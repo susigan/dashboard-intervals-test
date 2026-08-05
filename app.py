@@ -1,28 +1,26 @@
 """
-app.py — Script CORRIGIDO com BASIC AUTH
-Baseado na documentação oficial da API do David
+app.py — Script com FIX para erro 422 (parâmetro 'oldest' faltando)
 """
 import requests
 import os
 import json
 import base64
+from datetime import datetime, timedelta
 
 def main():
     """Função principal"""
     
     print("\n" + "="*70)
-    print("🏃 INTERVALS.ICU API TEST — BASIC AUTH (CORRECTO!)")
+    print("🏃 INTERVALS.ICU API TEST — BASIC AUTH + FIX 422")
     print("="*70 + "\n")
     
     # Carregar variáveis de ambiente
     API_KEY = os.getenv("INTERVALS_ICU_API_KEY", "").strip()
-    ATHLETE_ID = os.getenv("ATHLETE_ID", "0").strip()  # 0 = usar o atleta da API key
+    ATHLETE_ID = os.getenv("ATHLETE_ID", "0").strip()
     
     # Verificar API key
     if not API_KEY:
-        print("❌ ERRO: INTERVALS_ICU_API_KEY não está configurada!")
-        print("   Railway → Variables → INTERVALS_ICU_API_KEY")
-        print("   Ou ficheiro .env: INTERVALS_ICU_API_KEY=sua_chave_aqui\n")
+        print("❌ ERRO: INTERVALS_ICU_API_KEY não está configurada!\n")
         return
     
     print(f"✅ API Key: {API_KEY[:20]}...{API_KEY[-10:]}")
@@ -30,10 +28,9 @@ def main():
     print(f"✅ Tamanho da chave: {len(API_KEY)} caracteres\n")
     
     # ──────────────────────────────────────────────────────────────
-    # CRIAR BASIC AUTH HEADER (conforme documentação oficial)
+    # CRIAR BASIC AUTH HEADER
     # ──────────────────────────────────────────────────────────────
     
-    # Basic Auth: username="API_KEY", password=API_KEY
     credentials = f"API_KEY:{API_KEY}"
     credentials_base64 = base64.b64encode(credentials.encode()).decode()
     
@@ -42,18 +39,16 @@ def main():
         "Content-Type": "application/json"
     }
     
-    print("AUTENTICAÇÃO SENDO USADO:")
-    print(f"  Método: Basic Authentication")
-    print(f"  Username: API_KEY")
-    print(f"  Password: {API_KEY[:20]}...")
-    print(f"  Authorization: Basic {credentials_base64[:30]}...\n")
+    print("AUTENTICAÇÃO: Basic Authentication")
+    print(f"  Username: API_KEY (literal)")
+    print(f"  Password: {API_KEY[:20]}...\n")
     
     # ──────────────────────────────────────────────────────────────
-    # TESTE 1: Verificar autenticação (Perfil do Atleta)
+    # TESTE 1: Verificar autenticação
     # ──────────────────────────────────────────────────────────────
     
     print("="*70)
-    print("1️⃣  TESTANDO AUTENTICAÇÃO (GET /athlete/{id})")
+    print("1️⃣  TESTANDO AUTENTICAÇÃO")
     print("="*70)
     
     try:
@@ -62,73 +57,42 @@ def main():
         
         response = requests.get(url, headers=headers, timeout=10)
         
-        print(f"Status: {response.status_code}")
-        print(f"Reason: {response.reason}\n")
+        print(f"Status: {response.status_code}\n")
         
         if response.status_code == 200:
             profile = response.json()
             print("✅ AUTENTICAÇÃO BEM-SUCEDIDA!\n")
             print(f"Nome: {profile.get('name', 'N/A')}")
-            print(f"ID: {profile.get('id', 'N/A')}")
-            print(f"Peso: {profile.get('weight', 'N/A')}")
-            print(f"Email: {profile.get('email', 'N/A')}\n")
+            print(f"ID: {profile.get('id', 'N/A')}\n")
             
-            # Guardar athlete_id para próximos testes
             actual_athlete_id = profile.get('id', ATHLETE_ID)
         else:
-            print(f"❌ ERRO {response.status_code}: {response.reason}")
-            print(f"Resposta: {response.text}\n")
+            print(f"❌ ERRO {response.status_code}: {response.text}\n")
             return
     
     except Exception as e:
-        print(f"❌ ERRO DE CONEXÃO: {e}\n")
+        print(f"❌ ERRO: {e}\n")
         return
     
     # ──────────────────────────────────────────────────────────────
-    # TESTE 2: Verificar conexões com devices/platforms
+    # TESTE 2: Buscar atividades COM parâmetro 'oldest'
     # ──────────────────────────────────────────────────────────────
     
     print("="*70)
-    print("2️⃣  TESTANDO CONEXÕES COM DEVICES (GET /athlete/{id}/connections)")
+    print("2️⃣  BUSCANDO ATIVIDADES (com parâmetro 'oldest')")
     print("="*70)
     
     try:
-        url = f"https://intervals.icu/api/v1/athlete/{actual_athlete_id}/connections"
-        print(f"URL: {url}\n")
+        # Calcular data 'oldest' = 1 ano atrás
+        oldest_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
         
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        print(f"Status: {response.status_code}\n")
-        
-        if response.status_code == 200:
-            connections = response.json()
-            print("✅ CONEXÕES ENCONTRADAS:\n")
-            
-            for device, connected in connections.items():
-                if device != 'id':
-                    status = "✅ Conectado" if connected else "❌ Não conectado"
-                    print(f"  {device}: {status}")
-            print()
-        else:
-            print(f"⚠️  AVISO {response.status_code}: {response.text}\n")
-    
-    except Exception as e:
-        print(f"⚠️  AVISO: {e}\n")
-    
-    # ──────────────────────────────────────────────────────────────
-    # TESTE 3: Buscar atividades (CSV format)
-    # ──────────────────────────────────────────────────────────────
-    
-    print("="*70)
-    print("3️⃣  BUSCANDO ATIVIDADES (GET /athlete/{id}/activities)")
-    print("="*70)
-    
-    try:
         url = f"https://intervals.icu/api/v1/athlete/{actual_athlete_id}/activities"
+        params = {"oldest": oldest_date}
         
-        print(f"URL: {url}\n")
+        print(f"URL: {url}")
+        print(f"Params: {params}\n")
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, params=params, timeout=10)
         
         print(f"Status: {response.status_code}\n")
         
@@ -139,21 +103,26 @@ def main():
             print(f"✅ ENCONTRADAS {len(activities)} ATIVIDADES:\n")
             
             if activities:
-                for i, activity in enumerate(activities[:5], 1):
-                    print(f"{i}. {activity.get('start_date_local', 'N/A')} | "
+                # Mostrar primeiras 10
+                for i, activity in enumerate(activities[:10], 1):
+                    print(f"{i:2}. {activity.get('start_date_local', 'N/A')} | "
                           f"{activity.get('type', 'N/A').upper():6} | "
-                          f"{activity.get('distance', 0):6.1f}km | "
-                          f"RPE: {activity.get('rpe', 'N/A')}")
-                print()
+                          f"{activity.get('distance', 0):7.1f}km | "
+                          f"RPE: {activity.get('rpe', 'N/A')} | "
+                          f"ID: {activity.get('id', 'N/A')}")
+                
+                print(f"\n📊 Total de atividades: {len(activities)}")
+                print(f"   Mais antigas: {activities[-1].get('start_date_local', 'N/A')}")
+                print(f"   Mais recentes: {activities[0].get('start_date_local', 'N/A')}\n")
                 
                 # ──────────────────────────────────────────────────────────────
-                # TESTE 4: Pegar detalhes de 1 atividade
+                # TESTE 3: Pegar detalhes de 1 atividade
                 # ──────────────────────────────────────────────────────────────
                 
                 first_activity_id = activities[0].get('id')
                 
                 print("="*70)
-                print(f"4️⃣  DETALHES DA ATIVIDADE {first_activity_id}")
+                print(f"3️⃣  DETALHES DA ATIVIDADE {first_activity_id}")
                 print("="*70)
                 
                 url = f"https://intervals.icu/api/v1/athlete/{actual_athlete_id}/activities/{first_activity_id}"
@@ -192,6 +161,17 @@ def main():
                             print(f"  {key}: {value}")
                         print()
                     
+                    # Zones
+                    zones = activity.get('zones', {})
+                    if zones:
+                        print("🎯 ZONAS:")
+                        total_time = 0
+                        for zone, seconds in zones.items():
+                            minutes = seconds / 60
+                            print(f"  {zone}: {minutes:.0f} min")
+                            total_time += seconds
+                        print()
+                    
                     # Streams
                     print("="*70)
                     print("5️⃣  STREAMS (Série Temporal)")
@@ -214,15 +194,18 @@ def main():
                         print()
                     else:
                         print(f"⚠️  AVISO {stream_response.status_code}")
-                        if stream_response.status_code == 403:
-                            print("  (Pode ser restrição de Strava ou falta de permissão)")
                         print(f"  Resposta: {stream_response.text}\n")
                     
-                    # JSON Completo
+                    # JSON Completo (primeiras 50 linhas)
                     print("="*70)
-                    print("📋 DADOS COMPLETOS (JSON)")
+                    print("📋 DADOS COMPLETOS (JSON - primeiras 50 linhas)")
                     print("="*70)
-                    print(json.dumps(activity, indent=2, ensure_ascii=False))
+                    json_str = json.dumps(activity, indent=2, ensure_ascii=False)
+                    json_lines = json_str.split('\n')
+                    for line in json_lines[:50]:
+                        print(line)
+                    if len(json_lines) > 50:
+                        print(f"... ({len(json_lines) - 50} linhas omitidas)")
                     print()
                 
                 else:
@@ -242,37 +225,21 @@ def main():
     print("="*70 + "\n")
     
     print("""
-📌 INFORMAÇÕES IMPORTANTES (baseado na documentação oficial):
+📌 NOTAS IMPORTANTES:
 
-1. Basic Authentication (CORRECTO):
-   Username: API_KEY (literal)
-   Password: Your API key
-   Header: Authorization: Basic base64("API_KEY:your_api_key")
+1. Parâmetro 'oldest':
+   ✅ Obrigatório para listar atividades
+   ✅ Formato: YYYY-MM-DD
+   ✅ Retorna atividades entre 'oldest' e agora
 
-2. Bearer Token (ERRADO para acesso pessoal):
-   ❌ NÃO usar para acesso pessoal
-   ✅ Só usar se tiveres OAuth app multi-user
-
-3. Athlete ID:
-   ✅ Usa "0" para tua própria conta (recomendado)
-   ✅ Ou usa o número do atleta
-
-4. Rate Limits (API Key):
-   ✅ 5000 requests/dia
-   ✅ 2500 requests/15 minutos
-
-5. Cloudflare Note:
-   ⚠️  Alguns clients Python podem ser bloqueados
-   ✅ Solução: Mudar user-agent para browser
-
-6. Documentação Oficial:
-   📖 RapiDoc: https://intervals.icu/api/v1/docs/rapipoc/
-   📖 Swagger: https://intervals.icu/api/v1/docs/swagger-ui/
-
-7. Se ainda der erro 401:
-   ❌ API key inválida/expirada/com espaços
-   ❌ Verificar username (deve ser "API_KEY" literal)
-   ✅ Tentar recriar API key em https://intervals.icu/settings/api
+2. Basic Auth funciona! ✅
+   Username: "API_KEY" (literal)
+   Password: Tua API key
+   
+3. Próximos passos:
+   ✅ Guardar atividades em DB
+   ✅ Integrar com dashboard Streamlit
+   ✅ Processar custom fields
 
 """)
 

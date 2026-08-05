@@ -69,6 +69,64 @@ STD_FIELDS = {
  'type','use_elevation_correction','use_gap_zone_times','workout_shift_secs',
 }
 
+# ── Normalizacao de modalidades (identica ao repo dashboard/config.py) ──
+TYPE_MAP = {
+    'VirtualSki': 'Ski', 'AlpineSki': 'Ski', 'Ski': 'Ski', 'NordicSki': 'Ski',
+    'BackcountrySki': 'Ski', 'RollerSki': 'Ski',
+    'VirtualRow': 'Row', 'Rowing': 'Row', 'Row': 'Row', 'Kayaking': 'Row',
+    'VirtualRide': 'Bike', 'Cycling': 'Bike', 'Ride': 'Bike', 'Bike': 'Bike',
+    'MountainBike': 'Bike', 'MountainBikeRide': 'Bike', 'GravelRide': 'Bike',
+    'EBikeRide': 'Bike', 'Handcycle': 'Bike',
+    'VirtualRun': 'Run', 'Running': 'Run', 'Run': 'Run', 'TrailRun': 'Run',
+    'Treadmill': 'Run', 'Walk': 'Run', 'Hike': 'Run',
+    'WeightTraining': 'WeightTraining', 'Workout': 'WeightTraining',
+}
+CICLICOS = ['Bike', 'Row', 'Run', 'Ski']
+VALID_TYPES = CICLICOS + ['WeightTraining']
+CORES_MOD = {'Bike': '#E74C3C', 'Row': '#3498DB', 'Run': '#2ECC71',
+             'Ski': '#9B59B6', 'WeightTraining': '#F39C12', 'Other': '#7F8C8D'}
+
+
+def norm_tipo(t):
+    """AlpineSki/VirtualSki -> Ski, VirtualRide/Ride -> Bike, etc."""
+    if not t:
+        return 'Other'
+    return TYPE_MAP.get(t, TYPE_MAP.get(str(t).strip(), 'Other'))
+
+
+def kj_da_atividade(a):
+    """kJ de trabalho.
+
+    Prioridade identica ao repo dashboard (data.py:2548-2552):
+      1) Z1KJ + Z2KJ + Z3KJ  (custom fields, dao decomposicao por zona)
+      2) icu_joules / 1000   (fallback)
+    Nas atividades verificadas os dois batem certo ao milesimo.
+    """
+    z = [a.get('Z1KJ'), a.get('Z2KJ'), a.get('Z3KJ')]
+    if any(isinstance(v, (int, float)) for v in z):
+        return float(sum(v for v in z if isinstance(v, (int, float))))
+    j = a.get('icu_joules')
+    return float(j) / 1000.0 if isinstance(j, (int, float)) else 0.0
+
+
+def classificar_rpe(v):
+    """Leve 1-4.9 | Moderado 5-6.9 | Pesado 7-10 (helpers.py:156)."""
+    if not isinstance(v, (int, float)):
+        return None
+    v = float(v)
+    if 1 <= v <= 4.9:
+        return 'Leve'
+    if 5 <= v <= 6.9:
+        return 'Moderado'
+    if 7 <= v <= 10:
+        return 'Pesado'
+    return None
+
+
+def num(v, default=0.0):
+    return float(v) if isinstance(v, (int, float)) else default
+
+
 _cache = {'activities': None, 'time': None}
 
 
@@ -103,13 +161,17 @@ def process_all(acts):
     out = []
     for a in acts:
         try:
+            raw_type = p.get_activity_type(a)
             out.append({
                 'id': p.get_activity_id(a), 'date': p.get_start_date_local(a)[:10],
-                'name': p.get_activity_name(a), 'type': p.get_activity_type(a),
+                'name': p.get_activity_name(a),
+                'type': norm_tipo(raw_type), 'type_raw': raw_type,
                 'duration_min': round(p.get_duration_minutes(a), 1),
                 'distance_km': round(p.get_distance_km(a), 1),
                 'ftp': p.get_ftp(a), 'avg_watts': p.get_avg_watts(a),
-                'joules': p.get_joules(a), 'training_load': p.get_training_load(a),
+                'kj': round(kj_da_atividade(a), 1),
+                'training_load': p.get_training_load(a),
+                'rpe': a.get('icu_rpe'), 'xss': a.get('SS'),
                 'avg_hr': p.get_avg_hr(a), 'max_hr': p.get_max_hr(a),
                 'source': p.get_source(a),
             })
@@ -186,13 +248,304 @@ canvas { width:100%; display:block; }
 .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
 @media (max-width:800px){ .grid2 { grid-template-columns:1fr; } }
 .err { color:#E74C3C; font-size:12px; }
+.nav { display:flex; gap:4px; margin-bottom:18px; border-bottom:1px solid #21262d; }
+.nav a { padding:9px 16px; font-size:13px; color:#8b949e; border-bottom:2px solid transparent;
+  text-decoration:none; font-weight:500; }
+.nav a:hover { color:#c9d1d9; text-decoration:none; }
+.nav a.on { color:#5DADE2; border-bottom-color:#5DADE2; }
+label.sel { font-size:12px; color:#8b949e; display:flex; align-items:center; gap:6px; }
 """
+
+NAV = '''<div class="nav">
+  <a href="/" class="__ON_VOL__">Volume</a>
+  <a href="/atividades" class="__ON_ACT__">Atividades</a>
+</div>'''
+
+VOLUME_HTML = r"""
+<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Volume &amp; Carga</title><style>__CSS__</style></head><body>
+__NAV__
+<h1>Volume &amp; Carga</h1>
+<div class="sub" id="sub">A carregar...</div>
+
+<div class="controls">
+  <label class="sel">Periodo
+    <select id="periodo">
+      <option value="semana">Semana</option>
+      <option value="mes" selected>Mes</option>
+      <option value="ano">Ano</option>
+    </select>
+  </label>
+  <label class="sel">Vista
+    <select id="modo">
+      <option value="abs">Valores absolutos</option>
+      <option value="pct">Percentagem (100%)</option>
+    </select>
+  </label>
+  <label class="sel">Ultimos
+    <select id="janela">
+      <option value="12">12 periodos</option>
+      <option value="26">26 periodos</option>
+      <option value="52" selected>52 periodos</option>
+      <option value="0">Tudo</option>
+    </select>
+  </label>
+  <span id="mapping" class="sub" style="margin:0"></span>
+</div>
+
+<div class="cards" id="kpis"></div>
+
+<h2>Horas por modalidade</h2>
+<div class="chartbox"><div class="legend" id="lgHoras"></div>
+  <canvas id="chHoras" height="260"></canvas></div>
+
+<h2>Distancia (km) por modalidade</h2>
+<div class="chartbox"><div class="legend" id="lgKm"></div>
+  <canvas id="chKm" height="260"></canvas></div>
+
+<h2>Trabalho (kJ) por modalidade</h2>
+<div class="sub">kJ = Z1KJ + Z2KJ + Z3KJ &middot; fallback icu_joules/1000</div>
+<div class="chartbox"><div class="legend" id="lgKj"></div>
+  <canvas id="chKj" height="260"></canvas></div>
+
+<h2>Trabalho por zona (Z1 / Z2 / Z3)</h2>
+<div class="controls"><label class="sel">Modalidade
+  <select id="modZona"><option value="">Todas</option></select></label></div>
+<div class="chartbox"><div class="legend" id="lgZona"></div>
+  <canvas id="chZona" height="260"></canvas></div>
+
+<h2>Horas por RPE</h2>
+<div class="sub">Leve 1&ndash;4.9 &middot; Moderado 5&ndash;6.9 &middot; Pesado 7&ndash;10</div>
+<div class="chartbox"><div class="legend" id="lgRpe"></div>
+  <canvas id="chRpe" height="260"></canvas></div>
+
+<h2>Strain Score (XSS) por modalidade</h2>
+<div class="sub">Outliers removidos por modalidade (IQR &times; 3), como no dashboard</div>
+<div class="chartbox"><div class="legend" id="lgXss"></div>
+  <canvas id="chXss" height="260"></canvas></div>
+
+<h2>Training Load por modalidade</h2>
+<div class="chartbox"><div class="legend" id="lgTl"></div>
+  <canvas id="chTl" height="260"></canvas></div>
+
+<h2>Sistema energetico</h2>
+<div class="sub">oxidative = Aerobic &middot; glycolytic = Glycolytic &middot; sprint = Pmax</div>
+<div class="chartbox"><div class="legend" id="lgSys"></div>
+  <canvas id="chSys" height="260"></canvas></div>
+
+<h2>Tabela resumo</h2>
+<div class="controls"><label class="sel">Metrica
+  <select id="tblMetric">
+    <option value="horas">Horas</option><option value="km">km</option>
+    <option value="kj">kJ</option><option value="tl">Training Load</option>
+    <option value="xss">XSS</option>
+  </select></label></div>
+<div class="wrap" style="max-height:420px"><table>
+  <thead><tr id="tblHead"></tr></thead><tbody id="tblBody"></tbody></table></div>
+
+<script>
+let SESS=[],CIC=[],CORES={},RPECOR={Leve:'#58D68D',Moderado:'#F4D03F',Pesado:'#E74C3C'};
+const ZCOR={z1_kj:'#58D68D',z2_kj:'#F4D03F',z3_kj:'#E74C3C'};
+const SYSCOR={aerobic:'#5DADE2',glycolytic:'#F39C12',sprint:'#E74C3C'};
+
+function periodoDe(dateStr,tipo){
+ const d=new Date(dateStr+'T00:00:00');
+ if(tipo==='ano')return String(d.getFullYear());
+ if(tipo==='mes')return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+ // semana ISO
+ const t=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
+ const dn=t.getUTCDay()||7; t.setUTCDate(t.getUTCDate()+4-dn);
+ const y0=new Date(Date.UTC(t.getUTCFullYear(),0,1));
+ const wk=Math.ceil(((t-y0)/86400000+1)/7);
+ return t.getUTCFullYear()+'-W'+String(wk).padStart(2,'0');
+}
+
+function pivot(rows,periodo,groupKey,valueKey,groups){
+ const map={};
+ rows.forEach(function(r){
+  const p=periodoDe(r.date,periodo);
+  const g=typeof groupKey==='function'?groupKey(r):r[groupKey];
+  if(g==null||groups.indexOf(g)===-1)return;
+  const v=typeof valueKey==='function'?valueKey(r):r[valueKey];
+  if(!isFinite(v))return;
+  map[p]=map[p]||{}; map[p][g]=(map[p][g]||0)+v;
+ });
+ return Object.keys(map).sort().map(p=>({periodo:p,vals:map[p]}));
+}
+
+function pivotCols(rows,periodo,cols){
+ const map={};
+ rows.forEach(function(r){
+  const p=periodoDe(r.date,periodo);
+  map[p]=map[p]||{};
+  cols.forEach(function(c){const v=r[c];if(isFinite(v))map[p][c]=(map[p][c]||0)+v;});
+ });
+ return Object.keys(map).sort().map(p=>({periodo:p,vals:map[p]}));
+}
+
+function janela(data){
+ const n=parseInt(document.getElementById('janela').value,10);
+ return (n>0&&data.length>n)?data.slice(-n):data;
+}
+
+function drawStack(canvasId,legendId,data,groups,cores,unit,decimals){
+ data=janela(data);
+ const c=document.getElementById(canvasId),dpr=window.devicePixelRatio||1;
+ const W=c.clientWidth,H=260;
+ c.width=W*dpr;c.height=H*dpr;
+ const g=c.getContext('2d');g.scale(dpr,dpr);g.clearRect(0,0,W,H);
+ document.getElementById(legendId).innerHTML=groups.map(k=>
+  '<span><i style="background:'+(cores[k]||'#8b949e')+'"></i>'+k+'</span>').join('');
+ if(!data.length){g.fillStyle='#8b949e';g.font='13px sans-serif';g.fillText('Sem dados',20,30);return;}
+ const pct=document.getElementById('modo').value==='pct';
+ const PL=54,PR=14,PT=12,PB=34,w=W-PL-PR,h=H-PT-PB;
+ const totals=data.map(d=>groups.reduce((s,k)=>s+(d.vals[k]||0),0));
+ const mx=pct?100:Math.max.apply(null,totals.concat([1]));
+ g.strokeStyle='#21262d';g.lineWidth=1;
+ for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
+ const bw=w/data.length,pad=Math.min(4,bw*0.18);
+ data.forEach(function(d,i){
+  const tot=totals[i]||1;let acc=0;
+  groups.forEach(function(k){
+   let v=d.vals[k]||0; if(!v)return;
+   if(pct)v=v/tot*100;
+   const bh=h*v/mx;
+   g.fillStyle=cores[k]||'#8b949e';
+   g.fillRect(PL+i*bw+pad/2,PT+h-acc-bh,bw-pad,bh);
+   acc+=bh;});
+ });
+ // media
+ if(!pct){
+  const avg=totals.reduce((s,x)=>s+x,0)/totals.length;
+  const y=PT+h-h*avg/mx;
+  g.strokeStyle='#8b949e';g.setLineDash([4,4]);g.beginPath();
+  g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.setLineDash([]);
+  g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='left';
+  g.fillText('media '+avg.toFixed(decimals||0)+(unit||''),PL+4,y-4);
+ }
+ g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
+ for(let i=0;i<=4;i++){const v=mx-mx*i/4;
+  g.fillText(pct?Math.round(v)+'%':(v>=1000?Math.round(v/1000)+'k':v.toFixed(decimals||0)),PL-6,PT+h*i/4+3);}
+ g.textAlign='center';
+ const step=Math.ceil(data.length/12);
+ data.forEach(function(d,i){if(i%step!==0)return;
+  g.save();g.translate(PL+i*bw+bw/2,H-8);
+  if(data.length>16){g.rotate(-Math.PI/5);g.textAlign='right';}
+  g.fillText(d.periodo,0,0);g.restore();});
+ g.textAlign='left';
+}
+
+function limparOutliers(rows,col,factor){
+ factor=factor||3;
+ const out=rows.map(r=>Object.assign({},r));
+ const mods=Array.from(new Set(out.map(r=>r.type)));
+ let n=0;
+ mods.forEach(function(m){
+  const vals=out.filter(r=>r.type===m&&isFinite(r[col])&&r[col]>0).map(r=>r[col]).sort((a,b)=>a-b);
+  if(vals.length<8)return;
+  const q=p=>vals[Math.floor(p*(vals.length-1))];
+  const q1=q(0.25),q3=q(0.75),iqr=q3-q1;
+  if(iqr===0)return;
+  const lo=q1-factor*iqr,hi=q3+factor*iqr;
+  out.forEach(function(r){if(r.type===m&&isFinite(r[col])&&(r[col]<lo||r[col]>hi)){r[col]=0;n++;}});
+ });
+ window.__NOUT__=n;
+ return out;
+}
+
+function fmtH(h){const H=Math.floor(h),M=Math.round((h-H)*60);return H+'h'+String(M).padStart(2,'0');}
+
+function redraw(){
+ const per=document.getElementById('periodo').value;
+ const cic=SESS.filter(r=>CIC.indexOf(r.type)!==-1);
+
+ drawStack('chHoras','lgHoras',pivot(cic,per,'type','horas',CIC),CIC,CORES,'h',1);
+ drawStack('chKm','lgKm',pivot(cic.filter(r=>r.km>0),per,'type','km',CIC),CIC,CORES,'km',0);
+ drawStack('chKj','lgKj',pivot(cic.filter(r=>r.kj>0),per,'type','kj',CIC),CIC,CORES,'kJ',0);
+
+ const mz=document.getElementById('modZona').value;
+ const zrows=mz?cic.filter(r=>r.type===mz):cic;
+ drawStack('chZona','lgZona',pivotCols(zrows,per,['z1_kj','z2_kj','z3_kj']),
+  ['z1_kj','z2_kj','z3_kj'],ZCOR,'kJ',0);
+
+ drawStack('chRpe','lgRpe',pivot(cic.filter(r=>r.rpe_cat),per,'rpe_cat','horas',
+  ['Leve','Moderado','Pesado']),['Leve','Moderado','Pesado'],RPECOR,'h',1);
+
+ const xssClean=limparOutliers(cic,'xss',3);
+ drawStack('chXss','lgXss',pivot(xssClean.filter(r=>r.xss>0),per,'type','xss',CIC),CIC,CORES,'',0);
+ const nout=window.__NOUT__||0;
+
+ drawStack('chTl','lgTl',pivot(cic.filter(r=>r.tl>0),per,'type','tl',CIC),CIC,CORES,'',0);
+ drawStack('chSys','lgSys',pivotCols(cic,per,['aerobic','glycolytic','sprint']),
+  ['aerobic','glycolytic','sprint'],SYSCOR,'',0);
+
+ // KPIs do periodo mais recente vs anterior
+ const ph=janela(pivot(cic,per,'type','horas',CIC));
+ const pk=janela(pivot(cic.filter(r=>r.kj>0),per,'type','kj',CIC));
+ const pd=janela(pivot(cic.filter(r=>r.km>0),per,'type','km',CIC));
+ const pt=janela(pivot(cic.filter(r=>r.tl>0),per,'type','tl',CIC));
+ function tot(arr,i){if(!arr.length)return 0;const d=arr[arr.length+i];
+  return d?CIC.reduce((s,k)=>s+(d.vals[k]||0),0):0;}
+ function delta(cur,prev){if(!prev)return '';
+  const p=(cur-prev)/prev*100;
+  const col=p>=0?'#2ECC71':'#E74C3C';
+  return '<span style="color:'+col+';font-size:11px"> '+(p>=0?'+':'')+p.toFixed(0)+'%</span>';}
+ const kpis=[['Horas',fmtH(tot(ph,-1)),delta(tot(ph,-1),tot(ph,-2))],
+  ['km',Math.round(tot(pd,-1)),delta(tot(pd,-1),tot(pd,-2))],
+  ['kJ',Math.round(tot(pk,-1)).toLocaleString('pt-PT'),delta(tot(pk,-1),tot(pk,-2))],
+  ['Training Load',Math.round(tot(pt,-1)),delta(tot(pt,-1),tot(pt,-2))],
+  ['Sessoes',cic.length,''],
+  ['Outliers XSS',nout,'']];
+ document.getElementById('kpis').innerHTML=kpis.map(k=>
+  '<div class="card"><div class="label">'+k[0]+'</div><div class="value">'+k[1]+k[2]+'</div></div>').join('');
+
+ tabela(per,cic);
+}
+
+function tabela(per,cic){
+ const metric=document.getElementById('tblMetric').value;
+ const rows=janela(pivot(cic.filter(r=>isFinite(r[metric])),per,'type',metric,CIC));
+ const cols=['Periodo'].concat(CIC).concat(['Total']);
+ document.getElementById('tblHead').innerHTML=cols.map((c,i)=>
+  '<th class="'+(i?'num':'')+'">'+c+'</th>').join('');
+ const dec=metric==='horas'?1:0;
+ document.getElementById('tblBody').innerHTML=rows.slice().reverse().map(function(d){
+  const tot=CIC.reduce((s,k)=>s+(d.vals[k]||0),0);
+  return '<tr><td>'+d.periodo+'</td>'+CIC.map(function(k){
+   const v=d.vals[k]||0;
+   const pct=tot?(v/tot*100).toFixed(0):0;
+   return '<td class="num">'+(v?v.toFixed(dec)+' <span style="color:#8b949e;font-size:11px">'+pct+'%</span>':'-')+'</td>';
+  }).join('')+'<td class="num"><b>'+tot.toFixed(dec)+'</b></td></tr>';}).join('');
+}
+
+async function load(){
+ const d=await fetch('/api/volume').then(r=>r.json());
+ if(d.error){document.getElementById('sub').textContent='Erro: '+d.error;return;}
+ SESS=d.sessions||[];CIC=d.ciclicos||[];CORES=d.cores||{};
+ document.getElementById('sub').textContent=d.count+' sessoes nos ultimos 365 dias';
+ const mp=d.type_mapping||{};
+ document.getElementById('mapping').innerHTML=Object.keys(mp).map(k=>
+  '<span class="pill">'+k+' &larr; '+mp[k].join(', ')+'</span>').join('');
+ const sel=document.getElementById('modZona');
+ CIC.forEach(function(m){if(SESS.some(r=>r.type===m)){
+  const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);}});
+ redraw();
+}
+['periodo','modo','janela','modZona','tblMetric'].forEach(id=>
+ document.getElementById(id).onchange=redraw);
+window.addEventListener('resize',function(){if(SESS.length)redraw();});
+load();
+</script></body></html>
+"""
+
 
 LIST_HTML = r"""
 <!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Intervals.icu Dashboard</title><style>__CSS__</style></head><body>
-<h1>Intervals.icu Dashboard</h1>
+<title>Atividades</title><style>__CSS__</style></head><body>
+__NAV__
+<h1>Atividades</h1>
 <div class="sub">Athlete Susigan &middot; ultimos 365 dias &middot; clica numa linha para ver detalhe</div>
 <div class="cards" id="cards"></div>
 <div class="controls">
@@ -207,9 +560,10 @@ LIST_HTML = r"""
   <tbody id="body"><tr><td class="loading">A carregar...</td></tr></tbody>
 </table></div>
 <script>
-const COLS=[['date','Data',0],['name','Nome',0],['type','Tipo',0],['duration_min','Min',1],
- ['distance_km','km',1],['training_load','TL',1],['avg_watts','W',1],['ftp','FTP',1],
- ['avg_hr','HR',1],['max_hr','HR max',1],['joules','Joules',1],['source','Fonte',0]];
+const COLS=[['date','Data',0],['name','Nome',0],['type','Tipo',0],['type_raw','Tipo API',0],
+ ['duration_min','Min',1],['distance_km','km',1],['kj','kJ',1],['training_load','TL',1],
+ ['avg_watts','W',1],['ftp','FTP',1],['rpe','RPE',1],['xss','XSS',1],
+ ['avg_hr','HR',1],['max_hr','HR max',1],['source','Fonte',0]];
 let data=[],sortKey='date',sortAsc=false;
 function fmt(v,num){if(v===null||v===undefined||v==='')return '-';
  if(num&&typeof v==='number')return v.toLocaleString('pt-PT');return v;}
@@ -255,7 +609,8 @@ DETAIL_HTML = r"""
 <!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Atividade __AID__</title><style>__CSS__</style></head><body>
-<a href="/">&larr; Voltar a lista</a>
+__NAV__
+<a href="/atividades">&larr; Voltar a lista</a>
 <h1 id="title">A carregar...</h1>
 <div class="sub" id="subtitle"></div>
 <div class="cards" id="cards"></div>
@@ -588,15 +943,28 @@ load();
 """
 
 
+def _nav(active):
+    return (NAV.replace('__ON_VOL__', 'on' if active == 'volume' else '')
+               .replace('__ON_ACT__', 'on' if active == 'atividades' else ''))
+
+
 @app.route('/')
 def index():
-    return render_template_string(LIST_HTML.replace('__CSS__', CSS))
+    return render_template_string(
+        VOLUME_HTML.replace('__CSS__', CSS).replace('__NAV__', _nav('volume')))
+
+
+@app.route('/atividades')
+def atividades_page():
+    return render_template_string(
+        LIST_HTML.replace('__CSS__', CSS).replace('__NAV__', _nav('atividades')))
 
 
 @app.route('/activity/<activity_id>')
 def activity_page(activity_id):
     return render_template_string(
-        DETAIL_HTML.replace('__CSS__', CSS).replace('__AID__', activity_id))
+        DETAIL_HTML.replace('__CSS__', CSS).replace('__AID__', activity_id)
+                   .replace('__NAV__', _nav('atividades')))
 
 
 @app.route('/health')
@@ -650,6 +1018,54 @@ def api_stats():
     })
 
 
+@app.route('/api/volume')
+def api_volume():
+    """Agregados de volume por periodo e modalidade, a partir das atividades."""
+    acts = fetch_activities()
+    if not acts:
+        return jsonify({'error': 'Fetch failed'}), 500
+
+    rows = []
+    for a in acts:
+        d = (a.get('start_date_local') or '')[:10]
+        if len(d) != 10:
+            continue
+        tipo = norm_tipo(a.get('type'))
+        secs = num(a.get('elapsed_time')) or num(a.get('moving_time'))
+        dist = num(a.get('icu_distance')) or num(a.get('distance'))
+        rows.append({
+            'id': a.get('id'), 'date': d, 'type': tipo, 'type_raw': a.get('type'),
+            'horas': secs / 3600.0,
+            'km': dist / 1000.0,
+            'kj': kj_da_atividade(a),
+            'z1_kj': num(a.get('Z1KJ')), 'z2_kj': num(a.get('Z2KJ')), 'z3_kj': num(a.get('Z3KJ')),
+            'z1_sec': num(a.get('Z1sec')), 'z2_sec': num(a.get('Z2sec')), 'z3_sec': num(a.get('Z3sec')),
+            'tl': num(a.get('icu_training_load')),
+            'rpe': a.get('icu_rpe'),
+            'rpe_cat': classificar_rpe(a.get('icu_rpe')),
+            'xss': num(a.get('SS')),
+            'aerobic': num(a.get('Aerobic')),
+            'glycolytic': num(a.get('Glycolytic')),
+            'sprint': num(a.get('Pmax')),
+            'epoc': num(a.get('EPOC')),
+            'work_hour': num(a.get('WorkHour')),
+        })
+
+    tipos_raw = {}
+    for r in rows:
+        tipos_raw.setdefault(r['type'], set()).add(r['type_raw'])
+
+    return jsonify({
+        'status': 'OK',
+        'count': len(rows),
+        'sessions': rows,
+        'ciclicos': CICLICOS,
+        'cores': CORES_MOD,
+        'type_mapping': {k: sorted(v) for k, v in sorted(tipos_raw.items())},
+        'kj_note': 'kJ = Z1KJ+Z2KJ+Z3KJ, fallback icu_joules/1000',
+    })
+
+
 @app.route('/api/activity/<activity_id>/full')
 def api_activity_full(activity_id):
     act, err = icu_get(f"/activity/{activity_id}")
@@ -657,6 +1073,8 @@ def api_activity_full(activity_id):
         return jsonify({'error': err}), 502
 
     custom_fields = {k: v for k, v in act.items() if k not in STD_FIELDS}
+    act['_type_norm'] = norm_tipo(act.get('type'))
+    act['_kj'] = round(kj_da_atividade(act), 2)
 
     streams, stream_meta = {}, []
     sdata, serr = icu_get(f"/activity/{activity_id}/streams", {"includeDefaults": "true"})

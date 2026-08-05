@@ -1,5 +1,5 @@
 """
-app.py — Script com Basic Auth INLINE NA URL (como Google Sheets faz)
+app.py — Script FINAL com parsing correcto
 """
 import requests
 import os
@@ -10,7 +10,7 @@ def main():
     """Função principal"""
     
     print("\n" + "="*70)
-    print("🏃 INTERVALS.ICU API TEST — BASIC AUTH INLINE URL")
+    print("🏃 INTERVALS.ICU API TEST — FINAL VERSION")
     print("="*70 + "\n")
     
     # Carregar variáveis de ambiente
@@ -23,17 +23,7 @@ def main():
         return
     
     print(f"✅ API Key: {API_KEY[:20]}...{API_KEY[-10:]}")
-    print(f"✅ Athlete ID: {ATHLETE_ID}")
-    print(f"✅ Tamanho da chave: {len(API_KEY)} caracteres\n")
-    
-    # ──────────────────────────────────────────────────────────────
-    # MÉTODO: Basic Auth INLINE NA URL (como Google Sheets faz)
-    # ──────────────────────────────────────────────────────────────
-    
-    print("AUTENTICAÇÃO: Basic Auth INLINE URL")
-    print(f"  Formato: https://API_KEY:api_key@intervals.icu/api/...")
-    print(f"  Username: API_KEY (literal)")
-    print(f"  Password: {API_KEY[:20]}...\n")
+    print(f"✅ Athlete ID: {ATHLETE_ID}\n")
     
     # ──────────────────────────────────────────────────────────────
     # TESTE 1: Verificar autenticação
@@ -48,7 +38,6 @@ def main():
         url = f"https://API_KEY:{API_KEY}@intervals.icu/api/v1/athlete/{ATHLETE_ID}"
         print(f"URL: https://API_KEY:***@intervals.icu/api/v1/athlete/{ATHLETE_ID}\n")
         
-        # NÃO usar headers com Authorization, requests lê da URL
         response = requests.get(url, timeout=10)
         
         print(f"Status: {response.status_code}\n")
@@ -69,7 +58,7 @@ def main():
         return
     
     # ──────────────────────────────────────────────────────────────
-    # TESTE 2: Buscar atividades COM parâmetro 'oldest'
+    # TESTE 2: Buscar atividades
     # ──────────────────────────────────────────────────────────────
     
     print("="*70)
@@ -77,10 +66,8 @@ def main():
     print("="*70)
     
     try:
-        # Calcular data 'oldest' = 1 ano atrás
         oldest_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
         
-        # URL com Basic Auth INLINE
         url = f"https://API_KEY:{API_KEY}@intervals.icu/api/v1/athlete/{actual_athlete_id}/activities"
         params = {"oldest": oldest_date}
         
@@ -92,8 +79,16 @@ def main():
         print(f"Status: {response.status_code}\n")
         
         if response.status_code == 200:
-            data = response.json()
-            activities = data.get("data", [])
+            result = response.json()
+            
+            # ⚠️ IMPORTANTE: A resposta pode ser lista ou dicionário!
+            if isinstance(result, list):
+                # Resposta é lista directa
+                activities = result
+                print(f"📌 Nota: API retornou lista directa (não dicionário com 'data')\n")
+            else:
+                # Resposta é dicionário com 'data'
+                activities = result.get("data", [])
             
             print(f"✅ ENCONTRADAS {len(activities)} ATIVIDADES:\n")
             
@@ -145,8 +140,7 @@ def main():
                     
                     print("⚡ POWER:")
                     print(f"  Média: {activity.get('power_avg', 'N/A')} W")
-                    print(f"  Máximo: {activity.get('power_max', 'N/A')} W")
-                    print(f"  Normalizado: {activity.get('power_normalized', 'N/A')} W\n")
+                    print(f"  Máximo: {activity.get('power_max', 'N/A')} W\n")
                     
                     # Custom Fields
                     custom_fields = activity.get('custom_fields', {})
@@ -165,28 +159,16 @@ def main():
                             print(f"  {zone}: {minutes:.0f} min")
                         print()
                     
-                    # Streams
+                    # JSON resumido
                     print("="*70)
-                    print("4️⃣  STREAMS (Série Temporal)")
+                    print("📋 DADOS JSON (primeiras 30 linhas)")
                     print("="*70)
-                    
-                    stream_url = f"https://API_KEY:{API_KEY}@intervals.icu/api/v1/athlete/{actual_athlete_id}/activities/{first_activity_id}/streams"
-                    print(f"URL: https://API_KEY:***@intervals.icu/api/v1/athlete/{actual_athlete_id}/activities/{first_activity_id}/streams\n")
-                    
-                    stream_response = requests.get(stream_url, timeout=10)
-                    
-                    print(f"Status: {stream_response.status_code}\n")
-                    
-                    if stream_response.status_code == 200:
-                        streams = stream_response.json()
-                        print("✅ STREAMS DISPONÍVEIS:")
-                        
-                        if "data" in streams:
-                            for stream_type in streams["data"]:
-                                print(f"  - {stream_type}")
-                        print()
-                    else:
-                        print(f"⚠️  Status {stream_response.status_code}\n")
+                    json_str = json.dumps(activity, indent=2, ensure_ascii=False)
+                    json_lines = json_str.split('\n')
+                    for line in json_lines[:30]:
+                        print(line)
+                    if len(json_lines) > 30:
+                        print(f"... ({len(json_lines) - 30} linhas omitidas)\n")
                 
                 else:
                     print(f"❌ ERRO {response.status_code}: {response.text}\n")
@@ -199,26 +181,12 @@ def main():
     
     except Exception as e:
         print(f"❌ ERRO: {e}\n")
+        import traceback
+        traceback.print_exc()
     
     print("="*70)
     print("✅ TESTE CONCLUÍDO!")
     print("="*70 + "\n")
-    
-    print("""
-📌 NOTAS:
-
-1. Basic Auth INLINE URL (NOVO):
-   https://API_KEY:api_key@intervals.icu/api/...
-   
-2. Isto é equivalente a:
-   Authorization: Basic base64("API_KEY:api_key")
-   
-3. Google Sheets usa este método!
-   
-4. Se isto funcionar, significa que o problema era
-   o Base64 encoding no header!
-
-""")
 
 if __name__ == "__main__":
     main()

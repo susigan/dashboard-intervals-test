@@ -1,21 +1,22 @@
 """
-app.py — Script CORRIGIDO para testar API Intervals.icu
-Baseado na análise dos forums
+app.py — Script CORRIGIDO com BASIC AUTH
+Baseado na documentação oficial da API do David
 """
 import requests
 import os
 import json
+import base64
 
 def main():
     """Função principal"""
     
     print("\n" + "="*70)
-    print("🏃 INTERVALS.ICU API TEST — VERSÃO CORRIGIDA")
+    print("🏃 INTERVALS.ICU API TEST — BASIC AUTH (CORRECTO!)")
     print("="*70 + "\n")
     
     # Carregar variáveis de ambiente
     API_KEY = os.getenv("INTERVALS_ICU_API_KEY", "").strip()
-    ATHLETE_ID = os.getenv("ATHLETE_ID", "me").strip()
+    ATHLETE_ID = os.getenv("ATHLETE_ID", "0").strip()  # 0 = usar o atleta da API key
     
     # Verificar API key
     if not API_KEY:
@@ -29,17 +30,23 @@ def main():
     print(f"✅ Tamanho da chave: {len(API_KEY)} caracteres\n")
     
     # ──────────────────────────────────────────────────────────────
-    # HEADERS CORRECTOS (baseado nos forums)
+    # CRIAR BASIC AUTH HEADER (conforme documentação oficial)
     # ──────────────────────────────────────────────────────────────
     
+    # Basic Auth: username="API_KEY", password=API_KEY
+    credentials = f"API_KEY:{API_KEY}"
+    credentials_base64 = base64.b64encode(credentials.encode()).decode()
+    
     headers = {
-        "Authorization": f"Bearer {API_KEY}",
+        "Authorization": f"Basic {credentials_base64}",
         "Content-Type": "application/json"
     }
     
-    print("HEADERS SENDO USADO:")
-    print(f"  Authorization: Bearer {API_KEY[:20]}...")
-    print(f"  Content-Type: application/json\n")
+    print("AUTENTICAÇÃO SENDO USADO:")
+    print(f"  Método: Basic Authentication")
+    print(f"  Username: API_KEY")
+    print(f"  Password: {API_KEY[:20]}...")
+    print(f"  Authorization: Basic {credentials_base64[:30]}...\n")
     
     # ──────────────────────────────────────────────────────────────
     # TESTE 1: Verificar autenticação (Perfil do Atleta)
@@ -65,6 +72,9 @@ def main():
             print(f"ID: {profile.get('id', 'N/A')}")
             print(f"Peso: {profile.get('weight', 'N/A')}")
             print(f"Email: {profile.get('email', 'N/A')}\n")
+            
+            # Guardar athlete_id para próximos testes
+            actual_athlete_id = profile.get('id', ATHLETE_ID)
         else:
             print(f"❌ ERRO {response.status_code}: {response.reason}")
             print(f"Resposta: {response.text}\n")
@@ -75,7 +85,7 @@ def main():
         return
     
     # ──────────────────────────────────────────────────────────────
-    # TESTE 2: Verificar conexões com devices/platforms (novo endpoint)
+    # TESTE 2: Verificar conexões com devices/platforms
     # ──────────────────────────────────────────────────────────────
     
     print("="*70)
@@ -83,7 +93,7 @@ def main():
     print("="*70)
     
     try:
-        url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/connections"
+        url = f"https://intervals.icu/api/v1/athlete/{actual_athlete_id}/connections"
         print(f"URL: {url}\n")
         
         response = requests.get(url, headers=headers, timeout=10)
@@ -106,7 +116,7 @@ def main():
         print(f"⚠️  AVISO: {e}\n")
     
     # ──────────────────────────────────────────────────────────────
-    # TESTE 3: Buscar atividades
+    # TESTE 3: Buscar atividades (CSV format)
     # ──────────────────────────────────────────────────────────────
     
     print("="*70)
@@ -114,13 +124,11 @@ def main():
     print("="*70)
     
     try:
-        url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/activities"
-        params = {"page": 1, "limit": 10}
+        url = f"https://intervals.icu/api/v1/athlete/{actual_athlete_id}/activities"
         
-        print(f"URL: {url}")
-        print(f"Params: {params}\n")
+        print(f"URL: {url}\n")
         
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response = requests.get(url, headers=headers, timeout=10)
         
         print(f"Status: {response.status_code}\n")
         
@@ -148,7 +156,7 @@ def main():
                 print(f"4️⃣  DETALHES DA ATIVIDADE {first_activity_id}")
                 print("="*70)
                 
-                url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/activities/{first_activity_id}"
+                url = f"https://intervals.icu/api/v1/athlete/{actual_athlete_id}/activities/{first_activity_id}"
                 print(f"URL: {url}\n")
                 
                 response = requests.get(url, headers=headers, timeout=10)
@@ -189,7 +197,7 @@ def main():
                     print("5️⃣  STREAMS (Série Temporal)")
                     print("="*70)
                     
-                    stream_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/activities/{first_activity_id}/streams"
+                    stream_url = f"https://intervals.icu/api/v1/athlete/{actual_athlete_id}/activities/{first_activity_id}/streams"
                     print(f"URL: {stream_url}\n")
                     
                     stream_response = requests.get(stream_url, headers=headers, timeout=10)
@@ -207,7 +215,7 @@ def main():
                     else:
                         print(f"⚠️  AVISO {stream_response.status_code}")
                         if stream_response.status_code == 403:
-                            print("  (Pode ser restrição de Strava ou token propagation issue)")
+                            print("  (Pode ser restrição de Strava ou falta de permissão)")
                         print(f"  Resposta: {stream_response.text}\n")
                     
                     # JSON Completo
@@ -234,29 +242,37 @@ def main():
     print("="*70 + "\n")
     
     print("""
-📌 NOTAS IMPORTANTES (baseado nos forums):
+📌 INFORMAÇÕES IMPORTANTES (baseado na documentação oficial):
 
-1. Bearer Token Format:
-   Authorization: Bearer YOUR_API_KEY
+1. Basic Authentication (CORRECTO):
+   Username: API_KEY (literal)
+   Password: Your API key
+   Header: Authorization: Basic base64("API_KEY:your_api_key")
 
-2. Para acesso próprio:
-   ✅ Usa API key simples (o que estás a usar)
-   ❌ NÃO precisa OAuth
+2. Bearer Token (ERRADO para acesso pessoal):
+   ❌ NÃO usar para acesso pessoal
+   ✅ Só usar se tiveres OAuth app multi-user
 
-3. Scopes (se usasses OAuth, o que NÃO é o caso):
-   ACTIVITY:READ, WELLNESS:WRITE, CALENDAR:READ, etc.
-
-4. Athlete ID:
-   ✅ Usa "me" para tua própria conta
+3. Athlete ID:
+   ✅ Usa "0" para tua própria conta (recomendado)
    ✅ Ou usa o número do atleta
 
-5. Se receberes 403 em streams:
-   ⚠️  Pode ser token propagation issue
-   ✅ Solução: Criar nova API key em Intervals.icu
+4. Rate Limits (API Key):
+   ✅ 5000 requests/dia
+   ✅ 2500 requests/15 minutos
 
-6. Se receberes 401:
-   ❌ API key inválida, expirada ou com espaços
-   ✅ Verifica em: https://intervals.icu/settings/api
+5. Cloudflare Note:
+   ⚠️  Alguns clients Python podem ser bloqueados
+   ✅ Solução: Mudar user-agent para browser
+
+6. Documentação Oficial:
+   📖 RapiDoc: https://intervals.icu/api/v1/docs/rapipoc/
+   📖 Swagger: https://intervals.icu/api/v1/docs/swagger-ui/
+
+7. Se ainda der erro 401:
+   ❌ API key inválida/expirada/com espaços
+   ❌ Verificar username (deve ser "API_KEY" literal)
+   ✅ Tentar recriar API key em https://intervals.icu/settings/api
 
 """)
 

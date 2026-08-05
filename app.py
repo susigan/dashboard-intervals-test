@@ -267,6 +267,16 @@ DETAIL_HTML = r"""
   <canvas id="chart" height="360"></canvas>
 </div>
 
+<div id="nirsSection" style="display:none">
+<h2>NIRS &middot; SmO<sub>2</sub> / THb</h2>
+<div class="toggles" id="nirsToggles"></div>
+<div class="chartbox">
+  <div class="legend" id="nirsLegend"></div>
+  <canvas id="nirs" height="260"></canvas>
+</div>
+<div class="cards" id="nirsCards"></div>
+</div>
+
 <h2>Power vs HR &middot; decoupling</h2>
 <div class="chartbox">
   <div class="legend" id="pvhLegend"></div>
@@ -312,20 +322,24 @@ DETAIL_HTML = r"""
 <script>
 const AID="__AID__";
 const COLORS={watts:'#5DADE2',heartrate:'#E74C3C',cadence:'#F4D03F',altitude:'#58D68D',
- velocity_smooth:'#AF7AC5',temp:'#E67E22',smo2:'#48C9B0',thb:'#EC7063',torque:'#85929E',
- respiration:'#7FB3D5',dfa_a1:'#F1948A',RRa1:'#82E0AA',distance:'#566573',
- RespirationRateAlphaHRV:'#D7BDE2',hrv:'#F5B041',artifacts:'#5D6D7E'};
-let STREAMS={},ACTIVE={},DATA=null;
+ velocity_smooth:'#AF7AC5',temp:'#E67E22',Temperature:'#D68910',smo2:'#48C9B0',smo2_2:'#1ABC9C',
+ thb:'#EC7063',thb_2:'#CD6155',O2Hb:'#F39C12',HHb:'#9B59B6',DiffHb:'#E59866',torque:'#85929E',
+ respiration:'#7FB3D5',dfa_a1:'#F1948A',RRa1:'#82E0AA',distance:'#566573',Speed:'#A569BD',
+ RespirationRateAlphaHRV:'#D7BDE2',hrv:'#F5B041',artifacts:'#5D6D7E',
+ GarminDistanceperStroke:'#7DCEA0',WorkperStrokeEstimated:'#BB8FCE'};
+const NIRS=['smo2','thb','O2Hb','HHb','DiffHb'];
+let STREAMS={},META=[],ACTIVE={},NACTIVE={},DATA=null;
 function color(k){return COLORS[k]||'#8b949e';}
+function metaOf(k){for(var i=0;i<META.length;i++)if(META[i].key===k)return META[i];return {key:k,label:k,type:k};}
 function ctx(id,h){const c=document.getElementById(id);const dpr=window.devicePixelRatio||1;
  const W=c.clientWidth;c.width=W*dpr;c.height=h*dpr;const g=c.getContext('2d');
  g.scale(dpr,dpr);g.clearRect(0,0,W,h);return {g:g,W:W,H:h};}
 function noData(g,W,H,msg){g.fillStyle='#8b949e';g.font='13px sans-serif';g.fillText(msg||'Sem dados',20,30);}
 
-function drawChart(){
- const o=ctx('chart',360),g=o.g,W=o.W,H=o.H;
+function drawSeries(canvasId,height,keys){
+ const o=ctx(canvasId,height),g=o.g,W=o.W,H=o.H;
  const PL=46,PR=46,PT=10,PB=26,w=W-PL-PR,h=H-PT-PB;
- const keys=Object.keys(ACTIVE).filter(k=>ACTIVE[k]&&STREAMS[k]&&STREAMS[k].length);
+ keys=keys.filter(k=>STREAMS[k]&&STREAMS[k].length);
  if(!keys.length){noData(g,W,H,'Seleciona pelo menos uma serie');return;}
  const n=Math.max.apply(null,keys.map(k=>STREAMS[k].length));
  g.strokeStyle='#21262d';g.lineWidth=1;
@@ -350,6 +364,12 @@ function drawChart(){
  const el=window.__ELAPSED__||0;
  for(let i=0;i<=6;i++){const x=PL+w*i/6;g.fillText(Math.round(i/6*el/60)+'m',x,H-8);}
  g.textAlign='left';
+}
+function drawChart(){drawSeries('chart',360,Object.keys(ACTIVE).filter(k=>ACTIVE[k]));}
+function drawNirs(){
+ const keys=Object.keys(NACTIVE).filter(k=>NACTIVE[k]);
+ if(!keys.length){const o=ctx('nirs',260);noData(o.g,o.W,o.H,'Sem canais NIRS selecionados');return;}
+ drawSeries('nirs',260,keys);
 }
 
 function drawPvH(pvh){
@@ -472,20 +492,53 @@ async function load(){
   '<div class="card"><div class="label">'+c[0]+'</div><div class="value">'+(c[1]==null?'-':c[1])+'</div></div>').join('');
 
  STREAMS=d.streams||{};
+ META=d.stream_meta||[];
  const names=Object.keys(STREAMS);
- const customSet=new Set(d.custom_stream_types||[]);
- document.getElementById('streamPills').innerHTML=
-  (d.stream_types_available||names).map(t=>'<span class="pill'+(customSet.has(t)?' custom':'')+'">'+t+'</span>').join('')
-  ||'<span class="sub">nenhum</span>';
- names.forEach(k=>{ACTIVE[k]=(k==='watts'||k==='heartrate');});
- document.getElementById('toggles').innerHTML=names.map(k=>
-  '<label class="'+(customSet.has(k)?'custom':'')+'"><input type="checkbox" data-k="'+k+'" '+
-  (ACTIVE[k]?'checked':'')+'> '+k+'</label>').join('');
+ const nirsKeys=META.filter(m=>NIRS.indexOf(m.type)!==-1&&m.plotted).map(m=>m.key);
+ const mainKeys=names.filter(k=>nirsKeys.indexOf(k)===-1);
+
+ document.getElementById('streamPills').innerHTML=META.map(function(m){
+  const t=m.sensor_name?(m.type+' - '+m.sensor_name):m.key;
+  return '<span class="pill'+(m.custom?' custom':'')+'"'+(m.plotted?'':' style="opacity:.45"')+
+   ' title="'+(m.points||0)+' pontos">'+t+'</span>';}).join('')||'<span class="sub">nenhum</span>';
+
+ // grafico principal
+ mainKeys.forEach(k=>{ACTIVE[k]=(k==='watts'||k==='heartrate');});
+ document.getElementById('toggles').innerHTML=mainKeys.map(function(k){
+  const m=metaOf(k);
+  return '<label class="'+(m.custom?'custom':'')+'"><input type="checkbox" data-k="'+k+'" '+
+   (ACTIVE[k]?'checked':'')+'> '+(m.sensor_name||k)+'</label>';}).join('');
  document.querySelectorAll('#toggles input').forEach(cb=>cb.onchange=function(){
   ACTIVE[cb.dataset.k]=cb.checked;updLegend();drawChart();});
- function updLegend(){document.getElementById('legend').innerHTML=names.filter(k=>ACTIVE[k])
-  .map(k=>'<span><i style="background:'+color(k)+'"></i>'+k+'</span>').join('');}
+ function updLegend(){document.getElementById('legend').innerHTML=mainKeys.filter(k=>ACTIVE[k])
+  .map(k=>'<span><i style="background:'+color(k)+'"></i>'+(metaOf(k).sensor_name||k)+'</span>').join('');}
  updLegend();drawChart();
+
+ // grafico NIRS
+ if(nirsKeys.length){
+  document.getElementById('nirsSection').style.display='';
+  nirsKeys.forEach(k=>{NACTIVE[k]=(metaOf(k).type==='smo2'||metaOf(k).type==='thb');});
+  document.getElementById('nirsToggles').innerHTML=nirsKeys.map(function(k){
+   const m=metaOf(k);
+   return '<label class="'+(m.custom?'custom':'')+'"><input type="checkbox" data-k="'+k+'" '+
+    (NACTIVE[k]?'checked':'')+'> '+(m.sensor_name||k)+'</label>';}).join('');
+  document.querySelectorAll('#nirsToggles input').forEach(cb=>cb.onchange=function(){
+   NACTIVE[cb.dataset.k]=cb.checked;updNirsLegend();drawNirs();});
+  function updNirsLegend(){document.getElementById('nirsLegend').innerHTML=nirsKeys.filter(k=>NACTIVE[k])
+   .map(k=>'<span><i style="background:'+color(k)+'"></i>'+(metaOf(k).sensor_name||k)+'</span>').join('');}
+  updNirsLegend();drawNirs();
+  // estatisticas por canal
+  document.getElementById('nirsCards').innerHTML=nirsKeys.map(function(k){
+   const v=STREAMS[k].filter(x=>typeof x==='number');
+   if(!v.length)return '';
+   const mn=Math.min.apply(null,v),mx=Math.max.apply(null,v);
+   const avg=v.reduce((s,x)=>s+x,0)/v.length;
+   const m=metaOf(k);
+   return '<div class="card"><div class="label">'+(m.sensor_name||k)+'</div>'+
+    '<div class="value">'+avg.toFixed(1)+'</div>'+
+    '<div class="label" style="margin-top:4px">min '+mn.toFixed(1)+' · max '+mx.toFixed(1)+
+    ' · amp '+(mx-mn).toFixed(1)+'</div></div>';}).join('');
+ }
 
  const pvh=d.power_vs_hr||{};
  document.getElementById('pvhLegend').innerHTML=
@@ -526,7 +579,9 @@ async function load(){
   .filter(k=>!(k in cf)).map(k=>'<div><span class="k">'+k+'</span><span class="v">'+fmtv(a[k])+'</span></div>').join('');
 }
 window.addEventListener('resize',function(){
- if(!DATA)return;drawChart();drawPvH(DATA.power_vs_hr||{});drawPowerCurve(DATA.power_curve||{});
+ if(!DATA)return;drawChart();
+ if(Object.keys(NACTIVE).length)drawNirs();
+ drawPvH(DATA.power_vs_hr||{});drawPowerCurve(DATA.power_curve||{});
  drawHist('phist',DATA.power_histogram,'#5DADE2');drawHist('hhist',DATA.hr_histogram,'#E74C3C');});
 load();
 </script></body></html>
@@ -603,21 +658,33 @@ def api_activity_full(activity_id):
 
     custom_fields = {k: v for k, v in act.items() if k not in STD_FIELDS}
 
-    streams, stream_types, custom_stream_types = {}, [], []
+    streams, stream_meta = {}, []
     sdata, serr = icu_get(f"/activity/{activity_id}/streams", {"includeDefaults": "true"})
     if sdata and isinstance(sdata, list):
         for s in sdata:
-            t = s.get('type') or s.get('name')
-            if not t or s.get('allNull'):
+            t = s.get('type')
+            if not t or t == 'time' or s.get('allNull'):
                 continue
-            stream_types.append(t)
-            if s.get('custom'):
-                custom_stream_types.append(t)
             d = s.get('data')
-            if isinstance(d, list) and d and not s.get('valueTypeIsArray'):
-                if any(isinstance(v, (int, float)) for v in d):
-                    streams[t] = downsample(d)
-    streams.pop('time', None)
+            has_values = (isinstance(d, list) and d
+                          and not s.get('valueTypeIsArray')
+                          and any(isinstance(v, (int, float)) for v in d))
+            # chave unica: se ja existe este type (ex. 2 sensores Moxy), sufixa
+            key = t
+            n = 2
+            while key in streams or any(m['key'] == key for m in stream_meta):
+                key = f"{t}_{n}"
+                n += 1
+            stream_meta.append({
+                'key': key, 'type': t,
+                'label': s.get('name') or t,
+                'sensor_name': s.get('name'),
+                'custom': bool(s.get('custom')),
+                'points': len(d) if isinstance(d, list) else None,
+                'plotted': bool(has_values),
+            })
+            if has_values:
+                streams[key] = downsample(d)
 
     pvh, _ = icu_get(f"/activity/{activity_id}/power-vs-hr")
     ivs, _ = icu_get(f"/activity/{activity_id}/intervals")
@@ -635,8 +702,7 @@ def api_activity_full(activity_id):
         'activity': act,
         'custom_fields': custom_fields,
         'streams': streams,
-        'stream_types_available': stream_types,
-        'custom_stream_types': custom_stream_types,
+        'stream_meta': stream_meta,
         'power_vs_hr': pvh or {},
         'intervals': ivs or {},
         'power_curve': pcurve or {},
@@ -644,7 +710,8 @@ def api_activity_full(activity_id):
         'hr_histogram': hhist or [],
         'meta': {
             'custom_field_count': len(custom_fields),
-            'stream_count': len(stream_types),
+            'stream_count': len(stream_meta),
+            'has_nirs': any(m['type'] in ('smo2', 'thb', 'O2Hb', 'HHb', 'DiffHb') for m in stream_meta),
             'null_fields': sorted([k for k, v in act.items() if v is None]),
         },
     })

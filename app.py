@@ -1,5 +1,5 @@
 """
-app.py — Script FINAL com parsing correcto
+app.py — Script FINAL v2 com fix para None values
 """
 import requests
 import os
@@ -10,7 +10,7 @@ def main():
     """Função principal"""
     
     print("\n" + "="*70)
-    print("🏃 INTERVALS.ICU API TEST — FINAL VERSION")
+    print("🏃 INTERVALS.ICU API TEST — FINAL v2")
     print("="*70 + "\n")
     
     # Carregar variáveis de ambiente
@@ -81,13 +81,11 @@ def main():
         if response.status_code == 200:
             result = response.json()
             
-            # ⚠️ IMPORTANTE: A resposta pode ser lista ou dicionário!
+            # Detectar se é lista ou dicionário
             if isinstance(result, list):
-                # Resposta é lista directa
                 activities = result
-                print(f"📌 Nota: API retornou lista directa (não dicionário com 'data')\n")
+                print(f"📌 Nota: API retornou lista directa\n")
             else:
-                # Resposta é dicionário com 'data'
                 activities = result.get("data", [])
             
             print(f"✅ ENCONTRADAS {len(activities)} ATIVIDADES:\n")
@@ -95,11 +93,14 @@ def main():
             if activities:
                 # Mostrar primeiras 10
                 for i, activity in enumerate(activities[:10], 1):
+                    # ⚠️ IMPORTANTE: Converter None para 0!
+                    distance = activity.get('distance') or 0
+                    rpe = activity.get('rpe') or 'N/A'
+                    
                     print(f"{i:2}. {activity.get('start_date_local', 'N/A')} | "
-                          f"{activity.get('type', 'N/A').upper():6} | "
-                          f"{activity.get('distance', 0):7.1f}km | "
-                          f"RPE: {activity.get('rpe', 'N/A')} | "
-                          f"ID: {activity.get('id', 'N/A')}")
+                          f"{activity.get('type', 'N/A').upper():12} | "
+                          f"{distance:7.1f}km | "
+                          f"RPE: {rpe}")
                 
                 print(f"\n📊 Total: {len(activities)} atividades")
                 print(f"   Mais antigas: {activities[-1].get('start_date_local', 'N/A')}")
@@ -127,20 +128,29 @@ def main():
                     
                     print("✅ ATIVIDADE CARREGADA:\n")
                     
+                    # Converter None para 0 ou valor padrão
+                    duration = activity.get('duration') or 0
+                    distance = activity.get('distance') or 0
+                    hr_avg = activity.get('heart_rate_avg') or 0
+                    hr_max = activity.get('heart_rate_max') or 0
+                    power_avg = activity.get('power_avg') or 0
+                    power_max = activity.get('power_max') or 0
+                    rpe = activity.get('rpe') or 'N/A'
+                    
                     print("📊 DADOS PRINCIPAIS:")
                     print(f"  Data: {activity.get('start_date_local', 'N/A')}")
                     print(f"  Tipo: {activity.get('type', 'N/A')}")
-                    print(f"  Duração: {activity.get('duration', 0) // 60} min")
-                    print(f"  Distância: {activity.get('distance', 0):.1f} km")
-                    print(f"  RPE: {activity.get('rpe', 'N/A')}/10\n")
+                    print(f"  Duração: {duration // 60} min")
+                    print(f"  Distância: {distance:.1f} km")
+                    print(f"  RPE: {rpe}/10\n")
                     
                     print("❤️  HEART RATE:")
-                    print(f"  Média: {activity.get('heart_rate_avg', 'N/A')} bpm")
-                    print(f"  Máximo: {activity.get('heart_rate_max', 'N/A')} bpm\n")
+                    print(f"  Média: {hr_avg} bpm")
+                    print(f"  Máximo: {hr_max} bpm\n")
                     
                     print("⚡ POWER:")
-                    print(f"  Média: {activity.get('power_avg', 'N/A')} W")
-                    print(f"  Máximo: {activity.get('power_max', 'N/A')} W\n")
+                    print(f"  Média: {power_avg} W")
+                    print(f"  Máximo: {power_max} W\n")
                     
                     # Custom Fields
                     custom_fields = activity.get('custom_fields', {})
@@ -155,20 +165,20 @@ def main():
                     if zones:
                         print("🎯 ZONAS:")
                         for zone, seconds in zones.items():
-                            minutes = seconds / 60
+                            minutes = seconds / 60 if seconds else 0
                             print(f"  {zone}: {minutes:.0f} min")
                         print()
                     
                     # JSON resumido
                     print("="*70)
-                    print("📋 DADOS JSON (primeiras 30 linhas)")
+                    print("📋 DADOS JSON (primeiras 40 linhas)")
                     print("="*70)
                     json_str = json.dumps(activity, indent=2, ensure_ascii=False)
                     json_lines = json_str.split('\n')
-                    for line in json_lines[:30]:
+                    for line in json_lines[:40]:
                         print(line)
-                    if len(json_lines) > 30:
-                        print(f"... ({len(json_lines) - 30} linhas omitidas)\n")
+                    if len(json_lines) > 40:
+                        print(f"... ({len(json_lines) - 40} linhas omitidas)\n")
                 
                 else:
                     print(f"❌ ERRO {response.status_code}: {response.text}\n")

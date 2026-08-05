@@ -1,17 +1,16 @@
 """
-app.py — Script com FIX para erro 422 (parâmetro 'oldest' faltando)
+app.py — Script com Basic Auth INLINE NA URL (como Google Sheets faz)
 """
 import requests
 import os
 import json
-import base64
 from datetime import datetime, timedelta
 
 def main():
     """Função principal"""
     
     print("\n" + "="*70)
-    print("🏃 INTERVALS.ICU API TEST — BASIC AUTH + FIX 422")
+    print("🏃 INTERVALS.ICU API TEST — BASIC AUTH INLINE URL")
     print("="*70 + "\n")
     
     # Carregar variáveis de ambiente
@@ -28,18 +27,11 @@ def main():
     print(f"✅ Tamanho da chave: {len(API_KEY)} caracteres\n")
     
     # ──────────────────────────────────────────────────────────────
-    # CRIAR BASIC AUTH HEADER
+    # MÉTODO: Basic Auth INLINE NA URL (como Google Sheets faz)
     # ──────────────────────────────────────────────────────────────
     
-    credentials = f"API_KEY:{API_KEY}"
-    credentials_base64 = base64.b64encode(credentials.encode()).decode()
-    
-    headers = {
-        "Authorization": f"Basic {credentials_base64}",
-        "Content-Type": "application/json"
-    }
-    
-    print("AUTENTICAÇÃO: Basic Authentication")
+    print("AUTENTICAÇÃO: Basic Auth INLINE URL")
+    print(f"  Formato: https://API_KEY:api_key@intervals.icu/api/...")
     print(f"  Username: API_KEY (literal)")
     print(f"  Password: {API_KEY[:20]}...\n")
     
@@ -52,10 +44,12 @@ def main():
     print("="*70)
     
     try:
-        url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}"
-        print(f"URL: {url}\n")
+        # URL com Basic Auth INLINE
+        url = f"https://API_KEY:{API_KEY}@intervals.icu/api/v1/athlete/{ATHLETE_ID}"
+        print(f"URL: https://API_KEY:***@intervals.icu/api/v1/athlete/{ATHLETE_ID}\n")
         
-        response = requests.get(url, headers=headers, timeout=10)
+        # NÃO usar headers com Authorization, requests lê da URL
+        response = requests.get(url, timeout=10)
         
         print(f"Status: {response.status_code}\n")
         
@@ -79,20 +73,21 @@ def main():
     # ──────────────────────────────────────────────────────────────
     
     print("="*70)
-    print("2️⃣  BUSCANDO ATIVIDADES (com parâmetro 'oldest')")
+    print("2️⃣  BUSCANDO ATIVIDADES")
     print("="*70)
     
     try:
         # Calcular data 'oldest' = 1 ano atrás
         oldest_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
         
-        url = f"https://intervals.icu/api/v1/athlete/{actual_athlete_id}/activities"
+        # URL com Basic Auth INLINE
+        url = f"https://API_KEY:{API_KEY}@intervals.icu/api/v1/athlete/{actual_athlete_id}/activities"
         params = {"oldest": oldest_date}
         
-        print(f"URL: {url}")
+        print(f"URL: https://API_KEY:***@intervals.icu/api/v1/athlete/{actual_athlete_id}/activities")
         print(f"Params: {params}\n")
         
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=10)
         
         print(f"Status: {response.status_code}\n")
         
@@ -111,7 +106,7 @@ def main():
                           f"RPE: {activity.get('rpe', 'N/A')} | "
                           f"ID: {activity.get('id', 'N/A')}")
                 
-                print(f"\n📊 Total de atividades: {len(activities)}")
+                print(f"\n📊 Total: {len(activities)} atividades")
                 print(f"   Mais antigas: {activities[-1].get('start_date_local', 'N/A')}")
                 print(f"   Mais recentes: {activities[0].get('start_date_local', 'N/A')}\n")
                 
@@ -125,10 +120,10 @@ def main():
                 print(f"3️⃣  DETALHES DA ATIVIDADE {first_activity_id}")
                 print("="*70)
                 
-                url = f"https://intervals.icu/api/v1/athlete/{actual_athlete_id}/activities/{first_activity_id}"
-                print(f"URL: {url}\n")
+                url = f"https://API_KEY:{API_KEY}@intervals.icu/api/v1/athlete/{actual_athlete_id}/activities/{first_activity_id}"
+                print(f"URL: https://API_KEY:***@intervals.icu/api/v1/athlete/{actual_athlete_id}/activities/{first_activity_id}\n")
                 
-                response = requests.get(url, headers=headers, timeout=10)
+                response = requests.get(url, timeout=10)
                 
                 print(f"Status: {response.status_code}\n")
                 
@@ -165,22 +160,20 @@ def main():
                     zones = activity.get('zones', {})
                     if zones:
                         print("🎯 ZONAS:")
-                        total_time = 0
                         for zone, seconds in zones.items():
                             minutes = seconds / 60
                             print(f"  {zone}: {minutes:.0f} min")
-                            total_time += seconds
                         print()
                     
                     # Streams
                     print("="*70)
-                    print("5️⃣  STREAMS (Série Temporal)")
+                    print("4️⃣  STREAMS (Série Temporal)")
                     print("="*70)
                     
-                    stream_url = f"https://intervals.icu/api/v1/athlete/{actual_athlete_id}/activities/{first_activity_id}/streams"
-                    print(f"URL: {stream_url}\n")
+                    stream_url = f"https://API_KEY:{API_KEY}@intervals.icu/api/v1/athlete/{actual_athlete_id}/activities/{first_activity_id}/streams"
+                    print(f"URL: https://API_KEY:***@intervals.icu/api/v1/athlete/{actual_athlete_id}/activities/{first_activity_id}/streams\n")
                     
-                    stream_response = requests.get(stream_url, headers=headers, timeout=10)
+                    stream_response = requests.get(stream_url, timeout=10)
                     
                     print(f"Status: {stream_response.status_code}\n")
                     
@@ -193,20 +186,7 @@ def main():
                                 print(f"  - {stream_type}")
                         print()
                     else:
-                        print(f"⚠️  AVISO {stream_response.status_code}")
-                        print(f"  Resposta: {stream_response.text}\n")
-                    
-                    # JSON Completo (primeiras 50 linhas)
-                    print("="*70)
-                    print("📋 DADOS COMPLETOS (JSON - primeiras 50 linhas)")
-                    print("="*70)
-                    json_str = json.dumps(activity, indent=2, ensure_ascii=False)
-                    json_lines = json_str.split('\n')
-                    for line in json_lines[:50]:
-                        print(line)
-                    if len(json_lines) > 50:
-                        print(f"... ({len(json_lines) - 50} linhas omitidas)")
-                    print()
+                        print(f"⚠️  Status {stream_response.status_code}\n")
                 
                 else:
                     print(f"❌ ERRO {response.status_code}: {response.text}\n")
@@ -225,21 +205,18 @@ def main():
     print("="*70 + "\n")
     
     print("""
-📌 NOTAS IMPORTANTES:
+📌 NOTAS:
 
-1. Parâmetro 'oldest':
-   ✅ Obrigatório para listar atividades
-   ✅ Formato: YYYY-MM-DD
-   ✅ Retorna atividades entre 'oldest' e agora
-
-2. Basic Auth funciona! ✅
-   Username: "API_KEY" (literal)
-   Password: Tua API key
+1. Basic Auth INLINE URL (NOVO):
+   https://API_KEY:api_key@intervals.icu/api/...
    
-3. Próximos passos:
-   ✅ Guardar atividades em DB
-   ✅ Integrar com dashboard Streamlit
-   ✅ Processar custom fields
+2. Isto é equivalente a:
+   Authorization: Basic base64("API_KEY:api_key")
+   
+3. Google Sheets usa este método!
+   
+4. Se isto funcionar, significa que o problema era
+   o Base64 encoding no header!
 
 """)
 

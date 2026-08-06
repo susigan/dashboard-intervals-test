@@ -325,6 +325,38 @@ DURACOES = [1, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300, 420, 600,
             720, 900, 1200, 1800, 2400, 3600, 5400]
 
 
+def recriar_power_curves():
+    """Apaga e recria a tabela de curvas.
+
+    CREATE TABLE IF NOT EXISTS nao altera uma tabela que ja exista, por isso
+    se o esquema mudou e preciso deitar abaixo. Nao se perde nada: as curvas
+    vem todas da API em 4 pedidos (/api/sync/curvas).
+    """
+    if not ENABLED:
+        return {'ok': False, 'erro': 'sem base de dados'}
+    antes = colunas_de('power_curves')
+    _exec("DROP TABLE IF EXISTS power_curves")
+    init_schema()
+    return {'ok': True, 'colunas_antes': antes,
+            'colunas_agora': colunas_de('power_curves'),
+            'nota': 'corre /api/sync/curvas para voltar a preencher'}
+
+
+def colunas_de(tabela):
+    """Colunas de uma tabela, para diagnostico."""
+    if not ENABLED:
+        return []
+    if DRIVER == 'postgres':
+        rows = _exec("""SELECT column_name, data_type
+                        FROM information_schema.columns
+                        WHERE table_name = ? ORDER BY ordinal_position""",
+                     (tabela,), fetch='all')
+    else:
+        rows = _exec(f"PRAGMA table_info({tabela})", fetch='all')
+        rows = [(r[1], r[2]) for r in (rows or [])]
+    return [{'nome': r[0], 'tipo': r[1]} for r in (rows or [])]
+
+
 def upsert_power_curves(rows):
     """rows: lista de {activity_id, type, date, weight, secs, watts}."""
     if not ENABLED or not rows:

@@ -59,11 +59,23 @@ canvas { width:100%; display:block; }
 .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
 @media (max-width:800px){ .grid2 { grid-template-columns:1fr; } }
 .err { color:#E74C3C; font-size:12px; }
+.legend span.tog { cursor:pointer; user-select:none; padding:2px 6px; border-radius:4px; }
+.legend span.tog:hover { background:#1c2331; }
+.legend span.tog.off { opacity:.35; }
+.legend span.tog.off i { background:#484f58 !important; }
+.frescura { display:inline-flex; align-items:center; gap:8px; font-size:12px;
+  padding:5px 10px; border-radius:6px; border:1px solid #30363d; background:#161b22; }
+.frescura .dot { width:8px; height:8px; border-radius:50%; }
+.frescura button { background:#1c2331; border:1px solid #30363d; color:#5DADE2;
+  padding:4px 10px; border-radius:5px; font-size:12px; cursor:pointer; }
+.frescura button:hover { background:#22304a; }
+.frescura button:disabled { opacity:.5; cursor:default; }
 """
 
 # Registo de tabs: (slug, url, label). A ordem define a barra de navegacao.
 TABS = [
     ('volume',     '/',            'Volume'),
+    ('recordes',   '/recordes',    'Recordes'),
     ('atividades', '/atividades',  'Atividades'),
 ]
 
@@ -114,12 +126,32 @@ function noData(g,W,H,msg){g.fillStyle='#8b949e';g.font='13px sans-serif';
  g.fillText(msg||'Sem dados',20,30);}
 function fmtH(h){const H=Math.floor(h),M=Math.round((h-H)*60);return H+'h'+String(M).padStart(2,'0');}
 
+// Series desligadas por clique na legenda, por grafico.
+const OFF = {};
+function ligado(canvasId,k){ return !(OFF[canvasId] && OFF[canvasId][k]); }
+function alternar(canvasId,k){
+ OFF[canvasId] = OFF[canvasId] || {};
+ OFF[canvasId][k] = !OFF[canvasId][k];
+ if (typeof redraw === 'function') redraw();
+}
+
 function drawStack(canvasId,legendId,data,groups,cores,opts){
  opts=opts||{};
  const o=ctx(canvasId,opts.height||260); if(!o)return;
  const g=o.g,W=o.W,H=o.H;
- if(legendId)document.getElementById(legendId).innerHTML=groups.map(k=>
-  '<span><i style="background:'+(cores[k]||'#8b949e')+'"></i>'+(opts.labels&&opts.labels[k]||k)+'</span>').join('');
+ if(legendId){
+  document.getElementById(legendId).innerHTML=groups.map(function(k){
+   const off = !ligado(canvasId,k);
+   return '<span class="tog'+(off?' off':'')+'" data-c="'+canvasId+'" data-k="'+k+'">'+
+    '<i style="background:'+(cores[k]||'#8b949e')+'"></i>'+
+    (opts.labels&&opts.labels[k]||k)+'</span>';}).join('');
+  document.querySelectorAll('#'+legendId+' span.tog').forEach(function(sp){
+   sp.onclick=function(){ alternar(sp.dataset.c, sp.dataset.k); };});
+ }
+ // desenha so o que esta ligado; o empilhamento e as percentagens
+ // recalculam-se sobre as series visiveis
+ groups = groups.filter(k=>ligado(canvasId,k));
+ if(!groups.length){noData(g,W,H,'Todas as series desligadas');return;}
  if(!data.length){noData(g,W,H);return;}
  const pct=opts.pct;
  const PL=54,PR=14,PT=12,PB=34,w=W-PL-PR,h=H-PT-PB;
@@ -176,6 +208,59 @@ function limparOutliers(rows,col,factor){
 """
 
 
+FRESCURA_HTML = ('<div class="frescura" id="frescura">'
+                 '<span class="dot" style="background:#484f58"></span>'
+                 '<span id="frescuraTxt">a verificar...</span>'
+                 '<button id="btSync">Actualizar</button></div>')
+
+FRESCURA_JS = r"""
+// Indicador de frescura: compara a data mais recente na base com a API.
+async function verificarFrescura(){
+ const txt=document.getElementById('frescuraTxt');
+ const dot=document.querySelector('#frescura .dot');
+ if(!txt) return;
+ try{
+  const f=await fetch('/api/frescura?verificar=1').then(r=>r.json());
+  if(!f.db){ txt.textContent='sem base de dados - le sempre da API';
+             dot.style.background='#5DADE2'; return; }
+  const ult=f.ultima_na_base||'?';
+  if(f.erro){ txt.textContent='ultima sessao '+ult+' - nao consegui verificar a API';
+              dot.style.background='#E67E22'; return; }
+  if(f.novas>0){
+   const n=f.novas;
+   txt.innerHTML='<b>'+n+(n===1?' sessao nova':' sessoes novas')+'</b> na Intervals.icu - '+
+    'a base vai ate '+ult;
+   dot.style.background='#F4D03F';
+  } else {
+   txt.textContent='actualizado - ultima sessao '+ult;
+   dot.style.background='#2ECC71';
+  }
+ }catch(e){ txt.textContent='nao consegui verificar'; dot.style.background='#E74C3C'; }
+}
+
+async function sincronizar(){
+ const bt=document.getElementById('btSync');
+ const txt=document.getElementById('frescuraTxt');
+ const dot=document.querySelector('#frescura .dot');
+ bt.disabled=true; bt.textContent='a sincronizar...'; dot.style.background='#5DADE2';
+ try{
+  const r=await fetch('/api/sync').then(r=>r.json());
+  if(!r.ok){ txt.textContent='erro: '+(r.erro||'?'); dot.style.background='#E74C3C'; }
+  else {
+   txt.textContent=r.inseridas+' novas, '+r.actualizadas+' actualizadas';
+   dot.style.background='#2ECC71';
+   setTimeout(()=>location.reload(),900);
+  }
+ }catch(e){ txt.textContent='erro a sincronizar'; dot.style.background='#E74C3C'; }
+ bt.disabled=false; bt.textContent='Actualizar';
+}
+(function(){
+ const bt=document.getElementById('btSync');
+ if(bt){ bt.onclick=sincronizar; verificarFrescura(); }
+})();
+"""
+
+
 def page(title, active, body, extra_js=""):
     """Monta uma pagina completa."""
     return f"""<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
@@ -183,5 +268,7 @@ def page(title, active, body, extra_js=""):
 <title>{title}</title><style>{CSS}</style></head><body>
 {nav(active)}
 {body}
+<div style="margin-top:26px">{FRESCURA_HTML}</div>
 <script>{CHART_JS}
-{extra_js}</script></body></html>"""
+{extra_js}
+{FRESCURA_JS}</script></body></html>"""

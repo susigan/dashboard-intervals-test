@@ -1,6 +1,7 @@
 """Pagina de detalhe de uma atividade — streams, NIRS, curvas e custom fields."""
 
 from flask import jsonify
+import db
 from api_client import (icu_get, norm_tipo, num, kj_da_atividade,
                         kj_do_stream, parse_streams)
 from config import STD_FIELDS, ATHLETE_ID
@@ -19,13 +20,26 @@ def api_full(activity_id):
     act['_type_norm'] = norm_tipo(act.get('type'))
     act['_kj'] = round(kj_da_atividade(act), 2)
 
-    sdata, _ = icu_get(f"/activity/{activity_id}/streams", {"includeDefaults": "true"})
-    streams, stream_meta, watts_raw = parse_streams(sdata)
+    # Streams: da base de dados se ja foram carregados uma vez (lazy loading).
+    streams, stream_meta = db.get_streams(activity_id)
+    fonte_streams = 'db'
+    if not streams:
+        sdata, _ = icu_get(f"/activity/{activity_id}/streams", {"includeDefaults": "true"})
+        streams, stream_meta, _w = parse_streams(sdata)
+        fonte_streams = 'api'
+        if db.ENABLED and streams:
+            try:
+                db.upsert_streams(activity_id, stream_meta, streams)
+            except Exception as e:
+                print(f"Nao consegui guardar streams: {e}")
+    watts_raw = streams.get('watts') if streams else None
 
-    # kJ recalculado a partir do stream de potencia, para validar icu_joules.
-    # So e viavel aqui (1 atividade); no Volume seriam N requests.
+    # kJ recalculado a partir do stream, para validar icu_joules.
+    # n_pontos vem dos metadados porque a serie foi reduzida para o grafico.
     dt = num(act.get('icu_median_time_delta'), 1.0) or 1.0
-    kj_stream = kj_do_stream(watts_raw, dt)
+    n_watts = next((m.get('points') for m in (stream_meta or [])
+                    if m.get('type') == 'watts'), None)
+    kj_stream = kj_do_stream(watts_raw, dt, n_watts)
 
     pvh, _ = icu_get(f"/activity/{activity_id}/power-vs-hr")
     ivs, _ = icu_get(f"/activity/{activity_id}/intervals")
@@ -45,7 +59,9 @@ def api_full(activity_id):
         'custom_fields': custom_fields,
         'streams': streams,
         'stream_meta': stream_meta,
+        'streams_fonte': fonte_streams,
         'kj_stream': kj_stream,
+        'fonte_streams': fonte_streams,
         'kj_icu_joules': round(icu_kj, 2),
         'kj_delta_pct': (round((kj_stream - icu_kj) / icu_kj * 100, 2)
                          if kj_stream and icu_kj else None),

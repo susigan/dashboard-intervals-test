@@ -26,8 +26,16 @@ if not API_KEY:
 print(f"Config carregada | ATHLETE_ID: {ATHLETE_ID} | historico: {ANOS_HISTORICO} anos")
 
 from flask import Flask
-from api_client import fetch_activities, cache_info
+import db
+import sync
+from api_client import fetch_activities, cache_info, invalidar_cache
 from tabs import tab_volume, tab_atividades, tab_detalhe
+
+if db.ENABLED:
+    db.init_schema()
+    print(f"Fonte de dados: {db.DRIVER} (com a API como fallback)")
+else:
+    print("Fonte de dados: API Intervals.icu (DATABASE_URL nao definida)")
 
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
@@ -89,6 +97,27 @@ def api_cache():
 def api_cache_refresh():
     acts = fetch_activities(force=True)
     return jsonify({'status': 'OK', 'count': len(acts or [])})
+
+
+@app.route('/api/db')
+def api_db():
+    return jsonify(db.stats())
+
+
+@app.route('/api/sync')
+def api_sync():
+    """Sync incremental: so o que mudou desde o ultimo, com recuo de 21 dias."""
+    res = sync.sync_activities('incremental')
+    invalidar_cache()
+    return jsonify(res)
+
+
+@app.route('/api/sync/full')
+def api_sync_full():
+    """Sync completo: puxa ANOS_HISTORICO anos. Correr uma vez no inicio."""
+    res = sync.sync_activities('full')
+    invalidar_cache()
+    return jsonify(res)
 
 
 @app.route('/health')

@@ -8,7 +8,13 @@ from config import (API_KEY, ATHLETE_ID, BASE, ANOS_HISTORICO, CACHE_TTL,
 
 AUTH = ("API_KEY", API_KEY)
 
-_cache = {'activities': None, 'time': None, 'oldest': None}
+_cache = {'activities': None, 'time': None, 'oldest': None, 'fonte': None}
+
+try:
+    import db
+except Exception as _e:      # a app funciona sem persistencia
+    print(f"DB indisponivel: {_e}")
+    db = None
 
 
 def icu_get(path, params=None, timeout=60):
@@ -22,34 +28,66 @@ def icu_get(path, params=None, timeout=60):
         return None, str(e)
 
 
+def _data_oldest():
+    return (datetime.now() - timedelta(days=int(365.25 * ANOS_HISTORICO))).strftime("%Y-%m-%d")
+
+
+def fetch_da_api(oldest=None):
+    """Vai a API buscar atividades. Devolve (lista, erro)."""
+    oldest = oldest or _data_oldest()
+    data, err = icu_get(f"/athlete/{ATHLETE_ID}/activities", {"oldest": oldest})
+    if err:
+        return None, err
+    return (data if isinstance(data, list) else data.get("data", [])), None
+
+
+def invalidar_cache():
+    """Forca o proximo fetch a reler da fonte."""
+    _cache.update({'activities': None, 'time': None})
+
+
 def fetch_activities(force=False):
-    """Lista de atividades dos ultimos ANOS_HISTORICO anos, com cache."""
+    """Actividades: cache em memoria -> base de dados -> API.
+
+    A base de dados e transparente. Se nao existir, o comportamento e
+    exactamente o mesmo de antes: vai a API e guarda em memoria.
+    """
     now = datetime.now()
     if not force and _cache['activities'] and _cache['time']:
         if (now - _cache['time']).total_seconds() < CACHE_TTL:
             return _cache['activities']
 
-    oldest = (now - timedelta(days=int(365.25 * ANOS_HISTORICO))).strftime("%Y-%m-%d")
-    data, err = icu_get(f"/athlete/{ATHLETE_ID}/activities", {"oldest": oldest})
+    if db is not None and db.ENABLED:
+        acts = db.load_activities()
+        if acts:
+            _cache.update({'activities': acts, 'time': now,
+                           'oldest': None, 'fonte': 'db'})
+            return acts
+
+    oldest = _data_oldest()
+    acts, err = fetch_da_api(oldest)
     if err:
         print(f"Fetch error: {err}")
-        return _cache['activities']  # devolve cache antiga se existir
+        return _cache['activities']
 
-    acts = data if isinstance(data, list) else data.get("data", [])
-    _cache.update({'activities': acts, 'time': now, 'oldest': oldest})
-    print(f"Fetched {len(acts)} atividades desde {oldest}")
+    _cache.update({'activities': acts, 'time': now,
+                   'oldest': oldest, 'fonte': 'api'})
+    print(f"Fetched {len(acts)} actividades desde {oldest}")
     return acts
 
 
 def cache_info():
-    return {
+    info = {
         'cached': _cache['activities'] is not None,
         'count': len(_cache['activities'] or []),
+        'fonte': _cache['fonte'],
         'fetched_at': _cache['time'].isoformat() if _cache['time'] else None,
         'oldest': _cache['oldest'],
         'anos_historico': ANOS_HISTORICO,
         'ttl_segundos': CACHE_TTL,
     }
+    info['db_enabled'] = bool(db is not None and db.ENABLED)
+    return info
 
 
 # ── Normalizacao ──────────────────────────────────────────────────────────
@@ -85,13 +123,24 @@ def kj_da_atividade(a):
     return 0.0
 
 
-def kj_do_stream(watts, dt=1.0):
-    """kJ integrando o stream de potencia. So usado na pagina de detalhe,
-    onde os streams ja foram carregados, para validar contra icu_joules."""
+def kj_do_stream(watts, dt=1.0, n_pontos=None):
+    """kJ integrando o stream de potencia.
+
+    Usa a media x numero de pontos ORIGINAIS, nao a soma da serie: os streams
+    sao reduzidos a 1500 pontos para o grafico, e somar a serie reduzida daria
+    o integral a dividir pelo factor de reducao. A media sobrevive a reducao
+    (cada ponto e a media do seu bucket), o numero de pontos nao.
+
+    So e chamado na pagina de detalhe, onde os streams ja estao carregados.
+    """
     if not watts:
         return None
-    total = sum(v for v in watts if isinstance(v, (int, float)))
-    return round(total * dt / 1000.0, 2)
+    vals = [v for v in watts if isinstance(v, (int, float))]
+    if not vals:
+        return None
+    n = n_pontos if n_pontos else len(vals)
+    media = sum(vals) / len(vals)
+    return round(media * n * dt / 1000.0, 2)
 
 
 def classificar_rpe(v):

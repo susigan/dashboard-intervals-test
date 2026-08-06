@@ -14,13 +14,34 @@ ROUTE = '/recordes'
 
 
 def api_data():
+    """Recordes. Devolve o erro em JSON em vez de rebentar com 500, para a
+    pagina poder dizer ao utilizador o que se passa."""
     tipo = request.args.get('tipo') or None
     desde = request.args.get('desde') or None
-    r = db.calcular_recordes(tipo, desde)
 
-    tipos = db._exec("SELECT DISTINCT type FROM power_curves ORDER BY type",
-                     fetch='all') if db.ENABLED else []
-    r['tipos_disponiveis'] = [t[0] for t in (tipos or [])]
+    if not db.ENABLED:
+        return jsonify({'error': 'sem base de dados configurada',
+                        'duracoes': [], 'melhores': {}, 'progressao': {},
+                        'n_sessoes': 0, 'tipos_disponiveis': []})
+    try:
+        r = db.calcular_recordes(tipo, desde)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': f'{type(e).__name__}: {e}',
+            'sugestao': 'o esquema da tabela pode estar desactualizado; '
+                        'abre /api/db/recriar-curvas',
+            'colunas_actuais': db.colunas_de('power_curves'),
+            'duracoes': [], 'melhores': {}, 'progressao': {},
+            'n_sessoes': 0, 'tipos_disponiveis': []})
+
+    try:
+        tipos = db._exec("SELECT DISTINCT type FROM power_curves ORDER BY type",
+                         fetch='all')
+        r['tipos_disponiveis'] = [t[0] for t in (tipos or []) if t[0]]
+    except Exception:
+        r['tipos_disponiveis'] = []
     r['cores'] = CORES_MOD
     r['tipo'] = tipo
     return jsonify(r)
@@ -195,7 +216,9 @@ async function load(){
   if(!resp.ok){ falhou('O servidor devolveu '+resp.status+'. Corre /api/sync/curvas.'); return; }
   R=await resp.json();
  }catch(e){ falhou('Nao consegui carregar os recordes: '+e.message); return; }
- if(R && R.error){ falhou('Erro: '+R.error); return; }
+ if(R && R.error){
+  falhou(R.error + (R.sugestao ? ' — ' + R.sugestao : ''));
+  return; }
 
  const sel=document.getElementById('tipo');
  if(!sel.options.length){

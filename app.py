@@ -260,6 +260,12 @@ def api_debug_curvas():
     return jsonify(out)
 
 
+@app.route('/api/db/curvas')
+def api_db_curvas():
+    """Diagnostico da tabela de curvas."""
+    return jsonify(db.diagnostico_curvas())
+
+
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy'}), 200

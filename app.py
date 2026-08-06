@@ -192,6 +192,25 @@ def api_frescura():
     return jsonify(info)
 
 
+@app.route('/api/db/schema')
+def api_db_schema():
+    """Colunas de cada tabela — para perceber erros 500 de SQL."""
+    return jsonify({t: db.colunas_de(t) for t in
+                    ('activities', 'power_curves', 'streams', 'sync_log')})
+
+
+@app.route('/api/db/recriar-curvas')
+def api_recriar_curvas():
+    """Recria a tabela de curvas quando o esquema mudou."""
+    res = db.recriar_power_curves()
+    if res.get('ok'):
+        try:
+            res['sync'] = sync.sync_power_curves()
+        except Exception as e:
+            res['sync'] = {'ok': False, 'erro': str(e)}
+    return jsonify(res)
+
+
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy'}), 200

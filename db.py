@@ -325,6 +325,51 @@ DURACOES = [1, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300, 420, 600,
             720, 900, 1200, 1800, 2400, 3600, 5400]
 
 
+def diagnostico_curvas(limite=3):
+    """Estado real da tabela de curvas: contagens, amostra crua e parsing.
+
+    Serve para perceber porque e que a pagina fica a zero apesar de o sync
+    dizer que gravou.
+    """
+    if not ENABLED:
+        return {'enabled': False}
+    out = {'driver': DRIVER, 'colunas': colunas_de('power_curves')}
+
+    tot = _exec("SELECT COUNT(*) FROM power_curves", fetch='one')
+    out['linhas'] = tot[0] if tot else 0
+
+    por_tipo = _exec("""SELECT type, COUNT(*) FROM power_curves
+                        GROUP BY type ORDER BY COUNT(*) DESC""", fetch='all') or []
+    out['por_tipo'] = [{'type': t, 'n': n} for t, n in por_tipo]
+
+    nulos = _exec("""SELECT
+                       SUM(CASE WHEN secs IS NULL THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN watts IS NULL THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN date IS NULL THEN 1 ELSE 0 END)
+                     FROM power_curves""", fetch='one')
+    if nulos:
+        out['nulos'] = {'secs': nulos[0], 'watts': nulos[1], 'date': nulos[2]}
+
+    rows = _exec(f"""SELECT activity_id, type, date, weight, secs, watts
+                     FROM power_curves LIMIT {int(limite)}""", fetch='all') or []
+    amostra = []
+    for aid, tp, dt, w, secs, watts in rows:
+        item = {'activity_id': aid, 'type': tp, 'date': str(dt),
+                'tipo_python_secs': type(secs).__name__,
+                'tipo_python_watts': type(watts).__name__,
+                'secs_cru': str(secs)[:80], 'watts_cru': str(watts)[:80]}
+        try:
+            item['secs_parsed'] = _lista(secs)[:5]
+            item['watts_parsed'] = _lista(watts)[:5]
+            item['parse'] = 'ok'
+        except Exception as e:
+            item['parse'] = f'{type(e).__name__}: {e}'
+        amostra.append(item)
+    out['amostra'] = amostra
+    out['load_power_curves'] = len(load_power_curves() or [])
+    return out
+
+
 def recriar_power_curves():
     """Apaga e recria a tabela de curvas.
 
@@ -389,16 +434,31 @@ def load_power_curves(tipo=None, desde=None):
     rows = _exec(f"""SELECT activity_id, type, date, weight, secs, watts
                      FROM power_curves {where} ORDER BY date, activity_id""",
                  tuple(params), fetch='all') or []
-    out = []
+    out, falhas = [], []
     for aid, tp, dt, w, secs, watts in rows:
         try:
             out.append({'activity_id': aid, 'type': tp, 'date': str(dt)[:10],
-                        'weight': w,
-                        'secs': secs if isinstance(secs, list) else json.loads(secs),
-                        'watts': watts if isinstance(watts, list) else json.loads(watts)})
-        except Exception:
-            continue
+                        'weight': float(w) if w is not None else None,
+                        'secs': _lista(secs), 'watts': _lista(watts)})
+        except Exception as e:
+            falhas.append(f"{aid}: {type(e).__name__}: {e}")
+    if falhas:
+        # nao engolir em silencio: sem isto a pagina fica a zero sem explicacao
+        print(f"load_power_curves: {len(falhas)} linhas ilegiveis, ex: {falhas[:3]}")
     return out
+
+
+def _lista(v):
+    """secs/watts podem vir como lista (JSONB), string JSON (TEXT) ou memoryview."""
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return v
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        v = bytes(v).decode()
+    if isinstance(v, str):
+        return json.loads(v)
+    return list(v)
 
 
 def _nomes_actividades(ids):

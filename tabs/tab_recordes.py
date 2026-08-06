@@ -178,13 +178,24 @@ function kpis(){
   k[1]+'</div></div>').join('');
 }
 
+function falhou(msg){
+ document.getElementById('sub').innerHTML='<span class="err">'+msg+'</span>';
+ const t=document.getElementById('tbl');
+ if(t)t.innerHTML='<tr><td class="loading">'+msg+'</td></tr>';
+}
+
 async function load(){
  const tipo=document.getElementById('tipo').value;
  const desde=document.getElementById('desde').value;
  const qs=[];
  if(tipo)qs.push('tipo='+tipo);
  if(desde)qs.push('desde='+desde);
- R=await fetch('/api/recordes'+(qs.length?'?'+qs.join('&'):'')).then(r=>r.json());
+ try{
+  const resp=await fetch('/api/recordes'+(qs.length?'?'+qs.join('&'):''));
+  if(!resp.ok){ falhou('O servidor devolveu '+resp.status+'. Corre /api/sync/curvas.'); return; }
+  R=await resp.json();
+ }catch(e){ falhou('Nao consegui carregar os recordes: '+e.message); return; }
+ if(R && R.error){ falhou('Erro: '+R.error); return; }
 
  const sel=document.getElementById('tipo');
  if(!sel.options.length){
@@ -202,9 +213,9 @@ async function load(){
   dsel.innerHTML=durs.map(s=>'<option value="'+s+'"'+(s===1200?' selected':'')+'>'+
    fmtD(s)+'</option>').join('');
  }
- const m1200=(R.melhores||{})[1200];
  PESO=null;
- kpis();drawCurva();drawProg();tabela();
+ try{ kpis();drawCurva();drawProg();tabela(); }
+ catch(e){ falhou('Erro a desenhar: '+e.message); }
 }
 ['tipo','desde'].forEach(id=>document.getElementById(id).onchange=load);
 document.getElementById('dur').onchange=drawProg;

@@ -98,6 +98,95 @@ def sync_activities(modo='incremental', dias_recuo=21):
             'segundos': secs}
 
 
+# Tipos crus da Intervals.icu por modalidade. O parametro 'type' do endpoint
+# aceita um desporto e inclui os tipos relacionados, mas ser explicito evita
+# surpresas com VirtualRide/VirtualRow.
+# Fallback: nome do "sport" na API por modalidade. So usado se a base ainda
+# nao tiver actividades dessa modalidade — normalmente os tipos vem de la.
+TIPOS_API = {'Bike': 'Ride', 'Row': 'Rowing', 'Run': 'Run', 'Ski': 'AlpineSki'}
+
+
+def tipos_reais():
+    """Tipos crus por modalidade, lidos da base.
+
+    Evita adivinhar como a API chama cada desporto: se tens VirtualRow e
+    Rowing, pedimos os dois. O parametro 'type' agrupa variantes do mesmo
+    desporto, por isso pedir a mais nao faz mal — pedir o nome errado faz.
+    """
+    if not db.ENABLED:
+        return {}
+    rows = db._exec("""SELECT type, type_raw, COUNT(*) FROM activities
+                       WHERE type_raw IS NOT NULL AND type <> 'WeightTraining'
+                       GROUP BY type, type_raw ORDER BY COUNT(*) DESC""",
+                    fetch='all') or []
+    out = {}
+    for mod, raw, _n in rows:
+        out.setdefault(mod, []).append(raw)
+    return out
+
+
+def sync_power_curves(modalidades=None, anos=None):
+    """Curvas de potencia por sessao, para calcular recordes.
+
+    /athlete/{id}/activity-power-curves devolve, NUMA SO chamada por
+    modalidade, o melhor valor de cada duracao para todas as sessoes do
+    periodo. E o que substitui os custom fields MMP: aqui ficamos com o
+    numero e a data, e podemos comparar com o historico.
+    """
+    if not db.ENABLED:
+        return {'ok': False, 'erro': 'DATABASE_URL nao configurada'}
+
+    t0 = time.time()
+    anos = anos or ANOS_HISTORICO
+    oldest = (datetime.now() - timedelta(days=int(365.25 * anos))).strftime("%Y-%m-%d")
+    newest = datetime.now().strftime("%Y-%m-%d")
+    secs = ','.join(str(s) for s in db.DURACOES)
+
+    reais = tipos_reais()
+    mods = modalidades or (list(reais) or list(TIPOS_API))
+    total, detalhe = 0, {}
+    vistos = set()
+
+    for mod in mods:
+        # um pedido por tipo cru; o primeiro costuma trazer ja todos os do
+        # mesmo desporto, e os seguintes so confirmam
+        candidatos = reais.get(mod) or [TIPOS_API.get(mod, mod)]
+        rows_mod, erros_mod, usados = [], [], []
+
+        for tipo_api in candidatos:
+            data, err = icu_get(f"/athlete/{ATHLETE_ID}/activity-power-curves",
+                                {"oldest": oldest, "newest": newest,
+                                 "type": tipo_api, "secs": secs}, timeout=180)
+            if err:
+                erros_mod.append(f"{tipo_api}: {err}")
+                continue
+            usados.append(tipo_api)
+
+            secs_resp = (data or {}).get('secs') or db.DURACOES
+            for c in ((data or {}).get('curves') or []):
+                watts = c.get('watts')
+                aid = c.get('id')
+                d = (c.get('start_date_local') or '')[:10]
+                if not watts or not aid or len(d) != 10 or aid in vistos:
+                    continue
+                vistos.add(aid)
+                rows_mod.append({
+                    'activity_id': aid, 'type': mod, 'date': d,
+                    'weight': c.get('weight'), 'secs': secs_resp, 'watts': watts,
+                })
+
+        n = db.upsert_power_curves(rows_mod)
+        total += n
+        detalhe[mod] = {'ok': not erros_mod or n > 0, 'sessoes': n,
+                        'tipos_pedidos': candidatos, 'tipos_ok': usados}
+        if erros_mod:
+            detalhe[mod]['erros'] = erros_mod
+
+    return {'ok': True, 'oldest': oldest, 'total': total,
+            'por_modalidade': detalhe, 'tipos_na_base': reais,
+            'segundos': round(time.time() - t0, 2)}
+
+
 def sync_streams(activity_id):
     """Guarda os streams de UMA actividade. Chamado quando abres o detalhe
     (lazy loading): nunca fazemos bulk de milhares de requests."""

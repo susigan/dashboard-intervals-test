@@ -152,6 +152,17 @@ def init_schema():
     )""")
     _exec("CREATE INDEX IF NOT EXISTS ix_str_type ON streams(stype)")
 
+    _exec(f"""CREATE TABLE IF NOT EXISTS power_curves (
+        activity_id  TEXT PRIMARY KEY,
+        type         TEXT,
+        date         DATE,
+        weight       DOUBLE PRECISION,
+        secs         TEXT,
+        watts        TEXT,
+        updated_at   {ts}
+    )""")
+    _exec("CREATE INDEX IF NOT EXISTS ix_pc_type_date ON power_curves(type, date)")
+
     _exec(f"""CREATE TABLE IF NOT EXISTS sync_log (
         id            {serial},
         modo          TEXT,
@@ -306,6 +317,159 @@ def get_streams(activity_id):
     return streams, meta
 
 
+# ── curvas de potencia e recordes ──────────────────────────────────────────
+
+# Duracoes canonicas. Incluem as dos custom fields MMP (60s, 180, 300, 720,
+# 1200, 3600) mais o intervalo curto que interessa ao W'.
+DURACOES = [1, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300, 420, 600,
+            720, 900, 1200, 1800, 2400, 3600, 5400]
+
+
+def upsert_power_curves(rows):
+    """rows: lista de {activity_id, type, date, weight, secs, watts}."""
+    if not ENABLED or not rows:
+        return 0
+    now = _now()
+    params = [(r['activity_id'], r['type'], r['date'], r.get('weight'),
+               json.dumps(r['secs']), json.dumps(r['watts']), now) for r in rows]
+    _exec("""INSERT INTO power_curves
+             (activity_id, type, date, weight, secs, watts, updated_at)
+             VALUES (?,?,?,?,?,?,?)
+             ON CONFLICT (activity_id) DO UPDATE SET
+               type=EXCLUDED.type, date=EXCLUDED.date, weight=EXCLUDED.weight,
+               secs=EXCLUDED.secs, watts=EXCLUDED.watts,
+               updated_at=EXCLUDED.updated_at""", many=params)
+    return len(params)
+
+
+def load_power_curves(tipo=None, desde=None):
+    """Curvas ordenadas por data (a ordem importa para calcular progressao)."""
+    if not ENABLED:
+        return []
+    cond, params = [], []
+    if tipo:
+        cond.append("type = ?")
+        params.append(tipo)
+    if desde:
+        cond.append("date >= ?")
+        params.append(desde)
+    where = ("WHERE " + " AND ".join(cond)) if cond else ""
+    rows = _exec(f"""SELECT activity_id, type, date, weight, secs, watts
+                     FROM power_curves {where} ORDER BY date, activity_id""",
+                 tuple(params), fetch='all') or []
+    out = []
+    for aid, tp, dt, w, secs, watts in rows:
+        try:
+            out.append({'activity_id': aid, 'type': tp, 'date': str(dt)[:10],
+                        'weight': w,
+                        'secs': secs if isinstance(secs, list) else json.loads(secs),
+                        'watts': watts if isinstance(watts, list) else json.loads(watts)})
+        except Exception:
+            continue
+    return out
+
+
+def _nomes_actividades(ids):
+    if not ids or not ENABLED:
+        return {}
+    marcas = ','.join(['?'] * len(ids))
+    rows = _exec(f"SELECT id, name, type FROM activities WHERE id IN ({marcas})",
+                 tuple(ids), fetch='all') or []
+    return {r[0]: {'name': r[1], 'type': r[2]} for r in rows}
+
+
+def calcular_recordes(tipo=None, desde=None):
+    """Progressao de recordes por duracao.
+
+    Percorre as sessoes por ordem cronologica e, para cada duracao, marca a
+    sessao como PR sempre que bate o melhor valor anterior. Devolve o melhor
+    de sempre e a lista de vezes que o recorde mudou.
+    """
+    curvas = load_power_curves(tipo, desde)
+    if not curvas:
+        return {'duracoes': [], 'progressao': {}, 'melhores': {}, 'n_sessoes': 0}
+
+    melhores = {}      # secs -> {watts, date, activity_id, anterior_*}
+    progressao = {}    # secs -> [{date, watts, activity_id, delta}]
+    prs_por_act = {}   # activity_id -> [secs...]
+
+    for c in curvas:
+        for s, w in zip(c['secs'], c['watts']):
+            if not isinstance(w, (int, float)) or w <= 0:
+                continue
+            m = melhores.get(s)
+            if m is None or w > m['watts']:
+                anterior = dict(m) if m else None
+                melhores[s] = {
+                    'watts': w, 'date': c['date'], 'activity_id': c['activity_id'],
+                    'anterior_watts': anterior['watts'] if anterior else None,
+                    'anterior_date': anterior['date'] if anterior else None,
+                    'anterior_activity_id': anterior['activity_id'] if anterior else None,
+                }
+                progressao.setdefault(s, []).append({
+                    'date': c['date'], 'watts': w, 'activity_id': c['activity_id'],
+                    'delta': round(w - anterior['watts'], 1) if anterior else None,
+                })
+                prs_por_act.setdefault(c['activity_id'], []).append(s)
+
+    ids = {v['activity_id'] for v in melhores.values()}
+    nomes = _nomes_actividades(list(ids))
+    for v in melhores.values():
+        v['name'] = (nomes.get(v['activity_id']) or {}).get('name')
+
+    return {
+        'duracoes': sorted(melhores),
+        'melhores': melhores,
+        'progressao': progressao,
+        'prs_por_actividade': prs_por_act,
+        'n_sessoes': len(curvas),
+        'periodo': {'de': curvas[0]['date'], 'ate': curvas[-1]['date']},
+    }
+
+
+def prs_da_actividade(activity_id):
+    """Que duracoes esta sessao bateu, comparando so com as ANTERIORES.
+
+    Um PR so conta contra o que ja tinha acontecido nessa data — comparar com
+    o historico completo diria que quase nada foi recorde.
+    """
+    if not ENABLED:
+        return None
+    row = _exec("""SELECT type, date, secs, watts FROM power_curves
+                   WHERE activity_id = ?""", (activity_id,), fetch='one')
+    if not row:
+        return None
+    tipo, data, secs, watts = row
+    secs = secs if isinstance(secs, list) else json.loads(secs)
+    watts = watts if isinstance(watts, list) else json.loads(watts)
+    data = str(data)[:10]
+
+    anteriores = load_power_curves(tipo)
+    melhor_antes = {}
+    for c in anteriores:
+        if c['date'] >= data and c['activity_id'] != activity_id:
+            continue
+        if c['activity_id'] == activity_id:
+            continue
+        for s, w in zip(c['secs'], c['watts']):
+            if isinstance(w, (int, float)) and w > melhor_antes.get(s, 0):
+                melhor_antes[s] = w
+
+    out = []
+    for s, w in zip(secs, watts):
+        if not isinstance(w, (int, float)) or w <= 0:
+            continue
+        antes = melhor_antes.get(s)
+        out.append({
+            'secs': s, 'watts': w,
+            'melhor_anterior': antes,
+            'pr': antes is None or w > antes,
+            'delta': round(w - antes, 1) if antes else None,
+            'pct_do_melhor': round(w / antes * 100, 1) if antes else None,
+        })
+    return {'activity_id': activity_id, 'type': tipo, 'date': data, 'duracoes': out}
+
+
 # ── log e estado ──────────────────────────────────────────────────────────
 
 def log_sync(modo, oldest, recebidas, inseridas, actualizadas, segundos, erro=None):
@@ -332,6 +496,8 @@ def stats():
                      """SELECT type, COUNT(*), ROUND(SUM(kj), 0)
                         FROM activities GROUP BY type ORDER BY COUNT(*) DESC""",
                      fetch='all') or []
+    pc = _exec("SELECT COUNT(*), COUNT(DISTINCT type) FROM power_curves",
+               fetch='one') or (0, 0)
     ult = _exec("""SELECT modo, oldest, recebidas, inseridas, actualizadas,
                           segundos, erro, criado_em
                    FROM sync_log ORDER BY id DESC LIMIT 5""", fetch='all') or []
@@ -341,6 +507,7 @@ def stats():
         'date_max': str(a[2]) if a[2] else None, 'modalidades': a[3],
         'por_tipo': [{'type': t, 'n': n, 'kj': float(k or 0)} for t, n, k in por_tipo],
         'streams': {'actividades': s[0], 'series': s[1], 'pontos': int(s[2] or 0)},
+        'power_curves': {'actividades': pc[0], 'modalidades': pc[1]},
         'ultimos_syncs': [{
             'modo': r[0], 'oldest': str(r[1]), 'recebidas': r[2],
             'inseridas': r[3], 'actualizadas': r[4], 'segundos': r[5],

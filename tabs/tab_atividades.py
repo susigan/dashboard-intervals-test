@@ -32,6 +32,8 @@ def api_data():
             'rpe': a.get('icu_rpe'), 'xss': round(num(a.get('SS')), 0),
             'avg_hr': num(a.get('average_heartrate')), 'max_hr': num(a.get('max_heartrate')),
             'source': a.get('source'),
+            # tags vem null quando nao ha nenhuma, e lista de strings quando ha
+            'tags': [t for t in (a.get('tags') or []) if t],
         })
 
     limit = request.args.get('limit', type=int)
@@ -40,7 +42,9 @@ def api_data():
         out = [r for r in out if r['type'] == atype]
     if limit:
         out = out[:limit]
-    return jsonify({'status': 'OK', 'total': len(out), 'cores': CORES_MOD, 'activities': out})
+    todas_tags = sorted({t for r in out for t in r['tags']})
+    return jsonify({'status': 'OK', 'total': len(out), 'cores': CORES_MOD,
+                    'tags': todas_tags, 'activities': out})
 
 
 BODY = r"""
@@ -49,6 +53,7 @@ BODY = r"""
 <div class="controls">
   <input id="search" placeholder="Procurar nome...">
   <select id="typeFilter"><option value="">Todos os tipos</option></select>
+  <select id="tagFilter"><option value="">Todas as tags</option></select>
   <label class="sel">De <input id="dtDe" type="date" style="min-width:auto"></label>
   <label class="sel">Ate <input id="dtAte" type="date" style="min-width:auto"></label>
   <a href="/api/atividades" target="_blank">JSON</a>
@@ -64,7 +69,7 @@ JS = r"""
 const COLS=[['date','Data',0],['name','Nome',0],['type','Tipo',0],['type_raw','Tipo API',0],
  ['duration_min','Min',1],['distance_km','km',1],['kj','kJ',1],['training_load','TL',1],
  ['avg_watts','W',1],['ftp','FTP',1],['rpe','RPE',1],['xss','XSS',1],
- ['avg_hr','HR',1],['max_hr','HR max',1],['source','Fonte',0]];
+ ['avg_hr','HR',1],['max_hr','HR max',1],['tags','Tags',0],['source','Fonte',0]];
 let data=[],CORES={},sortKey='date',sortAsc=false;
 
 function fmt(v,num){if(v===null||v===undefined||v==='')return '-';
@@ -75,21 +80,31 @@ function filtrados(){
  const t=document.getElementById('typeFilter').value;
  const de=document.getElementById('dtDe').value;
  const ate=document.getElementById('dtAte').value;
+ const tag=document.getElementById('tagFilter').value;
  return data.filter(r=>(!q||(r.name||'').toLowerCase().indexOf(q)!==-1)
-  &&(!t||r.type===t)&&(!de||r.date>=de)&&(!ate||r.date<=ate));
+  &&(!t||r.type===t)&&(!de||r.date>=de)&&(!ate||r.date<=ate)
+  &&(!tag||(r.tags||[]).indexOf(tag)!==-1));
 }
 
 function render(){
  let rows=filtrados();
  rows.sort(function(a,b){var x=a[sortKey],y=b[sortKey];
+  if(Array.isArray(x))x=x.join(',');
+  if(Array.isArray(y))y=y.join(',');
   if(typeof x==='number')return sortAsc?x-y:y-x;
   x=String(x||'');y=String(y||'');return sortAsc?x.localeCompare(y):y.localeCompare(x);});
  document.getElementById('count').textContent=rows.length+' de '+data.length+' atividades';
  document.getElementById('body').innerHTML=rows.map(r=>
   '<tr class="clickable" onclick="location.href=\'/activity/'+r.id+'\'">'+
   COLS.map(function(c){
-   let v=fmt(r[c[0]],c[2]);
-   if(c[0]==='type')v='<span style="color:'+(CORES[r.type]||'#8b949e')+'">'+v+'</span>';
+   let v;
+   if(c[0]==='tags'){
+    v=(r.tags&&r.tags.length)
+      ? r.tags.map(t=>'<span class="pill">'+t+'</span>').join('') : '-';
+   } else {
+    v=fmt(r[c[0]],c[2]);
+    if(c[0]==='type')v='<span style="color:'+(CORES[r.type]||'#8b949e')+'">'+v+'</span>';
+   }
    return '<td class="'+(c[2]?'num':'')+'">'+v+'</td>';}).join('')+'</tr>').join('');
 }
 
@@ -112,10 +127,19 @@ async function load(){
  const types=Array.from(new Set(data.map(r=>r.type))).sort();
  document.getElementById('typeFilter').innerHTML='<option value="">Todos os tipos</option>'+
   types.map(t=>'<option>'+t+'</option>').join('');
+ const tags=d.tags||[];
+ const selTag=document.getElementById('tagFilter');
+ if(tags.length){
+  selTag.innerHTML='<option value="">Todas as tags ('+tags.length+')</option>'+
+   tags.map(t=>'<option>'+t+'</option>').join('');
+ } else {
+  selTag.innerHTML='<option value="">Sem tags</option>';
+  selTag.disabled=true;
+ }
  render();
 }
 ['search','dtDe','dtAte'].forEach(id=>document.getElementById(id).oninput=render);
-document.getElementById('typeFilter').onchange=render;
+['typeFilter','tagFilter'].forEach(id=>document.getElementById(id).onchange=render);
 load();
 """
 

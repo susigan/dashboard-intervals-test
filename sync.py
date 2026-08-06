@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 
 import db
 from config import ATHLETE_ID, ANOS_HISTORICO
-from api_client import icu_get, norm_tipo, num, kj_da_atividade, parse_streams
+from api_client import (icu_get, norm_tipo, num, kj_da_atividade,
+                        parse_streams, athlete_id_real)
 
 
 def _ts(v):
@@ -142,6 +143,7 @@ def sync_power_curves(modalidades=None, anos=None):
     newest = datetime.now().strftime("%Y-%m-%d")
     secs = ','.join(str(s) for s in db.DURACOES)
 
+    id_atleta = athlete_id_real()
     reais = tipos_reais()
     mods = modalidades or (list(reais) or list(TIPOS_API))
     total, detalhe = 0, {}
@@ -154,9 +156,15 @@ def sync_power_curves(modalidades=None, anos=None):
         rows_mod, erros_mod, usados = [], [], []
 
         for tipo_api in candidatos:
-            data, err = icu_get(f"/athlete/{ATHLETE_ID}/activity-power-curves",
-                                {"oldest": oldest, "newest": newest,
-                                 "type": tipo_api, "secs": secs}, timeout=180)
+            params = {"oldest": oldest, "newest": newest,
+                      "type": tipo_api, "secs": secs}
+            data, err = icu_get(f"/athlete/{id_atleta}/activity-power-curves",
+                                params, timeout=180)
+            # "0" significa "eu proprio" nas actividades, mas este endpoint
+            # nao resolve o atalho e responde 403. Tentamos o id numerico.
+            if err and '403' in err and id_atleta != ATHLETE_ID:
+                data, err = icu_get(f"/athlete/{ATHLETE_ID}/activity-power-curves",
+                                    params, timeout=180)
             if err:
                 erros_mod.append(f"{tipo_api}: {err}")
                 continue
@@ -182,7 +190,7 @@ def sync_power_curves(modalidades=None, anos=None):
         if erros_mod:
             detalhe[mod]['erros'] = erros_mod
 
-    return {'ok': True, 'oldest': oldest, 'total': total,
+    return {'ok': True, 'oldest': oldest, 'total': total, 'athlete_id': id_atleta,
             'por_modalidade': detalhe, 'tipos_na_base': reais,
             'segundos': round(time.time() - t0, 2)}
 

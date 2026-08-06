@@ -211,6 +211,55 @@ def api_recriar_curvas():
     return jsonify(res)
 
 
+@app.route('/api/debug/curvas')
+def api_debug_curvas():
+    """Testa variantes do endpoint de curvas para perceber o 403.
+
+    Compara: id "0" vs id real, com e sem extensao .json, e o endpoint por
+    actividade (que sabemos funcionar). Assim vemos qual das diferencas conta.
+    """
+    from api_client import icu_get, athlete_id_real
+    from datetime import datetime as _dt
+
+    real = athlete_id_real()
+    oldest = (_dt.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+    newest = _dt.now().strftime("%Y-%m-%d")
+    base_p = {"oldest": oldest, "newest": newest, "type": "Ride"}
+
+    uma = db._exec("""SELECT id FROM activities WHERE type = 'Bike'
+                      ORDER BY date DESC LIMIT 1""", fetch='one') if db.ENABLED else None
+    aid = uma[0] if uma else None
+
+    testes = [
+        ('activities (controlo)', f"/athlete/{ATHLETE_ID}/activities",
+         {"oldest": oldest}),
+        ('perfil id=0', f"/athlete/{ATHLETE_ID}", None),
+        ('perfil id real', f"/athlete/{real}", None),
+        ('curvas id=0', f"/athlete/{ATHLETE_ID}/activity-power-curves", base_p),
+        ('curvas id real', f"/athlete/{real}/activity-power-curves", base_p),
+        ('curvas id real .json', f"/athlete/{real}/activity-power-curves.json", base_p),
+        ('power-curves id real', f"/athlete/{real}/power-curves",
+         {"type": "Ride", "curves": "42d"}),
+    ]
+    if aid:
+        testes.append((f'power-curve da sessao {aid}', f"/activity/{aid}/power-curve", None))
+
+    out = {'athlete_id_configurado': ATHLETE_ID, 'athlete_id_resolvido': real,
+           'testes': {}}
+    for nome, path, params in testes:
+        data, err = icu_get(path, params, timeout=60)
+        if err:
+            out['testes'][nome] = {'ok': False, 'erro': err[:160]}
+        elif isinstance(data, dict):
+            out['testes'][nome] = {'ok': True, 'chaves': sorted(data.keys())[:12],
+                                   'n_curvas': len(data.get('curves') or [])}
+        elif isinstance(data, list):
+            out['testes'][nome] = {'ok': True, 'n': len(data)}
+        else:
+            out['testes'][nome] = {'ok': True, 'tipo': type(data).__name__}
+    return jsonify(out)
+
+
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy'}), 200

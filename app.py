@@ -108,9 +108,19 @@ def api_db():
 
 @app.route('/api/sync')
 def api_sync():
-    """Sync incremental: so o que mudou desde o ultimo, com recuo de 21 dias."""
+    """Sync incremental: actividades + curvas de potencia.
+
+    As curvas vivem numa tabela propria e nao se actualizam sozinhas quando
+    chegam sessoes novas, por isso vao no mesmo passo. Sao 4 pedidos (um por
+    modalidade), nao um por sessao. Com ?curvas=0 ficam de fora.
+    """
     res = sync.sync_activities('incremental')
     invalidar_cache()
+    if res.get('ok') and request.args.get('curvas') != '0':
+        try:
+            res['curvas'] = sync.sync_power_curves()
+        except Exception as e:
+            res['curvas'] = {'ok': False, 'erro': str(e)}
     return jsonify(res)
 
 

@@ -12,7 +12,7 @@ Estrutura:
 import os
 import sys
 import logging
-from flask import jsonify
+from flask import jsonify, request
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -28,8 +28,10 @@ print(f"Config carregada | ATHLETE_ID: {ATHLETE_ID} | historico: {ANOS_HISTORICO
 from flask import Flask
 import db
 import sync
-from api_client import fetch_activities, cache_info, invalidar_cache
-from tabs import tab_volume, tab_atividades, tab_detalhe
+from datetime import datetime, timedelta
+from api_client import (fetch_activities, cache_info, invalidar_cache,
+                        fetch_da_api)
+from tabs import tab_volume, tab_atividades, tab_detalhe, tab_recordes
 
 if db.ENABLED:
     db.init_schema()
@@ -118,6 +120,66 @@ def api_sync_full():
     res = sync.sync_activities('full')
     invalidar_cache()
     return jsonify(res)
+
+
+@app.route('/api/sync/curvas')
+def api_sync_curvas():
+    """Curvas de potencia por sessao — base dos recordes.
+
+    Uma chamada por modalidade, nao uma por sessao.
+    """
+    return jsonify(sync.sync_power_curves())
+
+
+@app.route('/api/recordes')
+def api_recordes():
+    return tab_recordes.api_data()
+
+
+@app.route('/recordes')
+def page_recordes():
+    return tab_recordes.render()
+
+
+@app.route('/api/activity/<activity_id>/prs')
+def api_activity_prs(activity_id):
+    return jsonify(db.prs_da_actividade(activity_id) or {'erro': 'sem curva guardada'})
+
+
+@app.route('/api/frescura')
+def api_frescura():
+    """Ha quanto tempo a base foi actualizada e se ha sessoes novas na API.
+
+    Compara a data mais recente na base com a data mais recente na
+    Intervals.icu, sem gravar nada. Serve para o aviso no topo das paginas.
+    """
+    if not db.ENABLED:
+        return jsonify({'db': False, 'nota': 'sem base de dados; le sempre da API'})
+
+    ult = db.ultima_data()
+    info = {'db': True,
+            'ultima_na_base': ult.isoformat() if ult else None,
+            'last_sync': None, 'novas': None}
+
+    linha = db._exec("""SELECT criado_em FROM sync_log
+                        WHERE erro IS NULL ORDER BY id DESC LIMIT 1""", fetch='one')
+    if linha and linha[0]:
+        info['last_sync'] = str(linha[0])
+
+    if request.args.get('verificar') in ('1', 'true'):
+        desde = ((ult - timedelta(days=1)).strftime("%Y-%m-%d") if ult
+                 else datetime.now().strftime("%Y-%m-%d"))
+        acts, err = fetch_da_api(desde)
+        if err:
+            info['erro'] = err
+        else:
+            ids = db.ids_existentes()
+            novas = [a for a in (acts or []) if a.get('id') not in ids]
+            info['novas'] = len(novas)
+            info['novas_detalhe'] = [{
+                'id': a.get('id'), 'date': (a.get('start_date_local') or '')[:10],
+                'name': a.get('name'), 'type': a.get('type')} for a in novas[:10]]
+    return jsonify(info)
 
 
 @app.route('/health')

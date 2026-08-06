@@ -28,6 +28,59 @@ def icu_get(path, params=None, timeout=60):
         return None, str(e)
 
 
+def icu_get_many(pedidos, max_workers=6):
+    """Varios GET em paralelo. pedidos = {nome: (path, params)}.
+
+    A pagina de detalhe precisa de 6 endpoints; em serie sao 6 idas e voltas
+    a Intervals.icu e o browser desiste antes do fim.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    out = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {nome: ex.submit(icu_get, path, params)
+                for nome, (path, params) in pedidos.items()}
+        for nome, f in futs.items():
+            try:
+                out[nome] = f.result(timeout=45)
+            except Exception as e:
+                out[nome] = (None, str(e))
+    return out
+
+
+_athlete = {'id': None}
+
+
+def athlete_id_real():
+    """Id numerico do atleta.
+
+    ATHLETE_ID pode ser "0" ("eu proprio"), mas nem todos os endpoints
+    resolvem esse atalho: alguns tentam mesmo o atleta 0 e devolvem 403.
+    Resolvemos uma vez e reutilizamos.
+    """
+    if _athlete['id']:
+        return _athlete['id']
+
+    if ATHLETE_ID and ATHLETE_ID not in ('0', 'i0', ''):
+        _athlete['id'] = ATHLETE_ID
+        return _athlete['id']
+
+    perfil, err = icu_get(f"/athlete/{ATHLETE_ID}")
+    if not err and isinstance(perfil, dict) and perfil.get('id'):
+        _athlete['id'] = str(perfil['id'])
+        print(f"Athlete id resolvido: {_athlete['id']}")
+        return _athlete['id']
+
+    if db is not None and db.ENABLED:
+        linha = db._exec("""SELECT athlete_id FROM activities
+                            WHERE athlete_id IS NOT NULL LIMIT 1""", fetch='one')
+        if linha and linha[0]:
+            _athlete['id'] = str(linha[0])
+            print(f"Athlete id vindo da base: {_athlete['id']}")
+            return _athlete['id']
+
+    return ATHLETE_ID
+
+
 def _data_oldest():
     return (datetime.now() - timedelta(days=int(365.25 * ANOS_HISTORICO))).strftime("%Y-%m-%d")
 

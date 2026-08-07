@@ -121,6 +121,11 @@ def api_sync():
             res['curvas'] = sync.sync_power_curves()
         except Exception as e:
             res['curvas'] = {'ok': False, 'erro': str(e)}
+        try:
+            # le do JSON ja guardado, nao gasta pedidos
+            res['zonas'] = db.extrair_zone_times()
+        except Exception as e:
+            res['zonas'] = {'ok': False, 'erro': str(e)}
     return jsonify(res)
 
 
@@ -270,6 +275,34 @@ def api_debug_curvas():
 def api_db_curvas():
     """Diagnostico da tabela de curvas."""
     return jsonify(db.diagnostico_curvas())
+
+
+@app.route('/api/debug/zonas')
+def api_debug_zonas():
+    """Que custom_zones existem por modalidade, e onde faltam."""
+    return jsonify(db.diagnostico_zonas())
+
+
+@app.route('/api/sync/zonas')
+def api_sync_zonas():
+    """Extrai o tempo por zona do JSON ja guardado. Nao gasta pedidos a API."""
+    return jsonify(db.extrair_zone_times())
+
+
+@app.route('/api/zonas')
+def api_zonas():
+    """Tempo por zona, para os graficos.
+
+    ?tipo=Bike  ?kind=power|hr|pace  ?desde=YYYY-MM-DD
+    """
+    return jsonify({
+        'status': 'OK',
+        'disponiveis': db.zonas_disponiveis(),
+        'sessoes': db.tempo_por_zona(
+            request.args.get('tipo') or None,
+            request.args.get('kind') or 'power',
+            request.args.get('desde') or None),
+    })
 
 
 @app.route('/health')

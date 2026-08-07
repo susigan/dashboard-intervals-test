@@ -470,7 +470,54 @@ def _nomes_actividades(ids):
     return {r[0]: {'name': r[1], 'type': r[2]} for r in rows}
 
 
-def curvas_por_season(tipo=None):
+def curvas_por_periodo(tipo=None, marcos=None, por='season'):
+    """Melhor curva de cada periodo — season (do calendario) ou ano civil.
+
+    por='ano'    -> agrupa por ano civil, sempre
+    por='season' -> usa os SEASON_START; sem eles cai no ano civil
+    """
+    from config import season_de, season_por_mes
+
+    curvas = load_power_curves(tipo)
+    if not curvas:
+        return {'periodos': [], 'por_periodo': {}, 'duracoes': []}
+
+    def etiqueta(d):
+        if por == 'ano':
+            return str(d)[:4]
+        return season_de(d, marcos)
+
+    grupos, duracoes = {}, set()
+    for c in curvas:
+        s = etiqueta(c['date'])
+        if not s:
+            continue
+        alvo = grupos.setdefault(s, {'melhores': {}, 'n_sessoes': 0,
+                                     'de': c['date'], 'ate': c['date']})
+        alvo['n_sessoes'] += 1
+        alvo['de'] = min(alvo['de'], c['date'])
+        alvo['ate'] = max(alvo['ate'], c['date'])
+        for secs, w in zip(c['secs'], c['watts']):
+            if not isinstance(w, (int, float)) or w <= 0:
+                continue
+            duracoes.add(secs)
+            m = alvo['melhores'].get(secs)
+            if m is None or w > m['watts']:
+                alvo['melhores'][secs] = {'watts': w, 'date': c['date'],
+                                          'activity_id': c['activity_id']}
+
+    ids = {m['activity_id'] for v in grupos.values() for m in v['melhores'].values()}
+    nomes = _nomes_actividades(list(ids))
+    for v in grupos.values():
+        for m in v['melhores'].values():
+            m['name'] = (nomes.get(m['activity_id']) or {}).get('name')
+
+    ordem = sorted(grupos, key=lambda s: grupos[s]['de'], reverse=True)
+    return {'periodos': ordem, 'por_periodo': grupos,
+            'duracoes': sorted(duracoes)}
+
+
+def curvas_por_season(tipo=None, marcos=None):
     """Melhor curva de cada season.
 
     Para cada season e cada duracao, o melhor watt de todas as sessoes dessa
@@ -485,7 +532,7 @@ def curvas_por_season(tipo=None):
 
     por_season, duracoes = {}, set()
     for c in curvas:
-        s = season_de(c['date'])
+        s = season_de(c['date'], marcos)
         if not s:
             continue
         alvo = por_season.setdefault(s, {'melhores': {}, 'n_sessoes': 0,
@@ -509,19 +556,23 @@ def curvas_por_season(tipo=None):
         for m in v['melhores'].values():
             m['name'] = (nomes.get(m['activity_id']) or {}).get('name')
 
-    return {'seasons': sorted(por_season, reverse=True),
-            'por_season': por_season,
+    # ordenar pela data de inicio de cada season, nao pelo nome
+    ordem = sorted(por_season, key=lambda s: por_season[s]['de'], reverse=True)
+    return {'seasons': ordem, 'por_season': por_season,
             'duracoes': sorted(duracoes)}
 
 
-def calcular_recordes(tipo=None, desde=None):
-    """Progressao de recordes por duracao.
+def calcular_recordes(tipo=None, desde=None, ate=None):
+    """Recordes por duracao dentro de uma janela.
 
-    Percorre as sessoes por ordem cronologica e, para cada duracao, marca a
-    sessao como PR sempre que bate o melhor valor anterior. Devolve o melhor
-    de sempre e a lista de vezes que o recorde mudou.
+    Sem 'desde', devolve o melhor de sempre — util para saber do que ja foste
+    capaz, mas enganador como retrato da forma actual: um esforco de 2022 fica
+    a marcar o recorde para sempre. Por isso a janela existe: com desde/ate
+    vemos o melhor DESSE periodo, e comparamos com o de sempre.
     """
     curvas = load_power_curves(tipo, desde)
+    if ate:
+        curvas = [c for c in curvas if c['date'] < ate]
     if not curvas:
         return {'duracoes': [], 'progressao': {}, 'melhores': {}, 'n_sessoes': 0}
 
@@ -553,14 +604,39 @@ def calcular_recordes(tipo=None, desde=None):
     for v in melhores.values():
         v['name'] = (nomes.get(v['activity_id']) or {}).get('name')
 
-    return {
+    out = {
         'duracoes': sorted(melhores),
         'melhores': melhores,
         'progressao': progressao,
         'prs_por_actividade': prs_por_act,
         'n_sessoes': len(curvas),
         'periodo': {'de': curvas[0]['date'], 'ate': curvas[-1]['date']},
+        'janela': {'desde': desde, 'ate': ate},
     }
+
+    # Referencia de sempre, para o periodo poder ser lido em contexto:
+    # 260 W aos 20min so diz alguma coisa se souberes que o teu melhor e 285.
+    if desde or ate:
+        todas = load_power_curves(tipo)
+        sempre = {}
+        for c in todas:
+            for s, w in zip(c['secs'], c['watts']):
+                if not isinstance(w, (int, float)) or w <= 0:
+                    continue
+                m = sempre.get(s)
+                if m is None or w > m['watts']:
+                    sempre[s] = {'watts': w, 'date': c['date'],
+                                 'activity_id': c['activity_id']}
+        nomes_s = _nomes_actividades([v['activity_id'] for v in sempre.values()])
+        for v in sempre.values():
+            v['name'] = (nomes_s.get(v['activity_id']) or {}).get('name')
+        out['sempre'] = sempre
+        out['n_sessoes_sempre'] = len(todas)
+    else:
+        out['sempre'] = melhores
+        out['n_sessoes_sempre'] = len(curvas)
+
+    return out
 
 
 def prs_da_actividade(activity_id):

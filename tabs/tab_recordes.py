@@ -4,9 +4,10 @@ Substitui os custom fields MMP ("No (PR: 302w)"): aqui temos o valor, a data,
 o recorde anterior e a progressao ao longo dos anos.
 """
 
+from datetime import datetime
 from flask import jsonify, request
 import db
-from config import CICLICOS, CORES_MOD
+from config import CICLICOS, CORES_MOD, season_de, SEASON_INICIO_MES
 from tabs.base import page
 
 SLUG = 'recordes'
@@ -47,6 +48,25 @@ def api_data():
     return jsonify(r)
 
 
+def api_seasons():
+    """Melhor curva por season, para sobrepor no grafico."""
+    tipo = request.args.get('tipo') or None
+    if not db.ENABLED:
+        return jsonify({'error': 'sem base de dados', 'seasons': [],
+                        'por_season': {}, 'duracoes': []})
+    try:
+        r = db.curvas_por_season(tipo)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'{type(e).__name__}: {e}',
+                        'seasons': [], 'por_season': {}, 'duracoes': []})
+    r['season_actual'] = season_de(datetime.now().strftime('%Y-%m-%d'))
+    r['inicio_mes'] = SEASON_INICIO_MES
+    r['tipo'] = tipo
+    return jsonify(r)
+
+
 BODY = r"""
 <h1>Recordes</h1>
 <div class="sub" id="sub">A carregar...</div>
@@ -66,6 +86,16 @@ BODY = r"""
 <h2>Progressao do recorde</h2>
 <div class="sub" id="subProg">Cada degrau e uma sessao que bateu o anterior.</div>
 <div class="chartbox"><div class="legend" id="lgProg"></div><canvas id="chProg"></canvas></div>
+
+<h2>Comparar seasons</h2>
+<div class="sub" id="subSeason">A carregar...</div>
+<div class="toggles" id="seasonToggles"></div>
+<div class="chartbox">
+  <div class="legend" id="lgSeasons"></div>
+  <canvas id="chSeasons" height="300"></canvas>
+</div>
+<div class="wrap" style="max-height:320px;margin-bottom:14px"><table>
+  <thead><tr id="seasonHead"></tr></thead><tbody id="seasonBody"></tbody></table></div>
 
 <h2>Melhores de sempre</h2>
 <div class="wrap" style="max-height:520px"><table>
@@ -240,9 +270,121 @@ async function load(){
  try{ kpis();drawCurva();drawProg();tabela(); }
  catch(e){ falhou('Erro a desenhar: '+e.message); }
 }
+
+// ─── Comparar seasons ────────────────────────────────────────────────────
+let SE=null, SEON={};
+const CORSEASON=['#5DADE2','#E74C3C','#2ECC71','#F4D03F','#AF7AC5',
+                 '#48C9B0','#E67E22','#7FB3D5','#F1948A','#82E0AA'];
+function corSeason(i){ return CORSEASON[i % CORSEASON.length]; }
+
+function drawSeasons(){
+ const o=ctx('chSeasons',300); if(!o) return;
+ const g=o.g,W=o.W,H=o.H;
+ const activas=(SE?SE.seasons:[]).filter(s=>SEON[s]);
+ document.getElementById('lgSeasons').innerHTML=activas.map(function(s){
+  const i=SE.seasons.indexOf(s);
+  const n=SE.por_season[s].n_sessoes;
+  return '<span><i style="background:'+corSeason(i)+'"></i>'+s+' ('+n+')</span>';}).join('');
+ if(!activas.length){ noData(g,W,H,'Escolhe pelo menos uma season'); return; }
+
+ const durs=SE.duracoes||[];
+ if(!durs.length){ noData(g,W,H); return; }
+ let mx=0;
+ activas.forEach(s=>durs.forEach(function(d){
+  const m=SE.por_season[s].melhores[d]; if(m&&m.watts>mx)mx=m.watts;}));
+ if(!mx){ noData(g,W,H); return; }
+
+ const PL=50,PR=16,PT=12,PB=28,w=W-PL-PR,h=H-PT-PB;
+ const lmin=Math.log10(Math.max(1,durs[0])),lmax=Math.log10(durs[durs.length-1]);
+ const X=s=>PL+w*(Math.log10(Math.max(1,s))-lmin)/((lmax-lmin)||1);
+ const Y=v=>PT+h-v/mx*h;
+
+ g.strokeStyle='#21262d';g.lineWidth=1;
+ for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
+ [1,5,15,60,300,1200,3600].forEach(function(s){
+  if(s<durs[0]||s>durs[durs.length-1])return;
+  g.strokeStyle='#21262d';g.beginPath();g.moveTo(X(s),PT);g.lineTo(X(s),PT+h);g.stroke();});
+
+ activas.forEach(function(s){
+  const i=SE.seasons.indexOf(s);
+  g.strokeStyle=corSeason(i);g.lineWidth=1.8;g.beginPath();
+  let st=false;
+  durs.forEach(function(d){
+   const m=SE.por_season[s].melhores[d];
+   if(!m){st=false;return;}
+   const x=X(d),y=Y(m.watts);
+   if(!st){g.moveTo(x,y);st=true;}else g.lineTo(x,y);});
+  g.stroke();});
+
+ g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
+ for(let i=0;i<=4;i++)g.fillText(Math.round(mx-mx*i/4)+'W',PL-6,PT+h*i/4+3);
+ g.textAlign='center';
+ [1,5,15,60,300,1200,3600].forEach(function(s){
+  if(s<durs[0]||s>durs[durs.length-1])return;
+  g.fillText(fmtD(s),X(s),H-8);});
+ g.textAlign='left';
+}
+
+function tabelaSeasons(){
+ if(!SE) return;
+ const activas=SE.seasons.filter(s=>SEON[s]);
+ const mostrar=[60,300,1200,3600].filter(d=>(SE.duracoes||[]).indexOf(d)!==-1);
+ document.getElementById('seasonHead').innerHTML=
+  ['Season','Sessoes','Periodo'].concat(mostrar.map(fmtD))
+   .map((c,i)=>'<th class="'+(i>1?'num':'')+'">'+c+'</th>').join('');
+ // referencia = season mais recente das activas, para calcular a diferenca
+ const ref=activas.length?activas[0]:null;
+ document.getElementById('seasonBody').innerHTML=activas.map(function(s){
+  const v=SE.por_season[s];
+  const cels=mostrar.map(function(d){
+   const m=v.melhores[d];
+   if(!m) return '<td class="num">-</td>';
+   let extra='';
+   if(ref&&s!==ref&&SE.por_season[ref].melhores[d]){
+    const dif=SE.por_season[ref].melhores[d].watts-m.watts;
+    const col=dif>=0?'#2ECC71':'#E74C3C';
+    extra=' <span style="color:'+col+';font-size:11px">'+(dif>=0?'+':'')+Math.round(dif)+'</span>';
+   }
+   return '<td class="num">'+Math.round(m.watts)+'W'+extra+'</td>';}).join('');
+  return '<tr><td>'+s+'</td><td class="num">'+v.n_sessoes+'</td>'+
+   '<td>'+v.de+' a '+v.ate+'</td>'+cels+'</tr>';}).join('')
+  || '<tr><td class="loading">Escolhe pelo menos uma season</td></tr>';
+}
+
+async function loadSeasons(){
+ const tipo=document.getElementById('tipo').value;
+ try{
+  const resp=await fetch('/api/recordes/seasons'+(tipo?'?tipo='+tipo:''));
+  SE=await resp.json();
+ }catch(e){
+  document.getElementById('subSeason').innerHTML=
+   '<span class="err">Nao consegui carregar as seasons</span>'; return; }
+ if(SE.error){ document.getElementById('subSeason').innerHTML=
+   '<span class="err">'+SE.error+'</span>'; return; }
+
+ const ss=SE.seasons||[];
+ if(!ss.length){ document.getElementById('subSeason').textContent='Sem dados'; return; }
+
+ // por defeito: season actual + a anterior
+ SEON={}; ss.forEach((s,i)=>SEON[s]=(i<2));
+ document.getElementById('subSeason').textContent=
+  (SE.inicio_mes===1 ? 'Ano civil' : 'Season comeca em '+SE.inicio_mes+'/'+
+   ' (muda com SEASON_INICIO_MES)')+' — actual: '+(SE.season_actual||'?');
+ document.getElementById('seasonToggles').innerHTML=ss.map(function(s,i){
+  return '<label style="color:'+corSeason(i)+'"><input type="checkbox" data-s="'+s+'" '+
+   (SEON[s]?'checked':'')+'> '+s+'</label>';}).join('');
+ document.querySelectorAll('#seasonToggles input').forEach(function(cb){
+  cb.onchange=function(){ SEON[cb.dataset.s]=cb.checked; drawSeasons(); tabelaSeasons(); };});
+ drawSeasons(); tabelaSeasons();
+}
+
 ['tipo','desde'].forEach(id=>document.getElementById(id).onchange=load);
+document.getElementById('tipo').addEventListener('change',loadSeasons);
 document.getElementById('dur').onchange=drawProg;
-window.addEventListener('resize',function(){if(R){drawCurva();drawProg();}});
+window.addEventListener('resize',function(){
+ if(R){drawCurva();drawProg();}
+ if(SE){drawSeasons();}});
+loadSeasons();
 load();
 """
 

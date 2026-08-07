@@ -470,6 +470,50 @@ def _nomes_actividades(ids):
     return {r[0]: {'name': r[1], 'type': r[2]} for r in rows}
 
 
+def curvas_por_season(tipo=None):
+    """Melhor curva de cada season.
+
+    Para cada season e cada duracao, o melhor watt de todas as sessoes dessa
+    season — e a sessao onde aconteceu. E o que permite sobrepor a epoca
+    actual com as anteriores.
+    """
+    from config import season_de
+
+    curvas = load_power_curves(tipo)
+    if not curvas:
+        return {'seasons': [], 'por_season': {}, 'duracoes': []}
+
+    por_season, duracoes = {}, set()
+    for c in curvas:
+        s = season_de(c['date'])
+        if not s:
+            continue
+        alvo = por_season.setdefault(s, {'melhores': {}, 'n_sessoes': 0,
+                                         'de': c['date'], 'ate': c['date']})
+        alvo['n_sessoes'] += 1
+        alvo['de'] = min(alvo['de'], c['date'])
+        alvo['ate'] = max(alvo['ate'], c['date'])
+        for secs, w in zip(c['secs'], c['watts']):
+            if not isinstance(w, (int, float)) or w <= 0:
+                continue
+            duracoes.add(secs)
+            m = alvo['melhores'].get(secs)
+            if m is None or w > m['watts']:
+                alvo['melhores'][secs] = {'watts': w, 'date': c['date'],
+                                          'activity_id': c['activity_id']}
+
+    ids = {m['activity_id'] for v in por_season.values()
+           for m in v['melhores'].values()}
+    nomes = _nomes_actividades(list(ids))
+    for v in por_season.values():
+        for m in v['melhores'].values():
+            m['name'] = (nomes.get(m['activity_id']) or {}).get('name')
+
+    return {'seasons': sorted(por_season, reverse=True),
+            'por_season': por_season,
+            'duracoes': sorted(duracoes)}
+
+
 def calcular_recordes(tipo=None, desde=None):
     """Progressao de recordes por duracao.
 

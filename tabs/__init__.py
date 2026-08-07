@@ -7,6 +7,8 @@ Para adicionar uma tab nova:
 4. registar em app.py -> uma rota de pagina e uma de API
 """
 
-from tabs import tab_volume, tab_atividades, tab_detalhe, tab_recordes
+from tabs import (tab_volume, tab_atividades, tab_detalhe,
+                  tab_recordes, tab_pmc)
 
-__all__ = ['tab_volume', 'tab_atividades', 'tab_detalhe', 'tab_recordes']
+__all__ = ['tab_volume', 'tab_atividades', 'tab_detalhe',
+           'tab_recordes', 'tab_pmc']

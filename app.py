@@ -31,7 +31,8 @@ import sync
 from datetime import datetime, timedelta
 from api_client import (fetch_activities, cache_info, invalidar_cache,
                         fetch_da_api)
-from tabs import tab_volume, tab_atividades, tab_detalhe, tab_recordes
+from tabs import (tab_volume, tab_atividades, tab_detalhe,
+                  tab_recordes, tab_pmc)
 
 if db.ENABLED:
     db.init_schema()
@@ -51,6 +52,11 @@ def page_volume():
     return tab_volume.render()
 
 
+@app.route('/pmc')
+def page_pmc():
+    return tab_pmc.render()
+
+
 @app.route('/atividades')
 def page_atividades():
     return tab_atividades.render()
@@ -66,6 +72,17 @@ def page_detalhe(activity_id):
 @app.route('/api/volume')
 def api_volume():
     return tab_volume.api_data()
+
+
+@app.route('/api/pmc')
+def api_pmc():
+    return tab_pmc.api_data()
+
+
+@app.route('/api/debug/sheets')
+def api_debug_sheets():
+    """Estado da ligacao aos Google Sheets e colunas reconhecidas."""
+    return tab_pmc.api_sheets_debug()
 
 
 @app.route('/api/atividades')

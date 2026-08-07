@@ -66,3 +66,34 @@ STD_FIELDS = {
  'threshold_pace','timezone','tiz_order','total_elevation_gain','total_elevation_loss','trainer','trimp',
  'type','use_elevation_correction','use_gap_zone_times','workout_shift_secs',
 }
+
+
+# ── Seasons ───────────────────────────────────────────────────────────────
+# A API da Intervals.icu nao tem seasons, por isso definimo-las aqui.
+# SEASON_INICIO_MES=1  -> ano civil: "2026"
+# SEASON_INICIO_MES=10 -> epoca a cavalo: "2025/26" comeca em Out/2025
+SEASON_INICIO_MES = int(os.getenv("SEASON_INICIO_MES", "1"))
+
+
+def season_de(d):
+    """Data (YYYY-MM-DD ou date) -> etiqueta da season."""
+    if not d:
+        return None
+    s = str(d)
+    ano, mes = int(s[:4]), int(s[5:7])
+    if SEASON_INICIO_MES == 1:
+        return str(ano)
+    ini = ano if mes >= SEASON_INICIO_MES else ano - 1
+    return f"{ini}/{str(ini + 1)[-2:]}"
+
+
+def intervalo_season(label):
+    """Etiqueta -> (primeiro_dia, ultimo_dia) em YYYY-MM-DD."""
+    if not label:
+        return None, None
+    if '/' in label:
+        ini = int(label.split('/')[0])
+        return (f"{ini}-{SEASON_INICIO_MES:02d}-01",
+                f"{ini + 1}-{SEASON_INICIO_MES:02d}-01")
+    ano = int(label)
+    return f"{ano}-01-01", f"{ano + 1}-01-01"

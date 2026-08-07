@@ -59,6 +59,14 @@ canvas { width:100%; display:block; }
 .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
 @media (max-width:800px){ .grid2 { grid-template-columns:1fr; } }
 .err { color:#E74C3C; font-size:12px; }
+.tip { position:fixed; z-index:999; pointer-events:none; display:none;
+  background:#0d1117; border:1px solid #30363d; border-radius:6px;
+  padding:8px 10px; font-size:12px; color:#e6e6e6; box-shadow:0 4px 14px rgba(0,0,0,.5);
+  max-width:260px; line-height:1.5; }
+.tip .th { color:#8b949e; font-size:11px; margin-bottom:4px; }
+.tip .tr { display:flex; justify-content:space-between; gap:12px; }
+.tip .tr i { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:6px; }
+.chartbox { position:relative; }
 .legend span.tog { cursor:pointer; user-select:none; padding:2px 6px; border-radius:4px; }
 .legend span.tog:hover { background:#1c2331; }
 .legend span.tog.off { opacity:.35; }
@@ -187,6 +195,68 @@ function drawStack(canvasId,legendId,data,groups,cores,opts){
   if(data.length>16){g.rotate(-Math.PI/5);g.textAlign='right';}
   g.fillText(d.periodo,0,0);g.restore();});
  g.textAlign='left';
+
+ // tooltip: barra sob o rato -> valores de cada serie visivel
+ registarTip(canvasId,function(mx,my,rw){
+  const esc=rw/W;                       // o canvas e escalado por CSS
+  const x=mx/esc;
+  const i=Math.floor((x-PL)/bw);
+  if(i<0||i>=data.length||x<PL||x>PL+w) return '';
+  const d=data[i], tot=groups.reduce((s,k)=>s+(d.vals[k]||0),0);
+  const dec=opts.decimals||0;
+  let html='<div class="th">'+d.periodo+'</div>';
+  groups.forEach(function(k){
+   const v=d.vals[k]||0; if(!v)return;
+   const val=pct? (v/tot*100).toFixed(0)+'%'
+                : v.toFixed(dec)+(opts.unit||'');
+   html+=linhaTip(cores[k]||'#8b949e',(opts.labels&&opts.labels[k])||k,val);});
+  if(groups.length>1)
+   html+='<div class="tr" style="border-top:1px solid #30363d;margin-top:4px;padding-top:4px">'+
+         '<span>Total</span><b>'+(pct?'100%':tot.toFixed(dec)+(opts.unit||''))+'</b></div>';
+  return html;
+ });
+}
+
+// ─── Tooltip partilhado ──────────────────────────────────────────────────
+// Cada grafico regista como converter a posicao do rato em conteudo.
+const TIPS={};
+function _tipEl(){
+ let t=document.getElementById('__tip');
+ if(!t){ t=document.createElement('div'); t.id='__tip'; t.className='tip';
+   document.body.appendChild(t); }
+ return t;
+}
+function registarTip(canvasId,fn){
+ const c=document.getElementById(canvasId); if(!c) return;
+ TIPS[canvasId]=fn;
+ if(c.dataset.tip) return;      // so ligar os eventos uma vez
+ c.dataset.tip='1';
+ c.style.cursor='crosshair';
+ c.addEventListener('mousemove',function(ev){
+  const f=TIPS[canvasId]; if(!f) return;
+  const r=c.getBoundingClientRect();
+  const html=f(ev.clientX-r.left, ev.clientY-r.top, r.width, r.height);
+  const t=_tipEl();
+  if(!html){ t.style.display='none'; return; }
+  t.innerHTML=html; t.style.display='block';
+  // manter dentro do ecra
+  const tw=t.offsetWidth||200, th=t.offsetHeight||60;
+  let x=ev.clientX+14, y=ev.clientY+14;
+  if(x+tw>window.innerWidth-8) x=ev.clientX-tw-14;
+  if(y+th>window.innerHeight-8) y=ev.clientY-th-14;
+  t.style.left=x+'px'; t.style.top=y+'px';
+ });
+ c.addEventListener('mouseleave',function(){ _tipEl().style.display='none'; });
+}
+function linhaTip(cor,nome,valor){
+ return '<div class="tr"><span><i style="background:'+cor+'"></i>'+nome+'</span>'+
+        '<b>'+valor+'</b></div>';
+}
+function fmtD(s){
+ s=Number(s);
+ if(s<60) return s+'s';
+ if(s<3600) return (s%60?(s/60).toFixed(1):s/60)+'min';
+ return (s%3600?(s/3600).toFixed(1):s/3600)+'h';
 }
 
 function limparOutliers(rows,col,factor){

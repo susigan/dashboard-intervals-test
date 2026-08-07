@@ -55,17 +55,22 @@ def api_seasons():
     if not db.ENABLED:
         return jsonify({'error': 'sem base de dados', 'seasons': [],
                         'por_season': {}, 'duracoes': []})
+    por = request.args.get('por') or 'season'
     try:
-        marcos = seasons_do_atleta()
-        r = db.curvas_por_season(tipo, marcos)
+        marcos = seasons_do_atleta() if por == 'season' else []
+        r = db.curvas_por_periodo(tipo, marcos, por)
+        # compatibilidade com o nome antigo usado no frontend
+        r['seasons'] = r['periodos']
+        r['por_season'] = r['por_periodo']
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'{type(e).__name__}: {e}',
                         'seasons': [], 'por_season': {}, 'duracoes': []})
     hoje = datetime.now().strftime('%Y-%m-%d')
-    r['season_actual'] = season_de(hoje, marcos)
-    r['fonte'] = 'calendario' if marcos else 'mes'
+    r['season_actual'] = hoje[:4] if por == 'ano' else season_de(hoje, marcos)
+    r['agrupamento'] = por
+    r['fonte'] = 'ano' if por == 'ano' else ('calendario' if marcos else 'mes')
     r['marcos'] = [{'inicio': d, 'nome': n} for d, n in (marcos or [])]
     r['inicio_mes'] = SEASON_INICIO_MES
     r['tipo'] = tipo
@@ -80,6 +85,9 @@ BODY = r"""
   <label class="sel">Modalidade <select id="tipo"></select></label>
   <label class="sel">Desde <input id="desde" type="date" style="min-width:auto"></label>
   <label class="sel">Duracao no grafico <select id="dur"></select></label>
+  <label class="sel">Agrupar por
+    <select id="por"><option value="season">Season</option>
+                     <option value="ano">Ano civil</option></select></label>
 </div>
 
 <div class="cards" id="kpis"></div>
@@ -101,6 +109,18 @@ BODY = r"""
 </div>
 <div class="wrap" style="max-height:320px;margin-bottom:14px"><table>
   <thead><tr id="seasonHead"></tr></thead><tbody id="seasonBody"></tbody></table></div>
+
+<h2>Recordes: de sempre vs periodo actual</h2>
+<div class="sub" id="subComp">
+  Um recorde de 2022 continua a ser recorde, mas nao diz nada sobre a forma de hoje.
+  Esta tabela poe os dois lado a lado.
+</div>
+<div class="controls">
+  <label class="sel">Comparar com
+    <select id="periodoRef"></select></label>
+</div>
+<div class="wrap" style="max-height:420px;margin-bottom:20px"><table>
+  <thead><tr id="compHead"></tr></thead><tbody id="compBody"></tbody></table></div>
 
 <h2>Melhores de sempre</h2>
 <div class="wrap" style="max-height:520px"><table>
@@ -151,9 +171,23 @@ function drawCurva(){
   const x=PL+w*(Math.log10(s)-lmin)/(lmax-lmin||1);
   g.fillText(fmtD(s),x,H-8);
   g.strokeStyle='#21262d';g.beginPath();g.moveTo(x,PT);g.lineTo(x,PT+h);g.stroke();});
+ // sobrepor o periodo de referencia, para separar recorde historico de forma actual
+ const ref=document.getElementById('periodoRef');
+ const rp=(SE&&ref&&ref.value&&SE.por_season[ref.value])?SE.por_season[ref.value]:null;
+ if(rp){
+  g.strokeStyle='#F4D03F';g.lineWidth=1.8;g.setLineDash([5,3]);g.beginPath();
+  let st=false;
+  durs.forEach(function(s){
+   const m=rp.melhores[s]; if(!m){st=false;return;}
+   const x=PL+w*(Math.log10(s)-lmin)/(lmax-lmin||1);
+   const y=PT+h-(m.watts-mn)/(mx-mn||1)*h;
+   if(!st){g.moveTo(x,y);st=true;}else g.lineTo(x,y);});
+  g.stroke();g.setLineDash([]);
+ }
  g.textAlign='left';
  document.getElementById('lgCurva').innerHTML=
   '<span><i style="background:#5DADE2"></i>Melhor de sempre</span>'+
+  (rp?'<span><i style="background:#F4D03F"></i>'+ref.value+'</span>':'')+
   '<span>'+durs.length+' duracoes</span>';
 
  registarTip('chCurva',function(mx_,my_,rw){
@@ -169,6 +203,12 @@ function drawCurva(){
   if(PESO) html+=linhaTip('#8b949e','W/kg',(m.watts/PESO).toFixed(2));
   if(m.date) html+='<div class="tr"><span>Quando</span><b>'+m.date+'</b></div>';
   if(m.name) html+='<div class="tr"><span>Sessao</span><b>'+m.name+'</b></div>';
+  if(rp&&rp.melhores[alvo]){
+   const c=rp.melhores[alvo], dif=Math.round(c.watts-m.watts);
+   const pc=(c.watts/m.watts*100).toFixed(0);
+   html+=linhaTip('#F4D03F',ref.value,Math.round(c.watts)+' W ('+pc+'%)');
+   html+='<div class="tr"><span>Diferenca</span><b style="color:'+
+    (dif>=0?'#2ECC71':'#E74C3C')+'">'+(dif>=0?'+':'')+dif+' W</b></div>';}
   if(m.anterior_watts){
    const dif=Math.round(m.watts-m.anterior_watts);
    html+='<div class="tr" style="border-top:1px solid #30363d;margin-top:4px;'+
@@ -293,7 +333,8 @@ async function load(){
    fmtD(s)+'</option>').join('');
  }
  PESO=null;
- try{ kpis();drawCurva();drawProg();tabela(); }
+ try{ kpis();drawCurva();drawProg();tabela();
+      if(typeof tabelaComparacao==='function') tabelaComparacao(); }
  catch(e){ falhou('Erro a desenhar: '+e.message); }
 }
 
@@ -401,7 +442,9 @@ function tabelaSeasons(){
 async function loadSeasons(){
  const tipo=document.getElementById('tipo').value;
  try{
-  const resp=await fetch('/api/recordes/seasons'+(tipo?'?tipo='+tipo:''));
+  const por=document.getElementById('por').value;
+  const qs=['por='+por]; if(tipo)qs.push('tipo='+tipo);
+  const resp=await fetch('/api/recordes/seasons?'+qs.join('&'));
   SE=await resp.json();
  }catch(e){
   document.getElementById('subSeason').innerHTML=
@@ -425,11 +468,65 @@ async function loadSeasons(){
    (SEON[s]?'checked':'')+'> '+s+'</label>';}).join('');
  document.querySelectorAll('#seasonToggles input').forEach(function(cb){
   cb.onchange=function(){ SEON[cb.dataset.s]=cb.checked; drawSeasons(); tabelaSeasons(); };});
- drawSeasons(); tabelaSeasons();
+ const selRef=document.getElementById('periodoRef');
+ selRef.innerHTML=ss.map(s=>'<option>'+s+'</option>').join('');
+ drawSeasons(); tabelaSeasons(); tabelaComparacao();
+ if(R) drawCurva();
+}
+
+// ─── De sempre vs periodo actual ─────────────────────────────────────────
+function tabelaComparacao(){
+ if(!SE||!R) return;
+ const sel=document.getElementById('periodoRef');
+ const ref=sel.value || (SE.seasons||[])[0];
+ if(!ref||!SE.por_season[ref]){
+  document.getElementById('compBody').innerHTML=
+   '<tr><td class="loading">Sem dados</td></tr>'; return; }
+
+ const v=SE.por_season[ref];
+ const durs=(R.duracoes||[]).filter(d=>R.melhores[d]);
+ document.getElementById('compHead').innerHTML=
+  ['Duracao','De sempre','Quando','Neste periodo','Quando','Diferenca','% do recorde']
+   .map((c,i)=>'<th class="'+(i>0&&i!==2&&i!==4?'num':'')+'">'+c+'</th>').join('');
+
+ document.getElementById('compBody').innerHTML=durs.map(function(d){
+  const all=R.melhores[d];
+  const cur=v.melhores[d];
+  if(!cur){
+   return '<tr><td>'+fmtD(d)+'</td><td class="num">'+Math.round(all.watts)+'W</td>'+
+    '<td>'+(all.date||'-')+'</td><td class="num">-</td><td>-</td>'+
+    '<td class="num">-</td><td class="num">-</td></tr>';}
+  const dif=Math.round(cur.watts-all.watts);
+  const pc=cur.watts/all.watts*100;
+  // verde se o periodo actual E o recorde; laranja/vermelho conforme a queda
+  const cor = dif>=0 ? '#2ECC71' : (pc>=95?'#F4D03F':(pc>=88?'#E67E22':'#E74C3C'));
+  const mesmo = all.activity_id===cur.activity_id;
+  return '<tr><td>'+fmtD(d)+'</td>'+
+   '<td class="num">'+Math.round(all.watts)+'W</td>'+
+   '<td style="color:#8b949e;font-size:12px">'+(all.date||'-')+
+     (mesmo?' <span style="color:#2ECC71">actual</span>':'')+'</td>'+
+   '<td class="num">'+Math.round(cur.watts)+'W</td>'+
+   '<td style="color:#8b949e;font-size:12px">'+(cur.date||'-')+'</td>'+
+   '<td class="num" style="color:'+cor+'">'+(dif>=0?'+':'')+dif+'W</td>'+
+   '<td class="num" style="color:'+cor+'">'+pc.toFixed(0)+'%</td></tr>';
+ }).join('');
+
+ // resumo: quantas duracoes ainda sao recorde neste periodo
+ let vivos=0,total=0;
+ durs.forEach(function(d){
+  const cur=v.melhores[d]; if(!cur)return; total++;
+  if(R.melhores[d].activity_id===cur.activity_id) vivos++;});
+ document.getElementById('subComp').innerHTML=
+  'Periodo <b>'+ref+'</b> ('+v.de+' a '+v.ate+', '+v.n_sessoes+' sessoes) — '+
+  '<b>'+vivos+' de '+total+'</b> recordes de sempre foram feitos neste periodo. '+
+  'As restantes duracoes tem o recorde num periodo anterior.';
 }
 
 ['tipo','desde'].forEach(id=>document.getElementById(id).onchange=load);
 document.getElementById('tipo').addEventListener('change',loadSeasons);
+document.getElementById('por').addEventListener('change',loadSeasons);
+document.getElementById('periodoRef').addEventListener('change',function(){
+ tabelaComparacao(); if(R) drawCurva();});
 document.getElementById('dur').onchange=drawProg;
 window.addEventListener('resize',function(){
  if(R){drawCurva();drawProg();}

@@ -69,14 +69,14 @@ STD_FIELDS = {
 
 
 # ── Seasons ───────────────────────────────────────────────────────────────
-# A API da Intervals.icu nao tem seasons, por isso definimo-las aqui.
-# SEASON_INICIO_MES=1  -> ano civil: "2026"
-# SEASON_INICIO_MES=10 -> epoca a cavalo: "2025/26" comeca em Out/2025
+# As seasons vivem no calendario da Intervals.icu como eventos de categoria
+# SEASON_START (ver api_client.seasons_do_atleta). Quando existem, sao essas
+# que mandam. Este mes so serve de recurso se o calendario nao tiver nenhuma.
 SEASON_INICIO_MES = int(os.getenv("SEASON_INICIO_MES", "1"))
 
 
-def season_de(d):
-    """Data (YYYY-MM-DD ou date) -> etiqueta da season."""
+def season_por_mes(d):
+    """Recurso: etiqueta da season a partir de SEASON_INICIO_MES."""
     if not d:
         return None
     s = str(d)
@@ -87,13 +87,22 @@ def season_de(d):
     return f"{ini}/{str(ini + 1)[-2:]}"
 
 
-def intervalo_season(label):
-    """Etiqueta -> (primeiro_dia, ultimo_dia) em YYYY-MM-DD."""
-    if not label:
-        return None, None
-    if '/' in label:
-        ini = int(label.split('/')[0])
-        return (f"{ini}-{SEASON_INICIO_MES:02d}-01",
-                f"{ini + 1}-{SEASON_INICIO_MES:02d}-01")
-    ano = int(label)
-    return f"{ano}-01-01", f"{ano + 1}-01-01"
+def season_de(d, marcos=None):
+    """Data -> etiqueta da season.
+
+    marcos: lista de (data_inicio, nome) vinda dos eventos SEASON_START,
+    ordenada. Se vier vazia, cai no calculo por mes.
+    """
+    if not d:
+        return None
+    s = str(d)[:10]
+    if not marcos:
+        return season_por_mes(s)
+    escolhido = None
+    for inicio, nome in marcos:
+        if s >= inicio:
+            escolhido = nome
+        else:
+            break
+    # antes da primeira season definida
+    return escolhido or season_por_mes(s)

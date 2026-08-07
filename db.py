@@ -163,6 +163,23 @@ def init_schema():
     )""")
     _exec("CREATE INDEX IF NOT EXISTS ix_pc_type_date ON power_curves(type, date)")
 
+    _exec(f"""CREATE TABLE IF NOT EXISTS zone_times (
+        activity_id  TEXT,
+        date         DATE,
+        type         TEXT,
+        code         TEXT,
+        kind         TEXT,
+        zone_id      TEXT,
+        zone_idx     INTEGER,
+        secs         INTEGER,
+        start_value  DOUBLE PRECISION,
+        end_value    DOUBLE PRECISION,
+        n_zonas      INTEGER,
+        PRIMARY KEY (activity_id, code, zone_idx)
+    )""")
+    _exec("CREATE INDEX IF NOT EXISTS ix_zt_type ON zone_times(type, kind)")
+    _exec("CREATE INDEX IF NOT EXISTS ix_zt_date ON zone_times(date)")
+
     _exec(f"""CREATE TABLE IF NOT EXISTS sync_log (
         id            {serial},
         modo          TEXT,
@@ -368,6 +385,65 @@ def diagnostico_curvas(limite=3):
     out['amostra'] = amostra
     out['load_power_curves'] = len(load_power_curves() or [])
     return out
+
+
+def diagnostico_zonas():
+    """Que conjuntos de custom_zones existem, por modalidade.
+
+    Le do JSON ja guardado — zero pedidos a API. Mostra o codigo de cada
+    conjunto, quantas zonas tem, os ids, os limites e em quantas sessoes
+    aparece. Serve para ver onde faltam zonas definidas.
+    """
+    if not ENABLED:
+        return {'enabled': False}
+
+    rows = _exec("SELECT type, raw FROM activities", fetch='all') or []
+    por_mod = {}
+    for tipo, raw in rows:
+        if raw is None:
+            continue
+        try:
+            a = raw if isinstance(raw, dict) else json.loads(raw)
+        except Exception:
+            continue
+        alvo = por_mod.setdefault(tipo, {'sessoes': 0, 'com_zonas': 0, 'conjuntos': {}})
+        alvo['sessoes'] += 1
+        cz = a.get('custom_zones')
+        if not isinstance(cz, list) or not cz:
+            continue
+        alvo['com_zonas'] += 1
+        for zs in cz:
+            if not isinstance(zs, dict):
+                continue
+            code = zs.get('code') or '?'
+            zonas = zs.get('zones') or []
+            c = alvo['conjuntos'].setdefault(code, {
+                'sessoes': 0, 'n_zonas': len(zonas),
+                'ids': [z.get('id') for z in zonas],
+                'exemplo': None, 'com_secs': 0})
+            c['sessoes'] += 1
+            if any(z.get('secs') for z in zonas):
+                c['com_secs'] += 1
+            if c['exemplo'] is None and zonas:
+                c['exemplo'] = [{
+                    'id': z.get('id'), 'start': z.get('start'), 'end': z.get('end'),
+                    'start_value': z.get('start_value'), 'end_value': z.get('end_value'),
+                    'secs': z.get('secs')} for z in zonas]
+
+    # o que falta: modalidade sem conjunto de HR ou sem conjunto de potencia
+    lacunas = []
+    for mod, v in por_mod.items():
+        if mod == 'WeightTraining':
+            continue
+        codes = list(v['conjuntos'])
+        tem_hr = any('hr' in c.lower() for c in codes)
+        tem_pw = any('power' in c.lower() or 'pace' in c.lower() for c in codes)
+        if not tem_hr:
+            lacunas.append(f"{mod}: sem zonas de HR")
+        if not tem_pw:
+            lacunas.append(f"{mod}: sem zonas de potencia/pace")
+
+    return {'enabled': True, 'por_modalidade': por_mod, 'lacunas': sorted(lacunas)}
 
 
 def recriar_power_curves():
@@ -743,3 +819,108 @@ def volume_rows(desde=None):
         return None
     nomes = [c.strip() for c in cols.replace('\n', ' ').split(',')]
     return [dict(zip(nomes, r)) for r in rows]
+
+
+# ── tempo por zona (custom zones do atleta) ───────────────────────────────
+
+def _kind_do_code(code):
+    """HR, potencia ou pace, a partir do nome do conjunto."""
+    c = (code or '').lower()
+    if 'hr' in c or 'heart' in c:
+        return 'hr'
+    if 'pace' in c:
+        return 'pace'
+    if 'power' in c or 'watt' in c:
+        return 'power'
+    return 'outro'
+
+
+def extrair_zone_times():
+    """Preenche zone_times a partir do JSON ja guardado das actividades.
+
+    Nao gasta pedidos a API: o campo custom_zones ja traz o secs de cada
+    zona calculado pela Intervals.icu.
+    """
+    if not ENABLED:
+        return {'ok': False, 'erro': 'sem base de dados'}
+
+    rows = _exec("SELECT id, date, type, raw FROM activities", fetch='all') or []
+    params, sessoes, sem = [], 0, 0
+    for aid, d, tipo, raw in rows:
+        if raw is None:
+            continue
+        try:
+            a = raw if isinstance(raw, dict) else json.loads(raw)
+        except Exception:
+            continue
+        cz = a.get('custom_zones')
+        if not isinstance(cz, list) or not cz:
+            sem += 1
+            continue
+        usou = False
+        for zs in cz:
+            if not isinstance(zs, dict):
+                continue
+            code = zs.get('code')
+            zonas = zs.get('zones') or []
+            kind = _kind_do_code(code)
+            for i, z in enumerate(zonas):
+                secs = z.get('secs')
+                if secs is None:
+                    continue
+                usou = True
+                params.append((aid, d, tipo, code, kind, z.get('id'), i,
+                               int(secs), z.get('start_value'), z.get('end_value'),
+                               len(zonas)))
+        if usou:
+            sessoes += 1
+
+    if params:
+        _exec("""INSERT INTO zone_times
+                 (activity_id, date, type, code, kind, zone_id, zone_idx,
+                  secs, start_value, end_value, n_zonas)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                 ON CONFLICT (activity_id, code, zone_idx) DO UPDATE SET
+                   date=EXCLUDED.date, type=EXCLUDED.type, kind=EXCLUDED.kind,
+                   zone_id=EXCLUDED.zone_id, secs=EXCLUDED.secs,
+                   start_value=EXCLUDED.start_value, end_value=EXCLUDED.end_value,
+                   n_zonas=EXCLUDED.n_zonas""", many=params)
+
+    return {'ok': True, 'sessoes_com_zonas': sessoes,
+            'sessoes_sem_zonas': sem, 'linhas': len(params),
+            'resumo': zonas_disponiveis()}
+
+
+def zonas_disponiveis():
+    """Conjuntos de zonas guardados, por modalidade e tipo."""
+    if not ENABLED:
+        return []
+    rows = _exec("""SELECT type, kind, code, MAX(n_zonas), COUNT(DISTINCT activity_id)
+                    FROM zone_times GROUP BY type, kind, code
+                    ORDER BY type, kind""", fetch='all') or []
+    return [{'type': t, 'kind': k, 'code': c, 'n_zonas': n, 'sessoes': s}
+            for t, k, c, n, s in rows]
+
+
+def tempo_por_zona(tipo=None, kind='power', desde=None):
+    """Horas em cada zona, por sessao — para os graficos do Volume."""
+    if not ENABLED:
+        return []
+    cond, params = ["secs > 0"], []
+    if tipo:
+        cond.append("type = ?")
+        params.append(tipo)
+    if kind:
+        cond.append("kind = ?")
+        params.append(kind)
+    if desde:
+        cond.append("date >= ?")
+        params.append(desde)
+    rows = _exec(f"""SELECT activity_id, date, type, code, zone_id, zone_idx,
+                            secs, start_value, end_value, n_zonas
+                     FROM zone_times WHERE {' AND '.join(cond)}
+                     ORDER BY date, zone_idx""", tuple(params), fetch='all') or []
+    return [{'activity_id': r[0], 'date': str(r[1]), 'type': r[2], 'code': r[3],
+             'zone_id': r[4], 'zone_idx': r[5], 'secs': r[6],
+             'start_value': r[7], 'end_value': r[8], 'n_zonas': r[9]}
+            for r in rows]

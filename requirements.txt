@@ -4,3 +4,4 @@ python-dotenv==1.0.0
 psycopg[binary]==3.2.3
 gspread==6.1.2
 google-auth==2.35.0
+numpy==2.1.3

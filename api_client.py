@@ -81,6 +81,44 @@ def athlete_id_real():
     return ATHLETE_ID
 
 
+_seasons = {'marcos': None, 'time': None}
+
+
+def seasons_do_atleta(force=False):
+    """Datas de inicio de season, lidas do calendario da Intervals.icu.
+
+    As seasons sao eventos de categoria SEASON_START. Se as tiveres definidas
+    la, sao estas que usamos — em vez de adivinhar um mes de inicio.
+    Devolve [(YYYY-MM-DD, nome), ...] ordenado.
+    """
+    from datetime import datetime as _dt
+    if not force and _seasons['marcos'] is not None and _seasons['time']:
+        if (datetime.now() - _seasons['time']).total_seconds() < 3600:
+            return _seasons['marcos']
+
+    oldest = (datetime.now() - timedelta(days=int(365.25 * (ANOS_HISTORICO + 2)))
+              ).strftime("%Y-%m-%d")
+    newest = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
+    data, err = icu_get(f"/athlete/{athlete_id_real()}/events",
+                        {"oldest": oldest, "newest": newest,
+                         "category": "SEASON_START"})
+    marcos = []
+    if not err and isinstance(data, list):
+        for e in data:
+            d = (e.get('start_date_local') or '')[:10]
+            if len(d) != 10:
+                continue
+            nome = e.get('name') or f"Season {d[:4]}"
+            marcos.append((d, nome))
+        marcos.sort()
+    else:
+        print(f"Seasons: sem SEASON_START ({err or 'nenhum evento'}); "
+              f"a usar SEASON_INICIO_MES")
+
+    _seasons.update({'marcos': marcos, 'time': datetime.now()})
+    return marcos
+
+
 def _data_oldest():
     return (datetime.now() - timedelta(days=int(365.25 * ANOS_HISTORICO))).strftime("%Y-%m-%d")
 

@@ -95,9 +95,18 @@ BODY = r"""
 <div class="chartbox"><div class="legend" id="lgKj"></div><canvas id="chKj"></canvas></div>
 
 <h2>Trabalho por zona</h2>
+<div class="sub">Z1KJ + Z2KJ + Z3KJ, os teus custom fields de 3 zonas</div>
 <div class="controls"><label class="sel">Modalidade
   <select id="modZona"><option value="">Todas</option></select></label></div>
 <div class="chartbox"><div class="legend" id="lgZona"></div><canvas id="chZona"></canvas></div>
+
+<h2>Tempo nas tuas zonas</h2>
+<div class="sub" id="subZT">A carregar...</div>
+<div class="controls">
+  <label class="sel">Modalidade <select id="ztTipo"></select></label>
+  <label class="sel">Zonas de <select id="ztKind"></select></label>
+</div>
+<div class="chartbox"><div class="legend" id="lgZT"></div><canvas id="chZT"></canvas></div>
 
 <h2>Horas por RPE</h2>
 <div class="sub">Leve 1&ndash;4.9 &middot; Moderado 5&ndash;6.9 &middot; Pesado 7&ndash;10</div>
@@ -186,6 +195,7 @@ function redraw(){
   k[1]+k[2]+'</div></div>').join('');
 
  tabela(per,cic);
+ drawZT();
 }
 
 function tabela(per,cic){
@@ -204,6 +214,84 @@ function tabela(per,cic){
   }).join('')+'<td class="num"><b>'+tot.toFixed(dec)+'</b></td></tr>';}).join('');
 }
 
+// ─── Tempo nas custom zones do atleta ───────────────────────────────────
+let ZT=null, ZTDISP=[];
+const ZTCOR=['#58D68D','#5DADE2','#F4D03F','#E67E22','#E74C3C','#C0392B','#8E44AD'];
+
+function opcoesZT(){
+ const tipos=Array.from(new Set(ZTDISP.map(z=>z.type))).sort();
+ const selT=document.getElementById('ztTipo');
+ const antesT=selT.value;
+ selT.innerHTML=tipos.map(t=>'<option>'+t+'</option>').join('');
+ if(tipos.indexOf(antesT)!==-1) selT.value=antesT;
+
+ const kinds=Array.from(new Set(
+   ZTDISP.filter(z=>z.type===selT.value).map(z=>z.kind))).sort();
+ const selK=document.getElementById('ztKind');
+ const antesK=selK.value;
+ const rot={power:'Potencia',hr:'Frequencia cardiaca',pace:'Pace',outro:'Outro'};
+ selK.innerHTML=kinds.map(k=>'<option value="'+k+'">'+(rot[k]||k)+'</option>').join('');
+ if(kinds.indexOf(antesK)!==-1) selK.value=antesK;
+}
+
+async function loadZT(){
+ const tipo=document.getElementById('ztTipo').value;
+ const kind=document.getElementById('ztKind').value;
+ const qs=[]; if(tipo)qs.push('tipo='+tipo); if(kind)qs.push('kind='+kind);
+ let d;
+ try{ d=await fetch('/api/zonas'+(qs.length?'?'+qs.join('&'):'')).then(r=>r.json()); }
+ catch(e){ document.getElementById('subZT').innerHTML=
+   '<span class="err">Nao consegui carregar</span>'; return; }
+
+ ZTDISP=d.disponiveis||[];
+ if(!ZTDISP.length){
+  document.getElementById('subZT').innerHTML=
+   'Sem custom zones guardadas — abre <b>/api/sync/zonas</b> para as extrair '+
+   '(le do que ja esta na base, nao gasta pedidos a API)';
+  return; }
+ if(!document.getElementById('ztTipo').options.length){ opcoesZT(); return loadZT(); }
+
+ // uma linha por sessao e zona -> horas por periodo e zona
+ const sess=d.sessoes||[];
+ const conj=ZTDISP.filter(z=>z.type===tipo&&z.kind===kind)[0];
+ const rot={power:'potencia',hr:'HR',pace:'pace'};
+ document.getElementById('subZT').innerHTML= conj
+  ? 'Conjunto <b>'+conj.code+'</b> — '+conj.n_zonas+' zonas de '+
+    (rot[kind]||kind)+', em '+conj.sessoes+' sessoes'
+  : 'Sem zonas de '+(rot[kind]||kind)+' para '+tipo;
+
+ // etiquetas Z1..Zn com os limites reais
+ const idx={}, lbl={}, cor={};
+ sess.forEach(function(r){
+  const k='z'+r.zone_idx;
+  if(!(k in lbl)){
+   const lim=(r.start_value!=null&&r.end_value!=null)
+     ? ' ('+Math.round(r.start_value)+'-'+Math.round(r.end_value)+')' : '';
+   lbl[k]=(r.zone_id||('Z'+(r.zone_idx+1)))+lim;
+   cor[k]=ZTCOR[r.zone_idx%ZTCOR.length];}
+  idx[k]=1;});
+ const chaves=Object.keys(idx).sort((a,b)=>+a.slice(1)-(+b.slice(1)));
+
+ // agregar por periodo
+ const per=document.getElementById('periodo').value;
+ const map={};
+ sess.forEach(function(r){
+  const p=periodoDe(r.date,per);
+  map[p]=map[p]||{};
+  const k='z'+r.zone_idx;
+  map[p][k]=(map[p][k]||0)+r.secs/3600;});
+ const dados=Object.keys(map).sort().map(p=>({periodo:p,vals:map[p]}));
+
+ ZT={dados:dados,chaves:chaves,cor:cor,lbl:lbl};
+ drawZT();
+}
+
+function drawZT(){
+ if(!ZT) return;
+ drawStack('chZT','lgZT',janela(ZT.dados),ZT.chaves,ZT.cor,
+  opts({unit:'h',decimals:1,labels:ZT.lbl}));
+}
+
 async function load(){
  const d=await fetch('/api/volume').then(r=>r.json());
  if(d.error){document.getElementById('sub').textContent='Erro: '+d.error;return;}
@@ -218,9 +306,14 @@ async function load(){
  CIC.forEach(function(m){if(SESS.some(r=>r.type===m)){
   const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);}});
  redraw();
+ loadZT();
 }
 ['periodo','modo','janela','modZona','tblMetric'].forEach(id=>
  document.getElementById(id).onchange=redraw);
+document.getElementById('periodo').addEventListener('change',loadZT);
+document.getElementById('ztTipo').addEventListener('change',function(){
+ opcoesZT(); loadZT();});
+document.getElementById('ztKind').addEventListener('change',loadZT);
 window.addEventListener('resize',function(){if(SESS.length)redraw();});
 load();
 """

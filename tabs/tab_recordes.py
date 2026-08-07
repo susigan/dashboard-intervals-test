@@ -8,6 +8,7 @@ from datetime import datetime
 from flask import jsonify, request
 import db
 from config import CICLICOS, CORES_MOD, season_de, SEASON_INICIO_MES
+from api_client import seasons_do_atleta
 from tabs.base import page
 
 SLUG = 'recordes'
@@ -55,13 +56,17 @@ def api_seasons():
         return jsonify({'error': 'sem base de dados', 'seasons': [],
                         'por_season': {}, 'duracoes': []})
     try:
-        r = db.curvas_por_season(tipo)
+        marcos = seasons_do_atleta()
+        r = db.curvas_por_season(tipo, marcos)
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'{type(e).__name__}: {e}',
                         'seasons': [], 'por_season': {}, 'duracoes': []})
-    r['season_actual'] = season_de(datetime.now().strftime('%Y-%m-%d'))
+    hoje = datetime.now().strftime('%Y-%m-%d')
+    r['season_actual'] = season_de(hoje, marcos)
+    r['fonte'] = 'calendario' if marcos else 'mes'
+    r['marcos'] = [{'inicio': d, 'nome': n} for d, n in (marcos or [])]
     r['inicio_mes'] = SEASON_INICIO_MES
     r['tipo'] = tipo
     return jsonify(r)
@@ -150,6 +155,27 @@ function drawCurva(){
  document.getElementById('lgCurva').innerHTML=
   '<span><i style="background:#5DADE2"></i>Melhor de sempre</span>'+
   '<span>'+durs.length+' duracoes</span>';
+
+ registarTip('chCurva',function(mx_,my_,rw){
+  const esc=rw/W, x=mx_/esc;
+  if(x<PL||x>PL+w) return '';
+  const X=s=>PL+w*(Math.log10(s)-lmin)/(lmax-lmin||1);
+  let alvo=null,dist=1e9;
+  durs.forEach(function(s){const d=Math.abs(X(s)-x);if(d<dist){dist=d;alvo=s;}});
+  if(alvo===null) return '';
+  const m=R.melhores[alvo]; if(!m) return '';
+  let html='<div class="th">'+fmtD(alvo)+'</div>';
+  html+=linhaTip('#5DADE2','Melhor',Math.round(m.watts)+' W');
+  if(PESO) html+=linhaTip('#8b949e','W/kg',(m.watts/PESO).toFixed(2));
+  if(m.date) html+='<div class="tr"><span>Quando</span><b>'+m.date+'</b></div>';
+  if(m.name) html+='<div class="tr"><span>Sessao</span><b>'+m.name+'</b></div>';
+  if(m.anterior_watts){
+   const dif=Math.round(m.watts-m.anterior_watts);
+   html+='<div class="tr" style="border-top:1px solid #30363d;margin-top:4px;'+
+    'padding-top:4px"><span>Recorde anterior</span><b>'+
+    Math.round(m.anterior_watts)+' W (+'+dif+')</b></div>';}
+  return html;
+ });
 }
 
 function drawProg(){
@@ -323,6 +349,27 @@ function drawSeasons(){
   if(s<durs[0]||s>durs[durs.length-1])return;
   g.fillText(fmtD(s),X(s),H-8);});
  g.textAlign='left';
+
+ registarTip('chSeasons',function(mx_,my_,rw){
+  const esc=rw/W, x=mx_/esc;
+  if(x<PL||x>PL+w) return '';
+  let alvo=null,dist=1e9;
+  durs.forEach(function(d){const dd=Math.abs(X(d)-x);if(dd<dist){dist=dd;alvo=d;}});
+  if(alvo===null) return '';
+  let html='<div class="th">'+fmtD(alvo)+'</div>';
+  activas.forEach(function(s){
+   const m=SE.por_season[s].melhores[alvo];
+   if(!m) return;
+   html+=linhaTip(corSeason(SE.seasons.indexOf(s)),s,Math.round(m.watts)+' W');});
+  if(activas.length>1){
+   const a=SE.por_season[activas[0]].melhores[alvo];
+   const b=SE.por_season[activas[1]].melhores[alvo];
+   if(a&&b){const dif=Math.round(a.watts-b.watts);
+    html+='<div class="tr" style="border-top:1px solid #30363d;margin-top:4px;'+
+     'padding-top:4px"><span>Diferenca</span><b style="color:'+
+     (dif>=0?'#2ECC71':'#E74C3C')+'">'+(dif>=0?'+':'')+dif+' W</b></div>';}}
+  return html;
+ });
 }
 
 function tabelaSeasons(){
@@ -368,8 +415,11 @@ async function loadSeasons(){
  // por defeito: season actual + a anterior
  SEON={}; ss.forEach((s,i)=>SEON[s]=(i<2));
  document.getElementById('subSeason').textContent=
-  (SE.inicio_mes===1 ? 'Ano civil' : 'Season comeca em '+SE.inicio_mes+'/'+
-   ' (muda com SEASON_INICIO_MES)')+' — actual: '+(SE.season_actual||'?');
+  (SE.fonte==='calendario'
+    ? 'Seasons do teu calendario (eventos SEASON_START)'
+    : (SE.inicio_mes===1 ? 'Ano civil — sem SEASON_START no calendario'
+       : 'Inicio no mes '+SE.inicio_mes+' — sem SEASON_START no calendario'))
+  +' · actual: '+(SE.season_actual||'?');
  document.getElementById('seasonToggles').innerHTML=ss.map(function(s,i){
   return '<label style="color:'+corSeason(i)+'"><input type="checkbox" data-s="'+s+'" '+
    (SEON[s]?'checked':'')+'> '+s+'</label>';}).join('');

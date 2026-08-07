@@ -83,6 +83,7 @@ canvas { width:100%; display:block; }
 # Registo de tabs: (slug, url, label). A ordem define a barra de navegacao.
 TABS = [
     ('volume',     '/',            'Volume'),
+    ('pmc',        '/pmc',         'PMC'),
     ('recordes',   '/recordes',    'Recordes'),
     ('atividades', '/atividades',  'Atividades'),
 ]

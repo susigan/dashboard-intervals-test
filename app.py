@@ -151,6 +151,12 @@ def page_recordes():
     return tab_recordes.render()
 
 
+@app.route('/api/recordes/seasons')
+def api_recordes_seasons():
+    """Melhor curva por periodo. ?por=season (default) ou ?por=ano"""
+    return tab_recordes.api_seasons()
+
+
 @app.route('/api/activity/<activity_id>/prs')
 def api_activity_prs(activity_id):
     return jsonify(db.prs_da_actividade(activity_id) or {'erro': 'sem curva guardada'})

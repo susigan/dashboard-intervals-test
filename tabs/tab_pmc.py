@@ -50,6 +50,10 @@ def api_data():
             'name': a.get('name'), 'tl': num(a.get('icu_training_load')),
             'horas': (num(a.get('elapsed_time')) or num(a.get('moving_time'))) / 3600,
             'rpe': a.get('icu_rpe'), 'xss': num(a.get('SS')),
+            # proxies de performance para ajustar o gamma
+            'cp': (num(a.get('icu_pm_cp')) or num(a.get('icu_rolling_ftp'))
+                   or num(a.get('icu_pm_ftp')) or None),
+            'w_prime': num(a.get('icu_pm_w_prime')) or None,
         })
 
     desde = request.args.get('desde') or None
@@ -57,6 +61,14 @@ def api_data():
     mods = pmc.por_modalidade(sessoes, CICLICOS, 'tl', desde=desde)
 
     wellness, corporal, erros_sheets = _sheets()
+
+    try:
+        ftlm_res = pmc.calcular_ftlm(sessoes, wellness, serie, CICLICOS)
+        erro_ftlm = None
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        ftlm_res, erro_ftlm = None, f'{type(e).__name__}: {e}'
 
     fim = serie[-1] if serie else {}
     return jsonify({
@@ -75,6 +87,7 @@ def api_data():
             'estado': pmc.estado_forma(fim.get('tsb')),
         },
         'alertas': pmc.alertas(serie, wellness),
+        'ftlm': ftlm_res, 'erro_ftlm': erro_ftlm,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
     })
 
@@ -88,6 +101,7 @@ BODY = r"""
 <div class="sub" id="sub">A carregar...</div>
 
 <div class="cards" id="kpis"></div>
+<div id="faseCard"></div>
 <div id="alertas"></div>
 
 <h2>Fitness, fadiga e forma</h2>
@@ -106,7 +120,30 @@ BODY = r"""
   <canvas id="chPMC" height="320"></canvas>
 </div>
 
-<h2>CTL por modalidade</h2>
+<h2>CTL&gamma; — FTLM fraccionario</h2>
+<div class="sub" id="subFTLM"></div>
+<div class="chartbox">
+  <div class="legend" id="lgFTLM"></div>
+  <canvas id="chFTLM" height="280"></canvas>
+</div>
+
+<h2>CTL&gamma; por modalidade</h2>
+<div class="sub">Cada modalidade tem o seu &gamma;, ajustado aos proprios dados</div>
+<div class="chartbox">
+  <div class="legend" id="lgCTLg"></div>
+  <canvas id="chCTLg" height="240"></canvas>
+</div>
+<div class="wrap" style="max-height:280px;margin-bottom:14px"><table>
+  <thead><tr id="gHead"></tr></thead><tbody id="gBody"></tbody></table></div>
+
+<h2>FMT — tensor metrico de fadiga</h2>
+<div class="sub" id="subFMT"></div>
+<div class="chartbox">
+  <div class="legend" id="lgFMT"></div>
+  <canvas id="chFMT" height="220"></canvas>
+</div>
+
+<h2>CTL por modalidade (classico)</h2>
 <div class="chartbox">
   <div class="legend" id="lgMod"></div>
   <canvas id="chMod" height="240"></canvas>
@@ -171,6 +208,19 @@ function drawLinhas(canvasId,legendId,dados,series,cores,labels,opcoes){
  const n=dados.length;
  const X=i=>PL+w*(n>1?i/(n-1):0.5);
 
+ // bandas de fase ao fundo, para ler o contexto de cada periodo
+ if(opcoes.fases&&D&&D.ftlm){
+  const leg=D.ftlm.fases_legenda||{};
+  let ini=0;
+  for(let i=1;i<=dados.length;i++){
+   const mudou=(i===dados.length)||(dados[i].fase!==dados[ini].fase);
+   if(!mudou)continue;
+   const f=leg[dados[ini].fase];
+   if(f&&dados[ini].fase!=='TRANSITION'){
+    g.fillStyle=hexRgba(f.cor,0.10);
+    g.fillRect(X(ini),PT,Math.max(1,X(i-1)-X(ini)),h);}
+   ini=i;}
+ }
  g.strokeStyle='#21262d';g.lineWidth=1;
  for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
 
@@ -233,6 +283,11 @@ function drawLinhas(canvasId,legendId,dados,series,cores,labels,opcoes){
     (Math.abs(d[s])>=100?Math.round(d[s]):d[s].toFixed(1)));});
   if(opcoes.barras&&d[opcoes.barras])
    html+=linhaTip('#586574','Carga',Math.round(d[opcoes.barras]));
+  if(opcoes.fases&&d.fase&&D.ftlm){
+   const f=(D.ftlm.fases_legenda||{})[d.fase];
+   if(f)html+='<div class="tr" style="border-top:1px solid #30363d;margin-top:4px;'+
+    'padding-top:4px"><span>Fase</span><b style="color:'+f.cor+'">'+f.label+'</b></div>';
+   if(d.dctlg!=null)html+=linhaTip('#8b949e','ΔCTLγ',d.dctlg.toFixed(4)+'/d');}
   if(opcoes.estado&&d.tsb!=null){
    const e=estadoDe(d.tsb);
    html+='<div class="tr" style="border-top:1px solid #30363d;margin-top:4px;'+
@@ -254,7 +309,54 @@ function estadoDe(tsb){
  return{label:'Muito carregado',cor:'#E74C3C'};
 }
 
-let OFFP={},OFFM={};
+let OFFP={},OFFM={},OFFF={},OFFG={},OFFK={};
+function hexRgba(h,a){h=h.replace('#','');
+ return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+
+  parseInt(h.slice(4,6),16)+','+a+')';}
+
+function drawFTLM(){
+ if(!D.ftlm){const o=ctx('chFTLM',280);if(o)noData(o.g,o.W,o.H,'FTLM indisponivel');return;}
+ const s=janelaPMC(D.ftlm.serie);
+ drawLinhas('chFTLM','lgFTLM',s,['ctlg_perf','ctlg_rec'],
+  {ctlg_perf:'#5DADE2',ctlg_rec:'#AF7AC5'},
+  {ctlg_perf:'CTLγ perf',ctlg_rec:'CTLγ rec'},
+  {off:OFFF,redraw:drawFTLM,height:280,fases:true});
+}
+function drawCTLg(){
+ const pm=(D.ftlm||{}).por_modalidade||{};
+ const mods=Object.keys(pm);
+ if(!mods.length){const o=ctx('chCTLg',240);if(o)noData(o.g,o.W,o.H);return;}
+ const porData={};
+ mods.forEach(function(m){
+  (pm[m].serie||[]).forEach(function(r){
+   porData[r.date]=porData[r.date]||{date:r.date};
+   porData[r.date][m]=r.ctlg;});});
+ drawLinhas('chCTLg','lgCTLg',janelaPMC(Object.keys(porData).sort().map(k=>porData[k])),
+  mods,D.cores,null,{off:OFFG,redraw:drawCTLg,height:240});
+}
+function drawFMT(){
+ if(!D.ftlm){return;}
+ drawLinhas('chFMT','lgFMT',janelaPMC(D.ftlm.serie),['kappa','lambda1'],
+  {kappa:'#E74C3C',lambda1:'#F4D03F'},
+  {kappa:'κ (instabilidade)',lambda1:'λ₁ (dominancia)'},
+  {off:OFFK,redraw:drawFMT,height:220});
+}
+function tabelaGammas(){
+ const pm=(D.ftlm||{}).por_modalidade||{};
+ const mods=Object.keys(pm);
+ document.getElementById('gHead').innerHTML=
+  ['Modalidade','γ','R²','n','Sessoes','CTLγ actual','Fase']
+   .map((c,i)=>'<th class="'+(i&&i<6?'num':'')+'">'+c+'</th>').join('');
+ const leg=(D.ftlm||{}).fases_legenda||{};
+ document.getElementById('gBody').innerHTML=mods.map(function(m){
+  const v=pm[m], f=leg[v.fase]||{};
+  return '<tr><td style="color:'+(D.cores[m]||'#e6e6e6')+'">'+m+'</td>'+
+   '<td class="num">'+v.gamma+'</td><td class="num">'+v.r2+'</td>'+
+   '<td class="num">'+v.n+'</td><td class="num">'+v.n_sessoes+'</td>'+
+   '<td class="num">'+v.ctlg_actual+'</td>'+
+   '<td style="color:'+(f.cor||'#8b949e')+'">'+(f.label||v.fase)+'</td></tr>';
+ }).join('');
+}
 function drawPMC(){
  drawLinhas('chPMC','lgPMC',janelaPMC(D.serie),['ctl','atl','tsb'],COR,
   {ctl:'CTL (fitness)',atl:'ATL (fadiga)',tsb:'TSB (forma)'},
@@ -325,7 +427,45 @@ async function load(){
    'padding:9px 12px;margin-bottom:8px;border-radius:0 6px 6px 0;font-size:13px">'+
    al.texto+'</div>';}).join('');
 
- drawPMC(); drawMod();
+ drawPMC(); drawMod(); drawFTLM();
+
+ // ── fase actual, com ΔCTLγ e HRV em sigma ──
+ const F=d.ftlm;
+ if(d.erro_ftlm){
+  document.getElementById('faseCard').innerHTML=
+   '<div class="err" style="margin-bottom:10px">FTLM: '+d.erro_ftlm+'</div>';
+ } else if(F&&F.fase_actual){
+  const fa=F.fase_actual, fg=F.fase_global;
+  const seta=(fa.dctlg>0?'&uarr;':'&darr;');
+  const dv=fa.dctlg==null?'—':Math.abs(fa.dctlg).toFixed(4)+'/d';
+  const hz=fa.hrv_z==null?'':' | HRV '+(fa.hrv_z>=0?'+':'')+fa.hrv_z.toFixed(2)+'&sigma;';
+  let html='<div style="background:'+hexRgba(fa.cor,0.10)+';border-left:4px solid '+
+   fa.cor+';padding:9px 14px;border-radius:0 5px 5px 0;margin-bottom:8px">'+
+   '<b>Fase actual:</b> '+fa.label+' — '+fa.desc+'<br>'+
+   '<small style="color:#8b949e">'+fa.dias+'d nesta fase | &Delta;CTL&gamma; '+
+   seta+dv+hz+'</small></div>';
+  if(fg&&fg.codigo!==fa.codigo){
+   const ctb=Object.keys(fg.contribuicoes||{})
+     .map(m=>m+' '+Math.round(fg.contribuicoes[m]*100)+'%').join(' · ');
+   html+='<div style="background:'+hexRgba(fg.cor,0.10)+';border-left:4px solid '+
+    fg.cor+';padding:9px 14px;border-radius:0 5px 5px 0;margin-bottom:8px">'+
+    '<b>Fase global ponderada (por CTL&gamma;):</b> '+fg.label+'<br>'+
+    '<small style="color:#8b949e">'+ctb+'</small></div>';}
+  document.getElementById('faseCard').innerHTML=html;
+
+  const g=F.gammas||{};
+  document.getElementById('subFTLM').innerHTML=
+   'Kernel Riemann-Liouville: CTL&gamma;(t) = &Sigma; Load(t&minus;k)&middot;k<sup>&gamma;&minus;1</sup>/&Gamma;(&gamma;) &middot; '+
+   '&gamma;<sub>perf</sub> '+(g.perf?g.perf.gamma+' (R&sup2; '+g.perf.r2+')':'—')+
+   ' &middot; &gamma;<sub>rec</sub> '+(g.rec?g.rec.gamma+' (R&sup2; '+g.rec.r2+')':'—');
+
+  drawCTLg(); tabelaGammas(); drawFMT();
+  const fm=F.fmt||{};
+  document.getElementById('subFMT').innerHTML=
+   '&kappa;(t) = trace(cov(&Delta;x)) em janela de 28d sobre '+
+   (fm.dimensoes||[]).length+' dimensoes: '+(fm.dimensoes||[]).join(', ')+
+   '. &kappa; alto = sistema a oscilar mais.';
+ }
 
  // wellness
  const w=d.wellness||[];
@@ -350,10 +490,12 @@ async function load(){
   togglesDe(c,CORC,LBLC,ATIVC,'togC',drawC); drawC();
  }
 }
-document.getElementById('janelaPMC').onchange=function(){
- if(!D)return; drawPMC();drawMod();drawW();drawC();};
-window.addEventListener('resize',function(){
- if(!D)return; drawPMC();drawMod();drawW();drawC();});
+function redesenhar(){
+ if(!D)return;
+ drawPMC();drawMod();drawW();drawC();
+ if(D.ftlm){drawFTLM();drawCTLg();drawFMT();}}
+document.getElementById('janelaPMC').onchange=redesenhar;
+window.addEventListener('resize',redesenhar);
 load();
 """
 

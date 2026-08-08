@@ -59,7 +59,12 @@ def ftlm_fractional(load, gamma_val, max_lag=None):
 
 def _zscore(arr):
     arr = np.asarray(arr, dtype=np.float64)
-    mu, sd = np.nanmean(arr), np.nanstd(arr)
+    if not np.isfinite(arr).any():     # serie toda vazia: nada a normalizar
+        return arr
+    with np.errstate(all='ignore'):
+        mu, sd = np.nanmean(arr), np.nanstd(arr)
+    if not np.isfinite(mu):
+        return arr
     return (arr - mu) / sd if sd > 1e-9 else arr - mu
 
 

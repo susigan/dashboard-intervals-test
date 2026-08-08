@@ -361,7 +361,8 @@ def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
 # Modelo homeostatico e indice alostatico
 # ══════════════════════════════════════════════════════════════════════════
 
-def modelo_homeostatico(serie_classica, sessoes, p0=None):
+def modelo_homeostatico(serie_classica, sessoes, p0=None,
+                        tau_sugerido=None, lag_hrv_sugerido=None):
     """Reserva de performance p̂(t) = p₀ + K₁·EWM(carga,T₁) − K₂·EWM(carga,T₂).
 
     O PMC classico fixa τ em 42 e 7 dias. Aqui T₁ e T₂ sao ajustados aos
@@ -392,12 +393,26 @@ def modelo_homeostatico(serie_classica, sessoes, p0=None):
     tentativas, rejeitados = 0, 0
     melhor_rejeitado = {'k1': None, 'k2': None, 't1': None, 't2': None, 'r2': -9e9}
 
+    # Se a calibracao encontrou um tau para a carga, a grelha do T1 e
+    # centrada nele — a mesma constante de tempo que explica o HRV tem de
+    # explicar tambem a componente de fitness.
+    grelha_t1 = (25, 30, 35, 40, 45, 50, 60)
+    grelha_t2 = (4, 5, 6, 7, 9, 11, 14)
+    if tau_sugerido:
+        t = float(tau_sugerido)
+        grelha_t1 = tuple(sorted({max(7, round(t * f))
+                                  for f in (0.6, 0.8, 1.0, 1.3, 1.8, 2.5, 3.5)}))
+    if lag_hrv_sugerido:
+        L = max(2.0, float(lag_hrv_sugerido))
+        grelha_t2 = tuple(sorted({max(2, round(L * f))
+                                  for f in (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)}))
+
     if n_testes >= 20:
         m = np.isfinite(alvo)
         y = alvo[m]
-        for t1 in (25, 30, 35, 40, 45, 50, 60):
+        for t1 in grelha_t1:
             e1 = ftlm.ewm(cargas, t1)[m]
-            for t2 in (4, 5, 6, 7, 9, 11, 14):
+            for t2 in grelha_t2:
                 e2 = ftlm.ewm(cargas, t2)[m]
                 # K1 e K2 por minimos quadrados, dados T1 e T2
                 A = np.column_stack([np.ones(len(y)), e1, -e2])
@@ -462,6 +477,8 @@ def modelo_homeostatico(serie_classica, sessoes, p0=None):
         'p0': round(p0, 1),
         'k1': round(melhor['k1'], 3), 'k2': round(melhor['k2'], 3),
         't1': round(melhor['t1'], 1), 't2': round(melhor['t2'], 1),
+        'grelha_t1': list(grelha_t1), 'grelha_t2': list(grelha_t2),
+        'grelha_calibrada': bool(tau_sugerido or lag_hrv_sugerido),
         'r2': round(melhor['r2'], 4),
         'melhor_rejeitado': (melhor_rejeitado
                              if melhor_rejeitado['k1'] is not None else None),
@@ -602,6 +619,15 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
 
     ph = ((homeostatico or {}).get('serie')) or []
     w = wellness or []
+
+    # Escala de referencia do TSB: o desvio-padrao do proprio atleta, em vez
+    # de um numero fixo. Uma variacao de 1 SD passa a valer o mesmo para
+    # qualquer pessoa, seja o TSB dela estavel ou muito oscilante.
+    tsbs = [r['tsb'] for r in serie_classica if r.get('tsb') is not None]
+    ref_tsb = float(np.std(tsbs)) if len(tsbs) >= 30 else 25.0
+    ref_tsb = max(ref_tsb, 1.0)
+    ref_tsb_fonte = 'desvio do atleta' if len(tsbs) >= 30 else 'referencia 25 au'
+
     dims = []
     # 'ref' != None -> a dimensao usa diferenca absoluta em vez de percentagem.
     # O TSB oscila em torno de zero: dividir por uma base proxima de zero faz
@@ -611,7 +637,7 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
     for nome, uni, bom, fonte, campo, ref in [
             ('Reserva pico', 'u.a.', True, ph, 'p_hat', None),
             ('CTL fitness', 'au', True, serie_classica, 'ctl', None),
-            ('Recovery TSB', 'au', True, serie_classica, 'tsb', 25.0),
+            ('Recovery TSB', 'au', True, serie_classica, 'tsb', ref_tsb),
             ('HRV matinal', 'ms', True, w, 'hrv', None),
             ('HR repouso', 'bpm', False, w, 'rhr', None),
             ('Sono', '/5', True, w, 'sleep_quality', None)]:
@@ -633,7 +659,7 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
         if ref is not None:
             # diferenca absoluta escalada: imune a base proxima de zero
             dp = delta / ref * 100
-            base_metodo = f'diferenca absoluta / {ref:g}'
+            base_metodo = f'diferenca absoluta / {ref:.1f}'
         elif abs(ant) < 0.001:
             linhas.append({'dim': nome, 'unidade': uni, 'ant': round(ant, 2),
                            'rec': round(rec, 2), 'delta_pct': None, 'score': None,
@@ -673,6 +699,7 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
             'periodo_anterior': list(p_ant), 'periodo_recente': list(p_rec),
             'formula': 'score = sinal * clip(delta_pct / 50, -1, +1); '
                        'total = media dos scores com dados',
+            'ref_tsb': round(ref_tsb, 2), 'ref_tsb_fonte': ref_tsb_fonte,
             'scores': [round(s, 4) for s in scores],
             'p_hat_disponivel': len(ph),
             'wellness_disponivel': len(w)}

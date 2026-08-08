@@ -387,6 +387,65 @@ def diagnostico_curvas(limite=3):
     return out
 
 
+def actividades_sem_streams(limite=100, tipos=None, desde=None, com_potencia=True):
+    """Sessoes que ainda nao tem streams guardados, mais recentes primeiro.
+
+    Serve para carregar em blocos: sao N pedidos a API, um por sessao, e o
+    limite da Intervals.icu e 2500 por 15 min.
+    """
+    if not ENABLED:
+        return []
+    cond = ["NOT EXISTS (SELECT 1 FROM streams s WHERE s.activity_id = a.id)"]
+    params = []
+    if tipos:
+        cond.append("a.type IN (" + ",".join(["?"] * len(tipos)) + ")")
+        params += list(tipos)
+    else:
+        cond.append("a.type <> 'WeightTraining'")
+    if desde:
+        cond.append("a.date >= ?")
+        params.append(desde)
+    if com_potencia:
+        # sem potencia nao ha kJ/kg para calcular
+        cond.append("a.avg_watts > 0")
+    params.append(limite)
+    rows = _exec(f"""SELECT a.id, a.date, a.type FROM activities a
+                     WHERE {' AND '.join(cond)}
+                     ORDER BY a.date DESC LIMIT ?""", tuple(params), fetch='all') or []
+    return [{'id': r[0], 'date': str(r[1]), 'type': r[2]} for r in rows]
+
+
+def streams_stats():
+    """Cobertura dos streams: quantas sessoes tem, quantas faltam, tamanho."""
+    if not ENABLED:
+        return {'enabled': False}
+    tot = _exec("""SELECT COUNT(DISTINCT activity_id), COUNT(*),
+                          COALESCE(SUM(points), 0), COALESCE(SUM(LENGTH(data)), 0)
+                   FROM streams""", fetch='one') or (0, 0, 0, 0)
+    falta = _exec("""SELECT COUNT(*) FROM activities a
+                     WHERE NOT EXISTS (SELECT 1 FROM streams s
+                                       WHERE s.activity_id = a.id)
+                       AND a.type <> 'WeightTraining' AND a.avg_watts > 0""",
+                  fetch='one') or (0,)
+    por_tipo = _exec("""SELECT a.type, COUNT(DISTINCT s.activity_id)
+                        FROM activities a JOIN streams s ON s.activity_id = a.id
+                        GROUP BY a.type ORDER BY 2 DESC""", fetch='all') or []
+    tipos_stream = _exec("""SELECT stype, COUNT(DISTINCT activity_id)
+                            FROM streams GROUP BY stype ORDER BY 2 DESC""",
+                         fetch='all') or []
+    mb = (tot[3] or 0) / (1024 * 1024)
+    return {
+        'enabled': True,
+        'actividades_com_streams': tot[0],
+        'series_guardadas': tot[1],
+        'pontos': int(tot[2] or 0),
+        'tamanho_mb': round(mb, 1),
+        'por_carregar': falta[0],
+        'por_tipo': [{'type': t, 'n': n} for t, n in por_tipo],
+        'tipos_de_stream': [{'stream': t, 'sessoes': n} for t, n in tipos_stream],
+    }
+
+
 def diagnostico_zonas():
     """Que conjuntos de custom_zones existem, por modalidade.
 

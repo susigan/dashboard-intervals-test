@@ -218,10 +218,12 @@ let D=null;
 const COR={ctl:'#5DADE2',atl:'#E74C3C',tsb:'#2ECC71',load:'#30363d'};
 const CORW={hrv:'#5DADE2',rhr:'#E74C3C',sleep_hours:'#AF7AC5',
  sleep_quality:'#58D68D',stress:'#E67E22',fatiga:'#F4D03F',
- humor:'#48C9B0',soreness:'#EC7063',hf_power:'#7FB3D5'};
+ humor:'#48C9B0',soreness:'#EC7063',hf_power:'#7FB3D5',
+ performance:'#F5B041',doente:'#C0392B'};
 const LBLW={hrv:'HRV (rMSSD)',rhr:'HR repouso',sleep_hours:'Horas de sono',
  sleep_quality:'Qualidade do sono',stress:'Stress',fatiga:'Cansaco',
- humor:'Humor',soreness:'Dores musculares',hf_power:'HF power'};
+ humor:'Humor',soreness:'Dores musculares',hf_power:'HF power',
+ performance:'Performance',doente:'Doente'};
 const CORC={peso:'#5DADE2',bf:'#E74C3C',calorias:'#F4D03F',
  carb:'#58D68D',fat:'#E67E22',ptn:'#AF7AC5',net:'#48C9B0'};
 const LBLC={peso:'Peso (kg)',bf:'Gordura (%)',calorias:'Calorias',

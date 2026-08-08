@@ -84,6 +84,7 @@ canvas { width:100%; display:block; }
 TABS = [
     ('volume',     '/',            'Volume'),
     ('pmc',        '/pmc',         'PMC'),
+    ('corporal',   '/corporal',    'Corporal'),
     ('recordes',   '/recordes',    'Recordes'),
     ('atividades', '/atividades',  'Atividades'),
 ]

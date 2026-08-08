@@ -603,35 +603,53 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
     ph = ((homeostatico or {}).get('serie')) or []
     w = wellness or []
     dims = []
-    for nome, uni, bom, fonte, campo in [
-            ('Reserva pico', 'u.a.', True, ph, 'p_hat'),
-            ('CTL fitness', 'au', True, serie_classica, 'ctl'),
-            ('Recovery TSB', 'au', True, serie_classica, 'tsb'),
-            ('HRV matinal', 'ms', True, w, 'hrv'),
-            ('HR repouso', 'bpm', False, w, 'rhr'),
-            ('Sono', '/5', True, w, 'sleep_quality')]:
+    # 'ref' != None -> a dimensao usa diferenca absoluta em vez de percentagem.
+    # O TSB oscila em torno de zero: dividir por uma base proxima de zero faz
+    # a percentagem explodir. Um TSB de 3.4 -> 1.2 e uma variacao de 2 pontos,
+    # mas da -65% e satura o score, enquanto -47 -> -50 (variacao maior) da -6%.
+    # Escala de referencia 25 au: e a largura tipica das bandas de forma.
+    for nome, uni, bom, fonte, campo, ref in [
+            ('Reserva pico', 'u.a.', True, ph, 'p_hat', None),
+            ('CTL fitness', 'au', True, serie_classica, 'ctl', None),
+            ('Recovery TSB', 'au', True, serie_classica, 'tsb', 25.0),
+            ('HRV matinal', 'ms', True, w, 'hrv', None),
+            ('HR repouso', 'bpm', False, w, 'rhr', None),
+            ('Sono', '/5', True, w, 'sleep_quality', None)]:
         da, dr = {}, {}
         va = _media_periodo(fonte, campo, p_ant[0], p_ant[1], da)
         vr = _media_periodo(fonte, campo, p_rec[0], p_rec[1], dr)
-        dims.append((nome, uni, bom, va, vr, (da, dr)))
+        dims.append((nome, uni, bom, va, vr, (da, dr), ref))
 
     linhas, scores = [], []
-    for nome, uni, bom_positivo, ant, rec, det in dims:
-        if not np.isfinite(ant) or not np.isfinite(rec) or abs(ant) < 0.001:
+    for nome, uni, bom_positivo, ant, rec, det, ref in dims:
+        if not np.isfinite(ant) or not np.isfinite(rec):
             linhas.append({'dim': nome, 'unidade': uni, 'ant': None,
                            'rec': None, 'delta_pct': None, 'score': None,
                            'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),
-                           'motivo': ('sem dados' if not np.isfinite(ant)
-                                      or not np.isfinite(rec)
-                                      else 'base proxima de zero')})
+                           'motivo': 'sem dados'})
             continue
-        dp = (rec - ant) / abs(ant) * 100
+
+        delta = rec - ant
+        if ref is not None:
+            # diferenca absoluta escalada: imune a base proxima de zero
+            dp = delta / ref * 100
+            base_metodo = f'diferenca absoluta / {ref:g}'
+        elif abs(ant) < 0.001:
+            linhas.append({'dim': nome, 'unidade': uni, 'ant': round(ant, 2),
+                           'rec': round(rec, 2), 'delta_pct': None, 'score': None,
+                           'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),
+                           'motivo': 'base proxima de zero'})
+            continue
+        else:
+            dp = delta / abs(ant) * 100
+            base_metodo = 'variacao percentual'
         sc = (1 if bom_positivo else -1) * float(np.clip(dp / 50.0, -1.0, 1.0))
         scores.append(sc)
         linhas.append({'dim': nome, 'unidade': uni,
                        'ant': round(ant, 2), 'rec': round(rec, 2),
                        'delta_pct': round(dp, 2), 'score': round(sc, 4),
                        'bom_positivo': bom_positivo,
+                       'delta_abs': round(delta, 2), 'metodo': base_metodo,
                        # quantos dias entraram em cada media — a causa mais
                        # comum de duas implementacoes darem numeros diferentes
                        'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),

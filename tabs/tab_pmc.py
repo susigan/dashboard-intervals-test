@@ -52,6 +52,23 @@ def api_data():
 
     wellness, corporal, erros_sheets = _sheets()
 
+    # CP ajustado a curva de potencia tem prioridade sobre o icu_pm_cp: aquele
+    # e a estimativa de uma sessao isolada e, nos dias sem esforcos maximos,
+    # subestima muito e enche a serie de ruido.
+    cp_curva, n_cp_curva = {}, 0
+    try:
+        for r in db.cp_por_sessao():
+            if r['r2'] >= 0.80:      # so ajustes que sao mesmo uma recta
+                cp_curva[r['activity_id']] = r
+    except Exception as e:
+        print(f"cp_por_sessao: {e}")
+    for s in sessoes:
+        r = cp_curva.get(s['id'])
+        if r:
+            s['cp'] = r['cp']
+            s['w_prime'] = r['w_prime'] or s.get('w_prime')
+            n_cp_curva += 1
+
     try:
         ftlm_res = pmc.calcular_ftlm(sessoes, wellness, serie, CICLICOS)
         erro_ftlm = None
@@ -92,6 +109,11 @@ def api_data():
         },
         'alertas': pmc.alertas(serie, wellness),
         'ftlm': ftlm_res, 'erro_ftlm': erro_ftlm,
+        'cp_fonte': {
+            'da_curva': n_cp_curva,
+            'do_icu_pm_cp': sum(1 for s in sessoes
+                                if s.get('cp') and s['id'] not in cp_curva),
+            'nota': "ajustado a P(t)=W'/t+CP nas duracoes 2-20min, R2>=0.80"},
         'homeostatico': homeo, 'homeostatico_mod': homeo_mod,
         'alostatico': alos,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
@@ -1138,7 +1160,10 @@ async function load(){
    '<span style="font-size:12px">Kernel Riemann-Liouville: CTL&gamma;(t) = '+
    '&Sigma; Load(t&minus;k)&middot;k<sup>&gamma;&minus;1</sup>/&Gamma;(&gamma;) &middot; '+
    '&gamma;<sub>perf</sub> '+(g.perf?g.perf.gamma+' (R&sup2; '+g.perf.r2+')':'—')+
-   ' &middot; &gamma;<sub>rec</sub> '+(g.rec?g.rec.gamma+' (R&sup2; '+g.rec.r2+')':'—')+'</span>';
+   ' &middot; &gamma;<sub>rec</sub> '+(g.rec?g.rec.gamma+' (R&sup2; '+g.rec.r2+')':'—')+
+   (D.cp_fonte&&D.cp_fonte.da_curva
+    ? '<br>CP de '+D.cp_fonte.da_curva+' sessoes ajustado a P(t)=W&prime;/t+CP '+
+      '(2-20min, R&sup2;&ge;0.80)' : '')+'</span>';
 
   drawCTLg(); tabelaGammas(); drawFMT();
   const fm=F.fmt||{};

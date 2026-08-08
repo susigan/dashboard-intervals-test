@@ -611,3 +611,112 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
     return {'total': round(total, 3), 'n_dims': len(scores),
             'estado': estado, 'dimensoes': linhas,
             'periodo_anterior': list(p_ant), 'periodo_recente': list(p_rec)}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FMT 5x5 (Della Mattia 2019, §02) — tensor completo e mapa de atencao
+# ══════════════════════════════════════════════════════════════════════════
+
+def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
+    """Sequencia de tensores FMT 5x5 e mapa de atencao sobre 28 dias.
+
+    As cinco dimensoes sao as da Figura 1 do paper: Load, HRV, W', Sleep e
+    WEED. Dimensoes sem dados suficientes ficam de fora e o tensor encolhe —
+    e melhor do que enche-las com zeros, que criariam covariancias falsas.
+    """
+    import numpy as np
+    import fmt as _fmt
+
+    if not serie_classica:
+        return None
+
+    datas = [d['date'] for d in serie_classica]
+    n = len(datas)
+    dims = {'Load': np.array([d['load'] for d in serie_classica], dtype=np.float64)}
+
+    idx = {w['date']: w for w in (wellness or [])}
+
+    def do_wellness(campo):
+        v = np.array([(idx.get(d) or {}).get(campo) if idx.get(d) else None
+                      for d in datas], dtype=object)
+        return np.array([x if isinstance(x, (int, float)) else np.nan
+                         for x in v], dtype=np.float64)
+
+    hrv = do_wellness('hrv')
+    if np.isfinite(hrv).sum() >= janela + 10:
+        with np.errstate(all='ignore'):
+            dims['HRV'] = np.where(hrv > 0, np.log(hrv), np.nan)
+
+    wp = _serie_por_dia(sessoes, datas, 'w_prime', 'mean')
+    if np.isfinite(wp).sum() >= janela + 10:
+        dims["W'"] = wp
+
+    sono = do_wellness('sleep_quality')
+    if np.isfinite(sono).sum() >= janela + 10:
+        dims['Sleep'] = sono
+
+    partes = []
+    for campo in ('stress', 'soreness', 'fatiga'):
+        v = do_wellness(campo)
+        if np.isfinite(v).sum() >= janela + 10:
+            partes.append(_zscore_rolling_28(v, datas))
+    if partes:
+        arr = np.array(partes)
+        validos = np.isfinite(arr).any(axis=0)
+        weed = np.full(arr.shape[1], np.nan)
+        if validos.any():
+            with np.errstate(all='ignore'):
+                weed[validos] = np.nanmean(arr[:, validos], axis=0)
+        if np.isfinite(weed).sum() >= janela + 10:
+            dims['WEED'] = weed
+
+    if len(dims) < 2:
+        return {'erro': 'sao precisas pelo menos 2 dimensoes com dados',
+                'dimensoes': list(dims)}
+
+    # interpolar buracos curtos: um dia sem resposta ao formulario nao deve
+    # apagar a janela inteira de 28 dias
+    for k, v in dims.items():
+        m = np.isfinite(v)
+        if m.sum() >= 2 and (~m).any():
+            dims[k] = np.interp(np.arange(n), np.flatnonzero(m), v[m])
+
+    tensores, kappa, eig, nomes = _fmt.construir(dims, janela)
+    if tensores is None:
+        return None
+
+    ultimo = None
+    for t in range(n - 1, -1, -1):
+        if np.isfinite(kappa[t]):
+            ultimo = t
+            break
+    if ultimo is None:
+        return {'erro': 'sem janelas completas de 28 dias',
+                'dimensoes': nomes}
+
+    canais = {}
+    for c in _fmt.CANAIS:
+        a = _fmt.atencao(tensores, kappa, eig, nomes, ultimo, c, janela)
+        if a:
+            canais[c] = {**a, 'datas': [datas[i] for i in a['idx']],
+                         **_fmt.CANAIS[c]}
+
+    return {
+        'dimensoes': nomes,
+        'janela': janela,
+        'dia': datas[ultimo],
+        'dia_idx': ultimo,
+        'resumo': _fmt.resumo_dia(tensores, kappa, eig, nomes, ultimo),
+        'canais': canais,
+        'serie': [{'date': datas[i],
+                   'kappa': (round(float(kappa[i]), 4)
+                             if np.isfinite(kappa[i]) else None),
+                   'lambda1': (round(float(eig[i][0] / eig[i][eig[i] > 0].sum()), 4)
+                               if np.isfinite(eig[i]).all() and (eig[i] > 0).any()
+                               else None)}
+                  for i in range(n)],
+        'nota_atencao': ('Os canais do paper emergem de um Transformer treinado '
+                         'em 30 atletas. Estes sao kernels explicitos que '
+                         'reproduzem o comportamento descrito para cada canal — '
+                         'nao sao pesos aprendidos.'),
+    }

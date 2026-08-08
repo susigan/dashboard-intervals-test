@@ -390,6 +390,7 @@ def modelo_homeostatico(serie_classica, sessoes, p0=None):
     melhor = {'k1': 2.0, 'k2': 3.0, 't1': 42.0, 't2': 7.0, 'r2': 0.0}
     ajustado = False
     tentativas, rejeitados = 0, 0
+    melhor_rejeitado = {'k1': None, 'k2': None, 't1': None, 't2': None, 'r2': -9e9}
 
     if n_testes >= 20:
         m = np.isfinite(alvo)
@@ -407,8 +408,20 @@ def modelo_homeostatico(serie_classica, sessoes, p0=None):
                 tentativas += 1
                 if coef[1] <= 0 or coef[2] <= 0:
                     # K negativos nao tem sentido fisico (Banister): o fitness
-                    # tem de somar e a fadiga tem de subtrair
+                    # tem de somar e a fadiga tem de subtrair.
+                    # Guardamos o melhor rejeitado so para diagnostico.
                     rejeitados += 1
+                    prev_r = A @ coef
+                    sr = float(((y - prev_r) ** 2).sum())
+                    st = float(((y - y.mean()) ** 2).sum())
+                    if st > 0:
+                        r2r = 1 - sr / st
+                        if r2r > melhor_rejeitado['r2']:
+                            melhor_rejeitado = {
+                                'k1': round(float(coef[1]), 3),
+                                'k2': round(float(coef[2]), 3),
+                                't1': float(t1), 't2': float(t2),
+                                'r2': round(r2r, 4)}
                     continue
                 prev = A @ coef
                 ss_res = float(((y - prev) ** 2).sum())
@@ -428,13 +441,30 @@ def modelo_homeostatico(serie_classica, sessoes, p0=None):
     suave = _savgol(p_hat, 21, 3)
     sd = _banda_sd(p_hat, 14)
 
+    # porque e que falhou, em detalhe — para se poder comparar modalidades
+    if ajustado:
+        motivo = 'ok'
+    elif n_testes < 20:
+        motivo = 'poucos_pontos_cp'
+    elif tentativas == 0:
+        motivo = 'sem_tentativas'
+    elif rejeitados == tentativas:
+        motivo = 'k_negativo'
+    else:
+        motivo = 'r2_nao_positivo'
+
     return {
         'ajustado': ajustado,
+        'motivo': motivo,
+        'tentativas': tentativas,
+        'rejeitados_k_negativo': rejeitados,
         'n_testes': n_testes,
         'p0': round(p0, 1),
         'k1': round(melhor['k1'], 3), 'k2': round(melhor['k2'], 3),
         't1': round(melhor['t1'], 1), 't2': round(melhor['t2'], 1),
         'r2': round(melhor['r2'], 4),
+        'melhor_rejeitado': (melhor_rejeitado
+                             if melhor_rejeitado['k1'] is not None else None),
         'nota': _nota_homeo(ajustado, n_testes, tentativas, rejeitados,
                             melhor['r2']),
         'serie': [{'date': datas[i],
@@ -528,10 +558,18 @@ def homeostatico_por_modalidade(serie_classica, sessoes, modalidades):
     return out
 
 
-def _media_periodo(linhas, campo, ini, fim):
+def _media_periodo(linhas, campo, ini, fim, detalhe=None):
+    """Media de um campo num intervalo. Se detalhe for um dict, escreve la
+    quantos dias entraram e de que datas — para se poder auditar diferencas
+    entre implementacoes."""
     import numpy as np
-    vals = [r[campo] for r in linhas
-            if r.get(campo) is not None and ini <= r['date'] <= fim]
+    sel = [r for r in linhas
+           if r.get(campo) is not None and ini <= r['date'] <= fim]
+    vals = [r[campo] for r in sel]
+    if detalhe is not None:
+        detalhe['n'] = len(vals)
+        detalhe['primeiro'] = sel[0]['date'] if sel else None
+        detalhe['ultimo'] = sel[-1]['date'] if sel else None
     return float(np.mean(vals)) if vals else float('nan')
 
 
@@ -563,39 +601,43 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
         p_ant = (i_ant, f_ant)
 
     ph = ((homeostatico or {}).get('serie')) or []
-    dims = [
-        ('Reserva pico', 'u.a.', True,
-         _media_periodo(ph, 'p_hat', *p_ant), _media_periodo(ph, 'p_hat', *p_rec)),
-        ('CTL fitness', 'au', True,
-         _media_periodo(serie_classica, 'ctl', *p_ant),
-         _media_periodo(serie_classica, 'ctl', *p_rec)),
-        ('Recovery TSB', 'au', True,
-         _media_periodo(serie_classica, 'tsb', *p_ant),
-         _media_periodo(serie_classica, 'tsb', *p_rec)),
-        ('HRV matinal', 'ms', True,
-         _media_periodo(wellness or [], 'hrv', *p_ant),
-         _media_periodo(wellness or [], 'hrv', *p_rec)),
-        ('HR repouso', 'bpm', False,
-         _media_periodo(wellness or [], 'rhr', *p_ant),
-         _media_periodo(wellness or [], 'rhr', *p_rec)),
-        ('Sono', '/5', True,
-         _media_periodo(wellness or [], 'sleep_quality', *p_ant),
-         _media_periodo(wellness or [], 'sleep_quality', *p_rec)),
-    ]
+    w = wellness or []
+    dims = []
+    for nome, uni, bom, fonte, campo in [
+            ('Reserva pico', 'u.a.', True, ph, 'p_hat'),
+            ('CTL fitness', 'au', True, serie_classica, 'ctl'),
+            ('Recovery TSB', 'au', True, serie_classica, 'tsb'),
+            ('HRV matinal', 'ms', True, w, 'hrv'),
+            ('HR repouso', 'bpm', False, w, 'rhr'),
+            ('Sono', '/5', True, w, 'sleep_quality')]:
+        da, dr = {}, {}
+        va = _media_periodo(fonte, campo, p_ant[0], p_ant[1], da)
+        vr = _media_periodo(fonte, campo, p_rec[0], p_rec[1], dr)
+        dims.append((nome, uni, bom, va, vr, (da, dr)))
 
     linhas, scores = [], []
-    for nome, uni, bom_positivo, ant, rec in dims:
+    for nome, uni, bom_positivo, ant, rec, det in dims:
         if not np.isfinite(ant) or not np.isfinite(rec) or abs(ant) < 0.001:
             linhas.append({'dim': nome, 'unidade': uni, 'ant': None,
-                           'rec': None, 'delta_pct': None, 'score': None})
+                           'rec': None, 'delta_pct': None, 'score': None,
+                           'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),
+                           'motivo': ('sem dados' if not np.isfinite(ant)
+                                      or not np.isfinite(rec)
+                                      else 'base proxima de zero')})
             continue
         dp = (rec - ant) / abs(ant) * 100
         sc = (1 if bom_positivo else -1) * float(np.clip(dp / 50.0, -1.0, 1.0))
         scores.append(sc)
         linhas.append({'dim': nome, 'unidade': uni,
-                       'ant': round(ant, 1), 'rec': round(rec, 1),
-                       'delta_pct': round(dp, 1), 'score': round(sc, 3),
-                       'bom_positivo': bom_positivo})
+                       'ant': round(ant, 2), 'rec': round(rec, 2),
+                       'delta_pct': round(dp, 2), 'score': round(sc, 4),
+                       'bom_positivo': bom_positivo,
+                       # quantos dias entraram em cada media — a causa mais
+                       # comum de duas implementacoes darem numeros diferentes
+                       'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),
+                       'datas_ant': [det[0].get('primeiro'), det[0].get('ultimo')],
+                       'datas_rec': [det[1].get('primeiro'), det[1].get('ultimo')],
+                       'saturado': abs(dp) >= 50})
 
     total = float(np.clip(np.mean(scores), -1, 1)) if scores else 0.0
     if total > 0.20:
@@ -608,9 +650,14 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
         estado = {'label': 'SOBRECARGA', 'cor': '#e74c3c',
                   'desc': 'O corpo nao esta a compensar a carga'}
 
-    return {'total': round(total, 3), 'n_dims': len(scores),
+    return {'total': round(total, 4), 'n_dims': len(scores),
             'estado': estado, 'dimensoes': linhas,
-            'periodo_anterior': list(p_ant), 'periodo_recente': list(p_rec)}
+            'periodo_anterior': list(p_ant), 'periodo_recente': list(p_rec),
+            'formula': 'score = sinal * clip(delta_pct / 50, -1, +1); '
+                       'total = media dos scores com dados',
+            'scores': [round(s, 4) for s in scores],
+            'p_hat_disponivel': len(ph),
+            'wellness_disponivel': len(w)}
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -863,7 +863,11 @@ function mostrarAlos(){
    '<td class="num">'+d.rec+' '+d.unidade+
     '<span style="color:#8b949e;font-size:11px"> n='+d.n_rec+'</span></td>'+
    '<td class="num" style="color:'+cor+'">'+(d.delta_pct>=0?'+':'')+
-    d.delta_pct.toFixed(1)+'%'+(d.saturado?
+    d.delta_pct.toFixed(1)+'%'+
+    (d.metodo&&d.metodo.indexOf('absoluta')!==-1?
+     ' <span style="color:#5DADE2" title="'+d.metodo+' — o TSB oscila em torno '+
+     'de zero, a percentagem sobre a base seria instavel">abs</span>':'')+
+    (d.saturado?
     ' <span style="color:#E67E22" title="acima de 50%: o score satura em ±1">▲</span>':'')+
     '</td>'+
    '<td class="num" style="color:'+cor+'">'+(d.score>=0?'+':'')+
@@ -1092,9 +1096,17 @@ function mostrarFMT5(){
  if(!F||F.erro){
   sub.innerHTML='<span class="err">'+((F&&F.erro)||'FMT indisponivel')+'</span>';
   return;}
+ const lim=(F.resumo||{}).limiares||{};
  sub.innerHTML='Tensor '+F.dimensoes.length+'&times;'+F.dimensoes.length+
   ' sobre janela de '+F.janela+' dias &middot; dimensoes: '+F.dimensoes.join(', ')+
-  ' &middot; dia '+F.dia;
+  ' &middot; dia '+F.dia+
+  (lim.fonte==='historico'
+   ? '<br><span style="font-size:12px">Limiares focal/multissistemico dos teus '+
+     'percentis 70/30 ('+(lim.focal_acima*100).toFixed(0)+'% / '+
+     (lim.multi_abaixo*100).toFixed(0)+'%), sobre '+lim.n_historico+' dias</span>'
+   : '<br><span style="font-size:12px;color:#E67E22">Limiares de referencia '+
+     '(0.55/0.35) — so '+(lim.n_historico||0)+' dias de historico, precisa de 60'+
+     ' para os derivar dos teus dados</span>');
  const L=(F.resumo||{}).leitura;
  document.getElementById('leituraFMT').innerHTML= L
   ? '<div style="border-left:3px solid '+L.cor+';background:#161b22;padding:9px 13px;'+

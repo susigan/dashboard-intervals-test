@@ -78,6 +78,13 @@ def api_data():
         ftlm_res, erro_ftlm = None, f'{type(e).__name__}: {e}'
 
     try:
+        fmt_res = pmc.calcular_fmt(sessoes, wellness, serie)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        fmt_res = {'erro': f'{type(e).__name__}: {e}'}
+
+    try:
         homeo = pmc.modelo_homeostatico(serie, sessoes)
         homeo_mod = pmc.homeostatico_por_modalidade(serie, sessoes, CICLICOS)
         alos = pmc.indice_alostatico(
@@ -114,6 +121,7 @@ def api_data():
             'do_icu_pm_cp': sum(1 for s in sessoes
                                 if s.get('cp') and s['id'] not in cp_curva),
             'nota': "ajustado a P(t)=W'/t+CP nas duracoes 2-20min, R2>=0.80"},
+        'fmt': fmt_res,
         'homeostatico': homeo, 'homeostatico_mod': homeo_mod,
         'alostatico': alos,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
@@ -187,29 +195,57 @@ positivo so por inercia da media exponencial.</p>
 pelo CTL&gamma; de cada uma: se o Bike domina a tua carga, e o estado do Bike que
 manda no estado global.</p>
 """),
-    'fmt': ('O que e o tensor metrico de fadiga (FMT)?', r"""
-<p>Todas as metricas ate aqui olham para uma dimensao de cada vez. O FMT olha
-para a <b>estabilidade do sistema como um todo</b>.</p>
+    'fmt': ("O que e o tensor FMT e o mapa de atencao?", r"""
+<p>Todas as metricas anteriores olham para uma dimensao de cada vez. O FMT
+(Della Mattia, 2019) olha para a <b>estrutura de covariacao entre todas</b>.</p>
 
-<p>Pegamos em varias series — CTL&gamma; perf e rec, tendencia do HRV, WEED, sono,
-W&prime; — normalizamos cada uma, e calculamos a variacao diaria de todas. Depois,
-numa janela movel de 28 dias, calculamos a matriz de covariancia dessas
-variacoes e tiramos dois numeros:</p>
+<p>Cada dia tem um vector de estado com cinco dimensoes — carga, HRV, W&prime;,
+sono e WEED. O tensor e o momento de segunda ordem das variacoes diarias
+numa janela de 28 dias:</p>
 
-<div class="form">&kappa;(t) = trace(cov(&Delta;x))</div>
+<div class="form">F(d) = (1/L) &middot; &Sigma; &Delta;x(t) &otimes; &Delta;x(t)<sup>T</sup></div>
+
+<p>O resultado e uma matriz simetrica 5&times;5. A <b>diagonal</b> tem a
+variancia de cada dimensao; fora da diagonal estao as covariacoes — se a carga
+e o HRV se movem juntos, essa celula acende.</p>
 
 <ul>
-<li><b>&kappa;</b> — soma das variancias. Alto significa que o sistema esta a
-oscilar mais do que o habitual em varias frentes ao mesmo tempo. Um &kappa; a
-subir sem que a carga tenha subido merece atencao.</li>
-<li><b>&lambda;<sub>1</sub></b> — peso do primeiro valor proprio na soma total.
-Proximo de 1 quer dizer que quase toda a variabilidade vem de uma unica
-direccao; distribuido quer dizer que varios sistemas se movem juntos.</li>
+<li><b>&kappa; = tr(F)</b> — a soma da diagonal. E o equivalente enriquecido do
+TSS: alto quando varias dimensoes mudam de forma abrupta e simultanea.</li>
+<li><b>Valores proprios</b> — dizem <i>onde</i> esta o stress. Se &lambda;&#8321;
+domina, o stress e <b>focal</b>: quase toda a variabilidade vem de uma direccao.
+Se estao equilibrados, e <b>multissistemico</b>.</li>
 </ul>
 
-<p class="nota">&kappa; nao e "bom" ou "mau" por si. E um indicador de
-instabilidade: interessa a tendencia e o contexto — subir durante um bloco duro
-e esperado, subir numa semana de descanso nao e.</p>
+<p>O argumento do paper para isto: o TSS e um mapa escalar, e qualquer mapa
+escalar e muitos-para-um sobre o espaco de trajectorias fisiologicas. Duas
+sessoes com o mesmo NP — e portanto o mesmo TSS — deixam o atleta em estados
+mensuravelmente diferentes no dia seguinte. O escalar descarta exactamente a
+informacao que interessa.</p>
+
+<p>O caso operacional mais util e a <b>fadiga silenciosa</b>: TSB positivo (o
+modelo classico diz "pronto") mas &kappa; a subir na dimensao autonomica. Essa
+configuracao precede episodios de queda de rendimento que o CTL/ATL nao sinaliza.</p>
+
+<h3 style="color:#E67E22">Sobre o mapa de atencao — leia isto</h3>
+
+<p>No paper, os quatro canais <b>emergem</b> de um Transformer treinado numa
+coorte de 30 atletas &times; 365 dias. Nao temos esse modelo treinado.</p>
+
+<p>O que esta aqui sao <b>kernels explicitos</b> que reproduzem o comportamento
+descrito para cada canal: decaimento exponencial para a acumulacao de carga,
+janela em d-14 a d-21 para a supercompensacao, e por ai fora. Sao uteis para
+ler a janela de 28 dias, mas <b>nao sao pesos aprendidos</b> — nao ha aqui nada
+que tenha descoberto padroes sozinho.</p>
+
+<p>A excepcao e o canal <b>Similaridade entre tensores</b>, que e atencao no
+sentido literal da equacao (4) do paper: <code>softmax(QK&#7488;/&radic;d)</code>
+com Q e K a serem os proprios vec(F), sem projeccoes aprendidas. Diz quais dos
+28 dias tem uma estrutura de covariacao parecida com a de hoje.</p>
+
+<p class="nota">Treinar o Transformer a serio exigiria uma coorte com alvos
+rotulados (falha de execucao no dia seguinte, &Delta;CP a 28 dias). Com os dados
+de um atleta so, o modelo sobreajustaria — daria previsoes confiantes e erradas.</p>
 """),
     'homeo': ('O que e o modelo homeostatico?', r"""
 <p>O PMC classico assume que o teu fitness responde a 42 dias e a fadiga a 7,
@@ -312,7 +348,29 @@ __EXPL_fases__
 <div class="wrap" style="max-height:280px;margin-bottom:14px"><table>
   <thead><tr id="gHead"></tr></thead><tbody id="gBody"></tbody></table></div>
 
-<h2>FMT — tensor metrico de fadiga</h2>
+<h2>FMT — tensor 5&times;5 e mapa de atencao</h2>
+<div class="sub" id="subFMT5"></div>
+<div class="grid2">
+  <div class="chartbox">
+    <div class="legend"><span>Matriz de covariacoes F(d)</span></div>
+    <canvas id="chMatriz" height="260"></canvas>
+  </div>
+  <div class="chartbox">
+    <div class="legend"><span>Valores proprios</span></div>
+    <canvas id="chEigen" height="260"></canvas>
+  </div>
+</div>
+<div id="leituraFMT"></div>
+<div class="controls">
+  <label class="sel">Canal <select id="canalFMT"></select></label>
+</div>
+<div class="chartbox">
+  <div class="legend" id="lgAtencao"></div>
+  <canvas id="chAtencao" height="200"></canvas>
+</div>
+<div class="sub" id="notaAtencao" style="font-style:italic"></div>
+
+<h2>Curvatura &kappa; ao longo do tempo</h2>
 __EXPL_fmt__
 <div class="sub" id="subFMT"></div>
 <div class="chartbox">
@@ -889,6 +947,143 @@ function drawCTLg(){
  });
 }
 
+// ─── FMT 5x5: matriz, valores proprios e mapa de atencao ────────────────
+function corCel(v,mx){
+ // azul (baixo) -> amarelo -> vermelho (alto), como a Figura 1 do paper
+ const t=mx>0?Math.max(0,Math.min(1,v/mx)):0;
+ if(t<0.5){const u=t/0.5;
+  return 'rgb('+Math.round(59+(234-59)*u)+','+Math.round(130+(179-130)*u)+','+
+   Math.round(246+(8-246)*u)+')';}
+ const u=(t-0.5)/0.5;
+ return 'rgb('+Math.round(234+(220-234)*u)+','+Math.round(179+(38-179)*u)+','+
+  Math.round(8+(38-8)*u)+')';
+}
+
+function drawMatriz(){
+ const F=D.fmt;
+ const o=ctx('chMatriz',260); if(!o)return;
+ const g=o.g,W=o.W,H=o.H;
+ if(!F||F.erro||!F.resumo){noData(g,W,H,(F&&F.erro)||'Sem tensor');return;}
+ const R=F.resumo, nomes=R.nomes, M=R.matriz, n=nomes.length;
+ const PL=64,PT=26,PR=14,PB=14;
+ const cel=Math.min((W-PL-PR)/n,(H-PT-PB)/n);
+ let mx=0;
+ M.forEach(l=>l.forEach(v=>{if(v!=null&&Math.abs(v)>mx)mx=Math.abs(v);}));
+ for(let i=0;i<n;i++)for(let j=0;j<n;j++){
+  const v=M[i][j];
+  g.fillStyle=v==null?'#21262d':corCel(Math.abs(v),mx);
+  g.fillRect(PL+j*cel,PT+i*cel,cel-1,cel-1);
+  if(i===j){g.strokeStyle='#5DADE2';g.lineWidth=2;
+   g.strokeRect(PL+j*cel,PT+i*cel,cel-1,cel-1);}
+  if(cel>26&&v!=null){
+   g.fillStyle=Math.abs(v)/mx>0.55?'#0d1117':'#e6e6e6';
+   g.font='9px sans-serif';g.textAlign='center';
+   g.fillText(v.toFixed(2),PL+j*cel+cel/2,PT+i*cel+cel/2+3);}
+ }
+ g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
+ nomes.forEach((nm,i)=>g.fillText(nm,PL-6,PT+i*cel+cel/2+3));
+ g.textAlign='center';
+ nomes.forEach((nm,j)=>g.fillText(nm,PL+j*cel+cel/2,PT-8));
+ g.textAlign='left';
+ g.fillStyle='#5DADE2';g.font='10px sans-serif';
+ g.fillText('diagonal = κ = '+R.kappa,PL,H-2);
+
+ registarTip('chMatriz',function(mxp,myp,rw){
+  const esc=rw/W,x=mxp/esc,y=myp/esc;
+  const j=Math.floor((x-PL)/cel), i=Math.floor((y-PT)/cel);
+  if(i<0||j<0||i>=n||j>=n)return '';
+  const v=M[i][j]; if(v==null)return '';
+  return '<div class="th">'+nomes[i]+' × '+nomes[j]+'</div>'+
+   '<div class="tr"><span>'+(i===j?'Variancia':'Covariancia')+'</span><b>'+
+   v.toFixed(4)+'</b></div>'+
+   (i===j?'<div class="tr"><span>Contributo para κ</span><b>'+
+    (v/R.kappa*100).toFixed(0)+'%</b></div>':'');});
+}
+
+function drawEigen(){
+ const F=D.fmt;
+ const o=ctx('chEigen',260); if(!o)return;
+ const g=o.g,W=o.W,H=o.H;
+ if(!F||F.erro||!F.resumo){noData(g,W,H);return;}
+ const ev=F.resumo.eigen.filter(v=>v>0);
+ if(!ev.length){noData(g,W,H);return;}
+ const PL=44,PT=16,PR=16,PB=30,w=W-PL-PR,h=H-PT-PB;
+ const tot=ev.reduce((a,b)=>a+b,0), mx=ev[0];
+ const bw=w/ev.length;
+ g.strokeStyle='#21262d';
+ for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
+ ev.forEach(function(v,i){
+  const bh=h*v/mx;
+  g.fillStyle=i===0?'#E67E22':'#5DADE2';g.globalAlpha=0.85;
+  g.fillRect(PL+i*bw+bw*0.2,PT+h-bh,bw*0.6,bh);g.globalAlpha=1;
+  g.fillStyle='#e6e6e6';g.font='10px sans-serif';g.textAlign='center';
+  g.fillText((v/tot*100).toFixed(0)+'%',PL+i*bw+bw/2,PT+h-bh-5);
+  g.fillStyle='#8b949e';
+  g.fillText('λ'+(i+1),PL+i*bw+bw/2,H-8);});
+ g.textAlign='right';g.fillStyle='#8b949e';
+ for(let i=0;i<=4;i++)g.fillText((mx-mx*i/4).toFixed(2),PL-5,PT+h*i/4+3);
+ g.textAlign='left';
+}
+
+function drawAtencao(){
+ const F=D.fmt;
+ const o=ctx('chAtencao',200); if(!o)return;
+ const g=o.g,W=o.W,H=o.H;
+ if(!F||F.erro||!F.canais){noData(g,W,H);return;}
+ const c=document.getElementById('canalFMT').value;
+ const A=F.canais[c];
+ if(!A){noData(g,W,H,'Canal indisponivel');return;}
+ const p=A.pesos, n=p.length;
+ const PL=44,PT=16,PR=14,PB=28,w=W-PL-PR,h=H-PT-PB;
+ const mx=Math.max.apply(null,p)||1;
+ const bw=w/n;
+ g.strokeStyle='#21262d';
+ for(let i=0;i<=3;i++){const y=PT+h*i/3;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
+ p.forEach(function(v,i){
+  const bh=h*v/mx;
+  g.fillStyle=A.cor;g.globalAlpha=0.35+0.65*(v/mx);
+  g.fillRect(PL+i*bw+1,PT+h-bh,bw-2,bh);g.globalAlpha=1;});
+ g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='center';
+ const step=Math.ceil(n/8);
+ A.lag.forEach(function(l,i){if(i%step!==0)return;
+  g.fillText(l===0?'hoje':'d-'+l,PL+i*bw+bw/2,H-8);});
+ g.textAlign='right';
+ for(let i=0;i<=3;i++)g.fillText((mx-mx*i/3*100).toFixed(0)+'%',PL-5,PT+h*i/3+3);
+ g.textAlign='left';
+
+ document.getElementById('lgAtencao').innerHTML=
+  '<span><i style="background:'+A.cor+'"></i>'+A.nome+'</span>'+
+  '<span style="color:#8b949e">'+A.desc+'</span>';
+
+ registarTip('chAtencao',function(mxp,myp,rw){
+  const esc=rw/W,x=mxp/esc;
+  const i=Math.floor((x-PL)/bw);
+  if(i<0||i>=n)return '';
+  return '<div class="th">'+A.datas[i]+' · '+(A.lag[i]===0?'hoje':'d-'+A.lag[i])+
+   '</div>'+linhaTip(A.cor,'Peso',(A.pesos[i]*100).toFixed(1)+'%');});
+}
+
+function mostrarFMT5(){
+ const F=D.fmt;
+ const sub=document.getElementById('subFMT5');
+ if(!F||F.erro){
+  sub.innerHTML='<span class="err">'+((F&&F.erro)||'FMT indisponivel')+'</span>';
+  return;}
+ sub.innerHTML='Tensor '+F.dimensoes.length+'&times;'+F.dimensoes.length+
+  ' sobre janela de '+F.janela+' dias &middot; dimensoes: '+F.dimensoes.join(', ')+
+  ' &middot; dia '+F.dia;
+ const L=(F.resumo||{}).leitura;
+ document.getElementById('leituraFMT').innerHTML= L
+  ? '<div style="border-left:3px solid '+L.cor+';background:#161b22;padding:9px 13px;'+
+    'border-radius:0 6px 6px 0;font-size:13px;margin:4px 0 12px">'+L.texto+'</div>' : '';
+ const sel=document.getElementById('canalFMT');
+ if(!sel.options.length)
+  sel.innerHTML=Object.keys(F.canais).map(k=>
+   '<option value="'+k+'">'+F.canais[k].nome+'</option>').join('');
+ document.getElementById('notaAtencao').textContent=F.nota_atencao||'';
+ drawMatriz();drawEigen();drawAtencao();
+}
+
 function drawFMT(){
  if(!D.ftlm){return;}
  drawLinhas('chFMT','lgFMT',janelaPMC(D.ftlm.serie),['kappa','lambda1'],
@@ -1127,7 +1322,7 @@ async function load(){
    'padding:9px 12px;margin-bottom:8px;border-radius:0 6px 6px 0;font-size:13px">'+
    al.texto+'</div>';}).join('');
 
- drawPMC(); mostrarHomeo(); mostrarAlos();
+ drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos();
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──
  const F=d.ftlm;
@@ -1178,10 +1373,12 @@ async function load(){
  document.getElementById(id).onchange=function(){if(D)drawPMC();});
 ['homeoMod','homeoVista','homeoMods','haIni','haFim','hrIni','hrFim'].forEach(id=>
  document.getElementById(id).onchange=function(){if(D)drawHomeo();});
+document.getElementById('canalFMT').onchange=function(){if(D&&D.fmt)drawAtencao();};
 function redesenhar(){
  if(!D)return;
  drawPMC();
  if(D.ftlm){drawCTLg();drawFMT();}
+ if(D.fmt){drawMatriz();drawEigen();drawAtencao();}
  if(D.homeostatico){drawHomeo();}}
 document.getElementById('janelaPMC').onchange=redesenhar;
 window.addEventListener('resize',redesenhar);

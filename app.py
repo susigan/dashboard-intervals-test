@@ -332,6 +332,28 @@ def api_zonas():
     })
 
 
+@app.route('/api/sync/streams')
+def api_sync_streams():
+    """Carrega streams em bloco.
+
+    ?limite=60          quantas sessoes por chamada (1 pedido cada)
+    ?tipos=Bike,Row     so estas modalidades
+    ?desde=YYYY-MM-DD   so a partir desta data
+    Repetir ate 'faltam' chegar a zero.
+    """
+    tipos = request.args.get('tipos')
+    return jsonify(sync.sync_streams_bloco(
+        limite=request.args.get('limite', default=60, type=int),
+        tipos=[t.strip() for t in tipos.split(',')] if tipos else None,
+        desde=request.args.get('desde')))
+
+
+@app.route('/api/db/streams')
+def api_db_streams():
+    """Cobertura dos streams guardados."""
+    return jsonify(db.streams_stats())
+
+
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy'}), 200

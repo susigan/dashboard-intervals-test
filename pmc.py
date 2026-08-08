@@ -355,3 +355,185 @@ def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
         },
         'fases_legenda': ftlm.FASES,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Modelo homeostatico e indice alostatico
+# ══════════════════════════════════════════════════════════════════════════
+
+def modelo_homeostatico(serie_classica, sessoes, p0=None):
+    """Reserva de performance p̂(t) = p₀ + K₁·EWM(carga,T₁) − K₂·EWM(carga,T₂).
+
+    O PMC classico fixa τ em 42 e 7 dias. Aqui T₁ e T₂ sao ajustados aos
+    dados deste atleta: procuramos a combinacao (K₁,K₂,T₁,T₂) que melhor
+    explica a serie de CP observada.
+
+    Sem testes de performance suficientes devolve os valores por defeito e
+    diz que sao insuficientes — em vez de fingir um ajuste.
+    """
+    import numpy as np
+    import ftlm
+
+    if not serie_classica:
+        return None
+
+    datas = [d['date'] for d in serie_classica]
+    cargas = np.array([d['load'] for d in serie_classica], dtype=np.float64)
+    n = len(datas)
+
+    alvo = _serie_por_dia(sessoes, datas, 'cp', 'mean')
+    n_testes = int(np.isfinite(alvo).sum())
+
+    if p0 is None:
+        p0 = float(np.nanmedian(alvo)) if n_testes else 200.0
+
+    melhor = {'k1': 2.0, 'k2': 3.0, 't1': 42.0, 't2': 7.0, 'r2': 0.0}
+    ajustado = False
+    tentativas, rejeitados = 0, 0
+
+    if n_testes >= 20:
+        m = np.isfinite(alvo)
+        y = alvo[m]
+        for t1 in (25, 30, 35, 40, 45, 50, 60):
+            e1 = ftlm.ewm(cargas, t1)[m]
+            for t2 in (4, 5, 6, 7, 9, 11, 14):
+                e2 = ftlm.ewm(cargas, t2)[m]
+                # K1 e K2 por minimos quadrados, dados T1 e T2
+                A = np.column_stack([np.ones(len(y)), e1, -e2])
+                try:
+                    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+                except Exception:
+                    continue
+                tentativas += 1
+                if coef[1] <= 0 or coef[2] <= 0:
+                    # K negativos nao tem sentido fisico (Banister): o fitness
+                    # tem de somar e a fadiga tem de subtrair
+                    rejeitados += 1
+                    continue
+                prev = A @ coef
+                ss_res = float(((y - prev) ** 2).sum())
+                ss_tot = float(((y - y.mean()) ** 2).sum())
+                if ss_tot <= 0:
+                    continue
+                r2 = 1 - ss_res / ss_tot
+                if r2 > melhor['r2']:
+                    melhor = {'k1': float(coef[1]), 'k2': float(coef[2]),
+                              't1': float(t1), 't2': float(t2), 'r2': r2}
+                    p0 = float(coef[0])
+                    ajustado = True
+
+    fit = ftlm.ewm(cargas, melhor['t1'])
+    fad = ftlm.ewm(cargas, melhor['t2'])
+    p_hat = p0 + melhor['k1'] * fit - melhor['k2'] * fad
+
+    return {
+        'ajustado': ajustado,
+        'n_testes': n_testes,
+        'p0': round(p0, 1),
+        'k1': round(melhor['k1'], 3), 'k2': round(melhor['k2'], 3),
+        't1': round(melhor['t1'], 1), 't2': round(melhor['t2'], 1),
+        'r2': round(melhor['r2'], 4),
+        'nota': _nota_homeo(ajustado, n_testes, tentativas, rejeitados,
+                            melhor['r2']),
+        'serie': [{'date': datas[i],
+                   'p_hat': round(float(p_hat[i]), 1),
+                   'fitness': round(float(fit[i]), 1),
+                   'fadiga': round(float(fad[i]), 1)} for i in range(n)],
+    }
+
+
+def _nota_homeo(ajustado, n_testes, tentativas, rejeitados, r2):
+    if ajustado:
+        return f'K e tau ajustados aos teus dados de CP (R² {r2:.3f})'
+    if n_testes < 20:
+        return (f'so {n_testes} pontos de CP (precisa de 20) — '
+                'a usar tau 42/7 do PMC classico')
+    if tentativas and rejeitados == tentativas:
+        return ('nenhuma combinacao deu K₁ e K₂ positivos: a CP nao segue o '
+                'padrao fitness-menos-fadiga neste periodo — a usar tau 42/7')
+    return 'sem ajuste com R² positivo — a usar tau 42/7 do PMC classico'
+
+
+def _media_periodo(linhas, campo, ini, fim):
+    import numpy as np
+    vals = [r[campo] for r in linhas
+            if r.get(campo) is not None and ini <= r['date'] <= fim]
+    return float(np.mean(vals)) if vals else float('nan')
+
+
+def indice_alostatico(serie_classica, homeostatico, wellness,
+                      p_ant=None, p_rec=None):
+    """Adaptacao vs sobrecarga alostatica, em 6 dimensoes.
+
+    Compara dois periodos. Cada dimensao da um score entre -1 e +1:
+      score = sinal · clip(variacao% / 50, -1, +1)
+    onde o sinal e -1 nas dimensoes em que subir e mau (HR de repouso).
+    """
+    import numpy as np
+    from datetime import datetime, timedelta
+
+    if not serie_classica:
+        return None
+
+    datas = [d['date'] for d in serie_classica]
+    fim = datas[-1]
+    if not p_rec:
+        ini_rec = (datetime.strptime(fim, '%Y-%m-%d') - timedelta(days=59)
+                   ).strftime('%Y-%m-%d')
+        p_rec = (ini_rec, fim)
+    if not p_ant:
+        f_ant = (datetime.strptime(p_rec[0], '%Y-%m-%d') - timedelta(days=1)
+                 ).strftime('%Y-%m-%d')
+        i_ant = (datetime.strptime(f_ant, '%Y-%m-%d') - timedelta(days=59)
+                 ).strftime('%Y-%m-%d')
+        p_ant = (i_ant, f_ant)
+
+    ph = ((homeostatico or {}).get('serie')) or []
+    dims = [
+        ('Reserva pico', 'u.a.', True,
+         _media_periodo(ph, 'p_hat', *p_ant), _media_periodo(ph, 'p_hat', *p_rec)),
+        ('CTL fitness', 'au', True,
+         _media_periodo(serie_classica, 'ctl', *p_ant),
+         _media_periodo(serie_classica, 'ctl', *p_rec)),
+        ('Recovery TSB', 'au', True,
+         _media_periodo(serie_classica, 'tsb', *p_ant),
+         _media_periodo(serie_classica, 'tsb', *p_rec)),
+        ('HRV matinal', 'ms', True,
+         _media_periodo(wellness or [], 'hrv', *p_ant),
+         _media_periodo(wellness or [], 'hrv', *p_rec)),
+        ('HR repouso', 'bpm', False,
+         _media_periodo(wellness or [], 'rhr', *p_ant),
+         _media_periodo(wellness or [], 'rhr', *p_rec)),
+        ('Sono', '/5', True,
+         _media_periodo(wellness or [], 'sleep_quality', *p_ant),
+         _media_periodo(wellness or [], 'sleep_quality', *p_rec)),
+    ]
+
+    linhas, scores = [], []
+    for nome, uni, bom_positivo, ant, rec in dims:
+        if not np.isfinite(ant) or not np.isfinite(rec) or abs(ant) < 0.001:
+            linhas.append({'dim': nome, 'unidade': uni, 'ant': None,
+                           'rec': None, 'delta_pct': None, 'score': None})
+            continue
+        dp = (rec - ant) / abs(ant) * 100
+        sc = (1 if bom_positivo else -1) * float(np.clip(dp / 50.0, -1.0, 1.0))
+        scores.append(sc)
+        linhas.append({'dim': nome, 'unidade': uni,
+                       'ant': round(ant, 1), 'rec': round(rec, 1),
+                       'delta_pct': round(dp, 1), 'score': round(sc, 3),
+                       'bom_positivo': bom_positivo})
+
+    total = float(np.clip(np.mean(scores), -1, 1)) if scores else 0.0
+    if total > 0.20:
+        estado = {'label': 'BOA ADAPTACAO', 'cor': '#27ae60',
+                  'desc': 'O corpo responde positivamente a carga'}
+    elif total > -0.10:
+        estado = {'label': 'ESTAVEL', 'cor': '#f39c12',
+                  'desc': 'Sistema em equilibrio — sem adaptacao clara nem sobrecarga'}
+    else:
+        estado = {'label': 'SOBRECARGA', 'cor': '#e74c3c',
+                  'desc': 'O corpo nao esta a compensar a carga'}
+
+    return {'total': round(total, 3), 'n_dims': len(scores),
+            'estado': estado, 'dimensoes': linhas,
+            'periodo_anterior': list(p_ant), 'periodo_recente': list(p_rec)}

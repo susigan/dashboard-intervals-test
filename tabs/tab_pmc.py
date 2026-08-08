@@ -70,6 +70,19 @@ def api_data():
         traceback.print_exc()
         ftlm_res, erro_ftlm = None, f'{type(e).__name__}: {e}'
 
+    try:
+        homeo = pmc.modelo_homeostatico(serie, sessoes)
+        alos = pmc.indice_alostatico(
+            serie, homeo, wellness,
+            p_ant=(request.args.get('ant_ini'), request.args.get('ant_fim'))
+                  if request.args.get('ant_ini') else None,
+            p_rec=(request.args.get('rec_ini'), request.args.get('rec_fim'))
+                  if request.args.get('rec_ini') else None)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        homeo, alos = None, None
+
     fim = serie[-1] if serie else {}
     return jsonify({
         'status': 'OK',
@@ -88,6 +101,7 @@ def api_data():
         },
         'alertas': pmc.alertas(serie, wellness),
         'ftlm': ftlm_res, 'erro_ftlm': erro_ftlm,
+        'homeostatico': homeo, 'alostatico': alos,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
     })
 
@@ -122,6 +136,14 @@ BODY = r"""
 
 <h2>CTL&gamma; — FTLM fraccionario</h2>
 <div class="sub" id="subFTLM"></div>
+<div class="controls"><label class="sel">Escala
+  <select id="escFTLM">
+    <option value="propria" selected>Eixo proprio por serie</option>
+    <option value="indice">Indice 0-100</option>
+    <option value="partilhada">Partilhada</option>
+  </select></label>
+  <span class="sub" style="margin:0">&gamma; diferentes dao ordens de grandeza diferentes</span>
+</div>
 <div class="chartbox">
   <div class="legend" id="lgFTLM"></div>
   <canvas id="chFTLM" height="280"></canvas>
@@ -129,6 +151,12 @@ BODY = r"""
 
 <h2>CTL&gamma; por modalidade</h2>
 <div class="sub">Cada modalidade tem o seu &gamma;, ajustado aos proprios dados</div>
+<div class="controls"><label class="sel">Escala
+  <select id="escCTLg">
+    <option value="indice" selected>Indice 0-100</option>
+    <option value="propria">Eixo proprio por serie</option>
+    <option value="partilhada">Partilhada</option>
+  </select></label></div>
 <div class="chartbox">
   <div class="legend" id="lgCTLg"></div>
   <canvas id="chCTLg" height="240"></canvas>
@@ -148,6 +176,20 @@ BODY = r"""
   <div class="legend" id="lgMod"></div>
   <canvas id="chMod" height="240"></canvas>
 </div>
+
+<h2>Modelo homeostatico — reserva de performance</h2>
+<div class="sub" id="subHomeo"></div>
+<div class="cards" id="homeoKpis"></div>
+<div class="chartbox">
+  <div class="legend" id="lgHomeo"></div>
+  <canvas id="chHomeo" height="240"></canvas>
+</div>
+
+<h2>Indice alostatico</h2>
+<div class="sub" id="subAlos"></div>
+<div id="alosCard"></div>
+<div class="wrap" style="max-height:320px;margin-bottom:14px"><table>
+  <thead><tr id="alosHead"></tr></thead><tbody id="alosBody"></tbody></table></div>
 
 <h2>Wellness</h2>
 <div class="sub" id="subW"></div>
@@ -238,33 +280,72 @@ function drawLinhas(canvasId,legendId,dados,series,cores,labels,opcoes){
 
  if(!vis.length){noData(g,W,H,'Todas as series desligadas');return;}
 
- // escala partilhada (TSB pode ser negativo)
- let mn=Infinity,mx=-Infinity;
- vis.forEach(s=>dados.forEach(function(d){
-  const v=d[s]; if(v==null)return;
-  if(v<mn)mn=v; if(v>mx)mx=v;}));
- if(!isFinite(mn)){noData(g,W,H);return;}
- if(mn>0)mn=0;
- if(mx===mn)mx=mn+1;
- const Y=v=>PT+h-(v-mn)/(mx-mn)*h;
+ // Modo de escala. Series com gamma diferente diferem em ordens de grandeza
+ // (gamma=0.9 chega a 13000, gamma=0.1 a 55), por isso partilhar eixo esconde
+ // a de menor amplitude.
+ //   'partilhada' — um so eixo (CTL/ATL/TSB, mesma unidade)
+ //   'propria'    — cada serie no seu eixo, rotulos para as duas primeiras
+ //   'indice'     — tudo em 0-100 face ao proprio maximo (compara formas)
+ const modo=opcoes.escala||'partilhada';
+ const lim={};
+ vis.forEach(function(s){
+  let a=Infinity,b=-Infinity;
+  dados.forEach(function(d){const v=d[s];if(v==null)return;
+   if(v<a)a=v; if(v>b)b=v;});
+  if(!isFinite(a)){a=0;b=1;}
+  if(a>0&&modo!=='indice')a=0;
+  if(b===a)b=a+1;
+  lim[s]=[a,b];});
 
- if(mn<0){                      // linha do zero, para o TSB
+ let mn=Infinity,mx=-Infinity;
+ if(modo==='partilhada'){
+  vis.forEach(function(s){mn=Math.min(mn,lim[s][0]);mx=Math.max(mx,lim[s][1]);});
+  if(!isFinite(mn)){noData(g,W,H);return;}
+  if(mn>0)mn=0; if(mx===mn)mx=mn+1;
+ } else if(modo==='indice'){ mn=0; mx=100; }
+
+ function Yde(s,v){
+  if(modo==='partilhada')return PT+h-(v-mn)/(mx-mn)*h;
+  if(modo==='indice'){const[a,b]=lim[s];return PT+h-((v-a)/(b-a)*100)/100*h;}
+  const[a,b]=lim[s]; return PT+h-(v-a)/(b-a)*h;
+ }
+
+ if(modo==='partilhada'&&mn<0){        // linha do zero, para o TSB
+  const y0=PT+h-(0-mn)/(mx-mn)*h;
   g.strokeStyle='#484f58';g.setLineDash([3,3]);g.beginPath();
-  g.moveTo(PL,Y(0));g.lineTo(PL+w,Y(0));g.stroke();g.setLineDash([]);}
+  g.moveTo(PL,y0);g.lineTo(PL+w,y0);g.stroke();g.setLineDash([]);}
 
  vis.forEach(function(s){
   g.strokeStyle=cores[s]||'#8b949e';g.lineWidth=1.8;g.beginPath();
   let st=false;
   dados.forEach(function(d,i){
    const v=d[s]; if(v==null){st=false;return;}
-   const x=X(i),y=Y(v);
+   const x=X(i),y=Yde(s,v);
    if(!st){g.moveTo(x,y);st=true;}else g.lineTo(x,y);});
   g.stroke();});
 
- g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
- for(let i=0;i<=4;i++){const v=mx-(mx-mn)*i/4;
-  g.fillText(Math.abs(v)>=100?Math.round(v):v.toFixed(1),PL-6,PT+h*i/4+3);}
- g.textAlign='center';
+ function fmtEixo(v){
+  const a=Math.abs(v);
+  if(a>=10000)return (v/1000).toFixed(0)+'k';
+  if(a>=100)return Math.round(v);
+  return v.toFixed(1);}
+
+ g.font='10px sans-serif';
+ if(modo==='partilhada'){
+  g.fillStyle='#8b949e';g.textAlign='right';
+  for(let i=0;i<=4;i++)g.fillText(fmtEixo(mx-(mx-mn)*i/4),PL-6,PT+h*i/4+3);
+ } else if(modo==='indice'){
+  g.fillStyle='#8b949e';g.textAlign='right';
+  for(let i=0;i<=4;i++)g.fillText(Math.round(100-100*i/4)+'%',PL-6,PT+h*i/4+3);
+ } else {
+  // eixo esquerdo para a 1a serie, direito para a 2a
+  vis.slice(0,2).forEach(function(s,idx){
+   const[a,b]=lim[s]; const dir=idx===1;
+   g.fillStyle=cores[s]||'#8b949e'; g.textAlign=dir?'left':'right';
+   for(let i=0;i<=4;i++)
+    g.fillText(fmtEixo(b-(b-a)*i/4),dir?PL+w+6:PL-6,PT+h*i/4+3);});
+ }
+ g.fillStyle='#8b949e';g.textAlign='center';
  const step=Math.ceil(n/8);
  dados.forEach(function(d,i){if(i%step!==0)return;
   g.fillText((d.date||'').slice(0,7),X(i),H-8);});
@@ -309,7 +390,78 @@ function estadoDe(tsb){
  return{label:'Muito carregado',cor:'#E74C3C'};
 }
 
-let OFFP={},OFFM={},OFFF={},OFFG={},OFFK={};
+let OFFP={},OFFM={},OFFF={},OFFG={},OFFK={},OFFH={};
+
+function drawHomeo(){
+ const H=D.homeostatico;
+ if(!H){const o=ctx('chHomeo',240);if(o)noData(o.g,o.W,o.H);return;}
+ drawLinhas('chHomeo','lgHomeo',janelaPMC(H.serie),
+  ['p_hat','fitness','fadiga'],
+  {p_hat:'#2ECC71',fitness:'#5DADE2',fadiga:'#E74C3C'},
+  {p_hat:'Reserva p̂(t)',fitness:'Fitness EWM(T₁)',fadiga:'Fadiga EWM(T₂)'},
+  {off:OFFH,redraw:drawHomeo,height:240,escala:'propria'});
+}
+
+function mostrarHomeo(){
+ const H=D.homeostatico;
+ if(!H){document.getElementById('subHomeo').innerHTML=
+   '<span class="err">indisponivel</span>';return;}
+ document.getElementById('subHomeo').innerHTML=
+  'p̂(t) = p₀ + K₁·EWM(carga,T₁) − K₂·EWM(carga,T₂) · '+H.nota;
+ document.getElementById('homeoKpis').innerHTML=[
+  ['K₁ (ganho fitness)',H.k1],['K₂ (ganho fadiga)',H.k2],
+  ['T₁ (τ fitness)',H.t1+'d'],['T₂ (τ fadiga)',H.t2+'d'],
+  ['R²',H.r2],['Pontos de CP',H.n_testes]
+ ].map(k=>'<div class="card"><div class="label">'+k[0]+'</div>'+
+  '<div class="value">'+k[1]+'</div></div>').join('');
+ drawHomeo();
+}
+
+function mostrarAlos(){
+ const A=D.alostatico;
+ if(!A){document.getElementById('subAlos').innerHTML=
+   '<span class="err">indisponivel</span>';return;}
+ const e=A.estado;
+ document.getElementById('subAlos').textContent=
+  A.n_dims+' de 6 dimensoes · anterior '+A.periodo_anterior.join(' a ')+
+  ' · recente '+A.periodo_recente.join(' a ');
+ const pct=Math.round((A.total+1)/2*100);
+ document.getElementById('alosCard').innerHTML=
+  '<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;'+
+  'padding:16px 20px;margin-bottom:12px">'+
+  '<div style="font-size:11px;color:#8b949e;text-transform:uppercase;'+
+  'letter-spacing:.5px;margin-bottom:6px">Adaptacao vs sobrecarga alostatica</div>'+
+  '<div style="font-size:30px;font-weight:600;color:'+e.cor+'">'+
+  (A.total>=0?'+':'')+A.total.toFixed(2)+
+  '<span style="font-size:14px;color:#8b949e"> /±1.00</span></div>'+
+  '<div style="font-size:13px;font-weight:600;color:'+e.cor+';margin:4px 0 12px">'+
+  e.label+'</div>'+
+  '<div style="display:flex;justify-content:space-between;font-size:10px;'+
+  'color:#8b949e;margin-bottom:4px"><span>SOBRECARGA</span><span>ESTAVEL</span>'+
+  '<span>ADAPTACAO</span></div>'+
+  '<div style="position:relative;height:10px;border-radius:5px;'+
+  'background:linear-gradient(to right,#e74c3c,#f39c12 45%,#27ae60)">'+
+  '<div style="position:absolute;left:'+pct+'%;top:-3px;width:16px;height:16px;'+
+  'border-radius:50%;background:'+e.cor+';border:2px solid #0e1117;'+
+  'transform:translateX(-50%)"></div></div>'+
+  '<div style="font-size:12px;color:#8b949e;margin-top:8px">'+e.desc+'</div></div>';
+
+ document.getElementById('alosHead').innerHTML=
+  ['Dimensao','Anterior','Recente','Δ %','Score']
+   .map((c,i)=>'<th class="'+(i?'num':'')+'">'+c+'</th>').join('');
+ document.getElementById('alosBody').innerHTML=A.dimensoes.map(function(d){
+  if(d.ant==null)
+   return '<tr><td>'+d.dim+'</td><td class="num" colspan="4" '+
+    'style="color:#484f58">sem dados</td></tr>';
+  const cor=d.score>=0?'#2ECC71':'#E74C3C';
+  return '<tr><td>'+d.dim+'</td>'+
+   '<td class="num">'+d.ant+' '+d.unidade+'</td>'+
+   '<td class="num">'+d.rec+' '+d.unidade+'</td>'+
+   '<td class="num" style="color:'+cor+'">'+(d.delta_pct>=0?'+':'')+
+    d.delta_pct+'%</td>'+
+   '<td class="num" style="color:'+cor+'">'+(d.score>=0?'+':'')+
+    d.score.toFixed(2)+'</td></tr>';}).join('');
+}
 function hexRgba(h,a){h=h.replace('#','');
  return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+
   parseInt(h.slice(4,6),16)+','+a+')';}
@@ -320,7 +472,8 @@ function drawFTLM(){
  drawLinhas('chFTLM','lgFTLM',s,['ctlg_perf','ctlg_rec'],
   {ctlg_perf:'#5DADE2',ctlg_rec:'#AF7AC5'},
   {ctlg_perf:'CTLγ perf',ctlg_rec:'CTLγ rec'},
-  {off:OFFF,redraw:drawFTLM,height:280,fases:true});
+  {off:OFFF,redraw:drawFTLM,height:280,fases:true,
+   escala:document.getElementById('escFTLM').value});
 }
 function drawCTLg(){
  const pm=(D.ftlm||{}).por_modalidade||{};
@@ -332,14 +485,15 @@ function drawCTLg(){
    porData[r.date]=porData[r.date]||{date:r.date};
    porData[r.date][m]=r.ctlg;});});
  drawLinhas('chCTLg','lgCTLg',janelaPMC(Object.keys(porData).sort().map(k=>porData[k])),
-  mods,D.cores,null,{off:OFFG,redraw:drawCTLg,height:240});
+  mods,D.cores,null,{off:OFFG,redraw:drawCTLg,height:240,
+   escala:document.getElementById('escCTLg').value});
 }
 function drawFMT(){
  if(!D.ftlm){return;}
  drawLinhas('chFMT','lgFMT',janelaPMC(D.ftlm.serie),['kappa','lambda1'],
   {kappa:'#E74C3C',lambda1:'#F4D03F'},
   {kappa:'κ (instabilidade)',lambda1:'λ₁ (dominancia)'},
-  {off:OFFK,redraw:drawFMT,height:220});
+  {off:OFFK,redraw:drawFMT,height:220,escala:'propria'});
 }
 function tabelaGammas(){
  const pm=(D.ftlm||{}).por_modalidade||{};
@@ -427,7 +581,7 @@ async function load(){
    'padding:9px 12px;margin-bottom:8px;border-radius:0 6px 6px 0;font-size:13px">'+
    al.texto+'</div>';}).join('');
 
- drawPMC(); drawMod(); drawFTLM();
+ drawPMC(); drawMod(); drawFTLM(); mostrarHomeo(); mostrarAlos();
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──
  const F=d.ftlm;
@@ -490,10 +644,13 @@ async function load(){
   togglesDe(c,CORC,LBLC,ATIVC,'togC',drawC); drawC();
  }
 }
+document.getElementById('escFTLM').onchange=function(){if(D&&D.ftlm)drawFTLM();};
+document.getElementById('escCTLg').onchange=function(){if(D&&D.ftlm)drawCTLg();};
 function redesenhar(){
  if(!D)return;
  drawPMC();drawMod();drawW();drawC();
- if(D.ftlm){drawFTLM();drawCTLg();drawFMT();}}
+ if(D.ftlm){drawFTLM();drawCTLg();drawFMT();}
+ if(D.homeostatico){drawHomeo();}}
 document.getElementById('janelaPMC').onchange=redesenhar;
 window.addEventListener('resize',redesenhar);
 load();

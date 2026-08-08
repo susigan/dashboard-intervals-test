@@ -59,6 +59,23 @@ canvas { width:100%; display:block; }
 .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
 @media (max-width:800px){ .grid2 { grid-template-columns:1fr; } }
 .err { color:#E74C3C; font-size:12px; }
+details.expl { background:#161b22; border:1px solid #30363d; border-radius:8px;
+  margin:0 0 14px; font-size:13px; }
+details.expl summary { cursor:pointer; padding:10px 14px; color:#5DADE2;
+  font-weight:500; list-style:none; user-select:none; }
+details.expl summary::-webkit-details-marker { display:none; }
+details.expl summary::before { content:'▸ '; color:#8b949e; }
+details.expl[open] summary::before { content:'▾ '; }
+details.expl summary:hover { color:#79c0ff; }
+.expl-corpo { padding:0 16px 14px; color:#c9d1d9; line-height:1.65; }
+.expl-corpo p { margin:0 0 10px; }
+.expl-corpo code { background:#0d1117; border:1px solid #30363d; border-radius:4px;
+  padding:1px 5px; font-size:12px; color:#79c0ff; }
+.expl-corpo .form { background:#0d1117; border:1px solid #30363d; border-radius:6px;
+  padding:10px 14px; margin:8px 0; font-size:13px; text-align:center; color:#e6e6e6; }
+.expl-corpo ul { margin:6px 0 10px; padding-left:20px; }
+.expl-corpo li { margin:4px 0; }
+.expl-corpo .nota { color:#8b949e; font-size:12px; font-style:italic; }
 .tip { position:fixed; z-index:999; pointer-events:none; display:none;
   background:#0d1117; border:1px solid #30363d; border-radius:6px;
   padding:8px 10px; font-size:12px; color:#e6e6e6; box-shadow:0 4px 14px rgba(0,0,0,.5);
@@ -331,6 +348,12 @@ async function sincronizar(){
  if(bt){ bt.onclick=sincronizar; verificarFrescura(); }
 })();
 """
+
+
+def explicacao(titulo, corpo):
+    """Bloco recolhivel com a teoria por tras de cada analise."""
+    return (f'<details class="expl"><summary>{titulo}</summary>'
+            f'<div class="expl-corpo">{corpo}</div></details>')
 
 
 def page(title, active, body, extra_js=""):

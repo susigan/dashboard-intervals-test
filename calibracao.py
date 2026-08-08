@@ -49,6 +49,28 @@ REFERENCIA = {
 P_MINIMO = 0.10              # acima disto a correlacao nao sustenta nada
 
 
+def _forca(r, n):
+    """Forca pratica da correlacao.
+
+    Com n na ordem dos milhares, p=0 nao diz nada: qualquer correlacao
+    minuscula e "significativa". O que interessa e o r2 — a fraccao da
+    variacao que fica explicada.
+    """
+    if r is None:
+        return {'r2': None, 'forca': None}
+    r2 = r * r
+    if r2 >= 0.25:
+        f = 'forte'
+    elif r2 >= 0.09:
+        f = 'moderada'
+    elif r2 >= 0.02:
+        f = 'fraca'
+    else:
+        f = 'residual'
+    return {'r2': round(r2, 4), 'forca': f,
+            'variacao_explicada_pct': round(r2 * 100, 1)}
+
+
 def _limpar(x, y):
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
@@ -93,7 +115,8 @@ def _desloca(serie, lag):
 
 
 def calibrar_tau(carga, alvo,
-                 taus=(2, 3, 4, 5, 6.5, 8, 10, 12, 14, 16, 18, 21, 25, 30, 42),
+                 taus=(2, 3, 4, 5, 6.5, 8, 10, 12, 14, 16, 18, 21, 25, 30, 42,
+                       56, 75, 100, 140, 180, 240),
                  lag=1, sinal=None):
     """tau da media exponencial que melhor explica o alvo.
 
@@ -124,8 +147,20 @@ def calibrar_tau(carga, alvo,
                 'motivo': f'nenhum tau deu correlacao com p < {P_MINIMO}'
                           + (f' e sinal {sinal:+d}' if sinal else ''),
                 'testados': testados}
-    return {'fonte': 'dados', 'valor': melhor['tau'], 'r': melhor['r'],
-            'p': melhor['p'], 'n': melhor['n'], 'testados': testados}
+    # Se o melhor ficou no extremo da grelha, nao e um optimo — e o sitio
+    # onde a procura parou. Dizer isso e essencial: caso contrario um valor
+    # de fronteira passa por resultado.
+    extremos = [taus[0], taus[-1]]
+    na_fronteira = melhor['tau'] in extremos
+    out = {'fonte': 'dados', 'valor': melhor['tau'], 'r': melhor['r'],
+           'p': melhor['p'], 'n': melhor['n'], 'testados': testados,
+           **_forca(melhor['r'], melhor['n'])}
+    if na_fronteira:
+        out['aviso'] = (f"tau={melhor['tau']} e o extremo da grelha "
+                        f"({taus[0]}-{taus[-1]}): o r ainda estava a melhorar, "
+                        "o valor verdadeiro esta fora deste intervalo")
+        out['fronteira'] = True
+    return out
 
 
 def calibrar_lag(x, y, lags=range(0, 29), sinal=None, chave_ref=None):
@@ -158,11 +193,17 @@ def calibrar_lag(x, y, lags=range(0, 29), sinal=None, chave_ref=None):
     bons = [t['lag'] for t in testados
             if t['r'] is not None and abs(t['r']) >= 0.7 * abs(melhor['r'])]
     largura = (max(bons) - min(bons)) / 2.0 if len(bons) > 1 else 3.5
-    return {'fonte': 'dados', 'valor': melhor['lag'], 'r': melhor['r'],
-            'p': melhor['p'], 'n': melhor['n'],
-            'largura': round(max(1.5, largura), 1),
-            'janela': [min(bons), max(bons)] if bons else None,
-            'testados': testados}
+    lags_l = list(lags)
+    out = {'fonte': 'dados', 'valor': melhor['lag'], 'r': melhor['r'],
+           'p': melhor['p'], 'n': melhor['n'],
+           'largura': round(max(1.5, largura), 1),
+           'janela': [min(bons), max(bons)] if bons else None,
+           'testados': testados, **_forca(melhor['r'], melhor['n'])}
+    if melhor['lag'] in (lags_l[0], lags_l[-1]):
+        out['fronteira'] = True
+        out['aviso'] = (f"lag={melhor['lag']} e o extremo do intervalo testado "
+                        f"({lags_l[0]}-{lags_l[-1]})")
+    return out
 
 
 def limiares_por_distribuicao(serie, minimo=60):
@@ -209,16 +250,45 @@ def calibrar_tudo(carga, hrv_trend=None, cp=None, kappa=None, lambda1=None):
                          {'fonte': 'referencia', 'valor': REFERENCIA['lag_super'],
                           'motivo': 'sem serie de CP'})
 
-    # Canal 4: em que horizonte kappa antecipa quedas de CP.
-    out['canal4_lag'] = (calibrar_lag(kappa, cp, range(0, 22), -1, 'tau_risco')
-                         if (kappa is not None and cp is not None) else
-                         {'fonte': 'referencia', 'valor': REFERENCIA['tau_risco'],
-                          'motivo': 'sem kappa ou sem CP'})
+    # Canal 4: em que horizonte kappa se relaciona com a CP.
+    #
+    # NAO impomos o sinal. A intuicao inicial era kappa alto -> CP a cair
+    # (risco), mas nos dados reais deste atleta a relacao e a inversa e mais
+    # forte: kappa alto prevê CP MAIS ALTA 14-21 dias depois. Faz sentido —
+    # kappa alto e uma perturbacao grande do sistema, ou seja um estimulo, e
+    # a resposta chega com atraso. Forcar o sinal negativo rejeitava um sinal
+    # real. Reportamos o que os dados dizem e deixamos a leitura seguir.
+    if kappa is not None and cp is not None:
+        c4 = calibrar_lag(kappa, cp, range(0, 29), None, 'tau_risco')
+        if c4.get('fonte') == 'dados':
+            c4['interpretacao'] = (
+                'kappa alto antecede CP mais alta — assinatura de estimulo '
+                'com resposta atrasada' if (c4.get('r') or 0) > 0 else
+                'kappa alto antecede CP mais baixa — assinatura de risco')
+        out['canal4_lag'] = c4
+    else:
+        out['canal4_lag'] = {'fonte': 'referencia',
+                             'valor': REFERENCIA['tau_risco'],
+                             'motivo': 'sem kappa ou sem CP'}
 
     out['limiares_lambda1'] = (limiares_por_distribuicao(lambda1)
                                if lambda1 is not None else
                                {'fonte': 'referencia', 'alto': 0.55,
                                 'baixo': 0.35, 'motivo': 'sem lambda1'})
+
+    # avisos que merecem ser vistos, nao enterrados no JSON
+    avisos = []
+    for k, v in out.items():
+        if not isinstance(v, dict):
+            continue
+        if v.get('aviso'):
+            avisos.append(f"{k}: {v['aviso']}")
+        if v.get('forca') in ('residual', 'fraca') and v.get('fonte') == 'dados':
+            avisos.append(
+                f"{k}: r={v.get('r')} explica so {v.get('variacao_explicada_pct')}% "
+                f"da variacao — estatisticamente significativo por causa do n "
+                f"({v.get('n')}), mas fraco na pratica")
+    out['avisos'] = avisos
 
     n_dados = sum(1 for k, v in out.items()
                   if isinstance(v, dict) and v.get('fonte') == 'dados')

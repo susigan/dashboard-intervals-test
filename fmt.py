@@ -23,6 +23,24 @@ import numpy as np
 # Ordem fixa das dimensoes, como na Figura 1 do paper
 DIMS = ['Load', 'HRV', "W'", 'Sleep', 'WEED']
 
+# O QUE E DERIVADO DOS TEUS DADOS E O QUE E FIXO
+#
+# Derivado (individual):
+#   - normalizacao de cada dimensao pela sua propria media e desvio
+#   - a matriz de covariacao inteira, e portanto kappa e os eigenvalues
+#   - os limiares focal/multissistemico (percentis 70/30 do teu historico)
+#   - a modulacao dos canais pela variancia real de cada dimensao
+#
+# Fixo, vindo do paper (nao dos teus dados):
+#   - janela de 28 dias (L=28, §03)
+#   - tau=6.5 no canal 1, calibrado para dar os 68% em d-1..d-5 que o §08 reporta
+#   - centro em d-17 e largura 3.5 no canal 3, da janela d-14..d-21 do §08
+#   - decaimentos de 10 e 8 dias nos canais 2 e 4
+#
+# Estes ultimos sao constantes de forma, nao valores fisiologicos. Se quiseres
+# que saiam dos teus dados, o caminho e treinar o modelo — o que exige alvos
+# rotulados que nao temos.
+
 CANAIS = {
     'load': {
         'nome': 'Canal 1 · Acumulacao de carga',
@@ -213,6 +231,26 @@ def atencao(tensores, kappa, eig, nomes, dia, canal='load', janela=28):
     return {'lag': lag.tolist(), 'idx': idx.tolist(), 'pesos': pesos.tolist()}
 
 
+def limiares_lambda1(eig, minimo=60):
+    """Limiares focal/multissistemico a partir do proprio historico.
+
+    Em vez de numeros fixos, usamos os percentis 70 e 30 da distribuicao de
+    lambda1 deste atleta: "focal" passa a significar "mais concentrado do que
+    o teu normal", que e o que interessa. Se nao houver historico suficiente,
+    cai para 0.55/0.35 — e ai diz-se que sao valores de referencia.
+    """
+    serie = []
+    for linha in eig:
+        v = linha[np.isfinite(linha)]
+        v = v[v > 0]
+        if len(v) >= 2:
+            serie.append(float(v[0] / v.sum()))
+    if len(serie) < minimo:
+        return 0.55, 0.35, 'referencia', len(serie)
+    return (float(np.quantile(serie, 0.70)),
+            float(np.quantile(serie, 0.30)), 'historico', len(serie))
+
+
 def resumo_dia(tensores, kappa, eig, nomes, dia):
     """Matriz, kappa, valores proprios e leitura focal/multissistemica."""
     if dia is None or dia >= len(kappa) or not np.isfinite(kappa[dia]):
@@ -223,17 +261,21 @@ def resumo_dia(tensores, kappa, eig, nomes, dia):
     pos = ev[ev > 0]
     l1 = float(pos[0] / pos.sum()) if len(pos) else None
 
+    alto, baixo, fonte_lim, n_hist = limiares_lambda1(eig)
+
     if l1 is None:
         leitura = None
-    elif l1 > 0.55:
+    elif l1 > alto:
         j = int(np.nanargmax(np.diag(Ft)))
         leitura = {'tipo': 'focal', 'cor': '#E67E22',
                    'texto': f'Stress focal — {l1*100:.0f}% da variabilidade '
-                            f'vem de uma so direccao, dominada por {nomes[j]}.'}
-    elif l1 < 0.35:
+                            f'vem de uma so direccao, dominada por {nomes[j]}. '
+                            f'Acima do teu p70 ({alto*100:.0f}%).'}
+    elif l1 < baixo:
         leitura = {'tipo': 'multissistemico', 'cor': '#5DADE2',
                    'texto': 'Stress multissistemico — os valores proprios estao '
-                            'equilibrados; varios sistemas movem-se juntos.'}
+                            'equilibrados; varios sistemas movem-se juntos. '
+                            f'Abaixo do teu p30 ({baixo*100:.0f}%).'}
     else:
         leitura = {'tipo': 'intermedio', 'cor': '#8b949e',
                    'texto': 'Distribuicao intermedia entre focal e multissistemica.'}
@@ -246,4 +288,6 @@ def resumo_dia(tensores, kappa, eig, nomes, dia):
         'eigen': [round(float(v), 4) for v in ev],
         'lambda1_frac': round(l1, 4) if l1 is not None else None,
         'leitura': leitura,
+        'limiares': {'focal_acima': round(alto, 4), 'multi_abaixo': round(baixo, 4),
+                     'fonte': fonte_lim, 'n_historico': n_hist},
     }

@@ -300,8 +300,10 @@ def upsert_streams(activity_id, meta, streams):
     for key, data in streams.items():
         m = by_key.get(key, {})
         blob = zlib.compress(json.dumps(data).encode(), 6)
+        custom = m.get('custom')
         params.append((activity_id, key, m.get('type'), m.get('sensor_name'),
-                       bool(m.get('custom')), m.get('points'), blob, now))
+                       bool(custom) if DRIVER == 'postgres' else int(bool(custom)),
+                       m.get('points'), blob, now))
     _exec("""INSERT INTO streams
              (activity_id, skey, stype, sensor_name, is_custom, points, data, updated_at)
              VALUES (?,?,?,?,?,?,?,?)
@@ -416,11 +418,18 @@ def actividades_sem_streams(limite=100, tipos=None, desde=None, com_potencia=Tru
 
 
 def streams_stats():
-    """Cobertura dos streams: quantas sessoes tem, quantas faltam, tamanho."""
+    """Cobertura dos streams: quantas sessoes tem, quantas faltam, tamanho.
+
+    Cada consulta e independente: se uma falhar, as outras ainda respondem —
+    isto e diagnostico, nao deve rebentar por causa de um detalhe de dialecto.
+    """
     if not ENABLED:
         return {'enabled': False}
-    tot = _exec("""SELECT COUNT(DISTINCT activity_id), COUNT(*),
-                          COALESCE(SUM(points), 0), COALESCE(SUM(LENGTH(data)), 0)
+    # LENGTH() sobre BYTEA no Postgres conta caracteres, nao bytes — e em
+    # algumas versoes rebenta. OCTET_LENGTH funciona nos dois dialectos.
+    fn = 'OCTET_LENGTH' if DRIVER == 'postgres' else 'LENGTH'
+    tot = _exec(f"""SELECT COUNT(DISTINCT activity_id), COUNT(*),
+                          COALESCE(SUM(points), 0), COALESCE(SUM({fn}(data)), 0)
                    FROM streams""", fetch='one') or (0, 0, 0, 0)
     falta = _exec("""SELECT COUNT(*) FROM activities a
                      WHERE NOT EXISTS (SELECT 1 FROM streams s
@@ -433,7 +442,7 @@ def streams_stats():
     tipos_stream = _exec("""SELECT stype, COUNT(DISTINCT activity_id)
                             FROM streams GROUP BY stype ORDER BY 2 DESC""",
                          fetch='all') or []
-    mb = (tot[3] or 0) / (1024 * 1024)
+    mb = (tot[3] or 0) / (1024 * 1024) if tot else 0.0
     return {
         'enabled': True,
         'actividades_com_streams': tot[0],

@@ -750,6 +750,38 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
     if tensores is None:
         return None
 
+    # ── calibracao nos dados deste atleta ────────────────────────────────
+    import calibracao as _cal
+    cp_serie = _serie_por_dia(sessoes, datas, 'cp', 'mean')
+    # Calibrar contra o LnRMSSD directamente, nao contra a tendencia: a
+    # tendencia e ja uma transformacao (nivel + declive em z-score) e destroi
+    # a relacao directa entre carga acumulada e nivel de HRV. Testado: com
+    # tau real de 14 dias, calibrar pela tendencia recupera 3; pelo LnRMSSD
+    # recupera 14.
+    hrv_para_calibrar = dims.get('HRV')
+    if hrv_para_calibrar is not None and np.isfinite(hrv_para_calibrar).sum() < 30:
+        hrv_para_calibrar = None
+    l1_hist = []
+    for linha in eig:
+        v = linha[np.isfinite(linha)]
+        v = v[v > 0]
+        l1_hist.append(float(v[0] / v.sum()) if len(v) >= 2 else None)
+
+    cal = _cal.calibrar_tudo(
+        carga=dims['Load'],
+        hrv_trend=hrv_para_calibrar,
+        cp=cp_serie if np.isfinite(cp_serie).sum() >= 30 else None,
+        kappa=kappa,
+        lambda1=l1_hist)
+
+    params = {
+        'tau_carga': cal['canal1_tau'].get('valor'),
+        'lag_hrv': cal['canal2_lag'].get('valor'),
+        'lag_super': cal['canal3_lag'].get('valor'),
+        'largura_super': cal['canal3_lag'].get('largura', 3.5),
+        'tau_risco': max(2.0, float(cal['canal4_lag'].get('valor') or 8)),
+    }
+
     ultimo = None
     for t in range(n - 1, -1, -1):
         if np.isfinite(kappa[t]):
@@ -759,19 +791,29 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
         return {'erro': 'sem janelas completas de 28 dias',
                 'dimensoes': nomes}
 
+    fonte_por_canal = {'load': 'canal1_tau', 'hrv': 'canal2_lag',
+                       'super': 'canal3_lag', 'risco': 'canal4_lag'}
     canais = {}
     for c in _fmt.CANAIS:
-        a = _fmt.atencao(tensores, kappa, eig, nomes, ultimo, c, janela)
+        a = _fmt.atencao(tensores, kappa, eig, nomes, ultimo, c, janela, params)
         if a:
+            info = cal.get(fonte_por_canal.get(c, ''), {})
             canais[c] = {**a, 'datas': [datas[i] for i in a['idx']],
-                         **_fmt.CANAIS[c]}
+                         **_fmt.CANAIS[c],
+                         'calibracao': {k: info.get(k) for k in
+                                        ('fonte', 'valor', 'r', 'p', 'n',
+                                         'motivo', 'janela')}
+                         if info else None}
 
     return {
         'dimensoes': nomes,
         'janela': janela,
         'dia': datas[ultimo],
         'dia_idx': ultimo,
-        'resumo': _fmt.resumo_dia(tensores, kappa, eig, nomes, ultimo),
+        'resumo': _fmt.resumo_dia(tensores, kappa, eig, nomes, ultimo,
+                                  cal.get('limiares_lambda1')),
+        'calibracao': cal,
+        'params_usados': params,
         'canais': canais,
         'serie': [{'date': datas[i],
                    'kappa': (round(float(kappa[i]), 4)
@@ -781,7 +823,9 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
                                else None)}
                   for i in range(n)],
         'nota_atencao': ('Os canais do paper emergem de um Transformer treinado '
-                         'em 30 atletas. Estes sao kernels explicitos que '
-                         'reproduzem o comportamento descrito para cada canal — '
-                         'nao sao pesos aprendidos.'),
+                         'em 30 atletas. Aqui sao kernels explicitos cujos '
+                         'parametros sao estimados por correlacao cruzada nas '
+                         'tuas series — ve a coluna "fonte" de cada canal. '
+                         'Onde diz "referencia", o valor vem do paper e '
+                         'descreve outros atletas, nao ti.'),
     }

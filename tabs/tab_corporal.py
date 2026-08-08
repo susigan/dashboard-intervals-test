@@ -5,13 +5,12 @@ from flask import jsonify, request
 import corporal
 import sheets_client as sheets
 from tabs.base import page
-from tabs.tab_pmc import _sheets
 
 SLUG = 'corporal'
 
 
 def api_data():
-    wellness, corp, erros = _sheets()
+    wellness, corp, erros = sheets.carregar()
     linhas = corporal.preparar(corp or [], wellness or [])
 
     if not linhas:

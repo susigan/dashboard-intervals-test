@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 
 import db
 from config import ATHLETE_ID, ANOS_HISTORICO
-from api_client import (icu_get, norm_tipo, num, kj_da_atividade,
-                        parse_streams, athlete_id_real)
+from api_client import (icu_get, icu_get_many, norm_tipo, num,
+                        kj_da_atividade, parse_streams, athlete_id_real)
 
 
 def _ts(v):
@@ -208,3 +208,42 @@ def sync_streams(activity_id):
     if streams:
         db.upsert_streams(activity_id, meta, streams)
     return streams, meta
+
+
+def sync_streams_bloco(limite=60, tipos=None, desde=None):
+    """Carrega streams de varias sessoes de uma vez.
+
+    Um pedido por sessao — por isso vai em blocos. Com limite=60 podes correr
+    varias vezes seguidas sem chegar perto dos 2500/15min da Intervals.icu.
+    Devolve quantas faltam, para saberes se precisas de repetir.
+    """
+    if not db.ENABLED:
+        return {'ok': False, 'erro': 'DATABASE_URL nao configurada'}
+
+    t0 = time.time()
+    pendentes = db.actividades_sem_streams(limite, tipos, desde)
+    if not pendentes:
+        return {'ok': True, 'nada_a_fazer': True, 'streams': db.streams_stats()}
+
+    pedidos = {a['id']: (f"/activity/{a['id']}/streams",
+                         {"includeDefaults": "true"}) for a in pendentes}
+    res = icu_get_many(pedidos, max_workers=4)
+
+    ok, vazias, erros = 0, 0, 0
+    for aid, (sdata, err) in res.items():
+        if err:
+            erros += 1
+            continue
+        streams, meta, _w = parse_streams(sdata)
+        if streams:
+            db.upsert_streams(aid, meta, streams)
+            ok += 1
+        else:
+            vazias += 1
+
+    st = db.streams_stats()
+    return {'ok': True, 'pedidas': len(pendentes), 'guardadas': ok,
+            'sem_streams': vazias, 'erros': erros,
+            'segundos': round(time.time() - t0, 2),
+            'faltam': st.get('por_carregar'),
+            'streams': st}

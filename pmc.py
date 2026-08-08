@@ -293,6 +293,18 @@ def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
 
     # ── fases: overall e global ponderada pelo CTLgamma de cada modalidade ─
     sem_treino = _dias_sem_treino(cargas)
+    # Duas nocoes de "global", propositadamente diferentes:
+    #
+    #  agregada  — soma a carga de TODAS as modalidades num unico sinal e
+    #              deteta a fase sobre ele. E o estado do corpo, que nao
+    #              distingue de onde veio a carga.
+    #
+    #  ponderada — deteta a fase de cada modalidade separadamente e escolhe a
+    #              moda pesada pelo CTLgamma de cada uma. E o estado do
+    #              treino, dominado pela modalidade que mais pesa.
+    #
+    # Divergirem e informacao: significa que o corpo esta num estado que
+    # nenhuma modalidade isolada explica.
     f_overall = ftlm.detect_phases(ctlg_perf, hrv_tendencia, weed_z, sem_treino)
     ctlg_actual_mod = {m: float(s[-1]) for m, s in ctlg_mod.items()}
     fase_global, contrib = ftlm.fase_global_ponderada(fases_mod, ctlg_actual_mod)
@@ -341,12 +353,17 @@ def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
         'por_modalidade': por_mod,
         'fase_actual': {
             'codigo': fase_actual,
+            'base': 'carga agregada de todas as modalidades',
+            'modalidades_incluidas': sorted(set(
+                s.get('type') for s in sessoes if s.get('type'))),
             'dias': int(f_overall['dias_na_fase'][-1]) + 1,
             'dctlg': _f(f_overall['dctlg'][-1]),
             'hrv_z': _f(f_overall['hrv_z'][-1]),
             **ftlm.FASES[fase_actual],
         },
         'fase_global': ({'codigo': fase_global, 'contribuicoes': contrib,
+                         'base': 'moda das fases por modalidade, pesada pelo CTLgamma',
+                         'fases_por_modalidade': fases_mod,
                          **ftlm.FASES[fase_global]} if fase_global else None),
         'fmt': {
             'dimensoes': nomes_dim,

@@ -164,6 +164,16 @@ def api_sync_full():
     return jsonify(res)
 
 
+@app.route('/api/calibracao')
+def api_calibracao():
+    """Parametros calibrados nos dados do atleta, com a evidencia.
+
+    E o mesmo calculo que alimenta o FMT — aqui exposto sozinho, para se
+    poder ver e auditar os valores sem abrir a tab.
+    """
+    return _seguro(tab_pmc.api_calibracao_dados)
+
+
 @app.route('/api/sync/curvas')
 def api_sync_curvas():
     """Curvas de potencia por sessao — base dos recordes.
@@ -332,6 +342,21 @@ def api_zonas():
     })
 
 
+def _seguro(fn, *args, **kwargs):
+    """Corre fn e devolve o erro em JSON em vez de 500.
+
+    Um endpoint de diagnostico que rebenta com 500 nao diz nada; a mensagem
+    de erro e precisamente a informacao util.
+    """
+    try:
+        return jsonify(fn(*args, **kwargs))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'ok': False, 'erro': f'{type(e).__name__}: {e}',
+                        'traceback': traceback.format_exc()[-1200:]}), 500
+
+
 @app.route('/api/sync/streams')
 def api_sync_streams():
     """Carrega streams em bloco.
@@ -342,16 +367,16 @@ def api_sync_streams():
     Repetir ate 'faltam' chegar a zero.
     """
     tipos = request.args.get('tipos')
-    return jsonify(sync.sync_streams_bloco(
-        limite=request.args.get('limite', default=60, type=int),
-        tipos=[t.strip() for t in tipos.split(',')] if tipos else None,
-        desde=request.args.get('desde')))
+    return _seguro(sync.sync_streams_bloco,
+                   limite=request.args.get('limite', default=60, type=int),
+                   tipos=[t.strip() for t in tipos.split(',')] if tipos else None,
+                   desde=request.args.get('desde'))
 
 
 @app.route('/api/db/streams')
 def api_db_streams():
     """Cobertura dos streams guardados."""
-    return jsonify(db.streams_stats())
+    return _seguro(db.streams_stats)
 
 
 @app.route('/health')

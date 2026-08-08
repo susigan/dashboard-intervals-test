@@ -425,6 +425,8 @@ def modelo_homeostatico(serie_classica, sessoes, p0=None):
     fit = ftlm.ewm(cargas, melhor['t1'])
     fad = ftlm.ewm(cargas, melhor['t2'])
     p_hat = p0 + melhor['k1'] * fit - melhor['k2'] * fad
+    suave = _savgol(p_hat, 21, 3)
+    sd = _banda_sd(p_hat, 14)
 
     return {
         'ajustado': ajustado,
@@ -437,6 +439,9 @@ def modelo_homeostatico(serie_classica, sessoes, p0=None):
                             melhor['r2']),
         'serie': [{'date': datas[i],
                    'p_hat': round(float(p_hat[i]), 1),
+                   'p_hat_suave': round(float(suave[i]), 1),
+                   'banda_sup': round(float(suave[i] + sd[i]), 1),
+                   'banda_inf': round(float(suave[i] - sd[i]), 1),
                    'fitness': round(float(fit[i]), 1),
                    'fadiga': round(float(fad[i]), 1)} for i in range(n)],
     }
@@ -452,6 +457,49 @@ def _nota_homeo(ajustado, n_testes, tentativas, rejeitados, r2):
         return ('nenhuma combinacao deu K₁ e K₂ positivos: a CP nao segue o '
                 'padrao fitness-menos-fadiga neste periodo — a usar tau 42/7')
     return 'sem ajuste com R² positivo — a usar tau 42/7 do PMC classico'
+
+
+def _savgol(y, janela=21, grau=3):
+    """Savitzky-Golay: ajusta um polinomio local por minimos quadrados.
+
+    Ao contrario da media movel, preserva a amplitude dos picos — e por isso
+    que o dashboard o usa para a reserva de performance.
+    """
+    import numpy as np
+    y = np.asarray(y, dtype=np.float64)
+    n = len(y)
+    if n < grau + 2:
+        return y.copy()
+    j = min(janela, n if n % 2 == 1 else n - 1)
+    if j % 2 == 0:
+        j -= 1
+    j = max(j, grau + 2 if (grau + 2) % 2 == 1 else grau + 3)
+    if j > n:
+        return y.copy()
+    meio = j // 2
+
+    # coeficientes do filtro: linha central da pseudo-inversa de Vandermonde
+    x = np.arange(-meio, meio + 1, dtype=np.float64)
+    A = np.vander(x, grau + 1, increasing=True)
+    coef = np.linalg.pinv(A)[0]
+
+    ext = np.concatenate([np.full(meio, y[0]), y, np.full(meio, y[-1])])
+    return np.array([float(np.dot(coef, ext[i:i + j])) for i in range(n)])
+
+
+def _banda_sd(y, janela=14):
+    """Desvio padrao movel centrado, para a banda +/-1 SD."""
+    import numpy as np
+    y = np.asarray(y, dtype=np.float64)
+    n = len(y)
+    out = np.zeros(n)
+    meio = janela // 2
+    for i in range(n):
+        seg = y[max(0, i - meio):min(n, i + meio + 1)]
+        seg = seg[np.isfinite(seg)]
+        if len(seg) >= 3:
+            out[i] = float(seg.std())
+    return out
 
 
 def _media_periodo(linhas, campo, ini, fim):

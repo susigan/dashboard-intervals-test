@@ -76,8 +76,9 @@ BODY = r"""
     </select></label>
   <label class="sel">Ultimos
     <select id="janela">
-      <option value="12">12</option><option value="26">26</option>
-      <option value="52" selected>52</option><option value="0">Tudo</option>
+      <option value="12">12</option><option value="13" selected>13</option>
+      <option value="26">26</option>
+      <option value="52">52</option><option value="0">Tudo</option>
     </select></label>
 </div>
 <div class="sub" id="mapping" style="margin-bottom:16px"></div>

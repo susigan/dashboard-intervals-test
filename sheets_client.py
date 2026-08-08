@@ -287,3 +287,34 @@ def diagnostico():
                      'colunas_no_sheet': cab,
                      'reconhecidas': reconhecidas, 'em_falta': em_falta}
     return out
+
+
+# ── cache partilhada ──────────────────────────────────────────────────────
+# Os sheets mudam uma vez por dia; ler a cada pedido seria desperdicio.
+# Vive aqui, e nao numa tab, para que qualquer tab a possa usar sem
+# depender das outras.
+
+_cache = {'wellness': None, 'corporal': None, 'time': None}
+CACHE_TTL = int(os.getenv("SHEETS_CACHE_TTL", "1800"))   # 30 min
+
+
+def carregar(force=False):
+    """Devolve (wellness, corporal, erros). Erros e None se correu tudo bem."""
+    agora = datetime.now()
+    if (not force and _cache['time']
+            and (agora - _cache['time']).total_seconds() < CACHE_TTL):
+        return _cache['wellness'], _cache['corporal'], None
+
+    w, e1 = carregar_wellness()
+    c, e2 = carregar_corporal()
+    _cache.update({'wellness': w, 'corporal': c, 'time': agora})
+    erros = {k: v for k, v in (('wellness', e1), ('corporal', e2)) if v}
+    return w, c, (erros or None)
+
+
+def cache_info():
+    return {'em_cache': _cache['time'] is not None,
+            'lido_em': _cache['time'].isoformat() if _cache['time'] else None,
+            'wellness': len(_cache['wellness'] or []),
+            'corporal': len(_cache['corporal'] or []),
+            'ttl_segundos': CACHE_TTL}

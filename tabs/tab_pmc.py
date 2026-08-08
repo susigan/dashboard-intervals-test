@@ -761,6 +761,22 @@ function drawHomeo(){
    return html;});});
 }
 
+const MOTIVOS={
+ ok:'ajustado',
+ poucos_pontos_cp:'poucos pontos de CP',
+ k_negativo:'K&#8322; sairia negativo',
+ r2_nao_positivo:'R&sup2; nao positivo',
+ sem_tentativas:'sem tentativas'};
+function motivoHomeo(v){
+ if(v.ajustado)return 'ajustado';
+ let t=MOTIVOS[v.motivo]||'defeito 42/7';
+ if(v.motivo==='poucos_pontos_cp')t+=' ('+v.n_testes+'/20)';
+ if(v.motivo==='k_negativo'&&v.melhor_rejeitado)
+  t+=' — o melhor daria K&#8321;='+v.melhor_rejeitado.k1+
+     ' K&#8322;='+v.melhor_rejeitado.k2+' (R&sup2; '+v.melhor_rejeitado.r2+')';
+ return t;
+}
+
 function tabelaHomeo(){
  const HM=D.homeostatico_mod||{},H=D.homeostatico;
  document.getElementById('hmHead').innerHTML=
@@ -773,8 +789,8 @@ function tabelaHomeo(){
    '<td class="num">'+v.k1+'</td><td class="num">'+v.k2+'</td>'+
    '<td class="num">'+v.t1+'d</td><td class="num">'+v.t2+'d</td>'+
    '<td class="num">'+v.r2+'</td><td class="num">'+ult+'</td>'+
-   '<td style="font-size:12px;color:'+(v.ajustado?'#2ECC71':'#8b949e')+'">'+
-   (v.ajustado?'ajustado':'defeito 42/7')+'</td></tr>';}
+   '<td style="font-size:12px;color:'+(v.ajustado?'#2ECC71':'#E67E22')+'" '+
+   'title="'+(v.nota||'')+'">'+motivoHomeo(v)+'</td></tr>';}
  const l=[];
  if(H)l.push(linha('Global',H,'#e6e6e6'));
  Object.keys(HM).forEach(m=>l.push(linha(m,HM[m],(D.cores||{})[m]||'#e6e6e6')));
@@ -806,9 +822,12 @@ function mostrarAlos(){
  if(!A){document.getElementById('subAlos').innerHTML=
    '<span class="err">indisponivel</span>';return;}
  const e=A.estado;
- document.getElementById('subAlos').textContent=
+ document.getElementById('subAlos').innerHTML=
   A.n_dims+' de 6 dimensoes · anterior '+A.periodo_anterior.join(' a ')+
-  ' · recente '+A.periodo_recente.join(' a ');
+  ' · recente '+A.periodo_recente.join(' a ')+
+  '<br><span style="font-size:12px">'+A.formula+
+  ' · scores: ['+(A.scores||[]).join(', ')+'] → media '+A.total+
+  '</span>';
  const pct=Math.round((A.total+1)/2*100);
  document.getElementById('alosCard').innerHTML=
   '<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;'+
@@ -831,7 +850,7 @@ function mostrarAlos(){
   '<div style="font-size:12px;color:#8b949e;margin-top:8px">'+e.desc+'</div></div>';
 
  document.getElementById('alosHead').innerHTML=
-  ['Dimensao','Anterior','Recente','Δ %','Score']
+  ['Dimensao','Anterior (n dias)','Recente (n dias)','Δ %','Score']
    .map((c,i)=>'<th class="'+(i?'num':'')+'">'+c+'</th>').join('');
  document.getElementById('alosBody').innerHTML=A.dimensoes.map(function(d){
   if(d.ant==null)
@@ -839,12 +858,16 @@ function mostrarAlos(){
     'style="color:#484f58">sem dados</td></tr>';
   const cor=d.score>=0?'#2ECC71':'#E74C3C';
   return '<tr><td>'+d.dim+'</td>'+
-   '<td class="num">'+d.ant+' '+d.unidade+'</td>'+
-   '<td class="num">'+d.rec+' '+d.unidade+'</td>'+
+   '<td class="num">'+d.ant+' '+d.unidade+
+    '<span style="color:#8b949e;font-size:11px"> n='+d.n_ant+'</span></td>'+
+   '<td class="num">'+d.rec+' '+d.unidade+
+    '<span style="color:#8b949e;font-size:11px"> n='+d.n_rec+'</span></td>'+
    '<td class="num" style="color:'+cor+'">'+(d.delta_pct>=0?'+':'')+
-    d.delta_pct+'%</td>'+
+    d.delta_pct.toFixed(1)+'%'+(d.saturado?
+    ' <span style="color:#E67E22" title="acima de 50%: o score satura em ±1">▲</span>':'')+
+    '</td>'+
    '<td class="num" style="color:'+cor+'">'+(d.score>=0?'+':'')+
-    d.score.toFixed(2)+'</td></tr>';}).join('');
+    d.score.toFixed(3)+'</td></tr>';}).join('');
 }
 function hexRgba(h,a){h=h.replace('#','');
  return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+

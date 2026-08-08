@@ -369,6 +369,10 @@ __EXPL_fases__
   <canvas id="chAtencao" height="200"></canvas>
 </div>
 <div class="sub" id="notaAtencao" style="font-style:italic"></div>
+<h3>Calibracao dos parametros</h3>
+<div class="sub" id="notaCal"></div>
+<div class="wrap" style="max-height:260px;margin-bottom:14px"><table>
+  <thead><tr id="calHead"></tr></thead><tbody id="calBody"></tbody></table></div>
 
 <h2>Curvatura &kappa; ao longo do tempo</h2>
 __EXPL_fmt__
@@ -1090,6 +1094,59 @@ function drawAtencao(){
    '</div>'+linhaTip(A.cor,'Peso',(A.pesos[i]*100).toFixed(1)+'%');});
 }
 
+function tabelaCalibracao(){
+ const F=D.fmt, C=(F||{}).calibracao;
+ if(!C){document.getElementById('calBody').innerHTML=
+   '<tr><td class="loading">sem calibracao</td></tr>';return;}
+ document.getElementById('calHead').innerHTML=
+  ['Parametro','Valor','Fonte','r','p','n','Pergunta que responde']
+   .map((c,i)=>'<th class="'+(i>0&&i<6?'num':'')+'">'+c+'</th>').join('');
+
+ const linhas=[
+  ['canal1_tau','τ do canal 1 (carga)','dias',
+   'Ao fim de quantos dias a carga deixa de pesar no teu HRV?'],
+  ['canal2_lag','lag do canal 2 (HRV)','dias',
+   'Quantos dias depois da carga o teu HRV cai mais?'],
+  ['canal3_lag','lag do canal 3 (supercomp.)','dias',
+   'Quantos dias depois de um bloco a tua CP sobe mais?'],
+  ['canal4_lag','τ do canal 4 (risco)','dias',
+   'Em que horizonte o κ antecipa quedas de CP?'],
+ ];
+ let html=linhas.map(function(l){
+  const v=C[l[0]]||{};
+  const dados=v.fonte==='dados';
+  const cor=dados?'#2ECC71':'#E67E22';
+  return '<tr><td>'+l[1]+'</td>'+
+   '<td class="num">'+(v.valor!=null?v.valor+' '+l[2]:'—')+'</td>'+
+   '<td class="num" style="color:'+cor+'" title="'+(v.motivo||'')+'">'+
+    (dados?'teus dados':'referencia')+'</td>'+
+   '<td class="num">'+(v.r!=null?v.r:'—')+'</td>'+
+   '<td class="num">'+(v.p!=null?v.p:'—')+'</td>'+
+   '<td class="num">'+(v.n!=null?v.n:'—')+'</td>'+
+   '<td style="font-size:12px;color:#8b949e">'+
+    (dados?l[3]:(v.motivo||l[3]))+'</td></tr>';}).join('');
+
+ const L=C.limiares_lambda1||{};
+ const dl=L.fonte==='dados';
+ html+='<tr><td>Limiares λ₁ (focal / multi)</td>'+
+  '<td class="num">'+(L.alto!=null?(L.alto*100).toFixed(0)+'% / '+
+   (L.baixo*100).toFixed(0)+'%':'—')+'</td>'+
+  '<td class="num" style="color:'+(dl?'#2ECC71':'#E67E22')+'">'+
+   (dl?'teus dados':'referencia')+'</td>'+
+  '<td class="num">—</td><td class="num">—</td>'+
+  '<td class="num">'+(L.n||'—')+'</td>'+
+  '<td style="font-size:12px;color:#8b949e">'+
+   (dl?'media ±1 desvio do teu λ₁ (media '+L.media+', desvio '+L.desvio+
+       '; p70/p30 seriam '+L.p70+'/'+L.p30+')'
+     :(L.motivo||''))+'</td></tr>';
+ document.getElementById('calBody').innerHTML=html;
+
+ const R=C.resumo||{};
+ const el=document.getElementById('notaCal');
+ if(el)el.innerHTML=R.derivados_dos_dados+' de '+R.total+
+  ' parametros vem dos teus dados. '+R.nota;
+}
+
 function mostrarFMT5(){
  const F=D.fmt;
  const sub=document.getElementById('subFMT5');
@@ -1116,6 +1173,7 @@ function mostrarFMT5(){
   sel.innerHTML=Object.keys(F.canais).map(k=>
    '<option value="'+k+'">'+F.canais[k].nome+'</option>').join('');
  document.getElementById('notaAtencao').textContent=F.nota_atencao||'';
+ tabelaCalibracao();
  drawMatriz();drawEigen();drawAtencao();
 }
 

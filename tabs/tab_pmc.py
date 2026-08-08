@@ -84,8 +84,17 @@ def api_data():
         traceback.print_exc()
         fmt_res = {'erro': f'{type(e).__name__}: {e}'}
 
+    # os parametros calibrados do FMT alimentam tambem o homeostatico
+    par = (fmt_res or {}).get('params_usados') or {}
+    cal_fmt = (fmt_res or {}).get('calibracao') or {}
+    tau_ok = (cal_fmt.get('canal1_tau') or {}).get('fonte') == 'dados'
+    lag_ok = (cal_fmt.get('canal2_lag') or {}).get('fonte') == 'dados'
+
     try:
-        homeo = pmc.modelo_homeostatico(serie, sessoes)
+        homeo = pmc.modelo_homeostatico(
+            serie, sessoes,
+            tau_sugerido=par.get('tau_carga') if tau_ok else None,
+            lag_hrv_sugerido=par.get('lag_hrv') if lag_ok else None)
         homeo_mod = pmc.homeostatico_por_modalidade(serie, sessoes, CICLICOS)
         alos = pmc.indice_alostatico(
             serie, homeo, wellness,
@@ -126,6 +135,69 @@ def api_data():
         'alostatico': alos,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
     })
+
+
+def api_calibracao_dados():
+    """Calibracao isolada, para inspeccao e exportacao.
+
+    Corre o mesmo calculo do FMT mas devolve so os parametros e a evidencia.
+    Nao e preciso exportar CSV nenhum: as series ja estao na base de dados.
+    """
+    acts = fetch_activities()
+    if not acts:
+        return {'erro': 'sem actividades'}
+
+    sessoes = []
+    for a in acts:
+        d = (a.get('start_date_local') or '')[:10]
+        if len(d) != 10:
+            continue
+        sessoes.append({
+            'id': a.get('id'), 'date': d, 'type': norm_tipo(a.get('type')),
+            'tl': num(a.get('icu_training_load')),
+            'cp': (num(a.get('icu_pm_cp')) or num(a.get('icu_rolling_ftp'))
+                   or num(a.get('icu_pm_ftp')) or None),
+            'w_prime': num(a.get('icu_pm_w_prime')) or None,
+        })
+
+    cp_curva = {}
+    try:
+        for r in db.cp_por_sessao():
+            if r['r2'] >= 0.80:
+                cp_curva[r['activity_id']] = r
+    except Exception:
+        pass
+    for s in sessoes:
+        r = cp_curva.get(s['id'])
+        if r:
+            s['cp'] = r['cp']
+
+    wellness, _c, _e = _sheets()
+    serie = pmc.calcular(sessoes, 'tl')
+    res = pmc.calcular_fmt(sessoes, wellness, serie)
+    if not res or res.get('erro'):
+        return {'erro': (res or {}).get('erro', 'nao foi possivel calibrar')}
+
+    cal = res.get('calibracao') or {}
+    return {
+        'status': 'OK',
+        'dias': len(serie),
+        'de': serie[0]['date'] if serie else None,
+        'ate': serie[-1]['date'] if serie else None,
+        'sessoes': len(sessoes),
+        'cp_de_curva': len(cp_curva),
+        'dimensoes_fmt': res.get('dimensoes'),
+        'parametros': res.get('params_usados'),
+        'calibracao': cal,
+        'onde_sao_usados': {
+            'tau_carga': 'canal 1 do mapa de atencao (decaimento da carga)',
+            'lag_hrv': 'canal 2 (onde o HRV cai mais depois da carga)',
+            'lag_super': 'canal 3 (janela de supercompensacao)',
+            'largura_super': 'canal 3 (largura da janela)',
+            'tau_risco': 'canal 4 (horizonte do sinal de risco)',
+            'limiares_lambda1': 'classificacao focal vs multissistemico',
+        },
+    }
 
 
 def api_sheets_debug():

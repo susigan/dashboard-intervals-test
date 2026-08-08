@@ -502,6 +502,32 @@ def _banda_sd(y, janela=14):
     return out
 
 
+def homeostatico_por_modalidade(serie_classica, sessoes, modalidades):
+    """Reserva de performance calculada por modalidade.
+
+    Cada desporto tem a sua CP e a sua carga, por isso os K e os tau saem
+    diferentes: o Ski absorve e dissipa a outro ritmo que o Bike. Sobrepor
+    as curvas mostra qual das modalidades esta a puxar a reserva global.
+    """
+    out = {}
+    for mod in modalidades:
+        ses = [s for s in sessoes if s.get('type') == mod]
+        if len(ses) < 30:
+            continue
+        # a serie diaria tem de cobrir o mesmo intervalo que a global,
+        # senao as curvas nao alinham no grafico
+        datas = [d['date'] for d in serie_classica]
+        por_dia = {}
+        for s in ses:
+            por_dia[s['date']] = por_dia.get(s['date'], 0.0) + float(s.get('tl') or 0)
+        serie_mod = [{'date': d, 'load': round(por_dia.get(d, 0.0), 1)}
+                     for d in datas]
+        r = modelo_homeostatico(serie_mod, ses)
+        if r:
+            out[mod] = r
+    return out
+
+
 def _media_periodo(linhas, campo, ini, fim):
     import numpy as np
     vals = [r[campo] for r in linhas

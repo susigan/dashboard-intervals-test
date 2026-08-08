@@ -1171,7 +1171,7 @@ function tabelaCalibracao(){
  if(!C){document.getElementById('calBody').innerHTML=
    '<tr><td class="loading">sem calibracao</td></tr>';return;}
  document.getElementById('calHead').innerHTML=
-  ['Parametro','Valor','Fonte','r','p','n','Pergunta que responde']
+  ['Parametro','Valor','Fonte','r','r² (var. expl.)','n','Leitura']
    .map((c,i)=>'<th class="'+(i>0&&i<6?'num':'')+'">'+c+'</th>').join('');
 
  const linhas=[
@@ -1188,15 +1188,23 @@ function tabelaCalibracao(){
   const v=C[l[0]]||{};
   const dados=v.fonte==='dados';
   const cor=dados?'#2ECC71':'#E67E22';
+  const CORF={forte:'#2ECC71',moderada:'#F4D03F',fraca:'#E67E22',residual:'#E74C3C'};
+  const cf=CORF[v.forca]||'#8b949e';
+  let nota=dados?l[3]:(v.motivo||l[3]);
+  if(v.aviso)nota='<span style="color:#E67E22">⚠ '+v.aviso+'</span>';
+  else if(v.interpretacao)nota=v.interpretacao;
   return '<tr><td>'+l[1]+'</td>'+
-   '<td class="num">'+(v.valor!=null?v.valor+' '+l[2]:'—')+'</td>'+
+   '<td class="num">'+(v.valor!=null?v.valor+' '+l[2]:'—')+
+    (v.fronteira?' <span style="color:#E67E22" title="valor no extremo da '+
+     'grelha — nao e um optimo">⚠</span>':'')+'</td>'+
    '<td class="num" style="color:'+cor+'" title="'+(v.motivo||'')+'">'+
     (dados?'teus dados':'referencia')+'</td>'+
    '<td class="num">'+(v.r!=null?v.r:'—')+'</td>'+
-   '<td class="num">'+(v.p!=null?v.p:'—')+'</td>'+
+   '<td class="num" style="color:'+cf+'">'+
+    (v.r2!=null?v.r2+' ('+v.variacao_explicada_pct+'%)':'—')+
+    (v.forca?'<br><span style="font-size:11px">'+v.forca+'</span>':'')+'</td>'+
    '<td class="num">'+(v.n!=null?v.n:'—')+'</td>'+
-   '<td style="font-size:12px;color:#8b949e">'+
-    (dados?l[3]:(v.motivo||l[3]))+'</td></tr>';}).join('');
+   '<td style="font-size:12px;color:#8b949e">'+nota+'</td></tr>';}).join('');
 
  const L=C.limiares_lambda1||{};
  const dl=L.fonte==='dados';
@@ -1215,8 +1223,13 @@ function tabelaCalibracao(){
 
  const R=C.resumo||{};
  const el=document.getElementById('notaCal');
- if(el)el.innerHTML=R.derivados_dos_dados+' de '+R.total+
-  ' parametros vem dos teus dados. '+R.nota;
+ if(el){
+  let h=R.derivados_dos_dados+' de '+R.total+' parametros vem dos teus dados. '+R.nota;
+  if((C.avisos||[]).length)
+   h+='<div style="margin-top:8px;border-left:3px solid #E67E22;background:#161b22;'+
+      'padding:8px 12px;border-radius:0 6px 6px 0;font-size:12px">'+
+      '<b>A ter em conta:</b><br>'+C.avisos.join('<br>')+'</div>';
+  el.innerHTML=h;}
 }
 
 function mostrarFMT5(){
@@ -1501,16 +1514,27 @@ async function load(){
   const hz=fa.hrv_z==null?'':' | HRV '+(fa.hrv_z>=0?'+':'')+fa.hrv_z.toFixed(2)+'&sigma;';
   let html='<div style="background:'+hexRgba(fa.cor,0.10)+';border-left:4px solid '+
    fa.cor+';padding:9px 14px;border-radius:0 5px 5px 0;margin-bottom:8px">'+
-   '<b>Fase actual:</b> '+fa.label+' — '+fa.desc+'<br>'+
+   '<b>Fase actual (carga agregada):</b> '+fa.label+' — '+fa.desc+'<br>'+
    '<small style="color:#8b949e">'+fa.dias+'d nesta fase | &Delta;CTL&gamma; '+
-   seta+dv+hz+'</small></div>';
+   seta+dv+hz+
+   (fa.modalidades_incluidas?' | soma de '+fa.modalidades_incluidas.join(', '):'')+
+   '</small></div>';
   if(fg&&fg.codigo!==fa.codigo){
    const ctb=Object.keys(fg.contribuicoes||{})
      .map(m=>m+' '+Math.round(fg.contribuicoes[m]*100)+'%').join(' · ');
+   const pm=fg.fases_por_modalidade||{};
+   const leg=F.fases_legenda||{};
+   const det=Object.keys(pm).map(m=>m+': '+((leg[pm[m]]||{}).label||pm[m])).join(' · ');
    html+='<div style="background:'+hexRgba(fg.cor,0.10)+';border-left:4px solid '+
     fg.cor+';padding:9px 14px;border-radius:0 5px 5px 0;margin-bottom:8px">'+
     '<b>Fase global ponderada (por CTL&gamma;):</b> '+fg.label+'<br>'+
-    '<small style="color:#8b949e">'+ctb+'</small></div>';}
+    '<small style="color:#8b949e">peso: '+ctb+'<br>'+det+'</small></div>';}
+  else if(fg){
+   const pm=fg.fases_por_modalidade||{};
+   const leg=F.fases_legenda||{};
+   const det=Object.keys(pm).map(m=>m+': '+((leg[pm[m]]||{}).label||pm[m])).join(' · ');
+   if(det)html+='<div style="font-size:12px;color:#8b949e;margin:-4px 0 10px">'+
+    'Por modalidade: '+det+'</div>';}
   document.getElementById('faseCard').innerHTML=html;
 
   const g=F.gammas||{};

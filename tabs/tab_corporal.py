@@ -55,9 +55,9 @@ BODY = r"""
 <div class="controls">
   <label class="sel">Janela
     <select id="janela">
-      <option value="90">90 dias</option>
+      <option value="90" selected>90 dias</option>
       <option value="180">6 meses</option>
-      <option value="365" selected>1 ano</option>
+      <option value="365">1 ano</option>
       <option value="0">Tudo</option>
     </select></label>
 </div>

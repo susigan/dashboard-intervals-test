@@ -25,6 +25,13 @@ DIMS = ['Load', 'HRV', "W'", 'Sleep', 'WEED']
 
 # O QUE E DERIVADO DOS TEUS DADOS E O QUE E FIXO
 #
+# Desde a introducao do modulo calibracao.py, os parametros dos canais sao
+# estimados por correlacao cruzada nas tuas proprias series. Os numeros
+# abaixo so entram quando os teus dados nao chegam — e nesse caso a resposta
+# diz fonte='referencia'.
+#
+# ANTES (mantido so como recurso):
+#
 # Derivado (individual):
 #   - normalizacao de cada dimensao pela sua propria media e desvio
 #   - a matriz de covariacao inteira, e portanto kappa e os eigenvalues
@@ -143,7 +150,8 @@ def _softmax(x, temp=1.0):
     return out
 
 
-def atencao(tensores, kappa, eig, nomes, dia, canal='load', janela=28):
+def atencao(tensores, kappa, eig, nomes, dia, canal='load', janela=28,
+            params=None):
     """Pesos de atencao dos 28 dias anteriores sobre o dia consultado.
 
     Cada canal e um kernel explicito que reproduz o comportamento descrito
@@ -157,13 +165,20 @@ def atencao(tensores, kappa, eig, nomes, dia, canal='load', janela=28):
     lag = dia - idx                     # 0 = hoje, 27 = ha 27 dias
     F = len(nomes)
 
+    # Parametros: preferencia aos calibrados nos dados do atleta.
+    P = params or {}
+    tau_carga = P.get('tau_carga', 6.5)
+    lag_hrv = P.get('lag_hrv', 1)
+    lag_super = P.get('lag_super', 17)
+    largura_super = P.get('largura_super', 3.5)
+    tau_risco = P.get('tau_risco', 8)
+
     def dim(nome):
         return nomes.index(nome) if nome in nomes else None
 
     if canal == 'load':
         # decaimento exponencial; ponderado pela variancia da dimensao Load
-        # tau=6.5 reproduz os ~68% de peso em d-1..d-5 que o paper reporta
-        base = np.exp(-lag / 6.5)
+        base = np.exp(-lag / max(tau_carga, 0.5))
         j = dim('Load')
         if j is not None:
             var = np.array([tensores[i][j, j] if np.isfinite(tensores[i][j, j])
@@ -178,12 +193,14 @@ def atencao(tensores, kappa, eig, nomes, dia, canal='load', janela=28):
             return None
         var = np.array([tensores[i][j, j] if np.isfinite(tensores[i][j, j])
                         else 0.0 for i in idx])
-        pesos = np.clip(var, 0, None) * np.exp(-lag / 10.0)
+        # centrado no lag em que a carga mais deprime o HRV neste atleta
+        pesos = np.clip(var, 0, None) * np.exp(-np.abs(lag - lag_hrv) / 6.0)
 
     elif canal == 'super':
         # janela gaussiana centrada em d-17, entre d-14 e d-21;
         # premeia kappa baixo com valores proprios equilibrados
-        base = np.exp(-((lag - 17.0) ** 2) / (2 * 3.5 ** 2))
+        base = np.exp(-((lag - float(lag_super)) ** 2) /
+                      (2 * max(float(largura_super), 1.0) ** 2))
         k = np.array([kappa[i] if np.isfinite(kappa[i]) else np.nan for i in idx])
         eq = np.zeros(len(idx))
         for p, i in enumerate(idx):
@@ -204,7 +221,8 @@ def atencao(tensores, kappa, eig, nomes, dia, canal='load', janela=28):
                            else 0.0 for i in idx])
         kz = np.nan_to_num(_z(k))
         hz = np.nan_to_num(_z(hv))
-        pesos = np.exp(-lag / 8.0) * np.clip(1.0 + kz + hz, 0.05, None)
+        pesos = np.exp(-lag / max(float(tau_risco), 1.0)) * \
+            np.clip(1.0 + kz + hz, 0.05, None)
 
     elif canal == 'similar':
         # atencao no sentido de (4), sem projeccoes aprendidas:
@@ -251,7 +269,7 @@ def limiares_lambda1(eig, minimo=60):
             float(np.quantile(serie, 0.30)), 'historico', len(serie))
 
 
-def resumo_dia(tensores, kappa, eig, nomes, dia):
+def resumo_dia(tensores, kappa, eig, nomes, dia, limiares=None):
     """Matriz, kappa, valores proprios e leitura focal/multissistemica."""
     if dia is None or dia >= len(kappa) or not np.isfinite(kappa[dia]):
         return None
@@ -261,7 +279,13 @@ def resumo_dia(tensores, kappa, eig, nomes, dia):
     pos = ev[ev > 0]
     l1 = float(pos[0] / pos.sum()) if len(pos) else None
 
-    alto, baixo, fonte_lim, n_hist = limiares_lambda1(eig)
+    if limiares:
+        alto = limiares.get('alto', 0.55)
+        baixo = limiares.get('baixo', 0.35)
+        fonte_lim = limiares.get('fonte', 'referencia')
+        n_hist = limiares.get('n', 0)
+    else:
+        alto, baixo, fonte_lim, n_hist = limiares_lambda1(eig)
 
     if l1 is None:
         leitura = None
@@ -270,12 +294,12 @@ def resumo_dia(tensores, kappa, eig, nomes, dia):
         leitura = {'tipo': 'focal', 'cor': '#E67E22',
                    'texto': f'Stress focal — {l1*100:.0f}% da variabilidade '
                             f'vem de uma so direccao, dominada por {nomes[j]}. '
-                            f'Acima do teu p70 ({alto*100:.0f}%).'}
+                            f'Limiar: {alto*100:.0f}%.'}
     elif l1 < baixo:
         leitura = {'tipo': 'multissistemico', 'cor': '#5DADE2',
                    'texto': 'Stress multissistemico — os valores proprios estao '
                             'equilibrados; varios sistemas movem-se juntos. '
-                            f'Abaixo do teu p30 ({baixo*100:.0f}%).'}
+                            f'Limiar: {baixo*100:.0f}%.'}
     else:
         leitura = {'tipo': 'intermedio', 'cor': '#8b949e',
                    'texto': 'Distribuicao intermedia entre focal e multissistemica.'}

@@ -638,6 +638,52 @@ def curvas_por_season(tipo=None, marcos=None):
             'duracoes': sorted(duracoes)}
 
 
+def cp_por_sessao(tipo=None, secs_min=120, secs_max=1200, minimo_pontos=4):
+    """CP e W' por sessao, ajustados a curva de potencia ja guardada.
+
+    Modelo de dois parametros (Monod & Scherrer):
+        P(t) = W'/t + CP
+    Regressao linear de P contra 1/t: a ordenada na origem e o CP, o declive
+    e o W'. Usamos 2 a 20 min — abaixo disso o esforco e demasiado anaerobio
+    para o modelo, acima ha deriva e o CP sai subestimado.
+
+    Melhor proxy que o icu_pm_cp por sessao: aquele usa so a curva daquela
+    actividade e, num dia sem esforcos maximos, subestima muito.
+    """
+    if not ENABLED:
+        return []
+    curvas = load_power_curves(tipo)
+    out = []
+    for c in curvas:
+        pts = [(s, w) for s, w in zip(c['secs'], c['watts'])
+               if isinstance(w, (int, float)) and w > 0
+               and secs_min <= s <= secs_max]
+        if len(pts) < minimo_pontos:
+            continue
+        n = len(pts)
+        xs = [1.0 / s for s, _ in pts]
+        ys = [float(w) for _, w in pts]
+        mx = sum(xs) / n
+        my = sum(ys) / n
+        den = sum((x - mx) ** 2 for x in xs)
+        if den < 1e-12:
+            continue
+        w_prime = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den
+        cp = my - w_prime * mx
+        if cp <= 0 or w_prime <= 0:
+            continue                    # ajuste sem sentido fisico
+        ss_tot = sum((y - my) ** 2 for y in ys)
+        prev = [cp + w_prime * x for x in xs]
+        ss_res = sum((y - p) ** 2 for y, p in zip(ys, prev))
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        out.append({'activity_id': c['activity_id'], 'date': c['date'],
+                    'type': c['type'], 'cp': round(cp, 1),
+                    'w_prime': round(w_prime, 0), 'r2': round(r2, 4),
+                    'n_pontos': n})
+    out.sort(key=lambda r: r['date'])
+    return out
+
+
 def calcular_recordes(tipo=None, desde=None, ate=None):
     """Recordes por duracao dentro de uma janela.
 

@@ -39,10 +39,13 @@ MAPA_WELLNESS = {
     'fat':           ['FAT', 'Fat', 'Gordura'],
     'hf_power':      ['HF Power', 'HF_Power', 'hf_power', 'HF', 'hf',
                       'hrv_hf', 'HRV_HF', 'hf power'],
+    'doente':        ['Doente', 'doente', 'Sick', 'Doenca'],
+    'performance':   ['Performance', 'performance', 'Desempenho'],
 }
 
 # Escalas 1-5 em que 5 = melhor. Guardado para os graficos saberem a direccao.
-ESCALA_1A5 = ['sleep_quality', 'stress', 'fatiga', 'humor', 'soreness']
+ESCALA_1A5 = ['sleep_quality', 'stress', 'fatiga', 'humor', 'soreness',
+              'performance']
 
 MAPA_CORPORAL = ['Peso', 'BF', 'Calorias', 'Carb', 'Fat', 'Ptn',
                  'Carb_perc', 'Fat_perc', 'Ptn_perc', 'Net']
@@ -51,7 +54,8 @@ MAPA_CORPORAL = ['Peso', 'BF', 'Calorias', 'Carb', 'Fat', 'Ptn',
 RANGES = {'Peso': (30, 200), 'BF': (3, 50), 'Calorias': (500, 6000),
           'Carb': (0, 800), 'Fat': (0, 400), 'Ptn': (0, 400),
           'Net': (-2000, 4000), 'hrv': (5, 250), 'rhr': (25, 120),
-          'sleep_hours': (0, 16), 'peso': (30, 200), 'fat': (3, 50)}
+          'sleep_hours': (0, 16), 'peso': (30, 200), 'fat': (3, 50),
+          'doente': (0, 5), 'performance': (0, 5)}
 
 _gc = None
 _erro_auth = None

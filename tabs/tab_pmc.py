@@ -62,6 +62,7 @@ def api_data():
 
     try:
         homeo = pmc.modelo_homeostatico(serie, sessoes)
+        homeo_mod = pmc.homeostatico_por_modalidade(serie, sessoes, CICLICOS)
         alos = pmc.indice_alostatico(
             serie, homeo, wellness,
             p_ant=(request.args.get('ant_ini'), request.args.get('ant_fim'))
@@ -71,7 +72,7 @@ def api_data():
     except Exception as e:
         import traceback
         traceback.print_exc()
-        homeo, alos = None, None
+        homeo, homeo_mod, alos = None, {}, None
 
     fim = serie[-1] if serie else {}
     return jsonify({
@@ -91,7 +92,8 @@ def api_data():
         },
         'alertas': pmc.alertas(serie, wellness),
         'ftlm': ftlm_res, 'erro_ftlm': erro_ftlm,
-        'homeostatico': homeo, 'alostatico': alos,
+        'homeostatico': homeo, 'homeostatico_mod': homeo_mod,
+        'alostatico': alos,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
     })
 
@@ -109,38 +111,28 @@ BODY = r"""
 <div id="alertas"></div>
 
 <h2>PMC — CTL / ATL / TSB / FTLM</h2>
-<div class="sub">CTL 42d e ATL 7d no eixo esquerdo &middot; CTL&gamma; no eixo direito, com valores reais
+<div class="sub" id="subPMC">CTL 42d e ATL 7d no eixo esquerdo &middot; CTL&gamma; no eixo direito
   &middot; carga diaria empilhada por modalidade em baixo</div>
 <div class="controls">
   <label class="sel">Janela
     <select id="janelaPMC">
-      <option value="90">90 dias</option>
+      <option value="90" selected>90 dias</option>
       <option value="180">6 meses</option>
-      <option value="365" selected>1 ano</option>
+      <option value="365">1 ano</option>
       <option value="0">Tudo</option>
     </select></label>
-  <label class="sel"><input type="checkbox" id="verFTLM" checked> Mostrar FTLM</label>
+  <label class="sel"><input type="checkbox" id="verFTLM" checked> Mostrar CTL&gamma;</label>
   <label class="sel"><input type="checkbox" id="verFases" checked> Bandas de fase</label>
+  <label class="sel">CTL&gamma; em
+    <select id="escCTLgPMC">
+      <option value="indice" selected>Indice 0-100</option>
+      <option value="real">Valores reais</option>
+    </select></label>
 </div>
 <div class="chartbox">
   <div class="legend" id="lgPMC"></div>
   <canvas id="chPMC" height="330"></canvas>
   <canvas id="chLoad" height="120"></canvas>
-</div>
-
-<h2>CTL&gamma; — FTLM fraccionario</h2>
-<div class="sub" id="subFTLM"></div>
-<div class="controls"><label class="sel">Escala
-  <select id="escFTLM">
-    <option value="propria" selected>Eixo proprio por serie</option>
-    <option value="indice">Indice 0-100</option>
-    <option value="partilhada">Partilhada</option>
-  </select></label>
-  <span class="sub" style="margin:0">&gamma; diferentes dao ordens de grandeza diferentes</span>
-</div>
-<div class="chartbox">
-  <div class="legend" id="lgFTLM"></div>
-  <canvas id="chFTLM" height="280"></canvas>
 </div>
 
 <h2>CTL&gamma; por modalidade</h2>
@@ -174,10 +166,22 @@ BODY = r"""
 <h2>Modelo homeostatico — reserva de performance</h2>
 <div class="sub" id="subHomeo"></div>
 <div class="cards" id="homeoKpis"></div>
+<div class="controls">
+  <label class="sel">Modalidade
+    <select id="homeoMod"><option value="">Global</option></select></label>
+  <label class="sel">Vista
+    <select id="homeoVista">
+      <option value="todo" selected>Global + modalidades</option>
+      <option value="banda">Fit + banda</option>
+      <option value="fits">So os fits</option>
+    </select></label>
+</div>
 <div class="chartbox">
   <div class="legend" id="lgHomeo"></div>
-  <canvas id="chHomeo" height="240"></canvas>
+  <canvas id="chHomeo" height="280"></canvas>
 </div>
+<div class="wrap" style="max-height:260px;margin-bottom:14px"><table>
+  <thead><tr id="hmHead"></tr></thead><tbody id="hmBody"></tbody></table></div>
 
 <h2>Indice alostatico</h2>
 <div class="sub" id="subAlos"></div>
@@ -388,51 +392,77 @@ function estadoDe(tsb){
 
 let OFFP={},OFFM={},OFFF={},OFFG={},OFFK={},OFFH={};
 
-// Reserva de performance com ajuste Savitzky-Golay e banda +/-1 SD,
-// como no dashboard original.
+// Reserva de performance: ajuste Savitzky-Golay com banda +/-1 SD, e as
+// modalidades sobrepostas para se ver qual esta a puxar a reserva global.
 function drawHomeo(){
  const H=D.homeostatico;
- if(!H){const o=ctx('chHomeo',260);if(o)noData(o.g,o.W,o.H);return;}
- const dados=janelaPMC(H.serie);
- const o=ctx('chHomeo',260); if(!o)return;
+ if(!H){const o=ctx('chHomeo',280);if(o)noData(o.g,o.W,o.H);return;}
+ const vista=document.getElementById('homeoVista').value;
+ const modSel=document.getElementById('homeoMod').value;
+ const HM=D.homeostatico_mod||{};
+ const principal=(modSel&&HM[modSel])?HM[modSel]:H;
+ const dados=janelaPMC(principal.serie);
+
+ const o=ctx('chHomeo',280); if(!o)return;
  const g=o.g,W=o.W,H2=o.H;
  const PL=52,PR=16,PT=12,PB=24,w=W-PL-PR,h=H2-PT-PB,n=dados.length;
  if(!n){noData(g,W,H2);return;}
  const X=i=>PL+w*(n>1?i/(n-1):0.5);
 
+ const mods=(!modSel&&vista==='todo')?Object.keys(HM):[];
+ const porData={};
+ mods.forEach(function(m){
+  const idx={};
+  (HM[m].serie||[]).forEach(r=>{idx[r.date]=r.p_hat_suave;});
+  porData[m]=idx;});
+
  let mn=Infinity,mx=-Infinity;
  dados.forEach(function(d){
-  [d.banda_inf,d.banda_sup,d.p_hat].forEach(function(v){
+  [d.banda_inf,d.banda_sup,d.p_hat_suave].forEach(function(v){
    if(v==null)return; if(v<mn)mn=v; if(v>mx)mx=v;});});
+ mods.forEach(m=>dados.forEach(function(d){
+  const v=porData[m][d.date]; if(v==null)return;
+  if(v<mn)mn=v; if(v>mx)mx=v;}));
  if(!isFinite(mn)){noData(g,W,H2);return;}
  if(mx===mn)mx=mn+1;
+ const marg=(mx-mn)*0.05; mn-=marg; mx+=marg;
  const Y=v=>PT+h-(v-mn)/(mx-mn)*h;
 
  g.strokeStyle='#21262d';g.lineWidth=1;
  for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
 
- // banda +/-1 SD
- g.fillStyle='rgba(255,255,255,0.07)';g.beginPath();
- dados.forEach(function(d,i){const v=d.banda_sup;if(v==null)return;
-  if(i===0)g.moveTo(X(i),Y(v));else g.lineTo(X(i),Y(v));});
- for(let i=n-1;i>=0;i--){const v=dados[i].banda_inf;if(v==null)continue;
-  g.lineTo(X(i),Y(v));}
- g.closePath();g.fill();
+ if(vista!=='fits'){
+  g.fillStyle='rgba(255,255,255,0.07)';g.beginPath();
+  let ok=false;
+  dados.forEach(function(d,i){const v=d.banda_sup;if(v==null)return;
+   if(!ok){g.moveTo(X(i),Y(v));ok=true;}else g.lineTo(X(i),Y(v));});
+  for(let i=n-1;i>=0;i--){const v=dados[i].banda_inf;if(v==null)continue;
+   g.lineTo(X(i),Y(v));}
+  g.closePath();g.fill();
+ }
 
- // p_hat bruto, esbatido
- if(!OFFH.bruto){
-  g.strokeStyle='rgba(46,204,113,0.35)';g.lineWidth=1;g.beginPath();
+ if(vista==='todo'&&!OFFH.bruto){
+  g.strokeStyle='rgba(150,150,150,0.30)';g.lineWidth=1;g.beginPath();
   let st=false;
   dados.forEach(function(d,i){const v=d.p_hat;if(v==null){st=false;return;}
    if(!st){g.moveTo(X(i),Y(v));st=true;}else g.lineTo(X(i),Y(v));});
   g.stroke();}
 
- // ajuste suavizado
- g.strokeStyle='#2ECC71';g.lineWidth=2.2;g.beginPath();
+ mods.forEach(function(m){
+  if(OFFH[m])return;
+  g.strokeStyle=(D.cores||{})[m]||'#8b949e';g.lineWidth=1.6;
+  g.globalAlpha=0.85;g.beginPath();let st=false;
+  dados.forEach(function(d,i){const v=porData[m][d.date];
+   if(v==null){st=false;return;}
+   if(!st){g.moveTo(X(i),Y(v));st=true;}else g.lineTo(X(i),Y(v));});
+  g.stroke();g.globalAlpha=1;});
+
+ g.strokeStyle=modSel?((D.cores||{})[modSel]||'#2ECC71'):'#e6e6e6';
+ g.lineWidth=2.4;g.setLineDash(modSel?[]:[7,3]);g.beginPath();
  let st2=false;
  dados.forEach(function(d,i){const v=d.p_hat_suave;if(v==null){st2=false;return;}
   if(!st2){g.moveTo(X(i),Y(v));st2=true;}else g.lineTo(X(i),Y(v));});
- g.stroke();
+ g.stroke();g.setLineDash([]);
 
  g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
  for(let i=0;i<=4;i++)g.fillText(Math.round(mx-(mx-mn)*i/4),PL-6,PT+h*i/4+3);
@@ -442,13 +472,18 @@ function drawHomeo(){
   g.fillText(d.date.slice(0,7),X(i),H2-8);});
  g.textAlign='left';
 
- document.getElementById('lgHomeo').innerHTML=
-  '<span><i style="background:#2ECC71"></i>p̂(t) — ajuste Savitzky-Golay</span>'+
-  '<span><i style="background:rgba(255,255,255,0.15)"></i>banda ±1 SD</span>'+
-  '<span class="tog'+(OFFH.bruto?' off':'')+'" data-k="bruto">'+
-  '<i style="background:rgba(46,204,113,0.35)"></i>diario</span>';
+ const itens=[['__p','p̂ '+(modSel||'global')+' — Savitzky-Golay',
+               modSel?((D.cores||{})[modSel]||'#2ECC71'):'#e6e6e6']];
+ if(vista!=='fits')itens.push(['__b','banda ±1 SD','rgba(255,255,255,0.15)']);
+ if(vista==='todo')itens.push(['bruto','p̂ diario','rgba(150,150,150,0.3)']);
+ mods.forEach(m=>itens.push([m,m,(D.cores||{})[m]||'#8b949e']));
+ document.getElementById('lgHomeo').innerHTML=itens.map(x=>
+  (x[0].indexOf('__')===0
+   ? '<span><i style="background:'+x[2]+'"></i>'+x[1]+'</span>'
+   : '<span class="tog'+(OFFH[x[0]]?' off':'')+'" data-k="'+x[0]+'">'+
+     '<i style="background:'+x[2]+'"></i>'+x[1]+'</span>')).join('');
  document.querySelectorAll('#lgHomeo span.tog').forEach(function(sp){
-  sp.onclick=function(){OFFH.bruto=!OFFH.bruto;drawHomeo();};});
+  sp.onclick=function(){OFFH[sp.dataset.k]=!OFFH[sp.dataset.k];drawHomeo();};});
 
  registarTip('chHomeo',function(mxp,myp,rw){
   const esc=rw/W,x=mxp/esc;
@@ -456,12 +491,35 @@ function drawHomeo(){
   const i=Math.round((x-PL)/w*(n-1));
   if(i<0||i>=n)return '';
   const d=dados[i];
-  return '<div class="th">'+d.date+'</div>'+
-   linhaTip('#2ECC71','p̂ ajustado',d.p_hat_suave)+
-   linhaTip('rgba(46,204,113,0.35)','p̂ diario',d.p_hat)+
-   linhaTip('#5DADE2','Fitness',d.fitness)+
-   linhaTip('#E74C3C','Fadiga',d.fadiga)+
-   '<div class="tr"><span>Banda</span><b>'+d.banda_inf+' a '+d.banda_sup+'</b></div>';});
+  let html='<div class="th">'+d.date+'</div>'+
+   linhaTip(modSel?((D.cores||{})[modSel]||'#2ECC71'):'#e6e6e6',
+            'p̂ '+(modSel||'global'),d.p_hat_suave);
+  mods.forEach(function(m){
+   if(OFFH[m])return;
+   const v=porData[m][d.date]; if(v==null)return;
+   html+=linhaTip((D.cores||{})[m]||'#8b949e',m,v);});
+  html+='<div class="tr"><span>Banda</span><b>'+d.banda_inf+' a '+d.banda_sup+'</b></div>';
+  return html;});
+}
+
+function tabelaHomeo(){
+ const HM=D.homeostatico_mod||{},H=D.homeostatico;
+ document.getElementById('hmHead').innerHTML=
+  ['Modalidade','K₁','K₂','T₁','T₂','R²','p̂ actual','Ajuste']
+   .map((c,i)=>'<th class="'+(i&&i<7?'num':'')+'">'+c+'</th>').join('');
+ function linha(nome,v,cor){
+  const s=v.serie||[];
+  const ult=s.length?s[s.length-1].p_hat_suave:'—';
+  return '<tr><td style="color:'+cor+'">'+nome+'</td>'+
+   '<td class="num">'+v.k1+'</td><td class="num">'+v.k2+'</td>'+
+   '<td class="num">'+v.t1+'d</td><td class="num">'+v.t2+'d</td>'+
+   '<td class="num">'+v.r2+'</td><td class="num">'+ult+'</td>'+
+   '<td style="font-size:12px;color:'+(v.ajustado?'#2ECC71':'#8b949e')+'">'+
+   (v.ajustado?'ajustado':'defeito 42/7')+'</td></tr>';}
+ const l=[];
+ if(H)l.push(linha('Global',H,'#e6e6e6'));
+ Object.keys(HM).forEach(m=>l.push(linha(m,HM[m],(D.cores||{})[m]||'#e6e6e6')));
+ document.getElementById('hmBody').innerHTML=l.join('');
 }
 
 function mostrarHomeo(){
@@ -470,13 +528,18 @@ function mostrarHomeo(){
    '<span class="err">indisponivel</span>';return;}
  document.getElementById('subHomeo').innerHTML=
   'p̂(t) = p₀ + K₁·EWM(carga,T₁) − K₂·EWM(carga,T₂) · '+H.nota;
+ const selM=document.getElementById('homeoMod');
+ const HM=D.homeostatico_mod||{};
+ if(selM.options.length<=1)
+  selM.innerHTML='<option value="">Global</option>'+
+   Object.keys(HM).map(m=>'<option>'+m+'</option>').join('');
  document.getElementById('homeoKpis').innerHTML=[
   ['K₁ (ganho fitness)',H.k1],['K₂ (ganho fadiga)',H.k2],
   ['T₁ (τ fitness)',H.t1+'d'],['T₂ (τ fadiga)',H.t2+'d'],
   ['R²',H.r2],['Pontos de CP',H.n_testes]
  ].map(k=>'<div class="card"><div class="label">'+k[0]+'</div>'+
   '<div class="value">'+k[1]+'</div></div>').join('');
- drawHomeo();
+ drawHomeo(); tabelaHomeo();
 }
 
 function mostrarAlos(){
@@ -528,15 +591,6 @@ function hexRgba(h,a){h=h.replace('#','');
  return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+
   parseInt(h.slice(4,6),16)+','+a+')';}
 
-function drawFTLM(){
- if(!D.ftlm){const o=ctx('chFTLM',280);if(o)noData(o.g,o.W,o.H,'FTLM indisponivel');return;}
- const s=janelaPMC(D.ftlm.serie);
- drawLinhas('chFTLM','lgFTLM',s,['ctlg_perf','ctlg_rec'],
-  {ctlg_perf:'#5DADE2',ctlg_rec:'#AF7AC5'},
-  {ctlg_perf:'CTLγ perf',ctlg_rec:'CTLγ rec'},
-  {off:OFFF,redraw:drawFTLM,height:280,fases:true,
-   escala:document.getElementById('escFTLM').value});
-}
 function drawCTLg(){
  const pm=(D.ftlm||{}).por_modalidade||{};
  const mods=Object.keys(pm);
@@ -640,25 +694,41 @@ function drawPMC(){
    const x=X(i),y=YE(v); if(!st){g.moveTo(x,y);st=true;}else g.lineTo(x,y);});
   g.stroke();});
 
- // ── eixo direito: CTLgamma, valores reais ──
- let gmn=Infinity,gmx=-Infinity;
+ // ── eixo direito: CTLgamma ──
+ // Em indice, cada serie e normalizada ao seu proprio min-max: gamma
+ // diferentes dao ordens de grandeza diferentes e sobreporiam-se mal.
+ const modoG=document.getElementById('escCTLgPMC').value;
  const serG=['ctlg_perf','ctlg_rec'].filter(k=>verF&&!OFFP[k]);
- serG.forEach(k=>comb.forEach(function(d){
-  const v=d[k];if(v==null)return; if(v<gmn)gmn=v; if(v>gmx)gmx=v;}));
- const temG=isFinite(gmn)&&serG.length;
- if(temG){
+ const limG={};
+ serG.forEach(function(k){
+  let a=Infinity,b=-Infinity;
+  comb.forEach(function(d){const v=d[k];if(v==null)return;
+   if(v<a)a=v;if(v>b)b=v;});
+  if(!isFinite(a)){a=0;b=1;} if(b===a)b=a+1;
+  limG[k]=[a,b];});
+ let gmn=Infinity,gmx=-Infinity;
+ if(modoG==='real'){
+  serG.forEach(function(k){gmn=Math.min(gmn,limG[k][0]);gmx=Math.max(gmx,limG[k][1]);});
   if(gmn>0)gmn=0; if(gmx===gmn)gmx=gmn+1;
-  const YD=v=>PT+h-(v-gmn)/(gmx-gmn)*h;
+ } else { gmn=0; gmx=100; }
+ const temG=serG.length&&isFinite(gmn);
+ function YD(k,v){
+  if(modoG==='real')return PT+h-(v-gmn)/(gmx-gmn)*h;
+  const[a,b]=limG[k]; return PT+h-((v-a)/(b-a))*h;}
+ if(temG){
   serG.forEach(function(k){
    g.strokeStyle=k==='ctlg_perf'?'#2980b9':'#8e44ad';
    g.lineWidth=1.6;g.setLineDash(k==='ctlg_perf'?[6,3]:[2,3]);
    g.globalAlpha=0.85;g.beginPath();let st=false;
    comb.forEach(function(d,i){const v=d[k];if(v==null){st=false;return;}
-    const x=X(i),y=YD(v); if(!st){g.moveTo(x,y);st=true;}else g.lineTo(x,y);});
+    const x=X(i),y=YD(k,v); if(!st){g.moveTo(x,y);st=true;}else g.lineTo(x,y);});
    g.stroke();g.setLineDash([]);g.globalAlpha=1;});
   g.fillStyle='#8e44ad';g.font='10px sans-serif';g.textAlign='left';
-  for(let i=0;i<=4;i++){const v=gmx-(gmx-gmn)*i/4;
-   g.fillText(Math.abs(v)>=10000?(v/1000).toFixed(0)+'k':Math.round(v),PL+w+6,PT+h*i/4+3);}
+  for(let i=0;i<=4;i++){
+   const txt = modoG==='indice' ? Math.round(100-100*i/4)+'%'
+    : (Math.abs(gmx)>=10000?((gmx-(gmx-gmn)*i/4)/1000).toFixed(0)+'k'
+       :Math.round(gmx-(gmx-gmn)*i/4));
+   g.fillText(txt,PL+w+6,PT+h*i/4+3);}
  }
 
  g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
@@ -687,8 +757,13 @@ function drawPMC(){
   let html='<div class="th">'+d.date+'</div>';
   it.forEach(function(t){
    if(OFFP[t[0]]||d[t[0]]==null)return;
-   html+=linhaTip(t[2],t[1].split(' (')[0],
-    Math.abs(d[t[0]])>=1000?Math.round(d[t[0]]).toLocaleString('pt-PT'):d[t[0]].toFixed(1));});
+   const v=d[t[0]];
+   let txt=Math.abs(v)>=1000?Math.round(v).toLocaleString('pt-PT'):v.toFixed(1);
+   // o eixo pode estar em indice, mas o tooltip mostra sempre o valor real
+   if(modoG==='indice'&&limG[t[0]]){
+    const[a,b]=limG[t[0]];
+    txt+=' <span style="color:#8b949e">('+Math.round((v-a)/(b-a)*100)+'%)</span>';}
+   html+=linhaTip(t[2],t[1].split(' (')[0],txt);});
   if(d.load)html+=linhaTip('#586574','Carga',Math.round(d.load));
   if(d.tsb!=null){const e=estadoDe(d.tsb);
    html+='<div class="tr" style="border-top:1px solid #30363d;margin-top:4px;'+
@@ -802,7 +877,7 @@ async function load(){
    'padding:9px 12px;margin-bottom:8px;border-radius:0 6px 6px 0;font-size:13px">'+
    al.texto+'</div>';}).join('');
 
- drawPMC(); drawMod(); drawFTLM(); mostrarHomeo(); mostrarAlos();
+ drawPMC(); drawMod(); mostrarHomeo(); mostrarAlos();
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──
  const F=d.ftlm;
@@ -829,10 +904,13 @@ async function load(){
   document.getElementById('faseCard').innerHTML=html;
 
   const g=F.gammas||{};
-  document.getElementById('subFTLM').innerHTML=
-   'Kernel Riemann-Liouville: CTL&gamma;(t) = &Sigma; Load(t&minus;k)&middot;k<sup>&gamma;&minus;1</sup>/&Gamma;(&gamma;) &middot; '+
+  document.getElementById('subPMC').innerHTML=
+   'CTL 42d e ATL 7d no eixo esquerdo &middot; CTL&gamma; no eixo direito &middot; '+
+   'carga diaria empilhada por modalidade em baixo<br>'+
+   '<span style="font-size:12px">Kernel Riemann-Liouville: CTL&gamma;(t) = '+
+   '&Sigma; Load(t&minus;k)&middot;k<sup>&gamma;&minus;1</sup>/&Gamma;(&gamma;) &middot; '+
    '&gamma;<sub>perf</sub> '+(g.perf?g.perf.gamma+' (R&sup2; '+g.perf.r2+')':'—')+
-   ' &middot; &gamma;<sub>rec</sub> '+(g.rec?g.rec.gamma+' (R&sup2; '+g.rec.r2+')':'—');
+   ' &middot; &gamma;<sub>rec</sub> '+(g.rec?g.rec.gamma+' (R&sup2; '+g.rec.r2+')':'—')+'</span>';
 
   drawCTLg(); tabelaGammas(); drawFMT();
   const fm=F.fmt||{};
@@ -865,14 +943,15 @@ async function load(){
   togglesDe(c,CORC,LBLC,ATIVC,'togC',drawC); drawC();
  }
 }
-['verFTLM','verFases'].forEach(id=>
+['verFTLM','verFases','escCTLgPMC'].forEach(id=>
  document.getElementById(id).onchange=function(){if(D)drawPMC();});
-document.getElementById('escFTLM').onchange=function(){if(D&&D.ftlm)drawFTLM();};
 document.getElementById('escCTLg').onchange=function(){if(D&&D.ftlm)drawCTLg();};
+['homeoMod','homeoVista'].forEach(id=>
+ document.getElementById(id).onchange=function(){if(D)drawHomeo();});
 function redesenhar(){
  if(!D)return;
  drawPMC();drawMod();drawW();drawC();
- if(D.ftlm){drawFTLM();drawCTLg();drawFMT();}
+ if(D.ftlm){drawCTLg();drawFMT();}
  if(D.homeostatico){drawHomeo();}}
 document.getElementById('janelaPMC').onchange=redesenhar;
 window.addEventListener('resize',redesenhar);

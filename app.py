@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 from api_client import (fetch_activities, cache_info, invalidar_cache,
                         fetch_da_api)
 from tabs import (tab_volume, tab_atividades, tab_detalhe,
-                  tab_recordes, tab_pmc)
+                  tab_recordes, tab_pmc, tab_corporal)
 
 if db.ENABLED:
     db.init_schema()
@@ -57,6 +57,11 @@ def page_pmc():
     return tab_pmc.render()
 
 
+@app.route('/corporal')
+def page_corporal():
+    return tab_corporal.render()
+
+
 @app.route('/atividades')
 def page_atividades():
     return tab_atividades.render()
@@ -77,6 +82,11 @@ def api_volume():
 @app.route('/api/pmc')
 def api_pmc():
     return tab_pmc.api_data()
+
+
+@app.route('/api/corporal')
+def api_corporal():
+    return tab_corporal.api_data()
 
 
 @app.route('/api/debug/sheets')

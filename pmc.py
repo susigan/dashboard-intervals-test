@@ -818,13 +818,47 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
         kappa=kappa,
         lambda1=l1_hist)
 
+    # Um parametro so e usado se medir o que diz medir.
+    #
+    # O canal 1 e um decaimento de FADIGA: exige que mais carga acumulada
+    # ande com HRV mais baixo. Se a correlacao sai positiva, o que foi
+    # medido e causalidade invertida (treina-se mais quando o HRV esta bom)
+    # — usar esse tau como decaimento de fadiga seria pior do que usar o
+    # valor de referencia, porque parece individualizado e nao e.
+    import calibracao as _c
+    rejeitados = {}
+
+    def _usar(chave, defeito, exigir_negativo=False):
+        v = cal.get(chave) or {}
+        if v.get('fonte') != 'dados' or v.get('valor') is None:
+            return defeito
+        if exigir_negativo and (v.get('r') or 0) > 0:
+            rejeitados[chave] = {
+                'valor_encontrado': v.get('valor'), 'r': v.get('r'),
+                'motivo': 'correlacao positiva — mede causalidade invertida, '
+                          'nao decaimento de fadiga',
+                'usado': defeito}
+            return defeito
+        if (v.get('r2') or 0) < 0.02:
+            rejeitados[chave] = {
+                'valor_encontrado': v.get('valor'), 'r2': v.get('r2'),
+                'motivo': f"explica so {(v.get('r2') or 0)*100:.1f}% da "
+                          'variacao — abaixo do minimo utilizavel',
+                'usado': defeito}
+            return defeito
+        return v['valor']
+
     params = {
-        'tau_carga': cal['canal1_tau'].get('valor'),
-        'lag_hrv': cal['canal2_lag'].get('valor'),
-        'lag_super': cal['canal3_lag'].get('valor'),
-        'largura_super': cal['canal3_lag'].get('largura', 3.5),
-        'tau_risco': max(2.0, float(cal['canal4_lag'].get('valor') or 8)),
+        'tau_carga': _usar('canal1_tau', _c.REFERENCIA['tau_carga'], True),
+        'lag_hrv': _usar('canal2_lag', _c.REFERENCIA['lag_hrv'], True),
+        'lag_super': _usar('canal3_lag', _c.REFERENCIA['lag_super']),
+        'largura_super': (cal['canal3_lag'].get('largura', 3.5)
+                          if cal.get('canal3_lag', {}).get('fonte') == 'dados'
+                          else _c.REFERENCIA['largura_super']),
+        'tau_risco': max(2.0, float(_usar('canal4_lag',
+                                          _c.REFERENCIA['tau_risco']) or 8)),
     }
+    cal['parametros_rejeitados'] = rejeitados
 
     ultimo = None
     for t in range(n - 1, -1, -1):

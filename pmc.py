@@ -873,3 +873,85 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
                          'Onde diz "referencia", o valor vem do paper e '
                          'descreve outros atletas, nao ti.'),
     }
+
+
+def calibrar_segmentado(sessoes, wellness, serie_classica, modalidades):
+    """Calibracao por modalidade e por ano, para ver onde o sinal existe.
+
+    No agregado de anos e desportos, relacoes reais diluem-se. Isto separa
+    para se poder comparar: se um segmento tiver r2 muito acima do agregado,
+    a relacao existe la e some ao juntar tudo.
+    """
+    import numpy as np
+    import calibracao as _cal
+
+    if not serie_classica:
+        return None
+
+    datas = [d['date'] for d in serie_classica]
+    n = len(datas)
+    carga_total = np.array([d['load'] for d in serie_classica], dtype=np.float64)
+
+    idx_w = {w['date']: w for w in (wellness or [])}
+    hrv = np.array([(idx_w.get(d) or {}).get('hrv') or np.nan for d in datas],
+                   dtype=np.float64)
+    with np.errstate(all='ignore'):
+        hrv = np.where(hrv > 0, np.log(hrv), np.nan)
+    cp = _serie_por_dia(sessoes, datas, 'cp', 'mean')
+
+    out = {}
+
+    # ── por modalidade: carga so dessa modalidade, HRV e CP dessa modalidade ─
+    por_mod = {}
+    for mod in modalidades:
+        ses = [s for s in sessoes if s.get('type') == mod]
+        if len(ses) < 60:
+            continue
+        carga_mod = np.nan_to_num(_serie_por_dia(ses, datas, 'tl', 'sum'))
+        cp_mod = _serie_por_dia(ses, datas, 'cp', 'mean')
+        # dias com actividade desta modalidade, mais os 30 dias seguintes
+        activo = carga_mod > 0
+        janela = activo.copy()
+        for k in range(1, 31):
+            janela[k:] |= activo[:-k]
+        seg = _cal.calibrar_por_segmento({mod: janela}, carga_mod, hrv, cp_mod)
+        por_mod[mod] = seg.get(mod)
+    out['por_modalidade'] = por_mod
+
+    # ── por ano civil ────────────────────────────────────────────────────
+    anos = {}
+    for d in datas:
+        anos.setdefault(d[:4], []).append(d)
+    segs = {}
+    for ano, ds in anos.items():
+        if len(ds) < 120:
+            continue
+        mask = np.array([d[:4] == ano for d in datas])
+        segs[ano] = mask
+    out['por_ano'] = (_cal.calibrar_por_segmento(segs, carga_total, hrv, cp)
+                      if segs else {})
+
+    # ── agregado, para comparar ──────────────────────────────────────────
+    tudo = np.ones(n, dtype=bool)
+    ag = _cal.calibrar_por_segmento({'agregado': tudo}, carga_total, hrv, cp)
+    out['agregado'] = ag.get('agregado')
+
+    base = (out['agregado'] or {}).get('melhor_r2') or 0.0
+    melhores = []
+    for grupo, dic in (('modalidade', por_mod), ('ano', out['por_ano'])):
+        for k, v in (dic or {}).items():
+            if k.startswith('_') or not isinstance(v, dict):
+                continue
+            r2 = v.get('melhor_r2')
+            if r2 and r2 > max(base * 2, 0.02):
+                melhores.append({'grupo': grupo, 'nome': k, 'r2': r2,
+                                 'n_dias': v.get('n_dias')})
+    melhores.sort(key=lambda x: -x['r2'])
+    out['destaques'] = melhores[:5]
+    out['r2_agregado'] = round(base, 4)
+    out['leitura'] = (
+        f"Segmentos com sinal claramente acima do agregado ({base*100:.1f}%): "
+        + (', '.join(f"{m['nome']} ({m['r2']*100:.0f}%)" for m in melhores[:3])
+           if melhores else 'nenhum — a ausencia de sinal nao vem da mistura '
+                           'de fases ou modalidades'))
+    return out

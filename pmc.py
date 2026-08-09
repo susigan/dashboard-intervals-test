@@ -839,6 +839,16 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
                           'nao decaimento de fadiga',
                 'usado': defeito}
             return defeito
+        pp = v.get('p_permutacao')
+        if pp is not None and pp >= 0.05:
+            nu = v.get('distribuicao_nula') or {}
+            rejeitados[chave] = {
+                'valor_encontrado': v.get('valor'), 'p_permutacao': pp,
+                'motivo': f'p corrigido por permutacao = {pp}: o |r| obtido '
+                          f'esta dentro do acaso (mediana nula '
+                          f"{nu.get('nulo_mediana')})",
+                'usado': defeito}
+            return defeito
         if (v.get('r2') or 0) < 0.02:
             rejeitados[chave] = {
                 'valor_encontrado': v.get('valor'), 'r2': v.get('r2'),

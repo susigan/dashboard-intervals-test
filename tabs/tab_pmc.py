@@ -180,6 +180,7 @@ def api_calibracao_dados():
 
     cal = res.get('calibracao') or {}
     segmentado = pmc.calibrar_segmentado(sessoes, wellness, serie, CICLICOS)
+    eventos = pmc.teste_eventos(sessoes, wellness, serie, CICLICOS)
     return {
         'status': 'OK',
         'dias': len(serie),
@@ -191,6 +192,7 @@ def api_calibracao_dados():
         'parametros': res.get('params_usados'),
         'calibracao': cal,
         'segmentado': segmentado,
+        'teste_eventos': eventos,
         'onde_sao_usados': {
             'tau_carga': 'canal 1 do mapa de atencao (decaimento da carga)',
             'lag_hrv': 'canal 2 (onde o HRV cai mais depois da carga)',

@@ -429,3 +429,121 @@ def calibrar_por_segmento(segmentos, carga, hrv, cp, minimo_dias=120):
         'Se algum segmento tiver r2 muito acima do agregado, e sinal de que a '
         'relacao existe la dentro e se dilui ao juntar tudo.')
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Teste por eventos — alternativa a correlacao
+# ══════════════════════════════════════════════════════════════════════════
+
+def teste_dias_duros(datas, carga, hrv, percentil_alto=80, percentil_baixo=20,
+                     lags=(1, 2, 3), minimo_por_grupo=25):
+    """O HRV depois de dias duros e diferente do HRV depois de dias leves?
+
+    Porque isto e melhor que correlacao aqui:
+
+      1. A correlacao mede associacao LINEAR ao longo de toda a gama. Se o
+         efeito so aparece nos dias verdadeiramente duros, a correlacao
+         dilui-o com centenas de dias medios.
+      2. Emparelhamos dentro do mesmo mes, o que remove deriva, sazonalidade
+         e mudancas de forma sem precisar de destendenciar.
+      3. Devolve a diferenca em unidades reais (ms de HRV), nao um r
+         abstracto. E isso que permite decidir se e relevante na pratica.
+
+    Devolve, por lag, a diferenca media e o tamanho de efeito (d de Cohen).
+    """
+    carga = np.asarray(carga, dtype=np.float64)
+    hrv = np.asarray(hrv, dtype=np.float64)
+    n = len(carga)
+
+    # limiares por mes, para nao comparar um bloco duro com uma semana de folga
+    mes = np.array([str(d)[:7] for d in datas])
+    duro = np.zeros(n, dtype=bool)
+    leve = np.zeros(n, dtype=bool)
+    for m in set(mes):
+        sel = mes == m
+        c = carga[sel]
+        c_treino = c[c > 0]
+        if len(c_treino) < 6:
+            continue
+        alto = np.percentile(c_treino, percentil_alto)
+        baixo = np.percentile(c_treino, percentil_baixo)
+        duro[sel] = c >= alto
+        leve[sel] = (c > 0) & (c <= baixo)
+
+    out = {'n_dias_duros': int(duro.sum()), 'n_dias_leves': int(leve.sum()),
+           'por_lag': [], 'metodo': (
+               f'dias no percentil {percentil_alto}+ vs {percentil_baixo}- '
+               'da carga DO PROPRIO MES; HRV nos dias seguintes')}
+
+    for L in lags:
+        va, vb = [], []
+        for t in range(n - L):
+            h = hrv[t + L]
+            if not np.isfinite(h):
+                continue
+            if duro[t]:
+                va.append(h)
+            elif leve[t]:
+                vb.append(h)
+        if len(va) < minimo_por_grupo or len(vb) < minimo_por_grupo:
+            out['por_lag'].append({'lag': L, 'n_duro': len(va),
+                                   'n_leve': len(vb),
+                                   'motivo': 'poucos dias em algum grupo'})
+            continue
+
+        a, b = np.array(va), np.array(vb)
+        ma, mb = a.mean(), b.mean()
+        sa, sb = a.std(ddof=1), b.std(ddof=1)
+        # desvio combinado, para o d de Cohen
+        sp = np.sqrt(((len(a) - 1) * sa ** 2 + (len(b) - 1) * sb ** 2) /
+                     (len(a) + len(b) - 2))
+        d = (ma - mb) / sp if sp > 1e-9 else 0.0
+        # t de Welch, que nao assume variancias iguais
+        se = np.sqrt(sa ** 2 / len(a) + sb ** 2 / len(b))
+        t = (ma - mb) / se if se > 1e-9 else 0.0
+        import math
+        p = 2 * (1 - 0.5 * (1 + math.erf(abs(t) / math.sqrt(2))))
+
+        if abs(d) >= 0.8:
+            mag = 'grande'
+        elif abs(d) >= 0.5:
+            mag = 'medio'
+        elif abs(d) >= 0.2:
+            mag = 'pequeno'
+        else:
+            mag = 'desprezavel'
+
+        out['por_lag'].append({
+            'lag': L, 'n_duro': len(a), 'n_leve': len(b),
+            'media_apos_duro': round(float(ma), 2),
+            'media_apos_leve': round(float(mb), 2),
+            'diferenca': round(float(ma - mb), 3),
+            'cohen_d': round(float(d), 3), 'magnitude': mag,
+            'p': round(float(p), 5)})
+
+    validos = [x for x in out['por_lag'] if x.get('cohen_d') is not None]
+    if validos:
+        forte = max(validos, key=lambda x: abs(x['cohen_d']))
+        out['melhor_lag'] = forte['lag']
+        out['maior_efeito'] = forte['cohen_d']
+        if abs(forte['cohen_d']) < 0.2:
+            out['leitura'] = (
+                'O HRV depois de dias duros e depois de dias leves e '
+                'praticamente o mesmo (d < 0.2). Com este metodo — que e mais '
+                'sensivel que a correlacao — continua sem haver efeito '
+                'detectavel. A causa provavel nao e o metodo, sao os dados: '
+                'um ponto de HRV por dia nao chega para ver dinamica de '
+                'recuperacao.')
+        elif forte['cohen_d'] < 0:
+            out['leitura'] = (
+                f"Ao dia +{forte['lag']}, o HRV depois de dias duros e "
+                f"{abs(forte['diferenca']):.2f} mais baixo (d={forte['cohen_d']}, "
+                f"efeito {forte['magnitude']}). E a direccao fisiologica "
+                'esperada — e este e o lag que interessa para o canal 2.')
+        else:
+            out['leitura'] = (
+                f"Ao dia +{forte['lag']}, o HRV depois de dias duros e MAIS "
+                f"ALTO (d={forte['cohen_d']}). Direccao contraria a esperada: "
+                'reforca a hipotese de causalidade invertida — treinas mais '
+                'nos dias em que ja estavas bem.')
+    return out

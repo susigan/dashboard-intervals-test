@@ -164,6 +164,31 @@ def api_sync_full():
     return jsonify(res)
 
 
+@app.route('/api/protocolo')
+def api_protocolo():
+    """Testes maximos detectados e quais estao em atraso.
+
+    ?tipo=Bike   filtra por modalidade
+    """
+    import protocolo
+    curvas = db.load_power_curves(request.args.get('tipo') or None)
+    det = protocolo.detectar_testes(curvas or [])
+    return jsonify({
+        'status': 'OK',
+        'cobertura': protocolo.cobertura(det),
+        'sugestoes': protocolo.sugerir(det),
+        'robustez': protocolo.robustez(det),
+        # so os recentes na resposta: a lista completa pode ter centenas
+        'detectados': {m: {s: {k: v for k, v in d.items() if k != 'testes'}
+                           for s, d in durs.items()}
+                       for m, durs in det.items()},
+        'como_funciona': (
+            f'Uma sessao conta como teste quando o esforco numa duracao chega '
+            f'a {int(protocolo.LIMIAR_ESFORCO*100)}% do teu melhor dos ultimos '
+            f'{protocolo.JANELA_MELHOR} dias. Nao e preciso marcar nada.'),
+    })
+
+
 @app.route('/api/calibracao')
 def api_calibracao():
     """Parametros calibrados nos dados do atleta, com a evidencia.

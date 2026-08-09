@@ -1193,19 +1193,29 @@ function tabelaCalibracao(){
   const v=C[l[0]]||{};
   const dados=v.fonte==='dados';
   const cor=dados?'#2ECC71':'#E67E22';
+  const REJ=(C.parametros_rejeitados||{})[l[0]];
   const CORF={forte:'#2ECC71',moderada:'#F4D03F',fraca:'#E67E22',residual:'#E74C3C'};
   const cf=CORF[v.forca]||'#8b949e';
   let nota=dados?l[3]:(v.motivo||l[3]);
-  if(v.aviso_causalidade)
+  if(REJ)
+   nota='<span style="color:#E67E22">Rejeitado: '+REJ.motivo+'. '+
+        'A usar o valor de referencia.</span>';
+  else if(v.aviso_causalidade)
    nota='<span style="color:#E74C3C">⚠ '+v.aviso_causalidade+'</span>';
   else if(v.aviso)nota='<span style="color:#E67E22">⚠ '+v.aviso+'</span>';
   else if(v.interpretacao)nota=v.interpretacao;
+  // Quando o valor foi encontrado mas rejeitado, mostrar os dois: o que os
+  // dados deram e o que esta realmente a ser usado.
+  const mostrado = REJ ? REJ.usado : v.valor;
   return '<tr><td>'+l[1]+'</td>'+
-   '<td class="num">'+(v.valor!=null?v.valor+' '+l[2]:'—')+
+   '<td class="num">'+(mostrado!=null?mostrado+' '+l[2]:'—')+
+    (REJ?'<br><span style="font-size:11px;color:#E74C3C">'+
+     'dados deram '+REJ.valor_encontrado+' — nao usado</span>':'')+
     (v.fronteira?' <span style="color:#E67E22" title="valor no extremo da '+
      'grelha — nao e um optimo">⚠</span>':'')+'</td>'+
-   '<td class="num" style="color:'+cor+'" title="'+(v.motivo||'')+'">'+
-    (dados?'teus dados':'referencia')+'</td>'+
+   '<td class="num" style="color:'+(REJ?'#E67E22':cor)+'" title="'+
+    (REJ?REJ.motivo:(v.motivo||''))+'">'+
+    (REJ?'referencia':(dados?'teus dados':'referencia'))+'</td>'+
    '<td class="num">'+(v.r!=null?v.r:'—')+'</td>'+
    '<td class="num" style="color:'+cf+'">'+
     (v.r2!=null?v.r2+' ('+v.variacao_explicada_pct+'%)':'—')+

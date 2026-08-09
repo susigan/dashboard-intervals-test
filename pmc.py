@@ -726,7 +726,7 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
 # FMT 5x5 (Della Mattia 2019, §02) — tensor completo e mapa de atencao
 # ══════════════════════════════════════════════════════════════════════════
 
-def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
+def calcular_fmt(sessoes, wellness, serie_classica, janela=28, desde_hrv=None):
     """Sequencia de tensores FMT 5x5 e mapa de atencao sobre 28 dias.
 
     As cinco dimensoes sao as da Figura 1 do paper: Load, HRV, W', Sleep e
@@ -743,6 +743,9 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
     n = len(datas)
     dims = {'Load': np.array([d['load'] for d in serie_classica], dtype=np.float64)}
 
+    # so o wellness dentro da janela util entra no tensor
+    if desde_hrv:
+        wellness = [w for w in (wellness or []) if w['date'] >= desde_hrv]
     idx = {w['date']: w for w in (wellness or [])}
 
     def do_wellness(campo):
@@ -783,12 +786,42 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
         return {'erro': 'sao precisas pelo menos 2 dimensoes com dados',
                 'dimensoes': list(dims)}
 
-    # interpolar buracos curtos: um dia sem resposta ao formulario nao deve
-    # apagar a janela inteira de 28 dias
+    # Interpolar SO buracos curtos. Um dia sem resposta ao formulario nao deve
+    # apagar a janela de 28 dias; mas np.interp sobre a serie toda preenche
+    # tambem lacunas de anos, e extrapola plano antes do primeiro valor.
+    # Se o HRV so comeca em 2024, isso transformava 2021-2023 numa constante
+    # inventada — 56% da serie — e a calibracao corria sobre dados falsos.
+    MAX_LACUNA = 7
+    cobertura = {}
     for k, v in dims.items():
         m = np.isfinite(v)
-        if m.sum() >= 2 and (~m).any():
-            dims[k] = np.interp(np.arange(n), np.flatnonzero(m), v[m])
+        cobertura[k] = {
+            'dias_reais': int(m.sum()),
+            'primeiro': datas[int(np.argmax(m))] if m.any() else None,
+            'ultimo': datas[n - 1 - int(np.argmax(m[::-1]))] if m.any() else None,
+        }
+        if m.sum() < 2 or not (~m).any():
+            continue
+        idx = np.flatnonzero(m)
+        preenchido = v.copy()
+        for a, b in zip(idx[:-1], idx[1:]):
+            if 1 < b - a <= MAX_LACUNA + 1:
+                preenchido[a + 1:b] = np.interp(np.arange(a + 1, b), [a, b],
+                                                [v[a], v[b]])
+        dims[k] = preenchido
+        cobertura[k]['apos_interpolacao'] = int(np.isfinite(preenchido).sum())
+
+    # Janela util: onde TODAS as dimensoes tem dados. E aqui que o tensor
+    # e a calibracao podem correr sem inventar nada.
+    todas = np.ones(n, dtype=bool)
+    for v in dims.values():
+        todas &= np.isfinite(v)
+    if todas.sum() < janela + 30:
+        return {'erro': 'sem periodo em que todas as dimensoes tenham dados',
+                'dimensoes': list(dims), 'cobertura': cobertura,
+                'dias_com_todas': int(todas.sum())}
+    ini_util = int(np.argmax(todas))
+    fim_util = n - 1 - int(np.argmax(todas[::-1]))
 
     tensores, kappa, eig, nomes = _fmt.construir(dims, janela)
     if tensores is None:
@@ -811,12 +844,22 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
         v = v[v > 0]
         l1_hist.append(float(v[0] / v.sum()) if len(v) >= 2 else None)
 
+    # A calibracao corre so no periodo em que os dados existem mesmo.
+    sl = slice(ini_util, fim_util + 1)
     cal = _cal.calibrar_tudo(
-        carga=dims['Load'],
-        hrv_trend=hrv_para_calibrar,
-        cp=cp_serie if np.isfinite(cp_serie).sum() >= 30 else None,
-        kappa=kappa,
-        lambda1=l1_hist)
+        carga=dims['Load'][sl],
+        hrv_trend=(hrv_para_calibrar[sl] if hrv_para_calibrar is not None
+                   else None),
+        cp=(cp_serie[sl] if np.isfinite(cp_serie[sl]).sum() >= 30 else None),
+        kappa=kappa[sl],
+        lambda1=l1_hist[ini_util:fim_util + 1])
+    cal['periodo'] = {
+        'de': datas[ini_util], 'ate': datas[fim_util],
+        'dias': fim_util - ini_util + 1,
+        'nota': 'periodo em que todas as dimensoes tem dados; fora dele nao '
+                'se calibra para nao inventar valores',
+    }
+    cal['cobertura_por_dimensao'] = cobertura
 
     # Um parametro so e usado se medir o que diz medir.
     #
@@ -919,7 +962,22 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
     }
 
 
-def teste_eventos(sessoes, wellness, serie_classica, modalidades):
+def _janela_hrv(datas, wellness, desde=None):
+    """Primeiro e ultimo dia com HRV real, respeitando um limite opcional.
+
+    As analises que dependem de HRV so devem correr onde ha HRV. Sem isto,
+    anos inteiros sem medicoes entram como se tivessem dados.
+    """
+    idx = {w['date']: w for w in (wellness or [])}
+    com = [d for d in datas
+           if isinstance((idx.get(d) or {}).get('hrv'), (int, float))
+           and (not desde or d >= desde)]
+    if not com:
+        return None, None, 0
+    return com[0], com[-1], len(com)
+
+
+def teste_eventos(sessoes, wellness, serie_classica, modalidades, desde=None):
     """Teste por eventos: HRV depois de dias duros vs dias leves.
 
     Corre no agregado e por modalidade. E mais sensivel que a correlacao —
@@ -931,20 +989,30 @@ def teste_eventos(sessoes, wellness, serie_classica, modalidades):
     if not serie_classica or not wellness:
         return None
 
-    datas = [d['date'] for d in serie_classica]
+    datas_todas = [d['date'] for d in serie_classica]
+    de, ate, n_hrv = _janela_hrv(datas_todas, wellness, desde)
+    if not de or n_hrv < 100:
+        return {'erro': f'so {n_hrv} dias com HRV (precisa de 100)',
+                'desde_pedido': desde}
+
+    # cortar tudo para o periodo em que ha HRV
+    sel = [i for i, d in enumerate(datas_todas) if de <= d <= ate]
+    datas = [datas_todas[i] for i in sel]
     idx_w = {w['date']: w for w in wellness}
     hrv = np.array([(idx_w.get(d) or {}).get('hrv') or np.nan for d in datas],
                    dtype=np.float64)
-    if np.isfinite(hrv).sum() < 100:
-        return {'erro': 'menos de 100 dias com HRV'}
-
-    carga = np.array([d['load'] for d in serie_classica], dtype=np.float64)
-    out = {'agregado': _cal.teste_dias_duros(datas, carga, hrv),
+    carga = np.array([serie_classica[i]['load'] for i in sel], dtype=np.float64)
+    out = {'periodo': {'de': de, 'ate': ate, 'dias': len(datas),
+                       'dias_com_hrv': int(np.isfinite(hrv).sum()),
+                       'nota': 'restrito ao periodo com HRV real'},
+           'agregado': _cal.teste_dias_duros(datas, carga, hrv),
            'por_modalidade': {}}
 
     for mod in modalidades:
-        ses = [s for s in sessoes if s.get('type') == mod]
+        ses = [s for s in sessoes if s.get('type') == mod and de <= s['date'] <= ate]
         if len(ses) < 80:
+            out['por_modalidade'][mod] = {
+                'motivo': f'so {len(ses)} sessoes no periodo com HRV'}
             continue
         cm = np.nan_to_num(_serie_por_dia(ses, datas, 'tl', 'sum'))
         out['por_modalidade'][mod] = _cal.teste_dias_duros(datas, cm, hrv)
@@ -959,7 +1027,83 @@ def teste_eventos(sessoes, wellness, serie_classica, modalidades):
     return out
 
 
-def calibrar_segmentado(sessoes, wellness, serie_classica, modalidades):
+def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
+                        minimo_testes=25):
+    """Calibra contra os dias de esforco maximo, nao contra a CP de todas as
+    sessoes.
+
+    A CP de uma sessao de Z2 tranquilo e baixa porque escolheste treinar
+    suave, nao porque estas pior — isso e ruido a afogar o sinal. Nos dias
+    de esforco maximo a CP mede capacidade, e o estimulo foi decidido pelo
+    esforco e nao pelo estado, o que reduz a causalidade invertida.
+    """
+    import numpy as np
+    import calibracao as _cal
+    import protocolo as _prot
+    import db
+
+    if not serie_classica:
+        return None
+
+    datas = [d['date'] for d in serie_classica]
+    idx = {d: i for i, d in enumerate(datas)}
+    n = len(datas)
+    carga_total = np.array([d['load'] for d in serie_classica], dtype=np.float64)
+
+    out = {'duracao': secs, 'por_modalidade': {}}
+    for mod in modalidades:
+        curvas = db.load_power_curves(mod)
+        if not curvas:
+            continue
+        det = _prot.detectar_testes(curvas)
+        ancora = _prot.serie_ancora(det, mod, secs)
+        if len(ancora) < minimo_testes:
+            out['por_modalidade'][mod] = {
+                'n_testes': len(ancora),
+                'motivo': f'so {len(ancora)} testes (precisa de {minimo_testes})'}
+            continue
+
+        alvo = np.full(n, np.nan)
+        for t in ancora:
+            i = idx.get(t['date'])
+            if i is not None:
+                alvo[i] = t['valor']
+
+        # carga da propria modalidade
+        r = _cal.calibrar_lag(carga_total, alvo, range(5, 29), None, 'lag_super')
+        primeiro = ancora[0]['date']
+        ultimo = ancora[-1]['date']
+        out['por_modalidade'][mod] = {
+            'n_testes': len(ancora),
+            'de': primeiro, 'ate': ultimo,
+            'lag': r.get('valor'), 'r': r.get('r'), 'r2': r.get('r2'),
+            'forca': r.get('forca'),
+            'p_permutacao': r.get('p_permutacao'),
+            'distribuicao_nula': r.get('distribuicao_nula'),
+            'sobrevive': (r.get('p_permutacao') is not None
+                          and r['p_permutacao'] < 0.05),
+        }
+
+    validos = [(m, v) for m, v in out['por_modalidade'].items()
+               if v.get('sobrevive')]
+    out['sobrevivem'] = [m for m, _ in validos]
+    if validos:
+        m, v = max(validos, key=lambda x: x[1].get('r2') or 0)
+        out['leitura'] = (
+            f"{m}: a CP nos dias de teste responde a carga {v['lag']} dias "
+            f"antes (r={v['r']}, {v['r2']*100:.0f}% da variacao, "
+            f"p permutacao {v['p_permutacao']}, {v['n_testes']} testes).")
+    else:
+        out['leitura'] = (
+            'Nenhuma modalidade sobrevive a correccao por permutacao, mesmo '
+            'usando so os dias de esforco maximo. Com esta ancora — que e a '
+            'melhor disponivel — continua sem haver relacao detectavel entre '
+            'carga e performance.')
+    return out
+
+
+def calibrar_segmentado(sessoes, wellness, serie_classica, modalidades,
+                        desde=None):
     """Calibracao por modalidade e por ano, para ver onde o sinal existe.
 
     No agregado de anos e desportos, relacoes reais diluem-se. Isto separa
@@ -972,9 +1116,16 @@ def calibrar_segmentado(sessoes, wellness, serie_classica, modalidades):
     if not serie_classica:
         return None
 
-    datas = [d['date'] for d in serie_classica]
+    datas_todas = [d['date'] for d in serie_classica]
+    de, ate, n_hrv = _janela_hrv(datas_todas, wellness, desde)
+    if de:
+        sel = [i for i, d in enumerate(datas_todas) if de <= d <= ate]
+    else:
+        sel = list(range(len(datas_todas)))
+    datas = [datas_todas[i] for i in sel]
     n = len(datas)
-    carga_total = np.array([d['load'] for d in serie_classica], dtype=np.float64)
+    carga_total = np.array([serie_classica[i]['load'] for i in sel],
+                           dtype=np.float64)
 
     idx_w = {w['date']: w for w in (wellness or [])}
     hrv = np.array([(idx_w.get(d) or {}).get('hrv') or np.nan for d in datas],
@@ -1019,6 +1170,8 @@ def calibrar_segmentado(sessoes, wellness, serie_classica, modalidades):
     tudo = np.ones(n, dtype=bool)
     ag = _cal.calibrar_por_segmento({'agregado': tudo}, carga_total, hrv, cp)
     out['agregado'] = ag.get('agregado')
+    # tambem restringimos os segmentos por ano ao periodo com HRV, ja feito
+    # acima ao cortar `datas`
 
     base = (out['agregado'] or {}).get('melhor_r2') or 0.0
     melhores = []
@@ -1033,6 +1186,10 @@ def calibrar_segmentado(sessoes, wellness, serie_classica, modalidades):
     melhores.sort(key=lambda x: -x['r2'])
     out['destaques'] = melhores[:5]
     out['r2_agregado'] = round(base, 4)
+    out['periodo'] = {'de': de, 'ate': ate, 'dias': n,
+                      'dias_com_hrv': n_hrv,
+                      'nota': ('restrito ao periodo com HRV real'
+                               if de else 'sem HRV — so as series de carga/CP')}
     out['leitura'] = (
         f"Segmentos com sinal claramente acima do agregado ({base*100:.1f}%): "
         + (', '.join(f"{m['nome']} ({m['r2']*100:.0f}%)" for m in melhores[:3])

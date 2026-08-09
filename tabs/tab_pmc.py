@@ -1204,7 +1204,10 @@ function tabelaCalibracao(){
     (v.r2!=null?v.r2+' ('+v.variacao_explicada_pct+'%)':'—')+
     (v.forca?'<br><span style="font-size:11px">'+v.forca+'</span>':'')+'</td>'+
    '<td class="num">'+(v.n!=null?v.n:'—')+'</td>'+
-   '<td style="font-size:12px;color:#8b949e">'+nota+'</td></tr>';}).join('');
+   '<td style="font-size:12px;color:#8b949e">'+nota+
+    (v.destendenciado?'<br><span style="color:#5DADE2">sem tendencia de longo '+
+     'prazo (residuos face a media movel de ±90d)</span>':'')+
+    '</td></tr>';}).join('');
 
  const L=C.limiares_lambda1||{};
  const dl=L.fonte==='dados';
@@ -1242,13 +1245,14 @@ function mostrarFMT5(){
  sub.innerHTML='Tensor '+F.dimensoes.length+'&times;'+F.dimensoes.length+
   ' sobre janela de '+F.janela+' dias &middot; dimensoes: '+F.dimensoes.join(', ')+
   ' &middot; dia '+F.dia+
-  (lim.fonte==='historico'
-   ? '<br><span style="font-size:12px">Limiares focal/multissistemico dos teus '+
-     'percentis 70/30 ('+(lim.focal_acima*100).toFixed(0)+'% / '+
-     (lim.multi_abaixo*100).toFixed(0)+'%), sobre '+lim.n_historico+' dias</span>'
+  (lim.fonte==='dados'||lim.fonte==='historico'
+   ? '<br><span style="font-size:12px">Limiares focal/multissistemico da tua '+
+     'distribuicao de λ₁ ('+(lim.focal_acima*100).toFixed(0)+'% / '+
+     (lim.multi_abaixo*100).toFixed(0)+'%), sobre '+
+     (lim.n_historico||lim.n||0)+' dias</span>'
    : '<br><span style="font-size:12px;color:#E67E22">Limiares de referencia '+
-     '(0.55/0.35) — so '+(lim.n_historico||0)+' dias de historico, precisa de 60'+
-     ' para os derivar dos teus dados</span>');
+     '(0.55/0.35) — so '+(lim.n_historico||lim.n||0)+' dias de historico, '+
+     'precisa de 60 para os derivar dos teus dados</span>');
  const L=(F.resumo||{}).leitura;
  document.getElementById('leituraFMT').innerHTML= L
   ? '<div style="border-left:3px solid '+L.cor+';background:#161b22;padding:9px 13px;'+

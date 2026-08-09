@@ -13,7 +13,7 @@ import db
 import pmc
 import sheets_client as sheets
 from api_client import fetch_activities, norm_tipo, num
-from config import CICLICOS, CORES_MOD
+from config import CICLICOS, CORES_MOD, ANOS_HRV, limite_hrv
 from tabs.base import page, explicacao
 
 SLUG = 'pmc'
@@ -78,7 +78,8 @@ def api_data():
         ftlm_res, erro_ftlm = None, f'{type(e).__name__}: {e}'
 
     try:
-        fmt_res = pmc.calcular_fmt(sessoes, wellness, serie)
+        fmt_res = pmc.calcular_fmt(sessoes, wellness, serie,
+                                   desde_hrv=limite_hrv())
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -179,8 +180,21 @@ def api_calibracao_dados():
         return {'erro': (res or {}).get('erro', 'nao foi possivel calibrar')}
 
     cal = res.get('calibracao') or {}
-    segmentado = pmc.calibrar_segmentado(sessoes, wellness, serie, CICLICOS)
-    eventos = pmc.teste_eventos(sessoes, wellness, serie, CICLICOS)
+    # ?desde=YYYY-MM-DD limita as analises que dependem de HRV.
+    # Util quando as medicoes so comecaram a meio do historico.
+    desde_hrv = request.args.get('desde') or limite_hrv()
+    segmentado = pmc.calibrar_segmentado(sessoes, wellness, serie, CICLICOS,
+                                         desde=desde_hrv)
+    eventos = pmc.teste_eventos(sessoes, wellness, serie, CICLICOS,
+                                desde=desde_hrv)
+    # Calibrar contra os dias de esforco maximo. Usa o historico completo:
+    # a CP de um teste de 2022 e comparavel com a de 2026, ao contrario do HRV.
+    try:
+        ancora = pmc.calibrar_com_ancora(serie, CICLICOS)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        ancora = {'erro': f'{type(e).__name__}: {e}'}
     return {
         'status': 'OK',
         'dias': len(serie),
@@ -191,6 +205,14 @@ def api_calibracao_dados():
         'dimensoes_fmt': res.get('dimensoes'),
         'parametros': res.get('params_usados'),
         'calibracao': cal,
+        'janela_hrv': {
+            'desde': desde_hrv, 'anos': ANOS_HRV,
+            'motivo': ('as analises com HRV usam so os ultimos '
+                       f'{ANOS_HRV:g} anos — dados mais antigos podem vir de '
+                       'outro dispositivo ou protocolo. Carga, CP e curvas de '
+                       'potencia continuam a usar o historico completo.'),
+            'configuravel': 'ANOS_HRV no Railway, ou ?desde=YYYY-MM-DD'},
+        'ancora_testes': ancora,
         'segmentado': segmentado,
         'teste_eventos': eventos,
         'onde_sao_usados': {

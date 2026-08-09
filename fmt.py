@@ -283,7 +283,7 @@ def resumo_dia(tensores, kappa, eig, nomes, dia, limiares=None):
         alto = limiares.get('alto', 0.55)
         baixo = limiares.get('baixo', 0.35)
         fonte_lim = limiares.get('fonte', 'referencia')
-        n_hist = limiares.get('n', 0)
+        n_hist = limiares.get('n', limiares.get('n_historico', 0))
     else:
         alto, baixo, fonte_lim, n_hist = limiares_lambda1(eig)
 

@@ -179,6 +179,7 @@ def api_calibracao_dados():
         return {'erro': (res or {}).get('erro', 'nao foi possivel calibrar')}
 
     cal = res.get('calibracao') or {}
+    segmentado = pmc.calibrar_segmentado(sessoes, wellness, serie, CICLICOS)
     return {
         'status': 'OK',
         'dias': len(serie),
@@ -189,6 +190,7 @@ def api_calibracao_dados():
         'dimensoes_fmt': res.get('dimensoes'),
         'parametros': res.get('params_usados'),
         'calibracao': cal,
+        'segmentado': segmentado,
         'onde_sao_usados': {
             'tau_carga': 'canal 1 do mapa de atencao (decaimento da carga)',
             'lag_hrv': 'canal 2 (onde o HRV cai mais depois da carga)',
@@ -442,6 +444,7 @@ __EXPL_fases__
 </div>
 <div class="sub" id="notaAtencao" style="font-style:italic"></div>
 <h3>Calibracao dos parametros</h3>
+<div id="veredicto"></div>
 <div class="sub" id="notaCal"></div>
 <div class="wrap" style="max-height:260px;margin-bottom:14px"><table>
   <thead><tr id="calHead"></tr></thead><tbody id="calBody"></tbody></table></div>
@@ -1191,7 +1194,9 @@ function tabelaCalibracao(){
   const CORF={forte:'#2ECC71',moderada:'#F4D03F',fraca:'#E67E22',residual:'#E74C3C'};
   const cf=CORF[v.forca]||'#8b949e';
   let nota=dados?l[3]:(v.motivo||l[3]);
-  if(v.aviso)nota='<span style="color:#E67E22">⚠ '+v.aviso+'</span>';
+  if(v.aviso_causalidade)
+   nota='<span style="color:#E74C3C">⚠ '+v.aviso_causalidade+'</span>';
+  else if(v.aviso)nota='<span style="color:#E67E22">⚠ '+v.aviso+'</span>';
   else if(v.interpretacao)nota=v.interpretacao;
   return '<tr><td>'+l[1]+'</td>'+
    '<td class="num">'+(v.valor!=null?v.valor+' '+l[2]:'—')+
@@ -1223,6 +1228,16 @@ function tabelaCalibracao(){
        '; p70/p30 seriam '+L.p70+'/'+L.p30+')'
      :(L.motivo||''))+'</td></tr>';
  document.getElementById('calBody').innerHTML=html;
+
+ // veredicto: ha sinal utilizavel ou os canais sao decorativos?
+ const V=C.veredicto;
+ const ev=document.getElementById('veredicto');
+ if(ev&&V)ev.innerHTML=
+  '<div style="border-left:4px solid '+V.cor+';background:'+hexRgba(V.cor,0.08)+
+  ';padding:11px 15px;border-radius:0 6px 6px 0;margin-bottom:10px;font-size:13px">'+
+  '<b>'+({utilizavel:'Sinal utilizavel',fraco:'Sinal fraco',
+          sem_sinal:'Sem sinal detectavel'}[V.nivel]||V.nivel)+'</b><br>'+
+  V.texto+'</div>';
 
  const R=C.resumo||{};
  const el=document.getElementById('notaCal');

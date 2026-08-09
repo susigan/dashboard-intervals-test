@@ -49,6 +49,55 @@ REFERENCIA = {
 P_MINIMO = 0.10              # acima disto a correlacao nao sustenta nada
 
 
+def p_permutacao(x, y, funcao_busca, n_perm=200, semente=0):
+    """p corrigido por permutacao circular.
+
+    Porque e indispensavel: quando se procura o melhor de 25 lags ou 21 taus,
+    o p do vencedor NAO e o p de um teste — e o p do maximo de 25. Com duas
+    series independentes mas autocorrelacionadas, essa busca devolve |r|
+    mediano de 0.106 e p95 de 0.19. Reportar o p individual do vencedor e
+    p-hacking por construcao.
+
+    Deslocamos ciclicamente o alvo por um valor aleatorio. Isso preserva toda
+    a autocorrelacao de ambas as series e destroi apenas a relacao entre elas
+    — que e exactamente a hipotese nula que interessa. Baralhar ao acaso
+    destruiria a autocorrelacao e daria p falsamente pequeno.
+
+    funcao_busca(x, y) -> melhor |r| encontrado nessa busca.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    n = len(y)
+    if n < 60:
+        return None, None
+
+    obs = funcao_busca(x, y)
+    if obs is None:
+        return None, None
+
+    rng = np.random.default_rng(semente)
+    # evitar deslocamentos minusculos, que quase nao quebram a relacao
+    margem = max(30, n // 10)
+    nulos = []
+    for _ in range(n_perm):
+        k = int(rng.integers(margem, n - margem))
+        r = funcao_busca(x, np.roll(y, k))
+        if r is not None:
+            nulos.append(r)
+    if len(nulos) < 30:
+        return None, None
+
+    nulos = np.array(nulos)
+    # +1 no numerador e denominador: estimador nao enviesado
+    p = (1 + int((nulos >= obs).sum())) / (1 + len(nulos))
+    return round(float(p), 4), {
+        'observado': round(float(obs), 4),
+        'nulo_mediana': round(float(np.median(nulos)), 4),
+        'nulo_p95': round(float(np.quantile(nulos, 0.95)), 4),
+        'nulo_max': round(float(nulos.max()), 4),
+        'n_permutacoes': len(nulos)}
+
+
 def _forca(r, n):
     """Forca pratica da correlacao.
 
@@ -86,13 +135,39 @@ def sem_tendencia(x, janela=90):
     """
     x = np.asarray(x, dtype=np.float64)
     n = len(x)
+    densidade = np.isfinite(x).sum() / max(n, 1)
+    # Series esparsas — por exemplo so os dias de teste — nao tem pontos
+    # suficientes dentro de uma janela movel. Nesse caso tira-se a tendencia
+    # global (recta ajustada) em vez da media movel: remove a deriva sem
+    # exigir vizinhos.
+    if densidade < 0.15:
+        m = np.isfinite(x)
+        if m.sum() < 5:
+            return x.copy()
+        t = np.arange(n, dtype=np.float64)
+        a, b = _linreg(t[m], x[m])
+        out = np.full(n, np.nan)
+        out[m] = x[m] - (a * t[m] + b)
+        return out
+
     out = np.full(n, np.nan)
+    minimo = 10 if densidade > 0.5 else 5
     for i in range(n):
         seg = x[max(0, i - janela):min(n, i + janela + 1)]
         seg = seg[np.isfinite(seg)]
-        if len(seg) >= 10:
+        if len(seg) >= minimo:
             out[i] = x[i] - seg.mean()
     return out
+
+
+def _linreg(x, y):
+    """Declive e ordenada na origem."""
+    mx, my = x.mean(), y.mean()
+    den = float(((x - mx) ** 2).sum())
+    if den < 1e-12:
+        return 0.0, float(my)
+    a = float(((x - mx) * (y - my)).sum() / den)
+    return a, float(my - a * mx)
 
 
 def _limpar(x, y):
@@ -107,7 +182,7 @@ def _pearson(x, y):
     import math
     x, y = _limpar(x, y)
     n = len(x)
-    if n < 10 or np.std(x) < 1e-9 or np.std(y) < 1e-9:
+    if n < 8 or np.std(x) < 1e-9 or np.std(y) < 1e-9:
         return None, None, n
     r = float(np.corrcoef(x, y)[0, 1])
     if not np.isfinite(r):
@@ -177,10 +252,24 @@ def calibrar_tau(carga, alvo,
     # Se o melhor ficou no extremo da grelha, nao e um optimo — e o sitio
     # onde a procura parou. Dizer isso e essencial: caso contrario um valor
     # de fronteira passa por resultado.
+    def _busca(cc, aa):
+        melhores = []
+        for t in taus:
+            e = _desloca(_ewm(cc, t), lag)
+            if destendenciar:
+                e = sem_tendencia(e)
+            r_, p_, n_ = _pearson(e, aa)
+            if r_ is not None:
+                melhores.append(abs(r_))
+        return max(melhores) if melhores else None
+
+    p_perm, nulo = p_permutacao(carga, alvo_use, _busca)
+
     extremos = [taus[0], taus[-1]]
     na_fronteira = melhor['tau'] in extremos
     out = {'fonte': 'dados', 'valor': melhor['tau'], 'r': melhor['r'],
            'p': melhor['p'], 'n': melhor['n'], 'testados': testados,
+           'p_permutacao': p_perm, 'distribuicao_nula': nulo,
            'destendenciado': destendenciar,
            **_forca(melhor['r'], melhor['n'])}
     if na_fronteira:
@@ -225,7 +314,21 @@ def calibrar_lag(x, y, lags=range(0, 29), sinal=None, chave_ref=None,
             if t['r'] is not None and abs(t['r']) >= 0.7 * abs(melhor['r'])]
     largura = (max(bons) - min(bons)) / 2.0 if len(bons) > 1 else 3.5
     lags_l = list(lags)
+
+    # p corrigido: quantas vezes uma busca igual sobre dados sem relacao
+    # daria um |r| tao grande como este?
+    def _busca(xx, yy):
+        melhores = []
+        for L in lags_l:
+            r_, p_, n_ = _pearson(_desloca(xx, L), yy)
+            if r_ is not None:
+                melhores.append(abs(r_))
+        return max(melhores) if melhores else None
+
+    p_perm, nulo = p_permutacao(x, y, _busca)
+
     out = {'fonte': 'dados', 'valor': melhor['lag'], 'r': melhor['r'],
+           'p_permutacao': p_perm, 'distribuicao_nula': nulo,
            'p': melhor['p'], 'n': melhor['n'],
            'largura': round(max(1.5, largura), 1),
            'janela': [min(bons), max(bons)] if bons else None,
@@ -331,18 +434,31 @@ def calibrar_tudo(carga, hrv_trend=None, cp=None, kappa=None, lambda1=None):
             continue
         if v.get('aviso'):
             avisos.append(f"{k}: {v['aviso']}")
-        if v.get('forca') in ('residual', 'fraca') and v.get('fonte') == 'dados':
+        pp = v.get('p_permutacao')
+        if pp is not None and pp >= 0.05 and v.get('fonte') == 'dados':
+            nu = v.get('distribuicao_nula') or {}
+            avisos.append(
+                f"{k}: p corrigido por permutacao = {pp}. O |r| de "
+                f"{abs(v.get('r') or 0):.3f} esta dentro do que a mesma busca "
+                f"da em dados sem relacao (mediana {nu.get('nulo_mediana')}, "
+                f"p95 {nu.get('nulo_p95')}). Nao e sinal.")
+        elif v.get('forca') in ('residual', 'fraca') and v.get('fonte') == 'dados':
             avisos.append(
                 f"{k}: r={v.get('r')} explica so {v.get('variacao_explicada_pct')}% "
-                f"da variacao — estatisticamente significativo por causa do n "
-                f"({v.get('n')}), mas fraco na pratica")
+                f"da variacao — fraco na pratica")
     out['avisos'] = avisos
 
     # Veredicto: ha sinal utilizavel, ou os canais sao decorativos?
     canais = ['canal1_tau', 'canal2_lag', 'canal3_lag', 'canal4_lag']
-    r2s = [out[k].get('r2') for k in canais
-           if isinstance(out.get(k), dict) and out[k].get('r2') is not None]
+    # So conta quem sobrevive a correccao por permutacao. O p ingenuo do
+    # vencedor de uma busca nao significa nada.
+    sobrevivem = [k for k in canais
+                  if isinstance(out.get(k), dict)
+                  and out[k].get('p_permutacao') is not None
+                  and out[k]['p_permutacao'] < 0.05]
+    r2s = [out[k].get('r2') for k in sobrevivem if out[k].get('r2') is not None]
     melhor_r2 = max(r2s) if r2s else 0.0
+    out['sobrevivem_permutacao'] = sobrevivem
     if melhor_r2 >= 0.09:
         vered = {'nivel': 'utilizavel', 'cor': '#2ECC71',
                  'texto': f'O melhor canal explica {melhor_r2*100:.0f}% da '
@@ -352,13 +468,18 @@ def calibrar_tudo(carga, hrv_trend=None, cp=None, kappa=None, lambda1=None):
                  'texto': f'O melhor canal explica {melhor_r2*100:.0f}% da '
                           'variacao. Sinal fraco — usar como indicacao, nao '
                           'para decidir treino.'}
+    elif sobrevivem:
+        vered = {'nivel': 'sem_sinal', 'cor': '#E74C3C',
+                 'texto': f'Passam a permutacao ({", ".join(sobrevivem)}) mas '
+                          f'nenhum chega a 2% de variacao explicada.'}
     else:
         vered = {'nivel': 'sem_sinal', 'cor': '#E74C3C',
-                 'texto': f'Nenhum canal passa de {melhor_r2*100:.1f}% de '
-                          'variacao explicada. Nos dados agregados nao ha '
-                          'relacao dinamica detectavel entre carga e '
-                          'HRV/CP — o mapa de atencao fica decorativo. '
-                          'Ver a calibracao por modalidade e por periodo.'}
+                 'texto': 'Nenhum canal sobrevive a correccao por permutacao. '
+                          'Os p pequenos vinham de procurar o melhor de dezenas '
+                          'de lags: com series independentes mas '
+                          'autocorrelacionadas, essa busca da |r| de 0.10 por '
+                          'puro acaso, que e a ordem de grandeza do que aqui '
+                          'aparece. Nao ha relacao dinamica detectavel.'}
     out['veredicto'] = {**vered, 'melhor_r2': round(melhor_r2, 4)}
 
     n_dados = sum(1 for k, v in out.items()
@@ -522,11 +643,33 @@ def teste_dias_duros(datas, carga, hrv, percentil_alto=80, percentil_baixo=20,
             'p': round(float(p), 5)})
 
     validos = [x for x in out['por_lag'] if x.get('cohen_d') is not None]
+
+    # Correccao de Holm: aqui testam-se varios lags, e mais tarde varias
+    # modalidades. Sem correccao, o "melhor" e quase sempre ruido.
+    if validos:
+        ordenados = sorted(validos, key=lambda x: x['p'])
+        m = len(ordenados)
+        anterior = 0.0
+        for i, x in enumerate(ordenados):
+            aj = min(1.0, max(anterior, x['p'] * (m - i)))
+            x['p_corrigido'] = round(aj, 4)
+            x['sobrevive'] = aj < 0.05
+            anterior = aj
+        out['n_testes_neste_grupo'] = m
+
     if validos:
         forte = max(validos, key=lambda x: abs(x['cohen_d']))
         out['melhor_lag'] = forte['lag']
         out['maior_efeito'] = forte['cohen_d']
-        if abs(forte['cohen_d']) < 0.2:
+        if not forte.get('sobrevive', False) and abs(forte['cohen_d']) >= 0.2:
+            out['leitura'] = (
+                f"O maior efeito e ao dia +{forte['lag']} "
+                f"(d={forte['cohen_d']}, {forte['magnitude']}), mas o p "
+                f"corrigido para os {out.get('n_testes_neste_grupo')} lags "
+                f"testados e {forte.get('p_corrigido')} — nao sobrevive. "
+                'Um efeito isolado com p a rondar 0.05 entre varios testes '
+                'e o que se espera do acaso.')
+        elif abs(forte['cohen_d']) < 0.2:
             out['leitura'] = (
                 'O HRV depois de dias duros e depois de dias leves e '
                 'praticamente o mesmo (d < 0.2). Com este metodo — que e mais '

@@ -875,6 +875,46 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28):
     }
 
 
+def teste_eventos(sessoes, wellness, serie_classica, modalidades):
+    """Teste por eventos: HRV depois de dias duros vs dias leves.
+
+    Corre no agregado e por modalidade. E mais sensivel que a correlacao —
+    se nem aqui houver efeito, a limitacao esta nos dados, nao no metodo.
+    """
+    import numpy as np
+    import calibracao as _cal
+
+    if not serie_classica or not wellness:
+        return None
+
+    datas = [d['date'] for d in serie_classica]
+    idx_w = {w['date']: w for w in wellness}
+    hrv = np.array([(idx_w.get(d) or {}).get('hrv') or np.nan for d in datas],
+                   dtype=np.float64)
+    if np.isfinite(hrv).sum() < 100:
+        return {'erro': 'menos de 100 dias com HRV'}
+
+    carga = np.array([d['load'] for d in serie_classica], dtype=np.float64)
+    out = {'agregado': _cal.teste_dias_duros(datas, carga, hrv),
+           'por_modalidade': {}}
+
+    for mod in modalidades:
+        ses = [s for s in sessoes if s.get('type') == mod]
+        if len(ses) < 80:
+            continue
+        cm = np.nan_to_num(_serie_por_dia(ses, datas, 'tl', 'sum'))
+        out['por_modalidade'][mod] = _cal.teste_dias_duros(datas, cm, hrv)
+
+    efeitos = [('agregado', out['agregado'].get('maior_efeito'))]
+    for m, v in out['por_modalidade'].items():
+        efeitos.append((m, v.get('maior_efeito')))
+    validos = [(k, v) for k, v in efeitos if v is not None]
+    if validos:
+        k, v = max(validos, key=lambda x: abs(x[1]))
+        out['maior_efeito_global'] = {'onde': k, 'cohen_d': v}
+    return out
+
+
 def calibrar_segmentado(sessoes, wellness, serie_classica, modalidades):
     """Calibracao por modalidade e por ano, para ver onde o sinal existe.
 

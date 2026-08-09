@@ -106,3 +106,19 @@ def season_de(d, marcos=None):
             break
     # antes da primeira season definida
     return escolhido or season_por_mes(s)
+
+
+# ── Janela das analises que dependem de HRV ───────────────────────────────
+# O HRV e sensivel a mudancas de dispositivo, de protocolo de medicao e de
+# habito. Dados de ha 5 anos podem nao ser comparaveis com os de agora, e
+# misturar tudo dilui relacoes que existem no periodo recente.
+# As series de carga, CP e curvas de potencia continuam a usar o historico
+# completo — essas nao tem o mesmo problema de comparabilidade.
+ANOS_HRV = float(os.getenv("ANOS_HRV", "3"))
+
+
+def limite_hrv(hoje=None):
+    """Data a partir da qual as analises com HRV correm."""
+    from datetime import datetime, timedelta
+    hoje = hoje or datetime.now()
+    return (hoje - timedelta(days=int(365.25 * ANOS_HRV))).strftime('%Y-%m-%d')

@@ -71,6 +71,30 @@ def _forca(r, n):
             'variacao_explicada_pct': round(r2 * 100, 1)}
 
 
+def sem_tendencia(x, janela=90):
+    """Residuos face a uma media movel centrada e longa.
+
+    Porque e preciso: ao longo de anos, carga e HRV tem ambos derivas lentas
+    (forma a melhorar, sazonalidade, idade). Correlacionar duas series com
+    deriva partilhada da correlacao sem existir relacao dinamica — e o
+    confundimento por tendencia. Ao tirar a media movel de +/-90 dias, fica
+    so a dinamica de semanas, que e o que interessa aqui.
+
+    Verificado: com relacao real de tau=10 dias mais deriva, a correlacao
+    bruta melhora ate ao fim da grelha (escolhe a tendencia); sem tendencia,
+    faz maximo em tau=10.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    n = len(x)
+    out = np.full(n, np.nan)
+    for i in range(n):
+        seg = x[max(0, i - janela):min(n, i + janela + 1)]
+        seg = seg[np.isfinite(seg)]
+        if len(seg) >= 10:
+            out[i] = x[i] - seg.mean()
+    return out
+
+
 def _limpar(x, y):
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
@@ -117,7 +141,7 @@ def _desloca(serie, lag):
 def calibrar_tau(carga, alvo,
                  taus=(2, 3, 4, 5, 6.5, 8, 10, 12, 14, 16, 18, 21, 25, 30, 42,
                        56, 75, 100, 140, 180, 240),
-                 lag=1, sinal=None):
+                 lag=1, sinal=None, destendenciar=True):
     """tau da media exponencial que melhor explica o alvo.
 
     sinal: -1 se se espera correlacao negativa (carga sobe -> HRV desce),
@@ -125,6 +149,7 @@ def calibrar_tau(carga, alvo,
     """
     carga = np.nan_to_num(np.asarray(carga, dtype=np.float64))
     alvo = np.asarray(alvo, dtype=np.float64)
+    alvo_use = sem_tendencia(alvo) if destendenciar else alvo
     if np.isfinite(alvo).sum() < 30:
         return {'fonte': 'referencia', 'valor': REFERENCIA['tau_carga'],
                 'motivo': f'so {int(np.isfinite(alvo).sum())} dias com alvo '
@@ -133,7 +158,9 @@ def calibrar_tau(carga, alvo,
     testados, melhor = [], None
     for t in taus:
         e = _desloca(_ewm(carga, t), lag)
-        r, p, n = _pearson(e, alvo)
+        if destendenciar:
+            e = sem_tendencia(e)
+        r, p, n = _pearson(e, alvo_use)
         testados.append({'tau': t, 'r': r, 'p': p, 'n': n})
         if r is None or p is None or p > P_MINIMO:
             continue
@@ -154,6 +181,7 @@ def calibrar_tau(carga, alvo,
     na_fronteira = melhor['tau'] in extremos
     out = {'fonte': 'dados', 'valor': melhor['tau'], 'r': melhor['r'],
            'p': melhor['p'], 'n': melhor['n'], 'testados': testados,
+           'destendenciado': destendenciar,
            **_forca(melhor['r'], melhor['n'])}
     if na_fronteira:
         out['aviso'] = (f"tau={melhor['tau']} e o extremo da grelha "
@@ -163,10 +191,13 @@ def calibrar_tau(carga, alvo,
     return out
 
 
-def calibrar_lag(x, y, lags=range(0, 29), sinal=None, chave_ref=None):
+def calibrar_lag(x, y, lags=range(0, 29), sinal=None, chave_ref=None,
+                 destendenciar=True):
     """Lag em que x[t-lag] melhor explica y[t]."""
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
+    if destendenciar:
+        x, y = sem_tendencia(x), sem_tendencia(y)
     if np.isfinite(y).sum() < 30:
         return {'fonte': 'referencia', 'valor': REFERENCIA.get(chave_ref),
                 'motivo': f'so {int(np.isfinite(y).sum())} dias com alvo '
@@ -198,7 +229,8 @@ def calibrar_lag(x, y, lags=range(0, 29), sinal=None, chave_ref=None):
            'p': melhor['p'], 'n': melhor['n'],
            'largura': round(max(1.5, largura), 1),
            'janela': [min(bons), max(bons)] if bons else None,
-           'testados': testados, **_forca(melhor['r'], melhor['n'])}
+           'testados': testados, 'destendenciado': destendenciar,
+           **_forca(melhor['r'], melhor['n'])}
     if melhor['lag'] in (lags_l[0], lags_l[-1]):
         out['fronteira'] = True
         out['aviso'] = (f"lag={melhor['lag']} e o extremo do intervalo testado "
@@ -259,7 +291,7 @@ def calibrar_tudo(carga, hrv_trend=None, cp=None, kappa=None, lambda1=None):
     # a resposta chega com atraso. Forcar o sinal negativo rejeitava um sinal
     # real. Reportamos o que os dados dizem e deixamos a leitura seguir.
     if kappa is not None and cp is not None:
-        c4 = calibrar_lag(kappa, cp, range(0, 29), None, 'tau_risco')
+        c4 = calibrar_lag(kappa, cp, range(0, 43), None, 'tau_risco')
         if c4.get('fonte') == 'dados':
             c4['interpretacao'] = (
                 'kappa alto antecede CP mais alta — assinatura de estimulo '

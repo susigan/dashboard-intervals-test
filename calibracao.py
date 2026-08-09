@@ -263,21 +263,37 @@ def calibrar_tudo(carga, hrv_trend=None, cp=None, kappa=None, lambda1=None):
     """Calibra os quatro canais e os limiares. Devolve valores e evidencia."""
     out = {'p_minimo': P_MINIMO, 'referencia': REFERENCIA}
 
-    # Canal 1: quanto tempo a carga pesa. Mais carga acumulada -> HRV mais baixo.
-    out['canal1_tau'] = (calibrar_tau(carga, hrv_trend, lag=1, sinal=-1)
-                         if hrv_trend is not None else
-                         {'fonte': 'referencia', 'valor': REFERENCIA['tau_carga'],
-                          'motivo': 'sem serie de HRV'})
+    # Canal 1: quanto tempo a carga pesa.
+    #
+    # NAO impomos sinal. A expectativa fisiologica e negativa (mais carga
+    # acumulada -> HRV mais baixo), mas ha um efeito em sentido contrario que
+    # e real: o atleta treina mais quando se sente bem. Essa causalidade
+    # invertida (HRV alto -> mais carga) cancela em parte o efeito
+    # fisiologico, e nos dados agregados pode ate domina-lo. Forcar o sinal
+    # negativo esconderia isso.
+    if hrv_trend is not None:
+        c1 = calibrar_tau(carga, hrv_trend, lag=1, sinal=None)
+        if c1.get('fonte') == 'dados' and (c1.get('r') or 0) > 0:
+            c1['aviso_causalidade'] = (
+                'correlacao POSITIVA: mais carga acumulada anda com HRV mais '
+                'alto. O efeito fisiologico e o inverso — isto sugere '
+                'causalidade invertida (treinas mais quando o HRV esta bom). '
+                'O parametro nao deve ser lido como decaimento de fadiga.')
+        out['canal1_tau'] = c1
+    else:
+        out['canal1_tau'] = {'fonte': 'referencia',
+                             'valor': REFERENCIA['tau_carga'],
+                             'motivo': 'sem serie de HRV'}
 
     # Canal 2: quantos dias depois da carga o HRV cai mais.
-    out['canal2_lag'] = (calibrar_lag(carga, hrv_trend, range(0, 15), -1, 'lag_hrv')
+    out['canal2_lag'] = (calibrar_lag(carga, hrv_trend, range(0, 15), None, 'lag_hrv')
                          if hrv_trend is not None else
                          {'fonte': 'referencia', 'valor': REFERENCIA['lag_hrv'],
                           'motivo': 'sem serie de HRV'})
 
     # Canal 3: quantos dias depois de um bloco a CP sobe. Aqui o sinal e
     # positivo — e a definicao de supercompensacao.
-    out['canal3_lag'] = (calibrar_lag(carga, cp, range(5, 29), +1, 'lag_super')
+    out['canal3_lag'] = (calibrar_lag(carga, cp, range(5, 29), None, 'lag_super')
                          if cp is not None else
                          {'fonte': 'referencia', 'valor': REFERENCIA['lag_super'],
                           'motivo': 'sem serie de CP'})
@@ -322,6 +338,29 @@ def calibrar_tudo(carga, hrv_trend=None, cp=None, kappa=None, lambda1=None):
                 f"({v.get('n')}), mas fraco na pratica")
     out['avisos'] = avisos
 
+    # Veredicto: ha sinal utilizavel, ou os canais sao decorativos?
+    canais = ['canal1_tau', 'canal2_lag', 'canal3_lag', 'canal4_lag']
+    r2s = [out[k].get('r2') for k in canais
+           if isinstance(out.get(k), dict) and out[k].get('r2') is not None]
+    melhor_r2 = max(r2s) if r2s else 0.0
+    if melhor_r2 >= 0.09:
+        vered = {'nivel': 'utilizavel', 'cor': '#2ECC71',
+                 'texto': f'O melhor canal explica {melhor_r2*100:.0f}% da '
+                          'variacao. Ha relacao dinamica detectavel.'}
+    elif melhor_r2 >= 0.02:
+        vered = {'nivel': 'fraco', 'cor': '#E67E22',
+                 'texto': f'O melhor canal explica {melhor_r2*100:.0f}% da '
+                          'variacao. Sinal fraco — usar como indicacao, nao '
+                          'para decidir treino.'}
+    else:
+        vered = {'nivel': 'sem_sinal', 'cor': '#E74C3C',
+                 'texto': f'Nenhum canal passa de {melhor_r2*100:.1f}% de '
+                          'variacao explicada. Nos dados agregados nao ha '
+                          'relacao dinamica detectavel entre carga e '
+                          'HRV/CP — o mapa de atencao fica decorativo. '
+                          'Ver a calibracao por modalidade e por periodo.'}
+    out['veredicto'] = {**vered, 'melhor_r2': round(melhor_r2, 4)}
+
     n_dados = sum(1 for k, v in out.items()
                   if isinstance(v, dict) and v.get('fonte') == 'dados')
     out['resumo'] = {
@@ -331,4 +370,62 @@ def calibrar_tudo(carga, hrv_trend=None, cp=None, kappa=None, lambda1=None):
                  'correlacao cruzada. Os de fonte "referencia" vem do paper '
                  'ou de escolha de forma — descrevem outros atletas, nao ti.'),
     }
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Calibracao segmentada
+# ══════════════════════════════════════════════════════════════════════════
+
+def calibrar_por_segmento(segmentos, carga, hrv, cp, minimo_dias=120):
+    """Repete a calibracao dentro de cada segmento.
+
+    Porque isto interessa: no agregado de varios anos, blocos de base,
+    construcao e pico misturam-se, e relacoes que existem dentro de um bloco
+    diluem-se. O mesmo se passa entre modalidades — a carga de Ski e a de
+    Bike nao produzem a mesma resposta autonomica, mas somamos as duas num
+    unico sinal.
+
+    segmentos: {nome: mascara booleana ou lista de indices}
+    """
+    out = {}
+    for nome, sel in segmentos.items():
+        idx = np.asarray(sel)
+        if idx.dtype == bool:
+            n_dias = int(idx.sum())
+            pick = lambda a: np.asarray(a, dtype=np.float64)[idx] if a is not None else None
+        else:
+            n_dias = len(idx)
+            pick = lambda a: np.asarray(a, dtype=np.float64)[idx] if a is not None else None
+
+        if n_dias < minimo_dias:
+            out[nome] = {'n_dias': n_dias,
+                         'motivo': f'so {n_dias} dias (precisa de {minimo_dias})'}
+            continue
+
+        c = pick(carga)
+        h = pick(hrv)
+        p = pick(cp)
+        # janela de destendenciamento menor: o segmento e mais curto
+        jan = max(21, min(90, n_dias // 6))
+        r = {'n_dias': n_dias, 'janela_destend': jan}
+
+        if h is not None and np.isfinite(h).sum() >= 40:
+            r['tau'] = calibrar_tau(c, h, lag=1, sinal=None)
+            r['lag_hrv'] = calibrar_lag(c, h, range(0, 15), None, 'lag_hrv')
+        if p is not None and np.isfinite(p).sum() >= 40:
+            r['lag_cp'] = calibrar_lag(c, p, range(5, 29), None, 'lag_super')
+
+        r2s = [v.get('r2') for v in r.values()
+               if isinstance(v, dict) and v.get('r2') is not None]
+        r['melhor_r2'] = round(max(r2s), 4) if r2s else None
+        out[nome] = r
+
+    # onde e que o sinal e mais forte
+    com_r2 = {k: v['melhor_r2'] for k, v in out.items()
+              if isinstance(v, dict) and v.get('melhor_r2')}
+    out['_melhor_segmento'] = (max(com_r2, key=com_r2.get) if com_r2 else None)
+    out['_comparacao'] = (
+        'Se algum segmento tiver r2 muito acima do agregado, e sinal de que a '
+        'relacao existe la dentro e se dilui ao juntar tudo.')
     return out

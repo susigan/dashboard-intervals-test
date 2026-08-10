@@ -121,7 +121,7 @@ def _r2(x, y):
 
 
 def fit_gamma(load, alvo, lag=0, gama_min=0.10, gama_max=0.90, passo=0.05,
-              max_lag=365, suavizar=0):
+              max_lag=365, suavizar=0, r2_minimo=0.02, permutacoes=150):
     """Procura o γ que maximiza o R² entre CTLγ e a serie alvo.
 
     lag=0 para performance (CP no proprio dia), lag=1 para HRV (a carga de
@@ -130,7 +130,9 @@ def fit_gamma(load, alvo, lag=0, gama_min=0.10, gama_max=0.90, passo=0.05,
     load = np.asarray(load, dtype=np.float64)
     alvo = np.asarray(alvo, dtype=np.float64)
     if np.isfinite(alvo).sum() < 5:
-        return GAMMA_DEFAULT, 0.0, 0
+        return {'gamma': GAMMA_DEFAULT, 'gamma_encontrado': None, 'r2': 0.0,
+                'n': 0, 'aceite': False, 'na_fronteira': False,
+                'p_permutacao': None, 'motivo': 'menos de 5 pontos de alvo'}
 
     if suavizar > 1:
         alvo = _media_movel(alvo, suavizar)
@@ -147,7 +149,73 @@ def fit_gamma(load, alvo, lag=0, gama_min=0.10, gama_max=0.90, passo=0.05,
             melhor_g, melhor_r2 = g, r2
         g += passo
     n = int(np.isfinite(alvo).sum())
-    return round(melhor_g, 3), round(melhor_r2, 4), n
+
+    # O mesmo rigor que se aplica aos canais tem de valer para o proprio
+    # gamma. Sem isto, um gamma escolhido no ruido muda o CTLgamma em duas
+    # ordens de grandeza: com gamma=0.9 o expoente e -0.1 e a soma quase nao
+    # decai (dezenas de milhar); com gamma=0.1 converge (dezenas).
+    na_fronteira = abs(melhor_g - gama_min) < 1e-9 or abs(melhor_g - gama_max) < 1e-9
+
+    p_perm = None
+    if permutacoes and n >= 60:
+        curvas = []
+        for g in np.arange(gama_min, gama_max + 1e-9, passo):
+            c = ftlm_fractional(load, float(g), max_lag)
+            curvas.append(c[:-lag] if lag else c)
+        P = np.vstack(curvas)
+        y = alvo[lag:] if lag else alvo
+        p_perm = _p_perm_matriz(P, y, permutacoes)
+
+    aceite = (melhor_r2 >= r2_minimo
+              and not na_fronteira
+              and (p_perm is None or p_perm < 0.05))
+
+    return {
+        'gamma': round(melhor_g, 3) if aceite else GAMMA_DEFAULT,
+        'gamma_encontrado': round(melhor_g, 3),
+        'r2': round(melhor_r2, 4), 'n': n,
+        'aceite': aceite, 'na_fronteira': na_fronteira,
+        'p_permutacao': p_perm,
+        'motivo': (None if aceite else
+                   ('gamma no extremo da grelha — nao e um optimo'
+                    if na_fronteira else
+                    (f'R2 de {melhor_r2:.4f} abaixo do minimo {r2_minimo}'
+                     if melhor_r2 < r2_minimo else
+                     f'p de permutacao {p_perm} — dentro do acaso'))),
+    }
+
+
+def _p_perm_matriz(P, y, n_perm=150, semente=0):
+    """p por permutacao circular sobre uma matriz de candidatos."""
+    P = np.asarray(P, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    if P.ndim != 2 or P.shape[1] != len(y):
+        return None
+    mask = np.isfinite(y) & np.all(np.isfinite(P), axis=0)
+    if mask.sum() < 60:
+        return None
+    Xm, ym = P[:, mask], y[mask]
+    n = len(ym)
+    Xc = Xm - Xm.mean(axis=1, keepdims=True)
+    Xn = np.sqrt((Xc ** 2).sum(axis=1))
+    ok = Xn > 1e-9
+    if not ok.any():
+        return None
+    Xc, Xn = Xc[ok], Xn[ok]
+
+    def melhor(v):
+        vc = v - v.mean()
+        vn = np.sqrt((vc ** 2).sum())
+        return 0.0 if vn < 1e-9 else float(np.abs(Xc @ vc / (Xn * vn)).max())
+
+    obs = melhor(ym)
+    rng = np.random.default_rng(semente)
+    margem = max(30, n // 10)
+    if n - 2 * margem <= 1:
+        return None
+    ks = rng.integers(margem, n - margem, size=n_perm)
+    nulos = np.array([melhor(np.roll(ym, int(k))) for k in ks])
+    return round(float((1 + int((nulos >= obs).sum())) / (1 + len(nulos))), 4)
 
 
 def _media_movel(arr, janela):

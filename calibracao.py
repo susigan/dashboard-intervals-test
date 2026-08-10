@@ -647,6 +647,39 @@ def calibrar_por_segmento(segmentos, carga, hrv, cp, minimo_dias=120):
 # Teste por eventos — alternativa a correlacao
 # ══════════════════════════════════════════════════════════════════════════
 
+def _zcrit(alfa):
+    """z critico bilateral. Aproximacao de Beasley-Springer-Moro simplificada."""
+    import math
+    p = 1 - alfa / 2
+    if p <= 0.5:
+        return 0.0
+    t = math.sqrt(-2.0 * math.log(1 - p))
+    return t - (2.30753 + 0.27061 * t) / (1 + 0.99229 * t + 0.04481 * t * t)
+
+
+def poder_teste(d, n_por_grupo, alfa=0.05):
+    """Probabilidade de detectar um efeito de tamanho d, se ele existir.
+
+    Sem isto, "nao sobrevive" confunde duas coisas muito diferentes:
+    o efeito nao existe, ou existe mas nao ha dados que cheguem. A segunda
+    e accionavel — diz quantos dias faltam.
+    """
+    import math
+    if not d or n_por_grupo < 2:
+        return None
+    ncp = abs(d) * math.sqrt(n_por_grupo / 2.0)
+    zc = _zcrit(alfa)
+    return round(0.5 * (1 + math.erf((ncp - zc) / math.sqrt(2))), 3)
+
+
+def n_necessario(d, alfa=0.05, poder_alvo=0.80, maximo=2000):
+    """Quantos dias por grupo seriam precisos para detectar d."""
+    for n in range(10, maximo, 5):
+        if (poder_teste(d, n, alfa) or 0) >= poder_alvo:
+            return n
+    return None
+
+
 def teste_dias_duros(datas, carga, hrv, percentil_alto=80, percentil_baixo=20,
                      lags=(1, 2, 3), minimo_por_grupo=25):
     """O HRV depois de dias duros e diferente do HRV depois de dias leves?
@@ -752,7 +785,29 @@ def teste_dias_duros(datas, carga, hrv, percentil_alto=80, percentil_baixo=20,
         forte = max(validos, key=lambda x: abs(x['cohen_d']))
         out['melhor_lag'] = forte['lag']
         out['maior_efeito'] = forte['cohen_d']
-        if not forte.get('sobrevive', False) and abs(forte['cohen_d']) >= 0.2:
+        # poder: com este n, conseguiriamos detectar um efeito deste tamanho?
+        m_testes = out.get('n_testes_neste_grupo') or 1
+        alfa_ef = 0.05 / m_testes
+        n_min = min(forte.get('n_duro', 0), forte.get('n_leve', 0))
+        pw = poder_teste(forte['cohen_d'], n_min, alfa_ef)
+        precisa = n_necessario(forte['cohen_d'], alfa_ef)
+        out['poder'] = {
+            'poder_actual': pw, 'n_por_grupo': n_min, 'alfa_efectivo': round(alfa_ef, 4),
+            'n_para_80pct': precisa,
+            'nota': ('poder baixo: nao detectar nao significa que nao existe'
+                     if (pw or 1) < 0.8 else 'poder adequado')}
+
+        if (not forte.get('sobrevive', False) and abs(forte['cohen_d']) >= 0.2
+                and (pw or 1) < 0.8):
+            out['leitura'] = (
+                f"Efeito de d={forte['cohen_d']} ao dia +{forte['lag']} "
+                f"({forte['diferenca']} ms), na direccao fisiologica esperada. "
+                f"Nao sobrevive a correccao (p ajustado {forte.get('p_corrigido')}), "
+                f"MAS o poder e so {pw:.0%} com {n_min} dias por grupo — "
+                f"seriam precisos ~{precisa}. Nao detectar aqui nao significa "
+                'que nao existe: significa que faltam dados para decidir. '
+                'Vale a pena voltar a testar daqui a uns meses.')
+        elif not forte.get('sobrevive', False) and abs(forte['cohen_d']) >= 0.2:
             out['leitura'] = (
                 f"O maior efeito e ao dia +{forte['lag']} "
                 f"(d={forte['cohen_d']}, {forte['magnitude']}), mas o p "

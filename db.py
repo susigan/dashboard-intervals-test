@@ -266,6 +266,32 @@ def ultima_data():
         return None
 
 
+def actividades_processadas(desde=None):
+    """Colunas ja normalizadas da tabela activities.
+
+    Diferente de load_activities(), que devolve o JSON original da API. Para
+    exportar interessa o que o dashboard usa de facto.
+    """
+    if not ENABLED:
+        return []
+    cols = ['id', 'date', 'type', 'type_raw', 'name', 'elapsed_time',
+            'moving_time', 'distance_m', 'kj', 'kj_acima_ftp',
+            'z1_kj', 'z2_kj', 'z3_kj', 'z1_sec', 'z2_sec', 'z3_sec',
+            'training_load', 'rpe', 'xss', 'aerobic', 'glycolytic',
+            'sprint', 'epoc', 'elevation', 'avg_hr', 'max_hr',
+            'avg_watts', 'ftp', 'source']
+    cond = "WHERE date >= ?" if desde else ""
+    params = (desde,) if desde else ()
+    rows = _exec(f"SELECT {', '.join(cols)} FROM activities {cond} "
+                 "ORDER BY date", params, fetch='all') or []
+    out = []
+    for r in rows:
+        d = dict(zip(cols, r))
+        d['date'] = str(d['date']) if d['date'] is not None else None
+        out.append(d)
+    return out
+
+
 def load_activities(desde=None):
     """Dicts originais das actividades (coluna raw). None se a BD nao servir."""
     if not ENABLED:

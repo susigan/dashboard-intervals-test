@@ -178,17 +178,56 @@ def declive_movel(serie, janela=14):
     return out
 
 
-def percentil_movel(serie, q, janela=60):
+def percentis_moveis(serie, qs, janela=60, minimo=10):
+    """Varios percentis moveis de uma so vez.
+
+    A deteccao de fases precisa de 7 percentis das MESMAS janelas. Calcular
+    cada um por separado repete o trabalho caro — ordenar. Aqui ordenamos as
+    janelas uma vez e lemos todos os percentis dessa ordenacao.
+    """
     serie = np.asarray(serie, dtype=np.float64)
     n = len(serie)
-    out = np.full(n, np.nan)
-    for t in range(n):
-        seg = serie[max(0, t - janela + 1):t + 1]
-        seg = seg[np.isfinite(seg)]
-        if len(seg) >= 10:
-            out[t] = float(np.quantile(seg, q))
-    return out
+    saida = {q: np.full(n, np.nan) for q in qs}
+    if n == 0:
+        return saida
 
+    ext = np.concatenate([np.full(janela - 1, np.nan), serie])
+    try:
+        from numpy.lib.stride_tricks import sliding_window_view
+        M = sliding_window_view(ext, janela)
+    except Exception:
+        for q in qs:
+            for t in range(n):
+                seg = serie[max(0, t - janela + 1):t + 1]
+                seg = seg[np.isfinite(seg)]
+                if len(seg) >= minimo:
+                    saida[q][t] = float(np.quantile(seg, q))
+        return saida
+
+    k = np.isfinite(M).sum(axis=1)          # validos por janela
+    tem = k >= minimo
+    if not tem.any():
+        return saida
+
+    # ordenar uma vez: os NaN vao para o fim
+    S = np.sort(M[tem], axis=1)
+    kk = k[tem].astype(np.float64)
+    linhas = np.arange(S.shape[0])
+
+    for q in qs:
+        # interpolacao linear, igual ao metodo por defeito do numpy
+        pos = q * (kk - 1)
+        lo = np.floor(pos).astype(int)
+        hi = np.minimum(lo + 1, (kk - 1).astype(int))
+        frac = pos - lo
+        vals = S[linhas, lo] * (1 - frac) + S[linhas, hi] * frac
+        saida[q][tem] = vals
+    return saida
+
+
+def percentil_movel(serie, q, janela=60, minimo=10):
+    """Um so percentil. Atalho para percentis_moveis."""
+    return percentis_moveis(serie, [q], janela, minimo)[q]
 
 def zscore_movel(serie, janela=60):
     serie = np.asarray(serie, dtype=np.float64)
@@ -315,15 +354,14 @@ def detect_phases(ctlg, hrv_rel, weed_z, dias_sem_treino,
     weed = _zscore(np.asarray(weed_z, dtype=np.float64)) if weed_z is not None \
         else np.full(n, np.nan)
 
-    d70 = percentil_movel(dctl, 0.70, janela_pct)
-    d50 = percentil_movel(dctl, 0.50, janela_pct)
-    d30 = percentil_movel(dctl, 0.30, janela_pct)
-    h60 = percentil_movel(hrv_z, 0.60, janela_pct)
-    h50 = percentil_movel(hrv_z, 0.50, janela_pct)
-    h30 = percentil_movel(hrv_z, 0.30, janela_pct)
-    h20 = percentil_movel(hrv_z, 0.20, janela_pct)
-    h10 = percentil_movel(hrv_z, 0.10, janela_pct)
-    w90 = percentil_movel(weed, 0.90, janela_pct)
+    # todos os percentis das mesmas janelas numa so passagem
+    pd_ = percentis_moveis(dctl, [0.30, 0.50, 0.70], janela_pct)
+    ph_ = percentis_moveis(hrv_z, [0.10, 0.20, 0.30, 0.50, 0.60], janela_pct)
+    pw_ = percentis_moveis(weed, [0.90], janela_pct)
+    d70, d50, d30 = pd_[0.70], pd_[0.50], pd_[0.30]
+    h60, h50 = ph_[0.60], ph_[0.50]
+    h30, h20, h10 = ph_[0.30], ph_[0.20], ph_[0.10]
+    w90 = pw_[0.90]
 
     fases = np.array(['TRANSITION'] * n, dtype=object)
     for t in range(n):

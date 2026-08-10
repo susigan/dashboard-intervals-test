@@ -25,6 +25,10 @@ def _sheets(force=False):
     return sheets.carregar(force)
 
 
+_cache_pmc = {'chave': None, 'valor': None, 'time': None}
+TTL_PMC = 900
+
+
 def api_data():
     acts = fetch_activities()
     if not acts:
@@ -77,9 +81,21 @@ def api_data():
         traceback.print_exc()
         ftlm_res, erro_ftlm = None, f'{type(e).__name__}: {e}'
 
+    # calcular_fmt corre a calibracao com permutacao — cara. Em cache, com a
+    # chave a mudar quando chegam sessoes novas.
+    chave_fmt = (serie[-1]['date'] if serie else None, len(sessoes))
+    agora = datetime.now()
+    if (_cache_pmc['chave'] == chave_fmt and _cache_pmc['time']
+            and (agora - _cache_pmc['time']).total_seconds() < TTL_PMC):
+        fmt_res, erro_ftlm = _cache_pmc['valor'], None
+    else:
+        fmt_res = None
     try:
-        fmt_res = pmc.calcular_fmt(sessoes, wellness, serie,
-                                   desde_hrv=limite_hrv())
+        if fmt_res is None:
+            fmt_res = pmc.calcular_fmt(sessoes, wellness, serie,
+                                       desde_hrv=limite_hrv())
+            _cache_pmc.update({'chave': chave_fmt, 'valor': fmt_res,
+                               'time': agora})
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -138,6 +154,10 @@ def api_data():
     })
 
 
+_cache_cal = {'chave': None, 'valor': None, 'time': None}
+TTL_CAL = 3600
+
+
 def api_calibracao_dados():
     """Calibracao isolada, para inspeccao e exportacao.
 
@@ -175,7 +195,16 @@ def api_calibracao_dados():
 
     wellness, _c, _e = _sheets()
     serie = pmc.calcular(sessoes, 'tl')
-    res = pmc.calcular_fmt(sessoes, wellness, serie)
+
+    completo = request.args.get('completo') in ('1', 'true', 'yes')
+    chave = (serie[0]['date'] if serie else None,
+             serie[-1]['date'] if serie else None, len(sessoes), completo)
+    agora = datetime.now()
+    if (_cache_cal['chave'] == chave and _cache_cal['time']
+            and (agora - _cache_cal['time']).total_seconds() < TTL_CAL):
+        return {**_cache_cal['valor'], 'de_cache': True}
+
+    res = pmc.calcular_fmt(sessoes, wellness, serie, desde_hrv=limite_hrv())
     if not res or res.get('erro'):
         return {'erro': (res or {}).get('erro', 'nao foi possivel calibrar')}
 
@@ -183,20 +212,30 @@ def api_calibracao_dados():
     # ?desde=YYYY-MM-DD limita as analises que dependem de HRV.
     # Util quando as medicoes so comecaram a meio do historico.
     desde_hrv = request.args.get('desde') or limite_hrv()
-    segmentado = pmc.calibrar_segmentado(sessoes, wellness, serie, CICLICOS,
-                                         desde=desde_hrv)
+    # O teste de eventos e barato; a segmentacao por ano/modalidade e a
+    # ancora sao ~35 buscas com permutacao. Ficam atras de ?completo=1,
+    # senao cada carregamento da tab espera minutos por elas.
     eventos = pmc.teste_eventos(sessoes, wellness, serie, CICLICOS,
                                 desde=desde_hrv)
-    # Calibrar contra os dias de esforco maximo. Usa o historico completo:
-    # a CP de um teste de 2022 e comparavel com a de 2026, ao contrario do HRV.
-    try:
-        ancora = pmc.calibrar_com_ancora(serie, CICLICOS)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        ancora = {'erro': f'{type(e).__name__}: {e}'}
-    return {
+    if completo:
+        segmentado = pmc.calibrar_segmentado(sessoes, wellness, serie, CICLICOS,
+                                             desde=desde_hrv)
+        try:
+            # a CP de um teste de 2022 e comparavel com a de 2026, ao
+            # contrario do HRV — por isso aqui usa-se o historico completo
+            ancora = pmc.calibrar_com_ancora(serie, CICLICOS)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            ancora = {'erro': f'{type(e).__name__}: {e}'}
+    else:
+        nota = 'analise pesada — pedir com ?completo=1'
+        segmentado = {'nota': nota}
+        ancora = {'nota': nota}
+
+    resposta = {
         'status': 'OK',
+        'completo': completo,
         'dias': len(serie),
         'de': serie[0]['date'] if serie else None,
         'ate': serie[-1]['date'] if serie else None,
@@ -224,6 +263,8 @@ def api_calibracao_dados():
             'limiares_lambda1': 'classificacao focal vs multissistemico',
         },
     }
+    _cache_cal.update({'chave': chave, 'valor': resposta, 'time': agora})
+    return resposta
 
 
 def api_sheets_debug():

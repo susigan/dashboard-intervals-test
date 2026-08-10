@@ -217,21 +217,23 @@ def api_calibracao_dados():
     # senao cada carregamento da tab espera minutos por elas.
     eventos = pmc.teste_eventos(sessoes, wellness, serie, CICLICOS,
                                 desde=desde_hrv)
+    # A ancora corre SEMPRE: e a analise com mais hipoteses de dar sinal, e
+    # depois de vectorizar o _ewm e os percentis passou a custar segundos.
+    try:
+        # a CP de um teste de 2022 e comparavel com a de 2026, ao contrario
+        # do HRV — por isso aqui usa-se o historico completo
+        ancora = pmc.calibrar_com_ancora(serie, CICLICOS)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        ancora = {'erro': f'{type(e).__name__}: {e}'}
+
+    # A segmentacao por ano e modalidade sao ~30 buscas; fica atras da flag.
     if completo:
         segmentado = pmc.calibrar_segmentado(sessoes, wellness, serie, CICLICOS,
                                              desde=desde_hrv)
-        try:
-            # a CP de um teste de 2022 e comparavel com a de 2026, ao
-            # contrario do HRV — por isso aqui usa-se o historico completo
-            ancora = pmc.calibrar_com_ancora(serie, CICLICOS)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            ancora = {'erro': f'{type(e).__name__}: {e}'}
     else:
-        nota = 'analise pesada — pedir com ?completo=1'
-        segmentado = {'nota': nota}
-        ancora = {'nota': nota}
+        segmentado = {'nota': 'por ano e modalidade — pedir com ?completo=1'}
 
     resposta = {
         'status': 'OK',
@@ -508,6 +510,7 @@ __EXPL_fases__
   <canvas id="chAtencao" height="200"></canvas>
 </div>
 <div class="sub" id="notaAtencao" style="font-style:italic"></div>
+<div id="poderBox"></div>
 <h3>Calibracao dos parametros</h3>
 <div id="veredicto"></div>
 <div class="sub" id="notaCal"></div>
@@ -1234,6 +1237,32 @@ function drawAtencao(){
    '</div>'+linhaTip(A.cor,'Peso',(A.pesos[i]*100).toFixed(1)+'%');});
 }
 
+function blocoPoder(){
+ const E=(D.teste_eventos||{}).por_modalidade||{};
+ const linhas=[];
+ Object.keys(E).forEach(function(m){
+  const p=E[m].poder; if(!p||p.poder_actual==null)return;
+  const baixo=p.poder_actual<0.8;
+  linhas.push('<tr><td>'+m+'</td>'+
+   '<td class="num">'+E[m].maior_efeito+'</td>'+
+   '<td class="num">+'+E[m].melhor_lag+'d</td>'+
+   '<td class="num">'+p.n_por_grupo+'</td>'+
+   '<td class="num" style="color:'+(baixo?'#E67E22':'#2ECC71')+'">'+
+    Math.round(p.poder_actual*100)+'%</td>'+
+   '<td class="num">'+(p.n_para_80pct||'—')+'</td></tr>');});
+ const el=document.getElementById('poderBox');
+ if(!el)return;
+ if(!linhas.length){el.innerHTML='';return;}
+ el.innerHTML='<h3>Poder estatistico</h3>'+
+  '<div class="sub">Com quantos dias conseguirias detectar o efeito que '+
+  'observas, se ele for real? Poder baixo significa que <b>nao detectar '+
+  'nao e o mesmo que nao existir</b>.</div>'+
+  '<div class="wrap"><table><thead><tr>'+
+  ['Modalidade','d observado','Lag','n/grupo','Poder','n para 80%']
+   .map((c,i)=>'<th class="'+(i?'num':'')+'">'+c+'</th>').join('')+
+  '</tr></thead><tbody>'+linhas.join('')+'</tbody></table></div>';
+}
+
 function tabelaCalibracao(){
  const F=D.fmt, C=(F||{}).calibracao;
  if(!C){document.getElementById('calBody').innerHTML=
@@ -1352,7 +1381,7 @@ function mostrarFMT5(){
   sel.innerHTML=Object.keys(F.canais).map(k=>
    '<option value="'+k+'">'+F.canais[k].nome+'</option>').join('');
  document.getElementById('notaAtencao').textContent=F.nota_atencao||'';
- tabelaCalibracao();
+ tabelaCalibracao(); blocoPoder();
  drawMatriz();drawEigen();drawAtencao();
 }
 

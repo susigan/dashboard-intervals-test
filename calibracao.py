@@ -34,6 +34,7 @@ passa a significar "mais concentrado do que o teu normal", com um criterio
 estatistico em vez de um percentil escolhido a mao.
 """
 
+import os
 import numpy as np
 
 # Valores de referencia. So sao usados quando os teus dados nao chegam, e
@@ -46,7 +47,76 @@ REFERENCIA = {
     'tau_risco': 8,          # sem base no paper
 }
 
-P_MINIMO = 0.10              # acima disto a correlacao nao sustenta nada
+P_MINIMO = 0.10
+
+# Permutacoes por teste. 200 da resolucao de 0.005 no p; 100 chega para
+# distinguir p<0.05 de p>0.05 e corta o tempo a metade.
+N_PERM = int(os.getenv('N_PERMUTACOES', '150'))              # acima disto a correlacao nao sustenta nada
+
+
+def _corr_matriz(P, y):
+    """|r| de cada linha de P contra y, ignorando NaN por linha.
+
+    Vectorizado: uma passagem de matriz em vez de um ciclo de Pearson.
+    """
+    y = np.asarray(y, dtype=np.float64)
+    val = np.isfinite(P) & np.isfinite(y)[None, :]
+    cont = val.sum(axis=1)
+    ok = cont >= 8
+    if not ok.any():
+        return None
+
+    Pm = np.where(val, P, 0.0)
+    Ym = np.where(val, np.broadcast_to(y, P.shape), 0.0)
+    n = np.maximum(cont, 1)
+    mx = Pm.sum(axis=1) / n
+    my = Ym.sum(axis=1) / n
+    dx = np.where(val, Pm - mx[:, None], 0.0)
+    dy = np.where(val, Ym - my[:, None], 0.0)
+    num = (dx * dy).sum(axis=1)
+    den = np.sqrt((dx ** 2).sum(axis=1) * (dy ** 2).sum(axis=1))
+    with np.errstate(all='ignore'):
+        r = np.where((den > 1e-12) & ok, num / den, np.nan)
+    return np.abs(r)
+
+
+def p_permutacao_matriz(P, y, n_perm=200, semente=0, margem_min=30):
+    """p corrigido, com o lado do preditor ja calculado.
+
+    A otimizacao que faltava: numa permutacao circular so o alvo roda. Todas
+    as medias exponenciais e desfasamentos do preditor sao identicos nas 200
+    repeticoes — calcula-los uma vez em vez de 200 e o grosso do ganho.
+    """
+    y = np.asarray(y, dtype=np.float64)
+    n = len(y)
+    if n < 60 or P is None or P.shape[1] != n:
+        return None, None
+
+    obs_all = _corr_matriz(P, y)
+    if obs_all is None or not np.isfinite(obs_all).any():
+        return None, None
+    obs = float(np.nanmax(obs_all))
+
+    rng = np.random.default_rng(semente)
+    margem = max(margem_min, n // 10)
+    if n - 2 * margem < n_perm // 4:
+        return None, None
+    nulos = []
+    for k in rng.integers(margem, n - margem, size=n_perm):
+        v = _corr_matriz(P, np.roll(y, int(k)))
+        if v is not None and np.isfinite(v).any():
+            nulos.append(float(np.nanmax(v)))
+    if len(nulos) < 30:
+        return None, None
+
+    nulos = np.array(nulos)
+    p = (1 + int((nulos >= obs).sum())) / (1 + len(nulos))
+    return round(float(p), 4), {
+        'observado': round(obs, 4),
+        'nulo_mediana': round(float(np.median(nulos)), 4),
+        'nulo_p95': round(float(np.quantile(nulos, 0.95)), 4),
+        'nulo_max': round(float(nulos.max()), 4),
+        'n_permutacoes': len(nulos)}
 
 
 def p_permutacao(x, y, funcao_busca, n_perm=200, semente=0):
@@ -150,14 +220,22 @@ def sem_tendencia(x, janela=90):
         out[m] = x[m] - (a * t[m] + b)
         return out
 
-    out = np.full(n, np.nan)
+    # Media movel centrada por somas cumulativas: O(n) em vez de O(n*janela).
+    # O ciclo Python custava 13 ms por chamada, e a permutacao chama isto
+    # milhares de vezes.
     minimo = 10 if densidade > 0.5 else 5
-    for i in range(n):
-        seg = x[max(0, i - janela):min(n, i + janela + 1)]
-        seg = seg[np.isfinite(seg)]
-        if len(seg) >= minimo:
-            out[i] = x[i] - seg.mean()
-    return out
+    vals = np.nan_to_num(x)
+    m = np.isfinite(x).astype(np.float64)
+    cs_v = np.concatenate([[0.0], np.cumsum(vals)])
+    cs_m = np.concatenate([[0.0], np.cumsum(m)])
+    i = np.arange(n)
+    lo = np.maximum(0, i - janela)
+    hi = np.minimum(n, i + janela + 1)
+    soma = cs_v[hi] - cs_v[lo]
+    cont = cs_m[hi] - cs_m[lo]
+    with np.errstate(all='ignore'):
+        media = np.where(cont >= minimo, soma / np.maximum(cont, 1), np.nan)
+    return x - media
 
 
 def _linreg(x, y):
@@ -195,13 +273,40 @@ def _pearson(x, y):
 
 
 def _ewm(v, span):
+    """Media exponencial, equivalente a pandas.ewm(span, adjust=False).
+
+    Vectorizada. A versao anterior tentava importar scipy.signal dentro da
+    funcao; como o scipy nao esta instalado, cada chamada percorria centenas
+    de caminhos de import antes de falhar — 1.5s por calibracao so nisso.
+
+    Identidade usada: out[k] = (1-a)^k * (v[0] + a * SUM_{i<=k} v[i]/(1-a)^i).
+    Para spans grandes, (1-a)^-k transborda; nesse caso usamos o ciclo, que
+    e exacto e so custa quando e mesmo preciso.
+    """
+    v = np.asarray(v, dtype=np.float64)
+    n = len(v)
+    if n == 0:
+        return v.copy()
     a = 2.0 / (span + 1.0)
-    out, prev = np.empty(len(v)), None
+    b = 1.0 - a
+    if b <= 0:
+        return v.copy()
+
+    k = np.arange(n, dtype=np.float64)
+    with np.errstate(over='ignore', invalid='ignore'):
+        inv = b ** (-k)
+        if np.all(np.isfinite(inv)) and inv.max() < 1e250:
+            acum = np.cumsum(v * inv * a)
+            out = (b ** k) * (v[0] + acum - v[0] * a * inv[0])
+            if np.all(np.isfinite(out)):
+                return out
+
+    out = np.empty(n)
+    prev = None
     for i, x in enumerate(v):
-        prev = x if prev is None else a * x + (1 - a) * prev
+        prev = x if prev is None else a * x + b * prev
         out[i] = prev
     return out
-
 
 def _desloca(serie, lag):
     """serie[t-lag] alinhado com t. Os primeiros lag dias ficam NaN."""
@@ -231,10 +336,12 @@ def calibrar_tau(carga, alvo,
                           '(precisa de 30)', 'testados': []}
 
     testados, melhor = [], None
+    linhas = {}
     for t in taus:
         e = _desloca(_ewm(carga, t), lag)
         if destendenciar:
             e = sem_tendencia(e)
+        linhas[t] = e
         r, p, n = _pearson(e, alvo_use)
         testados.append({'tau': t, 'r': r, 'p': p, 'n': n})
         if r is None or p is None or p > P_MINIMO:
@@ -252,18 +359,9 @@ def calibrar_tau(carga, alvo,
     # Se o melhor ficou no extremo da grelha, nao e um optimo — e o sitio
     # onde a procura parou. Dizer isso e essencial: caso contrario um valor
     # de fronteira passa por resultado.
-    def _busca(cc, aa):
-        melhores = []
-        for t in taus:
-            e = _desloca(_ewm(cc, t), lag)
-            if destendenciar:
-                e = sem_tendencia(e)
-            r_, p_, n_ = _pearson(e, aa)
-            if r_ is not None:
-                melhores.append(abs(r_))
-        return max(melhores) if melhores else None
-
-    p_perm, nulo = p_permutacao(carga, alvo_use, _busca)
+    # o lado do preditor e sempre o mesmo: calcula-se uma vez
+    P = np.vstack([linhas[t] for t in taus])
+    p_perm, nulo = p_permutacao_matriz(P, alvo_use, n_perm=N_PERM)
 
     extremos = [taus[0], taus[-1]]
     na_fronteira = melhor['tau'] in extremos
@@ -317,15 +415,8 @@ def calibrar_lag(x, y, lags=range(0, 29), sinal=None, chave_ref=None,
 
     # p corrigido: quantas vezes uma busca igual sobre dados sem relacao
     # daria um |r| tao grande como este?
-    def _busca(xx, yy):
-        melhores = []
-        for L in lags_l:
-            r_, p_, n_ = _pearson(_desloca(xx, L), yy)
-            if r_ is not None:
-                melhores.append(abs(r_))
-        return max(melhores) if melhores else None
-
-    p_perm, nulo = p_permutacao(x, y, _busca)
+    P = np.vstack([_desloca(x, L) for L in lags_l])
+    p_perm, nulo = p_permutacao_matriz(P, y, n_perm=N_PERM)
 
     out = {'fonte': 'dados', 'valor': melhor['lag'], 'r': melhor['r'],
            'p_permutacao': p_perm, 'distribuicao_nula': nulo,

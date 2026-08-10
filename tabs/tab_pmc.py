@@ -484,7 +484,10 @@ __EXPL_ctlg__
 <h2>CTL&gamma; por modalidade</h2>
 __EXPL_fases__
 <div class="sub">Um painel por desporto. Linha cheia = CTL&gamma; com o &gamma; ajustado
-  a essa modalidade; ponteado = CTL e ATL classicos, como referencia.</div>
+  a essa modalidade; ponteado = CTL e ATL classicos, como referencia.<br>
+  <b>O CTL&gamma; bruto nao e comparavel entre modalidades:</b> o kernel e
+  k<sup>&gamma;&minus;1</sup>, por isso &gamma;=0.9 da dezenas de milhar e
+  &gamma;=0.1 da dezenas. Compara a coluna em percentagem.</div>
 <div id="painelMods" class="grid2"></div>
 <div class="wrap" style="max-height:280px;margin-bottom:14px"><table>
   <thead><tr id="gHead"></tr></thead><tbody id="gBody"></tbody></table></div>
@@ -1396,15 +1399,27 @@ function tabelaGammas(){
  const pm=(D.ftlm||{}).por_modalidade||{};
  const mods=Object.keys(pm);
  document.getElementById('gHead').innerHTML=
-  ['Modalidade','γ','R²','n','Sessoes','CTLγ actual','Fase']
+  ['Modalidade','γ','R²','n','Sessoes','CTLγ (% do proprio max)','Fase']
    .map((c,i)=>'<th class="'+(i&&i<6?'num':'')+'">'+c+'</th>').join('');
  const leg=(D.ftlm||{}).fases_legenda||{};
+ // O CTLγ absoluto NAO e comparavel entre modalidades: gammas diferentes
+ // dao ordens de grandeza diferentes (γ=0.9 chega a dezenas de milhar,
+ // γ=0.1 a dezenas). Mostramos a percentagem do proprio maximo, que e
+ // comparavel, e o valor bruto em segunda linha.
  document.getElementById('gBody').innerHTML=mods.map(function(m){
-  const v=pm[m], f=leg[v.fase]||{};
+  const v=pm[m], f=leg[v.fase]||{}, gf=v.gamma_fit||{};
+  const suspeito=gf.aceite===false;
   return '<tr><td style="color:'+(D.cores[m]||'#e6e6e6')+'">'+m+'</td>'+
-   '<td class="num">'+v.gamma+'</td><td class="num">'+v.r2+'</td>'+
+   '<td class="num">'+v.gamma+
+    (suspeito?'<br><span style="font-size:11px;color:#E67E22" title="'+
+     (gf.motivo||'')+'">defeito'+(gf.gamma_encontrado!=null?
+     ' (dados deram '+gf.gamma_encontrado+')':'')+'</span>':'')+'</td>'+
+   '<td class="num">'+v.r2+'</td>'+
    '<td class="num">'+v.n+'</td><td class="num">'+v.n_sessoes+'</td>'+
-   '<td class="num">'+v.ctlg_actual+'</td>'+
+   '<td class="num">'+(v.ctlg_pct!=null?v.ctlg_pct+'%':'—')+
+    '<br><span style="font-size:11px;color:#8b949e">'+
+    (v.ctlg_actual>=1000?Math.round(v.ctlg_actual).toLocaleString('pt-PT')
+     :v.ctlg_actual)+' bruto</span></td>'+
    '<td style="color:'+(f.cor||'#8b949e')+'">'+(f.label||v.fase)+'</td></tr>';
  }).join('');
 }

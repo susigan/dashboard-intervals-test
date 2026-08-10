@@ -12,7 +12,7 @@ Estrutura:
 import os
 import sys
 import logging
-from flask import jsonify, request
+from flask import jsonify, request, Response
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -162,6 +162,81 @@ def api_sync_full():
     res = sync.sync_activities('full')
     invalidar_cache()
     return jsonify(res)
+
+
+@app.route('/api/export')
+@app.route('/api/export/')
+def api_export_indice():
+    """Que exportacoes existem."""
+    import export
+    return jsonify(export.indice())
+
+
+@app.route('/api/export/<nome>')
+def api_export(nome):
+    """Descarregar os dados em bruto.
+
+    /api/export/atividades.csv   /api/export/curvas.json?tipo=Bike
+    /api/export/tudo.json        todos num so ficheiro
+    """
+    import export
+    import protocolo
+    import sheets_client as sheets
+    import pmc as _pmc
+
+    base, _, ext = nome.rpartition('.')
+    base = base or nome
+    ext = (ext or 'csv').lower()
+    tipo = request.args.get('tipo')
+
+    try:
+        if base == 'tudo':
+            import csv as _csv_mod
+            import io as _io
+
+            def _linhas(txt):
+                return list(_csv_mod.DictReader(_io.StringIO(txt)))
+
+            wl, cp_, _erros = sheets.carregar()
+            return jsonify({
+                'gerado_em': datetime.now().isoformat(),
+                'atividades': db.actividades_processadas(),
+                'wellness': wl or [],
+                'corporal': cp_ or [],
+                'curvas': db.load_power_curves(tipo) or [],
+                'cp_ajustado': db.cp_por_sessao() or [],
+                'testes_maximos': _linhas(
+                    export.testes_maximos(db, protocolo)),
+            })
+
+        if base == 'curvas':
+            texto = export.curvas(db, tipo,
+                                  'json' if ext == 'json' else 'longo')
+        elif base == 'atividades':
+            texto = export.atividades(db)
+        elif base == 'wellness':
+            texto = export.wellness(sheets)
+        elif base == 'corporal':
+            texto = export.corporal(sheets)
+        elif base == 'testes':
+            texto = export.testes_maximos(db, protocolo)
+        elif base == 'cp':
+            texto = export.cp_ajustado(db)
+        elif base == 'serie_diaria':
+            texto = export.serie_diaria(_pmc, db, sheets)
+        else:
+            return jsonify({'erro': f'"{base}" nao existe',
+                            **export.indice()}), 404
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'erro': f'{type(e).__name__}: {e}',
+                        'traceback': traceback.format_exc()[-1200:]}), 500
+
+    mime = 'application/json' if ext == 'json' else 'text/csv'
+    hoje = datetime.now().strftime('%Y%m%d')
+    return Response(texto, mimetype=f'{mime}; charset=utf-8', headers={
+        'Content-Disposition': f'attachment; filename="{base}_{hoje}.{ext}"'})
 
 
 @app.route('/api/protocolo')

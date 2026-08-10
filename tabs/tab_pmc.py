@@ -450,6 +450,9 @@ anteriores. Faz sentido alinha-los com os teus blocos de treino reais.</p>
 BODY = r"""
 <h1>PMC — Performance Management Chart</h1>
 <div class="sub" id="sub">A carregar...</div>
+<div id="sugestoesTeste"></div>
+
+<div id="sugestoesTeste"></div>
 
 <div class="cards" id="kpis"></div>
 <div id="faseCard"></div>
@@ -568,9 +571,42 @@ __EXPL_alos__
 <div class="wrap" style="max-height:320px;margin-bottom:14px"><table>
   <thead><tr id="alosHead"></tr></thead><tbody id="alosBody"></tbody></table></div>
 
+<h2>Exportar dados</h2>
+<div class="sub">Os mesmos dados que o dashboard usa, para analisares por fora.
+  O CSV abre directamente no pandas ou no Excel.</div>
+<div class="wrap" style="margin-bottom:14px"><table>
+  <thead><tr><th>Ficheiro</th><th>O que tem</th><th class="num">Formato</th></tr></thead>
+  <tbody>
+  <tr><td>Atividades</td><td>uma linha por sessao: carga, kJ, zonas, HR, potencia</td>
+    <td class="num"><a href="/api/export/atividades.csv">CSV</a></td></tr>
+  <tr><td>Wellness</td><td>HRV, HR repouso, sono, stress, cansaco, dores</td>
+    <td class="num"><a href="/api/export/wellness.csv">CSV</a></td></tr>
+  <tr><td>Corporal</td><td>peso, gordura, calorias, macros</td>
+    <td class="num"><a href="/api/export/corporal.csv">CSV</a></td></tr>
+  <tr><td>Curvas de potencia</td><td>uma linha por sessao e duracao</td>
+    <td class="num"><a href="/api/export/curvas.csv">CSV</a> &middot;
+      <a href="/api/export/curvas.json">JSON</a></td></tr>
+  <tr><td>Testes maximos</td><td>esforcos detectados — a ancora de performance</td>
+    <td class="num"><a href="/api/export/testes.csv">CSV</a></td></tr>
+  <tr><td>CP ajustado</td><td>CP e W&prime; por sessao, de P(t)=W&prime;/t+CP</td>
+    <td class="num"><a href="/api/export/cp.csv">CSV</a></td></tr>
+  <tr><td>Serie diaria</td><td>CTL, ATL, TSB dia a dia</td>
+    <td class="num"><a href="/api/export/serie_diaria.csv">CSV</a></td></tr>
+  <tr><td><b>Tudo</b></td><td>todos os anteriores num so ficheiro</td>
+    <td class="num"><a href="/api/export/tudo.json">JSON</a></td></tr>
+  </tbody></table></div>
+
+<h2>Descarregar os dados</h2>
+<div class="sub">Dados em bruto, sem as transformacoes deste codigo — para
+  correres as tuas proprias analises noutro sitio.</div>
+<div id="exportBox"></div>
+
 <div class="sub" style="margin-top:20px">
-  <a href="/api/pmc" target="_blank">JSON</a> &middot;
-  <a href="/api/debug/sheets" target="_blank">Diagnostico dos Google Sheets</a>
+  <a href="/api/pmc" target="_blank">JSON do PMC</a> &middot;
+  <a href="/api/export" target="_blank">Indice das exportacoes</a> &middot;
+  <a href="/api/calibracao" target="_blank">Calibracao</a> &middot;
+  <a href="/api/protocolo" target="_blank">Protocolo de testes</a> &middot;
+  <a href="/api/debug/sheets" target="_blank">Diagnostico dos Sheets</a>
 </div>
 """
 
@@ -1608,6 +1644,135 @@ function drawLoad(comb,PL,PR,X){
  g.fillStyle='#8b949e';g.font='10px sans-serif';
  g.fillText('Carga por modalidade',PL+4,PT+10);
 }
+// Sugestoes de teste, por modalidade. Cada uma desaparece sozinha assim que
+// fizeres um esforco perto do maximo nessa duracao — nao ha nada a marcar.
+async function carregarSugestoes(){
+ let P;
+ try{ P=await fetch('/api/protocolo').then(r=>r.json()); }
+ catch(e){ return; }
+ const el=document.getElementById('sugestoesTeste');
+ if(!el)return;
+ const sug=P.sugestoes||[];
+ const cov=(P.cobertura||{}).por_modalidade||{};
+
+ // uma sugestao por modalidade: a mais atrasada
+ const porMod={};
+ sug.forEach(function(s){
+  if(!porMod[s.modalidade]||s.atraso_dias>porMod[s.modalidade].atraso_dias)
+   porMod[s.modalidade]=s;});
+ const mods=Object.keys(porMod);
+
+ if(!mods.length){
+  el.innerHTML='<div style="border-left:3px solid #2ECC71;background:#161b22;'+
+   'padding:10px 14px;border-radius:0 6px 6px 0;margin-bottom:14px;font-size:13px">'+
+   '<b>Testes em dia</b> — todas as modalidades tem esforcos maximos recentes.</div>';
+  return;}
+
+ const linhas=mods.map(function(m){
+  const s=porMod[m];
+  const cor=s.urgencia==='alta'?'#E74C3C':'#E67E22';
+  // quantos pontos-ancora ja existem nessa modalidade
+  const c=cov[m]||{};
+  const n=(c[s.nome]||{}).n;
+  return '<tr><td style="color:'+((D&&D.cores||{})[m]||'#e6e6e6')+'">'+m+'</td>'+
+   '<td><b>'+s.nome+'</b><br><span style="font-size:11px;color:#8b949e">'+
+    s.mede+'</span></td>'+
+   '<td class="num" style="color:'+cor+'">'+s.dias_desde_ultimo+'d</td>'+
+   '<td class="num">'+Math.round(s.ultimo_valor)+' W<br>'+
+    '<span style="font-size:11px;color:#8b949e">'+s.ultima_data+'</span></td>'+
+   '<td class="num">'+(n!=null?n:'—')+'</td></tr>';}).join('');
+
+ el.innerHTML=
+  '<details class="expl" open style="border-left:3px solid #E67E22">'+
+  '<summary>Testes sugeridos ('+mods.length+' modalidades)</summary>'+
+  '<div class="expl-corpo">'+
+  '<p>Nao e preciso marcar nada nem fazer um teste formal. Uma prova, um bloco '+
+  'de intervalos duro ou uma saida em grupo contam — basta ires perto do '+
+  'maximo nessa duracao. A sugestao desaparece sozinha quando isso acontecer.</p>'+
+  '<p class="nota">Cada esforco maximo acrescenta um ponto-ancora. Sao esses '+
+  'pontos que permitem calibrar o modelo aos teus dados em vez de usar valores '+
+  'de outros atletas — e a coluna da direita mostra quantos ja tens.</p>'+
+  '<div class="wrap"><table><thead><tr>'+
+  ['Modalidade','Teste','Desde o ultimo','Ultimo valor','Pontos-ancora']
+   .map((c,i)=>'<th class="'+(i>1?'num':'')+'">'+c+'</th>').join('')+
+  '</tr></thead><tbody>'+linhas+'</tbody></table></div>'+
+  '</div></details>';
+}
+
+// ─── Testes sugeridos ───────────────────────────────────────────────────
+// O painel sai dos dados: cada esforco maximo e detectado sozinho, por isso
+// a sugestao desaparece quando o teste for feito. Nada para marcar a mao.
+async function carregarSugestoes(){
+ let d;
+ try{ d=await fetch('/api/protocolo').then(r=>r.json()); }
+ catch(e){ return; }
+ const sug=d.sugestoes||[];
+ const el=document.getElementById('sugestoesTeste');
+ if(!el)return;
+ if(!sug.length){
+  el.innerHTML='<div style="border-left:3px solid #2ECC71;background:#161b22;'+
+   'padding:9px 13px;border-radius:0 6px 6px 0;font-size:13px;margin:10px 0">'+
+   'Todos os testes em dia. O sistema deteta esforcos maximos sozinho — '+
+   'nao precisas de marcar nada.</div>';
+  return;}
+
+ // um por modalidade, o mais atrasado
+ const porMod={};
+ sug.forEach(function(s){
+  if(!porMod[s.modalidade]||s.atraso_dias>porMod[s.modalidade].atraso_dias)
+   porMod[s.modalidade]=s;});
+
+ const cov=(d.cobertura||{}).por_modalidade||{};
+ const cartoes=Object.keys(porMod).map(function(m){
+  const s=porMod[m];
+  const cor=(D&&D.cores?D.cores[m]:null)||'#8b949e';
+  const urgente=s.urgencia==='alta';
+  // quantos testes ja existem nessa duracao
+  let n='';
+  const c=(cov[m]||{})[s.nome];
+  if(c)n=c.n+' feitos';
+  return '<div style="flex:1;min-width:190px;background:#161b22;border:1px solid '+
+   (urgente?'#E67E22':'#30363d')+';border-radius:8px;padding:10px 13px">'+
+   '<div style="color:'+cor+';font-weight:600;font-size:13px">'+m+'</div>'+
+   '<div style="font-size:13px;margin:3px 0">'+s.nome+'</div>'+
+   '<div style="font-size:11px;color:#8b949e">'+s.mede+'</div>'+
+   '<div style="font-size:12px;margin-top:6px;color:'+
+    (urgente?'#E67E22':'#8b949e')+'">'+s.dias_desde_ultimo+'d desde o ultimo'+
+    ' ('+Math.round(s.ultimo_valor)+'W)</div>'+
+   (n?'<div style="font-size:11px;color:#8b949e">'+n+'</div>':'')+'</div>';
+ }).join('');
+
+ el.innerHTML='<details class="expl" open style="margin:10px 0"><summary>'+
+  'Testes sugeridos ('+Object.keys(porMod).length+' modalidades)</summary>'+
+  '<div class="expl-corpo">'+
+  '<p style="font-size:13px">Estes esforcos alimentam a calibracao. Nao sao '+
+  'obrigatorios e nao ha nada para marcar: uma prova, um bloco de intervalos '+
+  'duro ou uma saida forte contam, desde que chegues perto do teu maximo '+
+  'nessa duracao. A sugestao desaparece sozinha quando acontecer.</p>'+
+  '<div style="display:flex;gap:10px;flex-wrap:wrap">'+cartoes+'</div>'+
+  '</div></details>';
+}
+
+async function montarExport(){
+ let d;
+ try{ d=await fetch('/api/export').then(r=>r.json()); }
+ catch(e){ return; }
+ const el=document.getElementById('exportBox'); if(!el)return;
+ const c=d.ficheiros||d.conjuntos||{};
+ el.innerHTML='<div class="wrap"><table><thead><tr>'+
+  ['Conjunto','O que tem','CSV','JSON'].map(x=>'<th>'+x+'</th>').join('')+
+  '</tr></thead><tbody>'+
+  Object.keys(c).map(k=>
+   '<tr><td><b>'+k+'</b></td>'+
+   '<td style="font-size:12px;color:#8b949e">'+c[k]+'</td>'+
+   '<td><a href="/api/export/'+k+'.csv">descarregar</a></td>'+
+   '<td><a href="/api/export/'+k+'.json" target="_blank">ver</a></td></tr>'
+  ).join('')+'</tbody></table></div>'+
+  (d.tudo?'<div class="sub" style="margin-top:8px">'+
+   '<a href="/api/export/tudo.json" target="_blank">tudo num so ficheiro</a> — '+
+   d.tudo.split('—')[1]+'</div>':'');
+}
+
 async function load(){
  let d;
  try{ d=await fetch('/api/pmc').then(r=>r.json()); }
@@ -1638,6 +1803,8 @@ async function load(){
    'padding:9px 12px;margin-bottom:8px;border-radius:0 6px 6px 0;font-size:13px">'+
    al.texto+'</div>';}).join('');
 
+ carregarSugestoes();
+montarExport();
  drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos();
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──
@@ -1710,6 +1877,7 @@ function redesenhar(){
 document.getElementById('janelaPMC').onchange=redesenhar;
 window.addEventListener('resize',redesenhar);
 load();
+carregarSugestoes();
 """
 
 

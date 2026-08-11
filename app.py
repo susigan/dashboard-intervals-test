@@ -239,6 +239,98 @@ def api_export(nome):
         'Content-Disposition': f'attachment; filename="{base}_{hoje}.{ext}"'})
 
 
+@app.route('/api/debug/wellness-icu')
+def api_debug_wellness_icu():
+    """O wellness da Intervals.icu traz o HRV nocturno do Garmin?
+
+    A Intervals.icu sincroniza do Garmin Connect e guarda os campos em
+    /athlete/{id}/wellness. Se o teu relogio grava HRV nocturno e a
+    sincronizacao esta ligada, o campo `hrv` vem de la — e nesse caso nao
+    e preciso ir buscar nada a mao.
+
+    Este endpoint compara: quantos dias tem hrv, desde quando, e como se
+    relaciona com o que tens no formulario.
+    """
+    from api_client import icu_get, athlete_id_real
+    import sheets_client
+
+    aid = athlete_id_real()
+    oldest = request.args.get('oldest', '2023-01-01')
+    dados, err = icu_get(f'/athlete/{aid}/wellness',
+                         params={'oldest': oldest,
+                                 'newest': datetime.now().strftime('%Y-%m-%d')})
+    if err:
+        return jsonify({'erro': err}), 502
+    if not isinstance(dados, list):
+        return jsonify({'erro': 'resposta inesperada',
+                        'tipo': str(type(dados))}), 502
+
+    campos = ['hrv', 'hrvSDNN', 'restingHR', 'sleepSecs', 'sleepScore',
+              'sleepQuality', 'avgSleepingHR', 'readiness', 'respiration',
+              'spO2', 'baevskySI', 'steps', 'weight', 'bodyFat',
+              'kcalConsumed', 'carbohydrates', 'protein', 'fatTotal']
+    resumo = {}
+    for c in campos:
+        vals = [(d.get('id'), d.get(c)) for d in dados
+                if isinstance(d.get(c), (int, float))]
+        if not vals:
+            resumo[c] = {'n': 0}
+            continue
+        datas = sorted(v[0] for v in vals)
+        nums = [v[1] for v in vals]
+        resumo[c] = {
+            'n': len(vals), 'primeiro': datas[0], 'ultimo': datas[-1],
+            'media': round(sum(nums) / len(nums), 2),
+            'min': round(min(nums), 2), 'max': round(max(nums), 2)}
+
+    # cruzar com o formulario, para ver se sao a mesma medicao
+    comparacao = None
+    try:
+        w, _c, _e = sheets_client.carregar()
+        form = {x['date']: x.get('hrv') for x in (w or [])
+                if isinstance(x.get('hrv'), (int, float))}
+        pares = [(d.get('hrv'), form.get(d.get('id'))) for d in dados
+                 if isinstance(d.get('hrv'), (int, float))
+                 and isinstance(form.get(d.get('id')), (int, float))]
+        if len(pares) >= 20:
+            import statistics as st
+            xs = [p[0] for p in pares]
+            ys = [p[1] for p in pares]
+            mx, my = st.mean(xs), st.mean(ys)
+            num = sum((a - mx) * (b - my) for a, b in pares)
+            den = (sum((a - mx) ** 2 for a in xs)
+                   * sum((b - my) ** 2 for b in ys)) ** 0.5
+            r = num / den if den else None
+            comparacao = {
+                'dias_em_comum': len(pares),
+                'media_intervals': round(mx, 2),
+                'media_formulario': round(my, 2),
+                'diferenca': round(mx - my, 2),
+                'r': round(r, 4) if r else None,
+                'leitura': (
+                    'praticamente a mesma medicao — o teu formulario e a '
+                    'fonte' if r and r > 0.95 else
+                    'muito parecidas mas nao identicas' if r and r > 0.85 else
+                    'medicoes DIFERENTES — o hrv da Intervals.icu pode vir do '
+                    'Garmin, o que seria exactamente o que procuramos')}
+    except Exception as e:
+        comparacao = {'erro': str(e)}
+
+    return jsonify({
+        'status': 'OK', 'athlete': aid,
+        'registos': len(dados),
+        'periodo': {'de': oldest, 'ate': datetime.now().strftime('%Y-%m-%d')},
+        'campos': resumo,
+        'comparacao_com_formulario': comparacao,
+        'como_ler': (
+            'Se `hrv` tiver muitos dias E a comparacao disser "medicoes '
+            'diferentes", entao a Intervals.icu ja traz o HRV do Garmin e '
+            'podemos usa-lo directamente, sem o script do Colab. Se `hrv` '
+            'vier vazio, e preciso ligar a sincronizacao Garmin -> '
+            'Intervals.icu nas definicoes da Intervals.icu.'),
+    })
+
+
 @app.route('/api/protocolo')
 def api_protocolo():
     """Testes maximos detectados e quais estao em atraso.

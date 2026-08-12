@@ -197,7 +197,16 @@ def api_export(nome):
             def _linhas(txt):
                 return list(_csv_mod.DictReader(_io.StringIO(txt)))
 
+            # O wellness tem de passar pelo export.wellness(), que junta o
+            # formulario com os campos da Intervals.icu (hrvSDNN_icu,
+            # readiness_icu, etc). Usar sheets.carregar() directamente
+            # trazia so o formulario, e o hrvSDNN nunca chegava a analise.
             wl, cp_, _erros = sheets.carregar()
+            try:
+                wl = _linhas(export.wellness(sheets))
+            except Exception as e:
+                print(f'wellness completo falhou, a usar so o formulario: {e}')
+                wl = wl or []
             return jsonify({
                 'gerado_em': datetime.now().isoformat(),
                 'atividades': db.actividades_processadas(),

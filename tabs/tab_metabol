@@ -1,0 +1,216 @@
+"""tab_metabol.py — Leitura do perfil metabólico (fisiologia_perfil.db).
+
+Não escreve nada — só lê o que fisiologia_worker.py já gravou e agrega.
+
+DUAS ANÁLISES:
+
+  1. perfil_por_modalidade(modalidade)
+     "A X watts, o que é normal/esperado?"
+     Quartis de potência CALCULADOS AGORA (não fixos) a partir da
+     distribuição real de watts dessa modalidade — depois, dentro de
+     cada faixa, quartis (p25/p50/p75) de cada métrica: valor no
+     esforço (hr_medio_work, smo2_medio_work, ...) e tempo de resposta/
+     recuperação (lag_*_50, rec_*_50).
+
+  2. evolucao_temporal(modalidade, campo, watts_min, watts_max)
+     "Este valor está a mudar ao longo do tempo, a esta potência?"
+     Agrupa por mês (ou por período à escolha) dentro de uma faixa de
+     watts fixa, para ver deriva longitudinal (ex.: será que o SmO2 a
+     300W está diferente agora do que há 6 meses?).
+
+Ambas usam apenas linhas com valido=1.
+"""
+
+import numpy as np
+import sqlite3
+from datetime import datetime
+
+import drive_db_fisiologia as ddf
+
+# Métricas de VALOR (patamar) — "quanto vale a X watts"
+CAMPOS_VALOR = [
+    'hr_medio_work', 'smo2_medio_work', 'thb_medio_work',
+    'resp_medio_work', 'dfa1_medio_work',
+]
+
+# Métricas de TEMPO (lag de resposta e recovery) — "quanto demora"
+CAMPOS_TEMPO = [
+    'lag_hr_50', 'lag_smo2_50', 'lag_thb_50', 'lag_resp_50', 'lag_dfa1_50',
+    'rec_hr_50', 'rec_smo2_50', 'rec_thb_50', 'rec_resp_50', 'rec_dfa1_50',
+]
+
+TODOS_CAMPOS = CAMPOS_VALOR + CAMPOS_TEMPO
+
+MIN_POR_FAIXA = 3   # abaixo disto, não vale a pena mostrar quartis (ruído)
+
+
+def _conn():
+    conn = ddf.get_conn()
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _quartis(valores):
+    vs = np.array([v for v in valores if v is not None], dtype=float)
+    vs = vs[np.isfinite(vs)]
+    if len(vs) < MIN_POR_FAIXA:
+        return None
+    return {
+        'n': len(vs),
+        'p25': round(float(np.percentile(vs, 25)), 2),
+        'p50': round(float(np.percentile(vs, 50)), 2),
+        'p75': round(float(np.percentile(vs, 75)), 2),
+        'min': round(float(np.min(vs)), 2),
+        'max': round(float(np.max(vs)), 2),
+    }
+
+
+def perfil_por_modalidade(modalidade, min_n_total=20, n_faixas=4):
+    """Curva watts -> métrica esperada, para 1 modalidade.
+
+    Faixas de potência calculadas AGORA a partir dos dados reais desta
+    modalidade (quartis dinâmicos) — nunca zonas fixas hardcoded.
+
+    Retorna dict pronto para gráfico: 1 entrada por faixa de watts, cada
+    uma com quartis de todas as métricas disponíveis (valor + tempo).
+    """
+    conn = _conn()
+    linhas = conn.execute(
+        """SELECT watts_medio, data, activity_id, """ + ", ".join(TODOS_CAMPOS) + """
+           FROM fisiologia_intervalos
+           WHERE modalidade = ? AND valido = 1 AND watts_medio IS NOT NULL
+           ORDER BY watts_medio""",
+        (modalidade,)
+    ).fetchall()
+
+    if len(linhas) < min_n_total:
+        return {
+            'status': 'dados_insuficientes',
+            'modalidade': modalidade,
+            'n_disponivel': len(linhas),
+            'minimo_necessario': min_n_total,
+            'mensagem': (f'Só há {len(linhas)} intervalos válidos para {modalidade}. '
+                        f'Precisa de pelo menos {min_n_total} para quartis com sentido. '
+                        f'Continua a processar atividades e volta a tentar.'),
+        }
+
+    watts = np.array([l['watts_medio'] for l in linhas])
+    n_datas = len(set(l['data'] for l in linhas))
+    n_activities = len(set(l['activity_id'] for l in linhas))
+
+    # Quartis de potência dinâmicos — recalculados sempre que há mais dados
+    percentis_corte = np.linspace(0, 100, n_faixas + 1)
+    cortes = np.percentile(watts, percentis_corte)
+    # Garantir cortes estritamente crescentes (evita faixas vazias se houver
+    # muitos valores repetidos, ex.: sessões sempre no mesmo alvo de watts)
+    cortes = np.unique(cortes)
+
+    faixas_saida = []
+    for i in range(len(cortes) - 1):
+        lo, hi = cortes[i], cortes[i + 1]
+        ultima = (i == len(cortes) - 2)
+        if ultima:
+            mask = (watts >= lo) & (watts <= hi)
+        else:
+            mask = (watts >= lo) & (watts < hi)
+        idxs = np.where(mask)[0]
+
+        label = f'{lo:.0f}–{hi:.0f}W'
+        faixa = {
+            'faixa_watts': label,
+            'watts_min': round(float(lo), 1),
+            'watts_max': round(float(hi), 1),
+            'n_intervalos': len(idxs),
+        }
+        for campo in TODOS_CAMPOS:
+            valores = [linhas[j][campo] for j in idxs]
+            faixa[campo] = _quartis(valores)
+        faixas_saida.append(faixa)
+
+    return {
+        'status': 'ok',
+        'modalidade': modalidade,
+        'n_intervalos_total': len(linhas),
+        'n_atividades': n_activities,
+        'n_dias_distintos': n_datas,
+        'watts_min_observado': round(float(watts.min()), 1),
+        'watts_max_observado': round(float(watts.max()), 1),
+        'faixas': faixas_saida,
+        'gerado_em': datetime.now().isoformat(timespec='seconds'),
+    }
+
+
+def evolucao_temporal(modalidade, campo, watts_min=None, watts_max=None,
+                      agregacao='mes', min_por_periodo=3):
+    """Deriva longitudinal: como 'campo' varia ao longo do tempo, dentro
+    de uma faixa de watts (fixa, definida por ti — ao contrário do
+    perfil_por_modalidade, aqui a faixa não é recalculada, porque queres
+    comparar sempre "a mesma pergunta" ao longo do tempo).
+
+    Args:
+        modalidade: 'Bike'/'Row'/'Ski'/'Run'
+        campo: um de TODOS_CAMPOS, ex. 'smo2_medio_work', 'lag_hr_50'
+        watts_min/watts_max: faixa fixa (None = sem limite desse lado)
+        agregacao: 'mes' ou 'semana'
+        min_por_periodo: mínimo de pontos para incluir um período
+
+    Retorna lista ordenada por período: [{periodo, p25, p50, p75, n}, ...]
+    """
+    if campo not in TODOS_CAMPOS:
+        return {'status': 'erro', 'mensagem': f'campo desconhecido: {campo}'}
+
+    conn = _conn()
+    cond = ["modalidade = ?", "valido = 1", f"{campo} IS NOT NULL"]
+    params = [modalidade]
+    if watts_min is not None:
+        cond.append("watts_medio >= ?")
+        params.append(watts_min)
+    if watts_max is not None:
+        cond.append("watts_medio <= ?")
+        params.append(watts_max)
+
+    linhas = conn.execute(
+        f"""SELECT data, {campo} as valor FROM fisiologia_intervalos
+           WHERE {' AND '.join(cond)} ORDER BY data""",
+        tuple(params)
+    ).fetchall()
+
+    if not linhas:
+        return {'status': 'dados_insuficientes', 'modalidade': modalidade,
+               'campo': campo, 'n_disponivel': 0}
+
+    def _periodo(data_str):
+        if agregacao == 'semana':
+            dt = datetime.strptime(data_str, '%Y-%m-%d')
+            ano, semana, _ = dt.isocalendar()
+            return f'{ano}-W{semana:02d}'
+        return data_str[:7]  # YYYY-MM
+
+    grupos = {}
+    for l in linhas:
+        p = _periodo(l['data'])
+        grupos.setdefault(p, []).append(l['valor'])
+
+    saida = []
+    for periodo in sorted(grupos.keys()):
+        q = _quartis(grupos[periodo])
+        if q and q['n'] >= min_por_periodo:
+            saida.append({'periodo': periodo, **q})
+
+    return {
+        'status': 'ok', 'modalidade': modalidade, 'campo': campo,
+        'watts_min': watts_min, 'watts_max': watts_max, 'agregacao': agregacao,
+        'n_periodos': len(saida), 'evolucao': saida,
+    }
+
+
+def modalidades_disponiveis():
+    """Quantos intervalos válidos há já, por modalidade — para saber se
+    já vale a pena chamar perfil_por_modalidade() em cada uma."""
+    conn = _conn()
+    linhas = conn.execute(
+        """SELECT modalidade, COUNT(*) as n, COUNT(DISTINCT activity_id) as n_atividades
+           FROM fisiologia_intervalos WHERE valido = 1
+           GROUP BY modalidade ORDER BY n DESC"""
+    ).fetchall()
+    return [dict(l) for l in linhas]

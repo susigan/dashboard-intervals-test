@@ -50,11 +50,6 @@ else:
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
-    print("Fonte de dados: API Intervals.icu (DATABASE_URL nao definida)")
-
-app = Flask(__name__)
-app.config['JSON_SORT_KEYS'] = False
-logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 
 # ── Paginas ───────────────────────────────────────────────────────────────
@@ -598,7 +593,6 @@ def health():
 
 
 
-
 # ── FMT Tensor Gráficos ──────────────────────────────────────────────────────
 
 @app.route('/api/fmt/grafico_kappa')
@@ -721,6 +715,8 @@ def api_fmt_lambda1_dimensoes():
         import traceback
         traceback.print_exc()
         return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))

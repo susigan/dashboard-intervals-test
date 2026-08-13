@@ -83,6 +83,10 @@ import numpy as np
 import db
 from api_client import icu_get, norm_tipo
 import drive_db_fisiologia as ddf
+try:
+    import sync as _sync
+except Exception:
+    _sync = None
 
 # ══════════════════════════════════════════════════════════════════════════
 # CONFIGURAÇÃO
@@ -373,6 +377,19 @@ def processar_atividade(activity, conn):
 
     streams, meta = db.get_streams(activity_id)
     tem_streams = bool(streams) and STREAM_WATTS in (streams or {})
+
+    if not tem_streams and _sync is not None:
+        # Self-heal: em vez de depender de correres /api/sync/streams antes,
+        # o worker busca aqui mesmo (1 pedido, só desta atividade) e guarda
+        # no Postgres — assim, correr só /api/fisiologia/processar já
+        # chega, sem precisares dos dois passos manuais.
+        try:
+            resultado = _sync.sync_streams(activity_id)
+            if resultado:
+                streams, meta = resultado
+                tem_streams = bool(streams) and STREAM_WATTS in (streams or {})
+        except Exception as e:
+            print(f"  [aviso] sync_streams falhou para {activity_id}: {e}")
 
     # tempos + valores por métrica (uma vez por atividade, reaproveitados
     # para todos os intervalos) — só se houver streams; senão ficam vazios

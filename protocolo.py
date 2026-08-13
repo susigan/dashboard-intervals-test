@@ -19,6 +19,14 @@ Como se deteta um teste
 Nao e preciso marcar nada a mao. Uma sessao conta como teste valido para
 uma duracao se o esforco nessa duracao chegar perto do teu melhor recente:
 e o que distingue um esforco maximo de um treino qualquer.
+
+RECUPERAÇÃO HRV (pré-registo 2026-08-13)
+-----------------------------------------
+Depois de sessões RPE ≥7, HRV atinge o mínimo ao dia +10 (d=-0.378).
+Modulador principal: TSB (r²=6.5%).
+- TSB negativo (cansaço): efeito maior
+- TSB positivo (forma): efeito menor
+Revisar a cada 3 meses (próximo: 2026-11-13).
 """
 
 from datetime import datetime, timedelta
@@ -225,3 +233,38 @@ def cobertura(deteccao):
                      'regulares nao ha ancora de performance; e por isso que '
                      'a calibracao contra CP falha.')
     return {'total': total, 'por_modalidade': detalhe, 'veredicto': veredicto}
+
+
+def recomendacao_teste_por_tsb(tsb, modalidade_preferida=None):
+    """Recomendação de quando fazer testes máximos, baseada em TSB.
+    
+    TSB é modulador principal da recuperação HRV (pré-registo 2026-08-13).
+    Efeito RPE→HRV varia conforme estado:
+    - TSB < -10: cansaço → recuperação mais lenta → evitar testes
+    - TSB -10 a 0: transição → ok para testes moderados
+    - TSB > 0: forma → ideal para testes máximos
+    """
+    if tsb is None:
+        return {'recomendacao': 'indeterminado', 'motivo': 'TSB não disponível'}
+    
+    if tsb < -10:
+        return {
+            'recomendacao': 'aguardar',
+            'motivo': f'TSB={tsb:.1f} (muito cansado)',
+            'sugestao': 'Recupera mais lentamente após carga; evita testes por agora',
+            'revisar_em_dias': 7,
+        }
+    elif tsb < 0:
+        return {
+            'recomendacao': 'moderado',
+            'motivo': f'TSB={tsb:.1f} (em transição)',
+            'sugestao': 'Pode fazer testes curtos (5-20min), evita testes máximos longos',
+            'revisar_em_dias': 3,
+        }
+    else:
+        return {
+            'recomendacao': 'ideal',
+            'motivo': f'TSB={tsb:.1f} (em forma)',
+            'sugestao': 'Estado ideal para testes máximos (1min, 5min, 20min)',
+            'revisar_em_dias': 1,
+        }

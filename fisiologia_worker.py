@@ -159,6 +159,9 @@ def buscar_intervalos_api(activity_id):
     return out, None
 
 
+LIMIAR_QUEDA_REC = float(os.getenv("FISIOLOGIA_LIMIAR_QUEDA", "0.30"))  # 30%
+
+
 def _limiar_gap(potencias):
     """Maior 'salto' na distribuição ordenada de potências — separa o
     grupo de baixa potência (REC/warmup/cooldown) do de alta (WORK).
@@ -174,22 +177,45 @@ def _limiar_gap(potencias):
 
 
 def classificar_por_potencia(intervalos):
-    """Marca cada intervalo com iv['_classe'] = 'work' | 'recovery' | 'ignorar',
-    usando a POTÊNCIA MÉDIA — não o campo 'type' da API (que pode estar
-    errado, ex.: REST marcado como WORK).
+    """Marca cada intervalo com iv['_classe'] = 'work' | 'recovery' | 'ignorar'.
+
+    NÃO usa o campo 'type' da API (pode estar errado — já visto REST
+    marcado como WORK). Combina dois sinais:
+
+      1. GLOBAL: potência abaixo do maior "salto" na distribuição de
+         toda a atividade -> candidato a REC. Bom para descansos longos
+         e estáveis.
+
+      2. QUEDA RELATIVA (face ao intervalo ANTERIOR): se a potência cai
+         >= LIMIAR_QUEDA_REC (30% por omissão) em relação ao intervalo
+         imediatamente antes, classifica como REC MESMO que ainda tenha
+         watts residuais (ex.: rodou/remou "de balde" sem força a seguir
+         a um esforço, e isso ficou gravado no lap de descanso com algum
+         valor > 0). O que importa é a QUEDA, não o valor absoluto.
+
+    Um intervalo fica REC se qualquer um dos dois sinais disparar.
     """
     potencias = [iv.get('watts_medio_api') for iv in intervalos
                 if iv.get('watts_medio_api') is not None]
-    if len(potencias) < 2:
-        for iv in intervalos:
-            iv['_classe'] = 'ignorar'
-        return intervalos
+    limiar_global = _limiar_gap(potencias) if len(potencias) >= 2 else None
 
-    limiar = _limiar_gap(potencias)
+    anterior_watts = None
     for iv in intervalos:
         w = iv.get('watts_medio_api')
-        iv['_classe'] = ('ignorar' if w is None
-                         else ('work' if w >= limiar else 'recovery'))
+        if w is None:
+            iv['_classe'] = 'ignorar'
+            continue
+
+        baixo_global = (limiar_global is not None and w < limiar_global)
+
+        queda_relativa = False
+        if anterior_watts is not None and anterior_watts > 0:
+            queda = (anterior_watts - w) / anterior_watts
+            queda_relativa = queda >= LIMIAR_QUEDA_REC
+
+        iv['_classe'] = 'recovery' if (baixo_global or queda_relativa) else 'work'
+        anterior_watts = w
+
     return intervalos
 
 
@@ -546,17 +572,25 @@ def debug_dict(activity_id):
 
     if intervalos:
         classificar_por_potencia(intervalos)
-        resultado['intervalos'] = [
-            {
+        anterior_watts = None
+        intervalos_debug = []
+        for iv in intervalos:
+            w = iv.get('watts_medio_api')
+            queda_pct = None
+            if w is not None and anterior_watts is not None and anterior_watts > 0:
+                queda_pct = round((anterior_watts - w) / anterior_watts * 100, 1)
+            intervalos_debug.append({
                 'tipo_api': iv['tipo'], 'label_api': iv.get('label'),
-                'classe_calculada_por_potencia': iv.get('_classe'),
+                'classe_calculada': iv.get('_classe'),
                 't_ini_s': round(iv['t_ini'], 1), 't_fim_s': round(iv['t_fim'], 1),
                 'dur_s': round(iv['t_fim'] - iv['t_ini'], 1),
-                'watts_medio_api': iv.get('watts_medio_api'),
+                'watts_medio_api': w,
+                'queda_pct_vs_anterior': queda_pct,
                 'hr_medio_api': iv.get('hr_medio_api'),
-            }
-            for iv in intervalos
-        ]
+            })
+            if w is not None:
+                anterior_watts = w
+        resultado['intervalos'] = intervalos_debug
         pares = emparelhar_work_rec(intervalos)
         resultado['n_pares_work_rec'] = len(pares)
         resultado['pares'] = [

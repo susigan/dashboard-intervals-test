@@ -324,6 +324,70 @@ def _moda_movel_3(fases):
 
 # ── FMT: tensor metrico de fadiga ─────────────────────────────────────────
 
+def explicar_kappa(k, k_media=None, k_desvio=None):
+    """Interpretação simples de κ para o utilizador.
+    
+    κ = trace(matriz covariância) = soma das variâncias das 5 dimensões
+    
+    Alto κ = múltiplos sistemas instáveis (carga, HRV, W', sono, WEED)
+    Baixo κ = sistemas estáveis, previsíveis
+    
+    Args:
+        k: valor de κ hoje
+        k_media: κ histórico médio (baseline)
+        k_desvio: κ histórico desvio padrão
+    
+    Returns:
+        dict com 'nivel', 'texto', 'cor'
+    """
+    if k is None or not np.isfinite(k):
+        return {'nivel': '—', 'texto': 'κ não disponível', 'cor': '#8b949e', 'valor': None}
+    
+    if k_media is None:
+        # Sem baseline, interpretação absoluta
+        if k > 3.0:
+            return {
+                'nivel': 'Alto',
+                'texto': f'κ={k:.2f} — múltiplos sistemas instáveis. Recuperação imprevisível.',
+                'cor': '#E74C3C',
+                'valor': k,
+            }
+        elif k > 1.5:
+            return {
+                'nivel': 'Moderado',
+                'texto': f'κ={k:.2f} — alguns sistemas variáveis. Ajusta treino conforme estado.',
+                'cor': '#F39C12',
+                'valor': k,
+            }
+        else:
+            return {
+                'nivel': 'Baixo',
+                'texto': f'κ={k:.2f} — sistemas estáveis, previsíveis. Seguro treinar.',
+                'cor': '#2ECC71',
+                'valor': k,
+            }
+    else:
+        # Com baseline, comparar percentis
+        z = (k - k_media) / (k_desvio or 0.5)
+        if z > 1.5:
+            nivel = 'Alto'
+            cor = '#E74C3C'
+        elif z > 0.5:
+            nivel = 'Moderado'
+            cor = '#F39C12'
+        else:
+            nivel = 'Baixo'
+            cor = '#2ECC71'
+        
+        return {
+            'nivel': nivel,
+            'texto': f'κ={k:.2f} ({z:+.2f}σ vs seu baseline {k_media:.2f}±{k_desvio:.2f}). {nivel}: instabilidade.',
+            'cor': cor,
+            'valor': k,
+            'z_score': z,
+        }
+
+
 def kappa_fmt(series, janela=28, suavizar=7):
     """κ(t) = trace(cov(Δx)) numa janela movel, e λ₁ = peso do 1º eigenvalor.
 

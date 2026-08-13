@@ -1,552 +1,318 @@
-"""FTLM fraccionario — Della Mattia (2025).
+"""FMT — Functional Multidimensional Tensor (Della Mattia, 2019).
 
-Porta do repo dashboard (data.py + phase_detector.py) para esta app, sem
-pandas nem scipy. Usa numpy, que ja e preciso para a covariancia do FMT.
+Referencia: FMT_Transformers_ENG.html, §02 Definicao 1.
 
-Peças:
-  ftlm_fractional   integral fraccionario Riemann-Liouville da carga
-  hrv_trend         tendencia local do LnRMSSD por regressao movel 7d
-  fit_gamma_*       procura o gamma que maximiza R² (performance / recuperacao)
-  detect_phases     Build / Fatigue / Overreach / Recovery / Peak / Transition
-  kappa_fmt         tensor metrico de fadiga: trace da covariancia movel
+    F(d) = (1/L) . SUM_{t=d-L+1}^{d}  dx(t) (x) dx(t)^T   em R^{FxF}
+
+onde dx(t) e a variacao diaria do vector de estado fisiologico e (x) e o
+produto externo. A traco k = tr(F) e a "curvatura escalar" do estado: alta
+quando varias dimensoes mudam de forma abrupta e simultanea. Os valores
+proprios dizem se o stress e focal (l1 domina) ou multissistemico (lj
+aproximadamente iguais).
+
+SOBRE OS CANAIS DE ATENCAO
+O paper (§08) descreve quatro canais que EMERGEM de um Transformer treinado
+numa coorte de 30 atletas. Nao temos esse modelo. O que esta aqui sao kernels
+explicitos que reproduzem o comportamento descrito para cada canal — uteis
+para ler a janela de 28 dias, mas nao sao pesos aprendidos. A interface diz
+isso.
 """
 
-import math
 import numpy as np
 
-MODS = ['Bike', 'Row', 'Ski', 'Run']
-GAMMA_DEFAULT = 0.35
-GAP_TREINO = 10          # dias sem treino a partir dos quais BUILD/FATIGUE nao fazem sentido
+# Ordem fixa das dimensoes, como na Figura 1 do paper
+DIMS = ['Load', 'HRV', "W'", 'Sleep', 'WEED']
 
-FASES = {
-    'BUILD':      {'label': 'Build',      'cor': '#2980b9',
-                   'desc': 'Acumulacao de carga — fitness a crescer'},
-    'FATIGUE':    {'label': 'Fatigue',    'cor': '#e74c3c',
-                   'desc': 'Carga alta com recuperacao autonomica comprometida'},
-    'OVERREACH':  {'label': 'Overreach',  'cor': '#8e44ad',
-                   'desc': 'HRV muito baixo + stress elevado + carga alta'},
-    'RECOVERY':   {'label': 'Recovery',   'cor': '#27ae60',
-                   'desc': 'Carga a reduzir, sistema autonomico a recuperar'},
-    'PEAK':       {'label': 'Peak',       'cor': '#f39c12',
-                   'desc': 'Carga estavel, HRV alto — forma potencial'},
-    'TRANSITION': {'label': 'Transition', 'cor': '#95a5a6',
-                   'desc': 'Estado intermedio — sem padrao claro'},
+# O QUE E DERIVADO DOS TEUS DADOS E O QUE E FIXO
+#
+# Desde a introducao do modulo calibracao.py, os parametros dos canais sao
+# estimados por correlacao cruzada nas tuas proprias series. Os numeros
+# abaixo so entram quando os teus dados nao chegam — e nesse caso a resposta
+# diz fonte='referencia'.
+#
+# ANTES (mantido so como recurso):
+#
+# Derivado (individual):
+#   - normalizacao de cada dimensao pela sua propria media e desvio
+#   - a matriz de covariacao inteira, e portanto kappa e os eigenvalues
+#   - os limiares focal/multissistemico (percentis 70/30 do teu historico)
+#   - a modulacao dos canais pela variancia real de cada dimensao
+#
+# Fixo, vindo do paper (nao dos teus dados):
+#   - janela de 28 dias (L=28, §03)
+#   - tau=6.5 no canal 1, calibrado para dar os 68% em d-1..d-5 que o §08 reporta
+#   - centro em d-17 e largura 3.5 no canal 3, da janela d-14..d-21 do §08
+#   - decaimentos de 10 e 8 dias nos canais 2 e 4
+#
+# Estes ultimos sao constantes de forma, nao valores fisiologicos. Se quiseres
+# que saiam dos teus dados, o caminho e treinar o modelo — o que exige alvos
+# rotulados que nao temos.
+
+CANAIS = {
+    'load': {
+        'nome': 'Canal 1 · Acumulacao de carga',
+        'desc': 'Decaimento exponencial para o passado. Os dias mais recentes '
+                'dominam o impulso de carga.',
+        'cor': '#E74C3C',
+    },
+    'hrv': {
+        'nome': 'Canal 2 · Recuperacao autonomica',
+        'desc': 'Foca a dimensao HRV do tensor. Deteta recuperacao '
+                'inter-sessao incompleta.',
+        'cor': '#5DADE2',
+    },
+    'super': {
+        'nome': 'Canal 3 · Supercompensacao',
+        'desc': 'Foca d-14 a d-21. Procura kappa baixo com valores proprios '
+                'equilibrados depois de um bloco de carga.',
+        'cor': '#F4D03F',
+    },
+    'risco': {
+        'nome': 'Canal 4 · Sinal de risco',
+        'desc': 'Configuracao multidimensional de overreaching: kappa alto '
+                'com o valor proprio do HRV a subir.',
+        'cor': '#8E44AD',
+    },
+    'similar': {
+        'nome': 'Similaridade entre tensores',
+        'desc': 'Atencao no sentido literal de (4): softmax da similaridade '
+                'entre vec(F) de cada dia e o dia consultado. Sem projeccoes '
+                'aprendidas — e a geometria dos proprios tensores.',
+        'cor': '#48C9B0',
+    },
 }
 
 
-# ── kernel fraccionario ───────────────────────────────────────────────────
-
-def ftlm_fractional(load, gamma_val, max_lag=None):
-    """CTLγ(t) = Σ_k Load(t-k) · k^(γ-1) / Γ(γ)
-
-    Memoria em lei de potencia: ao contrario do EWM, os treinos antigos nunca
-    desaparecem por completo — so pesam cada vez menos.
-    """
-    load = np.asarray(load, dtype=np.float64)
-    n = len(load)
-    if n == 0:
-        return np.zeros(0)
-    ml = n if max_lag is None else min(n, max_lag)
-    k = np.arange(1, ml + 1, dtype=np.float64)
-    w = np.power(k, gamma_val - 1.0) / math.gamma(gamma_val)
-    ctl = np.zeros(n)
-    for t in range(1, n):
-        lag = min(t, ml)
-        seg = load[max(0, t - ml):t][::-1]     # mais recente primeiro
-        ctl[t] = float(np.dot(seg, w[:lag]))
-    return ctl
-
-
-def _zscore(arr):
-    arr = np.asarray(arr, dtype=np.float64)
-    if not np.isfinite(arr).any():     # serie toda vazia: nada a normalizar
-        return arr
+def _z(a):
+    a = np.asarray(a, dtype=np.float64)
+    if not np.isfinite(a).any():
+        return a
     with np.errstate(all='ignore'):
-        mu, sd = np.nanmean(arr), np.nanstd(arr)
+        mu, sd = np.nanmean(a), np.nanstd(a)
     if not np.isfinite(mu):
-        return arr
-    return (arr - mu) / sd if sd > 1e-9 else arr - mu
+        return a
+    return (a - mu) / sd if sd > 1e-9 else a - mu
 
 
-def _linregress(x, y):
-    """Declive e ordenada na origem. Substitui scipy.stats.linregress."""
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    n = len(x)
-    if n < 2:
-        return 0.0, float(y[0]) if n else 0.0
-    mx, my = x.mean(), y.mean()
-    den = float(((x - mx) ** 2).sum())
-    if den < 1e-12:
-        return 0.0, float(my)
-    a = float(((x - mx) * (y - my)).sum() / den)
-    return a, float(my - a * mx)
+def construir(dimensoes, janela=28):
+    """Sequencia de tensores FMT, um por dia.
 
-
-def hrv_trend(hrv, window=7):
-    """Tendencia local do HRV por regressao movel.
-
-    Devolve b_z + w·a_z, onde b e o nivel e a o declive da janela. O peso w
-    e std(b)/std(a) — sai dos dados, nao e escolhido a mao.
+    dimensoes: dict {nome: serie}. Cada serie e normalizada antes, para que
+    escalas diferentes contribuam de forma comparavel.
+    Devolve (tensores, kappa, eigenvalues, nomes).
     """
-    hrv = np.asarray(hrv, dtype=np.float64)
-    n = len(hrv)
-    tb = np.full(n, np.nan)
-    ta = np.full(n, np.nan)
-    x = np.arange(window, dtype=np.float64)
-    for t in range(window - 1, n):
-        y = hrv[t - window + 1:t + 1]
-        m = ~np.isnan(y)
-        if m.sum() < 4:
-            continue
-        a, b = _linregress(x[m], y[m])
-        ta[t], tb[t] = a, b
-
-    b_z, a_z = _zscore(tb), _zscore(ta)
-    sb, sa = np.nanstd(tb), np.nanstd(ta)
-    w = float(np.clip(sb / sa, 0.1, 5.0)) if sa > 1e-9 else 1.0
-    return np.where(np.isfinite(b_z) & np.isfinite(a_z), b_z + w * a_z, b_z)
-
-
-def _r2(x, y):
-    """R² da regressao linear entre duas series, ignorando NaN."""
-    m = np.isfinite(x) & np.isfinite(y)
-    if m.sum() < 5:
-        return 0.0
-    xv, yv = x[m], y[m]
-    if np.std(xv) < 1e-12 or np.std(yv) < 1e-12:
-        return 0.0
-    r = float(np.corrcoef(xv, yv)[0, 1])
-    return 0.0 if not np.isfinite(r) else r * r
-
-
-def fit_gamma(load, alvo, lag=0, gama_min=0.10, gama_max=0.90, passo=0.05,
-              max_lag=365, suavizar=0, r2_minimo=0.02, permutacoes=150):
-    """Procura o γ que maximiza o R² entre CTLγ e a serie alvo.
-
-    lag=0 para performance (CP no proprio dia), lag=1 para HRV (a carga de
-    ontem explica o HRV de hoje).
-    """
-    load = np.asarray(load, dtype=np.float64)
-    alvo = np.asarray(alvo, dtype=np.float64)
-    if np.isfinite(alvo).sum() < 5:
-        return {'gamma': GAMMA_DEFAULT, 'gamma_encontrado': None, 'r2': 0.0,
-                'n': 0, 'aceite': False, 'na_fronteira': False,
-                'p_permutacao': None, 'motivo': 'menos de 5 pontos de alvo'}
-
-    if suavizar > 1:
-        alvo = _media_movel(alvo, suavizar)
-
-    melhor_g, melhor_r2 = GAMMA_DEFAULT, 0.0
-    g = gama_min
-    while g <= gama_max + 1e-9:
-        ctl = ftlm_fractional(load, g, max_lag)
-        if lag:
-            r2 = _r2(ctl[:-lag], alvo[lag:])
-        else:
-            r2 = _r2(ctl, alvo)
-        if r2 > melhor_r2:
-            melhor_g, melhor_r2 = g, r2
-        g += passo
-    n = int(np.isfinite(alvo).sum())
-
-    # O mesmo rigor que se aplica aos canais tem de valer para o proprio
-    # gamma. Sem isto, um gamma escolhido no ruido muda o CTLgamma em duas
-    # ordens de grandeza: com gamma=0.9 o expoente e -0.1 e a soma quase nao
-    # decai (dezenas de milhar); com gamma=0.1 converge (dezenas).
-    na_fronteira = abs(melhor_g - gama_min) < 1e-9 or abs(melhor_g - gama_max) < 1e-9
-
-    p_perm = None
-    if permutacoes and n >= 60:
-        curvas = []
-        for g in np.arange(gama_min, gama_max + 1e-9, passo):
-            c = ftlm_fractional(load, float(g), max_lag)
-            curvas.append(c[:-lag] if lag else c)
-        P = np.vstack(curvas)
-        y = alvo[lag:] if lag else alvo
-        p_perm = _p_perm_matriz(P, y, permutacoes)
-
-    aceite = (melhor_r2 >= r2_minimo
-              and not na_fronteira
-              and (p_perm is None or p_perm < 0.05))
-
-    return {
-        'gamma': round(melhor_g, 3) if aceite else GAMMA_DEFAULT,
-        'gamma_encontrado': round(melhor_g, 3),
-        'r2': round(melhor_r2, 4), 'n': n,
-        'aceite': aceite, 'na_fronteira': na_fronteira,
-        'p_permutacao': p_perm,
-        'motivo': (None if aceite else
-                   ('gamma no extremo da grelha — nao e um optimo'
-                    if na_fronteira else
-                    (f'R2 de {melhor_r2:.4f} abaixo do minimo {r2_minimo}'
-                     if melhor_r2 < r2_minimo else
-                     f'p de permutacao {p_perm} — dentro do acaso'))),
-    }
-
-
-def _p_perm_matriz(P, y, n_perm=150, semente=0):
-    """p por permutacao circular sobre uma matriz de candidatos."""
-    P = np.asarray(P, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    if P.ndim != 2 or P.shape[1] != len(y):
-        return None
-    mask = np.isfinite(y) & np.all(np.isfinite(P), axis=0)
-    if mask.sum() < 60:
-        return None
-    Xm, ym = P[:, mask], y[mask]
-    n = len(ym)
-    Xc = Xm - Xm.mean(axis=1, keepdims=True)
-    Xn = np.sqrt((Xc ** 2).sum(axis=1))
-    ok = Xn > 1e-9
-    if not ok.any():
-        return None
-    Xc, Xn = Xc[ok], Xn[ok]
-
-    def melhor(v):
-        vc = v - v.mean()
-        vn = np.sqrt((vc ** 2).sum())
-        return 0.0 if vn < 1e-9 else float(np.abs(Xc @ vc / (Xn * vn)).max())
-
-    obs = melhor(ym)
-    rng = np.random.default_rng(semente)
-    margem = max(30, n // 10)
-    if n - 2 * margem <= 1:
-        return None
-    ks = rng.integers(margem, n - margem, size=n_perm)
-    nulos = np.array([melhor(np.roll(ym, int(k))) for k in ks])
-    return round(float((1 + int((nulos >= obs).sum())) / (1 + len(nulos))), 4)
-
-
-def _media_movel(arr, janela):
-    arr = np.asarray(arr, dtype=np.float64)
-    out = np.full(len(arr), np.nan)
-    for i in range(len(arr)):
-        seg = arr[max(0, i - janela + 1):i + 1]
-        seg = seg[np.isfinite(seg)]
-        if len(seg):
-            out[i] = seg.mean()
-    return out
-
-
-# ── percentis e declives moveis ───────────────────────────────────────────
-
-def declive_movel(serie, janela=14):
-    serie = np.asarray(serie, dtype=np.float64)
-    n = len(serie)
-    out = np.full(n, np.nan)
-    x = np.arange(janela, dtype=np.float64)
-    for t in range(janela - 1, n):
-        y = serie[t - janela + 1:t + 1]
-        m = np.isfinite(y)
-        if m.sum() < max(3, janela // 2):
-            continue
-        a, _ = _linregress(x[m], y[m])
-        out[t] = a
-    return out
-
-
-def percentis_moveis(serie, qs, janela=60, minimo=10):
-    """Varios percentis moveis de uma so vez.
-
-    A deteccao de fases precisa de 7 percentis das MESMAS janelas. Calcular
-    cada um por separado repete o trabalho caro — ordenar. Aqui ordenamos as
-    janelas uma vez e lemos todos os percentis dessa ordenacao.
-    """
-    serie = np.asarray(serie, dtype=np.float64)
-    n = len(serie)
-    saida = {q: np.full(n, np.nan) for q in qs}
-    if n == 0:
-        return saida
-
-    ext = np.concatenate([np.full(janela - 1, np.nan), serie])
-    try:
-        from numpy.lib.stride_tricks import sliding_window_view
-        M = sliding_window_view(ext, janela)
-    except Exception:
-        for q in qs:
-            for t in range(n):
-                seg = serie[max(0, t - janela + 1):t + 1]
-                seg = seg[np.isfinite(seg)]
-                if len(seg) >= minimo:
-                    saida[q][t] = float(np.quantile(seg, q))
-        return saida
-
-    k = np.isfinite(M).sum(axis=1)          # validos por janela
-    tem = k >= minimo
-    if not tem.any():
-        return saida
-
-    # ordenar uma vez: os NaN vao para o fim
-    S = np.sort(M[tem], axis=1)
-    kk = k[tem].astype(np.float64)
-    linhas = np.arange(S.shape[0])
-
-    for q in qs:
-        # interpolacao linear, igual ao metodo por defeito do numpy
-        pos = q * (kk - 1)
-        lo = np.floor(pos).astype(int)
-        hi = np.minimum(lo + 1, (kk - 1).astype(int))
-        frac = pos - lo
-        vals = S[linhas, lo] * (1 - frac) + S[linhas, hi] * frac
-        saida[q][tem] = vals
-    return saida
-
-
-def percentil_movel(serie, q, janela=60, minimo=10):
-    """Um so percentil. Atalho para percentis_moveis."""
-    return percentis_moveis(serie, [q], janela, minimo)[q]
-
-def zscore_movel(serie, janela=60):
-    serie = np.asarray(serie, dtype=np.float64)
-    n = len(serie)
-    out = np.full(n, np.nan)
-    for t in range(n):
-        seg = serie[max(0, t - janela + 1):t + 1]
-        seg = seg[np.isfinite(seg)]
-        if len(seg) >= 10 and np.std(seg) > 1e-9:
-            out[t] = (serie[t] - seg.mean()) / seg.std()
-    return out
-
-
-def _moda_movel_3(fases):
-    """Suaviza a serie de fases com a moda de 3 dias, para nao piscar."""
-    n = len(fases)
-    out = list(fases)
-    for t in range(1, n - 1):
-        janela = [fases[t - 1], fases[t], fases[t + 1]]
-        for f in set(janela):
-            if janela.count(f) >= 2:
-                out[t] = f
-                break
-    return np.array(out, dtype=object)
-
-
-# ── FMT: tensor metrico de fadiga ─────────────────────────────────────────
-
-def explicar_kappa(k, k_media=None, k_desvio=None):
-    """Interpretação simples de κ para o utilizador.
-    
-    κ = trace(matriz covariância) = soma das variâncias das 5 dimensões
-    
-    Alto κ = múltiplos sistemas instáveis (carga, HRV, W', sono, WEED)
-    Baixo κ = sistemas estáveis, previsíveis
-    
-    Args:
-        k: valor de κ hoje
-        k_media: κ histórico médio (baseline)
-        k_desvio: κ histórico desvio padrão
-    
-    Returns:
-        dict com 'nivel', 'texto', 'cor'
-    """
-    if k is None or not np.isfinite(k):
-        return {'nivel': '—', 'texto': 'κ não disponível', 'cor': '#8b949e', 'valor': None}
-    
-    if k_media is None:
-        # Sem baseline, interpretação absoluta
-        if k > 3.0:
-            return {
-                'nivel': 'Alto',
-                'texto': f'κ={k:.2f} — múltiplos sistemas instáveis. Recuperação imprevisível.',
-                'cor': '#E74C3C',
-                'valor': k,
-            }
-        elif k > 1.5:
-            return {
-                'nivel': 'Moderado',
-                'texto': f'κ={k:.2f} — alguns sistemas variáveis. Ajusta treino conforme estado.',
-                'cor': '#F39C12',
-                'valor': k,
-            }
-        else:
-            return {
-                'nivel': 'Baixo',
-                'texto': f'κ={k:.2f} — sistemas estáveis, previsíveis. Seguro treinar.',
-                'cor': '#2ECC71',
-                'valor': k,
-            }
-    else:
-        # Com baseline, comparar percentis
-        z = (k - k_media) / (k_desvio or 0.5)
-        if z > 1.5:
-            nivel = 'Alto'
-            cor = '#E74C3C'
-        elif z > 0.5:
-            nivel = 'Moderado'
-            cor = '#F39C12'
-        else:
-            nivel = 'Baixo'
-            cor = '#2ECC71'
-        
-        return {
-            'nivel': nivel,
-            'texto': f'κ={k:.2f} ({z:+.2f}σ vs seu baseline {k_media:.2f}±{k_desvio:.2f}). {nivel}: instabilidade.',
-            'cor': cor,
-            'valor': k,
-            'z_score': z,
-        }
-
-
-def kappa_fmt(series, janela=28, suavizar=7):
-    """κ(t) = trace(cov(Δx)) numa janela movel, e λ₁ = peso do 1º eigenvalor.
-
-    Cada serie e normalizada antes, para que modalidades com escalas
-    diferentes contribuam de forma comparavel. κ alto = sistema instavel.
-    """
-    series = [s for s in series if s is not None and len(s)]
+    nomes = [d for d in DIMS if d in dimensoes] + \
+            [d for d in dimensoes if d not in DIMS]
+    series = [np.asarray(dimensoes[n], dtype=np.float64) for n in nomes]
     if not series:
-        return np.zeros(0), np.zeros(0)
-    n, d = len(series[0]), len(series)
-    mat = np.full((n, d), np.nan)
+        return None, None, None, []
+
+    n, F = len(series[0]), len(series)
+    X = np.full((n, F), np.nan)
     for j, s in enumerate(series):
-        mat[:, j] = _zscore(np.asarray(s, dtype=np.float64))
+        X[:, j] = _z(s)
 
-    delta = np.full_like(mat, np.nan)
-    delta[1:] = mat[1:] - mat[:-1]
+    dX = np.full_like(X, np.nan)
+    dX[1:] = X[1:] - X[:-1]
 
+    tensores = np.full((n, F, F), np.nan)
     kappa = np.full(n, np.nan)
-    lam1 = np.full(n, np.nan)
+    eig = np.full((n, F), np.nan)
+
     for t in range(janela, n):
-        wd = delta[t - janela:t]
-        val = np.all(np.isfinite(wd), axis=1)
-        if val.sum() < max(10, d + 2):
+        w = dX[t - janela:t]
+        val = np.all(np.isfinite(w), axis=1)
+        if val.sum() < max(10, F + 2):
             continue
+        d = w[val]
+        # F(d) = (1/L) SUM dx (x) dx^T  — momento de segunda ordem
+        Ft = (d.T @ d) / len(d)
+        tensores[t] = Ft
+        kappa[t] = float(np.trace(Ft))
         try:
-            F = np.cov(wd[val].T)
-            if F.ndim == 0:
-                F = F.reshape(1, 1)
-            kappa[t] = float(np.trace(F))
-            if d >= 2:
-                eig = np.sort(np.linalg.eigvalsh(F))[::-1]
-                pos = eig[eig > 0]
-                if len(pos):
-                    lam1[t] = float(pos[0] / pos.sum())
+            ev = np.sort(np.linalg.eigvalsh(Ft))[::-1]
+            eig[t] = ev
         except Exception:
             pass
-    return _ewm_nan(kappa, suavizar), _ewm_nan(lam1, suavizar)
+    return tensores, kappa, eig, nomes
 
 
-def _ewm_nan(arr, span, min_periods=3, adjust=True):
-    """Media exponencial ignorando NaN, igual ao pandas.ewm.
-
-    adjust=True e o defeito do pandas (e o que o dashboard usa para suavizar
-    o kappa); adjust=False e o usado no CTL/ATL. Em ambos o peso do passado
-    decai com a distancia real desde a ultima observacao valida, que e o
-    comportamento de ignore_na=False.
-    """
-    arr = np.asarray(arr, dtype=np.float64)
-    alpha = 2.0 / (span + 1.0)
-    um_menos = 1.0 - alpha
-    out = np.full(len(arr), np.nan)
-    num = den = 0.0
-    prev = None
-    vistos, desde = 0, 0
-
-    for i, v in enumerate(arr):
-        if np.isfinite(v):
-            peso = um_menos ** (desde + 1)
-            if adjust:
-                num = v + peso * num
-                den = 1.0 + peso * den
-                prev = num / den
-            else:
-                prev = v if prev is None else peso * prev + (1 - peso) * v
-            vistos += 1
-            desde = 0
-        else:
-            desde += 1
-        if prev is not None and vistos >= min_periods:
-            out[i] = prev
+def _softmax(x, temp=1.0):
+    x = np.asarray(x, dtype=np.float64)
+    m = np.isfinite(x)
+    out = np.zeros_like(x)
+    if not m.any():
+        return out
+    v = x[m] / max(temp, 1e-9)
+    v = v - v.max()
+    e = np.exp(v)
+    out[m] = e / e.sum()
     return out
 
 
-def ewm(valores, span):
-    alpha = 2.0 / (span + 1.0)
-    out, prev = [], None
-    for v in valores:
-        prev = v if prev is None else alpha * v + (1 - alpha) * prev
-        out.append(prev)
-    return np.array(out)
+def atencao(tensores, kappa, eig, nomes, dia, canal='load', janela=28,
+            params=None):
+    """Pesos de atencao dos 28 dias anteriores sobre o dia consultado.
 
-
-# ── deteccao de fases ─────────────────────────────────────────────────────
-
-def detect_phases(ctlg, hrv_rel, weed_z, dias_sem_treino,
-                  janela_declive=14, janela_pct=60):
-    """Classifica cada dia numa fase de treino.
-
-    A ordem das regras importa: OVERREACH antes de FATIGUE, FATIGUE antes de
-    BUILD. Os limiares sao percentis moveis de 60 dias, por isso adaptam-se
-    ao atleta em vez de serem numeros fixos.
+    Cada canal e um kernel explicito que reproduz o comportamento descrito
+    no §08 do paper. Devolve pesos que somam 1.
     """
-    n = len(ctlg)
-    dctl = declive_movel(ctlg, janela_declive)
-    hrv_z = np.asarray(hrv_rel, dtype=np.float64)
-    weed = _zscore(np.asarray(weed_z, dtype=np.float64)) if weed_z is not None \
-        else np.full(n, np.nan)
+    n = len(kappa)
+    if dia < janela or dia >= n:
+        return None
+    ini = dia - janela + 1
+    idx = np.arange(ini, dia + 1)
+    lag = dia - idx                     # 0 = hoje, 27 = ha 27 dias
+    F = len(nomes)
 
-    # todos os percentis das mesmas janelas numa so passagem
-    pd_ = percentis_moveis(dctl, [0.30, 0.50, 0.70], janela_pct)
-    ph_ = percentis_moveis(hrv_z, [0.10, 0.20, 0.30, 0.50, 0.60], janela_pct)
-    pw_ = percentis_moveis(weed, [0.90], janela_pct)
-    d70, d50, d30 = pd_[0.70], pd_[0.50], pd_[0.30]
-    h60, h50 = ph_[0.60], ph_[0.50]
-    h30, h20, h10 = ph_[0.30], ph_[0.20], ph_[0.10]
-    w90 = pw_[0.90]
+    # Parametros: preferencia aos calibrados nos dados do atleta.
+    P = params or {}
+    tau_carga = P.get('tau_carga', 6.5)
+    lag_hrv = P.get('lag_hrv', 1)
+    lag_super = P.get('lag_super', 17)
+    largura_super = P.get('largura_super', 3.5)
+    tau_risco = P.get('tau_risco', 8)
 
-    fases = np.array(['TRANSITION'] * n, dtype=object)
-    for t in range(n):
-        dc, hv, wd = dctl[t], hrv_z[t], weed[t]
-        if not np.isfinite(dc) or not (np.isfinite(d70[t]) and np.isfinite(d30[t])):
-            continue
+    def dim(nome):
+        return nomes.index(nome) if nome in nomes else None
 
-        hrv_ok = np.isfinite(hv) and np.isfinite(h20[t])
-        weed_ok = np.isfinite(wd) and np.isfinite(w90[t])
+    if canal == 'load':
+        # decaimento exponencial; ponderado pela variancia da dimensao Load
+        base = np.exp(-lag / max(tau_carga, 0.5))
+        j = dim('Load')
+        if j is not None:
+            var = np.array([tensores[i][j, j] if np.isfinite(tensores[i][j, j])
+                            else 0.0 for i in idx])
+            base = base * (1.0 + _z(var) * 0.3 + 0.5)
+        pesos = base
 
-        # Sem carga recente, o declive pode estar positivo so por inercia.
-        if dias_sem_treino is not None and dias_sem_treino[t] > GAP_TREINO:
-            if hrv_ok and np.isfinite(h50[t]) and hv > h50[t]:
-                fases[t] = 'RECOVERY'
-            continue
+    elif canal == 'hrv':
+        # variancia da dimensao HRV, com decaimento suave
+        j = dim('HRV')
+        if j is None:
+            return None
+        var = np.array([tensores[i][j, j] if np.isfinite(tensores[i][j, j])
+                        else 0.0 for i in idx])
+        # centrado no lag em que a carga mais deprime o HRV neste atleta
+        pesos = np.clip(var, 0, None) * np.exp(-np.abs(lag - lag_hrv) / 6.0)
 
-        if hrv_ok and weed_ok and hv < h10[t] and wd > w90[t] and dc > d50[t]:
-            fases[t] = 'OVERREACH'
-        elif hrv_ok and np.isfinite(d50[t]) and dc > d50[t] and hv < h20[t]:
-            fases[t] = 'FATIGUE'
-        elif hrv_ok and dc > d70[t] and hv > h30[t]:
-            fases[t] = 'BUILD'
-        elif (hrv_ok and np.isfinite(h60[t]) and np.isfinite(d30[t])
-              and d30[t] <= dc <= d70[t] and hv > h60[t]):
-            fases[t] = 'PEAK'
-        elif hrv_ok and dc < d30[t] and hv > h50[t]:
-            fases[t] = 'RECOVERY'
+    elif canal == 'super':
+        # janela gaussiana centrada em d-17, entre d-14 e d-21;
+        # premeia kappa baixo com valores proprios equilibrados
+        base = np.exp(-((lag - float(lag_super)) ** 2) /
+                      (2 * max(float(largura_super), 1.0) ** 2))
+        k = np.array([kappa[i] if np.isfinite(kappa[i]) else np.nan for i in idx])
+        eq = np.zeros(len(idx))
+        for p, i in enumerate(idx):
+            ev = eig[i]
+            ev = ev[np.isfinite(ev) & (ev > 0)]
+            if len(ev) >= 2:
+                eq[p] = 1.0 - ev[0] / ev.sum()      # alto = equilibrado
+        kz = _z(k)
+        pesos = base * (1.0 + eq) * np.exp(-np.nan_to_num(kz) * 0.5)
 
-    suave = _moda_movel_3(fases)
+    elif canal == 'risco':
+        # kappa alto + valor proprio do HRV a subir, nos dias recentes
+        k = np.array([kappa[i] if np.isfinite(kappa[i]) else np.nan for i in idx])
+        j = dim('HRV')
+        hv = np.zeros(len(idx))
+        if j is not None:
+            hv = np.array([tensores[i][j, j] if np.isfinite(tensores[i][j, j])
+                           else 0.0 for i in idx])
+        kz = np.nan_to_num(_z(k))
+        hz = np.nan_to_num(_z(hv))
+        pesos = np.exp(-lag / max(float(tau_risco), 1.0)) * \
+            np.clip(1.0 + kz + hz, 0.05, None)
 
-    # ha quantos dias estamos nesta fase
-    dias_na_fase = np.zeros(n, dtype=int)
-    for t in range(1, n):
-        dias_na_fase[t] = 0 if suave[t] != suave[t - 1] else dias_na_fase[t - 1] + 1
+    elif canal == 'similar':
+        # atencao no sentido de (4), sem projeccoes aprendidas:
+        # produto interno normalizado entre vec(F) de cada dia e o dia d
+        q = tensores[dia].reshape(-1)
+        if not np.isfinite(q).all():
+            return None
+        qn = np.linalg.norm(q) or 1.0
+        sim = np.full(len(idx), -np.inf)
+        for p, i in enumerate(idx):
+            v = tensores[i].reshape(-1)
+            if not np.isfinite(v).all():
+                continue
+            vn = np.linalg.norm(v) or 1.0
+            sim[p] = float(q @ v) / (qn * vn) * np.sqrt(F)   # escala 1/sqrt(d)
+        return {'lag': lag.tolist(), 'idx': idx.tolist(),
+                'pesos': _softmax(sim, temp=0.15).tolist()}
+    else:
+        return None
 
-    return {'fase': suave, 'dctlg': dctl, 'hrv_z': hrv_z,
-            'weed_z': weed, 'dias_na_fase': dias_na_fase}
+    pesos = np.clip(np.nan_to_num(pesos), 0, None)
+    s = pesos.sum()
+    pesos = pesos / s if s > 0 else np.full(len(pesos), 1.0 / len(pesos))
+    return {'lag': lag.tolist(), 'idx': idx.tolist(), 'pesos': pesos.tolist()}
 
 
-def fase_global_ponderada(fases_por_mod, ctlg_por_mod):
-    """Fase global = moda das fases modais, ponderada pelo CTLγ de cada uma.
+def limiares_lambda1(eig, minimo=60):
+    """Limiares focal/multissistemico a partir do proprio historico.
 
-    Uma modalidade com CTLγ alto pesa mais: se o Bike domina a carga, e o
-    estado do Bike que define o estado global.
+    Em vez de numeros fixos, usamos os percentis 70 e 30 da distribuicao de
+    lambda1 deste atleta: "focal" passa a significar "mais concentrado do que
+    o teu normal", que e o que interessa. Se nao houver historico suficiente,
+    cai para 0.55/0.35 — e ai diz-se que sao valores de referencia.
     """
-    if not fases_por_mod:
-        return None, {}
-    total = sum(ctlg_por_mod.get(m, 0.0) for m in fases_por_mod)
-    if total <= 0:
-        return None, {}
-    pesos = {}
-    for mod, fase in fases_por_mod.items():
-        pesos[fase] = pesos.get(fase, 0.0) + ctlg_por_mod.get(mod, 0.0)
-    global_fase = max(pesos, key=pesos.get)
-    contrib = {m: round(ctlg_por_mod.get(m, 0.0) / total, 3) for m in fases_por_mod}
-    return global_fase, contrib
+    serie = []
+    for linha in eig:
+        v = linha[np.isfinite(linha)]
+        v = v[v > 0]
+        if len(v) >= 2:
+            serie.append(float(v[0] / v.sum()))
+    if len(serie) < minimo:
+        return 0.55, 0.35, 'referencia', len(serie)
+    return (float(np.quantile(serie, 0.70)),
+            float(np.quantile(serie, 0.30)), 'historico', len(serie))
+
+
+def resumo_dia(tensores, kappa, eig, nomes, dia, limiares=None):
+    """Matriz, kappa, valores proprios e leitura focal/multissistemica."""
+    if dia is None or dia >= len(kappa) or not np.isfinite(kappa[dia]):
+        return None
+    Ft = tensores[dia]
+    ev = eig[dia]
+    ev = ev[np.isfinite(ev)]
+    pos = ev[ev > 0]
+    l1 = float(pos[0] / pos.sum()) if len(pos) else None
+
+    if limiares:
+        alto = limiares.get('alto', 0.55)
+        baixo = limiares.get('baixo', 0.35)
+        fonte_lim = limiares.get('fonte', 'referencia')
+        n_hist = limiares.get('n', limiares.get('n_historico', 0))
+    else:
+        alto, baixo, fonte_lim, n_hist = limiares_lambda1(eig)
+
+    if l1 is None:
+        leitura = None
+    elif l1 > alto:
+        j = int(np.nanargmax(np.diag(Ft)))
+        leitura = {'tipo': 'focal', 'cor': '#E67E22',
+                   'texto': f'Stress focal (λ₁={l1*100:.0f}% > limiar {alto*100:.0f}%) — '
+                            f'variabilidade concentrada em uma direção ({nomes[j]}). '
+                            f'Risco: pouca adaptabilidade.'}
+    elif l1 < baixo:
+        leitura = {'tipo': 'multissistemico', 'cor': '#5DADE2',
+                   'texto': f'Stress multissistemico (λ₁={l1*100:.0f}% < limiar {baixo*100:.0f}%) — '
+                            f'variabilidade distribuída; vários sistemas instáveis juntos. '
+                            f'Risco: colapso coordenado.'}
+    else:
+        leitura = {'tipo': 'intermedio', 'cor': '#8b949e',
+                   'texto': f'Distribuição intermédia (λ₁={l1*100:.0f}%, entre {baixo*100:.0f}% e {alto*100:.0f}%).'}
+
+
+    return {
+        'matriz': [[round(float(v), 4) if np.isfinite(v) else None
+                    for v in linha] for linha in Ft],
+        'nomes': nomes,
+        'kappa': round(float(kappa[dia]), 4),
+        'eigen': [round(float(v), 4) for v in ev],
+        'lambda1_frac': round(l1, 4) if l1 is not None else None,
+        'leitura': leitura,
+        'limiares': {'focal_acima': round(alto, 4), 'multi_abaixo': round(baixo, 4),
+                     'fonte': fonte_lim, 'n_historico': n_hist},
+    }

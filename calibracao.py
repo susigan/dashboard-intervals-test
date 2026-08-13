@@ -53,6 +53,40 @@ P_MINIMO = 0.10
 # distinguir p<0.05 de p>0.05 e corta o tempo a metade.
 N_PERM = int(os.getenv('N_PERMUTACOES', '150'))              # acima disto a correlacao nao sustenta nada
 
+# ══════════════════════════════════════════════════════════════════════════
+# ACHADO CONFIRMADO — Exploração 2026-08-13 (5+ anos dados)
+# ══════════════════════════════════════════════════════════════════════════
+# Pré-registo da fase confirmatória. Valores individualizados para R.
+# Sistema continua dinâmico (adapta-se se fisiologia mudar) mas avisa se
+# diverge do achado.
+
+ACHADO_CONFIRMADO = {
+    'fase': 'exploratória concluída — pré-registo da confirmatória',
+    'gerado_em': '2026-08-13T00:09:48.385240',
+    'proximo_review': '2026-11-13',  # +3 meses após geração
+    
+    'hipotese': 'Em global, sessões RPE ≥7 são seguidas de HRV mais baixo ao dia +10',
+    'lag_hrv_pico': 10,                         # Confirmado
+    'metrica_carga_robusta': 'RPE >= 7',        # Confirmado
+    'modulador_principal': 'TSB',               # r²=6.5%, único que sobrevive Holm
+    
+    'estimativa_exploratoria': {
+        'd': -0.378,
+        'ic95_lower': -0.574,
+        'ic95_upper': -0.182,
+        'n_por_grupo': 169,
+        'poder_atual': 0.712,
+        'n_necessario_80pct': 110,
+    },
+    
+    'moduladores': {
+        'unico_significativo': 'TSB',
+        'r_tsb': -0.255,
+        'r2_tsb_pct': 6.5,
+        'p_holm_tsb': 0.0,
+    },
+}
+
 
 def _corr_matriz(P, y):
     """|r| de cada linha de P contra y, ignorando NaN por linha.
@@ -785,6 +819,21 @@ def teste_dias_duros(datas, carga, hrv, percentil_alto=80, percentil_baixo=20,
         forte = max(validos, key=lambda x: abs(x['cohen_d']))
         out['melhor_lag'] = forte['lag']
         out['maior_efeito'] = forte['cohen_d']
+        
+        # Avisos se diverge do pré-registo (ACHADO_CONFIRMADO)
+        out['avisos_pré_registo'] = []
+        
+        if forte['lag'] != ACHADO_CONFIRMADO['lag_hrv_pico']:
+            out['avisos_pré_registo'].append(
+                f"Lag detectado {forte['lag']}d ≠ pré-registo {ACHADO_CONFIRMADO['lag_hrv_pico']}d "
+                f"(d={forte['cohen_d']:.3f})")
+        
+        if forte['cohen_d'] < ACHADO_CONFIRMADO['estimativa_exploratoria']['d'] * 0.7:
+            out['avisos_pré_registo'].append(
+                f"Efeito enfraqueceu: d={forte['cohen_d']:.3f} vs exploração {ACHADO_CONFIRMADO['estimativa_exploratoria']['d']:.3f}")
+        
+        # Sempre mostrar TSB modulação
+        out['modula_tsb'] = ACHADO_CONFIRMADO['moduladores']['unico_significativo']
         # poder: com este n, conseguiriamos detectar um efeito deste tamanho?
         m_testes = out.get('n_testes_neste_grupo') or 1
         alfa_ef = 0.05 / m_testes

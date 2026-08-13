@@ -292,17 +292,18 @@ def resumo_dia(tensores, kappa, eig, nomes, dia, limiares=None):
     elif l1 > alto:
         j = int(np.nanargmax(np.diag(Ft)))
         leitura = {'tipo': 'focal', 'cor': '#E67E22',
-                   'texto': f'Stress focal — {l1*100:.0f}% da variabilidade '
-                            f'vem de uma so direccao, dominada por {nomes[j]}. '
-                            f'Limiar: {alto*100:.0f}%.'}
+                   'texto': f'Stress focal (λ₁={l1*100:.0f}% > limiar {alto*100:.0f}%) — '
+                            f'variabilidade concentrada em uma direção ({nomes[j]}). '
+                            f'Risco: pouca adaptabilidade.'}
     elif l1 < baixo:
         leitura = {'tipo': 'multissistemico', 'cor': '#5DADE2',
-                   'texto': 'Stress multissistemico — os valores proprios estao '
-                            'equilibrados; varios sistemas movem-se juntos. '
-                            f'Limiar: {baixo*100:.0f}%.'}
+                   'texto': f'Stress multissistemico (λ₁={l1*100:.0f}% < limiar {baixo*100:.0f}%) — '
+                            f'variabilidade distribuída; vários sistemas instáveis juntos. '
+                            f'Risco: colapso coordenado.'}
     else:
         leitura = {'tipo': 'intermedio', 'cor': '#8b949e',
-                   'texto': 'Distribuicao intermedia entre focal e multissistemica.'}
+                   'texto': f'Distribuição intermédia (λ₁={l1*100:.0f}%, entre {baixo*100:.0f}% e {alto*100:.0f}%).'}
+
 
     return {
         'matriz': [[round(float(v), 4) if np.isfinite(v) else None

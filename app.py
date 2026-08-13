@@ -155,6 +155,77 @@ def api_fisiologia_processar():
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/fisiologia/status')
+def api_fisiologia_status():
+    """Quantos intervalos válidos há já, por modalidade — para saber se
+    já vale a pena pedir o perfil de cada uma.
+    """
+    try:
+        import tab_metabol as tm
+        return jsonify({'status': 'ok', 'modalidades': tm.modalidades_disponiveis()})
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/perfil')
+def api_fisiologia_perfil():
+    """Curva watts -> métrica esperada (HR/SmO2/tHb/respiração/DFA1),
+    valor e tempo de resposta/recuperação, por faixas de potência
+    calculadas dinamicamente (não fixas) a partir dos dados reais.
+
+    Query params:
+      ?modalidade=Row      (obrigatório: Bike, Row, Ski ou Run)
+      ?min_n=20             (mínimo de intervalos para calcular, default 20)
+      ?n_faixas=4            (quantas faixas de watts, default 4)
+
+    Exemplo: /api/fisiologia/perfil?modalidade=Row
+    """
+    try:
+        import tab_metabol as tm
+        modalidade = request.args.get('modalidade')
+        if not modalidade:
+            return jsonify({'erro': 'falta o parametro ?modalidade='}), 400
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 4))
+        resultado = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/evolucao')
+def api_fisiologia_evolucao():
+    """Deriva longitudinal de uma métrica, numa faixa de watts fixa
+    (ao contrário do /perfil, aqui a faixa é a que tu pedires, para
+    comparares sempre "a mesma pergunta" ao longo do tempo).
+
+    Query params:
+      ?modalidade=Row
+      ?campo=smo2_medio_work   (ver tab_metabol.TODOS_CAMPOS para a lista)
+      ?watts_min=250&watts_max=320
+      ?agregacao=mes           (ou 'semana')
+
+    Exemplo:
+      /api/fisiologia/evolucao?modalidade=Row&campo=smo2_medio_work&watts_min=250&watts_max=320
+    """
+    try:
+        import tab_metabol as tm
+        modalidade = request.args.get('modalidade')
+        campo = request.args.get('campo')
+        if not modalidade or not campo:
+            return jsonify({'erro': 'faltam parametros ?modalidade= e ?campo='}), 400
+        watts_min = request.args.get('watts_min', type=float)
+        watts_max = request.args.get('watts_max', type=float)
+        agregacao = request.args.get('agregacao', 'mes')
+        resultado = tm.evolucao_temporal(modalidade, campo, watts_min, watts_max, agregacao)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/debug/athlete')
 def api_debug_athlete():
     return tab_detalhe.api_debug_athlete()

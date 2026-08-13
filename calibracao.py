@@ -885,3 +885,82 @@ def teste_dias_duros(datas, carga, hrv, percentil_alto=80, percentil_baixo=20,
                 'reforca a hipotese de causalidade invertida — treinas mais '
                 'nos dias em que ja estavas bem.')
     return out
+
+
+def teste_eventos_rpe_hrv(datas, rpe, hrv, lag_fixo=10, minimo_por_grupo=30):
+    """Teste por EVENTOS: RPE>=7 (duros) vs RPE<4 (leves) → HRV lag dias.
+    
+    Diferente de teste_dias_duros() que faz correlação contínua.
+    Este método classifica dias e compara HRV nos dias seguintes.
+    
+    Motivação: Exploração Colab 2026-08 encontrou RPE>=7 → HRV↓ lag+10
+              com d=-0.378, p<0.001 via este método.
+    """
+    datas = np.array([str(d) for d in datas])
+    rpe = np.asarray(rpe, dtype=np.float64)
+    hrv = np.asarray(hrv, dtype=np.float64)
+    n = len(rpe)
+    
+    # Classificar por mês
+    mes = np.array([str(d)[:7] for d in datas])
+    duro = np.zeros(n, dtype=bool)
+    leve = np.zeros(n, dtype=bool)
+    
+    for m in np.unique(mes):
+        sel = mes == m
+        r = rpe[sel]
+        r_treino = r[r > 0]
+        if len(r_treino) < 6:
+            continue
+        duro[sel] = r >= 7.0
+        leve[sel] = (r > 0) & (r < 4.0)
+    
+    # HRV ao lag fixo
+    hrv_apos_duro = []
+    hrv_apos_leve = []
+    
+    for t in range(n - lag_fixo):
+        h = hrv[t + lag_fixo]
+        if not np.isfinite(h):
+            continue
+        if duro[t]:
+            hrv_apos_duro.append(h)
+        elif leve[t]:
+            hrv_apos_leve.append(h)
+    
+    out = {
+        'metodo': 'eventos_rpe_lag_fixo',
+        'lag_dias': lag_fixo,
+        'n_dias_duro': int(duro.sum()),
+        'n_dias_leve': int(leve.sum()),
+        'n_hrv_apos_duro': len(hrv_apos_duro),
+        'n_hrv_apos_leve': len(hrv_apos_leve),
+    }
+    
+    if len(hrv_apos_duro) < minimo_por_grupo or len(hrv_apos_leve) < minimo_por_grupo:
+        out['resultado'] = 'indeterminado'
+        out['motivo'] = f'Grupos pequenos ({len(hrv_apos_duro)} duro, {len(hrv_apos_leve)} leve)'
+        return out
+    
+    a = np.array(hrv_apos_duro)
+    b = np.array(hrv_apos_leve)
+    
+    ma, mb = a.mean(), b.mean()
+    sa, sb = a.std(ddof=1), b.std(ddof=1)
+    sp = np.sqrt(((len(a)-1)*sa**2 + (len(b)-1)*sb**2) / (len(a)+len(b)-2))
+    d = (ma - mb) / sp if sp > 1e-9 else 0.0
+    
+    se = np.sqrt(sa**2 / len(a) + sb**2 / len(b))
+    t_stat = (ma - mb) / se if se > 1e-9 else 0.0
+    p = 2 * (1 - 0.5 * (1 + math.erf(abs(t_stat) / math.sqrt(2))))
+    
+    out.update({
+        'resultado': 'confirmado' if d < -0.15 and p < 0.05 else 'não_confirmado',
+        'cohen_d': round(d, 4),
+        'p_bilateral': round(p, 5),
+        'media_apos_duro': round(ma, 2),
+        'media_apos_leve': round(mb, 2),
+        'diferenca_ms': round(ma - mb, 2),
+    })
+    
+    return out

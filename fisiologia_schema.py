@@ -74,6 +74,13 @@ CREATE TABLE IF NOT EXISTS fisiologia_intervalos (
     rec_resp_50     REAL,
     rec_resp_75     REAL,
 
+    -- ── TEMPO: DFA1 (stream dfa_a1, confirmado disponível) ──────────
+    lag_dfa1_50     REAL,
+    lag_dfa1_75     REAL,
+    lag_dfa1_90     REAL,
+    rec_dfa1_50     REAL,
+    rec_dfa1_75     REAL,
+
     -- ── VALOR/PATAMAR: quanto vale cada métrica no esforço (WORK) e em
     --    repouso (REC) — direto da API por intervalo, sem processar
     --    streams. É isto que dá a curva watts -> métrica esperada.
@@ -93,7 +100,8 @@ CREATE TABLE IF NOT EXISTS fisiologia_intervalos (
     tem_smo2        INTEGER DEFAULT 0,
     tem_thb         INTEGER DEFAULT 0,
     tem_resp        INTEGER DEFAULT 0,
-    tem_dfa1        INTEGER DEFAULT 0,
+    tem_dfa1        INTEGER DEFAULT 0,   -- tem valor medio da API (patamar)
+    tem_dfa1_stream INTEGER DEFAULT 0,   -- tem stream dfa_a1 (para lag/rec)
     valido          INTEGER DEFAULT 1,      -- 0 = intervalo curto demais ou dados incompletos
     motivo_invalido TEXT,
 
@@ -142,6 +150,12 @@ COLUNAS_MIGRACAO = {
     'dfa1_medio_work': 'REAL',
     'dfa1_medio_rec':  'REAL',
     'tem_dfa1':        'INTEGER DEFAULT 0',
+    'tem_dfa1_stream': 'INTEGER DEFAULT 0',
+    'lag_dfa1_50':     'REAL',
+    'lag_dfa1_75':     'REAL',
+    'lag_dfa1_90':     'REAL',
+    'rec_dfa1_50':     'REAL',
+    'rec_dfa1_75':     'REAL',
 }
 
 

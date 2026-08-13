@@ -180,20 +180,25 @@ def classificar_por_potencia(intervalos):
     """Marca cada intervalo com iv['_classe'] = 'work' | 'recovery' | 'ignorar'.
 
     NÃO usa o campo 'type' da API (pode estar errado — já visto REST
-    marcado como WORK). Combina dois sinais:
+    marcado como WORK, e no caso de Row, TODOS os laps marcados "WORK"
+    mesmo quando a potência é 0). Combina três sinais:
 
-      1. GLOBAL: potência abaixo do maior "salto" na distribuição de
+      1. SEM POTÊNCIA (average_watts = None): não é "sem dados a
+         ignorar" — é o sinal MAIS FORTE de descanso que existe. Em
+         Row/Ski, quando não há remada/patinada nenhuma no lap, a API
+         nem calcula uma média (fica null) em vez de devolver 0. Isto
+         classifica sempre como 'recovery'.
+
+      2. GLOBAL: potência abaixo do maior "salto" na distribuição de
          toda a atividade -> candidato a REC. Bom para descansos longos
-         e estáveis.
+         e estáveis com ALGUMA potência residual.
 
-      2. QUEDA RELATIVA (face ao intervalo ANTERIOR): se a potência cai
+      3. QUEDA RELATIVA (face ao intervalo ANTERIOR): se a potência cai
          >= LIMIAR_QUEDA_REC (30% por omissão) em relação ao intervalo
-         imediatamente antes, classifica como REC MESMO que ainda tenha
-         watts residuais (ex.: rodou/remou "de balde" sem força a seguir
-         a um esforço, e isso ficou gravado no lap de descanso com algum
-         valor > 0). O que importa é a QUEDA, não o valor absoluto.
+         imediatamente antes, classifica como REC mesmo que ainda tenha
+         watts residuais.
 
-    Um intervalo fica REC se qualquer um dos dois sinais disparar.
+    Um intervalo fica REC se qualquer um dos três sinais disparar.
     """
     potencias = [iv.get('watts_medio_api') for iv in intervalos
                 if iv.get('watts_medio_api') is not None]
@@ -202,8 +207,12 @@ def classificar_por_potencia(intervalos):
     anterior_watts = None
     for iv in intervalos:
         w = iv.get('watts_medio_api')
+
         if w is None:
-            iv['_classe'] = 'ignorar'
+            # Esforço nulo (nenhuma remada/pedalada no lap) -> REC quase
+            # certo, independentemente de tudo o resto.
+            iv['_classe'] = 'recovery'
+            anterior_watts = 0.0
             continue
 
         baixo_global = (limiar_global is not None and w < limiar_global)
@@ -588,8 +597,7 @@ def debug_dict(activity_id):
                 'queda_pct_vs_anterior': queda_pct,
                 'hr_medio_api': iv.get('hr_medio_api'),
             })
-            if w is not None:
-                anterior_watts = w
+            anterior_watts = 0.0 if w is None else w
         resultado['intervalos'] = intervalos_debug
         pares = emparelhar_work_rec(intervalos)
         resultado['n_pares_work_rec'] = len(pares)

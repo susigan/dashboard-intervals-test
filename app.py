@@ -34,13 +34,6 @@ from api_client import (fetch_activities, cache_info, invalidar_cache,
 from tabs import (tab_volume, tab_atividades, tab_detalhe,
                   tab_recordes, tab_pmc, tab_corporal)
 
-# FMT Tensor gráficos
-import fmt_graficos
-try:
-    import fmt as _fmt
-except ImportError:
-    _fmt = None
-
 if db.ENABLED:
     db.init_schema()
     print(f"Fonte de dados: {db.DRIVER} (com a API como fallback)")
@@ -599,6 +592,8 @@ def health():
 def api_fmt_grafico_kappa():
     """Gráfico κ timeline + Δκ/14d com regime backgrounds."""
     try:
+        import fmt_graficos
+        
         data = tab_pmc.api_data()
         if isinstance(data, tuple):
             data = data[0]
@@ -636,6 +631,8 @@ def api_fmt_grafico_kappa():
 def api_fmt_mapa_regimes():
     """Scatter κ vs TSB (mapa de regimes)."""
     try:
+        import fmt_graficos
+        
         data = tab_pmc.api_data()
         if isinstance(data, tuple):
             data = data[0]
@@ -678,6 +675,8 @@ def api_fmt_mapa_regimes():
 def api_fmt_lambda1_dimensoes():
     """Gráfico λ₁ timeline + 5 dimensões."""
     try:
+        import fmt_graficos
+        
         data = tab_pmc.api_data()
         if isinstance(data, tuple):
             data = data[0]

@@ -1,24 +1,33 @@
-"""fisiologia_worker.py — Perfil metabólico por lag/recovery.
+"""fisiologia_worker.py — Perfil metabólico por lag/recovery + patamar.
 
 O QUE FAZ
 ---------
-Para cada atividade cíclica (Bike/Row/Ski/Run) com potência:
-  1. Lê os streams JÁ GUARDADOS no Postgres (watts, heartrate, smo2, thb,
-     respiration) via db.get_streams() — não volta a pedir à API.
-  2. Pede à API do Intervals.icu só os INTERVALOS/LAPS da atividade
-     (endpoint leve, não é stream) — para saber onde começa/acaba cada
-     WORK e REC.
-  3. Para cada intervalo WORK: mede quanto tempo (s) cada métrica leva a
-     percorrer 50/75/90% da excursão entre a baseline (antes do WORK) e o
-     patamar estável (fim do WORK).
-  4. Para o REC a seguir (se existir): mede quanto tempo leva a voltar
-     50/75% do caminho até à baseline original.
-  5. Grava 1 linha por intervalo em fisiologia_perfil.db (SQLite, Drive).
+Para cada atividade cíclica (Bike/Row/Ski/Run) com potência, calcula DUAS
+dimensões, de fontes diferentes e independentes uma da outra:
 
-NÃO faz (por agora):
-  DFA1 — exige RR intervals brutos do FIT, não vem nos streams da API.
-         Fica para uma extensão futura (reaproveitando lógica tipo
-         tab_fit_analise.py do Streamlit, que já sabe extrair RR de FIT).
+  DIMENSÃO TEMPO (lag_*/rec_*) — precisa de streams já guardados no
+  Postgres (watts, heartrate, smo2, thb, respiration) via db.get_streams():
+    1. Pede à API do Intervals.icu só os INTERVALOS/LAPS da atividade
+       (endpoint leve, não é stream) — para saber onde começa/acaba cada
+       WORK e REC.
+    2. Para cada intervalo WORK: mede quanto tempo (s) cada métrica leva a
+       percorrer 50/75/90% da excursão entre a baseline (antes do WORK) e
+       o patamar estável (fim do WORK).
+    3. Para o REC a seguir (se existir): mede quanto tempo leva a voltar
+       50/75% do caminho até à baseline original.
+
+  DIMENSÃO VALOR/PATAMAR (*_medio_work/*_medio_rec) — NÃO precisa de
+  streams nenhuns, só da mesma resposta de /intervals: a Intervals.icu já
+  calcula e devolve, por lap, a média de HR, SmO2, tHb, respiração E DFA1
+  (average_dfa_a1) — usados directamente. É esta dimensão que dá a curva
+  "a X watts, o esperado é Y" que serve de base ao perfil metabólico.
+
+Por serem independentes: uma atividade sem streams carregados (ainda não
+passou por /api/sync/streams) fica com lag_*/rec_* a None mas continua a
+gravar os valores de patamar. Corre o sync de streams e reprocessa depois
+para completar a dimensão tempo.
+
+Grava 1 linha por intervalo em fisiologia_perfil.db (SQLite, Drive).
 
 SEM ZONAS FIXAS: watts_medio/min/max ficam como valor contínuo. Os
 quartis de potência são calculados depois, na leitura (tab_metabol.py),
@@ -48,6 +57,7 @@ existente em tabs/tab_detalhe.py (a página /activity/<id> já usa isto):
     d.intervals.icu_intervals = [
         {label, type, start_time, elapsed_time, distance,
          average_watts, max_watts, weighted_average_watts,
+
          average_heartrate, max_heartrate, average_cadence,
          intensity, joules, decoupling}, ...
     ]
@@ -124,7 +134,14 @@ def _valores_float(stream):
 # ══════════════════════════════════════════════════════════════════════════
 
 def buscar_intervalos_api(activity_id):
-    """(lista_intervalos, erro). Cada item: {tipo, label, t_ini, t_fim, watts_medio_api}."""
+    """(lista_intervalos, erro). Cada item: {tipo, label, t_ini, t_fim,
+    watts_medio_api, hr_medio_api, smo2_medio_api, thb_medio_api,
+    resp_medio_api, dfa1_medio_api}.
+
+    Os *_medio_api vêm TODOS directos da resposta da API por intervalo —
+    a Intervals.icu já calcula estas médias por lap, incluindo o DFA1
+    (average_dfa_a1), sem precisar de processar nenhum stream.
+    """
     data, erro = icu_get(f"/activity/{activity_id}/intervals")
     if erro:
         return None, erro
@@ -155,8 +172,13 @@ def buscar_intervalos_api(activity_id):
             't_fim': t_fim,
             'watts_medio_api': item.get('average_watts'),
             'hr_medio_api': item.get('average_heartrate'),
+            'smo2_medio_api': item.get('average_smo2'),
+            'thb_medio_api': item.get('average_thb'),
+            'resp_medio_api': item.get('average_respiration'),
+            'dfa1_medio_api': item.get('average_dfa_a1'),
         })
     return out, None
+
 
 
 LIMIAR_QUEDA_REC = float(os.getenv("FISIOLOGIA_LIMIAR_QUEDA", "0.30"))  # 30%
@@ -316,7 +338,19 @@ def _lags_metrica(tempos, valores, t_work_ini, t_work_fim, t_rec_fim=None):
 # ══════════════════════════════════════════════════════════════════════════
 
 def processar_atividade(activity, conn):
-    """Retorna (n_intervalos_gravados, motivo_se_pulada)."""
+    """Retorna (n_intervalos_gravados, motivo_se_pulada).
+
+    Duas fontes de dados INDEPENDENTES:
+      - streams do Postgres -> lag_*/rec_* (timing). Se não existirem
+        (ainda não foi feito /api/sync/streams para esta atividade), fica
+        tudo None nesses campos, mas NÃO impede o resto.
+      - médias por intervalo da API -> *_medio_work/*_medio_rec (patamar).
+        Não depende de streams nenhuns, só do /activity/{id}/intervals.
+
+    Assim dá para começar já a construir o perfil watts->valor mesmo em
+    atividades sem streams carregados, e completar com lag/recovery mais
+    tarde (correndo /api/sync/streams e reprocessando).
+    """
     activity_id = str(activity.get('id'))
     modalidade = norm_tipo(activity.get('type'))
     data_str = str(activity.get('start_date_local', ''))[:10]
@@ -324,10 +358,6 @@ def processar_atividade(activity, conn):
     duracao_total_s = activity.get('moving_time') or activity.get('elapsed_time')
     if not duracao_total_s:
         return 0, 'sem duracao'
-
-    streams, meta = db.get_streams(activity_id)
-    if not streams or STREAM_WATTS not in streams:
-        return 0, 'sem streams de potencia guardados'
 
     intervalos, erro = buscar_intervalos_api(activity_id)
     if erro:
@@ -340,24 +370,29 @@ def processar_atividade(activity, conn):
     if not pares:
         return 0, 'nenhum WORK identificado'
 
-    # tempos + valores por métrica (uma vez por atividade, reaproveitados
-    # para todos os intervalos)
-    t_watts = _tempos_do_stream(streams.get(STREAM_WATTS), duracao_total_s)
-    v_watts = _valores_float(streams.get(STREAM_WATTS))
+    streams, meta = db.get_streams(activity_id)
+    tem_streams = bool(streams) and STREAM_WATTS in (streams or {})
 
-    tem_hr = STREAM_HR in streams
+    # tempos + valores por métrica (uma vez por atividade, reaproveitados
+    # para todos os intervalos) — só se houver streams; senão ficam vazios
+    # e lag_*/rec_* saem None (mas *_medio_work/*_medio_rec da API continuam
+    # a ser gravados na mesma).
+    t_watts = _tempos_do_stream(streams.get(STREAM_WATTS), duracao_total_s) if tem_streams else np.array([])
+    v_watts = _valores_float(streams.get(STREAM_WATTS)) if tem_streams else np.array([])
+
+    tem_hr = tem_streams and STREAM_HR in streams
     t_hr = _tempos_do_stream(streams.get(STREAM_HR), duracao_total_s) if tem_hr else None
     v_hr = _valores_float(streams.get(STREAM_HR)) if tem_hr else None
 
-    tem_smo2 = STREAM_SMO2 in streams
+    tem_smo2 = tem_streams and STREAM_SMO2 in streams
     t_smo2 = _tempos_do_stream(streams.get(STREAM_SMO2), duracao_total_s) if tem_smo2 else None
     v_smo2 = _valores_float(streams.get(STREAM_SMO2)) if tem_smo2 else None
 
-    tem_thb = STREAM_THB in streams
+    tem_thb = tem_streams and STREAM_THB in streams
     t_thb = _tempos_do_stream(streams.get(STREAM_THB), duracao_total_s) if tem_thb else None
     v_thb = _valores_float(streams.get(STREAM_THB)) if tem_thb else None
 
-    resp_key = next((k for k in STREAMS_RESP_CANDIDATOS if k in streams), None)
+    resp_key = next((k for k in STREAMS_RESP_CANDIDATOS if tem_streams and k in streams), None)
     tem_resp = resp_key is not None
     t_resp = _tempos_do_stream(streams.get(resp_key), duracao_total_s) if tem_resp else None
     v_resp = _valores_float(streams.get(resp_key)) if tem_resp else None
@@ -403,7 +438,20 @@ def processar_atividade(activity, conn):
             'dur_work_s': int(dur_work), 'dur_rec_s': int(dur_rec) if dur_rec else None,
             'tem_hr': int(tem_hr), 'tem_smo2': int(tem_smo2),
             'tem_thb': int(tem_thb), 'tem_resp': int(tem_resp),
+            'tem_dfa1': int(work.get('dfa1_medio_api') is not None),
             'valido': 1, 'motivo_invalido': None, 'criado_em': now,
+            # Valor/patamar: direto da API, sem processar streams — é a
+            # base da curva "a X watts, esperar Y" que vais construir depois.
+            'hr_medio_work': work.get('hr_medio_api'),
+            'hr_medio_rec': rec.get('hr_medio_api') if rec else None,
+            'smo2_medio_work': work.get('smo2_medio_api'),
+            'smo2_medio_rec': rec.get('smo2_medio_api') if rec else None,
+            'thb_medio_work': work.get('thb_medio_api'),
+            'thb_medio_rec': rec.get('thb_medio_api') if rec else None,
+            'resp_medio_work': work.get('resp_medio_api'),
+            'resp_medio_rec': rec.get('resp_medio_api') if rec else None,
+            'dfa1_medio_work': work.get('dfa1_medio_api'),
+            'dfa1_medio_rec': rec.get('dfa1_medio_api') if rec else None,
         }
 
         qualidade_ok = False
@@ -430,9 +478,15 @@ def processar_atividade(activity, conn):
         _preencher('thb', tem_thb, t_thb, v_thb)
         _preencher('resp', tem_resp, t_resp, v_resp)
 
-        if not qualidade_ok:
+        tem_algum_valor_api = any(
+            linha[k] is not None for k in
+            ('hr_medio_work', 'smo2_medio_work', 'thb_medio_work',
+             'resp_medio_work', 'dfa1_medio_work'))
+
+        if not qualidade_ok and not tem_algum_valor_api:
             linha['valido'] = 0
-            linha['motivo_invalido'] = 'nenhuma metrica com baseline/plateau calculavel'
+            linha['motivo_invalido'] = (
+                'sem lag calculavel pelos streams E sem valores medios da API')
 
         _gravar_linha(conn, linha)
         gravados += 1

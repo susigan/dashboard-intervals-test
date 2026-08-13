@@ -40,16 +40,27 @@ processo web do app.py) — evita bloquear pedidos HTTP durante o
 processamento e evita repetir o erro anterior de mexer no app.py.
 Ver INSTRUCOES no fim do ficheiro para configurar o cron no Railway.
 
-CONFIGURAÇÃO QUE PODE PRECISAR DE AJUSTE
+CONFIGURAÇÃO — CAMPOS CONFIRMADOS
 -----------------------------------------
-O schema exato do endpoint /activity/{id}/intervals não foi confirmado
-ao vivo. Os nomes de campos candidatos estão nas constantes CHAVES_* no
-topo do ficheiro. Corra primeiro:
+Os nomes de campos abaixo foram confirmados directamente no código já
+existente em tabs/tab_detalhe.py (a página /activity/<id> já usa isto):
 
-    python fisiologia_worker.py --debug <activity_id>
+    d.intervals.icu_intervals = [
+        {label, type, start_time, elapsed_time, distance,
+         average_watts, max_watts, weighted_average_watts,
+         average_heartrate, max_heartrate, average_cadence,
+         intensity, joules, decoupling}, ...
+    ]
 
-e confirme que os campos batem certo. Se a Intervals.icu usar nomes
-diferentes, ajuste só as constantes — o resto do código não muda.
+IMPORTANTE: 'elapsed_time' aqui é a DURAÇÃO do intervalo (não um
+timestamp absoluto) — bate com a coluna "DurW" que já vês na tua tabela
+de calibração (ex.: intervalo 1 = 304s). t_fim = start_time + elapsed_time.
+
+O campo 'type' da API NEM SEMPRE é fiável — confirmaste que às vezes
+marca REST como WORK. Por isso este worker NÃO usa 'type' para decidir
+o que é WORK/REC: classifica pela POTÊNCIA MÉDIA de cada intervalo
+(maior "salto" na distribuição ordenada de average_watts separa os dois
+grupos). 'type'/'label' só ficam guardados para debug/logging.
 """
 
 import os
@@ -69,26 +80,12 @@ import drive_db_fisiologia as ddf
 
 DATA_CORTE = os.getenv("FISIOLOGIA_DATA_CORTE", "2024-01-01")
 LOTE_PADRAO = int(os.getenv("FISIOLOGIA_LOTE", "10"))
+LOTE_WEB_MAX = int(os.getenv("FISIOLOGIA_LOTE_WEB_MAX", "8"))  # limite p/ pedido HTTP (timeout Railway)
 
 DUR_MIN_WORK_S = 20     # intervalos mais curtos que isto são ignorados (ruído)
 DUR_MIN_REC_S = 15
 JANELA_BASELINE_S = 8   # segundos antes do WORK usados como baseline
 FRAC_PLATEAU = 0.25     # fração final do intervalo usada como "patamar estável"
-
-# Nomes de campos candidatos na resposta de /activity/{id}/intervals.
-# A Intervals.icu pode devolver a lista directamente ou dentro de uma chave.
-CHAVES_LISTA_INTERVALOS = ['icu_intervals', 'intervals', None]  # None = resposta já é lista
-CHAVES_TIPO = ['type', 'label', 'name']
-CHAVES_INICIO_S = ['start_time', 'start_index', 'start']
-CHAVES_FIM_S = ['end_time', 'end_index', 'end']
-CHAVES_WATTS_MEDIO = ['average_watts', 'avg_watts', 'icu_average_watts']
-
-# Tipos que contam como WORK (case-insensitive, substring match)
-TIPOS_WORK = ('work', 'interval', 'active', 'on')
-# Tipos que contam como RECOVERY (substring match) — o resto é ignorado
-# (warmup/cooldown/ramp não entram na análise de lag)
-TIPOS_RECOVERY = ('recovery', 'rest', 'off')
-TIPOS_IGNORAR = ('warmup', 'cooldown', 'ramp')
 
 # Nomes dos streams tal como guardados por parse_streams() (chave = 'type'
 # devolvido pela API). Se houver 2º sensor, a chave fica com sufixo _2 —
@@ -123,79 +120,92 @@ def _valores_float(stream):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# INTERVALOS (laps) — busca à API + parsing defensivo
+# INTERVALOS (laps) — busca à API + parsing com campos confirmados
 # ══════════════════════════════════════════════════════════════════════════
 
 def buscar_intervalos_api(activity_id):
-    """(lista_intervalos, erro). Cada item: {tipo, t_ini, t_fim, watts_medio}."""
+    """(lista_intervalos, erro). Cada item: {tipo, label, t_ini, t_fim, watts_medio_api}."""
     data, erro = icu_get(f"/activity/{activity_id}/intervals")
     if erro:
         return None, erro
 
-    bruto = None
-    for chave in CHAVES_LISTA_INTERVALOS:
-        if chave is None and isinstance(data, list):
-            bruto = data
-            break
-        if chave and isinstance(data, dict) and chave in data:
-            bruto = data[chave]
-            break
-    if bruto is None:
+    if isinstance(data, dict) and isinstance(data.get('icu_intervals'), list):
+        bruto = data['icu_intervals']
+    elif isinstance(data, list):
+        bruto = data
+    elif isinstance(data, dict) and isinstance(data.get('intervals'), list):
+        bruto = data['intervals']
+    else:
         return None, f"schema inesperado: {str(data)[:200]}"
 
     out = []
     for item in bruto:
         if not isinstance(item, dict):
             continue
-        tipo = None
-        for k in CHAVES_TIPO:
-            if item.get(k):
-                tipo = str(item[k]).lower()
-                break
-        t_ini = None
-        for k in CHAVES_INICIO_S:
-            if item.get(k) is not None:
-                t_ini = float(item[k])
-                break
-        t_fim = None
-        for k in CHAVES_FIM_S:
-            if item.get(k) is not None:
-                t_fim = float(item[k])
-                break
-        watts_medio = None
-        for k in CHAVES_WATTS_MEDIO:
-            if item.get(k) is not None:
-                watts_medio = float(item[k])
-                break
-        if tipo is None or t_ini is None or t_fim is None:
+        t_ini = item.get('start_time')
+        duracao = item.get('elapsed_time')
+        if t_ini is None or duracao is None:
             continue
-        out.append({'tipo': tipo, 't_ini': t_ini, 't_fim': t_fim,
-                    'watts_medio_api': watts_medio})
+        t_ini = float(t_ini)
+        t_fim = t_ini + float(duracao)
+        out.append({
+            'tipo': str(item.get('type') or '').lower(),
+            'label': item.get('label'),
+            't_ini': t_ini,
+            't_fim': t_fim,
+            'watts_medio_api': item.get('average_watts'),
+            'hr_medio_api': item.get('average_heartrate'),
+        })
     return out, None
 
 
-def _classificar(tipo):
-    t = (tipo or '').lower()
-    if any(p in t for p in TIPOS_IGNORAR):
-        return 'ignorar'
-    if any(p in t for p in TIPOS_WORK):
-        return 'work'
-    if any(p in t for p in TIPOS_RECOVERY):
-        return 'recovery'
-    return 'ignorar'
+def _limiar_gap(potencias):
+    """Maior 'salto' na distribuição ordenada de potências — separa o
+    grupo de baixa potência (REC/warmup/cooldown) do de alta (WORK).
+    Robusto a contagens desiguais de WORK vs REC, ao contrário de usar
+    simplesmente a mediana.
+    """
+    vs = sorted(p for p in potencias if p is not None)
+    if len(vs) < 2:
+        return (vs[0] - 1) if vs else 0.0
+    gaps = [(vs[i + 1] - vs[i], i) for i in range(len(vs) - 1)]
+    _, i = max(gaps)
+    return (vs[i] + vs[i + 1]) / 2.0
+
+
+def classificar_por_potencia(intervalos):
+    """Marca cada intervalo com iv['_classe'] = 'work' | 'recovery' | 'ignorar',
+    usando a POTÊNCIA MÉDIA — não o campo 'type' da API (que pode estar
+    errado, ex.: REST marcado como WORK).
+    """
+    potencias = [iv.get('watts_medio_api') for iv in intervalos
+                if iv.get('watts_medio_api') is not None]
+    if len(potencias) < 2:
+        for iv in intervalos:
+            iv['_classe'] = 'ignorar'
+        return intervalos
+
+    limiar = _limiar_gap(potencias)
+    for iv in intervalos:
+        w = iv.get('watts_medio_api')
+        iv['_classe'] = ('ignorar' if w is None
+                         else ('work' if w >= limiar else 'recovery'))
+    return intervalos
 
 
 def emparelhar_work_rec(intervalos):
-    """[(work, rec_ou_None), ...] — rec é o intervalo seguinte SE for recovery."""
+    """[(work, rec_ou_None), ...] — rec é o intervalo seguinte SE for recovery.
+
+    Espera que classificar_por_potencia() já tenha corrido (usa iv['_classe']).
+    """
     pares = []
     i = 0
     n = len(intervalos)
     while i < n:
-        cls = _classificar(intervalos[i]['tipo'])
-        if cls == 'work':
+        if intervalos[i].get('_classe') == 'work':
             work = intervalos[i]
             rec = None
-            if i + 1 < n and _classificar(intervalos[i + 1]['tipo']) == 'recovery':
+            if i + 1 < n and intervalos[i + 1].get('_classe') == 'recovery':
                 rec = intervalos[i + 1]
             pares.append((work, rec))
         i += 1
@@ -290,6 +300,7 @@ def processar_atividade(activity, conn):
     if not intervalos:
         return 0, 'sem intervalos/laps marcados'
 
+    classificar_por_potencia(intervalos)
     pares = emparelhar_work_rec(intervalos)
     if not pares:
         return 0, 'nenhum WORK identificado'
@@ -436,7 +447,7 @@ def proximo_lote(conn, n=LOTE_PADRAO):
 # LOOP PRINCIPAL
 # ══════════════════════════════════════════════════════════════════════════
 
-def processar_lote(n=LOTE_PADRAO):
+def processar_lote(n=LOTE_PADRAO, retornar_resumo=False):
     conn = ddf.get_conn()
     lote = proximo_lote(conn, n)
 
@@ -446,23 +457,35 @@ def processar_lote(n=LOTE_PADRAO):
                     (datetime.now().isoformat(timespec='seconds'),))
         conn.commit()
         ddf.upload()
-        print("Nada para processar — historico completo ate a data de corte.")
+        resumo = {'status': 'concluido',
+                 'mensagem': 'Nada para processar — historico completo ate a data de corte.'}
+        if retornar_resumo:
+            return resumo
+        print(resumo['mensagem'])
         return
 
     processadas = puladas = erros = 0
+    detalhes = []
     for activity in lote:
         aid = str(activity.get('id'))
         try:
             n_gravados, motivo = processar_atividade(activity, conn)
             if motivo:
                 puladas += 1
-                print(f"  [PULADA] {aid}: {motivo}")
+                detalhes.append({'activity_id': aid, 'status': 'pulada', 'motivo': motivo})
+                if not retornar_resumo:
+                    print(f"  [PULADA] {aid}: {motivo}")
             else:
                 processadas += 1
-                print(f"  [OK] {aid}: {n_gravados} intervalos gravados")
+                detalhes.append({'activity_id': aid, 'status': 'ok', 'intervalos_gravados': n_gravados})
+                if not retornar_resumo:
+                    print(f"  [OK] {aid}: {n_gravados} intervalos gravados")
         except Exception as e:
             erros += 1
-            print(f"  [ERRO] {aid}: {type(e).__name__}: {e}")
+            detalhes.append({'activity_id': aid, 'status': 'erro',
+                             'erro': f'{type(e).__name__}: {e}'})
+            if not retornar_resumo:
+                print(f"  [ERRO] {aid}: {type(e).__name__}: {e}")
 
     ultima = lote[-1]
     conn.execute("""UPDATE fisiologia_progresso SET
@@ -479,28 +502,108 @@ def processar_lote(n=LOTE_PADRAO):
     conn.commit()
     ddf.upload()
 
+    resumo = {
+        'status': 'lote_concluido',
+        'processadas': processadas, 'puladas': puladas, 'erros': erros,
+        'total_no_lote': len(lote),
+        'detalhes': detalhes,
+    }
+    if retornar_resumo:
+        return resumo
+
     print(f"\nLote concluido: {processadas} processadas, {puladas} puladas, "
           f"{erros} erros. {len(lote)} atividades no lote.")
 
 
-def depurar_intervalos(activity_id):
-    """Mostra a resposta bruta de /intervals para confirmar o schema."""
-    data, erro = icu_get(f"/activity/{activity_id}/intervals")
-    print(f"Erro: {erro}")
-    print(json.dumps(data, indent=2, ensure_ascii=False)[:3000])
-    print("\n--- Parsing com as chaves configuradas ---")
-    intervalos, erro2 = buscar_intervalos_api(activity_id)
-    print(f"Erro parsing: {erro2}")
+def _amostra_bruta(bruto, n=3):
+    try:
+        if isinstance(bruto, dict) and isinstance(bruto.get('icu_intervals'), list):
+            return bruto['icu_intervals'][:n]
+        if isinstance(bruto, list):
+            return bruto[:n]
+        return str(bruto)[:500]
+    except Exception:
+        return None
+
+
+def debug_dict(activity_id):
+    """Versão JSON-friendly do debug — para expor via endpoint HTTP.
+
+    Mostra: resposta bruta (amostra), o que o parser extraiu, a
+    classificação WORK/REC por potência (SEM usar o campo 'type' da API),
+    e os pares WORK->REC resultantes. Não grava nada no .db.
+    """
+    bruto, erro_api = icu_get(f"/activity/{activity_id}/intervals")
+    intervalos, erro_parse = buscar_intervalos_api(activity_id)
+
+    resultado = {
+        'activity_id': activity_id,
+        'erro_api': erro_api,
+        'erro_parsing': erro_parse,
+        'n_intervalos_parseados': len(intervalos) if intervalos else 0,
+        'bruto_amostra': _amostra_bruta(bruto),
+    }
+
     if intervalos:
-        for it in intervalos[:10]:
-            print(it)
+        classificar_por_potencia(intervalos)
+        resultado['intervalos'] = [
+            {
+                'tipo_api': iv['tipo'], 'label_api': iv.get('label'),
+                'classe_calculada_por_potencia': iv.get('_classe'),
+                't_ini_s': round(iv['t_ini'], 1), 't_fim_s': round(iv['t_fim'], 1),
+                'dur_s': round(iv['t_fim'] - iv['t_ini'], 1),
+                'watts_medio_api': iv.get('watts_medio_api'),
+                'hr_medio_api': iv.get('hr_medio_api'),
+            }
+            for iv in intervalos
+        ]
+        pares = emparelhar_work_rec(intervalos)
+        resultado['n_pares_work_rec'] = len(pares)
+        resultado['pares'] = [
+            {
+                'work_dur_s': round(w['t_fim'] - w['t_ini'], 1),
+                'work_watts': w.get('watts_medio_api'),
+                'rec_dur_s': (round(r['t_fim'] - r['t_ini'], 1) if r else None),
+                'rec_watts': (r.get('watts_medio_api') if r else None),
+            }
+            for w, r in pares
+        ]
+
+    # também tenta correr o processamento completo (sem gravar) para o
+    # utilizador ver os lags calculados de verdade nesta atividade
+    try:
+        act, err_act = icu_get(f"/activity/{activity_id}")
+        if act and not err_act:
+            act['id'] = activity_id
+            conn_temp = None
+            import sqlite3
+            conn_temp = sqlite3.connect(':memory:')
+            from fisiologia_schema import aplicar_schema
+            aplicar_schema(conn_temp)
+            n_gravados, motivo = processar_atividade(act, conn_temp)
+            if motivo:
+                resultado['simulacao_processamento'] = {'status': 'pulada', 'motivo': motivo}
+            else:
+                linhas = conn_temp.execute(
+                    "SELECT * FROM fisiologia_intervalos WHERE activity_id = ?",
+                    (activity_id,)).fetchall()
+                cols = [d[0] for d in conn_temp.execute(
+                    "SELECT * FROM fisiologia_intervalos LIMIT 0").description]
+                resultado['simulacao_processamento'] = {
+                    'status': 'ok', 'n_linhas': len(linhas),
+                    'linhas': [dict(zip(cols, l)) for l in linhas],
+                }
+    except Exception as e:
+        resultado['simulacao_processamento'] = {'status': 'erro', 'erro': str(e)}
+
+    return resultado
 
 
 if __name__ == '__main__':
     if '--debug' in sys.argv:
         idx = sys.argv.index('--debug')
         activity_id = sys.argv[idx + 1]
-        depurar_intervalos(activity_id)
+        print(json.dumps(debug_dict(activity_id), indent=2, ensure_ascii=False, default=str))
     else:
         n = LOTE_PADRAO
         if '--n' in sys.argv:
@@ -510,29 +613,28 @@ if __name__ == '__main__':
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# INSTRUÇÕES — Railway Cron Job
+# INSTRUÇÕES — Railway Cron Job (opcional, além do HTTP manual)
 # ══════════════════════════════════════════════════════════════════════════
 #
-# Este ficheiro NÃO altera app.py nem corre dentro do processo web.
-# No Railway, criar um novo serviço "Cron Job" (mesmo repo, mesmo build),
-# com comando:
+# Este ficheiro NÃO altera app.py por si só. Para o usar via HTTP (sem
+# terminal, só browser), ver app_fisiologia_rotas_ADICIONAR.py — são 2
+# rotas pequenas para colar no teu app.py via GitHub web.
+#
+# Para automatizar (correr sozinho todos os dias, sem precisares de abrir
+# a URL manualmente), o Railway permite criar um "Cron Job" TAMBÉM pela
+# interface web (não precisa de CLI): no projecto Railway, "New" ->
+# "Cron Job" -> escolher o mesmo repo -> comando:
 #
 #     python fisiologia_worker.py --n 10
 #
-# e agendamento (ex.: todos os dias às 04:00):
+# agendamento (todos os dias às 04:00):
 #
 #     0 4 * * *
 #
-# Variáveis de ambiente necessárias (as mesmas do serviço web):
+# Variáveis de ambiente — as MESMAS do serviço web já existente:
 #   INTERVALS_ICU_API_KEY, ATHLETE_ID, DATABASE_URL, GCP_SERVICE_ACCOUNT
 #
 # Opcional:
-#   FISIOLOGIA_LOTE       (default 10)
-#   FISIOLOGIA_DATA_CORTE (default 2024-01-01)
+#   FISIOLOGIA_LOTE        (default 10)
+#   FISIOLOGIA_DATA_CORTE  (default 2024-01-01)
 #   GDRIVE_FOLDER_ID       (default = mesma pasta de correlacoes.db)
-#
-# ANTES DA PRIMEIRA EXECUÇÃO EM MASSA:
-#   python fisiologia_worker.py --debug <um_activity_id_recente>
-# para confirmar que o parsing de /activity/{id}/intervals está a apanhar
-# os campos certos. Se não bater certo, ajustar as constantes CHAVES_*
-# no topo do ficheiro — o resto do código não precisa de mudar.

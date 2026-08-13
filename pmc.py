@@ -14,6 +14,10 @@ original (tab_pmc.py):
   TSB = CTL - ATL   (calculado com os valores de ONTEM, ver abaixo)
 
 Sem pandas: as series sao listas de dicts, calculadas em Python puro.
+
+NOTA: TSB é modulador principal (r²=6.5%, pré-registo 2026-08-13).
+      HRV lag mais relevante é +10d, métrica RPE ≥7.
+      Valores continuam dinâmicos; sistema avisa se divergem.
 """
 
 from datetime import datetime, timedelta
@@ -94,7 +98,11 @@ def por_modalidade(sessoes, modalidades, campo='tl', ate=None, desde=None):
 
 def estado_forma(tsb):
     """Interpretacao do TSB. Os limites sao convencao do TrainingPeaks,
-    nao uma verdade fisiologica — servem de referencia, nao de regra."""
+    nao uma verdade fisiologica — servem de referencia, nao de regra.
+    
+    NOTA: TSB é modulador principal da recuperação HRV (pré-registo 2026-08-13).
+          Efeito RPE→HRV é máximo em TSB negativo (cansaço) e mínimo em TSB positivo.
+    """
     if tsb is None:
         return {'label': '—', 'cor': '#8b949e', 'nota': ''}
     if tsb > 25:

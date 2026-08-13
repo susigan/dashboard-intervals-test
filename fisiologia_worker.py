@@ -104,6 +104,7 @@ STREAM_HR = 'heartrate'
 STREAM_WATTS = 'watts'
 STREAM_SMO2 = 'smo2'
 STREAM_THB = 'thb'
+STREAM_DFA1 = 'dfa_a1'   # confirmado via /api/db/streams: 153 sessões guardadas
 STREAMS_RESP_CANDIDATOS = ['respiration', 'breathing_rate', 'resp_rate']
 
 
@@ -397,6 +398,10 @@ def processar_atividade(activity, conn):
     t_resp = _tempos_do_stream(streams.get(resp_key), duracao_total_s) if tem_resp else None
     v_resp = _valores_float(streams.get(resp_key)) if tem_resp else None
 
+    tem_dfa1_stream = tem_streams and STREAM_DFA1 in streams
+    t_dfa1 = _tempos_do_stream(streams.get(STREAM_DFA1), duracao_total_s) if tem_dfa1_stream else None
+    v_dfa1 = _valores_float(streams.get(STREAM_DFA1)) if tem_dfa1_stream else None
+
     now = datetime.now().isoformat(timespec='seconds')
     gravados = 0
 
@@ -439,6 +444,7 @@ def processar_atividade(activity, conn):
             'tem_hr': int(tem_hr), 'tem_smo2': int(tem_smo2),
             'tem_thb': int(tem_thb), 'tem_resp': int(tem_resp),
             'tem_dfa1': int(work.get('dfa1_medio_api') is not None),
+            'tem_dfa1_stream': int(tem_dfa1_stream),
             'valido': 1, 'motivo_invalido': None, 'criado_em': now,
             # Valor/patamar: direto da API, sem processar streams — é a
             # base da curva "a X watts, esperar Y" que vais construir depois.
@@ -477,6 +483,7 @@ def processar_atividade(activity, conn):
         _preencher('smo2', tem_smo2, t_smo2, v_smo2)
         _preencher('thb', tem_thb, t_thb, v_thb)
         _preencher('resp', tem_resp, t_resp, v_resp)
+        _preencher('dfa1', tem_dfa1_stream, t_dfa1, v_dfa1)
 
         tem_algum_valor_api = any(
             linha[k] is not None for k in

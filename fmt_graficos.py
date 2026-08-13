@@ -7,12 +7,14 @@ Exporta 3 gráficos principais (retorna HTML renderizado):
 
 Baseado em tab_fmt_tensor.py (Streamlit dashboard).
 Adaptado para retornar HTML/Plotly que Flask possa servir.
+
+SEM DEPENDÊNCIAS: numpy, plotly apenas (sem pandas).
 """
 
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from datetime import datetime
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -37,6 +39,21 @@ CORES = {
 }
 
 
+def _converter_datas_str(datas):
+    """Converter array de datas para array de strings YYYY-MM-DD (sem pandas)."""
+    resultado = []
+    for d in datas:
+        if isinstance(d, datetime):
+            resultado.append(d.strftime('%Y-%m-%d'))
+        elif isinstance(d, str):
+            # Se já é string, assumir formato válido
+            resultado.append(d)
+        else:
+            # Tomar os 10 primeiros chars (assume YYYY-MM-DD)
+            resultado.append(str(d)[:10])
+    return resultado
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. GRÁFICO: κ Timeline + Δκ/14d
 # ══════════════════════════════════════════════════════════════════════════════
@@ -53,7 +70,7 @@ def grafico_kappa_timeline(datas, kappa, regimes, tsb=None):
     Returns:
         go.Figure (Plotly chart object)
     """
-    datas = pd.Series(pd.to_datetime(datas)).astype(str)
+    datas = _converter_datas_str(datas)
     kappa = np.asarray(kappa, dtype=float)
     regimes = np.asarray(regimes, dtype=str)
     
@@ -204,7 +221,7 @@ def mapa_regimes_scatter(tsb, kappa, regimes, datas, kappa_now=None, tsb_now=Non
     tsb = np.asarray(tsb, dtype=float)
     kappa = np.asarray(kappa, dtype=float)
     regimes = np.asarray(regimes, dtype=str)
-    datas = pd.Series(pd.to_datetime(datas)).astype(str)
+    datas = _converter_datas_str(datas)
     
     # Percentis κ
     kappa_valid = kappa[np.isfinite(kappa)]
@@ -299,7 +316,7 @@ def grafico_lambda1_dimensoes(datas, lambda1, load_z, hrv_z, wprime_z, sleep_z, 
     Returns:
         go.Figure com 2 subplots (λ₁ e 5 dimensões)
     """
-    datas = pd.Series(pd.to_datetime(datas)).astype(str)
+    datas = _converter_datas_str(datas)
     lambda1 = np.asarray(lambda1, dtype=float)
     
     dimensoes = {

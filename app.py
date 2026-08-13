@@ -112,6 +112,49 @@ def api_activity_debug(activity_id):
     return tab_detalhe.api_debug(activity_id)
 
 
+# ── Perfil fisiológico (lag/recovery SmO2/tHb/HR/respiração) ────────────────
+#
+# Imports feitos DENTRO das funções (lazy) e envolvidos em try/except: se
+# fisiologia_worker.py tiver algum problema, só estas 2 rotas falham
+# (devolvem erro 500 em JSON) — o resto do dashboard continua de pé.
+
+@app.route('/api/fisiologia/debug/<activity_id>')
+def api_fisiologia_debug(activity_id):
+    """Mostra, para 1 atividade, como os intervalos foram interpretados:
+    resposta bruta da API, classificação WORK/REC calculada pela potência
+    (ignora o campo 'type' da API, que pode estar errado), pares
+    WORK->REC, e uma simulação do processamento completo (lags/recovery)
+    SEM gravar nada no .db.
+
+    Exemplo: /api/fisiologia/debug/i174526190
+    """
+    try:
+        import fisiologia_worker as fw
+        return jsonify(fw.debug_dict(activity_id))
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/processar')
+def api_fisiologia_processar():
+    """Processa um lote de atividades (mais recentes -> mais antigas, até
+    2024-01-01) e grava em fisiologia_perfil.db no Drive.
+
+    Query params: ?n=5 (max LOTE_WEB_MAX por pedido, evita timeout Railway)
+    Exemplo: /api/fisiologia/processar?n=5
+    """
+    try:
+        import fisiologia_worker as fw
+        n = int(request.args.get('n', 5))
+        n = min(n, fw.LOTE_WEB_MAX)
+        resumo = fw.processar_lote(n, retornar_resumo=True)
+        return jsonify(resumo)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/debug/athlete')
 def api_debug_athlete():
     return tab_detalhe.api_debug_athlete()
@@ -583,138 +626,6 @@ def api_db_streams():
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy'}), 200
-
-
-
-# ── FMT Tensor Gráficos ──────────────────────────────────────────────────────
-
-@app.route('/api/fmt/grafico_kappa')
-def api_fmt_grafico_kappa():
-    """Gráfico κ timeline + Δκ/14d com regime backgrounds."""
-    try:
-        import fmt_graficos
-        
-        data = tab_pmc.api_data()
-        if isinstance(data, tuple):
-            data = data[0]
-        if hasattr(data, 'get_json'):
-            data = data.get_json()
-        
-        fmt_res = (data or {}).get('fmt') or {}
-        serie_classica = (data or {}).get('serie') or []
-        
-        if not fmt_res or not serie_classica:
-            return jsonify({'status': 'erro', 'mensagem': 'FMT nao calculado'}), 400
-        
-        serie_fmt = fmt_res.get('serie') or []
-        datas = [s['date'] for s in serie_fmt]
-        kappa = [s.get('kappa') for s in serie_fmt]
-        regimes = ['transition'] * len(datas)
-        tsb = [s.get('tsb') for s in serie_classica] if serie_classica else None
-        
-        fig = fmt_graficos.grafico_kappa_timeline(
-            datas=datas, kappa=kappa, regimes=regimes, tsb=tsb
-        )
-        
-        html = fig.to_html(include_plotlyjs='cdn', div_id='fmt-kappa-timeline',
-                          config={'responsive': True, 'displayModeBar': False})
-        
-        return jsonify({'status': 'ok', 'html': html, 'titulo': 'Evolução de κ e Regimes',
-                       'n_dias': len(datas)}), 200
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
-
-@app.route('/api/fmt/mapa_regimes')
-def api_fmt_mapa_regimes():
-    """Scatter κ vs TSB (mapa de regimes)."""
-    try:
-        import fmt_graficos
-        
-        data = tab_pmc.api_data()
-        if isinstance(data, tuple):
-            data = data[0]
-        if hasattr(data, 'get_json'):
-            data = data.get_json()
-        
-        fmt_res = (data or {}).get('fmt') or {}
-        serie_classica = (data or {}).get('serie') or []
-        actual = (data or {}).get('actual') or {}
-        
-        if not fmt_res or not serie_classica:
-            return jsonify({'status': 'erro', 'mensagem': 'FMT nao calculado'}), 400
-        
-        serie_fmt = fmt_res.get('serie') or []
-        datas = [s['date'] for s in serie_fmt]
-        kappa = [s.get('kappa') for s in serie_fmt]
-        tsb = [s.get('tsb') for s in serie_classica] if serie_classica else []
-        regimes = ['transition'] * len(datas)
-        kappa_now = kappa[-1] if kappa else None
-        tsb_now = actual.get('tsb')
-        
-        fig = fmt_graficos.mapa_regimes_scatter(
-            tsb=tsb, kappa=kappa, regimes=regimes, datas=datas,
-            kappa_now=kappa_now, tsb_now=tsb_now
-        )
-        
-        html = fig.to_html(include_plotlyjs='cdn', div_id='fmt-scatter-chart',
-                          config={'responsive': True, 'displayModeBar': False})
-        
-        return jsonify({'status': 'ok', 'html': html, 'titulo': 'Mapa de Regimes — κ vs TSB',
-                       'hoje': {'kappa': float(kappa_now) if kappa_now else None,
-                               'tsb': float(tsb_now) if tsb_now else None}}), 200
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
-
-@app.route('/api/fmt/lambda1_dimensoes')
-def api_fmt_lambda1_dimensoes():
-    """Gráfico λ₁ timeline + 5 dimensões."""
-    try:
-        import fmt_graficos
-        
-        data = tab_pmc.api_data()
-        if isinstance(data, tuple):
-            data = data[0]
-        if hasattr(data, 'get_json'):
-            data = data.get_json()
-        
-        fmt_res = (data or {}).get('fmt') or {}
-        
-        if not fmt_res:
-            return jsonify({'status': 'erro', 'mensagem': 'FMT nao calculado'}), 400
-        
-        serie_fmt = fmt_res.get('serie') or []
-        datas = [s['date'] for s in serie_fmt]
-        lambda1 = [s.get('lambda1') for s in serie_fmt]
-        
-        n = len(datas)
-        load_z, hrv_z, wprime_z, sleep_z, weed_z = [0.0]*n, [0.0]*n, [0.0]*n, [0.0]*n, [0.0]*n
-        
-        calibracao = fmt_res.get('calibracao') or {}
-        limiares = calibracao.get('limiares_lambda1') or {}
-        lambda1_threshold = (limiares.get('alto', 0.55), limiares.get('baixo', 0.35))
-        
-        fig = fmt_graficos.grafico_lambda1_dimensoes(
-            datas=datas, lambda1=lambda1, load_z=load_z, hrv_z=hrv_z,
-            wprime_z=wprime_z, sleep_z=sleep_z, weed_z=weed_z,
-            lambda1_threshold=lambda1_threshold
-        )
-        
-        html = fig.to_html(include_plotlyjs='cdn', div_id='fmt-lambda1-chart',
-                          config={'responsive': True, 'displayModeBar': False})
-        
-        return jsonify({'status': 'ok', 'html': html, 'titulo': 'λ₁ & Dimensões',
-                       'n_dias': len(datas)}), 200
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
 
 
 if __name__ == '__main__':

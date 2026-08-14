@@ -18,7 +18,13 @@ DUAS ANÁLISES:
      watts fixa, para ver deriva longitudinal (ex.: será que o SmO2 a
      300W está diferente agora do que há 6 meses?).
 
-Ambas usam apenas linhas com valido=1.
+  3. grafico_perfil_metabolico(perfil)
+     Plotly server-side (import LAZY, dentro da função — mesma razão do
+     fmt_graficos.py: se plotly não estiver instalado, só esta função
+     falha, o resto do módulo continua a funcionar). Devolve go.Figure;
+     quem chama decide se quer .to_html() ou servir como JSON.
+
+Ambas as análises usam apenas linhas com valido=1.
 """
 
 import numpy as np
@@ -214,3 +220,126 @@ def modalidades_disponiveis():
            GROUP BY modalidade ORDER BY n DESC"""
     ).fetchall()
     return [dict(l) for l in linhas]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# GRÁFICO — pequenos múltiplos: 1 linha por métrica, X = faixa de watts
+# ══════════════════════════════════════════════════════════════════════════
+
+# (métrica, unidade, cor) — mesma paleta usada em fmt_graficos.py, para
+# os gráficos ficarem visualmente consistentes entre tabs.
+_METRICAS_GRAFICO = [
+    ('hr',   'HR',            'bpm', '#E74C3C'),
+    ('smo2', 'SmO2',          '%',   '#F39C12'),
+    ('thb',  'tHb',           'a.u.', '#2980B9'),
+    ('resp', 'Respiração',    'rpm', '#1ABC9C'),
+    ('dfa1', 'DFA-α1',        'index', '#9B59B6'),
+]
+
+
+def grafico_perfil_metabolico(perfil):
+    """Pequenos múltiplos: 1 subplot por métrica, X = faixa de watts.
+
+    Por métrica mostra:
+      - linha+marcadores do p50 no ESFORÇO (cor sólida da métrica)
+      - banda sombreada p25-p75 do esforço (mesma cor, translúcida)
+      - linha tracejada cinza do p50 em REPOUSO (rec) — referência de
+        baseline, para se perceber o delta esforço-vs-repouso
+
+    Import de plotly é LAZY (dentro da função): se não estiver instalado,
+    só esta função falha — perfil_por_modalidade()/evolucao_temporal()
+    continuam a funcionar normalmente (endpoints JSON não dependem disto).
+
+    Args:
+        perfil: dict devolvido por perfil_por_modalidade() (status='ok')
+
+    Returns:
+        plotly.graph_objects.Figure
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    if perfil.get('status') != 'ok':
+        raise ValueError(f"perfil sem dados suficientes: {perfil.get('mensagem', perfil.get('status'))}")
+
+    faixas = perfil['faixas']
+    labels_x = [f['faixa_watts'] for f in faixas]
+
+    # só entram métricas com pelo menos 1 faixa com dado
+    metricas_com_dado = [
+        (chave, nome, unidade, cor) for chave, nome, unidade, cor in _METRICAS_GRAFICO
+        if any(f.get(f'{chave}_medio_work') for f in faixas)
+    ]
+    if not metricas_com_dado:
+        raise ValueError('nenhuma metrica com dados nas faixas deste perfil')
+
+    n_metricas = len(metricas_com_dado)
+    fig = make_subplots(
+        rows=n_metricas, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.06,
+        subplot_titles=[f'{nome} ({unidade})' for _, nome, unidade, _ in metricas_com_dado],
+    )
+
+    def _hex_para_rgba(hex_cor, alpha):
+        h = hex_cor.lstrip('#')
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f'rgba({r},{g},{b},{alpha})'
+
+    for i, (chave, nome, unidade, cor) in enumerate(metricas_com_dado, start=1):
+        campo_work = f'{chave}_medio_work'
+        campo_rec = f'{chave}_medio_rec'
+
+        p50 = [f[campo_work]['p50'] if f.get(campo_work) else None for f in faixas]
+        p25 = [f[campo_work]['p25'] if f.get(campo_work) else None for f in faixas]
+        p75 = [f[campo_work]['p75'] if f.get(campo_work) else None for f in faixas]
+        rec_p50 = [f[campo_rec]['p50'] if f.get(campo_rec) else None for f in faixas]
+        n_por_faixa = [f[campo_work]['n'] if f.get(campo_work) else 0 for f in faixas]
+
+        # banda p25-p75 (duas linhas invisíveis + fill entre elas)
+        fig.add_trace(go.Scatter(
+            x=labels_x + labels_x[::-1],
+            y=p75 + p25[::-1],
+            fill='toself', fillcolor=_hex_para_rgba(cor, 0.15),
+            line=dict(color='rgba(0,0,0,0)'),
+            hoverinfo='skip', showlegend=False,
+        ), row=i, col=1)
+
+        # p50 esforço
+        fig.add_trace(go.Scatter(
+            x=labels_x, y=p50, mode='lines+markers',
+            name=f'{nome} (esforço)', line=dict(color=cor, width=2),
+            marker=dict(size=7),
+            customdata=n_por_faixa,
+            hovertemplate=f'{nome}: %{{y}}{unidade} (n=%{{customdata}})<extra></extra>',
+            showlegend=(i == 1),
+        ), row=i, col=1)
+
+        # p50 repouso (referência, tracejado)
+        if any(v is not None for v in rec_p50):
+            fig.add_trace(go.Scatter(
+                x=labels_x, y=rec_p50, mode='lines+markers',
+                name=f'{nome} (repouso)', line=dict(color='#8b949e', width=1.5, dash='dot'),
+                marker=dict(size=5, symbol='circle-open'),
+                hovertemplate=f'{nome} repouso: %{{y}}{unidade}<extra></extra>',
+                showlegend=(i == 1),
+            ), row=i, col=1)
+
+    fig.update_layout(
+        title=dict(
+            text=f"Perfil Metabólico — {perfil['modalidade']} "
+                f"({perfil['n_intervalos_total']} intervalos, {perfil['n_atividades']} atividades)",
+            font=dict(size=14, color='#222')),
+        paper_bgcolor='white', plot_bgcolor='white',
+        height=180 * n_metricas + 80,
+        margin=dict(t=60, b=50, l=70, r=20),
+        hovermode='x unified',
+        legend=dict(orientation='h', y=-0.06, font=dict(color='#222', size=10),
+                   bgcolor='rgba(255,255,255,0.85)', borderwidth=0),
+        font=dict(color='#222', size=11),
+    )
+    fig.update_xaxes(tickfont=dict(size=10, color='#333'), linecolor='#555', tickcolor='#555')
+    fig.update_yaxes(tickfont=dict(size=10, color='#333'), linecolor='#555', tickcolor='#555',
+                     gridcolor='rgba(0,0,0,0.06)')
+
+    return fig

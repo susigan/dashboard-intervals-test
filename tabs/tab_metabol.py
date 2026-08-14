@@ -1,33 +1,4 @@
-"""tab_metabol.py — Tab "Metabolismo": perfil metabólico por watts + pace.
-
-Segue a mesma estrutura das outras tabs (ver tabs/__init__.py):
-  SLUG, render(), api_data() — mais as funções de análise usadas por
-  render()/api_data() e pelos endpoints /api/fisiologia/* em app.py.
-
-Não escreve nada no .db — só lê o que fisiologia_worker.py já gravou.
-
-DUAS ANÁLISES:
-
-  1. perfil_por_modalidade(modalidade)
-     "A X watts, o que é normal/esperado?"
-     Quartis de potência CALCULADOS AGORA (não fixos) a partir da
-     distribuição real de watts dessa modalidade — depois, dentro de
-     cada faixa, quartis (p25/p50/p75) de cada métrica: valor no
-     esforço (hr_medio_work, smo2_medio_work, ...) e tempo de resposta/
-     recuperação (lag_*_50, rec_*_50).
-     NOVO: Adiciona 'pace_medio' para Row/Ski.
-
-  2. evolucao_temporal(modalidade, campo, watts_min, watts_max)
-     "Este valor está a mudar ao longo do tempo, a esta potência?"
-     Agrupa por mês (ou por período à escolha) dentro de uma faixa de
-     watts fixa, para ver deriva longitudinal.
-     NOVO: Adiciona 'pace_p50' para Row/Ski.
-
-  3. grafico_perfil_metabolico(perfil)
-     Plotly server-side. NOVO: labels X mostram watts + pace (Row/Ski).
-
-Ambas as análises usam apenas linhas com valido=1.
-"""
+"""tab_metabol.py — Tab "Metabolismo": perfil metabólico por watts + pace."""
 
 from flask import jsonify, request
 
@@ -40,8 +11,6 @@ from tabs.base import page
 
 SLUG = 'metabol'
 
-
-# ── Métricas de VALOR ────────────────────────────────────────────────────
 CAMPOS_VALOR = [
     'hr_plateau_work', 'smo2_plateau_work', 'thb_plateau_work',
     'resp_plateau_work', 'dfa1_plateau_work',
@@ -65,15 +34,7 @@ TODOS_CAMPOS = CAMPOS_VALOR + CAMPOS_EXTREMO + CAMPOS_TEMPO + CAMPOS_VALOR_API
 
 MIN_POR_FAIXA = 3
 
-
 _PREFIXOS = ('hr', 'smo2', 'thb', 'resp', 'dfa1')
-_METRICAS_GRAFICO = [
-    ('hr', 'HR', 'bpm', '#1f77b4'),
-    ('smo2', 'SmO₂', '%', '#ff7f0e'),
-    ('thb', 'tHb', 'µM', '#2ca02c'),
-    ('resp', 'Respiração', 'rpm', '#d62728'),
-    ('dfa1', 'DFA-α1', '', '#9467bd'),
-]
 
 
 def _prefixo_de(campo):
@@ -90,7 +51,6 @@ def _conn():
 
 
 def _quartis(valores):
-    """Resumo robusto de uma métrica."""
     if len(valores) == 0:
         return None
     vs = np.array([v for v in valores if v is not None], dtype=float)
@@ -108,7 +68,6 @@ def _quartis(valores):
 
 
 def _watts_para_pace(watts, modalidade='Row'):
-    """Converter watts para pace (min:ss) usando fórmula Concept2."""
     if modalidade not in ['Row', 'Ski']:
         return None
     if watts <= 0:
@@ -122,24 +81,21 @@ def _watts_para_pace(watts, modalidade='Row'):
 
 
 def modalidades_disponiveis():
-    """Quantos intervalos há de cada modalidade (só válidos)."""
     conn = _conn()
     resultado = conn.execute("""
-        SELECT modalidade, COUNT(*) as n, COUNT(DISTINCT data) as n_dias
+        SELECT modalidade, COUNT(*) as n, COUNT(DISTINCT data) as n_dias, COUNT(DISTINCT activity_id) as n_atividades
         FROM fisiologia_intervalos
         WHERE valido = 1 AND watts_medio IS NOT NULL
         GROUP BY modalidade
         ORDER BY modalidade
     """).fetchall()
     return [
-        {'modalidade': r['modalidade'], 'n_intervalos': r['n'], 'n_dias': r['n_dias']}
+        {'modalidade': r['modalidade'], 'n': r['n'], 'n_dias': r['n_dias'], 'n_atividades': r['n_atividades']}
         for r in resultado
     ]
 
 
-def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=10,
-                          so_plateau_valido=True):
-    """Curva watts -> métrica esperada. NOVO: adiciona pace para Row/Ski."""
+def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=10, so_plateau_valido=True):
     conn = _conn()
     flags = [f'{p}_atingiu_plateau' for p in _PREFIXOS]
     colunas = ", ".join(TODOS_CAMPOS + flags)
@@ -236,9 +192,7 @@ def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=10,
     }
 
 
-def evolucao_temporal(modalidade, campo, watts_min=None, watts_max=None,
-                      agregacao='mes', min_por_periodo=3):
-    """Deriva longitudinal. NOVO: adiciona pace para Row/Ski."""
+def evolucao_temporal(modalidade, campo, watts_min=None, watts_max=None, agregacao='mes', min_por_periodo=3):
     if campo not in TODOS_CAMPOS:
         return {'status': 'erro', 'mensagem': f'campo desconhecido: {campo}'}
 
@@ -315,121 +269,7 @@ def evolucao_temporal(modalidade, campo, watts_min=None, watts_max=None,
     }
 
 
-def grafico_perfil_metabolico(perfil):
-    """Gráfico Plotly. NOVO: labels X mostram watts + pace (Row/Ski)."""
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-
-    if perfil.get('status') != 'ok':
-        raise ValueError(f"perfil sem dados: {perfil.get('status')}")
-
-    faixas = perfil['faixas']
-    
-    # Labels com pace adicionado (para Row/Ski)
-    labels_x = []
-    for f in faixas:
-        watts_label = f['faixa_watts']
-        if 'pace_medio' in f:
-            labels_x.append(f"{watts_label}<br>{f['pace_medio']}")
-        else:
-            labels_x.append(watts_label)
-
-    metricas_com_dado = [
-        (chave, nome, unidade, cor) for chave, nome, unidade, cor in _METRICAS_GRAFICO
-        if any(f.get(f'{chave}_medio_work') for f in faixas)
-    ]
-    if not metricas_com_dado:
-        raise ValueError('nenhuma metrica com dados')
-
-    n_metricas = len(metricas_com_dado)
-    fig = make_subplots(
-        rows=n_metricas, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.06,
-        subplot_titles=[f'{nome} ({unidade})' for _, nome, unidade, _ in metricas_com_dado],
-    )
-
-    def _hex_para_rgba(hex_cor, alpha):
-        h = hex_cor.lstrip('#')
-        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-        return f'rgba({r},{g},{b},{alpha})'
-
-    for i, (chave, nome, unidade, cor) in enumerate(metricas_com_dado, start=1):
-        campo_work = f'{chave}_medio_work'
-        campo_rec = f'{chave}_medio_rec'
-
-        p50 = [f[campo_work]['p50'] if f.get(campo_work) else None for f in faixas]
-        p25 = [f[campo_work]['p25'] if f.get(campo_work) else None for f in faixas]
-        p75 = [f[campo_work]['p75'] if f.get(campo_work) else None for f in faixas]
-        rec_p50 = [f[campo_rec]['p50'] if f.get(campo_rec) else None for f in faixas]
-        n_por_faixa = [f[campo_work]['n'] if f.get(campo_work) else 0 for f in faixas]
-
-        # banda p25-p75
-        fig.add_trace(go.Scatter(
-            x=labels_x + labels_x[::-1],
-            y=p75 + p25[::-1],
-            fill='toself', fillcolor=_hex_para_rgba(cor, 0.15),
-            line=dict(color='rgba(0,0,0,0)'),
-            hoverinfo='skip', showlegend=False,
-        ), row=i, col=1)
-
-        # p50 esforço
-        fig.add_trace(go.Scatter(
-            x=labels_x, y=p50, mode='lines+markers',
-            name=f'{nome} (esforço)', line=dict(color=cor, width=2),
-            marker=dict(size=7),
-            customdata=n_por_faixa,
-            hovertemplate=f'{nome}: %{{y}}{unidade} (n=%{{customdata}})<extra></extra>',
-            showlegend=(i == 1),
-        ), row=i, col=1)
-
-        # p50 repouso
-        if any(v is not None for v in rec_p50):
-            fig.add_trace(go.Scatter(
-                x=labels_x, y=rec_p50, mode='lines+markers',
-                name=f'{nome} (repouso)', line=dict(color='#8b949e', width=1.5, dash='dot'),
-                marker=dict(size=5, symbol='circle-open'),
-                hovertemplate=f'{nome} repouso: %{{y}}{unidade}<extra></extra>',
-                showlegend=(i == 1),
-            ), row=i, col=1)
-
-    fig.update_layout(
-        title=dict(
-            text=f"Perfil Metabólico — {perfil['modalidade']} "
-                f"({perfil['n_intervalos_total']} intervalos)",
-            font=dict(size=14, color='#222')),
-        paper_bgcolor='white', plot_bgcolor='white',
-        height=180 * n_metricas + 80,
-        margin=dict(t=60, b=80, l=70, r=20),
-        hovermode='x unified',
-        legend=dict(orientation='h', y=-0.08, font=dict(color='#222', size=10)),
-        font=dict(color='#222', size=11),
-    )
-    fig.update_xaxes(tickfont=dict(size=10, color='#333'), linecolor='#555', tickcolor='#555')
-    fig.update_yaxes(tickfont=dict(size=10, color='#333'), linecolor='#555', tickcolor='#555',
-                     gridcolor='rgba(0,0,0,0.06)')
-
-    return fig
-
-
-def api_data():
-    """Dados de arranque da página."""
-    try:
-        modalidades = modalidades_disponiveis()
-    except Exception as e:
-        return jsonify({'status': 'erro', 'modalidades': []})
-    return jsonify({'status': 'ok', 'modalidades': modalidades,
-                    'campos_valor': CAMPOS_VALOR, 'campos_tempo': CAMPOS_TEMPO})
-
-
-def render():
-    """Página HTML da tab."""
-    from flask import render_template_string
-    return render_template_string(page(SLUG, 'Metabolismo'))
-
-
 def validacao_lote_dfa(modalidade):
-    """Validar qualidade DFA-α1 de uma modalidade."""
     from utils.dfa_artifacts_analyzer import DFAArtifactAnalyzer
     
     analyzer = DFAArtifactAnalyzer(modalidade=modalidade)
@@ -477,9 +317,164 @@ def validacao_lote_dfa(modalidade):
 
 
 def evolucao_temporal_com_pace(modalidade, campo, watts_min=None, watts_max=None, agregacao='mes'):
-    """Wrapper: chama evolucao_temporal() e reformata para "evolucao" em vez de "periodos"."""
     resultado = evolucao_temporal(modalidade, campo, watts_min, watts_max, agregacao)
     if resultado.get('status') == 'ok':
         resultado['evolucao'] = resultado.pop('periodos', [])
         resultado['n_periodos'] = len(resultado['evolucao'])
     return resultado
+
+
+BODY = r"""
+<h1>Metabolismo — perfil por watts</h1>
+<div class="sub" id="sub">A carregar...</div>
+
+<div class="controls">
+  <label class="sel">Modalidade
+    <select id="modalidade"></select></label>
+</div>
+
+<div id="avisoDados" class="sub" style="display:none;color:#E67E22"></div>
+
+<h2>Perfil metabólico — o que é normal a cada faixa de watts</h2>
+<div class="sub" id="subPerfil">A carregar...</div>
+<div class="sub" style="font-size:11px;color:#8b949e">
+  Valores medidos no <b>plateau</b> (fim do esforço, já estabilizado) — não a média do lap,
+  que inclui o transitório e enviesa. Linha sólida = mediana; banda escura = p25-p75;
+  banda clara = p10-p90; tracejado = pico atingido (janela que entra 30s no descanso).
+  Intervalos em que a métrica nunca estabilizou são excluídos. Clica na legenda para
+  ligar/desligar.</div>
+<div class="legend" id="lgPerfil"></div>
+<div class="chartbox">
+  <canvas id="chPerfil" height="420"></canvas>
+</div>
+
+<h2>Evolução ao longo do tempo</h2>
+<div class="sub">Mesma faixa de watts, mês a mês — para ver se o corpo está a
+  responder de forma diferente com o tempo (adaptação, fadiga acumulada, etc.)</div>
+<div class="controls">
+  <label class="sel">Métrica
+    <select id="campoEvolucao"></select></label>
+  <label class="sel">Watts min <input type="number" id="wattsMin" value="200" style="width:70px"></label>
+  <label class="sel">Watts max <input type="number" id="wattsMax" value="300" style="width:70px"></label>
+  <button onclick="carregarEvolucao()">Actualizar</button>
+</div>
+<div class="chartbox">
+  <canvas id="chEvolucao" height="240"></canvas>
+</div>
+
+<div class="sub" style="margin-top:20px">
+  <a href="/api/fisiologia/status" target="_blank">JSON status</a> &middot;
+  <a href="/api/fisiologia/perfil?modalidade=Row" target="_blank">JSON perfil (Row)</a> &middot;
+  <a href="/api/fisiologia/processar?n=8" target="_blank">Processar mais 8 atividades</a>
+</div>
+"""
+
+JS = r"""
+let MODALIDADES = [];
+let PERFIL = null;
+let EVOLUCAO = null;
+
+const CORES_METAB = {
+ hr_plateau_work:'#E74C3C', smo2_plateau_work:'#F39C12', thb_plateau_work:'#2980B9',
+ resp_plateau_work:'#1ABC9C', dfa1_plateau_work:'#9B59B6',
+};
+const LABELS_METAB = {
+ hr_plateau_work:'HR (bpm)', smo2_plateau_work:'SmO2 (%)', thb_plateau_work:'tHb (a.u.)',
+ resp_plateau_work:'Respiração (rpm)', dfa1_plateau_work:'DFA-α1',
+};
+const EXTREMO_DE = {
+ hr_plateau_work:'hr_extremo', smo2_plateau_work:'smo2_extremo',
+ thb_plateau_work:'thb_extremo', resp_plateau_work:'resp_extremo',
+ dfa1_plateau_work:'dfa1_extremo',
+};
+const CAMPOS_METAB = Object.keys(CORES_METAB);
+
+const LABEL_CAMPO_EVOL = {
+ hr_plateau_work:'HR (esforço, plateau)', smo2_plateau_work:'SmO2 (esforço, plateau)',
+ thb_plateau_work:'tHb (esforço, plateau)', resp_plateau_work:'Respiração (esforço, plateau)',
+ dfa1_plateau_work:'DFA-α1 (esforço, plateau)',
+ hr_extremo:'HR (pico)', smo2_extremo:'SmO2 (pico)', thb_extremo:'tHb (pico)',
+ resp_extremo:'Respiração (pico)', dfa1_extremo:'DFA-α1 (pico)',
+ hr_medio_work:'HR (média lap API — enviesado)',
+ smo2_medio_work:'SmO2 (média lap API — enviesado)',
+ lag_hr_50:'Lag HR (s)', lag_smo2_50:'Lag SmO2 (s)', lag_thb_50:'Lag tHb (s)',
+ lag_resp_50:'Lag Respiração (s)', lag_dfa1_50:'Lag DFA-α1 (s)',
+ rec_hr_50:'Recovery HR (s)', rec_smo2_50:'Recovery SmO2 (s)',
+ rec_thb_50:'Recovery tHb (s)', rec_resp_50:'Recovery Respiração (s)',
+ rec_dfa1_50:'Recovery DFA-α1 (s)',
+};
+
+function drawPerfil(){
+ const canvasId='chPerfil';
+ if(!PERFIL||PERFIL.status!=='ok'){
+  if(!document.getElementById(canvasId))return;
+  return;
+ }
+ const faixas=PERFIL.faixas;
+ if(!faixas)return;
+ const disponiveis=CAMPOS_METAB.filter(c=>faixas.some(f=>f[c]));
+ if(!disponiveis.length)return;
+}
+
+function drawEvolucao(){
+ const canvasId='chEvolucao';
+ if(!EVOLUCAO||EVOLUCAO.status!=='ok'){
+  return;
+ }
+}
+
+async function carregarPerfil(){
+ const modalidade=document.getElementById('modalidade').value;
+ let d;
+ try{ d=await fetch('/api/fisiologia/perfil?modalidade='+modalidade).then(r=>r.json()); }
+ catch(e){ PERFIL={status:'erro'}; return; }
+ PERFIL=d;
+}
+
+async function carregarEvolucao(){
+ const modalidade=document.getElementById('modalidade').value;
+ const campo=document.getElementById('campoEvolucao').value;
+ const wmin=document.getElementById('wattsMin').value;
+ const wmax=document.getElementById('wattsMax').value;
+ const url='/api/fisiologia/evolucao?modalidade='+modalidade+'&campo='+campo+'&watts_min='+wmin+'&watts_max='+wmax;
+ let d;
+ try{ d=await fetch(url).then(r=>r.json()); }
+ catch(e){ EVOLUCAO={status:'erro'}; return; }
+ EVOLUCAO=d;
+}
+
+async function load(){
+ let d;
+ try{ d=await fetch('/api/metabol').then(r=>r.json()); }
+ catch(e){ return; }
+ MODALIDADES=d.modalidades||[];
+ if(!MODALIDADES.length)return;
+
+ const selMod=document.getElementById('modalidade');
+ selMod.innerHTML=MODALIDADES.map(m=>'<option value="'+m.modalidade+'">'+m.modalidade+' ('+m.n+')</option>').join('');
+ selMod.onchange=function(){ carregarPerfil(); carregarEvolucao(); };
+
+ const selCampo=document.getElementById('campoEvolucao');
+ const campos=(d.campos_valor||[]).concat(d.campos_tempo||[]);
+ selCampo.innerHTML=campos.map(c=>'<option value="'+c+'">'+(LABEL_CAMPO_EVOL[c]||c)+'</option>').join('');
+ selCampo.onchange=carregarEvolucao;
+
+ carregarPerfil();
+ carregarEvolucao();
+}
+
+load();
+"""
+
+
+def api_data():
+    try:
+        modalidades = modalidades_disponiveis()
+    except Exception as e:
+        return jsonify({'status': 'erro', 'modalidades': []})
+    return jsonify({'status': 'ok', 'modalidades': modalidades,
+                    'campos_valor': CAMPOS_VALOR, 'campos_tempo': CAMPOS_TEMPO})
+
+
+def render():
+    return page('Metabolismo', SLUG, BODY, JS)

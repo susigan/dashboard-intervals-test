@@ -8,7 +8,7 @@ Para adicionar uma tab nova:
 """
 
 from tabs import (tab_volume, tab_atividades, tab_detalhe,
-                  tab_recordes, tab_pmc, tab_corporal)
+                  tab_recordes, tab_pmc, tab_corporal, tab_metabol)
 
 __all__ = ['tab_volume', 'tab_atividades', 'tab_detalhe',
-           'tab_recordes', 'tab_pmc', 'tab_corporal']
+           'tab_recordes', 'tab_pmc', 'tab_corporal', 'tab_metabol']

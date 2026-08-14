@@ -99,7 +99,18 @@ LOTE_WEB_MAX = int(os.getenv("FISIOLOGIA_LOTE_WEB_MAX", "8"))  # limite p/ pedid
 DUR_MIN_WORK_S = 20     # intervalos mais curtos que isto são ignorados (ruído)
 DUR_MIN_REC_S = 15
 JANELA_BASELINE_S = 8   # segundos antes do WORK usados como baseline
-FRAC_PLATEAU = 0.25     # fração final do intervalo usada como "patamar estável"
+
+# Janela de plateau — medida do FIM do esforço PARA TRÁS. Proporcional à
+# duração, mas com limites: em intervalos de 20 min não faz sentido usar
+# 25% (5 min), e em intervalos curtos 25% pode ser 5s (ruidoso demais).
+FRAC_PLATEAU = 0.25
+JANELA_PLATEAU_MIN_S = 12.0
+JANELA_PLATEAU_MAX_S = 90.0
+
+# Quantos segundos DENTRO do descanso continuar a procurar o extremo.
+# Métricas com inércia (respiração, DFA1) atingem o pico depois do fim do
+# esforço; sem isto, esse pico é perdido ou atribuído ao descanso.
+JANELA_EXTREMO_APOS_S = 30.0
 
 # Nomes dos streams tal como guardados por parse_streams() (chave = 'type'
 # devolvido pela API). Se houver 2º sensor, a chave fica com sufixo _2 —
@@ -311,15 +322,40 @@ def _tempo_ate_percentual(tempos, valores, t_ini, t_fim, baseline, alvo, pct):
 
 
 def _lags_metrica(tempos, valores, t_work_ini, t_work_fim, t_rec_fim=None):
-    """Lag de resposta (50/75/90%) + recovery (50/75%), para 1 métrica.
+    """Cinética + valores de uma métrica, num par WORK->REC.
 
-    baseline  = média nos JANELA_BASELINE_S antes do WORK
-    plateau   = média no último FRAC_PLATEAU do WORK (patamar estável)
-    recovery  = tempo (desde início do REC) até voltar 50/75% do caminho
-                de volta à baseline original
+    NÃO usa o rótulo do lap para decidir nada: tudo é medido a partir da
+    TRANSIÇÃO de potência (t_work_ini) e do que a métrica realmente faz a
+    seguir. Os rótulos WORK/REC só definem as fronteiras temporais.
+
+    Devolve (lags, rec, valores, ok):
+
+    lags     lag_50/75/90 — segundos até percorrer 50/75/90% da excursão
+    rec      rec_50/75    — segundos até recuperar 50/75% do caminho de volta
+    valores  baseline     — estado antes da transição
+             plateau      — valor ESTABILIZADO no fim do esforço, medido do
+                            FIM PARA TRÁS numa janela adaptativa
+             extremo      — valor mais extremo atingido numa janela que se
+                            estende para dentro do descanso (capta o pico
+                            real de métricas com inércia, como respiração
+                            e DFA1, cujo extremo cai depois do fim do lap)
+             t_extremo    — quando ocorreu esse extremo (s após t_work_ini);
+                            se > duração do WORK, o pico caiu no descanso
+             atingiu_plateau — True só se lag_90 existe E é menor que a
+                            duração do esforço. Se False, a métrica nunca
+                            estabilizou e o plateau NÃO é de confiança.
     """
-    baseline = _media_janela(tempos, valores, max(0, t_work_ini - JANELA_BASELINE_S), t_work_ini)
-    janela_plateau = max(3.0, (t_work_fim - t_work_ini) * FRAC_PLATEAU)
+    dur_work = t_work_fim - t_work_ini
+    baseline = _media_janela(tempos, valores,
+                             max(0, t_work_ini - JANELA_BASELINE_S), t_work_ini)
+
+    # Janela de plateau: do FIM para trás. Adaptativa — proporcional à
+    # duração, mas nunca menor que JANELA_PLATEAU_MIN_S nem maior que
+    # JANELA_PLATEAU_MAX_S (em intervalos muito longos não faz sentido
+    # usar 25% de 20 minutos).
+    janela_plateau = dur_work * FRAC_PLATEAU
+    janela_plateau = max(JANELA_PLATEAU_MIN_S, min(JANELA_PLATEAU_MAX_S, janela_plateau))
+    janela_plateau = min(janela_plateau, dur_work)
     plateau = _media_janela(tempos, valores, t_work_fim - janela_plateau, t_work_fim)
 
     lags = {}
@@ -327,15 +363,45 @@ def _lags_metrica(tempos, valores, t_work_ini, t_work_fim, t_rec_fim=None):
         lags[f'lag_{nome}'] = _tempo_ate_percentual(
             tempos, valores, t_work_ini, t_work_fim, baseline, plateau, pct)
 
+    # Extremo em janela alargada: entra JANELA_EXTREMO_APOS_S dentro do
+    # descanso. Direcção determinada pelos DADOS (plateau vs baseline),
+    # não por suposições sobre a métrica.
+    extremo = None
+    t_extremo = None
+    if baseline is not None and plateau is not None:
+        t_fim_janela = t_work_fim + JANELA_EXTREMO_APOS_S
+        if t_rec_fim is not None:
+            t_fim_janela = min(t_fim_janela, t_rec_fim)
+        mask = (tempos >= t_work_ini) & (tempos <= t_fim_janela)
+        vs = valores[mask]
+        ts = tempos[mask]
+        finitos = np.isfinite(vs)
+        if finitos.any():
+            vs, ts = vs[finitos], ts[finitos]
+            desce = plateau < baseline
+            i = int(np.argmin(vs)) if desce else int(np.argmax(vs))
+            extremo = float(vs[i])
+            t_extremo = float(ts[i] - t_work_ini)
+
     rec = {'rec_50': None, 'rec_75': None}
     if t_rec_fim is not None and baseline is not None and plateau is not None:
-        # recovery: parte de "plateau" (extremo atingido no WORK) e mede o
-        # regresso em direcção à baseline original
+        # recovery: parte do estado atingido no esforço e mede o regresso
+        # em direcção à baseline original
         for pct, nome in [(0.5, '50'), (0.75, '75')]:
             rec[f'rec_{nome}'] = _tempo_ate_percentual(
                 tempos, valores, t_work_fim, t_rec_fim, plateau, baseline, pct)
 
-    return lags, rec, baseline is not None and plateau is not None
+    lag90 = lags.get('lag_90')
+    atingiu_plateau = (lag90 is not None) and (lag90 < dur_work)
+
+    vals = {
+        'baseline': baseline,
+        'plateau': plateau,
+        'extremo': extremo,
+        't_extremo': t_extremo,
+        'atingiu_plateau': atingiu_plateau,
+    }
+    return lags, rec, vals, (baseline is not None and plateau is not None)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -481,13 +547,16 @@ def processar_atividade(activity, conn):
 
         def _preencher(prefixo, tem, t_arr, v_arr):
             nonlocal qualidade_ok
+            campos_none = ([f'lag_{prefixo}_{s}' for s in ('50', '75', '90')] +
+                           [f'rec_{prefixo}_50', f'rec_{prefixo}_75',
+                            f'{prefixo}_plateau_work', f'{prefixo}_baseline',
+                            f'{prefixo}_extremo', f'{prefixo}_t_extremo'])
             if not tem or t_arr is None or not len(t_arr):
-                for suf in ('50', '75', '90'):
-                    linha[f'lag_{prefixo}_{suf}'] = None
-                linha[f'rec_{prefixo}_50'] = None
-                linha[f'rec_{prefixo}_75'] = None
+                for c in campos_none:
+                    linha[c] = None
+                linha[f'{prefixo}_atingiu_plateau'] = 0
                 return
-            lags, recv, ok = _lags_metrica(t_arr, v_arr, t_ini, t_fim, t_rec_fim)
+            lags, recv, vals, ok = _lags_metrica(t_arr, v_arr, t_ini, t_fim, t_rec_fim)
             if ok:
                 qualidade_ok = True
             linha[f'lag_{prefixo}_50'] = lags.get('lag_50')
@@ -495,6 +564,12 @@ def processar_atividade(activity, conn):
             linha[f'lag_{prefixo}_90'] = lags.get('lag_90')
             linha[f'rec_{prefixo}_50'] = recv.get('rec_50')
             linha[f'rec_{prefixo}_75'] = recv.get('rec_75')
+            # valores medidos (não vindos da média do lap da API)
+            linha[f'{prefixo}_plateau_work'] = vals.get('plateau')
+            linha[f'{prefixo}_baseline'] = vals.get('baseline')
+            linha[f'{prefixo}_extremo'] = vals.get('extremo')
+            linha[f'{prefixo}_t_extremo'] = vals.get('t_extremo')
+            linha[f'{prefixo}_atingiu_plateau'] = int(bool(vals.get('atingiu_plateau')))
 
         _preencher('hr', tem_hr, t_hr, v_hr)
         _preencher('smo2', tem_smo2, t_smo2, v_smo2)

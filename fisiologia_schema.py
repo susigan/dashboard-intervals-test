@@ -81,9 +81,45 @@ CREATE TABLE IF NOT EXISTS fisiologia_intervalos (
     rec_dfa1_50     REAL,
     rec_dfa1_75     REAL,
 
-    -- ── VALOR/PATAMAR: quanto vale cada métrica no esforço (WORK) e em
-    --    repouso (REC) — direto da API por intervalo, sem processar
-    --    streams. É isto que dá a curva watts -> métrica esperada.
+    -- ── VALOR MEDIDO NO STREAM (preferir estes aos *_medio_* da API) ──
+    --  *_plateau_work   valor ESTABILIZADO no fim do esforço, medido do fim
+    --                   para trás. Não contaminado pelo transitório.
+    --  *_baseline       estado imediatamente antes da transição de potência
+    --  *_extremo        valor mais extremo numa janela que entra 30s dentro
+    --                   do descanso (capta picos com inércia: resp., DFA1)
+    --  *_t_extremo      quando ocorreu (s após início do esforço). Se for
+    --                   maior que dur_work_s, o pico caiu já no descanso.
+    --  *_atingiu_plateau 1 só se lag_90 < duração do esforço. Se 0, a métrica
+    --                   NUNCA estabilizou -> plateau não é de confiança.
+    hr_plateau_work   REAL,
+    hr_baseline       REAL,
+    hr_extremo        REAL,
+    hr_t_extremo      REAL,
+    hr_atingiu_plateau INTEGER DEFAULT 0,
+    smo2_plateau_work REAL,
+    smo2_baseline     REAL,
+    smo2_extremo      REAL,
+    smo2_t_extremo    REAL,
+    smo2_atingiu_plateau INTEGER DEFAULT 0,
+    thb_plateau_work  REAL,
+    thb_baseline      REAL,
+    thb_extremo       REAL,
+    thb_t_extremo     REAL,
+    thb_atingiu_plateau INTEGER DEFAULT 0,
+    resp_plateau_work REAL,
+    resp_baseline     REAL,
+    resp_extremo      REAL,
+    resp_t_extremo    REAL,
+    resp_atingiu_plateau INTEGER DEFAULT 0,
+    dfa1_plateau_work REAL,
+    dfa1_baseline     REAL,
+    dfa1_extremo      REAL,
+    dfa1_t_extremo    REAL,
+    dfa1_atingiu_plateau INTEGER DEFAULT 0,
+
+    -- ── VALOR/PATAMAR vindo da API (média do lap INTEIRO) ──────────────
+    --  MANTIDOS por compatibilidade e comparação, mas ENVIESADOS: incluem
+    --  todo o período transitório. Ver análise do viés de lag.
     hr_medio_work   REAL,
     hr_medio_rec    REAL,
     smo2_medio_work REAL,
@@ -151,12 +187,23 @@ COLUNAS_MIGRACAO = {
     'dfa1_medio_rec':  'REAL',
     'tem_dfa1':        'INTEGER DEFAULT 0',
     'tem_dfa1_stream': 'INTEGER DEFAULT 0',
+}
+
+for _p in ('hr', 'smo2', 'thb', 'resp', 'dfa1'):
+    COLUNAS_MIGRACAO[f'{_p}_plateau_work'] = 'REAL'
+    COLUNAS_MIGRACAO[f'{_p}_baseline'] = 'REAL'
+    COLUNAS_MIGRACAO[f'{_p}_extremo'] = 'REAL'
+    COLUNAS_MIGRACAO[f'{_p}_t_extremo'] = 'REAL'
+    COLUNAS_MIGRACAO[f'{_p}_atingiu_plateau'] = 'INTEGER DEFAULT 0'
+
+_RESTO_MIGRACAO = {
     'lag_dfa1_50':     'REAL',
     'lag_dfa1_75':     'REAL',
     'lag_dfa1_90':     'REAL',
     'rec_dfa1_50':     'REAL',
     'rec_dfa1_75':     'REAL',
 }
+COLUNAS_MIGRACAO.update(_RESTO_MIGRACAO)
 
 
 def _colunas_existentes(conn, tabela):

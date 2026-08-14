@@ -569,9 +569,10 @@ def processar_lote(n=LOTE_PADRAO, retornar_resumo=False):
                         concluido = 1, ultima_execucao = ? WHERE id = 1""",
                     (datetime.now().isoformat(timespec='seconds'),))
         conn.commit()
-        ddf.upload()
+        upload_ok, upload_detalhe = ddf.upload()
         resumo = {'status': 'concluido',
-                 'mensagem': 'Nada para processar — historico completo ate a data de corte.'}
+                 'mensagem': 'Nada para processar — historico completo ate a data de corte.',
+                 'upload_drive_ok': upload_ok, 'upload_drive_detalhe': upload_detalhe}
         if retornar_resumo:
             return resumo
         print(resumo['mensagem'])
@@ -613,19 +614,27 @@ def processar_lote(n=LOTE_PADRAO, retornar_resumo=False):
                  str(ultima.get('id')), str(ultima.get('start_date_local', ''))[:10],
                  datetime.now().isoformat(timespec='seconds')))
     conn.commit()
-    ddf.upload()
+    upload_ok, upload_detalhe = ddf.upload()
 
     resumo = {
         'status': 'lote_concluido',
         'processadas': processadas, 'puladas': puladas, 'erros': erros,
         'total_no_lote': len(lote),
         'detalhes': detalhes,
+        'upload_drive_ok': upload_ok,
+        'upload_drive_detalhe': upload_detalhe,
     }
+    if not upload_ok:
+        resumo['aviso'] = (
+            'ATENÇÃO: os dados ficaram só no disco local do container (efémero). '
+            'Se o container reiniciar antes do próximo upload bem sucedido, '
+            'estes intervalos gravados agora perdem-se. Ver upload_drive_detalhe.')
     if retornar_resumo:
         return resumo
 
     print(f"\nLote concluido: {processadas} processadas, {puladas} puladas, "
-          f"{erros} erros. {len(lote)} atividades no lote.")
+          f"{erros} erros. {len(lote)} atividades no lote. "
+          f"Upload Drive: {'OK' if upload_ok else 'FALHOU - ' + str(upload_detalhe)}")
 
 
 def _amostra_bruta(bruto, n=3):

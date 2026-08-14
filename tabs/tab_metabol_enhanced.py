@@ -1,26 +1,14 @@
-"""tab_metabol_enhanced.py — Extensões para tab_metabol com DFA-α1 artefatos + pace/watts dual-axis.
-
-ADICIONA AO tab_metabol EXISTENTE:
-1. Análise de DFA-α1 com correção de artefatos
-2. Conversão watts ↔ pace para Row/Ski
-3. Gráficos dual-axis (eixo Y1=valor, eixo Y2=pace para Row/Ski)
-4. Validação de intervalos por qualidade de sinal
-
-COMO USAR:
-Copiar este arquivo para o mesmo diretório de tab_metabol.py
-depois importar as funções novas nos endpoints HTTP.
-"""
+"""tab_metabol_enhanced.py — Extensões metabol com DFA-α1, pace e gráficos dual-axis."""
 
 import numpy as np
 import sqlite3
+import plotly.graph_objects as go
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
-# Importar os módulos novos (estão em utils/)
 from utils.dfa_artifacts_analyzer import DFAArtifactAnalyzer
-from utils.pace_watts_converter import PaceWattsConverter, PaceWattsValidator
+from utils.pace_watts_converter import PaceWattsConverter
 
-# Importar drive_db_fisiologia da raiz
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,95 +22,27 @@ def _conn():
 
 
 class MetabolicProfileEnhanced:
-    """Perfil metabólico com DFA-α1 artefatos e conversão pace."""
+    """Perfil metabólico com DFA-α1, pace e gráficos dual Y-axis."""
     
     def __init__(self, modalidade: str = 'Row'):
         self.modalidade = modalidade
         self.dfa_analyzer = DFAArtifactAnalyzer(modalidade=modalidade)
         self.pace_converter = PaceWattsConverter()
-        self._calibrar_dfa()
-    
-    def _calibrar_dfa(self):
-        """Calibrar DFA-α1 analyzer com histórico pessoal."""
-        conn = _conn()
-        historico = conn.execute("""
-            SELECT dfa1_plateau_work, modalidade, COALESCE(artifact_percent, 2.5) as artifact_percent
-            FROM fisiologia_intervalos
-            WHERE modalidade = ? AND valido = 1 AND dfa1_plateau_work IS NOT NULL
-            LIMIT 365
-        """, (self.modalidade,)).fetchall()
-        
-        if len(historico) >= 10:
-            dfa1_list = [h['dfa1_plateau_work'] for h in historico]
-            mod_list = [h['modalidade'] for h in historico]
-            art_list = [h['artifact_percent'] for h in historico]
-            
-            self.dfa_analyzer.calibrar_com_historico(dfa1_list, mod_list, art_list)
-    
-    def adicionar_campos_pace(self, perfil: Dict) -> Dict:
-        """Adicionar coluna pace aos bins de watts (para Row/Ski).
-        
-        Para cada bin de watts, calcula o pace correspondente e adiciona
-        como coluna PACE_MEDIO no perfil.
-        """
-        if self.modalidade not in ['Row', 'Ski']:
-            return perfil  # sem pace para Bike/Run
-        
-        bins = perfil.get('bins', [])
-        for bin_dict in bins:
-            watts_medio = bin_dict.get('watts_medio')
-            if watts_medio is not None and watts_medio > 0:
-                pace_str = self.pace_converter.watts_para_pace_string(watts_medio, self.modalidade)
-                bin_dict['pace_medio'] = pace_str
-                
-                # Também adicionar em segundos para cálculos
-                parts = pace_str.split(':')
-                pace_seg = int(parts[0]) * 60 + int(parts[1])
-                bin_dict['pace_medio_segundos'] = pace_seg
-        
-        return perfil
-    
-    def adicionar_validacao_dfa(self, intervalo_dict: Dict) -> Dict:
-        """Validar DFA-α1 de um intervalo e adicionar flags."""
-        dfa1 = intervalo_dict.get('dfa1_plateau_work')
-        if dfa1 is None:
-            return intervalo_dict
-        
-        resultado = self.dfa_analyzer.analisar_intervalo(
-            dfa1=dfa1,
-            hr_medio=intervalo_dict.get('hr_plateau_work', 100),
-            hr_max=intervalo_dict.get('hr_extremo', 110),
-            artifact_percent=intervalo_dict.get('artifact_percent'),
-            watts_medio=intervalo_dict.get('watts_medio')
-        )
-        
-        intervalo_dict['dfa1_validacao'] = {
-            'original': resultado.dfa1_original,
-            'normalizado': resultado.dfa1_normalizado,
-            'esta_valido': resultado.esta_valido,
-            'confidence': resultado.confidence,
-            'motivo': resultado.motivo,
-            'flags': resultado.flags,
-        }
-        
-        return intervalo_dict
     
     def gerar_perfil_com_pace(self, 
                              modalidade: str,
                              min_n_total: int = 15,
                              n_faixas: int = 10) -> Dict:
-        """Gerar perfil metabólico com coluna pace para Row/Ski."""
+        """Gerar perfil metabólico com coluna pace (Row/Ski)."""
         conn = _conn()
         
-        # Buscar dados brutos
         linhas = conn.execute("""
             SELECT watts_medio, data, activity_id,
                    hr_plateau_work, smo2_plateau_work, thb_plateau_work,
                    resp_plateau_work, dfa1_plateau_work,
                    hr_extremo, smo2_extremo, thb_extremo, resp_extremo, dfa1_extremo,
                    lag_hr_50, lag_smo2_50, lag_thb_50, lag_resp_50, lag_dfa1_50,
-                   rec_hr_50, rec_smo2_50, rec_thb_50, rec_resp_50, rec_dfa1_50,
-                   artifact_percent
+                   rec_hr_50, rec_smo2_50, rec_thb_50, rec_resp_50, rec_dfa1_50
             FROM fisiologia_intervalos
             WHERE modalidade = ? AND valido = 1 AND watts_medio IS NOT NULL
             ORDER BY watts_medio
@@ -131,12 +51,10 @@ class MetabolicProfileEnhanced:
         if len(linhas) < min_n_total:
             return {'status': 'dados_insuficientes', 'n': len(linhas)}
         
-        # Calcular range de watts
         watts_array = np.array([l['watts_medio'] for l in linhas])
         watts_min, watts_max = np.min(watts_array), np.max(watts_array)
         bin_width = max(15, min(60, (watts_max - watts_min) / n_faixas))
         
-        # Criar bins e agregar
         bins_saida = []
         for bin_start in np.arange(watts_min, watts_max + bin_width, bin_width):
             bin_end = bin_start + bin_width
@@ -144,18 +62,16 @@ class MetabolicProfileEnhanced:
             linhas_bin = [l for l in linhas 
                          if bin_start <= l['watts_medio'] < bin_end]
             
-            if len(linhas_bin) < 3:  # MIN_POR_FAIXA
+            if len(linhas_bin) < 3:
                 continue
             
-            # Aggregar cada métrica
             bin_resultado = {
-                'watts_min': round(bin_start, 1),
-                'watts_max': round(bin_end, 1),
-                'watts_medio': round(np.mean([l['watts_medio'] for l in linhas_bin]), 1),
+                'watts_min': round(float(bin_start), 1),
+                'watts_max': round(float(bin_end), 1),
+                'watts_medio': round(float(np.mean([l['watts_medio'] for l in linhas_bin])), 1),
                 'n': len(linhas_bin),
             }
             
-            # Adicionar quartis para cada métrica
             metricas = ['hr_plateau_work', 'smo2_plateau_work', 'thb_plateau_work',
                        'resp_plateau_work', 'dfa1_plateau_work',
                        'lag_hr_50', 'rec_hr_50']
@@ -165,13 +81,14 @@ class MetabolicProfileEnhanced:
                 if len(valores) >= 3:
                     vs = np.array(valores, dtype=float)
                     vs = vs[np.isfinite(vs)]
-                    bin_resultado[metrica] = {
-                        'p50': round(float(np.percentile(vs, 50)), 2),
-                        'p25': round(float(np.percentile(vs, 25)), 2),
-                        'p75': round(float(np.percentile(vs, 75)), 2),
-                    }
+                    if len(vs) > 0:
+                        bin_resultado[metrica] = {
+                            'p50': round(float(np.percentile(vs, 50)), 2),
+                            'p25': round(float(np.percentile(vs, 25)), 2),
+                            'p75': round(float(np.percentile(vs, 75)), 2),
+                        }
             
-            # Adicionar pace se Row/Ski
+            # Adicionar pace para Row/Ski
             if modalidade in ['Row', 'Ski']:
                 pace_str = self.pace_converter.watts_para_pace_string(
                     bin_resultado['watts_medio'], modalidade
@@ -186,6 +103,84 @@ class MetabolicProfileEnhanced:
             'n_bins': len(bins_saida),
             'bins': bins_saida,
         }
+    
+    def grafico_perfil_dual_axis(self, perfil: Dict) -> go.Figure:
+        """Gráfico com dual Y-axis: watts (esquerda) e pace (direita) para Row/Ski."""
+        bins = perfil.get('bins', [])
+        if not bins:
+            return go.Figure().add_annotation(text='Sem dados')
+        
+        watts_medio = [b['watts_medio'] for b in bins]
+        hr_p50 = []
+        pace_labels = []
+        
+        for b in bins:
+            if 'hr_plateau_work' in b:
+                hr_p50.append(b['hr_plateau_work'].get('p50'))
+            if 'pace_medio' in b:
+                pace_labels.append(b['pace_medio'])
+        
+        fig = go.Figure()
+        
+        # Y1 (esquerda): HR em função de watts
+        if hr_p50 and len(hr_p50) == len(watts_medio):
+            fig.add_trace(go.Scatter(
+                x=watts_medio,
+                y=hr_p50,
+                name='HR (bpm)',
+                mode='lines+markers',
+                line=dict(color='blue', width=2),
+                yaxis='y1',
+            ))
+        
+        # Se Row/Ski, Y2 (direita): Pace
+        if perfil.get('modalidade') in ['Row', 'Ski'] and pace_labels:
+            # Converter pace strings para segundos para plotar
+            pace_seg = []
+            for pace_str in pace_labels:
+                try:
+                    m, s = map(int, pace_str.split(':'))
+                    pace_seg.append(m * 60 + s)
+                except:
+                    pace_seg.append(0)
+            
+            if len(pace_seg) == len(watts_medio):
+                fig.add_trace(go.Scatter(
+                    x=watts_medio,
+                    y=pace_seg,
+                    name='Pace (seg/500m)',
+                    mode='lines+markers',
+                    line=dict(color='red', width=2, dash='dash'),
+                    yaxis='y2',
+                ))
+        
+        # Layout com dual Y-axis
+        fig.update_layout(
+            title=f'Perfil Metabólico — {perfil.get("modalidade", "?")} (Dual Axis)',
+            xaxis=dict(
+                title='Potência (watts)',
+                gridcolor='lightgray',
+            ),
+            yaxis=dict(
+                title='HR (bpm)',
+                titlefont=dict(color='blue'),
+                tickfont=dict(color='blue'),
+                side='left',
+            ),
+            yaxis2=dict(
+                title='Pace (seg/500m)' if perfil.get('modalidade') in ['Row', 'Ski'] else None,
+                titlefont=dict(color='red'),
+                tickfont=dict(color='red'),
+                overlaying='y',
+                side='right',
+            ),
+            hovermode='x unified',
+            legend=dict(x=0.02, y=0.98),
+            height=500,
+            template='plotly_white',
+        )
+        
+        return fig
 
 
 def evolucao_temporal_com_pace(modalidade: str,
@@ -193,7 +188,7 @@ def evolucao_temporal_com_pace(modalidade: str,
                               watts_min: Optional[float] = None,
                               watts_max: Optional[float] = None,
                               agregacao: str = 'mes') -> Dict:
-    """Evolução temporal de uma métrica, com pace se Row/Ski."""
+    """Evolução temporal com pace dual-axis para Row/Ski."""
     conn = _conn()
     
     cond = ["modalidade = ?", "valido = 1", f"{campo} IS NOT NULL"]
@@ -216,13 +211,15 @@ def evolucao_temporal_com_pace(modalidade: str,
     if not linhas:
         return {'status': 'dados_insuficientes', 'n_disponivel': 0}
     
-    # Agrupar por período
     def _periodo(data_str):
         if agregacao == 'semana':
-            dt = datetime.strptime(data_str, '%Y-%m-%d')
-            ano, semana, _ = dt.isocalendar()
-            return f'{ano}-W{semana:02d}'
-        return data_str[:7]  # YYYY-MM
+            try:
+                dt = datetime.strptime(data_str, '%Y-%m-%d')
+                ano, semana, _ = dt.isocalendar()
+                return f'{ano}-W{semana:02d}'
+            except:
+                return data_str[:7]
+        return data_str[:7]
     
     grupos = {}
     for l in linhas:
@@ -237,6 +234,8 @@ def evolucao_temporal_com_pace(modalidade: str,
     
     for periodo in sorted(grupos.keys()):
         valores = [g['valor'] for g in grupos[periodo]]
+        watts_vals = [g['watts_medio'] for g in grupos[periodo]]
+        
         q = {
             'periodo': periodo,
             'n': len(valores),
@@ -245,7 +244,7 @@ def evolucao_temporal_com_pace(modalidade: str,
             'p75': round(float(np.percentile(valores, 75)), 2),
         }
         
-        # Se campo é watts e modalidade é Row/Ski, calcular pace também
+        # Adicionar pace se for modalidade Row/Ski e campo for watts
         if 'watts' in campo.lower() and modalidade in ['Row', 'Ski']:
             pace_str = converter.watts_para_pace_string(q['p50'], modalidade)
             if pace_str:
@@ -264,28 +263,100 @@ def evolucao_temporal_com_pace(modalidade: str,
     }
 
 
+def grafico_evolucao_dual_axis(resultado: Dict) -> go.Figure:
+    """Gráfico evolução temporal com dual Y-axis (watts + pace)."""
+    evolucao = resultado.get('evolucao', [])
+    if not evolucao:
+        return go.Figure().add_annotation(text='Sem dados')
+    
+    periodos = [e['periodo'] for e in evolucao]
+    p50_vals = [e['p50'] for e in evolucao]
+    
+    fig = go.Figure()
+    
+    # Y1: Métrica principal
+    fig.add_trace(go.Scatter(
+        x=periodos,
+        y=p50_vals,
+        name=resultado.get('campo', 'Valor'),
+        mode='lines+markers',
+        line=dict(color='blue', width=2),
+        yaxis='y1',
+    ))
+    
+    # Y2: Pace se Row/Ski
+    if resultado.get('modalidade') in ['Row', 'Ski']:
+        pace_seg = []
+        for e in evolucao:
+            if 'pace_p50' in e:
+                try:
+                    m, s = map(int, e['pace_p50'].split(':'))
+                    pace_seg.append(m * 60 + s)
+                except:
+                    pace_seg.append(0)
+            else:
+                pace_seg.append(0)
+        
+        if any(pace_seg):
+            fig.add_trace(go.Scatter(
+                x=periodos,
+                y=pace_seg,
+                name='Pace (seg/500m)',
+                mode='lines+markers',
+                line=dict(color='red', width=2, dash='dash'),
+                yaxis='y2',
+            ))
+    
+    fig.update_layout(
+        title=f'Evolução {resultado.get("campo")} — {resultado.get("modalidade")}',
+        xaxis=dict(title='Período'),
+        yaxis=dict(
+            title=resultado.get('campo', 'Valor'),
+            titlefont=dict(color='blue'),
+            tickfont=dict(color='blue'),
+        ),
+        yaxis2=dict(
+            title='Pace (seg/500m)' if resultado.get('modalidade') in ['Row', 'Ski'] else None,
+            titlefont=dict(color='red'),
+            tickfont=dict(color='red'),
+            overlaying='y',
+            side='right',
+        ),
+        hovermode='x unified',
+        legend=dict(x=0.02, y=0.98),
+        height=500,
+        template='plotly_white',
+    )
+    
+    return fig
+
+
 def validacao_lote_dfa(modalidade: str) -> Dict:
-    """Validar todos os DFA-α1 de uma modalidade e retornar resumo."""
+    """Validar DFA-α1 de uma modalidade."""
     analyzer = DFAArtifactAnalyzer(modalidade=modalidade)
-    analyzer._calibrar_dfa()  # carregar baseline
     
     conn = _conn()
     intervalos = conn.execute("""
-        SELECT dfa1_plateau_work, hr_plateau_work, hr_extremo, watts_medio,
-               artifact_percent
+        SELECT dfa1_plateau_work, hr_plateau_work, hr_extremo, watts_medio
         FROM fisiologia_intervalos
         WHERE modalidade = ? AND valido = 1 AND dfa1_plateau_work IS NOT NULL
         LIMIT 500
     """, (modalidade,)).fetchall()
     
+    if not intervalos:
+        return {
+            'modalidade': modalidade,
+            'resumo': {'n_total': 0},
+        }
+    
     resultados = []
     for iv in intervalos:
         resultado = analyzer.analisar_intervalo(
-            dfa1=iv['dfa1_plateau_work'],
-            hr_medio=iv['hr_plateau_work'] or 100,
-            hr_max=iv['hr_extremo'] or 110,
-            artifact_percent=iv['artifact_percent'],
-            watts_medio=iv['watts_medio']
+            dfa1=float(iv['dfa1_plateau_work']) if iv['dfa1_plateau_work'] else 0.0,
+            hr_medio=float(iv['hr_plateau_work']) if iv['hr_plateau_work'] else 100.0,
+            hr_max=float(iv['hr_extremo']) if iv['hr_extremo'] else 110.0,
+            artifact_percent=None,
+            watts_medio=float(iv['watts_medio']) if iv['watts_medio'] else 0.0
         )
         resultados.append(resultado)
     
@@ -297,39 +368,10 @@ def validacao_lote_dfa(modalidade: str) -> Dict:
         'detalhes_primeiros_10': [
             {
                 'dfa1': r.dfa1_original,
-                'valid': r.esta_valido,
+                'valido': r.esta_valido,
                 'confidence': r.confidence,
                 'motivo': r.motivo,
             }
             for r in resultados[:10]
         ]
     }
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# EXEMPLO: Como integrar ao app.py
-# ════════════════════════════════════════════════════════════════════════════
-
-"""
-Em app.py, adicionar estas rotas:
-
-@app.route('/api/fisiologia/perfil_enhanced/<modalidade>')
-def api_perfil_enhanced(modalidade):
-    enh = MetabolicProfileEnhanced(modalidade)
-    perfil = enh.gerar_perfil_com_pace(modalidade)
-    return jsonify(perfil)
-
-@app.route('/api/fisiologia/evolucao_com_pace')
-def api_evolucao_com_pace():
-    modalidade = request.args.get('modalidade', 'Row')
-    campo = request.args.get('campo', 'watts_medio')
-    watts_min = request.args.get('watts_min', type=float)
-    watts_max = request.args.get('watts_max', type=float)
-    resultado = evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max)
-    return jsonify(resultado)
-
-@app.route('/api/fisiologia/validacao_dfa/<modalidade>')
-def api_validacao_dfa(modalidade):
-    resultado = validacao_lote_dfa(modalidade)
-    return jsonify(resultado)
-"""

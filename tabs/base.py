@@ -102,6 +102,7 @@ TABS = [
     ('volume',     '/',            'Volume'),
     ('pmc',        '/pmc',         'PMC'),
     ('corporal',   '/corporal',    'Corporal'),
+    ('metabol',    '/metabol',     'Metabolismo'),
     ('recordes',   '/recordes',    'Recordes'),
     ('atividades', '/atividades',  'Atividades'),
 ]

@@ -748,7 +748,7 @@ def api_evolucao_com_pace():
         watts_min = request.args.get('watts_min', type=float)
         watts_max = request.args.get('watts_max', type=float)
         agregacao = request.args.get('agregacao', 'mes')
-        resultado = tme.evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max, agregacao)
+        resultado = tme.evolucao_temporal(modalidade, campo, watts_min, watts_max, agregacao)
         return jsonify(resultado)
     except Exception as e:
         import traceback

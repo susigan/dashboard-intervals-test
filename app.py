@@ -755,6 +755,48 @@ def api_db_streams():
     return _seguro(db.streams_stats)
 
 
+@app.route('/fisiologia/perfil_grafico_enhanced/<modalidade>')
+def page_perfil_grafico_enhanced(modalidade):
+    """Página HTML com gráfico dual-axis (watts + pace) do perfil."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 10))
+        enh = tme.MetabolicProfileEnhanced(modalidade)
+        perfil = enh.gerar_perfil_com_pace(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        if perfil.get('status') != 'ok':
+            return f"<h1>Perfil — {modalidade}</h1><p>Dados insuficientes</p>"
+        fig = enh.grafico_perfil_dual_axis(perfil)
+        html = fig.to_html(include_plotlyjs='cdn', div_id=f'perfil-{modalidade}',
+                          config={'responsive': True, 'displayModeBar': True})
+        return f"""<html><head><title>Perfil {modalidade}</title><meta charset="utf-8"></head><body>
+                <h1>Perfil Metabólico — {modalidade} (Dual Axis: Watts + Pace)</h1>{html}
+                <p><a href="/">← Voltar</a></p></body></html>"""
+    except Exception as e:
+        import traceback
+        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
+
+
+@app.route('/fisiologia/evolucao_grafico/<modalidade>/<campo>')
+def page_evolucao_grafico(modalidade, campo):
+    """Página HTML com gráfico evolução temporal (watts + pace)."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        watts_min = request.args.get('watts_min', type=float)
+        watts_max = request.args.get('watts_max', type=float)
+        agregacao = request.args.get('agregacao', 'mes')
+        resultado = tme.evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max, agregacao)
+        if resultado.get('status') != 'ok':
+            return f"<h1>Evolução — {modalidade}</h1><p>Dados insuficientes</p>"
+        fig = tme.grafico_evolucao_dual_axis(resultado)
+        html = fig.to_html(include_plotlyjs='cdn', div_id=f'evolucao-{modalidade}',
+                          config={'responsive': True, 'displayModeBar': True})
+        return f"""<html><head><title>Evolução {modalidade}</title><meta charset="utf-8"></head><body>
+                <h1>Evolução {campo} — {modalidade} (Dual Axis: Watts + Pace)</h1>{html}
+                <p><a href="/">← Voltar</a></p></body></html>"""
+    except Exception as e:
+        import traceback
+        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
 
 
 # ── Novas rotas: DFA-α1 + Pace/Watts ──────────────────────────────────────

@@ -706,15 +706,6 @@ def api_db_streams():
     """Cobertura dos streams guardados."""
     return _seguro(db.streams_stats)
 
-""
-    except Exception as e:
-        import traceback
-        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
-
-""
-    except Exception as e:
-        import traceback
-        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
 
 # ── Novas rotas: DFA-α1 + Pace/Watts ──────────────────────────────────────
 

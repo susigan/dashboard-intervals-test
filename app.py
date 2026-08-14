@@ -178,6 +178,23 @@ def api_fisiologia_status():
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/fisiologia/diagnostico')
+def api_fisiologia_diagnostico():
+    """Estado da persistência no Google Drive: credenciais, pasta, se o
+    ficheiro existe lá, quantas linhas tem o .db local agora mesmo.
+
+    Usa isto quando /api/fisiologia/processar disser "ok" mas a tab
+    Metabolismo continuar vazia — revela se o upload para o Drive está
+    mesmo a funcionar ou a falhar silenciosamente.
+    """
+    try:
+        import drive_db_fisiologia as ddf
+        return jsonify({'status': 'ok', 'diagnostico': ddf.diagnostico()})
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/fisiologia/perfil')
 def api_fisiologia_perfil():
     """Curva watts -> métrica esperada (HR/SmO2/tHb/respiração/DFA1),

@@ -566,7 +566,7 @@ const LABEL_CAMPO_EVOL = {
 function drawPerfil(){
  const canvasId='chPerfil';
  if(!PERFIL||PERFIL.status!=='ok'){
-  const o0=ctx(canvasId,180); if(o0) noData(o0.g,o0.W,o0.H,(PERFIL&&PERFIL.mensagem)||'Sem dados');
+  const o0=ctx(canvasId,240); if(o0) noData(o0.g,o0.W,o0.H,(PERFIL&&PERFIL.mensagem)||'Sem dados');
   return;
  }
  const faixas=PERFIL.faixas;
@@ -581,14 +581,12 @@ function drawPerfil(){
   sp.onclick=function(){ alternar(sp.dataset.c, sp.dataset.k); drawPerfil(); };});
 
  const vis=disponiveis.filter(c=>ligado(canvasId,c));
- const HP=110;                                  // altura de cada painel
- const alturaTotal=Math.max(180, vis.length*HP+42);
- const o=ctx(canvasId,alturaTotal); if(!o)return;
+ const o=ctx(canvasId,240); if(!o)return;
  const g=o.g,W=o.W,H=o.H;
  if(!faixas.length){noData(g,W,H,'Sem faixas com dados suficientes');return;}
  if(!vis.length){noData(g,W,H,'Nenhuma metrica seleccionada');return;}
 
- const PL=62,PR=16,PB=30,w=W-PL-PR;
+ const PL=62,PR=120,PB=30,PT=20,w=W-PL-PR,h=H-PT-PB;
  const xs=faixas.map(f=>f.watts_centro);
  const xmin=Math.min.apply(null,xs), xmax=Math.max.apply(null,xs);
  const X=v=> xmax>xmin ? PL+w*(v-xmin)/(xmax-xmin) : PL+w/2;
@@ -597,88 +595,83 @@ function drawPerfil(){
   return 'rgba('+parseInt(h.substring(0,2),16)+','+parseInt(h.substring(2,4),16)+','+
    parseInt(h.substring(4,6),16)+','+a+')';}
 
- const painel={};
- vis.forEach(function(c,i){
-  const PT=8+i*HP, hh=HP-30;
+ // Calcular escalas para cada métrica
+ const escalas={};
+ vis.forEach(function(c){
   const pts=faixas.filter(f=>f[c]);
   let a=Infinity,b=-Infinity;
   pts.forEach(function(f){const q=f[c];
    if(q.p10<a)a=q.p10; if(q.p90>b)b=q.p90;});
   if(!isFinite(a)){a=0;b=1;}
   const marg=(b-a)*0.15||1; a-=marg; b+=marg;
-  const Y=v=>PT+hh-(v-a)/(b-a)*hh;
-  painel[c]={PT:PT,hh:hh,a:a,b:b,Y:Y,pts:pts};
+  const Y=v=>PT+h-(v-a)/(b-a)*h;
+  escalas[c]={a:a,b:b,Y:Y,pts:pts};
+ });
 
-  // grelha
-  g.strokeStyle='#21262d';g.lineWidth=1;
-  for(let k=0;k<=2;k++){const y=PT+hh*k/2;
-   g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
+ // Grelha horizontal
+ g.strokeStyle='#21262d';g.lineWidth=1;
+ for(let k=0;k<=2;k++){const y=PT+h*k/2;
+  g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
 
-  if(!pts.length)return;
-
-  // banda p10-p90 (dispersao ampla, sem depender de min/max que sao
-  // enviesados pelo numero de amostras)
-  g.fillStyle=hexRgba(CORES_METAB[c],0.10);
-  g.beginPath();
-  pts.forEach(function(f,j){const y=Y(f[c].p90);
-   if(j===0)g.moveTo(X(f.watts_centro),y); else g.lineTo(X(f.watts_centro),y);});
-  for(let j=pts.length-1;j>=0;j--)g.lineTo(X(pts[j].watts_centro),Y(pts[j][c].p10));
-  g.closePath();g.fill();
-
+ // Desenhar cada métrica
+ vis.forEach(function(c){
+  const esc=escalas[c];
+  const pts=esc.pts;
+  
   // banda p25-p75
-  g.fillStyle=hexRgba(CORES_METAB[c],0.24);
+  g.fillStyle=hexRgba(CORES_METAB[c],0.08);
   g.beginPath();
-  pts.forEach(function(f,j){const y=Y(f[c].p75);
+  pts.forEach(function(f,j){const y=esc.Y(f[c].p75);
    if(j===0)g.moveTo(X(f.watts_centro),y); else g.lineTo(X(f.watts_centro),y);});
-  for(let j=pts.length-1;j>=0;j--)g.lineTo(X(pts[j].watts_centro),Y(pts[j][c].p25));
+  for(let j=pts.length-1;j>=0;j--)g.lineTo(X(pts[j].watts_centro),esc.Y(pts[j][c].p25));
   g.closePath();g.fill();
-
-  // pico (extremo) tracejado, se disponivel
-  const campoExt=EXTREMO_DE[c];
-  const ptsExt=faixas.filter(f=>f[campoExt]);
-  if(campoExt&&ptsExt.length){
-   g.strokeStyle=hexRgba(CORES_METAB[c],0.75);g.lineWidth=1.3;
-   g.setLineDash([4,3]);g.beginPath();
-   ptsExt.forEach(function(f,j){const y=Y(f[campoExt].p50);
-    if(j===0)g.moveTo(X(f.watts_centro),y); else g.lineTo(X(f.watts_centro),y);});
-   g.stroke();g.setLineDash([]);
-  }
 
   // linha p50
   g.strokeStyle=CORES_METAB[c];g.lineWidth=2.2;g.beginPath();
-  pts.forEach(function(f,j){const y=Y(f[c].p50);
+  pts.forEach(function(f,j){const y=esc.Y(f[c].p50);
    if(j===0)g.moveTo(X(f.watts_centro),y); else g.lineTo(X(f.watts_centro),y);});
   g.stroke();
+  
+  // marcadores
   g.fillStyle=CORES_METAB[c];
-  pts.forEach(function(f){g.beginPath();g.arc(X(f.watts_centro),Y(f[c].p50),3,0,7);g.fill();});
-
-  // eixo Y do painel
-  g.font='10px sans-serif';g.fillStyle='#8b949e';g.textAlign='right';
-  for(let k=0;k<=2;k++)g.fillText((b-(b-a)*k/2).toFixed(1),PL-6,PT+hh*k/2+3);
-  // titulo do painel
-  g.fillStyle=CORES_METAB[c];g.textAlign='left';g.font='bold 10px sans-serif';
-  g.fillText(LABELS_METAB[c],PL+2,PT-1);
+  pts.forEach(function(f){g.beginPath();g.arc(X(f.watts_centro),esc.Y(f[c].p50),2.5,0,7);g.fill();});
  });
 
- // eixo X partilhado (uma vez, no fim)
+ // Eixos Y à direita (um para cada métrica)
+ g.fillStyle='#8b949e';g.font='9px sans-serif';g.textAlign='right';
+ vis.forEach(function(c){
+  const esc=escalas[c];
+  // linha de escala
+  g.strokeStyle=CORES_METAB[c];g.lineWidth=1.5;g.beginPath();
+  g.moveTo(PL+w,PT);g.lineTo(PL+w,PT+h);g.stroke();
+  // labels
+  for(let k=0;k<=2;k++){
+   const val=(esc.b-(esc.b-esc.a)*k/2).toFixed(1);
+   const y=PT+h*k/2;
+   g.fillText(val,PL+w+8,y+3);
+   g.fillStyle=hexRgba(CORES_METAB[c],0.3);g.fillText(LABELS_METAB[c],PL+w+65,y-6);
+   g.fillStyle='#8b949e';
+  }
+ });
+
+ // eixo X inferior (WATTS)
  g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='center';
  const step=Math.ceil(faixas.length/12);
  faixas.forEach(function(f,i){if(i%step!==0)return;
   g.fillText(Math.round(f.watts_centro)+'W',X(f.watts_centro),H-10);});
- // label WATTS
  g.font='bold 9px sans-serif';
  g.fillText('WATTS',PL+w/2,H-1);
- 
- // NOVO: eixo X2 em cima com PACE (para Row/Ski)
+
+ // eixo X superior (PACE para Row/Ski)
  if(faixas.some(f=>f.pace_medio)){
   g.fillStyle='#FF6B6B';g.font='bold 10px sans-serif';g.textAlign='center';
-  g.fillText('PACE (min:ss)',PL+w/2,8);  // label do eixo X2
+  g.fillText('PACE (min:ss)',PL+w/2,8);
   faixas.forEach(function(f,i){if(i%step!==0)return;
    if(f.pace_medio) g.fillText(f.pace_medio,X(f.watts_centro),12);
   });
  }
- g.textAlign='left';
 
+ // Tooltips
  registarTip(canvasId,function(mxp,myp,rw){
   const esc=rw/W,x=mxp/esc;
   if(x<PL||x>PL+w)return '';
@@ -694,12 +687,11 @@ function drawPerfil(){
    if(q.n_excluidos_sem_plateau)txt+=' · '+q.n_excluidos_sem_plateau+' excl.';
    txt+=']</span>';
    html+=linhaTip(CORES_METAB[c],LABELS_METAB[c],txt);
-   const qe=melhor[EXTREMO_DE[c]];
-   if(qe)html+=linhaTip(hexRgba(CORES_METAB[c],0.6),'&nbsp;&nbsp;↳ pico',qe.p50);
   });
   return html;
  });
 }
+
 
 // ── Gráfico de evolução temporal: 1 série, X = período ──────────────────────
 function drawEvolucao(){

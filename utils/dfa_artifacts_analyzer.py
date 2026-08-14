@@ -1,32 +1,4 @@
-"""dfa_artifacts_analyzer.py — Análise de DFA-α1 com correção de artefatos.
-
-PRINCÍPIO (muscleoxygentraining.com + Lipponen 2019 + Tarvainen 2002):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-O DFA-α1 (detrended fluctuation analysis) depende da QUALIDADE DOS 
-intervalos RR (tempo entre batidas cardíacas). Artefatos introduzem 
-erros sistemáticos:
-
-  Tipo 1: Batida perdida (RR muito longo) → α1 inflacionado (parece < 1.0)
-  Tipo 2: Batida dupla/ruído (RR muito curto) → α1 deflacionado (parece > 1.0)
-  Tipo 3: Queda de sinal (séries de RR perdidos) → indeterminado
-
-A Intervals.icu NÃO fornece streams de RR brutos, mas fornece:
-  - average_dfa_a1 (por intervalo)
-  - average_heartrate (média de batidas)
-  - artefatos/dropout percentual (flags de qualidade)
-
-ESTRATÉGIA:
-━━━━━━━
-
-1. Detectar artefatos via % dropout + inconsistência HR vs DFA-α1
-2. Normalizar usando baseline pessoal (mean + 2×SD)
-3. Classificar: VÁLIDO (art<5%), DUVIDOSO (5-10%), INVÁLIDO (>10%)
-
-REFERÊNCIAS:
-[1] Lipponen et al. (2019) - Artefact correction algorithms
-[2] Tarvainen et al. (2014) - Kubios HRV method
-"""
+"""dfa_artifacts_analyzer.py — Análise de DFA-α1 com correção de artefatos."""
 
 import numpy as np
 from typing import Tuple, Dict, List, Optional
@@ -45,6 +17,8 @@ class DFAValidityResult:
 
 
 class DFAArtifactAnalyzer:
+    """Analisador de DFA-α1 com detecção de artefatos via HR/potência."""
+    
     def __init__(self, 
                  modalidade: str = 'Row',
                  artifact_threshold_invalido: float = 10.0,
@@ -62,7 +36,7 @@ class DFAArtifactAnalyzer:
                                dfa1_historico: List[float],
                                modalidade_historico: List[str],
                                artifact_historico: List[float]) -> Dict:
-        """Calcular baseline pessoal a partir de histórico válido."""
+        """Calibrar baseline pessoal a partir de histórico válido."""
         validos = [
             dfa1 for dfa1, mod, art in zip(
                 dfa1_historico, modalidade_historico, artifact_historico
@@ -76,11 +50,10 @@ class DFAArtifactAnalyzer:
             return {
                 'status': 'amostras_insuficientes',
                 'n': len(validos),
-                'recomendacao': f'precisa de ≥10 amostras válidas, tem {len(validos)}'
             }
         
-        self._baseline_media = np.mean(validos)
-        self._baseline_sd = np.std(validos, ddof=1)
+        self._baseline_media = float(np.mean(validos))
+        self._baseline_sd = float(np.std(validos, ddof=1))
         self._n_amostras_baseline = len(validos)
         
         return {
@@ -101,13 +74,12 @@ class DFAArtifactAnalyzer:
         dfa1_norm = dfa1
         confidence = 1.0
         
-        # Estimar artifacts se não fornecido
         if artifact_percent is None:
             artifact_percent = self._estimar_artifacts_de_hr_dfa1(
                 dfa1, hr_medio, hr_max, watts_medio
             )
         
-        # Critério 1: Dropout
+        # Classificação por artefatos
         if artifact_percent > self.artifact_threshold_invalido:
             flags.append(f'dropout={artifact_percent:.1f}%')
             esta_valido = False
@@ -115,21 +87,21 @@ class DFAArtifactAnalyzer:
             confidence *= 0.3
         elif artifact_percent > self.artifact_threshold_duvidoso:
             flags.append(f'dropout={artifact_percent:.1f}% (duvidoso)')
-            esta_valido = False  # conservador
+            esta_valido = False
             motivo = f'Artefatos {artifact_percent:.1f}% — duvidoso'
             confidence *= 0.6
         else:
             esta_valido = True
             motivo = 'Sinal com qualidade aceitável'
         
-        # Critério 2: Range fisiológico
+        # Classificação por range DFA
         if not (self.dfa_range_valido[0] <= dfa1 <= self.dfa_range_valido[1]):
             flags.append(f'dfa1={dfa1:.2f} fora range {self.dfa_range_valido}')
             esta_valido = False
             motivo = f'DFA-α1 implausível ({dfa1:.2f})'
             confidence *= 0.2
         
-        # Critério 3: Baseline pessoal
+        # Comparação com baseline pessoal
         if self._baseline_media is not None and esta_valido:
             z_score = (dfa1 - self._baseline_media) / (self._baseline_sd + 1e-6)
             if abs(z_score) > 2.0:
@@ -137,9 +109,9 @@ class DFAArtifactAnalyzer:
                 confidence *= 0.75
         
         return DFAValidityResult(
-            dfa1_original=round(dfa1, 4),
-            dfa1_normalizado=round(dfa1_norm, 4),
-            artifact_percent=round(artifact_percent, 1),
+            dfa1_original=round(float(dfa1), 4),
+            dfa1_normalizado=round(float(dfa1_norm), 4),
+            artifact_percent=round(float(artifact_percent), 1),
             esta_valido=esta_valido,
             motivo=motivo,
             confidence=round(min(confidence, 1.0), 2),
@@ -151,16 +123,23 @@ class DFAArtifactAnalyzer:
                                       hr_medio: float,
                                       hr_max: float,
                                       watts_medio: Optional[float] = None) -> float:
-        """Estimar % artefatos via inconsistência HR ↔ DFA-α1."""
+        """Estimar % artefatos via inconsistência HR ↔ DFA-α1 (heurística)."""
         artifact_pct = 0.0
-        hr_baseline_repouso = {'Row': 50, 'Bike': 50, 'Ski': 48, 'Run': 50}.get(self.modalidade, 50)
+        hr_baseline = {'Row': 50, 'Bike': 50, 'Ski': 48, 'Run': 50}.get(self.modalidade, 50)
         
-        if hr_medio > hr_baseline_repouso + 20 and dfa1 > 1.2:
+        # HR elevado + DFA-α1 elevado (inconsistência)
+        if hr_medio > hr_baseline + 20 and dfa1 > 1.2:
             artifact_pct += 5.0
-        if hr_medio < hr_baseline_repouso + 5 and dfa1 < 0.7:
+        
+        # HR baixo + DFA-α1 baixo (inconsistência)
+        if hr_medio < hr_baseline + 5 and dfa1 < 0.7:
             artifact_pct += 3.0
+        
+        # DFA-α1 fora limites plausíveis
         if dfa1 < 0.5 or dfa1 > 2.0:
             artifact_pct += 4.0
+        
+        # Potência muito elevada + DFA-α1 elevado
         if watts_medio is not None and watts_medio > 250 and dfa1 > 1.3:
             artifact_pct += 3.0
         
@@ -179,7 +158,7 @@ class DFAArtifactAnalyzer:
             'n_total': len(resultados),
             'n_validos': n_validos,
             'n_invalidos': n_invalidos,
-            'pct_validos': round(100 * n_validos / len(resultados), 1),
-            'confidence_media': round(np.mean([r.confidence for r in resultados]), 2),
-            'artifact_medio': round(np.mean([r.artifact_percent for r in resultados]), 1),
+            'pct_validos': round(100.0 * n_validos / len(resultados), 1),
+            'confidence_media': round(float(np.mean([r.confidence for r in resultados])), 2),
+            'artifact_medio': round(float(np.mean([r.artifact_percent for r in resultados])), 1),
         }

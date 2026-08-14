@@ -161,7 +161,7 @@ def api_fisiologia_status():
     já vale a pena pedir o perfil de cada uma.
     """
     try:
-        import tab_metabol as tm
+        from tabs import tab_metabol as tm
         return jsonify({'status': 'ok', 'modalidades': tm.modalidades_disponiveis()})
     except Exception as e:
         import traceback
@@ -182,7 +182,7 @@ def api_fisiologia_perfil():
     Exemplo: /api/fisiologia/perfil?modalidade=Row
     """
     try:
-        import tab_metabol as tm
+        from tabs import tab_metabol as tm
         modalidade = request.args.get('modalidade')
         if not modalidade:
             return jsonify({'erro': 'falta o parametro ?modalidade='}), 400
@@ -190,6 +190,40 @@ def api_fisiologia_perfil():
         n_faixas = int(request.args.get('n_faixas', 4))
         resultado = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
         return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/perfil_grafico')
+def api_fisiologia_perfil_grafico():
+    """Igual a /api/fisiologia/perfil, mas devolve HTML Plotly pronto a
+    embeber: 1 subplot por métrica (HR/SmO2/tHb/Respiração/DFA1), X =
+    faixa de watts, linha+banda p25-p75 no esforço, tracejado cinza de
+    referência em repouso.
+
+    Query params: iguais a /api/fisiologia/perfil (?modalidade=, ?min_n=,
+    ?n_faixas=)
+
+    Exemplo: /api/fisiologia/perfil_grafico?modalidade=Row
+    """
+    try:
+        from tabs import tab_metabol as tm
+        modalidade = request.args.get('modalidade')
+        if not modalidade:
+            return jsonify({'erro': 'falta o parametro ?modalidade='}), 400
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 4))
+
+        perfil = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        if perfil.get('status') != 'ok':
+            return jsonify(perfil), 200  # dados insuficientes -- devolve o motivo, sem gráfico
+
+        fig = tm.grafico_perfil_metabolico(perfil)
+        html = fig.to_html(include_plotlyjs='cdn', div_id='perfil-metabolico-chart',
+                           config={'responsive': True, 'displayModeBar': False})
+        return jsonify({'status': 'ok', 'html': html, 'modalidade': modalidade,
+                        'n_intervalos_total': perfil['n_intervalos_total']}), 200
     except Exception as e:
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
@@ -211,7 +245,7 @@ def api_fisiologia_evolucao():
       /api/fisiologia/evolucao?modalidade=Row&campo=smo2_medio_work&watts_min=250&watts_max=320
     """
     try:
-        import tab_metabol as tm
+        from tabs import tab_metabol as tm
         modalidade = request.args.get('modalidade')
         campo = request.args.get('campo')
         if not modalidade or not campo:

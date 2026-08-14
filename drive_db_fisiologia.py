@@ -106,7 +106,16 @@ def download():
 
 
 def upload():
-    """(ok, detalhe). Sobe o .db actualizado para o Drive."""
+    """(ok, detalhe). Sobe o .db actualizado para o Drive.
+
+    NOTA: se o ficheiro ainda não existir na pasta do Drive, esta função
+    NÃO consegue criá-lo — service accounts não têm quota de storage
+    própria no Google Drive (erro storageQuotaExceeded). É preciso
+    existir lá primeiro um upload manual feito por uma conta pessoal
+    (a mesma forma como correlacoes.db/hrv_analyzer.db foram criados);
+    a partir daí, esta função só faz UPDATE ao conteúdo, que não precisa
+    de quota nenhuma da service account.
+    """
     if not os.path.exists(_LOCAL_DB):
         return False, "sem ficheiro local para subir"
     try:
@@ -129,6 +138,14 @@ def upload():
             return True, f"criado (file_id={res.get('id')})"
     except Exception as e:
         detalhe = f"{type(e).__name__}: {e}"
+        if 'storageQuotaExceeded' in detalhe or 'storage quota' in detalhe.lower():
+            detalhe = (
+                f"{_DB_NAME} ainda não existe na pasta do Drive ({_FOLDER_ID}) e a "
+                f"service account ({_email_service_account()}) não pode criá-lo "
+                f"(sem quota própria). SOLUÇÃO: fazer upload manual de um "
+                f"{_DB_NAME} vazio para essa pasta, com uma conta Google pessoal "
+                f"— igual ao que já foi feito para correlacoes.db/hrv_analyzer.db. "
+                f"Depois disso, updates automáticos passam a funcionar sem quota.")
         print(f"[drive_db_fisiologia] upload falhou: {detalhe}")
         return False, detalhe
 

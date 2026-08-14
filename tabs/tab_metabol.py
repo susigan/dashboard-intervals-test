@@ -43,8 +43,23 @@ from tabs.base import page
 SLUG = 'metabol'
 
 
-# Métricas de VALOR (patamar) — "quanto vale a X watts"
+# ── Métricas de VALOR ────────────────────────────────────────────────────
+# PREFERIR *_plateau_work (medido no stream, no fim do esforço, já
+# estabilizado) a *_medio_work (média do lap inteiro dada pela API, que
+# inclui todo o transitório e enviesa sistematicamente).
 CAMPOS_VALOR = [
+    'hr_plateau_work', 'smo2_plateau_work', 'thb_plateau_work',
+    'resp_plateau_work', 'dfa1_plateau_work',
+]
+
+# Extremo atingido (janela que entra 30s no descanso) — capta o pico real
+# de métricas com inércia, que de outra forma seria atribuído ao descanso.
+CAMPOS_EXTREMO = [
+    'hr_extremo', 'smo2_extremo', 'thb_extremo', 'resp_extremo', 'dfa1_extremo',
+]
+
+# Média do lap vinda da API — mantidos só para comparação/diagnóstico.
+CAMPOS_VALOR_API = [
     'hr_medio_work', 'smo2_medio_work', 'thb_medio_work',
     'resp_medio_work', 'dfa1_medio_work',
 ]
@@ -55,9 +70,20 @@ CAMPOS_TEMPO = [
     'rec_hr_50', 'rec_smo2_50', 'rec_thb_50', 'rec_resp_50', 'rec_dfa1_50',
 ]
 
-TODOS_CAMPOS = CAMPOS_VALOR + CAMPOS_TEMPO
+TODOS_CAMPOS = CAMPOS_VALOR + CAMPOS_EXTREMO + CAMPOS_TEMPO + CAMPOS_VALOR_API
 
 MIN_POR_FAIXA = 3   # abaixo disto, não vale a pena mostrar quartis (ruído)
+
+
+_PREFIXOS = ('hr', 'smo2', 'thb', 'resp', 'dfa1')
+
+
+def _prefixo_de(campo):
+    """'smo2_plateau_work' -> 'smo2'. None se não corresponder a métrica."""
+    for p in _PREFIXOS:
+        if campo.startswith(p + '_'):
+            return p
+    return None
 
 
 def _conn():
@@ -67,21 +93,32 @@ def _conn():
 
 
 def _quartis(valores):
+    """Resumo robusto de uma métrica.
+
+    Inclui p10/p90 em vez de depender de min/max para os extremos: o
+    mínimo e o máximo observados são estimadores ENVIESADOS pelo número
+    de amostras (com mais intervalos, o max sobe sozinho mesmo sem
+    qualquer mudança fisiológica). p10/p90 são muito mais estáveis.
+    min/max continuam disponíveis, mas devem ser lidos sempre com o n.
+    """
     vs = np.array([v for v in valores if v is not None], dtype=float)
     vs = vs[np.isfinite(vs)]
     if len(vs) < MIN_POR_FAIXA:
         return None
     return {
         'n': len(vs),
+        'p10': round(float(np.percentile(vs, 10)), 2),
         'p25': round(float(np.percentile(vs, 25)), 2),
         'p50': round(float(np.percentile(vs, 50)), 2),
         'p75': round(float(np.percentile(vs, 75)), 2),
+        'p90': round(float(np.percentile(vs, 90)), 2),
         'min': round(float(np.min(vs)), 2),
         'max': round(float(np.max(vs)), 2),
     }
 
 
-def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=8):
+def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=10,
+                          so_plateau_valido=True):
     """Curva watts -> métrica esperada, para 1 modalidade.
 
     Bins de LARGURA FIXA em watts (não por contagem de intervalos) —
@@ -99,8 +136,10 @@ def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=8):
     pelo menos MIN_POR_FAIXA pontos numa métrica.
     """
     conn = _conn()
+    flags = [f'{p}_atingiu_plateau' for p in _PREFIXOS]
+    colunas = ", ".join(TODOS_CAMPOS + flags)
     linhas = conn.execute(
-        """SELECT watts_medio, data, activity_id, """ + ", ".join(TODOS_CAMPOS) + """
+        """SELECT watts_medio, data, activity_id, """ + colunas + """
            FROM fisiologia_intervalos
            WHERE modalidade = ? AND valido = 1 AND watts_medio IS NOT NULL
            ORDER BY watts_medio""",
@@ -129,7 +168,10 @@ def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=8):
         largura_bin = 20.0
     else:
         largura_bin = intervalo_total / n_faixas
-        largura_bin = max(15.0, min(60.0, largura_bin))
+        # Máximo 30W: acima disso, faixas com fisiologia muito diferente
+        # ficam misturadas (a respiração a 300W e a 200W não são a mesma
+        # coisa). Mínimo 10W para não fragmentar em ruído.
+        largura_bin = max(10.0, min(30.0, largura_bin))
 
     limites = [wmin]
     v = wmin
@@ -156,8 +198,23 @@ def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=8):
             'n_intervalos': len(idxs),
         }
         for campo in TODOS_CAMPOS:
-            valores = [linhas[j][campo] for j in idxs]
-            faixa[campo] = _quartis(valores)
+            prefixo = _prefixo_de(campo)
+            usar_filtro = so_plateau_valido and campo in CAMPOS_VALOR and prefixo
+            valores = []
+            n_excluidos = 0
+            for j in idxs:
+                if usar_filtro:
+                    flag = linhas[j][f'{prefixo}_atingiu_plateau']
+                    if not flag:
+                        # a métrica nunca estabilizou neste intervalo: o
+                        # valor não representa o esforço, seria enganador
+                        n_excluidos += 1
+                        continue
+                valores.append(linhas[j][campo])
+            q = _quartis(valores)
+            if q is not None and n_excluidos:
+                q['n_excluidos_sem_plateau'] = n_excluidos
+            faixa[campo] = q
         faixas_saida.append(faixa)
 
     return {
@@ -404,9 +461,13 @@ BODY = r"""
 <div id="avisoDados" class="sub" style="display:none;color:#E67E22"></div>
 
 <h2>Perfil metabólico — o que é normal a cada faixa de watts</h2>
-<div class="sub" id="subPerfil">Bins de largura fixa (não por contagem) — cada bin só
-  aparece se tiver dados. Linha solida = mediana; banda escura = p25-p75; banda clara =
-  min-max observado (para não esconder picos). Clica na legenda para ligar/desligar séries.</div>
+<div class="sub" id="subPerfil">A carregar...</div>
+<div class="sub" style="font-size:11px;color:#8b949e">
+  Valores medidos no <b>plateau</b> (fim do esforço, já estabilizado) — não a média do lap,
+  que inclui o transitório e enviesa. Linha sólida = mediana; banda escura = p25-p75;
+  banda clara = p10-p90; tracejado = pico atingido (janela que entra 30s no descanso).
+  Intervalos em que a métrica nunca estabilizou são excluídos. Clica na legenda para
+  ligar/desligar.</div>
 <div class="legend" id="lgPerfil"></div>
 <div class="chartbox">
   <canvas id="chPerfil" height="420"></canvas>
@@ -439,19 +500,28 @@ let PERFIL = null;
 let EVOLUCAO = null;
 
 const CORES_METAB = {
- hr_medio_work:'#E74C3C', smo2_medio_work:'#F39C12', thb_medio_work:'#2980B9',
- resp_medio_work:'#1ABC9C', dfa1_medio_work:'#9B59B6',
+ hr_plateau_work:'#E74C3C', smo2_plateau_work:'#F39C12', thb_plateau_work:'#2980B9',
+ resp_plateau_work:'#1ABC9C', dfa1_plateau_work:'#9B59B6',
 };
 const LABELS_METAB = {
- hr_medio_work:'HR (bpm)', smo2_medio_work:'SmO2 (%)', thb_medio_work:'tHb (a.u.)',
- resp_medio_work:'Respiração (rpm)', dfa1_medio_work:'DFA-α1',
+ hr_plateau_work:'HR (bpm)', smo2_plateau_work:'SmO2 (%)', thb_plateau_work:'tHb (a.u.)',
+ resp_plateau_work:'Respiração (rpm)', dfa1_plateau_work:'DFA-α1',
+};
+const EXTREMO_DE = {
+ hr_plateau_work:'hr_extremo', smo2_plateau_work:'smo2_extremo',
+ thb_plateau_work:'thb_extremo', resp_plateau_work:'resp_extremo',
+ dfa1_plateau_work:'dfa1_extremo',
 };
 const CAMPOS_METAB = Object.keys(CORES_METAB);
 
 const LABEL_CAMPO_EVOL = {
- hr_medio_work:'HR (esforço)', smo2_medio_work:'SmO2 (esforço)',
- thb_medio_work:'tHb (esforço)', resp_medio_work:'Respiração (esforço)',
- dfa1_medio_work:'DFA-α1 (esforço)',
+ hr_plateau_work:'HR (esforço, plateau)', smo2_plateau_work:'SmO2 (esforço, plateau)',
+ thb_plateau_work:'tHb (esforço, plateau)', resp_plateau_work:'Respiração (esforço, plateau)',
+ dfa1_plateau_work:'DFA-α1 (esforço, plateau)',
+ hr_extremo:'HR (pico)', smo2_extremo:'SmO2 (pico)', thb_extremo:'tHb (pico)',
+ resp_extremo:'Respiração (pico)', dfa1_extremo:'DFA-α1 (pico)',
+ hr_medio_work:'HR (média lap API — enviesado)',
+ smo2_medio_work:'SmO2 (média lap API — enviesado)',
  lag_hr_50:'Lag HR (s)', lag_smo2_50:'Lag SmO2 (s)', lag_thb_50:'Lag tHb (s)',
  lag_resp_50:'Lag Respiração (s)', lag_dfa1_50:'Lag DFA-α1 (s)',
  rec_hr_50:'Recovery HR (s)', rec_smo2_50:'Recovery SmO2 (s)',
@@ -459,19 +529,19 @@ const LABEL_CAMPO_EVOL = {
  rec_dfa1_50:'Recovery DFA-α1 (s)',
 };
 
-// ── Gráfico principal: várias métricas sobrepostas, X = watts ──────────────
+// ── Gráfico principal: PAINÉIS EMPILHADOS, X = watts partilhado ────────────
+// Painéis separados (e não sobreposição) porque as métricas têm unidades
+// incompatíveis: tHb varia entre 12.5-12.8 e DFA-a1 entre 0.6-1.4. Num par
+// de eixos partilhado, uma delas fica esmagada numa linha recta.
 function drawPerfil(){
  const canvasId='chPerfil';
- const o=ctx(canvasId,420); if(!o)return;
- const g=o.g,W=o.W,H=o.H;
-
  if(!PERFIL||PERFIL.status!=='ok'){
-  noData(g,W,H,(PERFIL&&PERFIL.mensagem)||'Sem dados'); return;
+  const o0=ctx(canvasId,180); if(o0) noData(o0.g,o0.W,o0.H,(PERFIL&&PERFIL.mensagem)||'Sem dados');
+  return;
  }
  const faixas=PERFIL.faixas;
- if(!faixas.length){noData(g,W,H,'Sem faixas com dados suficientes');return;}
-
  const disponiveis=CAMPOS_METAB.filter(c=>faixas.some(f=>f[c]));
+
  document.getElementById('lgPerfil').innerHTML=disponiveis.map(function(c){
   const off=!ligado(canvasId,c);
   return '<span class="tog'+(off?' off':'')+'" data-c="'+canvasId+'" data-k="'+c+'">'+
@@ -481,92 +551,108 @@ function drawPerfil(){
   sp.onclick=function(){ alternar(sp.dataset.c, sp.dataset.k); drawPerfil(); };});
 
  const vis=disponiveis.filter(c=>ligado(canvasId,c));
+ const HP=110;                                  // altura de cada painel
+ const alturaTotal=Math.max(180, vis.length*HP+42);
+ const o=ctx(canvasId,alturaTotal); if(!o)return;
+ const g=o.g,W=o.W,H=o.H;
+ if(!faixas.length){noData(g,W,H,'Sem faixas com dados suficientes');return;}
  if(!vis.length){noData(g,W,H,'Nenhuma metrica seleccionada');return;}
 
- const PL=58,PR=58,PT=14,PB=32,w=W-PL-PR,h=H-PT-PB;
+ const PL=62,PR=16,PB=30,w=W-PL-PR;
  const xs=faixas.map(f=>f.watts_centro);
  const xmin=Math.min.apply(null,xs), xmax=Math.max.apply(null,xs);
  const X=v=> xmax>xmin ? PL+w*(v-xmin)/(xmax-xmin) : PL+w/2;
 
- // escala propria por serie (mesma tecnica de tab_corporal: cada metrica
- // tem o seu proprio [min,max] mapeado para a mesma altura do grafico)
- const lim={};
- vis.forEach(function(c){
-  let a=Infinity,b=-Infinity;
-  faixas.forEach(function(f){const q=f[c]; if(!q)return;
-   if(q.min<a)a=q.min; if(q.max>b)b=q.max;});
-  if(!isFinite(a)){a=0;b=1;}
-  const marg=(b-a)*0.12||1;
-  lim[c]=[a-marg,b+marg];
- });
+ function hexRgba(hex,a){const h=hex.replace('#','');
+  return 'rgba('+parseInt(h.substring(0,2),16)+','+parseInt(h.substring(2,4),16)+','+
+   parseInt(h.substring(4,6),16)+','+a+')';}
 
- g.strokeStyle='#21262d';g.lineWidth=1;
- for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
-
- function hexRgba(hex,alpha){
-  const h=hex.replace('#','');
-  const r=parseInt(h.substring(0,2),16),gg=parseInt(h.substring(2,4),16),b=parseInt(h.substring(4,6),16);
-  return 'rgba('+r+','+gg+','+b+','+alpha+')';
- }
-
- vis.forEach(function(c){
-  const[a,b]=lim[c];
-  const Y=v=>PT+h-(v-a)/(b-a)*h;
+ const painel={};
+ vis.forEach(function(c,i){
+  const PT=8+i*HP, hh=HP-30;
   const pts=faixas.filter(f=>f[c]);
+  let a=Infinity,b=-Infinity;
+  pts.forEach(function(f){const q=f[c];
+   if(q.p10<a)a=q.p10; if(q.p90>b)b=q.p90;});
+  if(!isFinite(a)){a=0;b=1;}
+  const marg=(b-a)*0.15||1; a-=marg; b+=marg;
+  const Y=v=>PT+hh-(v-a)/(b-a)*hh;
+  painel[c]={PT:PT,hh:hh,a:a,b:b,Y:Y,pts:pts};
+
+  // grelha
+  g.strokeStyle='#21262d';g.lineWidth=1;
+  for(let k=0;k<=2;k++){const y=PT+hh*k/2;
+   g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
+
   if(!pts.length)return;
 
-  // banda min-max (mais clara -- mostra os extremos reais, nao escondidos)
+  // banda p10-p90 (dispersao ampla, sem depender de min/max que sao
+  // enviesados pelo numero de amostras)
   g.fillStyle=hexRgba(CORES_METAB[c],0.10);
   g.beginPath();
-  pts.forEach(function(f,i){const y=Y(f[c].max);
-   if(i===0)g.moveTo(X(f.watts_centro),y); else g.lineTo(X(f.watts_centro),y);});
-  for(let i=pts.length-1;i>=0;i--){g.lineTo(X(pts[i].watts_centro),Y(pts[i][c].min));}
+  pts.forEach(function(f,j){const y=Y(f[c].p90);
+   if(j===0)g.moveTo(X(f.watts_centro),y); else g.lineTo(X(f.watts_centro),y);});
+  for(let j=pts.length-1;j>=0;j--)g.lineTo(X(pts[j].watts_centro),Y(pts[j][c].p10));
   g.closePath();g.fill();
 
   // banda p25-p75
-  g.fillStyle=hexRgba(CORES_METAB[c],0.22);
+  g.fillStyle=hexRgba(CORES_METAB[c],0.24);
   g.beginPath();
-  pts.forEach(function(f,i){const y=Y(f[c].p75);
-   if(i===0)g.moveTo(X(f.watts_centro),y); else g.lineTo(X(f.watts_centro),y);});
-  for(let i=pts.length-1;i>=0;i--){g.lineTo(X(pts[i].watts_centro),Y(pts[i][c].p25));}
+  pts.forEach(function(f,j){const y=Y(f[c].p75);
+   if(j===0)g.moveTo(X(f.watts_centro),y); else g.lineTo(X(f.watts_centro),y);});
+  for(let j=pts.length-1;j>=0;j--)g.lineTo(X(pts[j].watts_centro),Y(pts[j][c].p25));
   g.closePath();g.fill();
 
-  // linha p50 + marcadores
+  // pico (extremo) tracejado, se disponivel
+  const campoExt=EXTREMO_DE[c];
+  const ptsExt=faixas.filter(f=>f[campoExt]);
+  if(campoExt&&ptsExt.length){
+   g.strokeStyle=hexRgba(CORES_METAB[c],0.75);g.lineWidth=1.3;
+   g.setLineDash([4,3]);g.beginPath();
+   ptsExt.forEach(function(f,j){const y=Y(f[campoExt].p50);
+    if(j===0)g.moveTo(X(f.watts_centro),y); else g.lineTo(X(f.watts_centro),y);});
+   g.stroke();g.setLineDash([]);
+  }
+
+  // linha p50
   g.strokeStyle=CORES_METAB[c];g.lineWidth=2.2;g.beginPath();
-  pts.forEach(function(f,i){const y=Y(f[c].p50);
-   if(i===0)g.moveTo(X(f.watts_centro),y); else g.lineTo(X(f.watts_centro),y);});
+  pts.forEach(function(f,j){const y=Y(f[c].p50);
+   if(j===0)g.moveTo(X(f.watts_centro),y); else g.lineTo(X(f.watts_centro),y);});
   g.stroke();
   g.fillStyle=CORES_METAB[c];
-  pts.forEach(function(f){g.beginPath();g.arc(X(f.watts_centro),Y(f[c].p50),3.2,0,7);g.fill();});
+  pts.forEach(function(f){g.beginPath();g.arc(X(f.watts_centro),Y(f[c].p50),3,0,7);g.fill();});
+
+  // eixo Y do painel
+  g.font='10px sans-serif';g.fillStyle='#8b949e';g.textAlign='right';
+  for(let k=0;k<=2;k++)g.fillText((b-(b-a)*k/2).toFixed(1),PL-6,PT+hh*k/2+3);
+  // titulo do painel
+  g.fillStyle=CORES_METAB[c];g.textAlign='left';g.font='bold 10px sans-serif';
+  g.fillText(LABELS_METAB[c],PL+2,PT-1);
  });
 
- // eixos Y -- so as 2 primeiras series visiveis, para nao poluir
- g.font='10px sans-serif';
- vis.slice(0,2).forEach(function(c,idx){
-  const[a,b]=lim[c],dir=idx===1;
-  g.fillStyle=CORES_METAB[c];g.textAlign=dir?'left':'right';
-  for(let i=0;i<=4;i++){const v=b-(b-a)*i/4;
-   g.fillText(v.toFixed(1),dir?PL+w+6:PL-6,PT+h*i/4+3);}
- });
-
- // eixo X: watts (centro de cada bin)
- g.fillStyle='#8b949e';g.textAlign='center';
- const step=Math.ceil(faixas.length/14);
+ // eixo X partilhado (uma vez, no fim)
+ g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='center';
+ const step=Math.ceil(faixas.length/12);
  faixas.forEach(function(f,i){if(i%step!==0)return;
-  g.fillText(Math.round(f.watts_centro)+'W',X(f.watts_centro),H-8);});
+  g.fillText(Math.round(f.watts_centro)+'W',X(f.watts_centro),H-10);});
  g.textAlign='left';
 
  registarTip(canvasId,function(mxp,myp,rw){
   const esc=rw/W,x=mxp/esc;
   if(x<PL||x>PL+w)return '';
-  let melhor=null,melhorD=Infinity;
-  faixas.forEach(function(f){const d=Math.abs(X(f.watts_centro)-x); if(d<melhorD){melhorD=d;melhor=f;}});
+  let melhor=null,md=Infinity;
+  faixas.forEach(function(f){const d=Math.abs(X(f.watts_centro)-x);
+   if(d<md){md=d;melhor=f;}});
   if(!melhor)return '';
-  let html='<div class="th">'+melhor.faixa_watts+' (n='+melhor.n_intervalos+' intervalos)</div>';
+  let html='<div class="th">'+melhor.faixa_watts+' &nbsp;('+melhor.n_intervalos+' intervalos)</div>';
   vis.forEach(function(c){const q=melhor[c]; if(!q)return;
-   html+=linhaTip(CORES_METAB[c],LABELS_METAB[c],
-    q.p50+' &nbsp;<span style="color:#8b949e">[p25-p75: '+q.p25+'–'+q.p75+
-    ', min-max: '+q.min+'–'+q.max+', n='+q.n+']</span>');});
+   let txt=q.p50+' <span style="color:#8b949e">[p25-p75 '+q.p25+'–'+q.p75+' · n='+q.n;
+   if(q.n_excluidos_sem_plateau)txt+=' · '+q.n_excluidos_sem_plateau+' excl.';
+   txt+=']</span>';
+   html+=linhaTip(CORES_METAB[c],LABELS_METAB[c],txt);
+   const qe=melhor[EXTREMO_DE[c]];
+   if(qe)html+=linhaTip(hexRgba(CORES_METAB[c],0.6),'&nbsp;&nbsp;↳ pico',qe.p50);
+  });
   return html;
  });
 }
@@ -644,7 +730,7 @@ async function carregarPerfil(){
   document.getElementById('subPerfil').textContent=
    d.n_intervalos_total+' intervalos, '+d.n_atividades+' atividades, '+
    d.n_dias_distintos+' dias distintos · bins de '+d.largura_bin_watts+'W · '+
-   'range observado '+d.watts_min_observado+'-'+d.watts_max_observado+'W';
+   'range '+d.watts_min_observado+'-'+d.watts_max_observado+'W';
  }
  drawPerfil();
 }

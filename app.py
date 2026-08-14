@@ -755,6 +755,56 @@ def api_db_streams():
     return _seguro(db.streams_stats)
 
 
+
+
+# ── Novas rotas: DFA-α1 + Pace/Watts ──────────────────────────────────────
+
+@app.route('/api/fisiologia/validacao_dfa/<modalidade>')
+def api_validacao_dfa(modalidade):
+    """Validar qualidade de DFA-α1 para uma modalidade."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        resultado = tme.validacao_lote_dfa(modalidade)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/perfil_enhanced/<modalidade>')
+def api_perfil_enhanced(modalidade):
+    """Perfil metabólico com coluna pace adicionada (Row/Ski)."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 10))
+        enh = tme.MetabolicProfileEnhanced(modalidade)
+        resultado = enh.gerar_perfil_com_pace(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/evolucao_com_pace')
+def api_evolucao_com_pace():
+    """Evolução temporal com pace secundário (Row/Ski)."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        modalidade = request.args.get('modalidade')
+        campo = request.args.get('campo')
+        if not modalidade or not campo:
+            return jsonify({'erro': 'faltam parametros ?modalidade= e ?campo='}), 400
+        watts_min = request.args.get('watts_min', type=float)
+        watts_max = request.args.get('watts_max', type=float)
+        agregacao = request.args.get('agregacao', 'mes')
+        resultado = tme.evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max, agregacao)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy'}), 200

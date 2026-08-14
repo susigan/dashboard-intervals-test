@@ -665,6 +665,18 @@ function drawPerfil(){
  const step=Math.ceil(faixas.length/12);
  faixas.forEach(function(f,i){if(i%step!==0)return;
   g.fillText(Math.round(f.watts_centro)+'W',X(f.watts_centro),H-10);});
+ // label WATTS
+ g.font='bold 9px sans-serif';
+ g.fillText('WATTS',PL+w/2,H-1);
+ 
+ // NOVO: eixo X2 em cima com PACE (para Row/Ski)
+ if(faixas.some(f=>f.pace_medio)){
+  g.fillStyle='#FF6B6B';g.font='bold 10px sans-serif';g.textAlign='center';
+  g.fillText('PACE (min:ss)',PL+w/2,8);  // label do eixo X2
+  faixas.forEach(function(f,i){if(i%step!==0)return;
+   if(f.pace_medio) g.fillText(f.pace_medio,X(f.watts_centro),12);
+  });
+ }
  g.textAlign='left';
 
  registarTip(canvasId,function(mxp,myp,rw){
@@ -674,7 +686,9 @@ function drawPerfil(){
   faixas.forEach(function(f){const d=Math.abs(X(f.watts_centro)-x);
    if(d<md){md=d;melhor=f;}});
   if(!melhor)return '';
-  let html='<div class="th">'+melhor.faixa_watts+' &nbsp;('+melhor.n_intervalos+' intervalos)</div>';
+  let html='<div class="th">'+melhor.faixa_watts+' &nbsp;('+melhor.n_intervalos+' intervalos)';
+  if(melhor.pace_medio) html+=' &nbsp;→ Pace: '+melhor.pace_medio;
+  html+='</div>';
   vis.forEach(function(c){const q=melhor[c]; if(!q)return;
    let txt=q.p50+' <span style="color:#8b949e">[p25-p75 '+q.p25+'–'+q.p75+' · n='+q.n;
    if(q.n_excluidos_sem_plateau)txt+=' · '+q.n_excluidos_sem_plateau+' excl.';
@@ -739,9 +753,11 @@ function drawEvolucao(){
   if(x<PL||x>PL+w)return '';
   const i=Math.round((x-PL)/w*(n-1));
   const p=pontos[i]; if(!p)return '';
-  return '<div class="th">'+p.periodo+' (n='+p.n+')</div>'+
+  let html='<div class="th">'+p.periodo+' (n='+p.n+')</div>'+
    linhaTip(cor,LABELS_METAB[campo]||campo,
     p.p50+' &nbsp;<span style="color:#8b949e">[p25-p75: '+p.p25+'–'+p.p75+']</span>');
+  if(p.pace_p50) html+='<div style="margin-top:4px;font-size:10px;color:#FF6B6B">Pace: '+p.pace_p50+'</div>';
+  return html;
  });
 }
 

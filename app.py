@@ -139,8 +139,6 @@ def api_fisiologia_debug(activity_id):
     Exemplo: /api/fisiologia/debug/i174526190
     """
     try:
-        import traceback
-        print(f'[DEBUG] api_perfil_robusto chamada com modalidade={modalidade}', flush=True)
         import fisiologia_worker as fw
         return jsonify(fw.debug_dict(activity_id))
     except Exception as e:
@@ -197,10 +195,7 @@ def api_perfil_robusto(modalidade):
         return jsonify(resultado)
     except Exception as e:
         import traceback
-        msg = str(e)
-        trace = traceback.format_exc()
-        print(f'[ERROR] {msg}\n{trace}', flush=True)
-        return jsonify({'status': 'erro', 'erro': msg, 'trace': trace}), 500
+        return jsonify({'status': 'erro', 'erro': str(e), 'trace': traceback.format_exc()}), 500
 
 
 @app.route('/api/fisiologia/evolucao_robusta')
@@ -224,10 +219,7 @@ def api_evolucao_robusta():
         return jsonify(resultado)
     except Exception as e:
         import traceback
-        msg = str(e)
-        trace = traceback.format_exc()
-        print(f'[ERROR] {msg}\n{trace}', flush=True)
-        return jsonify({'status': 'erro', 'erro': msg, 'trace': trace}), 500
+        return jsonify({'status': 'erro', 'erro': str(e), 'trace': traceback.format_exc()}), 500
 
 
 def api_fisiologia_status():
@@ -915,6 +907,30 @@ def api_evolucao_com_pace():
 def health():
     return jsonify({'status': 'healthy'}), 200
 
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# EMERGÊNCIA: rota para correr o worker sem acesso SSH
+# ══════════════════════════════════════════════════════════════════════════
+
+@app.route('/api/fisiologia/processar')
+def api_processar():
+    """Roda o fisiologia_worker.processar_lote() para reprocessar intervalos.
+    
+    Query params:
+      - n: número de atividades (default 10)
+      - retornar_resumo: se quer o resumo JSON (default: sim)
+    
+    Usa isto quando a BD está com colunas novas mas sem dados ainda.
+    Ex: /api/fisiologia/processar?n=10
+    """
+    try:
+        import fisiologia_worker as fw
+        n = int(request.args.get('n', 10))
+        resumo = fw.processar_lote(n, retornar_resumo=True)
+        return jsonify(resumo)
+    except Exception as e:
+        return jsonify({'status': 'erro', 'erro': str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))

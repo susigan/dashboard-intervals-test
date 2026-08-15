@@ -1026,6 +1026,158 @@ def api_aquecimento_sessao(activity_id):
         }), 500
 
 
+
+
+@app.route('/api/aquecimento/calibrar', methods=['POST'])
+def api_aquecimento_calibrar():
+    """Calibra com lista de datas específicas.
+    
+    POST JSON:
+    {
+        "modalidade": "Ski" | "Row" | "Bike",
+        "datas": ["02/01/2024", "06/01/2024", ...]
+    }
+    
+    Ou com activity_ids:
+    {
+        "activity_ids": ["i123456", "i234567", ...]
+    }
+    """
+    from datetime import datetime, timedelta
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'erro', 'mensagem': 'POST body vazio'}), 400
+        
+        import drive_db_fisiologia as ddf
+        conn = ddf.get_conn()
+        
+        atividades_para_processar = []
+        
+        # Opção 1: Por datas + modalidade
+        if 'datas' in data and 'modalidade' in data:
+            datas = data['datas']
+            modalidade = data['modalidade']
+            
+            for data_str in datas:
+                try:
+                    if '/' in data_str:
+                        data_obj = datetime.strptime(data_str, '%d/%m/%Y')
+                    else:
+                        data_obj = datetime.strptime(data_str, '%Y-%m-%d')
+                    
+                    data_inicio = data_obj.date()
+                    data_fim = data_inicio + timedelta(days=1)
+                    
+                    query = """
+                        SELECT DISTINCT activity_id 
+                        FROM fisiologia_intervalos 
+                        WHERE modalidade=? AND valido=1 
+                        AND DATE(data) = ?
+                    """
+                    resultados = conn.execute(query, (modalidade, data_inicio)).fetchall()
+                    
+                    for (activity_id,) in resultados:
+                        atividades_para_processar.append(activity_id)
+                
+                except ValueError as e:
+                    pass
+        
+        # Opção 2: Por activity_ids
+        elif 'activity_ids' in data:
+            atividades_para_processar = data['activity_ids']
+        
+        if not atividades_para_processar:
+            return jsonify({
+                'status': 'aviso',
+                'mensagem': 'Nenhuma atividade encontrada',
+                'atividades_para_processar': 0
+            }), 200
+        
+        # Remover duplicatas
+        atividades_para_processar = list(set(atividades_para_processar))
+        
+        import sys
+        sys.path.insert(0, './utils')
+        from aquecimento_analyzer import AquecimentoAnalyzer
+        from aquecimento_db import get_db as get_aq_db
+        
+        processadas = 0
+        aquecimentos_detectados = 0
+        detalhes = []
+        
+        for activity_id in atividades_para_processar:
+            try:
+                modalidade_row = conn.execute(
+                    "SELECT DISTINCT modalidade FROM fisiologia_intervalos WHERE activity_id=?",
+                    (activity_id,)
+                ).fetchone()
+                
+                if not modalidade_row:
+                    continue
+                
+                modalidade = modalidade_row[0]
+                analyzer = AquecimentoAnalyzer(conn)
+                resultado = analyzer.analisar_atividade(activity_id, modalidade)
+                
+                if resultado.get('detectado'):
+                    aq_db = get_aq_db()
+                    dados_aq = {
+                        'modalidade': modalidade,
+                        'data': datetime.now().isoformat(),
+                        'padrao_detectado': resultado.get('padrao'),
+                        'n_blocos': resultado.get('n_blocos'),
+                        'hr_avg': resultado.get('metricas', {}).get('hr_avg'),
+                        'hr_min': resultado.get('metricas', {}).get('hr_min'),
+                        'hr_max': resultado.get('metricas', {}).get('hr_max'),
+                        'smo2_avg': resultado.get('metricas', {}).get('smo2_avg'),
+                        'smo2_min': resultado.get('metricas', {}).get('smo2_min'),
+                        'smo2_max': resultado.get('metricas', {}).get('smo2_max'),
+                        'resp_avg': resultado.get('metricas', {}).get('resp_avg'),
+                        'resp_min': resultado.get('metricas', {}).get('resp_min'),
+                        'resp_max': resultado.get('metricas', {}).get('resp_max'),
+                        'dfa1_avg': resultado.get('metricas', {}).get('dfa1_avg'),
+                        'dfa1_min': resultado.get('metricas', {}).get('dfa1_min'),
+                        'dfa1_max': resultado.get('metricas', {}).get('dfa1_max'),
+                        'tempo_aquecimento_seg': resultado.get('tempo_aquecimento_seg'),
+                        'n_intervalos_analisados': resultado.get('n_intervalos'),
+                    }
+                    aq_db.salvar_sessao(activity_id, dados_aq)
+                    aquecimentos_detectados += 1
+                
+                processadas += 1
+                detalhes.append({
+                    'activity_id': activity_id,
+                    'modalidade': modalidade,
+                    'aquecimento_detectado': resultado.get('detectado'),
+                    'status': 'ok'
+                })
+            
+            except Exception as e:
+                detalhes.append({
+                    'activity_id': activity_id,
+                    'erro': str(e),
+                    'status': 'erro'
+                })
+        
+        return jsonify({
+            'status': 'calibracao_completa',
+            'total_solicitadas': len(atividades_para_processar),
+            'processadas': processadas,
+            'aquecimentos_detectados': aquecimentos_detectados,
+            'detalhes': detalhes
+        })
+    
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'status': 'erro',
+            'mensagem': str(e),
+            'trace': traceback.format_exc()
+        }), 500
+
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))
     print(f"Starting server on port {port}")

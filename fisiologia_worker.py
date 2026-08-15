@@ -1,14 +1,11 @@
 """
-FISIOLOGIA_WORKER.PY — Versão COMPLETA com Aquecimento
+FISIOLOGIA_WORKER.PY — VERSÃO FINAL COM AQUECIMENTO INTEGRADO
 
-Inclui:
-  - Fase B: Auto-migração + min/avg/max
-  - Aquecimento: Detecta padrão + extrai métricas
+Processa:
+  1. Min/Avg/Max para HR, Resp, SmO2, tHb, DFA1 (Fase B)
+  2. AQUECIMENTO: detecta padrão + extrai métricas (automático no loop)
   
-Processa automaticamente:
-  1. Calcula min/avg/max para HR, Resp, SmO2, tHb, DFA1
-  2. Detecta padrão de aquecimento (5-1-5-1-5 ou 5-1-5-1-5-1-5-1-5)
-  3. Guarda métricas de aquecimento na BD
+O aquecimento é processado CADA VEZ que uma atividade é processada.
 """
 
 import numpy as np
@@ -34,9 +31,8 @@ COLUNAS_EXTRA = {
 }
 
 def _garantir_colunas(conn):
-    """Cria as colunas novas se não existirem (auto-migração)."""
+    """Cria as colunas novas se não existirem."""
     existing = {r[1] for r in conn.execute("PRAGMA table_info(fisiologia_intervalos)")}
-    
     para_criar = COLUNAS_EXTRA - existing
     
     for col in para_criar:
@@ -49,25 +45,29 @@ def _garantir_colunas(conn):
     conn.commit()
     return list(para_criar)
 
-def _analisar_aquecimento(conn, activity_id, modalidade):
-    """Analisa se há padrão de aquecimento e extrai métricas."""
+def _processar_aquecimento(conn, activity_id, modalidade):
+    """Processa aquecimento para uma atividade.
+    
+    Retorna True se detectado e guardado, False caso contrário.
+    """
     try:
         from aquecimento_analyzer import AquecimentoAnalyzer
-        from aquecimento_db import get_db as get_aq_db
-    except ImportError:
-        return None
+        from aquecimento_db_google_drive import get_db as get_aq_db
+    except ImportError as e:
+        print(f"[AQUECIMENTO] Erro importar: {e}")
+        return False
     
     if modalidade not in ['Row', 'Ski', 'Bike']:
-        return None
+        return False
     
-    analyzer = AquecimentoAnalyzer(conn)
-    resultado = analyzer.analisar_atividade(activity_id, modalidade)
-    
-    if not resultado.get('detectado'):
-        return None
-    
-    # Salvar na BD de aquecimento
     try:
+        analyzer = AquecimentoAnalyzer(conn)
+        resultado = analyzer.analisar_atividade(activity_id, modalidade)
+        
+        if not resultado.get('detectado'):
+            return False
+        
+        # Guardar na BD de aquecimento
         aq_db = get_aq_db()
         dados_aq = {
             'modalidade': modalidade,
@@ -91,22 +91,23 @@ def _analisar_aquecimento(conn, activity_id, modalidade):
         }
         aq_db.salvar_sessao(activity_id, dados_aq)
         return True
+    
     except Exception as e:
-        print(f"[AQUECIMENTO] Erro ao guardar dados: {e}")
+        print(f"[AQUECIMENTO] Erro ao processar {activity_id}: {e}")
         return False
 
 def processar_lote(n=10, retornar_resumo=True):
-    """Processa os últimos N intervalos, calcula min/avg/max + aquecimento."""
+    """Processa lote de atividades com Fase B + Aquecimento."""
     try:
         import drive_db_fisiologia as ddf
         conn = ddf.get_conn()
     except Exception as e:
         return {'status': 'erro', 'mensagem': str(e)}
     
-    # Auto-migração: cria as colunas novas
+    # Auto-migração
     colunas_novas = _garantir_colunas(conn)
     
-    # Buscar últimas atividades (onde há intervalos válidos)
+    # Buscar últimas atividades
     atividades = conn.execute("""
         SELECT DISTINCT activity_id, modalidade
         FROM fisiologia_intervalos 
@@ -123,7 +124,7 @@ def processar_lote(n=10, retornar_resumo=True):
     
     for (activity_id, modalidade) in atividades:
         try:
-            # Buscar intervalos desta atividade que têm dados
+            # FASE B: processar min/avg/max
             intervalos = conn.execute("""
                 SELECT 
                     interval_num,
@@ -141,7 +142,6 @@ def processar_lote(n=10, retornar_resumo=True):
             for intervalo_row in intervalos:
                 interval_num = intervalo_row[0]
                 
-                # Extrair valores de HR, Resp, SmO2, tHb, DFA-α1
                 hr_max = intervalo_row[1]
                 hr_avg = intervalo_row[2]
                 hr_min = intervalo_row[3]
@@ -157,7 +157,6 @@ def processar_lote(n=10, retornar_resumo=True):
                 thb_avg = intervalo_row[10]
                 dfa1_avg = intervalo_row[11]
                 
-                # Construir UPDATE SQL
                 updates = []
                 values = []
                 
@@ -198,6 +197,7 @@ def processar_lote(n=10, retornar_resumo=True):
                 if thb_avg is not None:
                     updates.append("thb_avg_60s=?")
                     values.append(thb_avg)
+                    # Estimar min/max
                     if not conn.execute("SELECT thb_min_60s FROM fisiologia_intervalos WHERE activity_id=? AND interval_num=?", 
                                        (activity_id, interval_num)).fetchone()[0]:
                         updates.append("thb_min_60s=?")
@@ -210,7 +210,6 @@ def processar_lote(n=10, retornar_resumo=True):
                     updates.append("dfa1_avg_60s=?")
                     values.append(dfa1_avg)
                 
-                # Actualizar
                 if updates:
                     sql = f"UPDATE fisiologia_intervalos SET {', '.join(updates)} WHERE activity_id=? AND interval_num=?"
                     values.extend([activity_id, interval_num])
@@ -221,16 +220,16 @@ def processar_lote(n=10, retornar_resumo=True):
             processadas += 1
             total_intervalos += gravados
             
-            # NOVO: Analisar aquecimento
-            aq_resultado = _analisar_aquecimento(conn, activity_id, modalidade)
-            if aq_resultado:
+            # NOVO: AQUECIMENTO — processar automaticamente
+            aq_detectado = _processar_aquecimento(conn, activity_id, modalidade)
+            if aq_detectado:
                 aquecimentos_detectados += 1
             
             detalhes.append({
                 'activity_id': activity_id,
                 'modalidade': modalidade,
                 'intervalos_gravados': gravados,
-                'aquecimento_detectado': bool(aq_resultado),
+                'aquecimento_detectado': aq_detectado,
                 'status': 'ok'
             })
         

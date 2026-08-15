@@ -258,6 +258,19 @@ COLUNAS_EXTRA = {
     'velocidade_ms': 'REAL',
     'distancia_m': 'REAL',
     'pace_s_km': 'REAL',
+    # FASE B — min/avg/max para TODAS as metricas nos ultimos 60s.
+    # hr_min/avg/max_60s, resp_avg_60s, smo2_min_60s e dfa1_clean ja
+    # existiam; aqui completam-se as que faltavam.
+    'resp_min_60s': 'REAL',
+    'resp_max_60s': 'REAL',
+    'smo2_avg_60s': 'REAL',
+    'smo2_max_60s': 'REAL',
+    'dfa1_min_60s': 'REAL',
+    'dfa1_avg_60s': 'REAL',
+    'dfa1_max_60s': 'REAL',
+    'thb_min_60s': 'REAL',
+    'thb_avg_60s': 'REAL',
+    'thb_max_60s': 'REAL',
 }
 
 
@@ -564,71 +577,93 @@ def _moving_average(valores, janela_s, tempos):
     return ma
 
 
-def _extrair_metricas_60s(t_arr, hr_arr, resp_arr, smo2_arr, dfa1_arr):
-    """Extrai métricas dos últimos 60s (limpas de artefatos).
-    
-    Retorna dict: hr_max_60s, hr_avg_60s, hr_min_60s, resp_avg_60s, 
-                  smo2_min_60s, dfa1_clean, intervalo_valido_analise
+def _resumo_janela(t_arr, v_arr, tipo_metrica='hr', janela_ma_s=5):
+    """(min, avg, max) de uma metrica ja limpa de artefatos e suavizada.
+
+    Devolve (None, None, None) quando nao ha amostras utilizaveis — nunca
+    levanta excepcao, para um sensor em falta nao derrubar o intervalo
+    todo.
+    """
+    if v_arr is None or len(v_arr) == 0 or t_arr is None or len(t_arr) == 0:
+        return None, None, None
+    if len(v_arr) != len(t_arr):
+        n = min(len(v_arr), len(t_arr))
+        v_arr, t_arr = v_arr[:n], t_arr[:n]
+
+    limpo = _remover_artefatos(t_arr, v_arr, tipo_metrica=tipo_metrica)
+    suave = _moving_average(limpo, janela_ma_s, t_arr)
+    validos = suave[np.isfinite(suave)]
+    if len(validos) == 0:
+        return None, None, None
+
+    return (float(np.min(validos)), float(np.mean(validos)),
+            float(np.max(validos)))
+
+
+def _extrair_metricas_60s(t_arr, hr_arr, resp_arr, smo2_arr, dfa1_arr,
+                          thb_arr=None):
+    """Min/media/max dos ultimos 60s de WORK, por metrica.
+
+    FASE B: antes so se guardava hr_min/avg/max, resp_avg, smo2_min e
+    dfa1_clean — o que obrigava o frontend a limitar os dropdowns. Agora
+    calculam-se as tres agregacoes para todas as metricas, para o
+    utilizador poder escolher qualquer combinacao.
+
+    Mantem-se `dfa1_clean` (= mediana) por compatibilidade com o que ja
+    esta gravado e com quem le esse campo.
     """
     resultado = {
-        'hr_max_60s': None,
-        'hr_avg_60s': None,
-        'hr_min_60s': None,
-        'resp_avg_60s': None,
-        'smo2_min_60s': None,
+        'hr_min_60s': None, 'hr_avg_60s': None, 'hr_max_60s': None,
+        'resp_min_60s': None, 'resp_avg_60s': None, 'resp_max_60s': None,
+        'smo2_min_60s': None, 'smo2_avg_60s': None, 'smo2_max_60s': None,
+        'thb_min_60s': None, 'thb_avg_60s': None, 'thb_max_60s': None,
+        'dfa1_min_60s': None, 'dfa1_avg_60s': None, 'dfa1_max_60s': None,
         'dfa1_clean': None,
         'intervalo_valido_analise': 0,
     }
-    
-    if len(t_arr) < 2:
+
+    if t_arr is None or len(t_arr) < 2:
         return resultado
-    
-    dur_total = t_arr[-1] - t_arr[0]
-    if dur_total < 60:
-        return resultado  # intervalo muito curto
-    
-    # Validar watts estável
-    if len(hr_arr) > 0:
+
+    if (t_arr[-1] - t_arr[0]) < 60:
+        return resultado   # intervalo curto demais para uma janela de 60s
+
+    if hr_arr is not None and len(hr_arr) > 0:
         resultado['intervalo_valido_analise'] = 1
-    
-    # Últimos 60 segundos
-    t_inicio_60s = max(t_arr[0], t_arr[-1] - 60)
-    mask_60s = t_arr >= t_inicio_60s
-    
-    # HR
-    if np.any(mask_60s) and len(hr_arr) > 0:
-        hr_60s = hr_arr[mask_60s]
-        hr_limpo = _remover_artefatos(t_arr[mask_60s], hr_60s, tipo_metrica='hr')
-        hr_ma = _moving_average(hr_limpo, 5, t_arr[mask_60s])
-        hr_valido = hr_ma[np.isfinite(hr_ma)]
-        if len(hr_valido) > 0:
-            resultado['hr_max_60s'] = float(np.nanmax(hr_ma))
-            resultado['hr_avg_60s'] = float(np.nanmean(hr_ma))
-            resultado['hr_min_60s'] = float(np.nanmin(hr_ma))
-    
-    # Respiração
-    if np.any(mask_60s) and len(resp_arr) > 0:
-        resp_60s = resp_arr[mask_60s]
-        resp_limpo = _remover_artefatos(t_arr[mask_60s], resp_60s, tipo_metrica='hr')
-        resp_ma = _moving_average(resp_limpo, 5, t_arr[mask_60s])
-        resp_valido = resp_ma[np.isfinite(resp_ma)]
-        if len(resp_valido) > 0:
-            resultado['resp_avg_60s'] = float(np.nanmean(resp_ma))
-    
-    # SMO2: mínimo de todo intervalo
-    if len(smo2_arr) > 0:
-        smo2_valido = smo2_arr[np.isfinite(smo2_arr)]
-        if len(smo2_valido) > 0:
-            resultado['smo2_min_60s'] = float(np.nanmin(smo2_valido))
-    
-    # DFA-α1: mediana normalizada
-    if len(dfa1_arr) > 0:
-        dfa1_limpo = _remover_artefatos(t_arr, dfa1_arr, tipo_metrica='dfa1')
-        dfa1_ma = _moving_average(dfa1_limpo, 10, t_arr)
-        dfa1_valido = dfa1_ma[np.isfinite(dfa1_ma)]
-        if len(dfa1_valido) > 0:
-            resultado['dfa1_clean'] = float(np.nanmedian(dfa1_valido))
-    
+
+    # ultimos 60 segundos do WORK
+    mask = t_arr >= max(t_arr[0], t_arr[-1] - 60)
+    if not np.any(mask):
+        return resultado
+    t_60 = t_arr[mask]
+
+    def _corta(v):
+        if v is None or len(v) == 0:
+            return None
+        return v[mask] if len(v) == len(mask) else v
+
+    for prefixo, arr, tipo, janela in (
+            ('hr',   _corta(hr_arr),   'hr',   5),
+            ('resp', _corta(resp_arr), 'hr',   5),
+            ('smo2', _corta(smo2_arr), 'hr',   5),
+            ('thb',  _corta(thb_arr),  'hr',   5),
+            ('dfa1', _corta(dfa1_arr), 'dfa1', 10)):
+        vmin, vavg, vmax = _resumo_janela(t_60, arr, tipo_metrica=tipo,
+                                          janela_ma_s=janela)
+        resultado[f'{prefixo}_min_60s'] = vmin
+        resultado[f'{prefixo}_avg_60s'] = vavg
+        resultado[f'{prefixo}_max_60s'] = vmax
+
+    # dfa1_clean = mediana da janela (campo historico, mantido)
+    if dfa1_arr is not None and len(dfa1_arr) > 0:
+        d = _corta(dfa1_arr)
+        if d is not None and len(d) == len(t_60):
+            limpo = _remover_artefatos(t_60, d, tipo_metrica='dfa1')
+            suave = _moving_average(limpo, 10, t_60)
+            validos = suave[np.isfinite(suave)]
+            if len(validos) > 0:
+                resultado['dfa1_clean'] = float(np.median(validos))
+
     return resultado
 
 
@@ -824,20 +859,20 @@ def processar_atividade(activity, conn):
                     hr_arr_work = v_hr[mask_work] if tem_hr else np.array([])
                     resp_arr_work = v_resp[mask_work] if tem_resp else np.array([])
                     smo2_arr_work = v_smo2[mask_work] if tem_smo2 else np.array([])
+                    thb_arr_work = v_thb[mask_work] if tem_thb else np.array([])
                     dfa1_arr_work = v_dfa1[mask_work] if tem_dfa1_stream else np.array([])
-                    
+
                     metricas_v2 = _extrair_metricas_60s(
-                        t_arr_work, hr_arr_work, resp_arr_work, 
-                        smo2_arr_work, dfa1_arr_work
+                        t_arr_work, hr_arr_work, resp_arr_work,
+                        smo2_arr_work, dfa1_arr_work, thb_arr_work
                     )
                     linha.update(metricas_v2)
         else:
-            # Sem streams, preencher campos v2 com None
-            linha['hr_max_60s'] = None
-            linha['hr_avg_60s'] = None
-            linha['hr_min_60s'] = None
-            linha['resp_avg_60s'] = None
-            linha['smo2_min_60s'] = None
+            # Sem streams: todos os campos da janela de 60s ficam a None,
+            # mas os valores medios da API continuam a ser gravados.
+            for _p in ('hr', 'resp', 'smo2', 'thb', 'dfa1'):
+                for _a in ('min', 'avg', 'max'):
+                    linha[f'{_p}_{_a}_60s'] = None
             linha['dfa1_clean'] = None
             linha['intervalo_valido_analise'] = 0
 

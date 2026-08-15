@@ -296,6 +296,15 @@ def _media_janela(tempos, valores, t_ini, t_fim):
     return float(np.mean(vs)) if len(vs) else None
 
 
+def _media_ultimos_30s(tempos, valores, t_ini, t_fim):
+    """Média apenas dos últimos 30s do intervalo (mais estável)."""
+    t_inicio_30s = max(t_fim - 30.0, t_ini)  # não pode ser antes de t_ini
+    mask = (tempos >= t_inicio_30s) & (tempos <= t_fim)
+    vs = valores[mask]
+    vs = vs[np.isfinite(vs)]
+    return float(np.mean(vs)) if len(vs) else None
+
+
 def _tempo_ate_percentual(tempos, valores, t_ini, t_fim, baseline, alvo, pct):
     """Segundos desde t_ini até valor cruzar baseline + pct*(alvo-baseline).
 
@@ -550,7 +559,8 @@ def processar_atividade(activity, conn):
             campos_none = ([f'lag_{prefixo}_{s}' for s in ('50', '75', '90')] +
                            [f'rec_{prefixo}_50', f'rec_{prefixo}_75',
                             f'{prefixo}_plateau_work', f'{prefixo}_baseline',
-                            f'{prefixo}_extremo', f'{prefixo}_t_extremo'])
+                            f'{prefixo}_extremo', f'{prefixo}_t_extremo',
+                            f'{prefixo}_ultimos_30s_work'])
             if not tem or t_arr is None or not len(t_arr):
                 for c in campos_none:
                     linha[c] = None
@@ -570,6 +580,8 @@ def processar_atividade(activity, conn):
             linha[f'{prefixo}_extremo'] = vals.get('extremo')
             linha[f'{prefixo}_t_extremo'] = vals.get('t_extremo')
             linha[f'{prefixo}_atingiu_plateau'] = int(bool(vals.get('atingiu_plateau')))
+            # NOVO: média dos últimos 30s do intervalo (mais estável que média do lap inteiro)
+            linha[f'{prefixo}_ultimos_30s_work'] = _media_ultimos_30s(t_arr, v_arr, t_ini, t_fim)
 
         _preencher('hr', tem_hr, t_hr, v_hr)
         _preencher('smo2', tem_smo2, t_smo2, v_smo2)

@@ -139,8 +139,15 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
     if not para_buscar:
         return {'status': 'erro', 'mensagem': 'Nenhuma métrica válida selecionada'}
     
-    todas_colunas = set(['watts_medio', 'data', 'activity_id', 'interval_num',
-                         'pace_s_km'] + list(para_buscar.values()))
+    todas_colunas = set(['watts_medio', 'data', 'activity_id', 'interval_num'])
+    # pace_s_km é opcional — criada pelo worker mas pode não existir ainda
+    try:
+        existentes = {r[1] for r in conn.execute("PRAGMA table_info(fisiologia_intervalos)")}
+        if 'pace_s_km' in existentes:
+            todas_colunas.add('pace_s_km')
+    except:
+        pass
+    todas_colunas.update(para_buscar.values())
     colunas_str = ", ".join(todas_colunas)
     
     linhas = conn.execute(
@@ -186,11 +193,12 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
         }
         
         # FASE A — pace medido (mediana da faixa), nao formula
+        # Opcional: pace_s_km pode não existir se o worker ainda não correu
         paces = []
         for j in idxs:
             try:
-                v = linhas[j]['pace_s_km']
-            except (IndexError, KeyError):
+                v = linhas[j].get('pace_s_km') if hasattr(linhas[j], 'get') else linhas[j]['pace_s_km']
+            except (IndexError, KeyError, TypeError, AttributeError):
                 v = None
             if v is not None and np.isfinite(v):
                 paces.append(float(v))

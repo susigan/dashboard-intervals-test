@@ -169,17 +169,29 @@ def api_fisiologia_processar():
 
 @app.route('/api/fisiologia/perfil_robusto/<modalidade>')
 def api_perfil_robusto(modalidade):
-    """Perfil metabólico robusta v2 — últimos 60s com artefatos removidos.
+    """Perfil metabólico robusta v2 com agregação dinâmica (Min/Max/Avg).
     
     Query params:
-      - min_n: número mínimo de intervalos (default 15)
-      - largura_bin: largura dos bins em watts (50 ou 100, default 100)
+      - largura_bin: 20, 50 ou 100 (default 50)
+      - hr, resp, smo2, dfa1: agregação (min/max/avg)
+    
+    Ex: /api/fisiologia/perfil_robusto/Row?largura_bin=50&hr=max&resp=avg&smo2=min&dfa1=avg
     """
     try:
         from tabs import tab_metabol as tm
         min_n = int(request.args.get('min_n', 15))
-        largura_bin = int(request.args.get('largura_bin', 100))
-        resultado = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, largura_bin_manual=largura_bin)
+        largura_bin = int(request.args.get('largura_bin', 50))
+        
+        # Extrair agregações dos query params
+        campos_selecionados = {}
+        for metrica in ['hr', 'resp', 'smo2', 'dfa1']:
+            agregacao = request.args.get(metrica, 'avg')
+            if agregacao not in ['min', 'max', 'avg']:
+                agregacao = 'avg'
+            campos_selecionados[metrica] = agregacao
+        
+        resultado = tm.perfil_por_modalidade(modalidade, campos_selecionados=campos_selecionados, 
+                                              min_n_total=min_n, largura_bin_manual=largura_bin)
         return jsonify(resultado)
     except Exception as e:
         import traceback
@@ -188,21 +200,22 @@ def api_perfil_robusto(modalidade):
 
 @app.route('/api/fisiologia/evolucao_robusta')
 def api_evolucao_robusta():
-    """Evolução temporal robusta v2 de uma métrica.
+    """Evolução temporal com agregação dinâmica.
     
     Query params:
-      - modalidade: Row, Bike, Ski, Run
-      - campo: hr_max_60s, hr_avg_60s, resp_avg_60s, smo2_min_60s, dfa1_clean
-      - watts_min: (opcional) filtro watts mínimo
-      - watts_max: (opcional) filtro watts máximo
+      - modalidade: str
+      - metrica: hr, resp, smo2, dfa1
+      - agregacao: min, max, avg
+      - watts_min, watts_max: filtros opcionais
     """
     try:
         from tabs import tab_metabol as tm
         modalidade = request.args.get('modalidade', 'Row')
-        campo = request.args.get('campo', 'hr_max_60s')
+        metrica = request.args.get('metrica', 'hr')
+        agregacao = request.args.get('agregacao', 'avg')
         watts_min = request.args.get('watts_min', type=float, default=None)
         watts_max = request.args.get('watts_max', type=float, default=None)
-        resultado = tm.evolucao_temporal(modalidade, campo, watts_min, watts_max)
+        resultado = tm.evolucao_temporal(modalidade, metrica, agregacao, watts_min, watts_max)
         return jsonify(resultado)
     except Exception as e:
         import traceback

@@ -72,16 +72,38 @@ def _conn():
     conn.row_factory = sqlite3.Row
     return conn
 
-def _watts_para_pace(watts, modalidade='Row'):
-    """Converte watts para pace (min:ss) — Row/Ski."""
-    if modalidade not in ['Row', 'Ski']:
+def _fmt_pace(segundos):
+    """Segundos -> 'm:ss'. None se o valor nao fizer sentido."""
+    if segundos is None:
         return None
-    if watts <= 0:
+    try:
+        segundos = float(segundos)
+    except (TypeError, ValueError):
         return None
-    pace_seg = 500.0 / ((watts / 2.8) ** (1/3))
-    min_val = int(pace_seg // 60)
-    seg_val = int(pace_seg % 60)
-    return f'{min_val}:{seg_val:02d}'
+    if not np.isfinite(segundos) or segundos <= 0 or segundos > 3600:
+        return None
+    return f'{int(segundos // 60)}:{int(segundos % 60):02d}'
+
+
+def _pace_da_faixa(pace_s_km_mediano, modalidade):
+    """Formata o pace medido para a unidade convencional da modalidade.
+
+    Row/Ski usam /500m (metade do pace/km). Run usa /km. Bike nao usa
+    pace — quem pedala pensa em watts e km/h, nao em min/km.
+    """
+    if pace_s_km_mediano is None:
+        return None
+
+    if modalidade in ('Row', 'Ski'):
+        txt = _fmt_pace(pace_s_km_mediano / 2.0)
+        return f'{txt} /500m' if txt else None
+
+    if modalidade == 'Run':
+        txt = _fmt_pace(pace_s_km_mediano)
+        return f'{txt} /km' if txt else None
+
+    return None
+
 
 def modalidades_disponiveis():
     conn = _conn()
@@ -117,7 +139,8 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
     if not para_buscar:
         return {'status': 'erro', 'mensagem': 'Nenhuma métrica válida selecionada'}
     
-    todas_colunas = set(['watts_medio', 'data', 'activity_id', 'interval_num'] + list(para_buscar.values()))
+    todas_colunas = set(['watts_medio', 'data', 'activity_id', 'interval_num',
+                         'pace_s_km'] + list(para_buscar.values()))
     colunas_str = ", ".join(todas_colunas)
     
     linhas = conn.execute(
@@ -162,10 +185,20 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
             'n_intervalos': len(idxs),
         }
         
-        if modalidade in ['Row', 'Ski']:
-            pace = _watts_para_pace(watts_centro, modalidade)
-            if pace:
-                faixa['pace_medio'] = pace
+        # FASE A — pace medido (mediana da faixa), nao formula
+        paces = []
+        for j in idxs:
+            try:
+                v = linhas[j]['pace_s_km']
+            except (IndexError, KeyError):
+                v = None
+            if v is not None and np.isfinite(v):
+                paces.append(float(v))
+        if paces:
+            pace_txt = _pace_da_faixa(float(np.median(paces)), modalidade)
+            if pace_txt:
+                faixa['pace_medio'] = pace_txt
+                faixa['n_pace'] = len(paces)
         
         # Para cada métrica selecionada (VALIDADA)
         for chave_unica, coluna_db in para_buscar.items():
@@ -417,7 +450,8 @@ function drawPerfil(){
   return;
  }
  
- const PL = 100, PR = 120, PB = 40, PT = 25, w = W - PL - PR, h = H - PT - PB;
+ const temPace = faixas.some(f => f.pace_medio);
+ const PL = 100, PR = 120, PB = 40, PT = temPace ? 46 : 25, w = W - PL - PR, h = H - PT - PB;
  const xs = faixas.map(f => f.watts_centro);
  const xmin = Math.min.apply(null, xs), xmax = Math.max.apply(null, xs);
  const X = v => xmax > xmin ? PL + w*(v-xmin)/(xmax-xmin) : PL + w/2;
@@ -495,6 +529,21 @@ function drawPerfil(){
  faixas.forEach(function(f){
   g.fillText(Math.round(f.watts_centro)+'W', X(f.watts_centro), H-20);
  });
+
+ // FASE A — faixa de pace medido, por cima do eixo dos watts
+ if(temPace){
+  g.fillStyle = '#FF6B6B';
+  g.font = 'bold 10px sans-serif';
+  g.textAlign = 'left';
+  g.fillText('PACE', 8, 16);
+  g.font = '9px sans-serif';
+  g.textAlign = 'center';
+  const passo = faixas.length > 10 ? 2 : 1;
+  faixas.forEach(function(f, i){
+   if(i % passo !== 0 || !f.pace_medio) return;
+   g.fillText(f.pace_medio, X(f.watts_centro), 16);
+  });
+ }
  
  g.font = '9px sans-serif';
  g.textAlign = 'right';
@@ -526,6 +575,7 @@ function drawPerfil(){
   
   if(faixa){
    let txt = '<b>'+faixa.faixa_watts+'</b><br/>'+faixa.n_intervalos+' int.<br/>';
+   if(faixa.pace_medio) txt += '<span style="color:#FF6B6B">Pace: '+faixa.pace_medio+'</span><br/>';
    vis.forEach(function(m){
     const chave = m+'_'+camposSelecionados[m];
     if(faixa[chave]){

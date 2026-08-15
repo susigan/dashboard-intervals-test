@@ -933,6 +933,47 @@ def api_processar():
     except Exception as e:
         return jsonify({'status': 'erro', 'erro': str(e)}), 500
 
+
+
+@app.route('/api/fisiologia/dinamica_resposta')
+def api_dinamica_resposta():
+    """Dinâmica de resposta: lag/recuperação por faixa de watts.
+    
+    Query params:
+      - modalidade: Row, Ski, Run, Bike
+      - metrica: hr, resp, smo2, dfa1
+      - fase: lag ou rec
+      - largura_bin: tamanho do bin (default 50)
+      - min_n: mínimo de intervalos (default 15)
+    """
+    try:
+        from tabs import tab_metabol as tm
+    except ImportError:
+        return jsonify({'status': 'erro', 'mensagem': 'FASE C não carregada'}), 501
+    
+    modalidade = request.args.get('modalidade', 'Row')
+    metrica = request.args.get('metrica', 'hr')
+    fase = request.args.get('fase', 'lag')
+    
+    try:
+        largura_bin = int(request.args.get('largura_bin', 50))
+        min_n = int(request.args.get('min_n', 15))
+    except (TypeError, ValueError):
+        largura_bin = 50
+        min_n = 15
+    
+    try:
+        resultado = tm.dinamica_resposta(modalidade, metrica, fase, largura_bin, min_n)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'status': 'erro',
+            'erro': str(e),
+            'trace': traceback.format_exc()
+        }), 500
+
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))
     print(f"Starting server on port {port}")

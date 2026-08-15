@@ -1,771 +1,914 @@
-"""tab_metabol.py — CORRIGIDO: apenas campos que existem na BD."""
+#!/usr/bin/env python3
+"""Intervals.icu Dashboard — servidor Flask.
 
-from flask import jsonify, request
-import numpy as np
-import sqlite3
-from datetime import datetime
-
-import drive_db_fisiologia as ddf
-from tabs.base import page
-
-SLUG = 'metabol'
-
-# APENAS os campos que REALMENTE existem na BD:
-# hr_max_60s, hr_avg_60s (sem hr_min!)
-# resp_avg_60s (sem resp_min, resp_max!)
-# smo2_min_60s (sem smo2_max, smo2_avg!)
-# dfa1_clean (apenas um valor)
-
-METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1']
-
-# MAP REAL: só os que existem!
-CAMPOS_DB = {
-    'hr': {
-        'max': 'hr_max_60s',
-        'avg': 'hr_avg_60s',
-        # 'min' NÃO EXISTE
-    },
-    'resp': {
-        'avg': 'resp_avg_60s',
-        # 'min', 'max' NÃO EXISTEM
-    },
-    'smo2': {
-        'min': 'smo2_min_60s',
-        # 'max', 'avg' NÃO EXISTEM
-    },
-    'dfa1': {
-        'avg': 'dfa1_clean',
-        # 'min', 'max' NÃO EXISTEM (é um único valor)
-    },
-}
-
-# AGREGAÇÕES DISPONÍVEIS por métrica
-AGREGACOES_VALIDAS = {
-    'hr': ['max', 'avg'],
-    'resp': ['avg'],
-    'smo2': ['min'],
-    'dfa1': ['avg'],
-}
-
-CORES_METAB = {
-    'hr': '#E74C3C',
-    'resp': '#1ABC9C',
-    'smo2': '#F39C12',
-    'dfa1': '#9B59B6',
-}
-
-LABELS_METAB = {
-    'hr': 'HR (bpm)',
-    'resp': 'Respiração (rpm)',
-    'smo2': 'SmO₂ (%)',
-    'dfa1': 'DFA-α1 (clean)',
-}
-
-LABELS_AGREGACAO = {
-    'min': 'Mín',
-    'max': 'Máx',
-    'avg': 'Méd',
-}
-
-def _conn():
-    conn = ddf.get_conn()
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def _watts_para_pace(watts, modalidade='Row'):
-    """Converte watts para pace (min:ss) — Row/Ski."""
-    if modalidade not in ['Row', 'Ski']:
-        return None
-    if watts <= 0:
-        return None
-    pace_seg = 500.0 / ((watts / 2.8) ** (1/3))
-    min_val = int(pace_seg // 60)
-    seg_val = int(pace_seg % 60)
-    return f'{min_val}:{seg_val:02d}'
-
-def modalidades_disponiveis():
-    conn = _conn()
-    resultado = conn.execute("""
-        SELECT modalidade, COUNT(*) as n, COUNT(DISTINCT data) as n_dias, 
-               COUNT(DISTINCT activity_id) as n_atividades
-        FROM fisiologia_intervalos
-        WHERE valido = 1 AND watts_medio IS NOT NULL
-        GROUP BY modalidade
-        ORDER BY modalidade
-    """).fetchall()
-    return [
-        {'modalidade': r['modalidade'], 'n': r['n'], 'n_dias': r['n_dias'], 'n_atividades': r['n_atividades']}
-        for r in resultado
-    ]
-
-def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largura_bin_manual=50):
-    """
-    Perfil com PONDERAÇÃO.
-    campos_selecionados: dict {metrica_base: agregacao}
-    Ex: {'hr': 'max', 'resp': 'avg', 'smo2': 'min', 'dfa1': 'avg'}
-    """
-    conn = _conn()
-    
-    # VALIDAR que as agregações são válidas
-    para_buscar = {}
-    for metrica_base, agregacao in campos_selecionados.items():
-        if agregacao in AGREGACOES_VALIDAS.get(metrica_base, []):
-            coluna_db = CAMPOS_DB[metrica_base][agregacao]
-            para_buscar[f'{metrica_base}_{agregacao}'] = coluna_db
-        # Se agregação inválida, ignora (não inclui na query)
-    
-    if not para_buscar:
-        return {'status': 'erro', 'mensagem': 'Nenhuma métrica válida selecionada'}
-    
-    todas_colunas = set(['watts_medio', 'data', 'activity_id', 'interval_num'] + list(para_buscar.values()))
-    colunas_str = ", ".join(todas_colunas)
-    
-    linhas = conn.execute(
-        f"""SELECT {colunas_str}
-           FROM fisiologia_intervalos
-           WHERE modalidade = ? AND valido = 1 AND watts_medio IS NOT NULL
-           ORDER BY data DESC, activity_id DESC, interval_num DESC""",
-        (modalidade,)
-    ).fetchall()
-
-    if len(linhas) < min_n_total:
-        return {'status': 'dados_insuficientes', 'modalidade': modalidade, 'n_disponivel': len(linhas)}
-
-    n_linhas = len(linhas)
-    corte = int(n_linhas * 0.3)
-    pesos = np.ones(n_linhas)
-    pesos[:corte] = 1.5
-
-    watts = np.array([l['watts_medio'] for l in linhas])
-    wmin, wmax = float(watts.min()), float(watts.max())
-
-    # Gerar bins
-    inicio = int(wmin // largura_bin_manual) * largura_bin_manual
-    fim = int(wmax // largura_bin_manual + 1) * largura_bin_manual
-    limites = list(np.arange(inicio, fim + largura_bin_manual, largura_bin_manual))
-
-    faixas_saida = []
-    for i in range(len(limites) - 1):
-        lo, hi = limites[i], limites[i + 1]
-        ultima = (i == len(limites) - 2)
-        mask = (watts >= lo) & ((watts <= hi) if ultima else (watts < hi))
-        idxs = np.where(mask)[0]
-        if len(idxs) == 0:
-            continue
-
-        watts_centro = round((lo + hi) / 2, 1)
-        faixa = {
-            'faixa_watts': f'{lo:.0f}-{hi:.0f}W',
-            'watts_min': round(float(lo), 1),
-            'watts_max': round(float(hi), 1),
-            'watts_centro': watts_centro,
-            'n_intervalos': len(idxs),
-        }
-        
-        if modalidade in ['Row', 'Ski']:
-            pace = _watts_para_pace(watts_centro, modalidade)
-            if pace:
-                faixa['pace_medio'] = pace
-        
-        # Para cada métrica selecionada (VALIDADA)
-        for chave_unica, coluna_db in para_buscar.items():
-            valores = [linhas[j][coluna_db] for j in idxs]
-            pesos_faixa = pesos[idxs]
-            
-            vs_validos = []
-            ps_validos = []
-            for v, p in zip(valores, pesos_faixa):
-                if v is not None and np.isfinite(v):
-                    vs_validos.append(v)
-                    ps_validos.append(p)
-            
-            if len(vs_validos) > 0:
-                vs_arr = np.array(vs_validos)
-                ps_arr = np.array(ps_validos)
-                
-                vs_sorted_idx = np.argsort(vs_arr)
-                vs_sorted = vs_arr[vs_sorted_idx]
-                ps_sorted = ps_arr[vs_sorted_idx]
-                
-                ps_cum = np.cumsum(ps_sorted) / np.sum(ps_sorted)
-                
-                faixa[chave_unica] = {
-                    'p10': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.10), len(vs_sorted)-1)]), 2),
-                    'p25': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.25), len(vs_sorted)-1)]), 2),
-                    'p50': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.50), len(vs_sorted)-1)]), 2),
-                    'p75': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.75), len(vs_sorted)-1)]), 2),
-                    'p90': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.90), len(vs_sorted)-1)]), 2),
-                    'n': len(vs_validos),
-                }
-        
-        faixas_saida.append(faixa)
-
-    return {
-        'status': 'ok',
-        'modalidade': modalidade,
-        'n_intervalos_total': len(linhas),
-        'campos_selecionados': campos_selecionados,
-        'faixas': faixas_saida,
-    }
-
-def evolucao_temporal(modalidade, metrica, agregacao, watts_min=None, watts_max=None, min_por_periodo=3):
-    """Evolução temporal com agregação dinâmica."""
-    
-    # VALIDAR agregação
-    if agregacao not in AGREGACOES_VALIDAS.get(metrica, []):
-        return {'status': 'erro', 'mensagem': f'agregacao inválida: {metrica} não tem {agregacao}'}
-    
-    coluna_db = CAMPOS_DB[metrica][agregacao]
-    
-    conn = _conn()
-    cond = ["modalidade = ?", "valido = 1", f"{coluna_db} IS NOT NULL"]
-    params = [modalidade]
-
-    if watts_min is not None:
-        cond.append("watts_medio >= ?")
-        params.append(watts_min)
-    if watts_max is not None:
-        cond.append("watts_medio <= ?")
-        params.append(watts_max)
-
-    linhas = conn.execute(
-        f"""SELECT data, {coluna_db} as valor FROM fisiologia_intervalos
-           WHERE {' AND '.join(cond)} ORDER BY data""",
-        tuple(params)
-    ).fetchall()
-
-    if not linhas:
-        return {'status': 'dados_insuficientes', 'n_disponivel': 0}
-
-    grupos = {}
-    for l in linhas:
-        p = l['data'][:7]
-        grupos.setdefault(p, []).append(l['valor'])
-
-    saida = []
-    for periodo in sorted(grupos.keys()):
-        vs = [v for v in grupos[periodo] if v is not None and np.isfinite(v)]
-        if len(vs) < min_por_periodo:
-            continue
-        
-        vs_arr = np.array(vs)
-        saida.append({
-            'periodo': periodo,
-            'p10': round(float(np.percentile(vs_arr, 10)), 2),
-            'p25': round(float(np.percentile(vs_arr, 25)), 2),
-            'p50': round(float(np.percentile(vs_arr, 50)), 2),
-            'p75': round(float(np.percentile(vs_arr, 75)), 2),
-            'p90': round(float(np.percentile(vs_arr, 90)), 2),
-            'n': len(vs),
-        })
-
-    return {
-        'status': 'ok',
-        'metrica': metrica,
-        'agregacao': agregacao,
-        'periodos': saida,
-    }
-
-BODY = r"""
-<h1>Metabolismo</h1>
-
-<div class="tabs" style="border-bottom:1px solid #21262d; margin-bottom:20px;">
-  <button class="tab-btn active" data-tab="perfil_watts">Perfil por Watts</button>
-  <button class="tab-btn" data-tab="outras">Outras Análises</button>
-</div>
-
-<div id="perfil_watts" class="tab-content active">
-
-<div class="controls">
-  <label class="sel">Modalidade
-    <select id="modalidade"></select></label>
-  <label class="sel">Bin size (watts)
-    <select id="larguraBin">
-      <option value="20">20W</option>
-      <option value="50" selected>50W</option>
-      <option value="100">100W</option>
-    </select></label>
-</div>
-
-<div class="controls" id="agregacaoControls"></div>
-
-<h2>Perfil metabólico — ponderado (últimos 30% com 1.5x peso)</h2>
-<div id="tooltip" style="position:absolute;background:#000;color:#fff;padding:8px;border-radius:3px;font-size:11px;display:none;z-index:1000;pointer-events:none;border:1px solid #666;white-space:nowrap;"></div>
-<div class="legend" id="lgPerfil"></div>
-<div class="chartbox">
-  <canvas id="chPerfil" height="300"></canvas>
-</div>
-
-<h2>Evolução ao longo do tempo</h2>
-<div class="controls">
-  <label class="sel">Métrica
-    <select id="metricaEvolucao"></select></label>
-  <label class="sel">Agregação
-    <select id="agregacaoEvolucao"></select></label>
-  <label class="sel">Watts min <input type="number" id="wattsMin" value="200" style="width:70px"></label>
-  <label class="sel">Watts max <input type="number" id="wattsMax" value="350" style="width:70px"></label>
-  <button onclick="carregarEvolucao()">Actualizar</button>
-</div>
-<div class="chartbox">
-  <canvas id="chEvolucao" height="240"></canvas>
-</div>
-
-</div>
-
-<div id="outras" class="tab-content" style="display:none;">
-  <p style="color:#8b949e;">Outras análises virão aqui...</p>
-</div>
-
-<style>
-.tabs { display:flex; gap:20px; }
-.tab-btn { background:none; border:none; color:#8b949e; padding:10px 0; cursor:pointer; font-size:14px; border-bottom:2px solid transparent; }
-.tab-btn.active { color:#fff; border-bottom-color:#fff; }
-.tab-content { display:none; }
-.tab-content.active { display:block; }
-</style>
+Estrutura:
+  app.py          rotas
+  config.py       constantes (TYPE_MAP, cores, campos)
+  api_client.py   cliente da API + cache + normalizacao
+  helpers.py      ActivityProcessor
+  tabs/           uma tab por ficheiro
 """
 
-JS = r"""
-let MODALIDADES = [];
-let PERFIL = null;
-let EVOLUCAO = null;
-let isLoadingPerfil = false;
-let isLoadingEvolucao = false;
+import os
+import sys
+import logging
+from flask import jsonify, request, Response
+from dotenv import load_dotenv
 
-const CORES_METAB = {
- hr:'#E74C3C', resp:'#1ABC9C', smo2:'#F39C12', dfa1:'#9B59B6',
-};
-const LABELS_METAB = {
- hr:'HR (bpm)', resp:'Respiração (rpm)', smo2:'SmO₂ (%)', dfa1:'DFA-α1 (clean)',
-};
-const LABELS_AGREGACAO = {
- min:'Mín', max:'Máx', avg:'Méd',
-};
-const METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1'];
+load_dotenv()
 
-// AGREGAÇÕES REAIS (apenas as que existem na BD)
-const AGREGACOES_VALIDAS = {
- hr: ['max', 'avg'],
- resp: ['avg'],
- smo2: ['min'],
- dfa1: ['avg'],
-};
+from config import API_KEY, ATHLETE_ID, ANOS_HISTORICO
 
-let chartState = {chPerfil: {}, chEvolucao: {}};
-let camposSelecionados = {hr:'max', resp:'avg', smo2:'min', dfa1:'avg'};
+if not API_KEY:
+    print("ERRO: INTERVALS_ICU_API_KEY nao configurada")
+    sys.exit(1)
 
-function ctx(canvasId, h){
- const canvas = document.getElementById(canvasId);
- if(!canvas) return null;
- canvas.height = h;
- const rect = canvas.getBoundingClientRect();
- canvas.width = rect.width;
- const g = canvas.getContext('2d');
- return {g: g, W: canvas.width, H: canvas.height};
-}
+print(f"Config carregada | ATHLETE_ID: {ATHLETE_ID} | historico: {ANOS_HISTORICO} anos")
 
-function noData(g, W, H, msg){
- g.fillStyle = '#555';
- g.font = '14px sans-serif';
- g.textAlign = 'center';
- g.fillText(msg, W/2, H/2);
-}
+from flask import Flask
+import db
+import sync
+from datetime import datetime, timedelta
+from api_client import (fetch_activities, cache_info, invalidar_cache,
+                        fetch_da_api)
+from tabs import (tab_volume, tab_atividades, tab_detalhe,
+                  tab_recordes, tab_pmc, tab_corporal, tab_metabol)
 
-function ligado(canvasId, k){
- if(!chartState[canvasId]) chartState[canvasId] = {};
- if(chartState[canvasId][k] === undefined) chartState[canvasId][k] = true;
- return chartState[canvasId][k];
-}
+if db.ENABLED:
+    db.init_schema()
+    print(f"Fonte de dados: {db.DRIVER} (com a API como fallback)")
+else:
+    print("Fonte de dados: API Intervals.icu (DATABASE_URL nao definida)")
 
-function alternar(canvasId, k){
- if(!chartState[canvasId]) chartState[canvasId] = {};
- chartState[canvasId][k] = !chartState[canvasId][k];
-}
+app = Flask(__name__)
+app.config['JSON_SORT_KEYS'] = False
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
-function drawPerfil(){
- console.log('[drawPerfil] Começando. PERFIL:', PERFIL?.status);
- const o = ctx('chPerfil', 300);
- if(!o) return;
- const g = o.g, W = o.W, H = o.H;
- 
- if(!PERFIL || PERFIL.status !== 'ok'){
-  console.warn('[drawPerfil] Erro:', PERFIL);
-  noData(g, W, H, PERFIL?.mensagem || 'Sem dados');
-  return;
- }
- 
- const faixas = PERFIL.faixas;
- if(!faixas || !faixas.length){
-  noData(g, W, H, 'Sem faixas');
-  return;
- }
- 
- const disponiveis = Object.keys(camposSelecionados).filter(m => faixas.some(f => f[m+'_'+camposSelecionados[m]]));
- 
- document.getElementById('lgPerfil').innerHTML = disponiveis.map(function(m){
-  const off = !ligado('chPerfil', m);
-  const label = LABELS_METAB[m] + ' (' + LABELS_AGREGACAO[camposSelecionados[m]] + ')';
-  return '<span class="tog'+(off?' off':'')+'" data-c="chPerfil" data-k="'+m+'" style="cursor:pointer;margin-right:15px;"><i style="display:inline-block;width:10px;height:10px;background:'+CORES_METAB[m]+';margin-right:5px;"></i>'+label+'</span>';
- }).join('');
- document.querySelectorAll('#lgPerfil span.tog').forEach(function(sp){
-  sp.onclick = function(){ alternar(sp.dataset.c, sp.dataset.k); drawPerfil(); };
- });
- 
- const vis = disponiveis.filter(m => ligado('chPerfil', m));
- if(!vis.length){
-  noData(g, W, H, 'Nenhuma métrica');
-  return;
- }
- 
- const PL = 100, PR = 120, PB = 40, PT = 25, w = W - PL - PR, h = H - PT - PB;
- const xs = faixas.map(f => f.watts_centro);
- const xmin = Math.min.apply(null, xs), xmax = Math.max.apply(null, xs);
- const X = v => xmax > xmin ? PL + w*(v-xmin)/(xmax-xmin) : PL + w/2;
- 
- function hexRgba(hex, a){
-  const h = hex.replace('#', '');
-  return 'rgba('+parseInt(h.substring(0,3),16)+','+parseInt(h.substring(3,5),16)+','+parseInt(h.substring(5,7),16)+','+a+')';
- }
- 
- const escalas = {};
- vis.forEach(function(m){
-  const pts = faixas.filter(f => f[m+'_'+camposSelecionados[m]]);
-  let a = Infinity, b = -Infinity;
-  pts.forEach(function(f){
-   const q = f[m+'_'+camposSelecionados[m]];
-   if(q.p10 < a) a = q.p10;
-   if(q.p90 > b) b = q.p90;
-  });
-  if(!isFinite(a)){ a = 0; b = 1; }
-  const marg = (b-a)*0.15 || 1;
-  a -= marg; b += marg;
-  const Y = v => PT + h - (v-a)/(b-a)*h;
-  escalas[m] = {a: a, b: b, Y: Y, pts: pts, range_vis: {vmin: a, vmax: b}};
- });
- 
- g.strokeStyle = '#21262d';
- g.lineWidth = 1;
- for(let k = 0; k <= 2; k++){
-  const y = PT + h*k/2;
-  g.beginPath();
-  g.moveTo(PL, y);
-  g.lineTo(PL+w, y);
-  g.stroke();
- }
- 
- vis.forEach(function(m){
-  const esc = escalas[m];
-  const pts = esc.pts;
-  const chave = m+'_'+camposSelecionados[m];
-  
-  g.fillStyle = hexRgba(CORES_METAB[m], 0.08);
-  g.beginPath();
-  pts.forEach(function(f, j){
-   const y = esc.Y(f[chave].p75);
-   if(j === 0) g.moveTo(X(f.watts_centro), y);
-   else g.lineTo(X(f.watts_centro), y);
-  });
-  for(let j = pts.length-1; j >= 0; j--){
-   g.lineTo(X(pts[j].watts_centro), esc.Y(pts[j][chave].p25));
-  }
-  g.closePath();
-  g.fill();
-  
-  g.strokeStyle = CORES_METAB[m];
-  g.lineWidth = 2.5;
-  g.beginPath();
-  pts.forEach(function(f, j){
-   const y = esc.Y(f[chave].p50);
-   if(j === 0) g.moveTo(X(f.watts_centro), y);
-   else g.lineTo(X(f.watts_centro), y);
-  });
-  g.stroke();
-  
-  g.fillStyle = CORES_METAB[m];
-  pts.forEach(function(f){
-   g.beginPath();
-   g.arc(X(f.watts_centro), esc.Y(f[chave].p50), 3.5, 0, 7);
-   g.fill();
-  });
- });
- 
- g.fillStyle = '#8b949e';
- g.font = '10px sans-serif';
- g.textAlign = 'center';
- faixas.forEach(function(f){
-  g.fillText(Math.round(f.watts_centro)+'W', X(f.watts_centro), H-20);
- });
- 
- g.font = '9px sans-serif';
- g.textAlign = 'right';
- vis.forEach(function(m, idx){
-  const esc = escalas[m];
-  const cor = CORES_METAB[m];
-  for(let k = 0; k <= 2; k++){
-   const val = (esc.range_vis.vmax - (esc.range_vis.vmax-esc.range_vis.vmin)*k/2).toFixed(1);
-   const y = PT + h*k/2;
-   g.fillStyle = cor;
-   g.fillText(val, PL - 10 - idx*50, y+3);
-  }
- });
- 
- const tooltip = document.getElementById('tooltip');
- const canvas = document.getElementById('chPerfil');
- canvas.onmousemove = function(evt){
-  const rect = canvas.getBoundingClientRect();
-  const mx = evt.clientX - rect.left;
-  const my = evt.clientY - rect.top;
-  
-  if(mx < PL || mx > PL+w || my < PT || my > PT+h){
-   tooltip.style.display = 'none';
-   return;
-  }
-  
-  const watts = xmin + (mx-PL)/w*(xmax-xmin);
-  const faixa = faixas.find(f => Math.abs(f.watts_centro - watts) < 30);
-  
-  if(faixa){
-   let txt = '<b>'+faixa.faixa_watts+'</b><br/>'+faixa.n_intervalos+' int.<br/>';
-   vis.forEach(function(m){
-    const chave = m+'_'+camposSelecionados[m];
-    if(faixa[chave]){
-     txt += LABELS_METAB[m]+' ('+LABELS_AGREGACAO[camposSelecionados[m]]+'): '+faixa[chave].p50+'<br/>';
-    }
-   });
-   tooltip.innerHTML = txt;
-   tooltip.style.left = (evt.clientX + 10) + 'px';
-   tooltip.style.top = (evt.clientY + 10) + 'px';
-   tooltip.style.display = 'block';
-  } else {
-   tooltip.style.display = 'none';
-  }
- };
-}
 
-function drawEvolucao(){
- const o = ctx('chEvolucao', 240);
- if(!o) return;
- const g = o.g, W = o.W, H = o.H;
- 
- if(!EVOLUCAO || EVOLUCAO.status !== 'ok'){
-  noData(g, W, H, 'Sem dados');
-  return;
- }
- 
- const periodos = EVOLUCAO.periodos || [];
- if(!periodos.length){
-  noData(g, W, H, 'Sem dados');
-  return;
- }
- 
- const metrica = EVOLUCAO.metrica;
- const cor = CORES_METAB[metrica] || '#999';
- const valores = periodos.map(p => p.p50);
- const vmin = Math.min.apply(null, valores);
- const vmax = Math.max.apply(null, valores);
- const vmarg = (vmax - vmin) * 0.15 || 1;
- const va = vmin - vmarg;
- const vb = vmax + vmarg;
- 
- const PL = 70, PR = 80, PB = 30, PT = 20, w = W - PL - PR, h = H - PT - PB;
- const Y = v => PT + h - (v - va)/(vb - va)*h;
- 
- g.strokeStyle = '#21262d';
- g.lineWidth = 1;
- for(let k = 0; k <= 2; k++){
-  const y = PT + h*k/2;
-  g.beginPath();
-  g.moveTo(PL, y);
-  g.lineTo(PL+w, y);
-  g.stroke();
- }
- 
- g.fillStyle = 'rgba('+parseInt(cor.substring(1,3),16)+','+parseInt(cor.substring(3,5),16)+','+parseInt(cor.substring(5,7),16)+',0.12)';
- g.beginPath();
- periodos.forEach(function(p, i){
-  const x = PL + w*i/(periodos.length-1||1);
-  if(i === 0) g.moveTo(x, Y(p.p75));
-  else g.lineTo(x, Y(p.p75));
- });
- for(let i = periodos.length-1; i >= 0; i--){
-  const x = PL + w*i/(periodos.length-1||1);
-  g.lineTo(x, Y(periodos[i].p25));
- }
- g.closePath();
- g.fill();
- 
- g.strokeStyle = cor;
- g.lineWidth = 2.5;
- g.beginPath();
- periodos.forEach(function(p, i){
-  const x = PL + w*i/(periodos.length-1||1);
-  if(i === 0) g.moveTo(x, Y(p.p50));
-  else g.lineTo(x, Y(p.p50));
- });
- g.stroke();
- 
- g.fillStyle = cor;
- periodos.forEach(function(p, i){
-  const x = PL + w*i/(periodos.length-1||1);
-  g.beginPath();
-  g.arc(x, Y(p.p50), 3, 0, 7);
-  g.fill();
- });
- 
- g.fillStyle = '#8b949e';
- g.font = '9px sans-serif';
- g.textAlign = 'center';
- const step = Math.max(1, Math.floor(periodos.length / 8));
- periodos.forEach(function(p, i){
-  if(i % step !== 0) return;
-  g.fillText(p.periodo, PL + w*i/(periodos.length-1||1), H-10);
- });
- 
- g.fillStyle = cor;
- g.font = '9px sans-serif';
- g.textAlign = 'right';
- for(let k = 0; k <= 2; k++){
-  const val = (vb - (vb-va)*k/2).toFixed(1);
-  const y = PT + h*k/2;
-  g.fillText(val, PL-5, y+3);
- }
-}
+# ── Paginas ───────────────────────────────────────────────────────────────
 
-async function carregarPerfil(){
- if(isLoadingPerfil) return;
- isLoadingPerfil = true;
- 
- const modalidade = document.getElementById('modalidade').value;
- const largura = document.getElementById('larguraBin').value;
- const params = new URLSearchParams();
- params.append('largura_bin', largura);
- Object.entries(camposSelecionados).forEach(([m, a]) => params.append(m, a));
- 
- const url = '/api/fisiologia/perfil_robusto/'+modalidade+'?'+params.toString();
- console.log('[carregarPerfil]', url);
- 
- try{
-  const d = await fetch(url).then(r => r.json());
-  console.log('[carregarPerfil] OK:', d);
-  PERFIL = d;
-  drawPerfil();
- }catch(e){
-  console.error('[carregarPerfil] ERRO:', e);
-  PERFIL = {status: 'erro', mensagem: e.message};
-  drawPerfil();
- }finally{
-  isLoadingPerfil = false;
- }
-}
+@app.route('/')
+def page_volume():
+    return tab_volume.render()
 
-async function carregarEvolucao(){
- if(isLoadingEvolucao) return;
- isLoadingEvolucao = true;
- 
- const metrica = document.getElementById('metricaEvolucao').value;
- const agregacao = document.getElementById('agregacaoEvolucao').value;
- const modalidade = document.getElementById('modalidade').value;
- const wmin = document.getElementById('wattsMin').value || null;
- const wmax = document.getElementById('wattsMax').value || null;
- const url = '/api/fisiologia/evolucao_robusta?modalidade='+modalidade+'&metrica='+metrica+'&agregacao='+agregacao+(wmin?'&watts_min='+wmin:'')+(wmax?'&watts_max='+wmax:'');
- 
- console.log('[carregarEvolucao]', url);
- 
- try{
-  const d = await fetch(url).then(r => r.json());
-  console.log('[carregarEvolucao] OK:', d);
-  EVOLUCAO = d;
-  drawEvolucao();
- }catch(e){
-  console.error('[carregarEvolucao] ERRO:', e);
-  EVOLUCAO = {status: 'erro'};
-  drawEvolucao();
- }finally{
-  isLoadingEvolucao = false;
- }
-}
 
-async function load(){
- try{
-  const d = await fetch('/api/metabol').then(r => r.json());
-  MODALIDADES = d.modalidades || [];
-  if(!MODALIDADES.length) return;
-  
-  const selMod = document.getElementById('modalidade');
-  selMod.innerHTML = MODALIDADES.map(m => '<option value="'+m.modalidade+'">'+m.modalidade+' ('+m.n+')</option>').join('');
-  selMod.onchange = function(){
-   console.log('[selMod.onchange]', this.value);
-   carregarPerfil();
-   carregarEvolucao();
-  };
-  
-  const agregControls = document.getElementById('agregacaoControls');
-  agregControls.innerHTML = METRICAS_BASE.map(m => {
-   const aggs = AGREGACOES_VALIDAS[m] || [];
-   return '<label class="sel">'+LABELS_METAB[m]+': <select id="agr_'+m+'">'+
-   aggs.map(a => '<option value="'+a+'"'+(camposSelecionados[m]===a?' selected':'')+'> '+LABELS_AGREGACAO[a]+'</option>').join('')+
-   '</select></label>';
-  }).join('');
-  
-  METRICAS_BASE.forEach(m => {
-   const sel = document.getElementById('agr_'+m);
-   if(sel){
-    sel.onchange = function(){
-     console.log('[agr_'+m+'].onchange', this.value);
-     camposSelecionados[m] = this.value;
-     carregarPerfil();
-    };
-   }
-  });
-  
-  const selMetricaEvolucao = document.getElementById('metricaEvolucao');
-  selMetricaEvolucao.innerHTML = METRICAS_BASE.map(m => '<option value="'+m+'">'+LABELS_METAB[m]+'</option>').join('');
-  
-  const selAgregacaoEvolucao = document.getElementById('agregacaoEvolucao');
-  const primeiraMetrica = METRICAS_BASE[0];
-  const primeiraAgregacao = AGREGACOES_VALIDAS[primeiraMetrica]?.[0] || 'avg';
-  selAgregacaoEvolucao.innerHTML = (AGREGACOES_VALIDAS[primeiraMetrica] || []).map(a => '<option value="'+a+'">'+LABELS_AGREGACAO[a]+'</option>').join('');
-  
-  selMetricaEvolucao.onchange = function(){
-   const aggs = AGREGACOES_VALIDAS[this.value] || [];
-   selAgregacaoEvolucao.innerHTML = aggs.map(a => '<option value="'+a+'">'+LABELS_AGREGACAO[a]+'</option>').join('');
-   carregarEvolucao();
-  };
-  selAgregacaoEvolucao.onchange = carregarEvolucao;
-  
-  const selBin = document.getElementById('larguraBin');
-  selBin.onchange = function(){
-   console.log('[selBin.onchange]', this.value);
-   carregarPerfil();
-  };
-  
-  carregarPerfil();
-  carregarEvolucao();
- }catch(e){
-  console.error('[load] ERRO:', e);
- }
-}
+@app.route('/pmc')
+def page_pmc():
+    return tab_pmc.render()
 
-document.querySelectorAll('.tab-btn').forEach(btn => {
- btn.addEventListener('click', function(){
-  const tabName = this.dataset.tab;
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-  this.classList.add('active');
-  document.getElementById(tabName).classList.add('active');
- });
-});
 
-load();
-"""
+@app.route('/corporal')
+def page_corporal():
+    return tab_corporal.render()
 
-def api_data():
+
+@app.route('/metabol')
+def page_metabol():
+    return tab_metabol.render()
+
+
+@app.route('/atividades')
+def page_atividades():
+    return tab_atividades.render()
+
+
+@app.route('/activity/<activity_id>')
+def page_detalhe(activity_id):
+    return tab_detalhe.render(activity_id)
+
+
+# ── API por tab ───────────────────────────────────────────────────────────
+
+@app.route('/api/volume')
+def api_volume():
+    return tab_volume.api_data()
+
+
+@app.route('/api/pmc')
+def api_pmc():
+    return tab_pmc.api_data()
+
+
+@app.route('/api/corporal')
+def api_corporal():
+    return tab_corporal.api_data()
+
+
+@app.route('/api/metabol')
+def api_metabol():
+    return tab_metabol.api_data()
+
+
+@app.route('/api/debug/sheets')
+def api_debug_sheets():
+    """Estado da ligacao aos Google Sheets e colunas reconhecidas."""
+    return tab_pmc.api_sheets_debug()
+
+
+@app.route('/api/atividades')
+def api_atividades():
+    return tab_atividades.api_data()
+
+
+@app.route('/api/activity/<activity_id>/full')
+def api_activity_full(activity_id):
+    return tab_detalhe.api_full(activity_id)
+
+
+# ── Debug e servico ───────────────────────────────────────────────────────
+
+@app.route('/api/activity/<activity_id>/debug')
+def api_activity_debug(activity_id):
+    return tab_detalhe.api_debug(activity_id)
+
+
+# ── Perfil fisiológico (lag/recovery SmO2/tHb/HR/respiração) ────────────────
+#
+# Imports feitos DENTRO das funções (lazy) e envolvidos em try/except: se
+# fisiologia_worker.py tiver algum problema, só estas 2 rotas falham
+# (devolvem erro 500 em JSON) — o resto do dashboard continua de pé.
+
+@app.route('/api/fisiologia/debug/<activity_id>')
+def api_fisiologia_debug(activity_id):
+    """Mostra, para 1 atividade, como os intervalos foram interpretados:
+    resposta bruta da API, classificação WORK/REC calculada pela potência
+    (ignora o campo 'type' da API, que pode estar errado), pares
+    WORK->REC, e uma simulação do processamento completo (lags/recovery)
+    SEM gravar nada no .db.
+
+    Exemplo: /api/fisiologia/debug/i174526190
+    """
     try:
-        modalidades = modalidades_disponiveis()
+        import fisiologia_worker as fw
+        return jsonify(fw.debug_dict(activity_id))
     except Exception as e:
-        return jsonify({'status': 'erro', 'modalidades': []})
-    return jsonify({'status': 'ok', 'modalidades': modalidades, 'agregacoes_validas': AGREGACOES_VALIDAS})
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
 
-def render():
-    from flask import render_template_string
-    return render_template_string(page(SLUG, 'Metabolismo', BODY, JS))
+
+@app.route('/api/fisiologia/processar')
+def api_fisiologia_processar():
+    """Processa um lote de atividades (mais recentes -> mais antigas, até
+    2024-01-01) e grava em fisiologia_perfil.db no Drive.
+
+    Query params: ?n=5 (max LOTE_WEB_MAX por pedido, evita timeout Railway)
+    Exemplo: /api/fisiologia/processar?n=5
+    """
+    try:
+        import fisiologia_worker as fw
+        n = int(request.args.get('n', 5))
+        n = min(n, fw.LOTE_WEB_MAX)
+        resumo = fw.processar_lote(n, retornar_resumo=True)
+        return jsonify(resumo)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/status')
+
+@app.route('/api/fisiologia/perfil_robusto/<modalidade>')
+def api_perfil_robusto(modalidade):
+    """Perfil metabólico robusta v2 com agregação dinâmica (Min/Max/Avg).
+    
+    Query params:
+      - largura_bin: 20, 50 ou 100 (default 50)
+      - hr, resp, smo2, dfa1: agregação (min/max/avg)
+    
+    Ex: /api/fisiologia/perfil_robusto/Row?largura_bin=50&hr=max&resp=avg&smo2=min&dfa1=avg
+    """
+    try:
+        from tabs import tab_metabol as tm
+        min_n = int(request.args.get('min_n', 15))
+        largura_bin = int(request.args.get('largura_bin', 50))
+        
+        # Extrair agregações dos query params
+        campos_selecionados = {}
+        for metrica in ['hr', 'resp', 'smo2', 'dfa1']:
+            agregacao = request.args.get(metrica, 'avg')
+            if agregacao not in ['min', 'max', 'avg']:
+                agregacao = 'avg'
+            campos_selecionados[metrica] = agregacao
+        
+        resultado = tm.perfil_por_modalidade(modalidade, campos_selecionados=campos_selecionados, 
+                                              min_n_total=min_n, largura_bin_manual=largura_bin)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/evolucao_robusta')
+def api_evolucao_robusta():
+    """Evolução temporal com agregação dinâmica.
+    
+    Query params:
+      - modalidade: str
+      - metrica: hr, resp, smo2, dfa1
+      - agregacao: min, max, avg
+      - watts_min, watts_max: filtros opcionais
+    """
+    try:
+        from tabs import tab_metabol as tm
+        modalidade = request.args.get('modalidade', 'Row')
+        metrica = request.args.get('metrica', 'hr')
+        agregacao = request.args.get('agregacao', 'avg')
+        watts_min = request.args.get('watts_min', type=float, default=None)
+        watts_max = request.args.get('watts_max', type=float, default=None)
+        resultado = tm.evolucao_temporal(modalidade, metrica, agregacao, watts_min, watts_max)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+def api_fisiologia_status():
+    """Quantos intervalos válidos há já, por modalidade — para saber se
+    já vale a pena pedir o perfil de cada uma.
+    """
+    try:
+        from tabs import tab_metabol as tm
+        return jsonify({'status': 'ok', 'modalidades': tm.modalidades_disponiveis()})
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/diagnostico')
+def api_fisiologia_diagnostico():
+    """Estado da persistência no Google Drive: credenciais, pasta, se o
+    ficheiro existe lá, quantas linhas tem o .db local agora mesmo.
+
+    Usa isto quando /api/fisiologia/processar disser "ok" mas a tab
+    Metabolismo continuar vazia — revela se o upload para o Drive está
+    mesmo a funcionar ou a falhar silenciosamente.
+    """
+    try:
+        import drive_db_fisiologia as ddf
+        return jsonify({'status': 'ok', 'diagnostico': ddf.diagnostico()})
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/perfil')
+def api_fisiologia_perfil():
+    """Curva watts -> métrica esperada (HR/SmO2/tHb/respiração/DFA1),
+    valor e tempo de resposta/recuperação, por faixas de potência
+    calculadas dinamicamente (não fixas) a partir dos dados reais.
+
+    Query params:
+      ?modalidade=Row      (obrigatório: Bike, Row, Ski ou Run)
+      ?min_n=20             (mínimo de intervalos para calcular, default 20)
+      ?n_faixas=4            (quantas faixas de watts, default 4)
+
+    Exemplo: /api/fisiologia/perfil?modalidade=Row
+    """
+    try:
+        from tabs import tab_metabol as tm
+        modalidade = request.args.get('modalidade')
+        if not modalidade:
+            return jsonify({'erro': 'falta o parametro ?modalidade='}), 400
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 4))
+        resultado = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/perfil_grafico')
+def api_fisiologia_perfil_grafico():
+    """Igual a /api/fisiologia/perfil, mas devolve HTML Plotly pronto a
+    embeber: 1 subplot por métrica (HR/SmO2/tHb/Respiração/DFA1), X =
+    faixa de watts, linha+banda p25-p75 no esforço, tracejado cinza de
+    referência em repouso.
+
+    Query params: iguais a /api/fisiologia/perfil (?modalidade=, ?min_n=,
+    ?n_faixas=)
+
+    Exemplo: /api/fisiologia/perfil_grafico?modalidade=Row
+    """
+    try:
+        from tabs import tab_metabol as tm
+        modalidade = request.args.get('modalidade')
+        if not modalidade:
+            return jsonify({'erro': 'falta o parametro ?modalidade='}), 400
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 4))
+
+        perfil = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        if perfil.get('status') != 'ok':
+            return jsonify(perfil), 200  # dados insuficientes -- devolve o motivo, sem gráfico
+
+        fig = tm.grafico_perfil_metabolico(perfil)
+        html = fig.to_html(include_plotlyjs='cdn', div_id='perfil-metabolico-chart',
+                           config={'responsive': True, 'displayModeBar': False})
+        return jsonify({'status': 'ok', 'html': html, 'modalidade': modalidade,
+                        'n_intervalos_total': perfil['n_intervalos_total']}), 200
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/evolucao')
+def api_fisiologia_evolucao():
+    """Deriva longitudinal de uma métrica, numa faixa de watts fixa
+    (ao contrário do /perfil, aqui a faixa é a que tu pedires, para
+    comparares sempre "a mesma pergunta" ao longo do tempo).
+
+    Query params:
+      ?modalidade=Row
+      ?campo=smo2_medio_work   (ver tab_metabol.TODOS_CAMPOS para a lista)
+      ?watts_min=250&watts_max=320
+      ?agregacao=mes           (ou 'semana')
+
+    Exemplo:
+      /api/fisiologia/evolucao?modalidade=Row&campo=smo2_medio_work&watts_min=250&watts_max=320
+    """
+    try:
+        from tabs import tab_metabol as tm
+        modalidade = request.args.get('modalidade')
+        campo = request.args.get('campo')
+        if not modalidade or not campo:
+            return jsonify({'erro': 'faltam parametros ?modalidade= e ?campo='}), 400
+        watts_min = request.args.get('watts_min', type=float)
+        watts_max = request.args.get('watts_max', type=float)
+        agregacao = request.args.get('agregacao', 'mes')
+        resultado = tm.evolucao_temporal(modalidade, campo, watts_min, watts_max, agregacao)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/debug/athlete')
+def api_debug_athlete():
+    return tab_detalhe.api_debug_athlete()
+
+
+@app.route('/api/cache')
+def api_cache():
+    return jsonify(cache_info())
+
+
+@app.route('/api/cache/refresh')
+def api_cache_refresh():
+    acts = fetch_activities(force=True)
+    return jsonify({'status': 'OK', 'count': len(acts or [])})
+
+
+@app.route('/api/db')
+def api_db():
+    return jsonify(db.stats())
+
+
+@app.route('/api/sync')
+def api_sync():
+    """Sync incremental: actividades + curvas de potencia.
+
+    As curvas vivem numa tabela propria e nao se actualizam sozinhas quando
+    chegam sessoes novas, por isso vao no mesmo passo. Sao 4 pedidos (um por
+    modalidade), nao um por sessao. Com ?curvas=0 ficam de fora.
+    """
+    res = sync.sync_activities('incremental')
+    invalidar_cache()
+    if res.get('ok') and request.args.get('curvas') != '0':
+        try:
+            res['curvas'] = sync.sync_power_curves()
+        except Exception as e:
+            res['curvas'] = {'ok': False, 'erro': str(e)}
+        try:
+            # le do JSON ja guardado, nao gasta pedidos
+            res['zonas'] = db.extrair_zone_times()
+        except Exception as e:
+            res['zonas'] = {'ok': False, 'erro': str(e)}
+    return jsonify(res)
+
+
+@app.route('/api/sync/full')
+def api_sync_full():
+    """Sync completo: puxa ANOS_HISTORICO anos. Correr uma vez no inicio."""
+    res = sync.sync_activities('full')
+    invalidar_cache()
+    return jsonify(res)
+
+
+@app.route('/api/export')
+@app.route('/api/export/')
+def api_export_indice():
+    """Que exportacoes existem."""
+    import export
+    return jsonify(export.indice())
+
+
+@app.route('/api/export/<nome>')
+def api_export(nome):
+    """Descarregar os dados em bruto.
+
+    /api/export/atividades.csv   /api/export/curvas.json?tipo=Bike
+    /api/export/tudo.json        todos num so ficheiro
+    """
+    import export
+    import protocolo
+    import sheets_client as sheets
+    import pmc as _pmc
+
+    base, _, ext = nome.rpartition('.')
+    base = base or nome
+    ext = (ext or 'csv').lower()
+    tipo = request.args.get('tipo')
+
+    try:
+        if base == 'tudo':
+            import csv as _csv_mod
+            import io as _io
+
+            def _linhas(txt):
+                return list(_csv_mod.DictReader(_io.StringIO(txt)))
+
+            # O wellness tem de passar pelo export.wellness(), que junta o
+            # formulario com os campos da Intervals.icu (hrvSDNN_icu,
+            # readiness_icu, etc). Usar sheets.carregar() directamente
+            # trazia so o formulario, e o hrvSDNN nunca chegava a analise.
+            wl, cp_, _erros = sheets.carregar()
+            try:
+                wl = _linhas(export.wellness(sheets))
+            except Exception as e:
+                print(f'wellness completo falhou, a usar so o formulario: {e}')
+                wl = wl or []
+            return jsonify({
+                'gerado_em': datetime.now().isoformat(),
+                'atividades': db.actividades_processadas(),
+                'wellness': wl or [],
+                'corporal': cp_ or [],
+                'curvas': db.load_power_curves(tipo) or [],
+                'cp_ajustado': db.cp_por_sessao() or [],
+                'testes_maximos': _linhas(
+                    export.testes_maximos(db, protocolo)),
+            })
+
+        if base == 'curvas':
+            texto = export.curvas(db, tipo,
+                                  'json' if ext == 'json' else 'longo')
+        elif base == 'atividades':
+            texto = export.atividades(db)
+        elif base == 'wellness':
+            texto = export.wellness(sheets)
+        elif base == 'corporal':
+            texto = export.corporal(sheets)
+        elif base == 'testes':
+            texto = export.testes_maximos(db, protocolo)
+        elif base == 'cp':
+            texto = export.cp_ajustado(db)
+        elif base == 'serie_diaria':
+            texto = export.serie_diaria(_pmc, db, sheets)
+        else:
+            return jsonify({'erro': f'"{base}" nao existe',
+                            **export.indice()}), 404
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'erro': f'{type(e).__name__}: {e}',
+                        'traceback': traceback.format_exc()[-1200:]}), 500
+
+    mime = 'application/json' if ext == 'json' else 'text/csv'
+    hoje = datetime.now().strftime('%Y%m%d')
+    return Response(texto, mimetype=f'{mime}; charset=utf-8', headers={
+        'Content-Disposition': f'attachment; filename="{base}_{hoje}.{ext}"'})
+
+
+@app.route('/api/debug/wellness-icu')
+def api_debug_wellness_icu():
+    """O wellness da Intervals.icu traz o HRV nocturno do Garmin?
+
+    A Intervals.icu sincroniza do Garmin Connect e guarda os campos em
+    /athlete/{id}/wellness. Se o teu relogio grava HRV nocturno e a
+    sincronizacao esta ligada, o campo `hrv` vem de la — e nesse caso nao
+    e preciso ir buscar nada a mao.
+
+    Este endpoint compara: quantos dias tem hrv, desde quando, e como se
+    relaciona com o que tens no formulario.
+    """
+    from api_client import icu_get, athlete_id_real
+    import sheets_client
+
+    aid = athlete_id_real()
+    oldest = request.args.get('oldest', '2023-01-01')
+    dados, err = icu_get(f'/athlete/{aid}/wellness',
+                         params={'oldest': oldest,
+                                 'newest': datetime.now().strftime('%Y-%m-%d')})
+    if err:
+        return jsonify({'erro': err}), 502
+    if not isinstance(dados, list):
+        return jsonify({'erro': 'resposta inesperada',
+                        'tipo': str(type(dados))}), 502
+
+    campos = ['hrv', 'hrvSDNN', 'restingHR', 'sleepSecs', 'sleepScore',
+              'sleepQuality', 'avgSleepingHR', 'readiness', 'respiration',
+              'spO2', 'baevskySI', 'steps', 'weight', 'bodyFat',
+              'kcalConsumed', 'carbohydrates', 'protein', 'fatTotal']
+    resumo = {}
+    for c in campos:
+        vals = [(d.get('id'), d.get(c)) for d in dados
+                if isinstance(d.get(c), (int, float))]
+        if not vals:
+            resumo[c] = {'n': 0}
+            continue
+        datas = sorted(v[0] for v in vals)
+        nums = [v[1] for v in vals]
+        resumo[c] = {
+            'n': len(vals), 'primeiro': datas[0], 'ultimo': datas[-1],
+            'media': round(sum(nums) / len(nums), 2),
+            'min': round(min(nums), 2), 'max': round(max(nums), 2)}
+
+    # cruzar com o formulario, para ver se sao a mesma medicao
+    comparacao = None
+    try:
+        w, _c, _e = sheets_client.carregar()
+        form = {x['date']: x.get('hrv') for x in (w or [])
+                if isinstance(x.get('hrv'), (int, float))}
+        pares = [(d.get('hrv'), form.get(d.get('id'))) for d in dados
+                 if isinstance(d.get('hrv'), (int, float))
+                 and isinstance(form.get(d.get('id')), (int, float))]
+        if len(pares) >= 20:
+            import statistics as st
+            xs = [p[0] for p in pares]
+            ys = [p[1] for p in pares]
+            mx, my = st.mean(xs), st.mean(ys)
+            num = sum((a - mx) * (b - my) for a, b in pares)
+            den = (sum((a - mx) ** 2 for a in xs)
+                   * sum((b - my) ** 2 for b in ys)) ** 0.5
+            r = num / den if den else None
+            comparacao = {
+                'dias_em_comum': len(pares),
+                'media_intervals': round(mx, 2),
+                'media_formulario': round(my, 2),
+                'diferenca': round(mx - my, 2),
+                'r': round(r, 4) if r else None,
+                'leitura': (
+                    'praticamente a mesma medicao — o teu formulario e a '
+                    'fonte' if r and r > 0.95 else
+                    'muito parecidas mas nao identicas' if r and r > 0.85 else
+                    'medicoes DIFERENTES — o hrv da Intervals.icu pode vir do '
+                    'Garmin, o que seria exactamente o que procuramos')}
+    except Exception as e:
+        comparacao = {'erro': str(e)}
+
+    return jsonify({
+        'status': 'OK', 'athlete': aid,
+        'registos': len(dados),
+        'periodo': {'de': oldest, 'ate': datetime.now().strftime('%Y-%m-%d')},
+        'campos': resumo,
+        'comparacao_com_formulario': comparacao,
+        'como_ler': (
+            'Se `hrv` tiver muitos dias E a comparacao disser "medicoes '
+            'diferentes", entao a Intervals.icu ja traz o HRV do Garmin e '
+            'podemos usa-lo directamente, sem o script do Colab. Se `hrv` '
+            'vier vazio, e preciso ligar a sincronizacao Garmin -> '
+            'Intervals.icu nas definicoes da Intervals.icu.'),
+    })
+
+
+@app.route('/api/protocolo')
+def api_protocolo():
+    """Testes maximos detectados e quais estao em atraso.
+
+    ?tipo=Bike   filtra por modalidade
+    """
+    import protocolo
+    curvas = db.load_power_curves(request.args.get('tipo') or None)
+    det = protocolo.detectar_testes(curvas or [])
+    return jsonify({
+        'status': 'OK',
+        'cobertura': protocolo.cobertura(det),
+        'sugestoes': protocolo.sugerir(det),
+        'robustez': protocolo.robustez(det),
+        # so os recentes na resposta: a lista completa pode ter centenas
+        'detectados': {m: {s: {k: v for k, v in d.items() if k != 'testes'}
+                           for s, d in durs.items()}
+                       for m, durs in det.items()},
+        'como_funciona': (
+            f'Uma sessao conta como teste quando o esforco numa duracao chega '
+            f'a {int(protocolo.LIMIAR_ESFORCO*100)}% do teu melhor dos ultimos '
+            f'{protocolo.JANELA_MELHOR} dias. Nao e preciso marcar nada.'),
+    })
+
+
+@app.route('/api/calibracao')
+def api_calibracao():
+    """Parametros calibrados nos dados do atleta, com a evidencia.
+
+    E o mesmo calculo que alimenta o FMT — aqui exposto sozinho, para se
+    poder ver e auditar os valores sem abrir a tab.
+    """
+    return _seguro(tab_pmc.api_calibracao_dados)
+
+
+@app.route('/api/sync/curvas')
+def api_sync_curvas():
+    """Curvas de potencia por sessao — base dos recordes.
+
+    Uma chamada por modalidade, nao uma por sessao.
+    """
+    return jsonify(sync.sync_power_curves())
+
+
+@app.route('/api/recordes')
+def api_recordes():
+    return tab_recordes.api_data()
+
+
+@app.route('/recordes')
+def page_recordes():
+    return tab_recordes.render()
+
+
+@app.route('/api/recordes/seasons')
+def api_recordes_seasons():
+    """Melhor curva por periodo. ?por=season (default) ou ?por=ano"""
+    return tab_recordes.api_seasons()
+
+
+@app.route('/api/activity/<activity_id>/prs')
+def api_activity_prs(activity_id):
+    return jsonify(db.prs_da_actividade(activity_id) or {'erro': 'sem curva guardada'})
+
+
+@app.route('/api/frescura')
+def api_frescura():
+    """Ha quanto tempo a base foi actualizada e se ha sessoes novas na API.
+
+    Compara a data mais recente na base com a data mais recente na
+    Intervals.icu, sem gravar nada. Serve para o aviso no topo das paginas.
+    """
+    if not db.ENABLED:
+        return jsonify({'db': False, 'nota': 'sem base de dados; le sempre da API'})
+
+    ult = db.ultima_data()
+    info = {'db': True,
+            'ultima_na_base': ult.isoformat() if ult else None,
+            'last_sync': None, 'novas': None}
+
+    linha = db._exec("""SELECT criado_em FROM sync_log
+                        WHERE erro IS NULL ORDER BY id DESC LIMIT 1""", fetch='one')
+    if linha and linha[0]:
+        info['last_sync'] = str(linha[0])
+
+    if request.args.get('verificar') in ('1', 'true'):
+        desde = ((ult - timedelta(days=1)).strftime("%Y-%m-%d") if ult
+                 else datetime.now().strftime("%Y-%m-%d"))
+        acts, err = fetch_da_api(desde)
+        if err:
+            info['erro'] = err
+        else:
+            ids = db.ids_existentes()
+            novas = [a for a in (acts or []) if a.get('id') not in ids]
+            info['novas'] = len(novas)
+            info['novas_detalhe'] = [{
+                'id': a.get('id'), 'date': (a.get('start_date_local') or '')[:10],
+                'name': a.get('name'), 'type': a.get('type')} for a in novas[:10]]
+    return jsonify(info)
+
+
+@app.route('/api/db/schema')
+def api_db_schema():
+    """Colunas de cada tabela — para perceber erros 500 de SQL."""
+    return jsonify({t: db.colunas_de(t) for t in
+                    ('activities', 'power_curves', 'streams', 'sync_log')})
+
+
+@app.route('/api/db/recriar-curvas')
+def api_recriar_curvas():
+    """Recria a tabela de curvas quando o esquema mudou."""
+    res = db.recriar_power_curves()
+    if res.get('ok'):
+        try:
+            res['sync'] = sync.sync_power_curves()
+        except Exception as e:
+            res['sync'] = {'ok': False, 'erro': str(e)}
+    return jsonify(res)
+
+
+@app.route('/api/debug/curvas')
+def api_debug_curvas():
+    """Testa variantes do endpoint de curvas para perceber o 403.
+
+    Compara: id "0" vs id real, com e sem extensao .json, e o endpoint por
+    actividade (que sabemos funcionar). Assim vemos qual das diferencas conta.
+    """
+    from api_client import icu_get, athlete_id_real
+    from datetime import datetime as _dt
+
+    real = athlete_id_real()
+    oldest = (_dt.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+    newest = _dt.now().strftime("%Y-%m-%d")
+    base_p = {"oldest": oldest, "newest": newest, "type": "Ride"}
+
+    uma = db._exec("""SELECT id FROM activities WHERE type = 'Bike'
+                      ORDER BY date DESC LIMIT 1""", fetch='one') if db.ENABLED else None
+    aid = uma[0] if uma else None
+
+    testes = [
+        ('activities (controlo)', f"/athlete/{ATHLETE_ID}/activities",
+         {"oldest": oldest}),
+        ('perfil id=0', f"/athlete/{ATHLETE_ID}", None),
+        ('perfil id real', f"/athlete/{real}", None),
+        ('curvas id=0', f"/athlete/{ATHLETE_ID}/activity-power-curves", base_p),
+        ('curvas id real', f"/athlete/{real}/activity-power-curves", base_p),
+        ('curvas id real .json', f"/athlete/{real}/activity-power-curves.json", base_p),
+        ('power-curves id real', f"/athlete/{real}/power-curves",
+         {"type": "Ride", "curves": "42d"}),
+    ]
+    if aid:
+        testes.append((f'power-curve da sessao {aid}', f"/activity/{aid}/power-curve", None))
+
+    out = {'athlete_id_configurado': ATHLETE_ID, 'athlete_id_resolvido': real,
+           'testes': {}}
+    for nome, path, params in testes:
+        data, err = icu_get(path, params, timeout=60)
+        if err:
+            out['testes'][nome] = {'ok': False, 'erro': err[:160]}
+        elif isinstance(data, dict):
+            out['testes'][nome] = {'ok': True, 'chaves': sorted(data.keys())[:12],
+                                   'n_curvas': len(data.get('curves') or [])}
+        elif isinstance(data, list):
+            out['testes'][nome] = {'ok': True, 'n': len(data)}
+        else:
+            out['testes'][nome] = {'ok': True, 'tipo': type(data).__name__}
+    return jsonify(out)
+
+
+@app.route('/api/db/curvas')
+def api_db_curvas():
+    """Diagnostico da tabela de curvas."""
+    return jsonify(db.diagnostico_curvas())
+
+
+@app.route('/api/debug/zonas')
+def api_debug_zonas():
+    """Que custom_zones existem por modalidade, e onde faltam."""
+    return jsonify(db.diagnostico_zonas())
+
+
+@app.route('/api/sync/zonas')
+def api_sync_zonas():
+    """Extrai o tempo por zona do JSON ja guardado. Nao gasta pedidos a API."""
+    return jsonify(db.extrair_zone_times())
+
+
+@app.route('/api/zonas')
+def api_zonas():
+    """Tempo por zona, para os graficos.
+
+    ?tipo=Bike  ?kind=power|hr|pace  ?desde=YYYY-MM-DD
+    """
+    return jsonify({
+        'status': 'OK',
+        'disponiveis': db.zonas_disponiveis(),
+        'sessoes': db.tempo_por_zona(
+            request.args.get('tipo') or None,
+            request.args.get('kind') or 'power',
+            request.args.get('desde') or None),
+    })
+
+
+def _seguro(fn, *args, **kwargs):
+    """Corre fn e devolve o erro em JSON em vez de 500.
+
+    Um endpoint de diagnostico que rebenta com 500 nao diz nada; a mensagem
+    de erro e precisamente a informacao util.
+    """
+    try:
+        return jsonify(fn(*args, **kwargs))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'ok': False, 'erro': f'{type(e).__name__}: {e}',
+                        'traceback': traceback.format_exc()[-1200:]}), 500
+
+
+@app.route('/api/sync/streams')
+def api_sync_streams():
+    """Carrega streams em bloco.
+
+    ?limite=60          quantas sessoes por chamada (1 pedido cada)
+    ?tipos=Bike,Row     so estas modalidades
+    ?desde=YYYY-MM-DD   so a partir desta data
+    Repetir ate 'faltam' chegar a zero.
+    """
+    tipos = request.args.get('tipos')
+    return _seguro(sync.sync_streams_bloco,
+                   limite=request.args.get('limite', default=60, type=int),
+                   tipos=[t.strip() for t in tipos.split(',')] if tipos else None,
+                   desde=request.args.get('desde'))
+
+
+@app.route('/api/db/streams')
+def api_db_streams():
+    """Cobertura dos streams guardados."""
+    return _seguro(db.streams_stats)
+
+
+@app.route('/fisiologia/perfil_grafico_enhanced/<modalidade>')
+def page_perfil_grafico_enhanced(modalidade):
+    """Página HTML com gráfico dual-axis (watts + pace) do perfil."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 10))
+        enh = tme.MetabolicProfileEnhanced(modalidade)
+        perfil = enh.gerar_perfil_com_pace(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        if perfil.get('status') != 'ok':
+            return f"<h1>Perfil — {modalidade}</h1><p>Dados insuficientes</p>"
+        fig = enh.grafico_perfil_dual_axis(perfil)
+        html = fig.to_html(include_plotlyjs='cdn', div_id=f'perfil-{modalidade}',
+                          config={'responsive': True, 'displayModeBar': True})
+        return f"""<html><head><title>Perfil {modalidade}</title><meta charset="utf-8"></head><body>
+                <h1>Perfil Metabólico — {modalidade} (Dual Axis: Watts + Pace)</h1>{html}
+                <p><a href="/">← Voltar</a></p></body></html>"""
+    except Exception as e:
+        import traceback
+        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
+
+
+@app.route('/fisiologia/evolucao_grafico/<modalidade>/<campo>')
+def page_evolucao_grafico(modalidade, campo):
+    """Página HTML com gráfico evolução temporal (watts + pace)."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        watts_min = request.args.get('watts_min', type=float)
+        watts_max = request.args.get('watts_max', type=float)
+        agregacao = request.args.get('agregacao', 'mes')
+        resultado = tme.evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max, agregacao)
+        if resultado.get('status') != 'ok':
+            return f"<h1>Evolução — {modalidade}</h1><p>Dados insuficientes</p>"
+        fig = tme.grafico_evolucao_dual_axis(resultado)
+        html = fig.to_html(include_plotlyjs='cdn', div_id=f'evolucao-{modalidade}',
+                          config={'responsive': True, 'displayModeBar': True})
+        return f"""<html><head><title>Evolução {modalidade}</title><meta charset="utf-8"></head><body>
+                <h1>Evolução {campo} — {modalidade} (Dual Axis: Watts + Pace)</h1>{html}
+                <p><a href="/">← Voltar</a></p></body></html>"""
+    except Exception as e:
+        import traceback
+        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
+
+
+# ── Novas rotas: DFA-α1 + Pace/Watts ──────────────────────────────────────
+
+@app.route('/api/fisiologia/validacao_dfa/<modalidade>')
+def api_validacao_dfa(modalidade):
+    """Validar qualidade de DFA-α1 para uma modalidade."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        resultado = tme.validacao_lote_dfa(modalidade)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/perfil_enhanced/<modalidade>')
+def api_perfil_enhanced(modalidade):
+    """Perfil metabólico com coluna pace adicionada (Row/Ski)."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 10))
+        enh = tme.MetabolicProfileEnhanced(modalidade)
+        resultado = enh.gerar_perfil_com_pace(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/evolucao_com_pace')
+def api_evolucao_com_pace():
+    """Evolução temporal com pace secundário (Row/Ski)."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        modalidade = request.args.get('modalidade')
+        campo = request.args.get('campo')
+        if not modalidade or not campo:
+            return jsonify({'erro': 'faltam parametros ?modalidade= e ?campo='}), 400
+        watts_min = request.args.get('watts_min', type=float)
+        watts_max = request.args.get('watts_max', type=float)
+        agregacao = request.args.get('agregacao', 'mes')
+        resultado = tme.evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max, agregacao)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/health')
+def health():
+    return jsonify({'status': 'healthy'}), 200
+
+
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 8080))
+    print(f"Starting server on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)

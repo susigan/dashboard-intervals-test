@@ -51,6 +51,20 @@ LABELS_METAB = {
     'smo2': 'SmO₂ (%)',
     'dfa1': 'DFA-α1 (clean)',
 }
+
+CAMPOS_DB = {
+    m: {a: f'{m}_{a}_60s' for a in AGREGACOES} for m in METRICAS_BASE
+}
+
+AGREGACOES_VALIDAS = {m: list(AGREGACOES) for m in METRICAS_BASE}
+
+CORES_METAB = {
+    'hr': '#E74C3C',
+    'resp': '#1ABC9C',
+    'smo2': '#F39C12',
+    'thb': '#3498DB',
+    'dfa1': '#9B59B6',
+}
 LABELS_AGREGACAO = {
     'min': 'Mín',
     'max': 'Máx',
@@ -813,6 +827,7 @@ def api_data():
     except Exception as e:
         return jsonify({'status': 'erro', 'modalidades': []})
     return jsonify({'status': 'ok', 'modalidades': modalidades, 'agregacoes_validas': AGREGACOES_VALIDAS})
+
 def render():
     from flask import render_template_string
     return render_template_string(page(SLUG, 'Metabolismo', BODY, JS))

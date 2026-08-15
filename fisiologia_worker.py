@@ -52,7 +52,7 @@ def _processar_aquecimento(conn, activity_id, modalidade):
     """
     try:
         from aquecimento_analyzer import AquecimentoAnalyzer
-        from aquecimento_db_google_drive import get_db as get_aq_db
+        import aquecimento_db_simples as aq_db
     except ImportError as e:
         print(f"[AQUECIMENTO] Erro importar: {e}")
         return False
@@ -68,7 +68,7 @@ def _processar_aquecimento(conn, activity_id, modalidade):
             return False
         
         # Guardar na BD de aquecimento
-        aq_db = get_aq_db()
+        aq_db = aq_db
         dados_aq = {
             'modalidade': modalidade,
             'data': datetime.now().isoformat(),

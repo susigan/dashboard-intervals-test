@@ -1,4 +1,4 @@
-"""tab_metabol.py — FIXES: ranges menores + pace run + axis Y cores."""
+"""tab_metabol.py — REFACTOR: dropdown Min/Max/Avg por métrica."""
 
 from flask import jsonify, request
 import numpy as np
@@ -10,24 +10,52 @@ from tabs.base import page
 
 SLUG = 'metabol'
 
-CAMPOS_VALOR = ['hr_max_60s', 'hr_avg_60s', 'resp_avg_60s', 'smo2_min_60s', 'dfa1_clean']
-CAMPOS_TEMPO = []
-TODOS_CAMPOS = CAMPOS_VALOR + CAMPOS_TEMPO
+# BASE METRICS — user escolhe agregação (min/max/avg)
+METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1']
+AGREGACOES = ['min', 'max', 'avg']
+
+# Map: base_metric -> {agregacao -> coluna_db}
+CAMPOS_DB = {
+    'hr': {
+        'min': 'hr_min_60s',
+        'max': 'hr_max_60s',
+        'avg': 'hr_avg_60s',
+    },
+    'resp': {
+        'min': 'resp_min_60s',  # Se existir, senão usar resp_avg
+        'max': 'resp_max_60s',  # Se existir, senão usar resp_avg
+        'avg': 'resp_avg_60s',
+    },
+    'smo2': {
+        'min': 'smo2_min_60s',
+        'max': 'smo2_max_60s',  # Se existir
+        'avg': 'smo2_avg_60s',  # Se existir
+    },
+    'dfa1': {
+        'min': 'dfa1_clean',  # DFA-α1 é um único valor, não tem min/max/avg
+        'max': 'dfa1_clean',
+        'avg': 'dfa1_clean',
+    },
+}
 
 CORES_METAB = {
-    'hr_max_60s': '#E74C3C',
-    'hr_avg_60s': '#C0392B',
-    'resp_avg_60s': '#1ABC9C',
-    'smo2_min_60s': '#F39C12',
-    'dfa1_clean': '#9B59B6',
+    'hr': '#E74C3C',        # Vermelho
+    'resp': '#1ABC9C',      # Cyan
+    'smo2': '#F39C12',      # Laranja
+    'dfa1': '#9B59B6',      # Roxo
 }
 
 LABELS_METAB = {
-    'hr_max_60s': 'HR Max (bpm)',
-    'hr_avg_60s': 'HR Avg (bpm)',
-    'resp_avg_60s': 'Respiração (rpm)',
-    'smo2_min_60s': 'SmO₂ Min (%)',
-    'dfa1_clean': 'DFA-α1 (clean)',
+    'hr': 'HR (bpm)',
+    'resp': 'Respiração (rpm)',
+    'smo2': 'SmO₂ (%)',
+    'dfa1': 'DFA-α1 (clean)',
+}
+
+LABELS_AGREGACAO = {
+    'min': 'Mín',
+    'max': 'Máx',
+    'avg': 'Méd',
 }
 
 def _conn():
@@ -61,12 +89,23 @@ def modalidades_disponiveis():
         for r in resultado
     ]
 
-def perfil_por_modalidade(modalidade, min_n_total=15, largura_bin_manual=50):
-    """Perfil com PONDERAÇÃO. largura_bin em watts (20, 50 ou 100)."""
+def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largura_bin_manual=50):
+    """
+    Perfil com PONDERAÇÃO.
+    campos_selecionados: dict {metrica_base: agregacao}
+    Ex: {'hr': 'max', 'resp': 'avg', 'smo2': 'min', 'dfa1': 'avg'}
+    """
     conn = _conn()
-    colunas = ", ".join(TODOS_CAMPOS)
+    
+    # Construir lista de colunas a fetchear
+    todas_colunas = set(['hr_min_60s', 'hr_max_60s', 'hr_avg_60s', 
+                         'resp_avg_60s', 'smo2_min_60s', 'dfa1_clean',
+                         'watts_medio', 'data', 'activity_id', 'interval_num'])
+    
+    colunas_str = ", ".join(todas_colunas)
+    
     linhas = conn.execute(
-        f"""SELECT watts_medio, data, activity_id, interval_num, {colunas}
+        f"""SELECT {colunas_str}
            FROM fisiologia_intervalos
            WHERE modalidade = ? AND valido = 1 AND watts_medio IS NOT NULL
            ORDER BY data DESC, activity_id DESC, interval_num DESC""",
@@ -88,7 +127,7 @@ def perfil_por_modalidade(modalidade, min_n_total=15, largura_bin_manual=50):
     watts = np.array([l['watts_medio'] for l in linhas])
     wmin, wmax = float(watts.min()), float(watts.max())
 
-    # Gerar limites de bins com padding
+    # Gerar bins
     inicio = int(wmin // largura_bin_manual) * largura_bin_manual
     fim = int(wmax // largura_bin_manual + 1) * largura_bin_manual
     limites = list(np.arange(inicio, fim + largura_bin_manual, largura_bin_manual))
@@ -116,8 +155,10 @@ def perfil_por_modalidade(modalidade, min_n_total=15, largura_bin_manual=50):
             if pace:
                 faixa['pace_medio'] = pace
         
-        for campo in TODOS_CAMPOS:
-            valores = [linhas[j][campo] for j in idxs]
+        # Para cada métrica base selecionada
+        for metrica_base, agregacao in campos_selecionados.items():
+            coluna_db = CAMPOS_DB[metrica_base][agregacao]
+            valores = [linhas[j][coluna_db] for j in idxs]
             pesos_faixa = pesos[idxs]
             
             vs_validos = []
@@ -137,7 +178,9 @@ def perfil_por_modalidade(modalidade, min_n_total=15, largura_bin_manual=50):
                 
                 ps_cum = np.cumsum(ps_sorted) / np.sum(ps_sorted)
                 
-                faixa[campo] = {
+                # Usar chave única: metrica_base+agregacao
+                chave = f'{metrica_base}_{agregacao}'
+                faixa[chave] = {
                     'p10': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.10), len(vs_sorted)-1)]), 2),
                     'p25': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.25), len(vs_sorted)-1)]), 2),
                     'p50': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.50), len(vs_sorted)-1)]), 2),
@@ -152,16 +195,16 @@ def perfil_por_modalidade(modalidade, min_n_total=15, largura_bin_manual=50):
         'status': 'ok',
         'modalidade': modalidade,
         'n_intervalos_total': len(linhas),
+        'campos_selecionados': campos_selecionados,
         'faixas': faixas_saida,
     }
 
-def evolucao_temporal(modalidade, campo, watts_min=None, watts_max=None, agregacao='mes', min_por_periodo=3):
-    """Evolução temporal com ponderação."""
-    if campo not in TODOS_CAMPOS:
-        return {'status': 'erro', 'mensagem': f'campo desconhecido: {campo}'}
-
+def evolucao_temporal(modalidade, metrica_base, agregacao, watts_min=None, watts_max=None, min_por_periodo=3):
+    """Evolução temporal com agregação dinâmica."""
+    coluna_db = CAMPOS_DB[metrica_base][agregacao]
+    
     conn = _conn()
-    cond = ["modalidade = ?", "valido = 1", f"{campo} IS NOT NULL"]
+    cond = ["modalidade = ?", "valido = 1", f"{coluna_db} IS NOT NULL"]
     params = [modalidade]
 
     if watts_min is not None:
@@ -172,7 +215,7 @@ def evolucao_temporal(modalidade, campo, watts_min=None, watts_max=None, agregac
         params.append(watts_max)
 
     linhas = conn.execute(
-        f"""SELECT data, {campo} as valor, watts_medio FROM fisiologia_intervalos
+        f"""SELECT data, {coluna_db} as valor FROM fisiologia_intervalos
            WHERE {' AND '.join(cond)} ORDER BY data""",
         tuple(params)
     ).fetchall()
@@ -180,12 +223,9 @@ def evolucao_temporal(modalidade, campo, watts_min=None, watts_max=None, agregac
     if not linhas:
         return {'status': 'dados_insuficientes', 'n_disponivel': 0}
 
-    def _periodo(data_str):
-        return data_str[:7]
-
     grupos = {}
     for l in linhas:
-        p = _periodo(l['data'])
+        p = l['data'][:7]
         grupos.setdefault(p, []).append(l['valor'])
 
     saida = []
@@ -207,7 +247,8 @@ def evolucao_temporal(modalidade, campo, watts_min=None, watts_max=None, agregac
 
     return {
         'status': 'ok',
-        'campo': campo,
+        'metrica': metrica_base,
+        'agregacao': agregacao,
         'periodos': saida,
     }
 
@@ -232,6 +273,8 @@ BODY = r"""
     </select></label>
 </div>
 
+<div class="controls" id="agregacaoControls"></div>
+
 <h2>Perfil metabólico — ponderado (últimos 30% com 1.5x peso)</h2>
 <div id="tooltip" style="position:absolute;background:#000;color:#fff;padding:8px;border-radius:3px;font-size:11px;display:none;z-index:1000;pointer-events:none;border:1px solid #666;white-space:nowrap;"></div>
 <div class="legend" id="lgPerfil"></div>
@@ -242,7 +285,9 @@ BODY = r"""
 <h2>Evolução ao longo do tempo</h2>
 <div class="controls">
   <label class="sel">Métrica
-    <select id="campoEvolucao"></select></label>
+    <select id="metricaEvolucao"></select></label>
+  <label class="sel">Agregação
+    <select id="agregacaoEvolucao"></select></label>
   <label class="sel">Watts min <input type="number" id="wattsMin" value="200" style="width:70px"></label>
   <label class="sel">Watts max <input type="number" id="wattsMax" value="350" style="width:70px"></label>
   <button onclick="carregarEvolucao()">Actualizar</button>
@@ -272,15 +317,19 @@ let PERFIL = null;
 let EVOLUCAO = null;
 
 const CORES_METAB = {
- hr_max_60s:'#E74C3C', hr_avg_60s:'#C0392B', resp_avg_60s:'#1ABC9C',
- smo2_min_60s:'#F39C12', dfa1_clean:'#9B59B6',
+ hr:'#E74C3C', resp:'#1ABC9C', smo2:'#F39C12', dfa1:'#9B59B6',
 };
 const LABELS_METAB = {
- hr_max_60s:'HR Max (bpm)', hr_avg_60s:'HR Avg (bpm)', resp_avg_60s:'Respiração (rpm)',
- smo2_min_60s:'SmO₂ Min (%)', dfa1_clean:'DFA-α1 (clean)',
+ hr:'HR (bpm)', resp:'Respiração (rpm)', smo2:'SmO₂ (%)', dfa1:'DFA-α1 (clean)',
 };
+const LABELS_AGREGACAO = {
+ min:'Mín', max:'Máx', avg:'Méd',
+};
+const METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1'];
+const AGREGACOES = ['min', 'max', 'avg'];
 
 let chartState = {chPerfil: {}, chEvolucao: {}};
+let camposSelecionados = {hr:'max', resp:'avg', smo2:'min', dfa1:'avg'};
 
 function ctx(canvasId, h){
  const canvas = document.getElementById(canvasId);
@@ -326,17 +375,18 @@ function drawPerfil(){
   return;
  }
  
- const disponiveis = Object.keys(CORES_METAB).filter(c => faixas.some(f => f[c]));
+ const disponiveis = Object.keys(camposSelecionados).filter(m => faixas.some(f => f[m+'_'+camposSelecionados[m]]));
  
- document.getElementById('lgPerfil').innerHTML = disponiveis.map(function(c){
-  const off = !ligado('chPerfil', c);
-  return '<span class="tog'+(off?' off':'')+'" data-c="chPerfil" data-k="'+c+'" style="cursor:pointer;margin-right:15px;"><i style="display:inline-block;width:10px;height:10px;background:'+CORES_METAB[c]+';margin-right:5px;"></i>'+LABELS_METAB[c]+'</span>';
+ document.getElementById('lgPerfil').innerHTML = disponiveis.map(function(m){
+  const off = !ligado('chPerfil', m);
+  const label = LABELS_METAB[m] + ' (' + LABELS_AGREGACAO[camposSelecionados[m]] + ')';
+  return '<span class="tog'+(off?' off':'')+'" data-c="chPerfil" data-k="'+m+'" style="cursor:pointer;margin-right:15px;"><i style="display:inline-block;width:10px;height:10px;background:'+CORES_METAB[m]+';margin-right:5px;"></i>'+label+'</span>';
  }).join('');
  document.querySelectorAll('#lgPerfil span.tog').forEach(function(sp){
   sp.onclick = function(){ alternar(sp.dataset.c, sp.dataset.k); drawPerfil(); };
  });
  
- const vis = disponiveis.filter(c => ligado('chPerfil', c));
+ const vis = disponiveis.filter(m => ligado('chPerfil', m));
  if(!vis.length){
   noData(g, W, H, 'Nenhuma métrica');
   return;
@@ -349,15 +399,15 @@ function drawPerfil(){
  
  function hexRgba(hex, a){
   const h = hex.replace('#', '');
-  return 'rgba('+parseInt(h.substring(0,2),16)+','+parseInt(h.substring(2,4),16)+','+parseInt(h.substring(4,6),16)+','+a+')';
+  return 'rgba('+parseInt(h.substring(0,3),16)+','+parseInt(h.substring(3,5),16)+','+parseInt(h.substring(5,7),16)+','+a+')';
  }
  
  const escalas = {};
- vis.forEach(function(c){
-  const pts = faixas.filter(f => f[c]);
+ vis.forEach(function(m){
+  const pts = faixas.filter(f => f[m+'_'+camposSelecionados[m]]);
   let a = Infinity, b = -Infinity;
   pts.forEach(function(f){
-   const q = f[c];
+   const q = f[m+'_'+camposSelecionados[m]];
    if(q.p10 < a) a = q.p10;
    if(q.p90 > b) b = q.p90;
   });
@@ -365,7 +415,7 @@ function drawPerfil(){
   const marg = (b-a)*0.15 || 1;
   a -= marg; b += marg;
   const Y = v => PT + h - (v-a)/(b-a)*h;
-  escalas[c] = {a: a, b: b, Y: Y, pts: pts, range_vis: {vmin: a, vmax: b}};
+  escalas[m] = {a: a, b: b, Y: Y, pts: pts, range_vis: {vmin: a, vmax: b}};
  });
  
  g.strokeStyle = '#21262d';
@@ -378,37 +428,38 @@ function drawPerfil(){
   g.stroke();
  }
  
- vis.forEach(function(c){
-  const esc = escalas[c];
+ vis.forEach(function(m){
+  const esc = escalas[m];
   const pts = esc.pts;
+  const chave = m+'_'+camposSelecionados[m];
   
-  g.fillStyle = hexRgba(CORES_METAB[c], 0.08);
+  g.fillStyle = hexRgba(CORES_METAB[m], 0.08);
   g.beginPath();
   pts.forEach(function(f, j){
-   const y = esc.Y(f[c].p75);
+   const y = esc.Y(f[chave].p75);
    if(j === 0) g.moveTo(X(f.watts_centro), y);
    else g.lineTo(X(f.watts_centro), y);
   });
   for(let j = pts.length-1; j >= 0; j--){
-   g.lineTo(X(pts[j].watts_centro), esc.Y(pts[j][c].p25));
+   g.lineTo(X(pts[j].watts_centro), esc.Y(pts[j][chave].p25));
   }
   g.closePath();
   g.fill();
   
-  g.strokeStyle = CORES_METAB[c];
+  g.strokeStyle = CORES_METAB[m];
   g.lineWidth = 2.5;
   g.beginPath();
   pts.forEach(function(f, j){
-   const y = esc.Y(f[c].p50);
+   const y = esc.Y(f[chave].p50);
    if(j === 0) g.moveTo(X(f.watts_centro), y);
    else g.lineTo(X(f.watts_centro), y);
   });
   g.stroke();
   
-  g.fillStyle = CORES_METAB[c];
+  g.fillStyle = CORES_METAB[m];
   pts.forEach(function(f){
    g.beginPath();
-   g.arc(X(f.watts_centro), esc.Y(f[c].p50), 3.5, 0, 7);
+   g.arc(X(f.watts_centro), esc.Y(f[chave].p50), 3.5, 0, 7);
    g.fill();
   });
  });
@@ -420,30 +471,15 @@ function drawPerfil(){
   g.fillText(Math.round(f.watts_centro)+'W', X(f.watts_centro), H-20);
  });
  
- if(faixas.some(f => f.pace_medio)){
-  g.fillStyle = '#FF6B6B';
-  g.font = 'bold 12px sans-serif';
-  g.textAlign = 'center';
-  g.fillText('PACE', PL + w/2, 15);
-  faixas.forEach(function(f){
-   if(f.pace_medio){
-    g.font = '9px sans-serif';
-    g.fillStyle = '#FF6B6B';
-    g.fillText(f.pace_medio, X(f.watts_centro), 28);
-   }
-  });
- }
- 
- // AXIS Y COM CORES DAS MÉTRICAS
  g.font = '9px sans-serif';
  g.textAlign = 'right';
- vis.forEach(function(c, idx){
-  const esc = escalas[c];
-  const cor = CORES_METAB[c];
+ vis.forEach(function(m, idx){
+  const esc = escalas[m];
+  const cor = CORES_METAB[m];
   for(let k = 0; k <= 2; k++){
    const val = (esc.range_vis.vmax - (esc.range_vis.vmax-esc.range_vis.vmin)*k/2).toFixed(1);
    const y = PT + h*k/2;
-   g.fillStyle = cor;  // USAR COR DA MÉTRICA!
+   g.fillStyle = cor;
    g.fillText(val, PL - 10 - idx*50, y+3);
   }
  });
@@ -465,9 +501,10 @@ function drawPerfil(){
   
   if(faixa){
    let txt = '<b>'+faixa.faixa_watts+'</b><br/>'+faixa.n_intervalos+' int.<br/>';
-   vis.forEach(function(c){
-    if(faixa[c]){
-     txt += LABELS_METAB[c]+': '+faixa[c].p50+'<br/>';
+   vis.forEach(function(m){
+    const chave = m+'_'+camposSelecionados[m];
+    if(faixa[chave]){
+     txt += LABELS_METAB[m]+' ('+LABELS_AGREGACAO[camposSelecionados[m]]+'): '+faixa[chave].p50+'<br/>';
     }
    });
    tooltip.innerHTML = txt;
@@ -496,9 +533,8 @@ function drawEvolucao(){
   return;
  }
  
- const PL = 70, PR = 80, PB = 30, PT = 20, w = W - PL - PR, h = H - PT - PB;
- const campo = document.getElementById('campoEvolucao').value;
- const cor = CORES_METAB[campo] || '#999';
+ const metrica = EVOLUCAO.metrica;
+ const cor = CORES_METAB[metrica] || '#999';
  
  const valores = periodos.map(p => p.p50);
  const vmin = Math.min.apply(null, valores);
@@ -506,6 +542,8 @@ function drawEvolucao(){
  const vmarg = (vmax - vmin) * 0.15 || 1;
  const va = vmin - vmarg;
  const vb = vmax + vmarg;
+ 
+ const PL = 70, PR = 80, PB = 30, PT = 20, w = W - PL - PR, h = H - PT - PB;
  const Y = v => PT + h - (v - va)/(vb - va)*h;
  
  g.strokeStyle = '#21262d';
@@ -559,7 +597,7 @@ function drawEvolucao(){
   g.fillText(p.periodo, PL + w*i/(periodos.length-1||1), H-10);
  });
  
- g.fillStyle = cor;  // AXIS Y NA COR DA MÉTRICA
+ g.fillStyle = cor;
  g.font = '9px sans-serif';
  g.textAlign = 'right';
  for(let k = 0; k <= 2; k++){
@@ -572,8 +610,15 @@ function drawEvolucao(){
 async function carregarPerfil(){
  const modalidade = document.getElementById('modalidade').value;
  const largura = document.getElementById('larguraBin').value;
+ 
+ const params = new URLSearchParams();
+ params.append('largura_bin', largura);
+ Object.entries(camposSelecionados).forEach(([m, a]) => {
+  params.append(m, a);
+ });
+ 
  try{
-  const d = await fetch('/api/fisiologia/perfil_robusto/'+modalidade+'?largura_bin='+largura).then(r => r.json());
+  const d = await fetch('/api/fisiologia/perfil_robusto/'+modalidade+'?'+params.toString()).then(r => r.json());
   PERFIL = d;
   if(PERFIL.status === 'ok') drawPerfil();
  }catch(e){
@@ -584,11 +629,12 @@ async function carregarPerfil(){
 }
 
 async function carregarEvolucao(){
+ const metrica = document.getElementById('metricaEvolucao').value;
+ const agregacao = document.getElementById('agregacaoEvolucao').value;
  const modalidade = document.getElementById('modalidade').value;
- const campo = document.getElementById('campoEvolucao').value;
  const wmin = document.getElementById('wattsMin').value || null;
  const wmax = document.getElementById('wattsMax').value || null;
- const url = '/api/fisiologia/evolucao_robusta?modalidade='+modalidade+'&campo='+campo+(wmin?'&watts_min='+wmin:'')+(wmax?'&watts_max='+wmax:'');
+ const url = '/api/fisiologia/evolucao_robusta?modalidade='+modalidade+'&metrica='+metrica+'&agregacao='+agregacao+(wmin?'&watts_min='+wmin:'')+(wmax?'&watts_max='+wmax:'');
  try{
   const d = await fetch(url).then(r => r.json());
   EVOLUCAO = d;
@@ -610,10 +656,29 @@ async function load(){
   selMod.innerHTML = MODALIDADES.map(m => '<option value="'+m.modalidade+'">'+m.modalidade+' ('+m.n+')</option>').join('');
   selMod.onchange = function(){ carregarPerfil(); carregarEvolucao(); };
   
-  const selCampo = document.getElementById('campoEvolucao');
-  const campos = Object.keys(LABELS_METAB);
-  selCampo.innerHTML = campos.map(c => '<option value="'+c+'">'+LABELS_METAB[c]+'</option>').join('');
-  selCampo.onchange = carregarEvolucao;
+  // Criar dropdowns de agregação
+  const agregControls = document.getElementById('agregacaoControls');
+  agregControls.innerHTML = METRICAS_BASE.map(m => 
+   '<label class="sel">'+LABELS_METAB[m]+': <select id="agr_'+m+'">'+
+   AGREGACOES.map(a => '<option value="'+a+'"'+(camposSelecionados[m]===a?' selected':'')+'> '+LABELS_AGREGACAO[a]+'</option>').join('')+
+   '</select></label>'
+  ).join('');
+  
+  METRICAS_BASE.forEach(m => {
+   document.getElementById('agr_'+m).onchange = function(){
+    camposSelecionados[m] = this.value;
+    carregarPerfil();
+   };
+  });
+  
+  const selMetricaEvolucao = document.getElementById('metricaEvolucao');
+  selMetricaEvolucao.innerHTML = METRICAS_BASE.map(m => '<option value="'+m+'">'+LABELS_METAB[m]+'</option>').join('');
+  
+  const selAgregacaoEvolucao = document.getElementById('agregacaoEvolucao');
+  selAgregacaoEvolucao.innerHTML = AGREGACOES.map(a => '<option value="'+a+'">'+LABELS_AGREGACAO[a]+'</option>').join('');
+  
+  selMetricaEvolucao.onchange = carregarEvolucao;
+  selAgregacaoEvolucao.onchange = carregarEvolucao;
   
   const selBin = document.getElementById('larguraBin');
   selBin.onchange = carregarPerfil;
@@ -643,7 +708,7 @@ def api_data():
         modalidades = modalidades_disponiveis()
     except Exception as e:
         return jsonify({'status': 'erro', 'modalidades': []})
-    return jsonify({'status': 'ok', 'modalidades': modalidades, 'campos_valor': CAMPOS_VALOR})
+    return jsonify({'status': 'ok', 'modalidades': modalidades})
 
 def render():
     from flask import render_template_string

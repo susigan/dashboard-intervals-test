@@ -375,6 +375,39 @@ BODY = r"""
 </div>
 <div class="chartbox">
   <canvas id="chEvolucao" height="240"></canvas>
+
+<!-- GRÁFICO DINÂMICA DE RESPOSTA -->
+<div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #333;">
+    <h4>Dinâmica de Resposta (Lag/Recuperação)</h4>
+    
+    <div style="margin-bottom: 15px;">
+        <label>Métrica:</label>
+        <select id="dinMetrica">
+            <option value="hr">HR (bpm)</option>
+            <option value="resp">Respiração (rpm)</option>
+            <option value="smo2">SmO2 (%)</option>
+            <option value="dfa1">DFA-α1 (clean)</option>
+        </select>
+        
+        <label style="margin-left: 20px;">Fase:</label>
+        <select id="dinFase">
+            <option value="lag">Subida (Lag)</option>
+            <option value="rec">Recuperação (Rec)</option>
+        </select>
+        
+        <label style="margin-left: 20px;">Bin Size:</label>
+        <select id="dinBin">
+            <option value="20">20W</option>
+            <option value="50" selected>50W</option>
+            <option value="100">100W</option>
+        </select>
+    </div>
+    
+    <canvas id="chDinamica" width="1200" height="350"></canvas>
+    <div id="lgDinamica" style="margin-top: 10px; font-size: 12px;"></div>
+    <div id="tooltipDin" style="position: absolute; background: rgba(0,0,0,0.8); color: #fff; padding: 5px 10px; border-radius: 3px; font-size: 11px; display: none; z-index: 1000; white-space: pre;"></div>
+    <div id="dinNota" style="margin-top: 10px; font-size: 11px; color: #999;">Tempo até atingir 50/75/90% da resposta (Lag) ou tempo para recuperar 50/75% (Rec)</div>
+</div>
 </div>
 </div>
 <div id="outras" class="tab-content" style="display:none;">
@@ -812,14 +845,7 @@ async function load(){
   console.error('[load] ERRO:', e);
  }
 }
-document.querySelectorAll('.tab-btn').forEach(btn => {
- btn.addEventListener('click', function(){
-  const tabName = this.dataset.tab;
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-  this.classList.add('active');
-  document.getElementById(tabName).classList.add('active');
- });
+
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -980,18 +1006,196 @@ function init_dinamica() {
     carregarDinamica();
 }
 
-document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', function() {
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
-        this.classList.add('active');
-        const tabName = this.dataset.tab;
-        const tabEl = document.getElementById(tabName);
-        if (tabEl) tabEl.style.display = 'block';
-        if (tabName === 'tab_dinamica') setTimeout(init_dinamica, 100);
-    });
+
 });
 
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Dinâmica de Resposta — Gráfico Inline (mesma página)
+// ══════════════════════════════════════════════════════════════════════════════
+
+let DINAMICA = null;
+
+async function carregarDinamica() {
+    const metrica = document.getElementById('dinMetrica')?.value || 'hr';
+    const fase = document.getElementById('dinFase')?.value || 'lag';
+    const bin = document.getElementById('dinBin')?.value || '50';
+    
+    // Pega a modalidade do dropdown que já existe na página
+    const selModal = document.getElementById('selModalidade') || 
+                     Array.from(document.querySelectorAll('select')).find(el => 
+                       el.options && el.options[0]?.text === 'Row');
+    const modalidade = selModal?.value || 'Row';
+    
+    const url = '/api/fisiologia/dinamica_resposta?modalidade=' + modalidade + 
+                '&metrica=' + metrica + '&fase=' + fase + '&largura_bin=' + bin;
+
+    try {
+        const d = await fetch(url).then(r => r.json());
+        DINAMICA = d;
+        drawDinamica();
+    } catch (e) {
+        DINAMICA = {status: 'erro', mensagem: e.message};
+        drawDinamica();
+    }
+}
+
+function drawDinamica() {
+    const canvas = document.getElementById('chDinamica');
+    if (!canvas) return;
+    const g = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+
+    if (!DINAMICA || DINAMICA.status !== 'ok') {
+        g.clearRect(0, 0, W, H);
+        g.fillStyle = '#666';
+        g.font = '14px sans-serif';
+        g.textAlign = 'center';
+        g.fillText(DINAMICA?.mensagem || 'Sem dados', W/2, H/2);
+        return;
+    }
+
+    const faixas = DINAMICA.faixas || [];
+    if (!faixas.length) {
+        g.fillStyle = '#666';
+        g.font = '14px sans-serif';
+        g.fillText('Sem faixas', W/2, H/2);
+        return;
+    }
+
+    g.clearRect(0, 0, W, H);
+
+    const percentis = DINAMICA.percentis || ['50', '75', '90'];
+    const PL = 80, PR = 80, PB = 40, PT = 20;
+    const w = W - PL - PR, h = H - PT - PB;
+    
+    const xs = faixas.map(f => f.watts_centro);
+    const xmin = Math.min.apply(null, xs), xmax = Math.max.apply(null, xs);
+    const X = v => xmax > xmin ? PL + w * (v - xmin) / (xmax - xmin) : PL + w/2;
+
+    let todos_tempos = [];
+    percentis.forEach(pc => faixas.forEach(f => {
+        if (f[pc]) todos_tempos.push(f[pc].p50);
+    }));
+    
+    const tmin = Math.min.apply(null, todos_tempos);
+    const tmax = Math.max.apply(null, todos_tempos);
+    const tmarg = (tmax - tmin) * 0.15 || 1;
+    const ta = tmin - tmarg, tb = tmax + tmarg;
+    const Y = v => PT + h - (v - ta) / (tb - ta) * h;
+
+    // Grid
+    g.strokeStyle = '#333';
+    g.lineWidth = 1;
+    for (let k = 0; k <= 2; k++) {
+        const y = PT + h * k / 2;
+        g.beginPath();
+        g.moveTo(PL, y);
+        g.lineTo(PL + w, y);
+        g.stroke();
+    }
+
+    const cores = {'50': '#FF6B6B', '75': '#FFA500', '90': '#4ECDC4'};
+    const labels_pc = {'50': 'p50', '75': 'p75', '90': 'p90'};
+
+    // Desenhar linhas
+    percentis.forEach(pc => {
+        const cor = cores[pc];
+        g.strokeStyle = cor;
+        g.lineWidth = 2.5;
+        g.beginPath();
+        let primeiro = true;
+        faixas.forEach(f => {
+            if (!f[pc] || !f[pc].p50) return;
+            const x = X(f.watts_centro), y = Y(f[pc].p50);
+            if (primeiro) {
+                g.moveTo(x, y);
+                primeiro = false;
+            } else {
+                g.lineTo(x, y);
+            }
+        });
+        g.stroke();
+
+        g.fillStyle = cor;
+        faixas.forEach(f => {
+            if (!f[pc] || !f[pc].p50) return;
+            g.beginPath();
+            g.arc(X(f.watts_centro), Y(f[pc].p50), 3, 0, 7);
+            g.fill();
+        });
+    });
+
+    // Legenda
+    const legHTML = percentis.map(pc => 
+        '<span style="margin-right:20px;"><i style="display:inline-block;width:10px;height:10px;background:' + 
+        cores[pc] + ';margin-right:5px;"></i>' + labels_pc[pc] + '</span>'
+    ).join('');
+    document.getElementById('lgDinamica').innerHTML = legHTML;
+
+    // Eixo X
+    g.fillStyle = '#8b949e';
+    g.font = '10px sans-serif';
+    g.textAlign = 'center';
+    faixas.forEach(f => {
+        g.fillText(Math.round(f.watts_centro) + 'W', X(f.watts_centro), H - 20);
+    });
+
+    // Eixo Y (segundos)
+    g.font = '9px sans-serif';
+    g.textAlign = 'right';
+    for (let k = 0; k <= 2; k++) {
+        const val = (tb - (tb - ta) * k / 2).toFixed(1);
+        const y = PT + h * k / 2;
+        g.fillStyle = '#8b949e';
+        g.fillText(val + 's', PL - 5, y + 3);
+    }
+
+    // Tooltip
+    const tooltip = document.getElementById('tooltipDin');
+    const canvas2 = document.getElementById('chDinamica');
+    canvas2.onmousemove = function(evt) {
+        const rect = canvas2.getBoundingClientRect();
+        const mx = evt.clientX - rect.left;
+        const my = evt.clientY - rect.top;
+
+        if (mx < PL || mx > PL + w || my < PT || my > PT + h) {
+            tooltip.style.display = 'none';
+            return;
+        }
+
+        const watts = xmin + (mx - PL) / w * (xmax - xmin);
+        const faixa = faixas.find(f => Math.abs(f.watts_centro - watts) < 30);
+
+        if (faixa) {
+            let txt = faixa.faixa_watts + ' (' + faixa.n_intervalos + ' int.)\n';
+            percentis.forEach(pc => {
+                if (faixa[pc]) txt += labels_pc[pc] + ': ' + faixa[pc].p50.toFixed(1) + 's\n';
+            });
+            tooltip.textContent = txt;
+            tooltip.style.left = (evt.clientX + 10) + 'px';
+            tooltip.style.top = (evt.clientY + 10) + 'px';
+            tooltip.style.display = 'block';
+        } else {
+            tooltip.style.display = 'none';
+        }
+    };
+}
+
+// Inicializar quando a página carrega
+window.addEventListener('load', function() {
+    const dinMetrica = document.getElementById('dinMetrica');
+    const dinFase = document.getElementById('dinFase');
+    const dinBin = document.getElementById('dinBin');
+    
+    if (dinMetrica) dinMetrica.addEventListener('change', carregarDinamica);
+    if (dinFase) dinFase.addEventListener('change', carregarDinamica);
+    if (dinBin) dinBin.addEventListener('change', carregarDinamica);
+    
+    // Carregar inicial
+    carregarDinamica();
+});
 
 load();
 """

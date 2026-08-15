@@ -408,7 +408,7 @@ function drawEvolucao(){
 
 async function carregarPerfil(){
  const modalidade=document.getElementById('modalidade').value;
- try{ const d=await fetch('/api/fisiologia/perfil_enhanced?modalidade='+modalidade).then(r=>r.json());
+ try{ const d=await fetch('/api/fisiologia/perfil_robusto/'+modalidade).then(r=>r.json());
   PERFIL=d;
   if(PERFIL.status==='ok') drawPerfil();
  }catch(e){ PERFIL={status:'erro'}; }
@@ -419,7 +419,7 @@ async function carregarEvolucao(){
  const campo=document.getElementById('campoEvolucao').value;
  const wmin=document.getElementById('wattsMin').value;
  const wmax=document.getElementById('wattsMax').value;
- try{ const d=await fetch('/api/fisiologia/evolucao?modalidade='+modalidade+'&campo='+campo+'&watts_min='+wmin+'&watts_max='+wmax).then(r=>r.json());
+ try{ const d=await fetch('/api/fisiologia/evolucao_robusta?modalidade='+modalidade+'&campo='+campo+'&watts_min='+wmin+'&watts_max='+wmax).then(r=>r.json());
   EVOLUCAO=d;
  }catch(e){ EVOLUCAO={status:'erro'}; }
 }

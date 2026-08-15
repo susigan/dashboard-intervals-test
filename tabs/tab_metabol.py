@@ -1,4 +1,4 @@
-"""tab_metabol.py — REFACTOR: dropdown Min/Max/Avg por métrica."""
+"""tab_metabol.py — CORRIGIDO: apenas campos que existem na BD."""
 
 from flask import jsonify, request
 import numpy as np
@@ -10,39 +10,48 @@ from tabs.base import page
 
 SLUG = 'metabol'
 
-# BASE METRICS — user escolhe agregação (min/max/avg)
-METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1']
-AGREGACOES = ['min', 'max', 'avg']
+# APENAS os campos que REALMENTE existem na BD:
+# hr_max_60s, hr_avg_60s (sem hr_min!)
+# resp_avg_60s (sem resp_min, resp_max!)
+# smo2_min_60s (sem smo2_max, smo2_avg!)
+# dfa1_clean (apenas um valor)
 
-# Map: base_metric -> {agregacao -> coluna_db}
+METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1']
+
+# MAP REAL: só os que existem!
 CAMPOS_DB = {
     'hr': {
-        'min': 'hr_min_60s',
         'max': 'hr_max_60s',
         'avg': 'hr_avg_60s',
+        # 'min' NÃO EXISTE
     },
     'resp': {
-        'min': 'resp_min_60s',  # Se existir, senão usar resp_avg
-        'max': 'resp_max_60s',  # Se existir, senão usar resp_avg
         'avg': 'resp_avg_60s',
+        # 'min', 'max' NÃO EXISTEM
     },
     'smo2': {
         'min': 'smo2_min_60s',
-        'max': 'smo2_max_60s',  # Se existir
-        'avg': 'smo2_avg_60s',  # Se existir
+        # 'max', 'avg' NÃO EXISTEM
     },
     'dfa1': {
-        'min': 'dfa1_clean',  # DFA-α1 é um único valor, não tem min/max/avg
-        'max': 'dfa1_clean',
         'avg': 'dfa1_clean',
+        # 'min', 'max' NÃO EXISTEM (é um único valor)
     },
 }
 
+# AGREGAÇÕES DISPONÍVEIS por métrica
+AGREGACOES_VALIDAS = {
+    'hr': ['max', 'avg'],
+    'resp': ['avg'],
+    'smo2': ['min'],
+    'dfa1': ['avg'],
+}
+
 CORES_METAB = {
-    'hr': '#E74C3C',        # Vermelho
-    'resp': '#1ABC9C',      # Cyan
-    'smo2': '#F39C12',      # Laranja
-    'dfa1': '#9B59B6',      # Roxo
+    'hr': '#E74C3C',
+    'resp': '#1ABC9C',
+    'smo2': '#F39C12',
+    'dfa1': '#9B59B6',
 }
 
 LABELS_METAB = {
@@ -97,11 +106,18 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
     """
     conn = _conn()
     
-    # Construir lista de colunas a fetchear
-    todas_colunas = set(['hr_min_60s', 'hr_max_60s', 'hr_avg_60s', 
-                         'resp_avg_60s', 'smo2_min_60s', 'dfa1_clean',
-                         'watts_medio', 'data', 'activity_id', 'interval_num'])
+    # VALIDAR que as agregações são válidas
+    para_buscar = {}
+    for metrica_base, agregacao in campos_selecionados.items():
+        if agregacao in AGREGACOES_VALIDAS.get(metrica_base, []):
+            coluna_db = CAMPOS_DB[metrica_base][agregacao]
+            para_buscar[f'{metrica_base}_{agregacao}'] = coluna_db
+        # Se agregação inválida, ignora (não inclui na query)
     
+    if not para_buscar:
+        return {'status': 'erro', 'mensagem': 'Nenhuma métrica válida selecionada'}
+    
+    todas_colunas = set(['watts_medio', 'data', 'activity_id', 'interval_num'] + list(para_buscar.values()))
     colunas_str = ", ".join(todas_colunas)
     
     linhas = conn.execute(
@@ -113,11 +129,7 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
     ).fetchall()
 
     if len(linhas) < min_n_total:
-        return {
-            'status': 'dados_insuficientes',
-            'modalidade': modalidade,
-            'n_disponivel': len(linhas),
-        }
+        return {'status': 'dados_insuficientes', 'modalidade': modalidade, 'n_disponivel': len(linhas)}
 
     n_linhas = len(linhas)
     corte = int(n_linhas * 0.3)
@@ -155,9 +167,8 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
             if pace:
                 faixa['pace_medio'] = pace
         
-        # Para cada métrica base selecionada
-        for metrica_base, agregacao in campos_selecionados.items():
-            coluna_db = CAMPOS_DB[metrica_base][agregacao]
+        # Para cada métrica selecionada (VALIDADA)
+        for chave_unica, coluna_db in para_buscar.items():
             valores = [linhas[j][coluna_db] for j in idxs]
             pesos_faixa = pesos[idxs]
             
@@ -178,9 +189,7 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
                 
                 ps_cum = np.cumsum(ps_sorted) / np.sum(ps_sorted)
                 
-                # Usar chave única: metrica_base+agregacao
-                chave = f'{metrica_base}_{agregacao}'
-                faixa[chave] = {
+                faixa[chave_unica] = {
                     'p10': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.10), len(vs_sorted)-1)]), 2),
                     'p25': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.25), len(vs_sorted)-1)]), 2),
                     'p50': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.50), len(vs_sorted)-1)]), 2),
@@ -199,9 +208,14 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
         'faixas': faixas_saida,
     }
 
-def evolucao_temporal(modalidade, metrica_base, agregacao, watts_min=None, watts_max=None, min_por_periodo=3):
+def evolucao_temporal(modalidade, metrica, agregacao, watts_min=None, watts_max=None, min_por_periodo=3):
     """Evolução temporal com agregação dinâmica."""
-    coluna_db = CAMPOS_DB[metrica_base][agregacao]
+    
+    # VALIDAR agregação
+    if agregacao not in AGREGACOES_VALIDAS.get(metrica, []):
+        return {'status': 'erro', 'mensagem': f'agregacao inválida: {metrica} não tem {agregacao}'}
+    
+    coluna_db = CAMPOS_DB[metrica][agregacao]
     
     conn = _conn()
     cond = ["modalidade = ?", "valido = 1", f"{coluna_db} IS NOT NULL"]
@@ -247,7 +261,7 @@ def evolucao_temporal(modalidade, metrica_base, agregacao, watts_min=None, watts
 
     return {
         'status': 'ok',
-        'metrica': metrica_base,
+        'metrica': metrica,
         'agregacao': agregacao,
         'periodos': saida,
     }
@@ -328,7 +342,14 @@ const LABELS_AGREGACAO = {
  min:'Mín', max:'Máx', avg:'Méd',
 };
 const METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1'];
-const AGREGACOES = ['min', 'max', 'avg'];
+
+// AGREGAÇÕES REAIS (apenas as que existem na BD)
+const AGREGACOES_VALIDAS = {
+ hr: ['max', 'avg'],
+ resp: ['avg'],
+ smo2: ['min'],
+ dfa1: ['avg'],
+};
 
 let chartState = {chPerfil: {}, chEvolucao: {}};
 let camposSelecionados = {hr:'max', resp:'avg', smo2:'min', dfa1:'avg'};
@@ -368,20 +389,18 @@ function drawPerfil(){
  const g = o.g, W = o.W, H = o.H;
  
  if(!PERFIL || PERFIL.status !== 'ok'){
-  console.warn('[drawPerfil] Erro ou vazio:', PERFIL);
-  noData(g, W, H, 'Sem dados');
+  console.warn('[drawPerfil] Erro:', PERFIL);
+  noData(g, W, H, PERFIL?.mensagem || 'Sem dados');
   return;
  }
  
  const faixas = PERFIL.faixas;
  if(!faixas || !faixas.length){
-  console.warn('[drawPerfil] Sem faixas');
   noData(g, W, H, 'Sem faixas');
   return;
  }
  
  const disponiveis = Object.keys(camposSelecionados).filter(m => faixas.some(f => f[m+'_'+camposSelecionados[m]]));
- console.log('[drawPerfil] Disponiveis:', disponiveis, 'camposSelecionados:', camposSelecionados);
  
  document.getElementById('lgPerfil').innerHTML = disponiveis.map(function(m){
   const off = !ligado('chPerfil', m);
@@ -394,7 +413,6 @@ function drawPerfil(){
  
  const vis = disponiveis.filter(m => ligado('chPerfil', m));
  if(!vis.length){
-  console.warn('[drawPerfil] Nenhuma métrica activa');
   noData(g, W, H, 'Nenhuma métrica');
   return;
  }
@@ -522,34 +540,6 @@ function drawPerfil(){
    tooltip.style.display = 'none';
   }
  };
- console.log('[drawPerfil] Completo');
-}
-
-async function carregarPerfil(){
- if(isLoadingPerfil) return;
- isLoadingPerfil = true;
- 
- const modalidade = document.getElementById('modalidade').value;
- const largura = document.getElementById('larguraBin').value;
- const params = new URLSearchParams();
- params.append('largura_bin', largura);
- Object.entries(camposSelecionados).forEach(([m, a]) => params.append(m, a));
- 
- const url = '/api/fisiologia/perfil_robusto/'+modalidade+'?'+params.toString();
- console.log('[carregarPerfil] Iniciando:', url);
- 
- try{
-  const d = await fetch(url).then(r => r.json());
-  console.log('[carregarPerfil] OK:', d);
-  PERFIL = d;
-  drawPerfil();
- }catch(e){
-  console.error('[carregarPerfil] ERRO:', e);
-  PERFIL = {status: 'erro'};
-  drawPerfil();
- }finally{
-  isLoadingPerfil = false;
- }
 }
 
 function drawEvolucao(){
@@ -641,6 +631,33 @@ function drawEvolucao(){
  }
 }
 
+async function carregarPerfil(){
+ if(isLoadingPerfil) return;
+ isLoadingPerfil = true;
+ 
+ const modalidade = document.getElementById('modalidade').value;
+ const largura = document.getElementById('larguraBin').value;
+ const params = new URLSearchParams();
+ params.append('largura_bin', largura);
+ Object.entries(camposSelecionados).forEach(([m, a]) => params.append(m, a));
+ 
+ const url = '/api/fisiologia/perfil_robusto/'+modalidade+'?'+params.toString();
+ console.log('[carregarPerfil]', url);
+ 
+ try{
+  const d = await fetch(url).then(r => r.json());
+  console.log('[carregarPerfil] OK:', d);
+  PERFIL = d;
+  drawPerfil();
+ }catch(e){
+  console.error('[carregarPerfil] ERRO:', e);
+  PERFIL = {status: 'erro', mensagem: e.message};
+  drawPerfil();
+ }finally{
+  isLoadingPerfil = false;
+ }
+}
+
 async function carregarEvolucao(){
  if(isLoadingEvolucao) return;
  isLoadingEvolucao = true;
@@ -652,8 +669,11 @@ async function carregarEvolucao(){
  const wmax = document.getElementById('wattsMax').value || null;
  const url = '/api/fisiologia/evolucao_robusta?modalidade='+modalidade+'&metrica='+metrica+'&agregacao='+agregacao+(wmin?'&watts_min='+wmin:'')+(wmax?'&watts_max='+wmax:'');
  
+ console.log('[carregarEvolucao]', url);
+ 
  try{
   const d = await fetch(url).then(r => r.json());
+  console.log('[carregarEvolucao] OK:', d);
   EVOLUCAO = d;
   drawEvolucao();
  }catch(e){
@@ -674,38 +694,48 @@ async function load(){
   const selMod = document.getElementById('modalidade');
   selMod.innerHTML = MODALIDADES.map(m => '<option value="'+m.modalidade+'">'+m.modalidade+' ('+m.n+')</option>').join('');
   selMod.onchange = function(){
-   console.log('[selMod.onchange] Novo:', this.value);
+   console.log('[selMod.onchange]', this.value);
    carregarPerfil();
    carregarEvolucao();
   };
   
   const agregControls = document.getElementById('agregacaoControls');
-  agregControls.innerHTML = METRICAS_BASE.map(m => 
-   '<label class="sel">'+LABELS_METAB[m]+': <select id="agr_'+m+'">'+
-   AGREGACOES.map(a => '<option value="'+a+'"'+(camposSelecionados[m]===a?' selected':'')+'> '+LABELS_AGREGACAO[a]+'</option>').join('')+
-   '</select></label>'
-  ).join('');
+  agregControls.innerHTML = METRICAS_BASE.map(m => {
+   const aggs = AGREGACOES_VALIDAS[m] || [];
+   return '<label class="sel">'+LABELS_METAB[m]+': <select id="agr_'+m+'">'+
+   aggs.map(a => '<option value="'+a+'"'+(camposSelecionados[m]===a?' selected':'')+'> '+LABELS_AGREGACAO[a]+'</option>').join('')+
+   '</select></label>';
+  }).join('');
   
   METRICAS_BASE.forEach(m => {
-   document.getElementById('agr_'+m).onchange = function(){
-    console.log('[agr_'+m+'.onchange] Novo:', this.value);
-    camposSelecionados[m] = this.value;
-    carregarPerfil();
-   };
+   const sel = document.getElementById('agr_'+m);
+   if(sel){
+    sel.onchange = function(){
+     console.log('[agr_'+m+'].onchange', this.value);
+     camposSelecionados[m] = this.value;
+     carregarPerfil();
+    };
+   }
   });
   
   const selMetricaEvolucao = document.getElementById('metricaEvolucao');
   selMetricaEvolucao.innerHTML = METRICAS_BASE.map(m => '<option value="'+m+'">'+LABELS_METAB[m]+'</option>').join('');
   
   const selAgregacaoEvolucao = document.getElementById('agregacaoEvolucao');
-  selAgregacaoEvolucao.innerHTML = AGREGACOES.map(a => '<option value="'+a+'">'+LABELS_AGREGACAO[a]+'</option>').join('');
+  const primeiraMetrica = METRICAS_BASE[0];
+  const primeiraAgregacao = AGREGACOES_VALIDAS[primeiraMetrica]?.[0] || 'avg';
+  selAgregacaoEvolucao.innerHTML = (AGREGACOES_VALIDAS[primeiraMetrica] || []).map(a => '<option value="'+a+'">'+LABELS_AGREGACAO[a]+'</option>').join('');
   
-  selMetricaEvolucao.onchange = carregarEvolucao;
+  selMetricaEvolucao.onchange = function(){
+   const aggs = AGREGACOES_VALIDAS[this.value] || [];
+   selAgregacaoEvolucao.innerHTML = aggs.map(a => '<option value="'+a+'">'+LABELS_AGREGACAO[a]+'</option>').join('');
+   carregarEvolucao();
+  };
   selAgregacaoEvolucao.onchange = carregarEvolucao;
   
   const selBin = document.getElementById('larguraBin');
   selBin.onchange = function(){
-   console.log('[selBin.onchange] Novo:', this.value);
+   console.log('[selBin.onchange]', this.value);
    carregarPerfil();
   };
   
@@ -729,13 +759,12 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 load();
 """
 
-
 def api_data():
     try:
         modalidades = modalidades_disponiveis()
     except Exception as e:
         return jsonify({'status': 'erro', 'modalidades': []})
-    return jsonify({'status': 'ok', 'modalidades': modalidades})
+    return jsonify({'status': 'ok', 'modalidades': modalidades, 'agregacoes_validas': AGREGACOES_VALIDAS})
 
 def render():
     from flask import render_template_string

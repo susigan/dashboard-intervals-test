@@ -1,4 +1,4 @@
-"""tab_metabol.py — Com tabs: Perfil por Watts + outras análises."""
+"""tab_metabol.py — FIXES: ranges menores + pace run + axis Y cores."""
 
 from flask import jsonify, request
 import numpy as np
@@ -61,8 +61,8 @@ def modalidades_disponiveis():
         for r in resultado
     ]
 
-def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=10, peso_ultimos=1.5, largura_bin_manual=50):
-    """Perfil com PONDERAÇÃO. largura_bin_manual em watts (50 ou 100)."""
+def perfil_por_modalidade(modalidade, min_n_total=15, largura_bin_manual=50):
+    """Perfil com PONDERAÇÃO. largura_bin em watts (20, 50 ou 100)."""
     conn = _conn()
     colunas = ", ".join(TODOS_CAMPOS)
     linhas = conn.execute(
@@ -78,22 +78,20 @@ def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=10, peso_ultimos=
             'status': 'dados_insuficientes',
             'modalidade': modalidade,
             'n_disponivel': len(linhas),
-            'minimo_necessario': min_n_total,
         }
 
     n_linhas = len(linhas)
     corte = int(n_linhas * 0.3)
     pesos = np.ones(n_linhas)
-    pesos[:corte] = peso_ultimos
+    pesos[:corte] = 1.5
 
     watts = np.array([l['watts_medio'] for l in linhas])
     wmin, wmax = float(watts.min()), float(watts.max())
 
-    limites = list(np.arange(int(wmin // largura_bin_manual) * largura_bin_manual, 
-                             int(wmax // largura_bin_manual + 2) * largura_bin_manual, 
-                             largura_bin_manual))
-    if limites[-1] < wmax:
-        limites.append(limites[-1] + largura_bin_manual)
+    # Gerar limites de bins com padding
+    inicio = int(wmin // largura_bin_manual) * largura_bin_manual
+    fim = int(wmax // largura_bin_manual + 1) * largura_bin_manual
+    limites = list(np.arange(inicio, fim + largura_bin_manual, largura_bin_manual))
 
     faixas_saida = []
     for i in range(len(limites) - 1):
@@ -183,21 +181,12 @@ def evolucao_temporal(modalidade, campo, watts_min=None, watts_max=None, agregac
         return {'status': 'dados_insuficientes', 'n_disponivel': 0}
 
     def _periodo(data_str):
-        if agregacao == 'semana':
-            try:
-                dt = datetime.strptime(data_str, '%Y-%m-%d')
-                ano, semana, _ = dt.isocalendar()
-                return f'{ano}-W{semana:02d}'
-            except:
-                return data_str[:7]
         return data_str[:7]
 
     grupos = {}
-    watts_grupos = {}
     for l in linhas:
         p = _periodo(l['data'])
         grupos.setdefault(p, []).append(l['valor'])
-        watts_grupos.setdefault(p, []).append(l['watts_medio'] if l['watts_medio'] else 0)
 
     saida = []
     for periodo in sorted(grupos.keys()):
@@ -230,16 +219,16 @@ BODY = r"""
   <button class="tab-btn" data-tab="outras">Outras Análises</button>
 </div>
 
-<!-- TAB 1: Perfil por Watts -->
 <div id="perfil_watts" class="tab-content active">
 
 <div class="controls">
   <label class="sel">Modalidade
     <select id="modalidade"></select></label>
-  <label class="sel">Range watts
+  <label class="sel">Bin size (watts)
     <select id="larguraBin">
-      <option value="50">50W</option>
-      <option value="100" selected>100W</option>
+      <option value="20">20W</option>
+      <option value="50" selected>50W</option>
+      <option value="100">100W</option>
     </select></label>
 </div>
 
@@ -262,12 +251,11 @@ BODY = r"""
   <canvas id="chEvolucao" height="240"></canvas>
 </div>
 
-</div><!-- FIM tab perfil_watts -->
+</div>
 
-<!-- TAB 2: Outras Análises -->
 <div id="outras" class="tab-content" style="display:none;">
   <p style="color:#8b949e;">Outras análises virão aqui...</p>
-</div><!-- FIM tab outras -->
+</div>
 
 <style>
 .tabs { display:flex; gap:20px; }
@@ -354,7 +342,7 @@ function drawPerfil(){
   return;
  }
  
- const PL = 70, PR = 120, PB = 40, PT = 25, w = W - PL - PR, h = H - PT - PB;
+ const PL = 100, PR = 120, PB = 40, PT = 25, w = W - PL - PR, h = H - PT - PB;
  const xs = faixas.map(f => f.watts_centro);
  const xmin = Math.min.apply(null, xs), xmax = Math.max.apply(null, xs);
  const X = v => xmax > xmin ? PL + w*(v-xmin)/(xmax-xmin) : PL + w/2;
@@ -428,8 +416,7 @@ function drawPerfil(){
  g.fillStyle = '#8b949e';
  g.font = '10px sans-serif';
  g.textAlign = 'center';
- faixas.forEach(function(f, i){
-  if(i % 2 !== 0) return;
+ faixas.forEach(function(f){
   g.fillText(Math.round(f.watts_centro)+'W', X(f.watts_centro), H-20);
  });
  
@@ -438,8 +425,7 @@ function drawPerfil(){
   g.font = 'bold 12px sans-serif';
   g.textAlign = 'center';
   g.fillText('PACE', PL + w/2, 15);
-  faixas.forEach(function(f, i){
-   if(i % 2 !== 0) return;
+  faixas.forEach(function(f){
    if(f.pace_medio){
     g.font = '9px sans-serif';
     g.fillStyle = '#FF6B6B';
@@ -448,7 +434,7 @@ function drawPerfil(){
   });
  }
  
- g.fillStyle = '#8b949e';
+ // AXIS Y COM CORES DAS MÉTRICAS
  g.font = '9px sans-serif';
  g.textAlign = 'right';
  vis.forEach(function(c, idx){
@@ -457,7 +443,7 @@ function drawPerfil(){
   for(let k = 0; k <= 2; k++){
    const val = (esc.range_vis.vmax - (esc.range_vis.vmax-esc.range_vis.vmin)*k/2).toFixed(1);
    const y = PT + h*k/2;
-   g.fillStyle = hexRgba(cor, 0.4);
+   g.fillStyle = cor;  // USAR COR DA MÉTRICA!
    g.fillText(val, PL - 10 - idx*50, y+3);
   }
  });
@@ -474,10 +460,8 @@ function drawPerfil(){
    return;
   }
   
-  const xmin2 = Math.min.apply(null, xs);
-  const xmax2 = Math.max.apply(null, xs);
-  const watts = xmin2 + (mx-PL)/w*(xmax2-xmin2);
-  const faixa = faixas.find(f => Math.abs(f.watts_centro - watts) < 20);
+  const watts = xmin + (mx-PL)/w*(xmax-xmin);
+  const faixa = faixas.find(f => Math.abs(f.watts_centro - watts) < 30);
   
   if(faixa){
    let txt = '<b>'+faixa.faixa_watts+'</b><br/>'+faixa.n_intervalos+' int.<br/>';
@@ -575,6 +559,7 @@ function drawEvolucao(){
   g.fillText(p.periodo, PL + w*i/(periodos.length-1||1), H-10);
  });
  
+ g.fillStyle = cor;  // AXIS Y NA COR DA MÉTRICA
  g.font = '9px sans-serif';
  g.textAlign = 'right';
  for(let k = 0; k <= 2; k++){

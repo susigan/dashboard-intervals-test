@@ -44,31 +44,38 @@ app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
+
 # ── Paginas ───────────────────────────────────────────────────────────────
 
 @app.route('/')
 def page_volume():
     return tab_volume.render()
 
+
 @app.route('/pmc')
 def page_pmc():
     return tab_pmc.render()
+
 
 @app.route('/corporal')
 def page_corporal():
     return tab_corporal.render()
 
+
 @app.route('/metabol')
 def page_metabol():
     return tab_metabol.render()
+
 
 @app.route('/atividades')
 def page_atividades():
     return tab_atividades.render()
 
+
 @app.route('/activity/<activity_id>')
 def page_detalhe(activity_id):
     return tab_detalhe.render(activity_id)
+
 
 # ── API por tab ───────────────────────────────────────────────────────────
 
@@ -76,36 +83,44 @@ def page_detalhe(activity_id):
 def api_volume():
     return tab_volume.api_data()
 
+
 @app.route('/api/pmc')
 def api_pmc():
     return tab_pmc.api_data()
+
 
 @app.route('/api/corporal')
 def api_corporal():
     return tab_corporal.api_data()
 
+
 @app.route('/api/metabol')
 def api_metabol():
     return tab_metabol.api_data()
+
 
 @app.route('/api/debug/sheets')
 def api_debug_sheets():
     """Estado da ligacao aos Google Sheets e colunas reconhecidas."""
     return tab_pmc.api_sheets_debug()
 
+
 @app.route('/api/atividades')
 def api_atividades():
     return tab_atividades.api_data()
 
+
 @app.route('/api/activity/<activity_id>/full')
 def api_activity_full(activity_id):
     return tab_detalhe.api_full(activity_id)
+
 
 # ── Debug e servico ───────────────────────────────────────────────────────
 
 @app.route('/api/activity/<activity_id>/debug')
 def api_activity_debug(activity_id):
     return tab_detalhe.api_debug(activity_id)
+
 
 # ── Perfil fisiológico (lag/recovery SmO2/tHb/HR/respiração) ────────────────
 #
@@ -130,6 +145,7 @@ def api_fisiologia_debug(activity_id):
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
 
+
 @app.route('/api/fisiologia/processar')
 def api_fisiologia_processar():
     """Processa um lote de atividades (mais recentes -> mais antigas, até
@@ -148,7 +164,50 @@ def api_fisiologia_processar():
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
 
+
 @app.route('/api/fisiologia/status')
+
+@app.route('/api/fisiologia/perfil_robusto/<modalidade>')
+def api_perfil_robusto(modalidade):
+    """Perfil metabólico robusta v2 — últimos 60s com artefatos removidos.
+    
+    Retorna quartis (p25, p50, p75) para cada faixa de watts.
+    Campos: hr_max_60s, hr_avg_60s, resp_avg_60s, smo2_min_60s, dfa1_clean
+    """
+    try:
+        from tabs import tab_metabol as tm
+        min_n = int(request.args.get('min_n', 15))
+        n_faixas = int(request.args.get('n_faixas', 10))
+        resultado = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/evolucao_robusta')
+def api_evolucao_robusta():
+    """Evolução temporal robusta v2 de uma métrica.
+    
+    Query params:
+      - modalidade: Row, Bike, Ski, Run
+      - campo: hr_max_60s, hr_avg_60s, resp_avg_60s, smo2_min_60s, dfa1_clean
+      - watts_min: (opcional) filtro watts mínimo
+      - watts_max: (opcional) filtro watts máximo
+    """
+    try:
+        from tabs import tab_metabol as tm
+        modalidade = request.args.get('modalidade', 'Row')
+        campo = request.args.get('campo', 'hr_max_60s')
+        watts_min = request.args.get('watts_min', type=float, default=None)
+        watts_max = request.args.get('watts_max', type=float, default=None)
+        resultado = tm.evolucao_temporal(modalidade, campo, watts_min, watts_max)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
 def api_fisiologia_status():
     """Quantos intervalos válidos há já, por modalidade — para saber se
     já vale a pena pedir o perfil de cada uma.
@@ -159,6 +218,7 @@ def api_fisiologia_status():
     except Exception as e:
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
 
 @app.route('/api/fisiologia/diagnostico')
 def api_fisiologia_diagnostico():
@@ -175,6 +235,7 @@ def api_fisiologia_diagnostico():
     except Exception as e:
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
 
 @app.route('/api/fisiologia/perfil')
 def api_fisiologia_perfil():
@@ -201,6 +262,7 @@ def api_fisiologia_perfil():
     except Exception as e:
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
 
 @app.route('/api/fisiologia/perfil_grafico')
 def api_fisiologia_perfil_grafico():
@@ -235,6 +297,7 @@ def api_fisiologia_perfil_grafico():
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
 
+
 @app.route('/api/fisiologia/evolucao')
 def api_fisiologia_evolucao():
     """Deriva longitudinal de uma métrica, numa faixa de watts fixa
@@ -265,22 +328,27 @@ def api_fisiologia_evolucao():
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
 
+
 @app.route('/api/debug/athlete')
 def api_debug_athlete():
     return tab_detalhe.api_debug_athlete()
 
+
 @app.route('/api/cache')
 def api_cache():
     return jsonify(cache_info())
+
 
 @app.route('/api/cache/refresh')
 def api_cache_refresh():
     acts = fetch_activities(force=True)
     return jsonify({'status': 'OK', 'count': len(acts or [])})
 
+
 @app.route('/api/db')
 def api_db():
     return jsonify(db.stats())
+
 
 @app.route('/api/sync')
 def api_sync():
@@ -304,6 +372,7 @@ def api_sync():
             res['zonas'] = {'ok': False, 'erro': str(e)}
     return jsonify(res)
 
+
 @app.route('/api/sync/full')
 def api_sync_full():
     """Sync completo: puxa ANOS_HISTORICO anos. Correr uma vez no inicio."""
@@ -311,12 +380,14 @@ def api_sync_full():
     invalidar_cache()
     return jsonify(res)
 
+
 @app.route('/api/export')
 @app.route('/api/export/')
 def api_export_indice():
     """Que exportacoes existem."""
     import export
     return jsonify(export.indice())
+
 
 @app.route('/api/export/<nome>')
 def api_export(nome):
@@ -392,6 +463,7 @@ def api_export(nome):
     hoje = datetime.now().strftime('%Y%m%d')
     return Response(texto, mimetype=f'{mime}; charset=utf-8', headers={
         'Content-Disposition': f'attachment; filename="{base}_{hoje}.{ext}"'})
+
 
 @app.route('/api/debug/wellness-icu')
 def api_debug_wellness_icu():
@@ -484,6 +556,7 @@ def api_debug_wellness_icu():
             'Intervals.icu nas definicoes da Intervals.icu.'),
     })
 
+
 @app.route('/api/protocolo')
 def api_protocolo():
     """Testes maximos detectados e quais estao em atraso.
@@ -508,6 +581,7 @@ def api_protocolo():
             f'{protocolo.JANELA_MELHOR} dias. Nao e preciso marcar nada.'),
     })
 
+
 @app.route('/api/calibracao')
 def api_calibracao():
     """Parametros calibrados nos dados do atleta, com a evidencia.
@@ -517,6 +591,7 @@ def api_calibracao():
     """
     return _seguro(tab_pmc.api_calibracao_dados)
 
+
 @app.route('/api/sync/curvas')
 def api_sync_curvas():
     """Curvas de potencia por sessao — base dos recordes.
@@ -525,22 +600,27 @@ def api_sync_curvas():
     """
     return jsonify(sync.sync_power_curves())
 
+
 @app.route('/api/recordes')
 def api_recordes():
     return tab_recordes.api_data()
 
+
 @app.route('/recordes')
 def page_recordes():
     return tab_recordes.render()
+
 
 @app.route('/api/recordes/seasons')
 def api_recordes_seasons():
     """Melhor curva por periodo. ?por=season (default) ou ?por=ano"""
     return tab_recordes.api_seasons()
 
+
 @app.route('/api/activity/<activity_id>/prs')
 def api_activity_prs(activity_id):
     return jsonify(db.prs_da_actividade(activity_id) or {'erro': 'sem curva guardada'})
+
 
 @app.route('/api/frescura')
 def api_frescura():
@@ -577,11 +657,13 @@ def api_frescura():
                 'name': a.get('name'), 'type': a.get('type')} for a in novas[:10]]
     return jsonify(info)
 
+
 @app.route('/api/db/schema')
 def api_db_schema():
     """Colunas de cada tabela — para perceber erros 500 de SQL."""
     return jsonify({t: db.colunas_de(t) for t in
                     ('activities', 'power_curves', 'streams', 'sync_log')})
+
 
 @app.route('/api/db/recriar-curvas')
 def api_recriar_curvas():
@@ -593,6 +675,7 @@ def api_recriar_curvas():
         except Exception as e:
             res['sync'] = {'ok': False, 'erro': str(e)}
     return jsonify(res)
+
 
 @app.route('/api/debug/curvas')
 def api_debug_curvas():
@@ -642,20 +725,24 @@ def api_debug_curvas():
             out['testes'][nome] = {'ok': True, 'tipo': type(data).__name__}
     return jsonify(out)
 
+
 @app.route('/api/db/curvas')
 def api_db_curvas():
     """Diagnostico da tabela de curvas."""
     return jsonify(db.diagnostico_curvas())
+
 
 @app.route('/api/debug/zonas')
 def api_debug_zonas():
     """Que custom_zones existem por modalidade, e onde faltam."""
     return jsonify(db.diagnostico_zonas())
 
+
 @app.route('/api/sync/zonas')
 def api_sync_zonas():
     """Extrai o tempo por zona do JSON ja guardado. Nao gasta pedidos a API."""
     return jsonify(db.extrair_zone_times())
+
 
 @app.route('/api/zonas')
 def api_zonas():
@@ -672,6 +759,7 @@ def api_zonas():
             request.args.get('desde') or None),
     })
 
+
 def _seguro(fn, *args, **kwargs):
     """Corre fn e devolve o erro em JSON em vez de 500.
 
@@ -685,6 +773,7 @@ def _seguro(fn, *args, **kwargs):
         traceback.print_exc()
         return jsonify({'ok': False, 'erro': f'{type(e).__name__}: {e}',
                         'traceback': traceback.format_exc()[-1200:]}), 500
+
 
 @app.route('/api/sync/streams')
 def api_sync_streams():
@@ -701,10 +790,55 @@ def api_sync_streams():
                    tipos=[t.strip() for t in tipos.split(',')] if tipos else None,
                    desde=request.args.get('desde'))
 
+
 @app.route('/api/db/streams')
 def api_db_streams():
     """Cobertura dos streams guardados."""
     return _seguro(db.streams_stats)
+
+
+@app.route('/fisiologia/perfil_grafico_enhanced/<modalidade>')
+def page_perfil_grafico_enhanced(modalidade):
+    """Página HTML com gráfico dual-axis (watts + pace) do perfil."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 10))
+        enh = tme.MetabolicProfileEnhanced(modalidade)
+        perfil = enh.gerar_perfil_com_pace(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        if perfil.get('status') != 'ok':
+            return f"<h1>Perfil — {modalidade}</h1><p>Dados insuficientes</p>"
+        fig = enh.grafico_perfil_dual_axis(perfil)
+        html = fig.to_html(include_plotlyjs='cdn', div_id=f'perfil-{modalidade}',
+                          config={'responsive': True, 'displayModeBar': True})
+        return f"""<html><head><title>Perfil {modalidade}</title><meta charset="utf-8"></head><body>
+                <h1>Perfil Metabólico — {modalidade} (Dual Axis: Watts + Pace)</h1>{html}
+                <p><a href="/">← Voltar</a></p></body></html>"""
+    except Exception as e:
+        import traceback
+        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
+
+
+@app.route('/fisiologia/evolucao_grafico/<modalidade>/<campo>')
+def page_evolucao_grafico(modalidade, campo):
+    """Página HTML com gráfico evolução temporal (watts + pace)."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        watts_min = request.args.get('watts_min', type=float)
+        watts_max = request.args.get('watts_max', type=float)
+        agregacao = request.args.get('agregacao', 'mes')
+        resultado = tme.evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max, agregacao)
+        if resultado.get('status') != 'ok':
+            return f"<h1>Evolução — {modalidade}</h1><p>Dados insuficientes</p>"
+        fig = tme.grafico_evolucao_dual_axis(resultado)
+        html = fig.to_html(include_plotlyjs='cdn', div_id=f'evolucao-{modalidade}',
+                          config={'responsive': True, 'displayModeBar': True})
+        return f"""<html><head><title>Evolução {modalidade}</title><meta charset="utf-8"></head><body>
+                <h1>Evolução {campo} — {modalidade} (Dual Axis: Watts + Pace)</h1>{html}
+                <p><a href="/">← Voltar</a></p></body></html>"""
+    except Exception as e:
+        import traceback
+        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
 
 
 # ── Novas rotas: DFA-α1 + Pace/Watts ──────────────────────────────────────
@@ -713,34 +847,34 @@ def api_db_streams():
 def api_validacao_dfa(modalidade):
     """Validar qualidade de DFA-α1 para uma modalidade."""
     try:
-        from tabs import tab_metabol as tme
+        from tabs import tab_metabol_enhanced as tme
         resultado = tme.validacao_lote_dfa(modalidade)
         return jsonify(resultado)
     except Exception as e:
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
 
+
 @app.route('/api/fisiologia/perfil_enhanced/<modalidade>')
 def api_perfil_enhanced(modalidade):
     """Perfil metabólico com coluna pace adicionada (Row/Ski)."""
     try:
-        from tabs import tab_metabol as tme
+        from tabs import tab_metabol_enhanced as tme
         min_n = int(request.args.get('min_n', 20))
         n_faixas = int(request.args.get('n_faixas', 10))
-        resultado = tme.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
-        if resultado.get('status') == 'ok':
-            resultado['bins'] = resultado.pop('faixas', [])
-            resultado['n_bins'] = len(resultado['bins'])
+        enh = tme.MetabolicProfileEnhanced(modalidade)
+        resultado = enh.gerar_perfil_com_pace(modalidade, min_n_total=min_n, n_faixas=n_faixas)
         return jsonify(resultado)
     except Exception as e:
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
 
+
 @app.route('/api/fisiologia/evolucao_com_pace')
 def api_evolucao_com_pace():
     """Evolução temporal com pace secundário (Row/Ski)."""
     try:
-        from tabs import tab_metabol as tme
+        from tabs import tab_metabol_enhanced as tme
         modalidade = request.args.get('modalidade')
         campo = request.args.get('campo')
         if not modalidade or not campo:
@@ -748,15 +882,17 @@ def api_evolucao_com_pace():
         watts_min = request.args.get('watts_min', type=float)
         watts_max = request.args.get('watts_max', type=float)
         agregacao = request.args.get('agregacao', 'mes')
-        resultado = tme.evolucao_temporal(modalidade, campo, watts_min, watts_max, agregacao)
+        resultado = tme.evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max, agregacao)
         return jsonify(resultado)
     except Exception as e:
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
 
+
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy'}), 200
+
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))

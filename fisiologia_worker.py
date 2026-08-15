@@ -1,900 +1,997 @@
-#!/usr/bin/env python3
-"""Intervals.icu Dashboard — servidor Flask.
+"""fisiologia_worker.py — Perfil metabólico por lag/recovery + patamar.
 
-Estrutura:
-  app.py          rotas
-  config.py       constantes (TYPE_MAP, cores, campos)
-  api_client.py   cliente da API + cache + normalizacao
-  helpers.py      ActivityProcessor
-  tabs/           uma tab por ficheiro
+O QUE FAZ
+---------
+Para cada atividade cíclica (Bike/Row/Ski/Run) com potência, calcula DUAS
+dimensões, de fontes diferentes e independentes uma da outra:
+
+  DIMENSÃO TEMPO (lag_*/rec_*) — precisa de streams já guardados no
+  Postgres (watts, heartrate, smo2, thb, respiration) via db.get_streams():
+    1. Pede à API do Intervals.icu só os INTERVALOS/LAPS da atividade
+       (endpoint leve, não é stream) — para saber onde começa/acaba cada
+       WORK e REC.
+    2. Para cada intervalo WORK: mede quanto tempo (s) cada métrica leva a
+       percorrer 50/75/90% da excursão entre a baseline (antes do WORK) e
+       o patamar estável (fim do WORK).
+    3. Para o REC a seguir (se existir): mede quanto tempo leva a voltar
+       50/75% do caminho até à baseline original.
+
+  DIMENSÃO VALOR/PATAMAR (*_medio_work/*_medio_rec) — NÃO precisa de
+  streams nenhuns, só da mesma resposta de /intervals: a Intervals.icu já
+  calcula e devolve, por lap, a média de HR, SmO2, tHb, respiração E DFA1
+  (average_dfa_a1) — usados directamente. É esta dimensão que dá a curva
+  "a X watts, o esperado é Y" que serve de base ao perfil metabólico.
+
+Por serem independentes: uma atividade sem streams carregados (ainda não
+passou por /api/sync/streams) fica com lag_*/rec_* a None mas continua a
+gravar os valores de patamar. Corre o sync de streams e reprocessa depois
+para completar a dimensão tempo.
+
+Grava 1 linha por intervalo em fisiologia_perfil.db (SQLite, Drive).
+
+SEM ZONAS FIXAS: watts_medio/min/max ficam como valor contínuo. Os
+quartis de potência são calculados depois, na leitura (tab_metabol.py),
+a partir da distribuição real de cada modalidade.
+
+COMO CORRER
+-----------
+Processamento incremental, por lotes, do mais recente para o mais antigo,
+até à data de corte (2024-01-01 por omissão):
+
+    python fisiologia_worker.py                  # 1 lote de 10 atividades
+    python fisiologia_worker.py --n 20            # lote maior
+    python fisiologia_worker.py --debug ACTIVITY_ID   # ver resposta bruta
+                                                        # da API /intervals
+                                                        # para 1 atividade
+
+Pensado para correr como CRON JOB separado no Railway (não dentro do
+processo web do app.py) — evita bloquear pedidos HTTP durante o
+processamento e evita repetir o erro anterior de mexer no app.py.
+Ver INSTRUCOES no fim do ficheiro para configurar o cron no Railway.
+
+CONFIGURAÇÃO — CAMPOS CONFIRMADOS
+-----------------------------------------
+Os nomes de campos abaixo foram confirmados directamente no código já
+existente em tabs/tab_detalhe.py (a página /activity/<id> já usa isto):
+
+    d.intervals.icu_intervals = [
+        {label, type, start_time, elapsed_time, distance,
+         average_watts, max_watts, weighted_average_watts,
+
+         average_heartrate, max_heartrate, average_cadence,
+         intensity, joules, decoupling}, ...
+    ]
+
+IMPORTANTE: 'elapsed_time' aqui é a DURAÇÃO do intervalo (não um
+timestamp absoluto) — bate com a coluna "DurW" que já vês na tua tabela
+de calibração (ex.: intervalo 1 = 304s). t_fim = start_time + elapsed_time.
+
+O campo 'type' da API NEM SEMPRE é fiável — confirmaste que às vezes
+marca REST como WORK. Por isso este worker NÃO usa 'type' para decidir
+o que é WORK/REC: classifica pela POTÊNCIA MÉDIA de cada intervalo
+(maior "salto" na distribuição ordenada de average_watts separa os dois
+grupos). 'type'/'label' só ficam guardados para debug/logging.
 """
 
 import os
 import sys
-import logging
-from flask import jsonify, request, Response
-from dotenv import load_dotenv
+import json
+from datetime import datetime, date
 
-load_dotenv()
+import numpy as np
 
-from config import API_KEY, ATHLETE_ID, ANOS_HISTORICO
-
-if not API_KEY:
-    print("ERRO: INTERVALS_ICU_API_KEY nao configurada")
-    sys.exit(1)
-
-print(f"Config carregada | ATHLETE_ID: {ATHLETE_ID} | historico: {ANOS_HISTORICO} anos")
-
-from flask import Flask
 import db
-import sync
-from datetime import datetime, timedelta
-from api_client import (fetch_activities, cache_info, invalidar_cache,
-                        fetch_da_api)
-from tabs import (tab_volume, tab_atividades, tab_detalhe,
-                  tab_recordes, tab_pmc, tab_corporal, tab_metabol)
+from api_client import icu_get, norm_tipo
+import drive_db_fisiologia as ddf
+try:
+    import sync as _sync
+except Exception:
+    _sync = None
 
-if db.ENABLED:
-    db.init_schema()
-    print(f"Fonte de dados: {db.DRIVER} (com a API como fallback)")
-else:
-    print("Fonte de dados: API Intervals.icu (DATABASE_URL nao definida)")
+# ══════════════════════════════════════════════════════════════════════════
+# CONFIGURAÇÃO
+# ══════════════════════════════════════════════════════════════════════════
 
-app = Flask(__name__)
-app.config['JSON_SORT_KEYS'] = False
-logging.getLogger("werkzeug").setLevel(logging.WARNING)
+DATA_CORTE = os.getenv("FISIOLOGIA_DATA_CORTE", "2024-01-01")
+LOTE_PADRAO = int(os.getenv("FISIOLOGIA_LOTE", "10"))
+LOTE_WEB_MAX = int(os.getenv("FISIOLOGIA_LOTE_WEB_MAX", "8"))  # limite p/ pedido HTTP (timeout Railway)
 
+DUR_MIN_WORK_S = 20     # intervalos mais curtos que isto são ignorados (ruído)
+DUR_MIN_REC_S = 15
+JANELA_BASELINE_S = 8   # segundos antes do WORK usados como baseline
 
-# ── Paginas ───────────────────────────────────────────────────────────────
+# Janela de plateau — medida do FIM do esforço PARA TRÁS. Proporcional à
+# duração, mas com limites: em intervalos de 20 min não faz sentido usar
+# 25% (5 min), e em intervalos curtos 25% pode ser 5s (ruidoso demais).
+FRAC_PLATEAU = 0.25
+JANELA_PLATEAU_MIN_S = 12.0
+JANELA_PLATEAU_MAX_S = 90.0
 
-@app.route('/')
-def page_volume():
-    return tab_volume.render()
+# Quantos segundos DENTRO do descanso continuar a procurar o extremo.
+# Métricas com inércia (respiração, DFA1) atingem o pico depois do fim do
+# esforço; sem isto, esse pico é perdido ou atribuído ao descanso.
+JANELA_EXTREMO_APOS_S = 30.0
 
-
-@app.route('/pmc')
-def page_pmc():
-    return tab_pmc.render()
-
-
-@app.route('/corporal')
-def page_corporal():
-    return tab_corporal.render()
-
-
-@app.route('/metabol')
-def page_metabol():
-    return tab_metabol.render()
-
-
-@app.route('/atividades')
-def page_atividades():
-    return tab_atividades.render()
+# Nomes dos streams tal como guardados por parse_streams() (chave = 'type'
+# devolvido pela API). Se houver 2º sensor, a chave fica com sufixo _2 —
+# aqui só usamos o principal.
+STREAM_HR = 'heartrate'
+STREAM_WATTS = 'watts'
+STREAM_SMO2 = 'smo2'
+STREAM_THB = 'thb'
+STREAM_DFA1 = 'dfa_a1'   # confirmado via /api/db/streams: 153 sessões guardadas
+STREAMS_RESP_CANDIDATOS = ['respiration', 'breathing_rate', 'resp_rate']
 
 
-@app.route('/activity/<activity_id>')
-def page_detalhe(activity_id):
-    return tab_detalhe.render(activity_id)
+# ══════════════════════════════════════════════════════════════════════════
+# ALINHAMENTO TEMPORAL (streams vêm downsampled, precisam de dt próprio)
+# ══════════════════════════════════════════════════════════════════════════
 
+def _tempos_do_stream(stream, duracao_total_s):
+    """Vector de tempos (s) alinhado a um stream possivelmente downsampled.
 
-# ── API por tab ───────────────────────────────────────────────────────────
-
-@app.route('/api/volume')
-def api_volume():
-    return tab_volume.api_data()
-
-
-@app.route('/api/pmc')
-def api_pmc():
-    return tab_pmc.api_data()
-
-
-@app.route('/api/corporal')
-def api_corporal():
-    return tab_corporal.api_data()
-
-
-@app.route('/api/metabol')
-def api_metabol():
-    return tab_metabol.api_data()
-
-
-@app.route('/api/debug/sheets')
-def api_debug_sheets():
-    """Estado da ligacao aos Google Sheets e colunas reconhecidas."""
-    return tab_pmc.api_sheets_debug()
-
-
-@app.route('/api/atividades')
-def api_atividades():
-    return tab_atividades.api_data()
-
-
-@app.route('/api/activity/<activity_id>/full')
-def api_activity_full(activity_id):
-    return tab_detalhe.api_full(activity_id)
-
-
-# ── Debug e servico ───────────────────────────────────────────────────────
-
-@app.route('/api/activity/<activity_id>/debug')
-def api_activity_debug(activity_id):
-    return tab_detalhe.api_debug(activity_id)
-
-
-# ── Perfil fisiológico (lag/recovery SmO2/tHb/HR/respiração) ────────────────
-#
-# Imports feitos DENTRO das funções (lazy) e envolvidos em try/except: se
-# fisiologia_worker.py tiver algum problema, só estas 2 rotas falham
-# (devolvem erro 500 em JSON) — o resto do dashboard continua de pé.
-
-@app.route('/api/fisiologia/debug/<activity_id>')
-def api_fisiologia_debug(activity_id):
-    """Mostra, para 1 atividade, como os intervalos foram interpretados:
-    resposta bruta da API, classificação WORK/REC calculada pela potência
-    (ignora o campo 'type' da API, que pode estar errado), pares
-    WORK->REC, e uma simulação do processamento completo (lags/recovery)
-    SEM gravar nada no .db.
-
-    Exemplo: /api/fisiologia/debug/i174526190
+    downsample() em api_client.py reduz para no máx. 1500 pontos, uniforme.
+    dt = duracao_total / n_pontos (aprox — assume amostragem original ~1Hz).
     """
-    try:
-        import fisiologia_worker as fw
-        return jsonify(fw.debug_dict(activity_id))
-    except Exception as e:
-        import traceback
-        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+    n = len(stream) if stream else 0
+    if n == 0 or not duracao_total_s:
+        return np.array([])
+    dt = duracao_total_s / n
+    return np.arange(n) * dt
 
 
-@app.route('/api/fisiologia/processar')
-def api_fisiologia_processar():
-    """Processa um lote de atividades (mais recentes -> mais antigas, até
-    2024-01-01) e grava em fisiologia_perfil.db no Drive.
+def _valores_float(stream):
+    return np.array([v if isinstance(v, (int, float)) else np.nan for v in (stream or [])],
+                    dtype=np.float64)
 
-    Query params: ?n=5 (max LOTE_WEB_MAX por pedido, evita timeout Railway)
-    Exemplo: /api/fisiologia/processar?n=5
+
+# ══════════════════════════════════════════════════════════════════════════
+# INTERVALOS (laps) — busca à API + parsing com campos confirmados
+# ══════════════════════════════════════════════════════════════════════════
+
+def buscar_intervalos_api(activity_id):
+    """(lista_intervalos, erro). Cada item: {tipo, label, t_ini, t_fim,
+    watts_medio_api, hr_medio_api, smo2_medio_api, thb_medio_api,
+    resp_medio_api, dfa1_medio_api}.
+
+    Os *_medio_api vêm TODOS directos da resposta da API por intervalo —
+    a Intervals.icu já calcula estas médias por lap, incluindo o DFA1
+    (average_dfa_a1), sem precisar de processar nenhum stream.
     """
-    try:
-        import fisiologia_worker as fw
-        n = int(request.args.get('n', 5))
-        n = min(n, fw.LOTE_WEB_MAX)
-        resumo = fw.processar_lote(n, retornar_resumo=True)
-        return jsonify(resumo)
-    except Exception as e:
-        import traceback
-        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+    data, erro = icu_get(f"/activity/{activity_id}/intervals")
+    if erro:
+        return None, erro
 
+    if isinstance(data, dict) and isinstance(data.get('icu_intervals'), list):
+        bruto = data['icu_intervals']
+    elif isinstance(data, list):
+        bruto = data
+    elif isinstance(data, dict) and isinstance(data.get('intervals'), list):
+        bruto = data['intervals']
+    else:
+        return None, f"schema inesperado: {str(data)[:200]}"
 
-@app.route('/api/fisiologia/status')
-
-@app.route('/api/fisiologia/perfil_robusto/<modalidade>')
-def api_perfil_robusto(modalidade):
-    """Perfil metabólico robusta v2 — últimos 60s com artefatos removidos.
-    
-    Retorna quartis (p25, p50, p75) para cada faixa de watts.
-    Campos: hr_max_60s, hr_avg_60s, resp_avg_60s, smo2_min_60s, dfa1_clean
-    """
-    try:
-        from tabs import tab_metabol as tm
-        min_n = int(request.args.get('min_n', 15))
-        n_faixas = int(request.args.get('n_faixas', 10))
-        resultado = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
-        return jsonify(resultado)
-    except Exception as e:
-        import traceback
-        return jsonify({'status': 'erro', 'erro': str(e), 'trace': traceback.format_exc()}), 500
-
-
-@app.route('/api/fisiologia/evolucao_robusta')
-def api_evolucao_robusta():
-    """Evolução temporal robusta v2 de uma métrica.
-    
-    Query params:
-      - modalidade: Row, Bike, Ski, Run
-      - campo: hr_max_60s, hr_avg_60s, resp_avg_60s, smo2_min_60s, dfa1_clean
-      - watts_min: (opcional) filtro watts mínimo
-      - watts_max: (opcional) filtro watts máximo
-    """
-    try:
-        from tabs import tab_metabol as tm
-        modalidade = request.args.get('modalidade', 'Row')
-        campo = request.args.get('campo', 'hr_max_60s')
-        watts_min = request.args.get('watts_min', type=float, default=None)
-        watts_max = request.args.get('watts_max', type=float, default=None)
-        resultado = tm.evolucao_temporal(modalidade, campo, watts_min, watts_max)
-        return jsonify(resultado)
-    except Exception as e:
-        import traceback
-        return jsonify({'status': 'erro', 'erro': str(e), 'trace': traceback.format_exc()}), 500
-
-
-def api_fisiologia_status():
-    """Quantos intervalos válidos há já, por modalidade — para saber se
-    já vale a pena pedir o perfil de cada uma.
-    """
-    try:
-        from tabs import tab_metabol as tm
-        return jsonify({'status': 'ok', 'modalidades': tm.modalidades_disponiveis()})
-    except Exception as e:
-        import traceback
-        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
-
-
-@app.route('/api/fisiologia/diagnostico')
-def api_fisiologia_diagnostico():
-    """Estado da persistência no Google Drive: credenciais, pasta, se o
-    ficheiro existe lá, quantas linhas tem o .db local agora mesmo.
-
-    Usa isto quando /api/fisiologia/processar disser "ok" mas a tab
-    Metabolismo continuar vazia — revela se o upload para o Drive está
-    mesmo a funcionar ou a falhar silenciosamente.
-    """
-    try:
-        import drive_db_fisiologia as ddf
-        return jsonify({'status': 'ok', 'diagnostico': ddf.diagnostico()})
-    except Exception as e:
-        import traceback
-        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
-
-
-@app.route('/api/fisiologia/perfil')
-def api_fisiologia_perfil():
-    """Curva watts -> métrica esperada (HR/SmO2/tHb/respiração/DFA1),
-    valor e tempo de resposta/recuperação, por faixas de potência
-    calculadas dinamicamente (não fixas) a partir dos dados reais.
-
-    Query params:
-      ?modalidade=Row      (obrigatório: Bike, Row, Ski ou Run)
-      ?min_n=20             (mínimo de intervalos para calcular, default 20)
-      ?n_faixas=4            (quantas faixas de watts, default 4)
-
-    Exemplo: /api/fisiologia/perfil?modalidade=Row
-    """
-    try:
-        from tabs import tab_metabol as tm
-        modalidade = request.args.get('modalidade')
-        if not modalidade:
-            return jsonify({'erro': 'falta o parametro ?modalidade='}), 400
-        min_n = int(request.args.get('min_n', 20))
-        n_faixas = int(request.args.get('n_faixas', 4))
-        resultado = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
-        return jsonify(resultado)
-    except Exception as e:
-        import traceback
-        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
-
-
-@app.route('/api/fisiologia/perfil_grafico')
-def api_fisiologia_perfil_grafico():
-    """Igual a /api/fisiologia/perfil, mas devolve HTML Plotly pronto a
-    embeber: 1 subplot por métrica (HR/SmO2/tHb/Respiração/DFA1), X =
-    faixa de watts, linha+banda p25-p75 no esforço, tracejado cinza de
-    referência em repouso.
-
-    Query params: iguais a /api/fisiologia/perfil (?modalidade=, ?min_n=,
-    ?n_faixas=)
-
-    Exemplo: /api/fisiologia/perfil_grafico?modalidade=Row
-    """
-    try:
-        from tabs import tab_metabol as tm
-        modalidade = request.args.get('modalidade')
-        if not modalidade:
-            return jsonify({'erro': 'falta o parametro ?modalidade='}), 400
-        min_n = int(request.args.get('min_n', 20))
-        n_faixas = int(request.args.get('n_faixas', 4))
-
-        perfil = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
-        if perfil.get('status') != 'ok':
-            return jsonify(perfil), 200  # dados insuficientes -- devolve o motivo, sem gráfico
-
-        fig = tm.grafico_perfil_metabolico(perfil)
-        html = fig.to_html(include_plotlyjs='cdn', div_id='perfil-metabolico-chart',
-                           config={'responsive': True, 'displayModeBar': False})
-        return jsonify({'status': 'ok', 'html': html, 'modalidade': modalidade,
-                        'n_intervalos_total': perfil['n_intervalos_total']}), 200
-    except Exception as e:
-        import traceback
-        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
-
-
-@app.route('/api/fisiologia/evolucao')
-def api_fisiologia_evolucao():
-    """Deriva longitudinal de uma métrica, numa faixa de watts fixa
-    (ao contrário do /perfil, aqui a faixa é a que tu pedires, para
-    comparares sempre "a mesma pergunta" ao longo do tempo).
-
-    Query params:
-      ?modalidade=Row
-      ?campo=smo2_medio_work   (ver tab_metabol.TODOS_CAMPOS para a lista)
-      ?watts_min=250&watts_max=320
-      ?agregacao=mes           (ou 'semana')
-
-    Exemplo:
-      /api/fisiologia/evolucao?modalidade=Row&campo=smo2_medio_work&watts_min=250&watts_max=320
-    """
-    try:
-        from tabs import tab_metabol as tm
-        modalidade = request.args.get('modalidade')
-        campo = request.args.get('campo')
-        if not modalidade or not campo:
-            return jsonify({'erro': 'faltam parametros ?modalidade= e ?campo='}), 400
-        watts_min = request.args.get('watts_min', type=float)
-        watts_max = request.args.get('watts_max', type=float)
-        agregacao = request.args.get('agregacao', 'mes')
-        resultado = tm.evolucao_temporal(modalidade, campo, watts_min, watts_max, agregacao)
-        return jsonify(resultado)
-    except Exception as e:
-        import traceback
-        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
-
-
-@app.route('/api/debug/athlete')
-def api_debug_athlete():
-    return tab_detalhe.api_debug_athlete()
-
-
-@app.route('/api/cache')
-def api_cache():
-    return jsonify(cache_info())
-
-
-@app.route('/api/cache/refresh')
-def api_cache_refresh():
-    acts = fetch_activities(force=True)
-    return jsonify({'status': 'OK', 'count': len(acts or [])})
-
-
-@app.route('/api/db')
-def api_db():
-    return jsonify(db.stats())
-
-
-@app.route('/api/sync')
-def api_sync():
-    """Sync incremental: actividades + curvas de potencia.
-
-    As curvas vivem numa tabela propria e nao se actualizam sozinhas quando
-    chegam sessoes novas, por isso vao no mesmo passo. Sao 4 pedidos (um por
-    modalidade), nao um por sessao. Com ?curvas=0 ficam de fora.
-    """
-    res = sync.sync_activities('incremental')
-    invalidar_cache()
-    if res.get('ok') and request.args.get('curvas') != '0':
-        try:
-            res['curvas'] = sync.sync_power_curves()
-        except Exception as e:
-            res['curvas'] = {'ok': False, 'erro': str(e)}
-        try:
-            # le do JSON ja guardado, nao gasta pedidos
-            res['zonas'] = db.extrair_zone_times()
-        except Exception as e:
-            res['zonas'] = {'ok': False, 'erro': str(e)}
-    return jsonify(res)
-
-
-@app.route('/api/sync/full')
-def api_sync_full():
-    """Sync completo: puxa ANOS_HISTORICO anos. Correr uma vez no inicio."""
-    res = sync.sync_activities('full')
-    invalidar_cache()
-    return jsonify(res)
-
-
-@app.route('/api/export')
-@app.route('/api/export/')
-def api_export_indice():
-    """Que exportacoes existem."""
-    import export
-    return jsonify(export.indice())
-
-
-@app.route('/api/export/<nome>')
-def api_export(nome):
-    """Descarregar os dados em bruto.
-
-    /api/export/atividades.csv   /api/export/curvas.json?tipo=Bike
-    /api/export/tudo.json        todos num so ficheiro
-    """
-    import export
-    import protocolo
-    import sheets_client as sheets
-    import pmc as _pmc
-
-    base, _, ext = nome.rpartition('.')
-    base = base or nome
-    ext = (ext or 'csv').lower()
-    tipo = request.args.get('tipo')
-
-    try:
-        if base == 'tudo':
-            import csv as _csv_mod
-            import io as _io
-
-            def _linhas(txt):
-                return list(_csv_mod.DictReader(_io.StringIO(txt)))
-
-            # O wellness tem de passar pelo export.wellness(), que junta o
-            # formulario com os campos da Intervals.icu (hrvSDNN_icu,
-            # readiness_icu, etc). Usar sheets.carregar() directamente
-            # trazia so o formulario, e o hrvSDNN nunca chegava a analise.
-            wl, cp_, _erros = sheets.carregar()
-            try:
-                wl = _linhas(export.wellness(sheets))
-            except Exception as e:
-                print(f'wellness completo falhou, a usar so o formulario: {e}')
-                wl = wl or []
-            return jsonify({
-                'gerado_em': datetime.now().isoformat(),
-                'atividades': db.actividades_processadas(),
-                'wellness': wl or [],
-                'corporal': cp_ or [],
-                'curvas': db.load_power_curves(tipo) or [],
-                'cp_ajustado': db.cp_por_sessao() or [],
-                'testes_maximos': _linhas(
-                    export.testes_maximos(db, protocolo)),
-            })
-
-        if base == 'curvas':
-            texto = export.curvas(db, tipo,
-                                  'json' if ext == 'json' else 'longo')
-        elif base == 'atividades':
-            texto = export.atividades(db)
-        elif base == 'wellness':
-            texto = export.wellness(sheets)
-        elif base == 'corporal':
-            texto = export.corporal(sheets)
-        elif base == 'testes':
-            texto = export.testes_maximos(db, protocolo)
-        elif base == 'cp':
-            texto = export.cp_ajustado(db)
-        elif base == 'serie_diaria':
-            texto = export.serie_diaria(_pmc, db, sheets)
-        else:
-            return jsonify({'erro': f'"{base}" nao existe',
-                            **export.indice()}), 404
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'erro': f'{type(e).__name__}: {e}',
-                        'traceback': traceback.format_exc()[-1200:]}), 500
-
-    mime = 'application/json' if ext == 'json' else 'text/csv'
-    hoje = datetime.now().strftime('%Y%m%d')
-    return Response(texto, mimetype=f'{mime}; charset=utf-8', headers={
-        'Content-Disposition': f'attachment; filename="{base}_{hoje}.{ext}"'})
-
-
-@app.route('/api/debug/wellness-icu')
-def api_debug_wellness_icu():
-    """O wellness da Intervals.icu traz o HRV nocturno do Garmin?
-
-    A Intervals.icu sincroniza do Garmin Connect e guarda os campos em
-    /athlete/{id}/wellness. Se o teu relogio grava HRV nocturno e a
-    sincronizacao esta ligada, o campo `hrv` vem de la — e nesse caso nao
-    e preciso ir buscar nada a mao.
-
-    Este endpoint compara: quantos dias tem hrv, desde quando, e como se
-    relaciona com o que tens no formulario.
-    """
-    from api_client import icu_get, athlete_id_real
-    import sheets_client
-
-    aid = athlete_id_real()
-    oldest = request.args.get('oldest', '2023-01-01')
-    dados, err = icu_get(f'/athlete/{aid}/wellness',
-                         params={'oldest': oldest,
-                                 'newest': datetime.now().strftime('%Y-%m-%d')})
-    if err:
-        return jsonify({'erro': err}), 502
-    if not isinstance(dados, list):
-        return jsonify({'erro': 'resposta inesperada',
-                        'tipo': str(type(dados))}), 502
-
-    campos = ['hrv', 'hrvSDNN', 'restingHR', 'sleepSecs', 'sleepScore',
-              'sleepQuality', 'avgSleepingHR', 'readiness', 'respiration',
-              'spO2', 'baevskySI', 'steps', 'weight', 'bodyFat',
-              'kcalConsumed', 'carbohydrates', 'protein', 'fatTotal']
-    resumo = {}
-    for c in campos:
-        vals = [(d.get('id'), d.get(c)) for d in dados
-                if isinstance(d.get(c), (int, float))]
-        if not vals:
-            resumo[c] = {'n': 0}
+    out = []
+    for item in bruto:
+        if not isinstance(item, dict):
             continue
-        datas = sorted(v[0] for v in vals)
-        nums = [v[1] for v in vals]
-        resumo[c] = {
-            'n': len(vals), 'primeiro': datas[0], 'ultimo': datas[-1],
-            'media': round(sum(nums) / len(nums), 2),
-            'min': round(min(nums), 2), 'max': round(max(nums), 2)}
-
-    # cruzar com o formulario, para ver se sao a mesma medicao
-    comparacao = None
-    try:
-        w, _c, _e = sheets_client.carregar()
-        form = {x['date']: x.get('hrv') for x in (w or [])
-                if isinstance(x.get('hrv'), (int, float))}
-        pares = [(d.get('hrv'), form.get(d.get('id'))) for d in dados
-                 if isinstance(d.get('hrv'), (int, float))
-                 and isinstance(form.get(d.get('id')), (int, float))]
-        if len(pares) >= 20:
-            import statistics as st
-            xs = [p[0] for p in pares]
-            ys = [p[1] for p in pares]
-            mx, my = st.mean(xs), st.mean(ys)
-            num = sum((a - mx) * (b - my) for a, b in pares)
-            den = (sum((a - mx) ** 2 for a in xs)
-                   * sum((b - my) ** 2 for b in ys)) ** 0.5
-            r = num / den if den else None
-            comparacao = {
-                'dias_em_comum': len(pares),
-                'media_intervals': round(mx, 2),
-                'media_formulario': round(my, 2),
-                'diferenca': round(mx - my, 2),
-                'r': round(r, 4) if r else None,
-                'leitura': (
-                    'praticamente a mesma medicao — o teu formulario e a '
-                    'fonte' if r and r > 0.95 else
-                    'muito parecidas mas nao identicas' if r and r > 0.85 else
-                    'medicoes DIFERENTES — o hrv da Intervals.icu pode vir do '
-                    'Garmin, o que seria exactamente o que procuramos')}
-    except Exception as e:
-        comparacao = {'erro': str(e)}
-
-    return jsonify({
-        'status': 'OK', 'athlete': aid,
-        'registos': len(dados),
-        'periodo': {'de': oldest, 'ate': datetime.now().strftime('%Y-%m-%d')},
-        'campos': resumo,
-        'comparacao_com_formulario': comparacao,
-        'como_ler': (
-            'Se `hrv` tiver muitos dias E a comparacao disser "medicoes '
-            'diferentes", entao a Intervals.icu ja traz o HRV do Garmin e '
-            'podemos usa-lo directamente, sem o script do Colab. Se `hrv` '
-            'vier vazio, e preciso ligar a sincronizacao Garmin -> '
-            'Intervals.icu nas definicoes da Intervals.icu.'),
-    })
+        t_ini = item.get('start_time')
+        duracao = item.get('elapsed_time')
+        if t_ini is None or duracao is None:
+            continue
+        t_ini = float(t_ini)
+        t_fim = t_ini + float(duracao)
+        out.append({
+            'tipo': str(item.get('type') or '').lower(),
+            'label': item.get('label'),
+            't_ini': t_ini,
+            't_fim': t_fim,
+            'watts_medio_api': item.get('average_watts'),
+            'hr_medio_api': item.get('average_heartrate'),
+            'smo2_medio_api': item.get('average_smo2'),
+            'thb_medio_api': item.get('average_thb'),
+            'resp_medio_api': item.get('average_respiration'),
+            'dfa1_medio_api': item.get('average_dfa_a1'),
+        })
+    return out, None
 
 
-@app.route('/api/protocolo')
-def api_protocolo():
-    """Testes maximos detectados e quais estao em atraso.
 
-    ?tipo=Bike   filtra por modalidade
+LIMIAR_QUEDA_REC = float(os.getenv("FISIOLOGIA_LIMIAR_QUEDA", "0.30"))  # 30%
+
+
+def _limiar_gap(potencias):
+    """Maior 'salto' na distribuição ordenada de potências — separa o
+    grupo de baixa potência (REC/warmup/cooldown) do de alta (WORK).
+    Robusto a contagens desiguais de WORK vs REC, ao contrário de usar
+    simplesmente a mediana.
     """
-    import protocolo
-    curvas = db.load_power_curves(request.args.get('tipo') or None)
-    det = protocolo.detectar_testes(curvas or [])
-    return jsonify({
-        'status': 'OK',
-        'cobertura': protocolo.cobertura(det),
-        'sugestoes': protocolo.sugerir(det),
-        'robustez': protocolo.robustez(det),
-        # so os recentes na resposta: a lista completa pode ter centenas
-        'detectados': {m: {s: {k: v for k, v in d.items() if k != 'testes'}
-                           for s, d in durs.items()}
-                       for m, durs in det.items()},
-        'como_funciona': (
-            f'Uma sessao conta como teste quando o esforco numa duracao chega '
-            f'a {int(protocolo.LIMIAR_ESFORCO*100)}% do teu melhor dos ultimos '
-            f'{protocolo.JANELA_MELHOR} dias. Nao e preciso marcar nada.'),
-    })
+    vs = sorted(p for p in potencias if p is not None)
+    if len(vs) < 2:
+        return (vs[0] - 1) if vs else 0.0
+    gaps = [(vs[i + 1] - vs[i], i) for i in range(len(vs) - 1)]
+    _, i = max(gaps)
+    return (vs[i] + vs[i + 1]) / 2.0
 
 
-@app.route('/api/calibracao')
-def api_calibracao():
-    """Parametros calibrados nos dados do atleta, com a evidencia.
+def classificar_por_potencia(intervalos):
+    """Marca cada intervalo com iv['_classe'] = 'work' | 'recovery' | 'ignorar'.
 
-    E o mesmo calculo que alimenta o FMT — aqui exposto sozinho, para se
-    poder ver e auditar os valores sem abrir a tab.
+    NÃO usa o campo 'type' da API (pode estar errado — já visto REST
+    marcado como WORK, e no caso de Row, TODOS os laps marcados "WORK"
+    mesmo quando a potência é 0). Combina três sinais:
+
+      1. SEM POTÊNCIA (average_watts = None): não é "sem dados a
+         ignorar" — é o sinal MAIS FORTE de descanso que existe. Em
+         Row/Ski, quando não há remada/patinada nenhuma no lap, a API
+         nem calcula uma média (fica null) em vez de devolver 0. Isto
+         classifica sempre como 'recovery'.
+
+      2. GLOBAL: potência abaixo do maior "salto" na distribuição de
+         toda a atividade -> candidato a REC. Bom para descansos longos
+         e estáveis com ALGUMA potência residual.
+
+      3. QUEDA RELATIVA (face ao intervalo ANTERIOR): se a potência cai
+         >= LIMIAR_QUEDA_REC (30% por omissão) em relação ao intervalo
+         imediatamente antes, classifica como REC mesmo que ainda tenha
+         watts residuais.
+
+    Um intervalo fica REC se qualquer um dos três sinais disparar.
     """
-    return _seguro(tab_pmc.api_calibracao_dados)
+    potencias = [iv.get('watts_medio_api') for iv in intervalos
+                if iv.get('watts_medio_api') is not None]
+    limiar_global = _limiar_gap(potencias) if len(potencias) >= 2 else None
+
+    anterior_watts = None
+    for iv in intervalos:
+        w = iv.get('watts_medio_api')
+
+        if w is None:
+            # Esforço nulo (nenhuma remada/pedalada no lap) -> REC quase
+            # certo, independentemente de tudo o resto.
+            iv['_classe'] = 'recovery'
+            anterior_watts = 0.0
+            continue
+
+        baixo_global = (limiar_global is not None and w < limiar_global)
+
+        queda_relativa = False
+        if anterior_watts is not None and anterior_watts > 0:
+            queda = (anterior_watts - w) / anterior_watts
+            queda_relativa = queda >= LIMIAR_QUEDA_REC
+
+        iv['_classe'] = 'recovery' if (baixo_global or queda_relativa) else 'work'
+        anterior_watts = w
+
+    return intervalos
 
 
-@app.route('/api/sync/curvas')
-def api_sync_curvas():
-    """Curvas de potencia por sessao — base dos recordes.
+def emparelhar_work_rec(intervalos):
+    """[(work, rec_ou_None), ...] — rec é o intervalo seguinte SE for recovery.
 
-    Uma chamada por modalidade, nao uma por sessao.
+    Espera que classificar_por_potencia() já tenha corrido (usa iv['_classe']).
     """
-    return jsonify(sync.sync_power_curves())
+    pares = []
+    i = 0
+    n = len(intervalos)
+    while i < n:
+        if intervalos[i].get('_classe') == 'work':
+            work = intervalos[i]
+            rec = None
+            if i + 1 < n and intervalos[i + 1].get('_classe') == 'recovery':
+                rec = intervalos[i + 1]
+            pares.append((work, rec))
+        i += 1
+    return pares
 
 
-@app.route('/api/recordes')
-def api_recordes():
-    return tab_recordes.api_data()
+# ══════════════════════════════════════════════════════════════════════════
+# LAG / RECOVERY — núcleo do cálculo
+# ══════════════════════════════════════════════════════════════════════════
+
+def _media_janela(tempos, valores, t_ini, t_fim):
+    mask = (tempos >= t_ini) & (tempos <= t_fim)
+    vs = valores[mask]
+    vs = vs[np.isfinite(vs)]
+    return float(np.mean(vs)) if len(vs) else None
 
 
-@app.route('/recordes')
-def page_recordes():
-    return tab_recordes.render()
+def _tempo_ate_percentual(tempos, valores, t_ini, t_fim, baseline, alvo, pct):
+    """Segundos desde t_ini até valor cruzar baseline + pct*(alvo-baseline).
 
-
-@app.route('/api/recordes/seasons')
-def api_recordes_seasons():
-    """Melhor curva por periodo. ?por=season (default) ou ?por=ano"""
-    return tab_recordes.api_seasons()
-
-
-@app.route('/api/activity/<activity_id>/prs')
-def api_activity_prs(activity_id):
-    return jsonify(db.prs_da_actividade(activity_id) or {'erro': 'sem curva guardada'})
-
-
-@app.route('/api/frescura')
-def api_frescura():
-    """Ha quanto tempo a base foi actualizada e se ha sessoes novas na API.
-
-    Compara a data mais recente na base com a data mais recente na
-    Intervals.icu, sem gravar nada. Serve para o aviso no topo das paginas.
+    None se não houver dados suficientes ou o alvo nunca for atingido
+    dentro da janela.
     """
-    if not db.ENABLED:
-        return jsonify({'db': False, 'nota': 'sem base de dados; le sempre da API'})
+    if baseline is None or alvo is None:
+        return None
+    delta = alvo - baseline
+    if abs(delta) < 1e-6:
+        return None
+    limiar = baseline + pct * delta
+    crescente = delta > 0
 
-    ult = db.ultima_data()
-    info = {'db': True,
-            'ultima_na_base': ult.isoformat() if ult else None,
-            'last_sync': None, 'novas': None}
-
-    linha = db._exec("""SELECT criado_em FROM sync_log
-                        WHERE erro IS NULL ORDER BY id DESC LIMIT 1""", fetch='one')
-    if linha and linha[0]:
-        info['last_sync'] = str(linha[0])
-
-    if request.args.get('verificar') in ('1', 'true'):
-        desde = ((ult - timedelta(days=1)).strftime("%Y-%m-%d") if ult
-                 else datetime.now().strftime("%Y-%m-%d"))
-        acts, err = fetch_da_api(desde)
-        if err:
-            info['erro'] = err
-        else:
-            ids = db.ids_existentes()
-            novas = [a for a in (acts or []) if a.get('id') not in ids]
-            info['novas'] = len(novas)
-            info['novas_detalhe'] = [{
-                'id': a.get('id'), 'date': (a.get('start_date_local') or '')[:10],
-                'name': a.get('name'), 'type': a.get('type')} for a in novas[:10]]
-    return jsonify(info)
+    mask = (tempos >= t_ini) & (tempos <= t_fim)
+    idx = np.where(mask)[0]
+    for i in idx:
+        v = valores[i]
+        if not np.isfinite(v):
+            continue
+        if (crescente and v >= limiar) or ((not crescente) and v <= limiar):
+            return float(tempos[i] - t_ini)
+    return None
 
 
-@app.route('/api/db/schema')
-def api_db_schema():
-    """Colunas de cada tabela — para perceber erros 500 de SQL."""
-    return jsonify({t: db.colunas_de(t) for t in
-                    ('activities', 'power_curves', 'streams', 'sync_log')})
+def _lags_metrica(tempos, valores, t_work_ini, t_work_fim, t_rec_fim=None):
+    """Cinética + valores de uma métrica, num par WORK->REC.
+
+    NÃO usa o rótulo do lap para decidir nada: tudo é medido a partir da
+    TRANSIÇÃO de potência (t_work_ini) e do que a métrica realmente faz a
+    seguir. Os rótulos WORK/REC só definem as fronteiras temporais.
+
+    Devolve (lags, rec, valores, ok):
+
+    lags     lag_50/75/90 — segundos até percorrer 50/75/90% da excursão
+    rec      rec_50/75    — segundos até recuperar 50/75% do caminho de volta
+    valores  baseline     — estado antes da transição
+             plateau      — valor ESTABILIZADO no fim do esforço, medido do
+                            FIM PARA TRÁS numa janela adaptativa
+             extremo      — valor mais extremo atingido numa janela que se
+                            estende para dentro do descanso (capta o pico
+                            real de métricas com inércia, como respiração
+                            e DFA1, cujo extremo cai depois do fim do lap)
+             t_extremo    — quando ocorreu esse extremo (s após t_work_ini);
+                            se > duração do WORK, o pico caiu no descanso
+             atingiu_plateau — True só se lag_90 existe E é menor que a
+                            duração do esforço. Se False, a métrica nunca
+                            estabilizou e o plateau NÃO é de confiança.
+    """
+    dur_work = t_work_fim - t_work_ini
+    baseline = _media_janela(tempos, valores,
+                             max(0, t_work_ini - JANELA_BASELINE_S), t_work_ini)
+
+    # Janela de plateau: do FIM para trás. Adaptativa — proporcional à
+    # duração, mas nunca menor que JANELA_PLATEAU_MIN_S nem maior que
+    # JANELA_PLATEAU_MAX_S (em intervalos muito longos não faz sentido
+    # usar 25% de 20 minutos).
+    janela_plateau = dur_work * FRAC_PLATEAU
+    janela_plateau = max(JANELA_PLATEAU_MIN_S, min(JANELA_PLATEAU_MAX_S, janela_plateau))
+    janela_plateau = min(janela_plateau, dur_work)
+    plateau = _media_janela(tempos, valores, t_work_fim - janela_plateau, t_work_fim)
+
+    lags = {}
+    for pct, nome in [(0.5, '50'), (0.75, '75'), (0.9, '90')]:
+        lags[f'lag_{nome}'] = _tempo_ate_percentual(
+            tempos, valores, t_work_ini, t_work_fim, baseline, plateau, pct)
+
+    # Extremo em janela alargada: entra JANELA_EXTREMO_APOS_S dentro do
+    # descanso. Direcção determinada pelos DADOS (plateau vs baseline),
+    # não por suposições sobre a métrica.
+    extremo = None
+    t_extremo = None
+    if baseline is not None and plateau is not None:
+        t_fim_janela = t_work_fim + JANELA_EXTREMO_APOS_S
+        if t_rec_fim is not None:
+            t_fim_janela = min(t_fim_janela, t_rec_fim)
+        mask = (tempos >= t_work_ini) & (tempos <= t_fim_janela)
+        vs = valores[mask]
+        ts = tempos[mask]
+        finitos = np.isfinite(vs)
+        if finitos.any():
+            vs, ts = vs[finitos], ts[finitos]
+            desce = plateau < baseline
+            i = int(np.argmin(vs)) if desce else int(np.argmax(vs))
+            extremo = float(vs[i])
+            t_extremo = float(ts[i] - t_work_ini)
+
+    rec = {'rec_50': None, 'rec_75': None}
+    if t_rec_fim is not None and baseline is not None and plateau is not None:
+        # recovery: parte do estado atingido no esforço e mede o regresso
+        # em direcção à baseline original
+        for pct, nome in [(0.5, '50'), (0.75, '75')]:
+            rec[f'rec_{nome}'] = _tempo_ate_percentual(
+                tempos, valores, t_work_fim, t_rec_fim, plateau, baseline, pct)
+
+    lag90 = lags.get('lag_90')
+    atingiu_plateau = (lag90 is not None) and (lag90 < dur_work)
+
+    vals = {
+        'baseline': baseline,
+        'plateau': plateau,
+        'extremo': extremo,
+        't_extremo': t_extremo,
+        'atingiu_plateau': atingiu_plateau,
+    }
+    return lags, rec, vals, (baseline is not None and plateau is not None)
 
 
-@app.route('/api/db/recriar-curvas')
-def api_recriar_curvas():
-    """Recria a tabela de curvas quando o esquema mudou."""
-    res = db.recriar_power_curves()
-    if res.get('ok'):
+# ══════════════════════════════════════════════════════════════════════════
+# PROCESSAMENTO DE 1 ATIVIDADE
+# ══════════════════════════════════════════════════════════════════════════
+
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ANÁLISE ROBUSTA V2 — Detecção de artefatos + Moving averages
+# ══════════════════════════════════════════════════════════════════════════
+
+def _remover_artefatos(tempos, valores, tipo_metrica='hr'):
+    """Remove artefatos (quedas bruscas, picos) de uma série temporal.
+    
+    HR: queda >30 bpm em <5s = fault
+    DFA-α1: queda >0.5 em <5s = fault
+    """
+    if not len(valores) or not np.any(np.isfinite(valores)):
+        return valores
+    
+    valores = np.array(valores, dtype=float)
+    limpos = valores.copy()
+    
+    if tipo_metrica == 'hr' and len(valores) > 1:
+        for i in range(1, len(valores)):
+            if np.isfinite(valores[i]) and np.isfinite(valores[i-1]):
+                delta = abs(valores[i] - valores[i-1])
+                if delta > 30:  # queda brusca HR
+                    limpos[i] = np.nan
+    
+    elif tipo_metrica == 'dfa1' and len(valores) > 1:
+        for i in range(1, len(valores)):
+            if np.isfinite(valores[i]) and np.isfinite(valores[i-1]):
+                delta = abs(valores[i] - valores[i-1])
+                if delta > 0.5:  # queda brusca DFA-α1
+                    limpos[i] = np.nan
+    
+    # Interpolar gaps pequenos (≤3 pontos)
+    for i in range(len(limpos)):
+        if not np.isfinite(limpos[i]):
+            vizinhos = []
+            for j in range(max(0, i-3), min(len(limpos), i+4)):
+                if j != i and np.isfinite(limpos[j]):
+                    vizinhos.append(limpos[j])
+            if vizinhos:
+                limpos[i] = np.mean(vizinhos)
+    
+    return limpos
+
+
+def _moving_average(valores, janela_s, tempos):
+    """Moving average com janela em segundos."""
+    if len(valores) < 2 or not janela_s:
+        return valores
+    
+    dt_medio = (tempos[-1] - tempos[0]) / (len(tempos) - 1) if len(tempos) > 1 else 1
+    n_pontos = max(1, int(janela_s / dt_medio))
+    
+    ma = np.convolve(valores, np.ones(n_pontos)/n_pontos, mode='same')
+    return ma
+
+
+def _extrair_metricas_60s(t_arr, hr_arr, resp_arr, smo2_arr, dfa1_arr):
+    """Extrai métricas dos últimos 60s (limpas de artefatos).
+    
+    Retorna dict: hr_max_60s, hr_avg_60s, hr_min_60s, resp_avg_60s, 
+                  smo2_min_60s, dfa1_clean, intervalo_valido_analise
+    """
+    resultado = {
+        'hr_max_60s': None,
+        'hr_avg_60s': None,
+        'hr_min_60s': None,
+        'resp_avg_60s': None,
+        'smo2_min_60s': None,
+        'dfa1_clean': None,
+        'intervalo_valido_analise': 0,
+    }
+    
+    if len(t_arr) < 2:
+        return resultado
+    
+    dur_total = t_arr[-1] - t_arr[0]
+    if dur_total < 60:
+        return resultado  # intervalo muito curto
+    
+    # Validar watts estável
+    if len(hr_arr) > 0:
+        resultado['intervalo_valido_analise'] = 1
+    
+    # Últimos 60 segundos
+    t_inicio_60s = max(t_arr[0], t_arr[-1] - 60)
+    mask_60s = t_arr >= t_inicio_60s
+    
+    # HR
+    if np.any(mask_60s) and len(hr_arr) > 0:
+        hr_60s = hr_arr[mask_60s]
+        hr_limpo = _remover_artefatos(t_arr[mask_60s], hr_60s, tipo_metrica='hr')
+        hr_ma = _moving_average(hr_limpo, 5, t_arr[mask_60s])
+        hr_valido = hr_ma[np.isfinite(hr_ma)]
+        if len(hr_valido) > 0:
+            resultado['hr_max_60s'] = float(np.nanmax(hr_ma))
+            resultado['hr_avg_60s'] = float(np.nanmean(hr_ma))
+            resultado['hr_min_60s'] = float(np.nanmin(hr_ma))
+    
+    # Respiração
+    if np.any(mask_60s) and len(resp_arr) > 0:
+        resp_60s = resp_arr[mask_60s]
+        resp_limpo = _remover_artefatos(t_arr[mask_60s], resp_60s, tipo_metrica='hr')
+        resp_ma = _moving_average(resp_limpo, 5, t_arr[mask_60s])
+        resp_valido = resp_ma[np.isfinite(resp_ma)]
+        if len(resp_valido) > 0:
+            resultado['resp_avg_60s'] = float(np.nanmean(resp_ma))
+    
+    # SMO2: mínimo de todo intervalo
+    if len(smo2_arr) > 0:
+        smo2_valido = smo2_arr[np.isfinite(smo2_arr)]
+        if len(smo2_valido) > 0:
+            resultado['smo2_min_60s'] = float(np.nanmin(smo2_valido))
+    
+    # DFA-α1: mediana normalizada
+    if len(dfa1_arr) > 0:
+        dfa1_limpo = _remover_artefatos(t_arr, dfa1_arr, tipo_metrica='dfa1')
+        dfa1_ma = _moving_average(dfa1_limpo, 10, t_arr)
+        dfa1_valido = dfa1_ma[np.isfinite(dfa1_ma)]
+        if len(dfa1_valido) > 0:
+            resultado['dfa1_clean'] = float(np.nanmedian(dfa1_valido))
+    
+    return resultado
+
+
+def processar_atividade(activity, conn):
+    """Retorna (n_intervalos_gravados, motivo_se_pulada).
+
+    Duas fontes de dados INDEPENDENTES:
+      - streams do Postgres -> lag_*/rec_* (timing). Se não existirem
+        (ainda não foi feito /api/sync/streams para esta atividade), fica
+        tudo None nesses campos, mas NÃO impede o resto.
+      - médias por intervalo da API -> *_medio_work/*_medio_rec (patamar).
+        Não depende de streams nenhuns, só do /activity/{id}/intervals.
+
+    Assim dá para começar já a construir o perfil watts->valor mesmo em
+    atividades sem streams carregados, e completar com lag/recovery mais
+    tarde (correndo /api/sync/streams e reprocessando).
+    """
+    activity_id = str(activity.get('id'))
+    modalidade = norm_tipo(activity.get('type'))
+    data_str = str(activity.get('start_date_local', ''))[:10]
+
+    duracao_total_s = activity.get('moving_time') or activity.get('elapsed_time')
+    if not duracao_total_s:
+        return 0, 'sem duracao'
+
+    intervalos, erro = buscar_intervalos_api(activity_id)
+    if erro:
+        return 0, f'erro API intervals: {erro}'
+    if not intervalos:
+        return 0, 'sem intervalos/laps marcados'
+
+    classificar_por_potencia(intervalos)
+    pares = emparelhar_work_rec(intervalos)
+    if not pares:
+        return 0, 'nenhum WORK identificado'
+
+    streams, meta = db.get_streams(activity_id)
+    tem_streams = bool(streams) and STREAM_WATTS in (streams or {})
+
+    if not tem_streams and _sync is not None:
+        # Self-heal: em vez de depender de correres /api/sync/streams antes,
+        # o worker busca aqui mesmo (1 pedido, só desta atividade) e guarda
+        # no Postgres — assim, correr só /api/fisiologia/processar já
+        # chega, sem precisares dos dois passos manuais.
         try:
-            res['sync'] = sync.sync_power_curves()
+            resultado = _sync.sync_streams(activity_id)
+            if resultado:
+                streams, meta = resultado
+                tem_streams = bool(streams) and STREAM_WATTS in (streams or {})
         except Exception as e:
-            res['sync'] = {'ok': False, 'erro': str(e)}
-    return jsonify(res)
+            print(f"  [aviso] sync_streams falhou para {activity_id}: {e}")
+
+    # tempos + valores por métrica (uma vez por atividade, reaproveitados
+    # para todos os intervalos) — só se houver streams; senão ficam vazios
+    # e lag_*/rec_* saem None (mas *_medio_work/*_medio_rec da API continuam
+    # a ser gravados na mesma).
+    t_watts = _tempos_do_stream(streams.get(STREAM_WATTS), duracao_total_s) if tem_streams else np.array([])
+    v_watts = _valores_float(streams.get(STREAM_WATTS)) if tem_streams else np.array([])
+
+    tem_hr = tem_streams and STREAM_HR in streams
+    t_hr = _tempos_do_stream(streams.get(STREAM_HR), duracao_total_s) if tem_hr else None
+    v_hr = _valores_float(streams.get(STREAM_HR)) if tem_hr else None
+
+    tem_smo2 = tem_streams and STREAM_SMO2 in streams
+    t_smo2 = _tempos_do_stream(streams.get(STREAM_SMO2), duracao_total_s) if tem_smo2 else None
+    v_smo2 = _valores_float(streams.get(STREAM_SMO2)) if tem_smo2 else None
+
+    tem_thb = tem_streams and STREAM_THB in streams
+    t_thb = _tempos_do_stream(streams.get(STREAM_THB), duracao_total_s) if tem_thb else None
+    v_thb = _valores_float(streams.get(STREAM_THB)) if tem_thb else None
+
+    resp_key = next((k for k in STREAMS_RESP_CANDIDATOS if tem_streams and k in streams), None)
+    tem_resp = resp_key is not None
+    t_resp = _tempos_do_stream(streams.get(resp_key), duracao_total_s) if tem_resp else None
+    v_resp = _valores_float(streams.get(resp_key)) if tem_resp else None
+
+    tem_dfa1_stream = tem_streams and STREAM_DFA1 in streams
+    t_dfa1 = _tempos_do_stream(streams.get(STREAM_DFA1), duracao_total_s) if tem_dfa1_stream else None
+    v_dfa1 = _valores_float(streams.get(STREAM_DFA1)) if tem_dfa1_stream else None
+
+    now = datetime.now().isoformat(timespec='seconds')
+    gravados = 0
+
+    for n, (work, rec) in enumerate(pares, start=1):
+        t_ini, t_fim = work['t_ini'], work['t_fim']
+        dur_work = t_fim - t_ini
+        if dur_work < DUR_MIN_WORK_S:
+            continue
+
+        dur_rec = None
+        t_rec_fim = None
+        if rec is not None:
+            dur_rec = rec['t_fim'] - rec['t_ini']
+            if dur_rec >= DUR_MIN_REC_S:
+                t_rec_fim = rec['t_fim']
+            else:
+                dur_rec = None
+
+        # watts: preferir o que a API já dá (average_watts do intervalo);
+        # min/max calculados a partir do stream, se disponível
+        watts_medio = work.get('watts_medio_api')
+        watts_min = watts_max = None
+        if len(v_watts):
+            mask = (t_watts >= t_ini) & (t_watts <= t_fim)
+            vs = v_watts[mask]
+            vs = vs[np.isfinite(vs)]
+            if len(vs):
+                if watts_medio is None:
+                    watts_medio = float(np.mean(vs))
+                watts_min = float(np.min(vs))
+                watts_max = float(np.max(vs))
+        if watts_medio is None:
+            continue  # sem potência não há como caracterizar o intervalo
+
+        linha = {
+            'activity_id': activity_id, 'data': data_str, 'modalidade': modalidade,
+            'interval_num': n, 'watts_medio': watts_medio,
+            'watts_min': watts_min, 'watts_max': watts_max,
+            'dur_work_s': int(dur_work), 'dur_rec_s': int(dur_rec) if dur_rec else None,
+            'tem_hr': int(tem_hr), 'tem_smo2': int(tem_smo2),
+            'tem_thb': int(tem_thb), 'tem_resp': int(tem_resp),
+            'tem_dfa1': int(work.get('dfa1_medio_api') is not None),
+            'tem_dfa1_stream': int(tem_dfa1_stream),
+            'valido': 1, 'motivo_invalido': None, 'criado_em': now,
+            # Valor/patamar: direto da API, sem processar streams — é a
+            # base da curva "a X watts, esperar Y" que vais construir depois.
+            'hr_medio_work': work.get('hr_medio_api'),
+            'hr_medio_rec': rec.get('hr_medio_api') if rec else None,
+            'smo2_medio_work': work.get('smo2_medio_api'),
+            'smo2_medio_rec': rec.get('smo2_medio_api') if rec else None,
+            'thb_medio_work': work.get('thb_medio_api'),
+            'thb_medio_rec': rec.get('thb_medio_api') if rec else None,
+            'resp_medio_work': work.get('resp_medio_api'),
+            'resp_medio_rec': rec.get('resp_medio_api') if rec else None,
+            'dfa1_medio_work': work.get('dfa1_medio_api'),
+            'dfa1_medio_rec': rec.get('dfa1_medio_api') if rec else None,
+        }
+
+        qualidade_ok = False
+
+        def _preencher(prefixo, tem, t_arr, v_arr):
+            nonlocal qualidade_ok
+            campos_none = ([f'lag_{prefixo}_{s}' for s in ('50', '75', '90')] +
+                           [f'rec_{prefixo}_50', f'rec_{prefixo}_75',
+                            f'{prefixo}_plateau_work', f'{prefixo}_baseline',
+                            f'{prefixo}_extremo', f'{prefixo}_t_extremo'])
+            if not tem or t_arr is None or not len(t_arr):
+                for c in campos_none:
+                    linha[c] = None
+                linha[f'{prefixo}_atingiu_plateau'] = 0
+                return
+            lags, recv, vals, ok = _lags_metrica(t_arr, v_arr, t_ini, t_fim, t_rec_fim)
+            if ok:
+                qualidade_ok = True
+            linha[f'lag_{prefixo}_50'] = lags.get('lag_50')
+            linha[f'lag_{prefixo}_75'] = lags.get('lag_75')
+            linha[f'lag_{prefixo}_90'] = lags.get('lag_90')
+            linha[f'rec_{prefixo}_50'] = recv.get('rec_50')
+            linha[f'rec_{prefixo}_75'] = recv.get('rec_75')
+            # valores medidos (não vindos da média do lap da API)
+            linha[f'{prefixo}_plateau_work'] = vals.get('plateau')
+            linha[f'{prefixo}_baseline'] = vals.get('baseline')
+            linha[f'{prefixo}_extremo'] = vals.get('extremo')
+            linha[f'{prefixo}_t_extremo'] = vals.get('t_extremo')
+            linha[f'{prefixo}_atingiu_plateau'] = int(bool(vals.get('atingiu_plateau')))
+
+        _preencher('hr', tem_hr, t_hr, v_hr)
+        _preencher('smo2', tem_smo2, t_smo2, v_smo2)
+        _preencher('thb', tem_thb, t_thb, v_thb)
+        _preencher('resp', tem_resp, t_resp, v_resp)
+        _preencher('dfa1', tem_dfa1_stream, t_dfa1, v_dfa1)
 
 
-@app.route('/api/debug/curvas')
-def api_debug_curvas():
-    """Testa variantes do endpoint de curvas para perceber o 403.
-
-    Compara: id "0" vs id real, com e sem extensao .json, e o endpoint por
-    actividade (que sabemos funcionar). Assim vemos qual das diferencas conta.
-    """
-    from api_client import icu_get, athlete_id_real
-    from datetime import datetime as _dt
-
-    real = athlete_id_real()
-    oldest = (_dt.now() - timedelta(days=60)).strftime("%Y-%m-%d")
-    newest = _dt.now().strftime("%Y-%m-%d")
-    base_p = {"oldest": oldest, "newest": newest, "type": "Ride"}
-
-    uma = db._exec("""SELECT id FROM activities WHERE type = 'Bike'
-                      ORDER BY date DESC LIMIT 1""", fetch='one') if db.ENABLED else None
-    aid = uma[0] if uma else None
-
-    testes = [
-        ('activities (controlo)', f"/athlete/{ATHLETE_ID}/activities",
-         {"oldest": oldest}),
-        ('perfil id=0', f"/athlete/{ATHLETE_ID}", None),
-        ('perfil id real', f"/athlete/{real}", None),
-        ('curvas id=0', f"/athlete/{ATHLETE_ID}/activity-power-curves", base_p),
-        ('curvas id real', f"/athlete/{real}/activity-power-curves", base_p),
-        ('curvas id real .json', f"/athlete/{real}/activity-power-curves.json", base_p),
-        ('power-curves id real', f"/athlete/{real}/power-curves",
-         {"type": "Ride", "curves": "42d"}),
-    ]
-    if aid:
-        testes.append((f'power-curve da sessao {aid}', f"/activity/{aid}/power-curve", None))
-
-    out = {'athlete_id_configurado': ATHLETE_ID, 'athlete_id_resolvido': real,
-           'testes': {}}
-    for nome, path, params in testes:
-        data, err = icu_get(path, params, timeout=60)
-        if err:
-            out['testes'][nome] = {'ok': False, 'erro': err[:160]}
-        elif isinstance(data, dict):
-            out['testes'][nome] = {'ok': True, 'chaves': sorted(data.keys())[:12],
-                                   'n_curvas': len(data.get('curves') or [])}
-        elif isinstance(data, list):
-            out['testes'][nome] = {'ok': True, 'n': len(data)}
+        # ANÁLISE ROBUSTA V2 — Extrai hr_max_60s, resp_avg_60s, etc
+        if tem_streams and (tem_hr or tem_resp or tem_smo2 or tem_dfa1_stream):
+            t_work = t_watts if len(t_watts) else None
+            if t_work is not None and len(t_work) > 0:
+                mask_work = (t_work >= t_ini) & (t_work <= t_fim)
+                if np.any(mask_work):
+                    t_arr_work = t_work[mask_work] - t_ini  # tempos relativos ao início do intervalo
+                    hr_arr_work = v_hr[mask_work] if tem_hr else np.array([])
+                    resp_arr_work = v_resp[mask_work] if tem_resp else np.array([])
+                    smo2_arr_work = v_smo2[mask_work] if tem_smo2 else np.array([])
+                    dfa1_arr_work = v_dfa1[mask_work] if tem_dfa1_stream else np.array([])
+                    
+                    metricas_v2 = _extrair_metricas_60s(
+                        t_arr_work, hr_arr_work, resp_arr_work, 
+                        smo2_arr_work, dfa1_arr_work
+                    )
+                    linha.update(metricas_v2)
         else:
-            out['testes'][nome] = {'ok': True, 'tipo': type(data).__name__}
-    return jsonify(out)
+            # Sem streams, preencher campos v2 com None
+            linha['hr_max_60s'] = None
+            linha['hr_avg_60s'] = None
+            linha['hr_min_60s'] = None
+            linha['resp_avg_60s'] = None
+            linha['smo2_min_60s'] = None
+            linha['dfa1_clean'] = None
+            linha['intervalo_valido_analise'] = 0
+
+        tem_algum_valor_api = any(
+            linha[k] is not None for k in
+            ('hr_medio_work', 'smo2_medio_work', 'thb_medio_work',
+             'resp_medio_work', 'dfa1_medio_work'))
+
+        if not qualidade_ok and not tem_algum_valor_api:
+            linha['valido'] = 0
+            linha['motivo_invalido'] = (
+                'sem lag calculavel pelos streams E sem valores medios da API')
+
+        _gravar_linha(conn, linha)
+        gravados += 1
+
+    return gravados, None
 
 
-@app.route('/api/db/curvas')
-def api_db_curvas():
-    """Diagnostico da tabela de curvas."""
-    return jsonify(db.diagnostico_curvas())
+def _gravar_linha(conn, linha):
+    cols = ', '.join(linha.keys())
+    placeholders = ', '.join(['?'] * len(linha))
+    conn.execute(
+        f"""INSERT OR REPLACE INTO fisiologia_intervalos ({cols})
+            VALUES ({placeholders})""",
+        tuple(linha.values())
+    )
 
 
-@app.route('/api/debug/zonas')
-def api_debug_zonas():
-    """Que custom_zones existem por modalidade, e onde faltam."""
-    return jsonify(db.diagnostico_zonas())
+# ══════════════════════════════════════════════════════════════════════════
+# SELEÇÃO DO LOTE (mais recente → mais antigo, até DATA_CORTE)
+# ══════════════════════════════════════════════════════════════════════════
+
+CICLICOS = ('Bike', 'Row', 'Ski', 'Run')
 
 
-@app.route('/api/sync/zonas')
-def api_sync_zonas():
-    """Extrai o tempo por zona do JSON ja guardado. Nao gasta pedidos a API."""
-    return jsonify(db.extrair_zone_times())
+def proximo_lote(conn, n=LOTE_PADRAO):
+    ja_processadas = {r[0] for r in conn.execute(
+        "SELECT DISTINCT activity_id FROM fisiologia_intervalos").fetchall()}
+
+    atividades = db.load_activities(desde=DATA_CORTE) or []
+    candidatas = []
+    for a in atividades:
+        aid = str(a.get('id'))
+        if aid in ja_processadas:
+            continue
+        modalidade = norm_tipo(a.get('type'))
+        if modalidade not in CICLICOS:
+            continue
+        if not (a.get('icu_average_watts') or 0) > 0:
+            continue
+        candidatas.append(a)
+
+    # já vem ORDER BY date DESC do Postgres (load_activities)
+    return candidatas[:n]
 
 
-@app.route('/api/zonas')
-def api_zonas():
-    """Tempo por zona, para os graficos.
+# ══════════════════════════════════════════════════════════════════════════
+# LOOP PRINCIPAL
+# ══════════════════════════════════════════════════════════════════════════
 
-    ?tipo=Bike  ?kind=power|hr|pace  ?desde=YYYY-MM-DD
+def processar_lote(n=LOTE_PADRAO, retornar_resumo=False):
+    conn = ddf.get_conn()
+    lote = proximo_lote(conn, n)
+
+    if not lote:
+        conn.execute("""UPDATE fisiologia_progresso SET
+                        concluido = 1, ultima_execucao = ? WHERE id = 1""",
+                    (datetime.now().isoformat(timespec='seconds'),))
+        conn.commit()
+        upload_ok, upload_detalhe = ddf.upload()
+        resumo = {'status': 'concluido',
+                 'mensagem': 'Nada para processar — historico completo ate a data de corte.',
+                 'upload_drive_ok': upload_ok, 'upload_drive_detalhe': upload_detalhe}
+        if retornar_resumo:
+            return resumo
+        print(resumo['mensagem'])
+        return
+
+    processadas = puladas = erros = 0
+    detalhes = []
+    for activity in lote:
+        aid = str(activity.get('id'))
+        try:
+            n_gravados, motivo = processar_atividade(activity, conn)
+            if motivo:
+                puladas += 1
+                detalhes.append({'activity_id': aid, 'status': 'pulada', 'motivo': motivo})
+                if not retornar_resumo:
+                    print(f"  [PULADA] {aid}: {motivo}")
+            else:
+                processadas += 1
+                detalhes.append({'activity_id': aid, 'status': 'ok', 'intervalos_gravados': n_gravados})
+                if not retornar_resumo:
+                    print(f"  [OK] {aid}: {n_gravados} intervalos gravados")
+        except Exception as e:
+            erros += 1
+            detalhes.append({'activity_id': aid, 'status': 'erro',
+                             'erro': f'{type(e).__name__}: {e}'})
+            if not retornar_resumo:
+                print(f"  [ERRO] {aid}: {type(e).__name__}: {e}")
+
+    ultima = lote[-1]
+    conn.execute("""UPDATE fisiologia_progresso SET
+                    total_processadas = total_processadas + ?,
+                    total_puladas = total_puladas + ?,
+                    total_erros = total_erros + ?,
+                    ultima_activity_id = ?,
+                    ultima_data = ?,
+                    ultima_execucao = ?
+                    WHERE id = 1""",
+                (processadas, puladas, erros,
+                 str(ultima.get('id')), str(ultima.get('start_date_local', ''))[:10],
+                 datetime.now().isoformat(timespec='seconds')))
+    conn.commit()
+    upload_ok, upload_detalhe = ddf.upload()
+
+    resumo = {
+        'status': 'lote_concluido',
+        'processadas': processadas, 'puladas': puladas, 'erros': erros,
+        'total_no_lote': len(lote),
+        'detalhes': detalhes,
+        'upload_drive_ok': upload_ok,
+        'upload_drive_detalhe': upload_detalhe,
+    }
+    if not upload_ok:
+        resumo['aviso'] = (
+            'ATENÇÃO: os dados ficaram só no disco local do container (efémero). '
+            'Se o container reiniciar antes do próximo upload bem sucedido, '
+            'estes intervalos gravados agora perdem-se. Ver upload_drive_detalhe.')
+    if retornar_resumo:
+        return resumo
+
+    print(f"\nLote concluido: {processadas} processadas, {puladas} puladas, "
+          f"{erros} erros. {len(lote)} atividades no lote. "
+          f"Upload Drive: {'OK' if upload_ok else 'FALHOU - ' + str(upload_detalhe)}")
+
+
+def _amostra_bruta(bruto, n=3):
+    try:
+        if isinstance(bruto, dict) and isinstance(bruto.get('icu_intervals'), list):
+            return bruto['icu_intervals'][:n]
+        if isinstance(bruto, list):
+            return bruto[:n]
+        return str(bruto)[:500]
+    except Exception:
+        return None
+
+
+def debug_dict(activity_id):
+    """Versão JSON-friendly do debug — para expor via endpoint HTTP.
+
+    Mostra: resposta bruta (amostra), o que o parser extraiu, a
+    classificação WORK/REC por potência (SEM usar o campo 'type' da API),
+    e os pares WORK->REC resultantes. Não grava nada no .db.
     """
-    return jsonify({
-        'status': 'OK',
-        'disponiveis': db.zonas_disponiveis(),
-        'sessoes': db.tempo_por_zona(
-            request.args.get('tipo') or None,
-            request.args.get('kind') or 'power',
-            request.args.get('desde') or None),
-    })
+    bruto, erro_api = icu_get(f"/activity/{activity_id}/intervals")
+    intervalos, erro_parse = buscar_intervalos_api(activity_id)
 
+    resultado = {
+        'activity_id': activity_id,
+        'erro_api': erro_api,
+        'erro_parsing': erro_parse,
+        'n_intervalos_parseados': len(intervalos) if intervalos else 0,
+        'bruto_amostra': _amostra_bruta(bruto),
+    }
 
-def _seguro(fn, *args, **kwargs):
-    """Corre fn e devolve o erro em JSON em vez de 500.
+    if intervalos:
+        classificar_por_potencia(intervalos)
+        anterior_watts = None
+        intervalos_debug = []
+        for iv in intervalos:
+            w = iv.get('watts_medio_api')
+            queda_pct = None
+            if w is not None and anterior_watts is not None and anterior_watts > 0:
+                queda_pct = round((anterior_watts - w) / anterior_watts * 100, 1)
+            intervalos_debug.append({
+                'tipo_api': iv['tipo'], 'label_api': iv.get('label'),
+                'classe_calculada': iv.get('_classe'),
+                't_ini_s': round(iv['t_ini'], 1), 't_fim_s': round(iv['t_fim'], 1),
+                'dur_s': round(iv['t_fim'] - iv['t_ini'], 1),
+                'watts_medio_api': w,
+                'queda_pct_vs_anterior': queda_pct,
+                'hr_medio_api': iv.get('hr_medio_api'),
+            })
+            anterior_watts = 0.0 if w is None else w
+        resultado['intervalos'] = intervalos_debug
+        pares = emparelhar_work_rec(intervalos)
+        resultado['n_pares_work_rec'] = len(pares)
+        resultado['pares'] = [
+            {
+                'work_dur_s': round(w['t_fim'] - w['t_ini'], 1),
+                'work_watts': w.get('watts_medio_api'),
+                'rec_dur_s': (round(r['t_fim'] - r['t_ini'], 1) if r else None),
+                'rec_watts': (r.get('watts_medio_api') if r else None),
+            }
+            for w, r in pares
+        ]
 
-    Um endpoint de diagnostico que rebenta com 500 nao diz nada; a mensagem
-    de erro e precisamente a informacao util.
-    """
+    # também tenta correr o processamento completo (sem gravar) para o
+    # utilizador ver os lags calculados de verdade nesta atividade
     try:
-        return jsonify(fn(*args, **kwargs))
+        act, err_act = icu_get(f"/activity/{activity_id}")
+        if act and not err_act:
+            act['id'] = activity_id
+            conn_temp = None
+            import sqlite3
+            conn_temp = sqlite3.connect(':memory:')
+            from fisiologia_schema import aplicar_schema
+            aplicar_schema(conn_temp)
+            n_gravados, motivo = processar_atividade(act, conn_temp)
+            if motivo:
+                resultado['simulacao_processamento'] = {'status': 'pulada', 'motivo': motivo}
+            else:
+                linhas = conn_temp.execute(
+                    "SELECT * FROM fisiologia_intervalos WHERE activity_id = ?",
+                    (activity_id,)).fetchall()
+                cols = [d[0] for d in conn_temp.execute(
+                    "SELECT * FROM fisiologia_intervalos LIMIT 0").description]
+                resultado['simulacao_processamento'] = {
+                    'status': 'ok', 'n_linhas': len(linhas),
+                    'linhas': [dict(zip(cols, l)) for l in linhas],
+                }
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'ok': False, 'erro': f'{type(e).__name__}: {e}',
-                        'traceback': traceback.format_exc()[-1200:]}), 500
+        resultado['simulacao_processamento'] = {'status': 'erro', 'erro': str(e)}
 
-
-@app.route('/api/sync/streams')
-def api_sync_streams():
-    """Carrega streams em bloco.
-
-    ?limite=60          quantas sessoes por chamada (1 pedido cada)
-    ?tipos=Bike,Row     so estas modalidades
-    ?desde=YYYY-MM-DD   so a partir desta data
-    Repetir ate 'faltam' chegar a zero.
-    """
-    tipos = request.args.get('tipos')
-    return _seguro(sync.sync_streams_bloco,
-                   limite=request.args.get('limite', default=60, type=int),
-                   tipos=[t.strip() for t in tipos.split(',')] if tipos else None,
-                   desde=request.args.get('desde'))
-
-
-@app.route('/api/db/streams')
-def api_db_streams():
-    """Cobertura dos streams guardados."""
-    return _seguro(db.streams_stats)
-
-
-@app.route('/fisiologia/perfil_grafico_enhanced/<modalidade>')
-def page_perfil_grafico_enhanced(modalidade):
-    """Página HTML com gráfico dual-axis (watts + pace) do perfil."""
-    try:
-        from tabs import tab_metabol_enhanced as tme
-        min_n = int(request.args.get('min_n', 20))
-        n_faixas = int(request.args.get('n_faixas', 10))
-        enh = tme.MetabolicProfileEnhanced(modalidade)
-        perfil = enh.gerar_perfil_com_pace(modalidade, min_n_total=min_n, n_faixas=n_faixas)
-        if perfil.get('status') != 'ok':
-            return f"<h1>Perfil — {modalidade}</h1><p>Dados insuficientes</p>"
-        fig = enh.grafico_perfil_dual_axis(perfil)
-        html = fig.to_html(include_plotlyjs='cdn', div_id=f'perfil-{modalidade}',
-                          config={'responsive': True, 'displayModeBar': True})
-        return f"""<html><head><title>Perfil {modalidade}</title><meta charset="utf-8"></head><body>
-                <h1>Perfil Metabólico — {modalidade} (Dual Axis: Watts + Pace)</h1>{html}
-                <p><a href="/">← Voltar</a></p></body></html>"""
-    except Exception as e:
-        import traceback
-        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
-
-
-@app.route('/fisiologia/evolucao_grafico/<modalidade>/<campo>')
-def page_evolucao_grafico(modalidade, campo):
-    """Página HTML com gráfico evolução temporal (watts + pace)."""
-    try:
-        from tabs import tab_metabol_enhanced as tme
-        watts_min = request.args.get('watts_min', type=float)
-        watts_max = request.args.get('watts_max', type=float)
-        agregacao = request.args.get('agregacao', 'mes')
-        resultado = tme.evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max, agregacao)
-        if resultado.get('status') != 'ok':
-            return f"<h1>Evolução — {modalidade}</h1><p>Dados insuficientes</p>"
-        fig = tme.grafico_evolucao_dual_axis(resultado)
-        html = fig.to_html(include_plotlyjs='cdn', div_id=f'evolucao-{modalidade}',
-                          config={'responsive': True, 'displayModeBar': True})
-        return f"""<html><head><title>Evolução {modalidade}</title><meta charset="utf-8"></head><body>
-                <h1>Evolução {campo} — {modalidade} (Dual Axis: Watts + Pace)</h1>{html}
-                <p><a href="/">← Voltar</a></p></body></html>"""
-    except Exception as e:
-        import traceback
-        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
-
-
-# ── Novas rotas: DFA-α1 + Pace/Watts ──────────────────────────────────────
-
-@app.route('/api/fisiologia/validacao_dfa/<modalidade>')
-def api_validacao_dfa(modalidade):
-    """Validar qualidade de DFA-α1 para uma modalidade."""
-    try:
-        from tabs import tab_metabol_enhanced as tme
-        resultado = tme.validacao_lote_dfa(modalidade)
-        return jsonify(resultado)
-    except Exception as e:
-        import traceback
-        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
-
-
-@app.route('/api/fisiologia/perfil_enhanced/<modalidade>')
-def api_perfil_enhanced(modalidade):
-    """Perfil metabólico com coluna pace adicionada (Row/Ski)."""
-    try:
-        from tabs import tab_metabol_enhanced as tme
-        min_n = int(request.args.get('min_n', 20))
-        n_faixas = int(request.args.get('n_faixas', 10))
-        enh = tme.MetabolicProfileEnhanced(modalidade)
-        resultado = enh.gerar_perfil_com_pace(modalidade, min_n_total=min_n, n_faixas=n_faixas)
-        return jsonify(resultado)
-    except Exception as e:
-        import traceback
-        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
-
-
-@app.route('/api/fisiologia/evolucao_com_pace')
-def api_evolucao_com_pace():
-    """Evolução temporal com pace secundário (Row/Ski)."""
-    try:
-        from tabs import tab_metabol_enhanced as tme
-        modalidade = request.args.get('modalidade')
-        campo = request.args.get('campo')
-        if not modalidade or not campo:
-            return jsonify({'erro': 'faltam parametros ?modalidade= e ?campo='}), 400
-        watts_min = request.args.get('watts_min', type=float)
-        watts_max = request.args.get('watts_max', type=float)
-        agregacao = request.args.get('agregacao', 'mes')
-        resultado = tme.evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max, agregacao)
-        return jsonify(resultado)
-    except Exception as e:
-        import traceback
-        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
-
-
-@app.route('/health')
-def health():
-    return jsonify({'status': 'healthy'}), 200
+    return resultado
 
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 8080))
-    print(f"Starting server on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    if '--debug' in sys.argv:
+        idx = sys.argv.index('--debug')
+        activity_id = sys.argv[idx + 1]
+        print(json.dumps(debug_dict(activity_id), indent=2, ensure_ascii=False, default=str))
+    else:
+        n = LOTE_PADRAO
+        if '--n' in sys.argv:
+            idx = sys.argv.index('--n')
+            n = int(sys.argv[idx + 1])
+        processar_lote(n)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# INSTRUÇÕES — Railway Cron Job (opcional, além do HTTP manual)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Este ficheiro NÃO altera app.py por si só. Para o usar via HTTP (sem
+# terminal, só browser), ver app_fisiologia_rotas_ADICIONAR.py — são 2
+# rotas pequenas para colar no teu app.py via GitHub web.
+#
+# Para automatizar (correr sozinho todos os dias, sem precisares de abrir
+# a URL manualmente), o Railway permite criar um "Cron Job" TAMBÉM pela
+# interface web (não precisa de CLI): no projecto Railway, "New" ->
+# "Cron Job" -> escolher o mesmo repo -> comando:
+#
+#     python fisiologia_worker.py --n 10
+#
+# agendamento (todos os dias às 04:00):
+#
+#     0 4 * * *
+#
+# Variáveis de ambiente — as MESMAS do serviço web já existente:
+#   INTERVALS_ICU_API_KEY, ATHLETE_ID, DATABASE_URL, GCP_SERVICE_ACCOUNT
+#
+# Opcional:
+#   FISIOLOGIA_LOTE        (default 10)
+#   FISIOLOGIA_DATA_CORTE  (default 2024-01-01)
+#   GDRIVE_FOLDER_ID       (default = mesma pasta de correlacoes.db)

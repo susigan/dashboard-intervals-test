@@ -83,6 +83,41 @@ import numpy as np
 import db
 from api_client import icu_get, norm_tipo
 import drive_db_fisiologia as ddf
+
+# ── Migração automática: adicionar colunas ultimos_30s se não existirem ────
+def _migrar_ultimos_30s():
+    """Verifica e cria as 5 colunas novas se faltarem."""
+    try:
+        conn = ddf.get_conn()
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(fisiologia_intervalos)")
+        colunas_existentes = {row[1] for row in cur.fetchall()}
+        
+        colunas_novas = [
+            'hr_ultimos_30s_work',
+            'smo2_ultimos_30s_work',
+            'thb_ultimos_30s_work',
+            'resp_ultimos_30s_work',
+            'dfa1_ultimos_30s_work'
+        ]
+        
+        para_adicionar = [c for c in colunas_novas if c not in colunas_existentes]
+        if para_adicionar:
+            print(f"[fisiologia_worker] Adicionando {len(para_adicionar)} colunas...")
+            for col in para_adicionar:
+                cur.execute(f"ALTER TABLE fisiologia_intervalos ADD COLUMN {col} REAL")
+                print(f"  ✓ {col}")
+            conn.commit()
+            print("[fisiologia_worker] Migração concluída!")
+        else:
+            print("[fisiologia_worker] Colunas ultimos_30s já existem ✓")
+    except Exception as e:
+        print(f"[fisiologia_worker] ERRO na migração: {e}")
+        raise
+
+# Executar migração ao importar
+_migrar_ultimos_30s()
+
 try:
     import sync as _sync
 except Exception:

@@ -192,8 +192,107 @@ def buscar_intervalos_api(activity_id):
             'thb_medio_api': item.get('average_thb'),
             'resp_medio_api': item.get('average_respiration'),
             'dfa1_medio_api': item.get('average_dfa_a1'),
+            # FASE A — velocidade real (para pace). A Intervals.icu devolve
+            # distance (m) e moving_time (s) por lap; average_speed (m/s)
+            # existe em algumas respostas. Usamos o que houver.
+            'distancia_api': item.get('distance'),
+            'moving_time_api': item.get('moving_time') or item.get('elapsed_time'),
+            'velocidade_api': item.get('average_speed'),
         })
     return out, None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FASE A — PACE REAL (a partir da velocidade medida, não de fórmula)
+# ══════════════════════════════════════════════════════════════════════════
+
+def _velocidade_do_intervalo(item):
+    """Velocidade média do intervalo em m/s, ou None.
+
+    Prioridade: average_speed da API -> distance/moving_time. Só aceita
+    valores fisiologicamente plausíveis (0.5–15 m/s) para não deixar
+    entrar lixo (laps parados, GPS a saltar, etc).
+    """
+    if item is None:
+        return None
+
+    v = item.get('velocidade_api')
+    if v is None:
+        dist = item.get('distancia_api')
+        tempo = item.get('moving_time_api')
+        try:
+            if dist is not None and tempo:
+                v = float(dist) / float(tempo)
+        except (TypeError, ValueError, ZeroDivisionError):
+            v = None
+
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+
+    if not np.isfinite(v) or v < 0.5 or v > 15.0:
+        return None
+    return v
+
+
+def _pace_s_km(velocidade_ms):
+    """Segundos por quilómetro. Serve todas as modalidades: para Row/Ski
+    basta dividir por 2 na leitura para obter o pace /500m."""
+    if velocidade_ms is None or velocidade_ms <= 0:
+        return None
+    pace = 1000.0 / velocidade_ms
+    if not np.isfinite(pace) or pace <= 0 or pace > 3600:
+        return None
+    return float(pace)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# MIGRAÇÃO AUTOMÁTICA DO SCHEMA (o dashboard é WEB-only: não há terminal
+# para correr ALTER TABLE à mão, por isso o worker garante as colunas)
+# ══════════════════════════════════════════════════════════════════════════
+
+# nome -> tipo SQL. Acrescentar aqui basta para a coluna passar a existir.
+COLUNAS_EXTRA = {
+    # FASE A
+    'velocidade_ms': 'REAL',
+    'distancia_m': 'REAL',
+    'pace_s_km': 'REAL',
+}
+
+
+def _garantir_colunas(conn):
+    """ALTER TABLE ADD COLUMN para o que faltar. Idempotente e barato:
+    uma leitura de PRAGMA por chamada. Nunca apaga nem altera colunas
+    existentes."""
+    try:
+        existentes = {r[1] for r in conn.execute(
+            "PRAGMA table_info(fisiologia_intervalos)")}
+    except Exception as e:
+        print(f"  [aviso] nao consegui ler schema: {e}")
+        return []
+
+    if not existentes:
+        return []  # tabela ainda nao existe; quem a cria trata disso
+
+    adicionadas = []
+    for col, tipo in COLUNAS_EXTRA.items():
+        if col in existentes:
+            continue
+        try:
+            conn.execute(
+                f"ALTER TABLE fisiologia_intervalos ADD COLUMN {col} {tipo}")
+            adicionadas.append(col)
+        except Exception as e:
+            print(f"  [aviso] ADD COLUMN {col} falhou: {e}")
+
+    if adicionadas:
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        print(f"  [schema] colunas adicionadas: {', '.join(adicionadas)}")
+    return adicionadas
 
 
 
@@ -644,10 +743,22 @@ def processar_atividade(activity, conn):
         if watts_medio is None:
             continue  # sem potência não há como caracterizar o intervalo
 
+        # FASE A — velocidade/pace reais do lap WORK (None se a modalidade
+        # nao tiver distancia: trainer indoor sem roda, por exemplo)
+        velocidade_ms = _velocidade_do_intervalo(work)
+        pace_km = _pace_s_km(velocidade_ms)
+        try:
+            distancia_m = float(work.get('distancia_api')) if work.get('distancia_api') is not None else None
+        except (TypeError, ValueError):
+            distancia_m = None
+
         linha = {
             'activity_id': activity_id, 'data': data_str, 'modalidade': modalidade,
             'interval_num': n, 'watts_medio': watts_medio,
             'watts_min': watts_min, 'watts_max': watts_max,
+            'velocidade_ms': velocidade_ms,
+            'distancia_m': distancia_m,
+            'pace_s_km': pace_km,
             'dur_work_s': int(dur_work), 'dur_rec_s': int(dur_rec) if dur_rec else None,
             'tem_hr': int(tem_hr), 'tem_smo2': int(tem_smo2),
             'tem_thb': int(tem_thb), 'tem_resp': int(tem_resp),
@@ -790,6 +901,7 @@ def proximo_lote(conn, n=LOTE_PADRAO):
 
 def processar_lote(n=LOTE_PADRAO, retornar_resumo=False):
     conn = ddf.get_conn()
+    colunas_novas = _garantir_colunas(conn)   # migração automática do schema
     lote = proximo_lote(conn, n)
 
     if not lote:
@@ -848,6 +960,7 @@ def processar_lote(n=LOTE_PADRAO, retornar_resumo=False):
         'status': 'lote_concluido',
         'processadas': processadas, 'puladas': puladas, 'erros': erros,
         'total_no_lote': len(lote),
+        'colunas_migradas': colunas_novas,
         'detalhes': detalhes,
         'upload_drive_ok': upload_ok,
         'upload_drive_detalhe': upload_detalhe,

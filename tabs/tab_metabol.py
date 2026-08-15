@@ -343,7 +343,7 @@ BODY = r"""
 <h1>Metabolismo</h1>
 <div class="tabs" style="border-bottom:1px solid #21262d; margin-bottom:20px;">
   <button class="tab-btn active" data-tab="perfil_watts">Perfil por Watts</button>
-  <button class="tab-btn" data-tab="aquecimento">Outras Análises</button>
+  <button class="tab-btn" data-tab="aquecimento">Aquecimento</button>
 </div>
 <div id="perfil_watts" class="tab-content active">
 <div class="controls">
@@ -829,87 +829,6 @@ def api_data():
     except Exception as e:
         return jsonify({'status': 'erro', 'modalidades': []})
     return jsonify({'status': 'ok', 'modalidades': modalidades, 'agregacoes_validas': AGREGACOES_VALIDAS})
-
-
-
-def dinamica_resposta(modalidade, metrica, fase, largura_bin_manual=50, min_n_total=15):
-    """Retorna dinâmica de resposta (lag/rec) por faixa de watts."""
-    try:
-        conn = _conn()
-    except Exception as e:
-        return {'status': 'erro', 'mensagem': str(e)}
-    
-    percentis = ['50', '75', '90'] if fase == 'lag' else ['50', '75']
-    colunas_esperadas = [f'{fase}_{metrica}_{p}' for p in percentis]
-    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(fisiologia_intervalos)")}
-    colunas_ok = [c for c in colunas_esperadas if c in existing_cols]
-    
-    if not colunas_ok:
-        return {'status': 'erro', 'mensagem': 'Colunas não encontradas'}
-    
-    cols_sql = ', '.join(colunas_ok)
-    query = f"SELECT watts_medio, {cols_sql} FROM fisiologia_intervalos WHERE modalidade=? AND valido=1 ORDER BY watts_medio"
-    
-    try:
-        linhas = conn.execute(query, (modalidade,)).fetchall()
-    except Exception as e:
-        return {'status': 'erro', 'mensagem': str(e)}
-    
-    if not linhas:
-        return {'status': 'erro', 'mensagem': 'Sem dados'}
-    
-    watts = np.array([l[0] for l in linhas if l[0] is not None])
-    if len(watts) == 0:
-        return {'status': 'erro', 'mensagem': 'Sem watts'}
-    
-    wmin, wmax = float(watts.min()), float(watts.max())
-    inicio = int(wmin // largura_bin_manual) * largura_bin_manual
-    fim = int(wmax // largura_bin_manual) * largura_bin_manual
-    if fim == inicio:
-        fim += largura_bin_manual
-    
-    limites = list(np.arange(inicio, fim + largura_bin_manual, largura_bin_manual))
-    faixas = []
-    
-    for i in range(len(limites) - 1):
-        w_min, w_max = limites[i], limites[i+1]
-        w_centro = (w_min + w_max) / 2.0
-        idxs = [j for j, l in enumerate(linhas) if l[0] is not None and w_min <= l[0] < w_max]
-        
-        if len(idxs) < min_n_total:
-            continue
-        
-        faixa = {
-            'faixa_watts': f'{int(w_min)}-{int(w_max)}W',
-            'watts_centro': w_centro,
-            'n_intervalos': len(idxs),
-        }
-        
-        for perc in percentis:
-            valores = []
-            for j in idxs:
-                v = linhas[j][1 + percentis.index(perc)]
-                if v is not None and np.isfinite(v):
-                    valores.append(float(v))
-            
-            if valores:
-                faixa[perc] = {
-                    'p50': float(np.median(valores)),
-                    'p75': float(np.percentile(valores, 75)) if len(valores) > 1 else float(np.median(valores)),
-                    'p90': float(np.percentile(valores, 90)) if len(valores) > 2 else float(np.median(valores)),
-                }
-        
-        faixas.append(faixa)
-    
-    if not faixas:
-        return {'status': 'erro', 'mensagem': 'Nenhuma faixa com dados'}
-    
-    return {
-        'status': 'ok',
-        'faixas': faixas,
-        'percentis': percentis,
-    }
-
 
 def render():
     from flask import render_template_string

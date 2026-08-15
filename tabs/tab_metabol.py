@@ -343,7 +343,7 @@ BODY = r"""
 <h1>Metabolismo</h1>
 <div class="tabs" style="border-bottom:1px solid #21262d; margin-bottom:20px;">
   <button class="tab-btn active" data-tab="perfil_watts">Perfil por Watts</button>
-  <button class="tab-btn" data-tab="outras">Outras Análises</button>
+  <button class="tab-btn" data-tab="aquecimento">Outras Análises</button>
 </div>
 <div id="perfil_watts" class="tab-content active">
 <div class="controls">
@@ -377,7 +377,7 @@ BODY = r"""
   <canvas id="chEvolucao" height="240"></canvas>
 </div>
 </div>
-<div id="outras" class="tab-content" style="display:none;">
+<div id="aquecimento" class="tab-content" style="display:none;">
   <p style="color:#8b949e;">Outras análises virão aqui...</p>
 </div>
 <style>

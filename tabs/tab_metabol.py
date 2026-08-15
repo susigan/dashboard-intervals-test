@@ -1,4 +1,4 @@
-"""tab_metabol.py — Análise robusta v3: ponderação + tooltips + pace + evolução."""
+"""tab_metabol.py — Com tabs: Perfil por Watts + outras análises."""
 
 from flask import jsonify, request
 import numpy as np
@@ -36,7 +36,7 @@ def _conn():
     return conn
 
 def _watts_para_pace(watts, modalidade='Row'):
-    """Converte watts para pace (min:ss)."""
+    """Converte watts para pace (min:ss) — Row/Ski."""
     if modalidade not in ['Row', 'Ski']:
         return None
     if watts <= 0:
@@ -45,15 +45,6 @@ def _watts_para_pace(watts, modalidade='Row'):
     min_val = int(pace_seg // 60)
     seg_val = int(pace_seg % 60)
     return f'{min_val}:{seg_val:02d}'
-
-def _watts_para_pace_run(watts):
-    """Converte watts para pace/km (run)."""
-    if watts <= 0:
-        return None
-    pace_seg = 200.0 / np.sqrt(watts / 75.0)
-    min_val = int(pace_seg // 60)
-    seg_val = int(pace_seg % 60)
-    return f'{min_val}:{seg_val:02d} /km'
 
 def modalidades_disponiveis():
     conn = _conn()
@@ -70,8 +61,8 @@ def modalidades_disponiveis():
         for r in resultado
     ]
 
-def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=10, peso_ultimos=1.5):
-    """Perfil com PONDERAÇÃO nos últimos intervalos."""
+def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=10, peso_ultimos=1.5, largura_bin_manual=50):
+    """Perfil com PONDERAÇÃO. largura_bin_manual em watts (50 ou 100)."""
     conn = _conn()
     colunas = ", ".join(TODOS_CAMPOS)
     linhas = conn.execute(
@@ -97,16 +88,12 @@ def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=10, peso_ultimos=
 
     watts = np.array([l['watts_medio'] for l in linhas])
     wmin, wmax = float(watts.min()), float(watts.max())
-    intervalo_total = wmax - wmin
-    largura_bin = max(10.0, min(30.0, intervalo_total / n_faixas if intervalo_total > 0 else 20.0))
 
-    limites = [wmin]
-    v = wmin
-    while v < wmax:
-        v += largura_bin
-        limites.append(v)
+    limites = list(np.arange(int(wmin // largura_bin_manual) * largura_bin_manual, 
+                             int(wmax // largura_bin_manual + 2) * largura_bin_manual, 
+                             largura_bin_manual))
     if limites[-1] < wmax:
-        limites.append(wmax + 0.01)
+        limites.append(limites[-1] + largura_bin_manual)
 
     faixas_saida = []
     for i in range(len(limites) - 1):
@@ -128,10 +115,6 @@ def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=10, peso_ultimos=
         
         if modalidade in ['Row', 'Ski']:
             pace = _watts_para_pace(watts_centro, modalidade)
-            if pace:
-                faixa['pace_medio'] = pace
-        elif modalidade == 'Run':
-            pace = _watts_para_pace_run(watts_centro)
             if pace:
                 faixa['pace_medio'] = pace
         
@@ -240,19 +223,31 @@ def evolucao_temporal(modalidade, campo, watts_min=None, watts_max=None, agregac
     }
 
 BODY = r"""
-<h1>Metabolismo — perfil por watts (análise robusta)</h1>
-<div class="sub" id="sub">A carregar...</div>
+<h1>Metabolismo</h1>
+
+<div class="tabs" style="border-bottom:1px solid #21262d; margin-bottom:20px;">
+  <button class="tab-btn active" data-tab="perfil_watts">Perfil por Watts</button>
+  <button class="tab-btn" data-tab="outras">Outras Análises</button>
+</div>
+
+<!-- TAB 1: Perfil por Watts -->
+<div id="perfil_watts" class="tab-content active">
 
 <div class="controls">
   <label class="sel">Modalidade
     <select id="modalidade"></select></label>
+  <label class="sel">Range watts
+    <select id="larguraBin">
+      <option value="50">50W</option>
+      <option value="100" selected>100W</option>
+    </select></label>
 </div>
 
-<h2>Perfil metabólico — ponderado com últimos 30% de intervalos (1.5x peso)</h2>
-<div id="tooltip" style="position:absolute;background:#000;color:#fff;padding:8px;border-radius:3px;font-size:11px;display:none;z-index:1000;pointer-events:none;border:1px solid #666;"></div>
+<h2>Perfil metabólico — ponderado (últimos 30% com 1.5x peso)</h2>
+<div id="tooltip" style="position:absolute;background:#000;color:#fff;padding:8px;border-radius:3px;font-size:11px;display:none;z-index:1000;pointer-events:none;border:1px solid #666;white-space:nowrap;"></div>
 <div class="legend" id="lgPerfil"></div>
 <div class="chartbox">
-  <canvas id="chPerfil" height="280"></canvas>
+  <canvas id="chPerfil" height="300"></canvas>
 </div>
 
 <h2>Evolução ao longo do tempo</h2>
@@ -266,6 +261,21 @@ BODY = r"""
 <div class="chartbox">
   <canvas id="chEvolucao" height="240"></canvas>
 </div>
+
+</div><!-- FIM tab perfil_watts -->
+
+<!-- TAB 2: Outras Análises -->
+<div id="outras" class="tab-content" style="display:none;">
+  <p style="color:#8b949e;">Outras análises virão aqui...</p>
+</div><!-- FIM tab outras -->
+
+<style>
+.tabs { display:flex; gap:20px; }
+.tab-btn { background:none; border:none; color:#8b949e; padding:10px 0; cursor:pointer; font-size:14px; border-bottom:2px solid transparent; }
+.tab-btn.active { color:#fff; border-bottom-color:#fff; }
+.tab-content { display:none; }
+.tab-content.active { display:block; }
+</style>
 """
 
 JS = r"""
@@ -313,7 +323,7 @@ function alternar(canvasId, k){
 }
 
 function drawPerfil(){
- const o = ctx('chPerfil', 280);
+ const o = ctx('chPerfil', 300);
  if(!o) return;
  const g = o.g, W = o.W, H = o.H;
  
@@ -344,7 +354,7 @@ function drawPerfil(){
   return;
  }
  
- const PL = 70, PR = 120, PB = 35, PT = 25, w = W - PL - PR, h = H - PT - PB;
+ const PL = 70, PR = 120, PB = 40, PT = 25, w = W - PL - PR, h = H - PT - PB;
  const xs = faixas.map(f => f.watts_centro);
  const xmin = Math.min.apply(null, xs), xmax = Math.max.apply(null, xs);
  const X = v => xmax > xmin ? PL + w*(v-xmin)/(xmax-xmin) : PL + w/2;
@@ -367,7 +377,7 @@ function drawPerfil(){
   const marg = (b-a)*0.15 || 1;
   a -= marg; b += marg;
   const Y = v => PT + h - (v-a)/(b-a)*h;
-  escalas[c] = {a: a, b: b, Y: Y, pts: pts};
+  escalas[c] = {a: a, b: b, Y: Y, pts: pts, range_vis: {vmin: a, vmax: b}};
  });
  
  g.strokeStyle = '#21262d';
@@ -410,7 +420,7 @@ function drawPerfil(){
   g.fillStyle = CORES_METAB[c];
   pts.forEach(function(f){
    g.beginPath();
-   g.arc(X(f.watts_centro), esc.Y(f[c].p50), 3, 0, 7);
+   g.arc(X(f.watts_centro), esc.Y(f[c].p50), 3.5, 0, 7);
    g.fill();
   });
  });
@@ -419,8 +429,8 @@ function drawPerfil(){
  g.font = '10px sans-serif';
  g.textAlign = 'center';
  faixas.forEach(function(f, i){
-  if(i % 3 !== 0) return;
-  g.fillText(Math.round(f.watts_centro)+'W', X(f.watts_centro), H-15);
+  if(i % 2 !== 0) return;
+  g.fillText(Math.round(f.watts_centro)+'W', X(f.watts_centro), H-20);
  });
  
  if(faixas.some(f => f.pace_medio)){
@@ -429,7 +439,7 @@ function drawPerfil(){
   g.textAlign = 'center';
   g.fillText('PACE', PL + w/2, 15);
   faixas.forEach(function(f, i){
-   if(i % 3 !== 0) return;
+   if(i % 2 !== 0) return;
    if(f.pace_medio){
     g.font = '9px sans-serif';
     g.fillStyle = '#FF6B6B';
@@ -437,6 +447,20 @@ function drawPerfil(){
    }
   });
  }
+ 
+ g.fillStyle = '#8b949e';
+ g.font = '9px sans-serif';
+ g.textAlign = 'right';
+ vis.forEach(function(c, idx){
+  const esc = escalas[c];
+  const cor = CORES_METAB[c];
+  for(let k = 0; k <= 2; k++){
+   const val = (esc.range_vis.vmax - (esc.range_vis.vmax-esc.range_vis.vmin)*k/2).toFixed(1);
+   const y = PT + h*k/2;
+   g.fillStyle = hexRgba(cor, 0.4);
+   g.fillText(val, PL - 10 - idx*50, y+3);
+  }
+ });
  
  const tooltip = document.getElementById('tooltip');
  const canvas = document.getElementById('chPerfil');
@@ -450,11 +474,19 @@ function drawPerfil(){
    return;
   }
   
-  const watts = xmin + (mx-PL)/w*(xmax-xmin);
-  const faixa = faixas.find(f => Math.abs(f.watts_centro - watts) < 15);
+  const xmin2 = Math.min.apply(null, xs);
+  const xmax2 = Math.max.apply(null, xs);
+  const watts = xmin2 + (mx-PL)/w*(xmax2-xmin2);
+  const faixa = faixas.find(f => Math.abs(f.watts_centro - watts) < 20);
   
   if(faixa){
-   tooltip.innerHTML = '<b>'+faixa.faixa_watts+'</b><br/>'+faixa.n_intervalos+' intervalos';
+   let txt = '<b>'+faixa.faixa_watts+'</b><br/>'+faixa.n_intervalos+' int.<br/>';
+   vis.forEach(function(c){
+    if(faixa[c]){
+     txt += LABELS_METAB[c]+': '+faixa[c].p50+'<br/>';
+    }
+   });
+   tooltip.innerHTML = txt;
    tooltip.style.left = (evt.clientX + 10) + 'px';
    tooltip.style.top = (evt.clientY + 10) + 'px';
    tooltip.style.display = 'block';
@@ -554,12 +586,13 @@ function drawEvolucao(){
 
 async function carregarPerfil(){
  const modalidade = document.getElementById('modalidade').value;
+ const largura = document.getElementById('larguraBin').value;
  try{
-  const d = await fetch('/api/fisiologia/perfil_robusto/'+modalidade).then(r => r.json());
+  const d = await fetch('/api/fisiologia/perfil_robusto/'+modalidade+'?largura_bin='+largura).then(r => r.json());
   PERFIL = d;
   if(PERFIL.status === 'ok') drawPerfil();
  }catch(e){
-  console.error('Erro carregando perfil:', e);
+  console.error('Erro:', e);
   PERFIL = {status: 'erro'};
   drawPerfil();
  }
@@ -576,7 +609,7 @@ async function carregarEvolucao(){
   EVOLUCAO = d;
   drawEvolucao();
  }catch(e){
-  console.error('Erro carregando evolução:', e);
+  console.error('Erro:', e);
   EVOLUCAO = {status: 'erro'};
   drawEvolucao();
  }
@@ -590,22 +623,32 @@ async function load(){
   
   const selMod = document.getElementById('modalidade');
   selMod.innerHTML = MODALIDADES.map(m => '<option value="'+m.modalidade+'">'+m.modalidade+' ('+m.n+')</option>').join('');
-  selMod.onchange = function(){
-   carregarPerfil();
-   carregarEvolucao();
-  };
+  selMod.onchange = function(){ carregarPerfil(); carregarEvolucao(); };
   
   const selCampo = document.getElementById('campoEvolucao');
   const campos = Object.keys(LABELS_METAB);
   selCampo.innerHTML = campos.map(c => '<option value="'+c+'">'+LABELS_METAB[c]+'</option>').join('');
   selCampo.onchange = carregarEvolucao;
   
+  const selBin = document.getElementById('larguraBin');
+  selBin.onchange = carregarPerfil;
+  
   carregarPerfil();
   carregarEvolucao();
  }catch(e){
-  console.error('Erro no load:', e);
+  console.error('Erro:', e);
  }
 }
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+ btn.addEventListener('click', function(){
+  const tabName = this.dataset.tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  this.classList.add('active');
+  document.getElementById(tabName).classList.add('active');
+ });
+});
 
 load();
 """
@@ -619,4 +662,4 @@ def api_data():
 
 def render():
     from flask import render_template_string
-    return render_template_string(page(SLUG, 'Metabolismo (v3 - Robusto Completo)', BODY, JS))
+    return render_template_string(page(SLUG, 'Metabolismo', BODY, JS))

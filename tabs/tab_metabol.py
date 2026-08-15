@@ -821,6 +821,178 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   document.getElementById(tabName).classList.add('active');
  });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FASE C — JavaScript para Dinâmica de Resposta
+// ══════════════════════════════════════════════════════════════════════════════
+
+let DINAMICA = null;
+
+function drawDinamica() {
+    const canvas = document.getElementById('chDinamica');
+    if (!canvas) return;
+    const g = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+
+    if (!DINAMICA || DINAMICA.status !== 'ok') {
+        g.fillStyle = '#666';
+        g.font = '14px sans-serif';
+        g.textAlign = 'center';
+        g.fillText(DINAMICA?.mensagem || 'Sem dados', W/2, H/2);
+        return;
+    }
+
+    const faixas = DINAMICA.faixas || [];
+    if (!faixas.length) return;
+
+    const percentis = DINAMICA.percentis || ['50', '75', '90'];
+    const PL = 80, PR = 100, PB = 40, PT = 25;
+    const w = W - PL - PR, h = H - PT - PB;
+    
+    const xs = faixas.map(f => f.watts_centro);
+    const xmin = Math.min.apply(null, xs), xmax = Math.max.apply(null, xs);
+    const X = v => xmax > xmin ? PL + w * (v - xmin) / (xmax - xmin) : PL + w/2;
+
+    let todos_tempos = [];
+    percentis.forEach(pc => faixas.forEach(f => {
+        if (f[pc]) todos_tempos.push(f[pc].p50);
+    }));
+    
+    const tmin = Math.min.apply(null, todos_tempos);
+    const tmax = Math.max.apply(null, todos_tempos);
+    const tmarg = (tmax - tmin) * 0.15 || 1;
+    const ta = tmin - tmarg, tb = tmax + tmarg;
+    const Y = v => PT + h - (v - ta) / (tb - ta) * h;
+
+    g.strokeStyle = '#333';
+    g.lineWidth = 1;
+    for (let k = 0; k <= 2; k++) {
+        const y = PT + h * k / 2;
+        g.beginPath();
+        g.moveTo(PL, y);
+        g.lineTo(PL + w, y);
+        g.stroke();
+    }
+
+    const cores = {'50': '#FF6B6B', '75': '#FFA500', '90': '#4ECDC4'};
+    const labels_pc = {'50': 'p50', '75': 'p75', '90': 'p90'};
+
+    percentis.forEach(pc => {
+        const cor = cores[pc];
+        g.strokeStyle = cor;
+        g.lineWidth = 2.5;
+        g.beginPath();
+        let primeiro = true;
+        faixas.forEach(f => {
+            if (!f[pc] || !f[pc].p50) return;
+            const x = X(f.watts_centro), y = Y(f[pc].p50);
+            if (primeiro) {
+                g.moveTo(x, y);
+                primeiro = false;
+            } else {
+                g.lineTo(x, y);
+            }
+        });
+        g.stroke();
+
+        g.fillStyle = cor;
+        faixas.forEach(f => {
+            if (!f[pc] || !f[pc].p50) return;
+            g.beginPath();
+            g.arc(X(f.watts_centro), Y(f[pc].p50), 3, 0, 7);
+            g.fill();
+        });
+    });
+
+    const legHTML = percentis.map(pc => 
+        '<span style="margin-right:20px;"><i style="display:inline-block;width:10px;height:10px;background:' + cores[pc] + ';margin-right:5px;"></i>' + labels_pc[pc] + '</span>'
+    ).join('');
+    document.getElementById('lgDinamica').innerHTML = legHTML;
+
+    g.fillStyle = '#8b949e';
+    g.font = '10px sans-serif';
+    g.textAlign = 'center';
+    faixas.forEach(f => {
+        g.fillText(Math.round(f.watts_centro) + 'W', X(f.watts_centro), H - 20);
+    });
+
+    g.font = '9px sans-serif';
+    g.textAlign = 'right';
+    for (let k = 0; k <= 2; k++) {
+        const val = (tb - (tb - ta) * k / 2).toFixed(1);
+        const y = PT + h * k / 2;
+        g.fillStyle = '#8b949e';
+        g.fillText(val + 's', PL - 5, y + 3);
+    }
+
+    const tooltip = document.getElementById('tooltipDin');
+    const canvas2 = document.getElementById('chDinamica');
+    canvas2.onmousemove = function(evt) {
+        const rect = canvas2.getBoundingClientRect();
+        const mx = evt.clientX - rect.left;
+        const my = evt.clientY - rect.top;
+
+        if (mx < PL || mx > PL + w || my < PT || my > PT + h) {
+            tooltip.style.display = 'none';
+            return;
+        }
+
+        const watts = xmin + (mx - PL) / w * (xmax - xmin);
+        const faixa = faixas.find(f => Math.abs(f.watts_centro - watts) < 30);
+
+        if (faixa) {
+            let txt = faixa.faixa_watts + ' (' + faixa.n_intervalos + ' int.)\n';
+            percentis.forEach(pc => {
+                if (faixa[pc]) txt += labels_pc[pc] + ': ' + faixa[pc].p50.toFixed(1) + 's\n';
+            });
+            tooltip.textContent = txt;
+            tooltip.style.left = (evt.clientX + 10) + 'px';
+            tooltip.style.top = (evt.clientY + 10) + 'px';
+            tooltip.style.display = 'block';
+        } else {
+            tooltip.style.display = 'none';
+        }
+    };
+}
+
+async function carregarDinamica() {
+    const modalidade = document.getElementById('dinModalidade').value;
+    const metrica = document.getElementById('dinMetrica').value;
+    const fase = document.getElementById('dinFase').value;
+    const bin = document.getElementById('dinBin').value;
+    
+    const url = '/api/fisiologia/dinamica_resposta?modalidade=' + modalidade + '&metrica=' + metrica + '&fase=' + fase + '&largura_bin=' + bin;
+
+    try {
+        const d = await fetch(url).then(r => r.json());
+        DINAMICA = d;
+        drawDinamica();
+    } catch (e) {
+        DINAMICA = {status: 'erro', mensagem: e.message};
+        drawDinamica();
+    }
+}
+
+function init_dinamica() {
+    [document.getElementById('dinModalidade'), document.getElementById('dinMetrica'), document.getElementById('dinFase'), document.getElementById('dinBin')].forEach(el => {
+        if (el) el.addEventListener('change', carregarDinamica);
+    });
+    carregarDinamica();
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+        this.classList.add('active');
+        const tabName = this.dataset.tab;
+        const tabEl = document.getElementById(tabName);
+        if (tabEl) tabEl.style.display = 'block';
+        if (tabName === 'tab_dinamica') setTimeout(init_dinamica, 100);
+    });
+});
+
+
 load();
 """
 def api_data():
@@ -829,6 +1001,98 @@ def api_data():
     except Exception as e:
         return jsonify({'status': 'erro', 'modalidades': []})
     return jsonify({'status': 'ok', 'modalidades': modalidades, 'agregacoes_validas': AGREGACOES_VALIDAS})
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE C — Dinâmica de Resposta
+# ══════════════════════════════════════════════════════════════════════════════
+
+def dinamica_resposta(modalidade, metrica, fase, largura_bin_manual=50, min_n_total=15):
+    """Retorna dinâmica de resposta (lag/rec) por faixa de watts."""
+    try:
+        conn = _conn()
+    except Exception as e:
+        return {'status': 'erro', 'mensagem': str(e)}
+    
+    percentis = ['50', '75', '90'] if fase == 'lag' else ['50', '75']
+    
+    colunas_esperadas = [f'{fase}_{metrica}_{p}' for p in percentis]
+    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(fisiologia_intervalos)")}
+    colunas_ok = [c for c in colunas_esperadas if c in existing_cols]
+    
+    if not colunas_ok:
+        return {'status': 'erro', 'mensagem': f'Colunas não encontradas'}
+    
+    cols_sql = ', '.join(colunas_ok)
+    query = f"SELECT watts_medio, {cols_sql} FROM fisiologia_intervalos WHERE modalidade=? AND valido=1 ORDER BY watts_medio"
+    
+    try:
+        linhas = conn.execute(query, (modalidade,)).fetchall()
+    except Exception as e:
+        return {'status': 'erro', 'mensagem': str(e)}
+    
+    if not linhas:
+        return {'status': 'erro', 'mensagem': f'Sem dados'}
+    
+    watts = np.array([l[0] for l in linhas if l[0] is not None])
+    if len(watts) == 0:
+        return {'status': 'erro', 'mensagem': 'Sem watts'}
+    
+    wmin, wmax = float(watts.min()), float(watts.max())
+    inicio = int(wmin // largura_bin_manual) * largura_bin_manual
+    fim = int(wmax // largura_bin_manual) * largura_bin_manual
+    if fim == inicio:
+        fim += largura_bin_manual
+    
+    limites = list(np.arange(inicio, fim + largura_bin_manual, largura_bin_manual))
+    faixas = []
+    
+    for i in range(len(limites) - 1):
+        w_min, w_max = limites[i], limites[i+1]
+        w_centro = (w_min + w_max) / 2.0
+        
+        idxs = [j for j, l in enumerate(linhas) if l[0] is not None and w_min <= l[0] < w_max]
+        
+        if len(idxs) < min_n_total:
+            continue
+        
+        faixa = {
+            'faixa_watts': f'{int(w_min)}-{int(w_max)}W',
+            'watts_centro': w_centro,
+            'n_intervalos': len(idxs),
+        }
+        
+        for p_idx, perc in enumerate(percentis):
+            valores = []
+            for j in idxs:
+                v = linhas[j][1 + percentis.index(perc)]
+                if v is not None and np.isfinite(v):
+                    valores.append(float(v))
+            
+            if valores:
+                faixa[perc] = {
+                    'p50': float(np.median(valores)),
+                    'p75': float(np.percentile(valores, 75)) if len(valores) > 1 else float(np.median(valores)),
+                    'p90': float(np.percentile(valores, 90)) if len(valores) > 2 else float(np.median(valores)),
+                }
+        
+        n_com_dados = sum(1 for j in idxs if linhas[j][1 + percentis.index(percentis[0])] is not None)
+        faixa['frac_atingiu_plateau'] = n_com_dados / len(idxs) if len(idxs) > 0 else 0
+        
+        faixas.append(faixa)
+    
+    if not faixas:
+        return {'status': 'erro', 'mensagem': f'Nenhuma faixa com dados'}
+    
+    return {
+        'status': 'ok',
+        'faixas': faixas,
+        'percentis': percentis,
+        'metrica': metrica,
+        'fase': fase,
+    }
+
 
 def render():
     from flask import render_template_string

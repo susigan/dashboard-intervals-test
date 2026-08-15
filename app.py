@@ -974,6 +974,58 @@ def api_dinamica_resposta():
         }), 500
 
 
+
+
+@app.route('/api/aquecimento/dados')
+def api_aquecimento_dados():
+    """Retorna dados de aquecimento para exibição."""
+    try:
+        import sys
+        sys.path.insert(0, './utils')
+        from aquecimento_db import get_db
+        
+        db = get_db()
+        sessoes = db.listar_todas()
+        
+        return jsonify({
+            'status': 'ok',
+            'sessoes': sessoes,
+            'total': len(sessoes)
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'erro',
+            'mensagem': str(e)
+        }), 500
+
+@app.route('/api/aquecimento/sessao/<activity_id>')
+def api_aquecimento_sessao(activity_id):
+    """Retorna dados de aquecimento de uma atividade específica."""
+    try:
+        import sys
+        sys.path.insert(0, './utils')
+        from aquecimento_db import get_db
+        
+        db = get_db()
+        sessao = db.obter_sessao(activity_id)
+        
+        if not sessao:
+            return jsonify({
+                'status': 'erro',
+                'mensagem': 'Sessão não encontrada'
+            }), 404
+        
+        return jsonify({
+            'status': 'ok',
+            'sessao': sessao
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'erro',
+            'mensagem': str(e)
+        }), 500
+
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))
     print(f"Starting server on port {port}")

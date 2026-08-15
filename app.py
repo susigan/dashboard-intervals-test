@@ -1,24 +1,31 @@
 """
-APP.PY — VERSÃO COMPLETA COM AQUECIMENTO INTEGRADO
+APP.PY — VERSÃO FINAL COMPLETA COM AQUECIMENTO
+Todas as rotas, rota raiz, sem erros
 """
 
-from flask import Flask, jsonify, request, render_template_string
+from flask import Flask, jsonify, request
 from datetime import datetime, timedelta
-import json
 import sys
 
 app = Flask(__name__)
 
-# ===== IMPORTS AQUECIMENTO =====
+# ===== IMPORTS =====
 sys.path.insert(0, './utils')
 import aquecimento_db as aq_db
 
-# ===== IMPORTS DOS TABS EXISTENTES =====
 from tabs import tab_metabol
-# Adicionar outros tabs conforme necessário
-# from tabs import tab_recovery
-# from tabs import tab_wellness
-# etc.
+
+# ===== ROTA RAIZ =====
+
+@app.route('/')
+def index():
+    """Rota raiz - health check."""
+    return jsonify({
+        'status': 'ok',
+        'app': 'ATHELTICA',
+        'version': '1.0',
+        'timestamp': datetime.now().isoformat()
+    })
 
 # ===== ROTAS AQUECIMENTO =====
 
@@ -64,7 +71,6 @@ def api_aquecimento_sessao(activity_id):
 def api_aquecimento_calibrar():
     """Calibra aquecimento com datas específicas."""
     try:
-        # Obter dados (GET ou POST)
         if request.method == 'GET':
             modalidade = request.args.get('modalidade')
             datas_str = request.args.get('datas', '')
@@ -82,14 +88,12 @@ def api_aquecimento_calibrar():
                 'mensagem': 'modalidade e datas obrigatórios'
             }), 400
         
-        # Importar analisador
         from aquecimento_analyzer import AquecimentoAnalyzer
         import drive_db_fisiologia as ddf
         
         conn = ddf.get_conn()
         atividades_para_processar = []
         
-        # Procurar atividades por data + modalidade
         for data_str in datas:
             try:
                 if '/' in data_str:
@@ -113,7 +117,6 @@ def api_aquecimento_calibrar():
             except ValueError:
                 pass
         
-        # Remover duplicatas
         atividades_para_processar = list(set(atividades_para_processar))
         
         if not atividades_para_processar:
@@ -123,7 +126,6 @@ def api_aquecimento_calibrar():
                 'total': 0
             }), 200
         
-        # Processar cada atividade
         processadas = 0
         aquecimentos_detectados = 0
         detalhes = []
@@ -200,6 +202,17 @@ def api_metabolismo():
     """API do tab Metabolismo."""
     return tab_metabol.api_data()
 
+@app.route('/api/fisiologia/processar')
+def api_fisiologia_processar():
+    """Processa lote de atividades com worker."""
+    try:
+        import fisiologia_worker
+        n = request.args.get('n', 10, type=int)
+        resultado = fisiologia_worker.processar_lote(n)
+        return jsonify(resultado)
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
 @app.route('/api/fisiologia/perfil_robusto/<modalidade>')
 def api_fisiologia_perfil_robusto(modalidade):
     """API: Perfil metabolico robusto por modalidade."""
@@ -274,17 +287,6 @@ def api_fisiologia_evolucao_robusta():
             'agregacao': agregacao,
             'dados': [dict(zip([desc[0] for desc in conn.execute(sql, (modalidade, watts_min, watts_max)).description], r)) for r in resultados]
         })
-    except Exception as e:
-        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
-@app.route('/api/fisiologia/processar')
-def api_fisiologia_processar():
-    """Processa lote de atividades com worker."""
-    try:
-        import fisiologia_worker
-        n = request.args.get('n', 10, type=int)
-        resultado = fisiologia_worker.processar_lote(n)
-        return jsonify(resultado)
     except Exception as e:
         return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
 

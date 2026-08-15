@@ -821,6 +821,74 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   document.getElementById(tabName).classList.add('active');
  });
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// FASE B — Preenchimento dinâmico dos dropdowns com agregacoes_validas
+// ══════════════════════════════════════════════════════════════════════════
+
+let AGREGACOES_VALIDAS = {};
+
+async function carregarAgregacoes() {
+    // Fetch /api/metabol e preenche os dropdowns com agregacoes_validas
+    try {
+        const resp = await fetch('/api/metabol');
+        const dados = await resp.json();
+        
+        if (dados.agregacoes_validas) {
+            AGREGACOES_VALIDAS = dados.agregacoes_validas;
+            console.log('[FASE B] AGREGACOES_VALIDAS:', AGREGACOES_VALIDAS);
+            
+            // Preencher cada dropdown
+            preencherDropdownsAgregacoes();
+        }
+    } catch (e) {
+        console.warn('[FASE B] Erro ao carregar agregacoes:', e);
+        AGREGACOES_VALIDAS = {};  // fallback vazio
+    }
+}
+
+function preencherDropdownsAgregacoes() {
+    // Preenche os dropdowns com as opções de agregação para cada métrica
+    const metricas = ['hr', 'resp', 'smo2', 'thb', 'dfa1'];
+    
+    for (const metrica of metricas) {
+        const selectId = 'sel_' + metrica;  // ex: sel_hr, sel_resp, etc
+        const selectEl = document.getElementById(selectId);
+        
+        if (!selectEl) {
+            console.warn('[FASE B] Dropdown ' + selectId + ' não encontrado');
+            continue;
+        }
+        
+        const opcoes = AGREGACOES_VALIDAS[metrica] || ['avg'];  // fallback
+        
+        // Guardar valor actual antes de limpar
+        const valorAtual = selectEl.value;
+        
+        // Limpar e refazer opções
+        selectEl.innerHTML = '';
+        for (const opcao of opcoes) {
+            const opt = document.createElement('option');
+            opt.value = opcao;
+            opt.textContent = opcao.charAt(0).toUpperCase() + opcao.slice(1);
+            selectEl.appendChild(opt);
+        }
+        
+        // Restaurar valor actual se ainda for válido
+        if (opcoes.includes(valorAtual)) {
+            selectEl.value = valorAtual;
+        } else {
+            selectEl.value = opcoes[0];  // primeira opção disponível
+        }
+        
+        console.log('[FASE B] ' + metrica + ': ' + opcoes.join(', '));
+    }
+}
+
+// Chamar assim que a página carregue
+document.addEventListener('DOMContentLoaded', carregarAgregacoes);
+
+
 load();
 """
 def api_data():

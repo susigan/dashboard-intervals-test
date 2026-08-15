@@ -89,7 +89,7 @@ def modalidades_disponiveis():
         SELECT modalidade, COUNT(*) as n, COUNT(DISTINCT data) as n_dias, 
                COUNT(DISTINCT activity_id) as n_atividades
         FROM fisiologia_intervalos
-        WHERE valido = 1 AND intervalo_valido_analise = 1 AND watts_medio IS NOT NULL
+        WHERE valido = 1 AND watts_medio IS NOT NULL
         GROUP BY modalidade
         ORDER BY modalidade
     """).fetchall()
@@ -106,8 +106,7 @@ def perfil_por_modalidade(modalidade, min_n_total=15, n_faixas=10):
     linhas = conn.execute(
         f"""SELECT watts_medio, data, activity_id, {colunas}
            FROM fisiologia_intervalos
-           WHERE modalidade = ? AND valido = 1 AND intervalo_valido_analise = 1 
-                 AND watts_medio IS NOT NULL
+           WHERE modalidade = ? AND valido = 1 AND watts_medio IS NOT NULL
            ORDER BY watts_medio""",
         (modalidade,)
     ).fetchall()
@@ -194,7 +193,7 @@ def evolucao_temporal(modalidade, campo, watts_min=None, watts_max=None,
         return {'status': 'erro', 'mensagem': f'campo desconhecido: {campo}'}
 
     conn = _conn()
-    cond = ["modalidade = ?", "valido = 1", "intervalo_valido_analise = 1", f"{campo} IS NOT NULL"]
+    cond = ["modalidade = ?", "valido = 1", f"{campo} IS NOT NULL"]
     params = [modalidade]
 
     if watts_min is not None:

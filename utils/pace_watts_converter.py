@@ -1,130 +1,164 @@
-"""pace_watts_converter.py — Conversão bidirecional watts ↔ pace (Concept2)."""
+"""dfa_artifacts_analyzer.py — Análise de DFA-α1 com correção de artefatos."""
 
 import numpy as np
-from typing import Tuple, Optional, List, Dict
+from typing import Tuple, Dict, List, Optional
+from dataclasses import dataclass
 
 
-class PaceWattsConverter:
-    """Conversor watts ↔ pace para Concept2 Rowing/Ski (fórmula Pépin & Beaver 1992)."""
-    
-    # Fórmula: watts = CONCEPT2_FACTOR × (500 / pace_segundos)³
-    CONCEPT2_FACTOR = 2.8
-    
-    # Limites fisiológicos por modalidade
-    LIMITS = {
-        'Row': {'pace_min_s': 60, 'pace_max_s': 180, 'watts_min': 30, 'watts_max': 600},
-        'Ski': {'pace_min_s': 55, 'pace_max_s': 200, 'watts_min': 20, 'watts_max': 500},
-        'Bike': {'pace_min_s': 40, 'pace_max_s': 300, 'watts_min': 30, 'watts_max': 800},
-    }
-    
-    def __init__(self):
-        pass
-    
-    def watts_para_pace(self, watts: float, modalidade: str = 'Row') -> Tuple[int, int]:
-        """Converter watts para pace (min, seg).
-        
-        Returns: (minutos, segundos)
-        """
-        if not self._validar_watts(watts, modalidade):
-            return (0, 0)
-        
-        # pace = 500 / (watts / 2.8)^(1/3)
-        pace_segundos = 500.0 / ((watts / self.CONCEPT2_FACTOR) ** (1/3))
-        
-        minutos = int(pace_segundos // 60)
-        segundos = int(pace_segundos % 60)
-        
-        return (minutos, segundos)
-    
-    def pace_para_watts(self, minutos: int, segundos: int, modalidade: str = 'Row') -> float:
-        """Converter pace (min, seg) para watts."""
-        pace_segundos = minutos * 60 + segundos
-        
-        if not self._validar_pace(pace_segundos, modalidade):
-            return 0.0
-        
-        # watts = 2.8 × (500 / pace)³
-        watts = self.CONCEPT2_FACTOR * ((500.0 / pace_segundos) ** 3)
-        
-        return round(watts, 1)
-    
-    def watts_para_pace_string(self, watts: float, modalidade: str = 'Row') -> str:
-        """Converter watts para string "M:SS"."""
-        if not self._validar_watts(watts, modalidade):
-            return ''
-        
-        minutos, segundos = self.watts_para_pace(watts, modalidade)
-        return f'{minutos}:{segundos:02d}'
-    
-    def pace_string_para_watts(self, pace_str: str, modalidade: str = 'Row') -> float:
-        """Converter string "M:SS" para watts."""
-        try:
-            partes = pace_str.split(':')
-            minutos = int(partes[0])
-            segundos = int(partes[1])
-            return self.pace_para_watts(minutos, segundos, modalidade)
-        except (ValueError, IndexError):
-            return 0.0
-    
-    def serie_watts_para_pace(self, 
-                             array_watts: List[float], 
-                             modalidade: str = 'Row') -> Tuple[List[float], List[str]]:
-        """Converter array de watts para paces (segundos e strings)."""
-        pace_seg = []
-        pace_str = []
-        
-        for w in array_watts:
-            m, s = self.watts_para_pace(w, modalidade)
-            pace_seg.append(m * 60.0 + s)
-            pace_str.append(f'{m}:{s:02d}')
-        
-        return (pace_seg, pace_str)
-    
-    def normalizar_axis_pace(self, array_seg: List[float]) -> Tuple[List[float], List[str]]:
-        """Converter array de segundos em labels "M:SS" para gráfico."""
-        labels = []
-        for seg in array_seg:
-            m = int(seg // 60)
-            s = int(seg % 60)
-            labels.append(f'{m}:{s:02d}')
-        return (array_seg, labels)
-    
-    def _validar_watts(self, watts: float, modalidade: str) -> bool:
-        """Validar se watts está dentro dos limites."""
-        if modalidade not in self.LIMITS:
-            return False
-        
-        limites = self.LIMITS[modalidade]
-        return limites['watts_min'] <= watts <= limites['watts_max']
-    
-    def _validar_pace(self, pace_segundos: float, modalidade: str) -> bool:
-        """Validar se pace está dentro dos limites."""
-        if modalidade not in self.LIMITS:
-            return False
-        
-        limites = self.LIMITS[modalidade]
-        return limites['pace_min_s'] <= pace_segundos <= limites['pace_max_s']
+@dataclass
+class DFAValidityResult:
+    dfa1_original: float
+    dfa1_normalizado: float
+    artifact_percent: float
+    esta_valido: bool
+    motivo: str
+    confidence: float
+    flags: List[str]
 
 
-class PaceWattsValidator:
-    """Validador de conversões pace ↔ watts."""
+class DFAArtifactAnalyzer:
+    """Analisador de DFA-α1 com detecção de artefatos via HR/potência."""
     
-    def __init__(self, modalidade: str = 'Row'):
+    def __init__(self, 
+                 modalidade: str = 'Row',
+                 artifact_threshold_invalido: float = 10.0,
+                 artifact_threshold_duvidoso: float = 5.0,
+                 dfa_range_valido: Tuple[float, float] = (0.5, 2.0)):
         self.modalidade = modalidade
-        self.converter = PaceWattsConverter()
+        self.artifact_threshold_invalido = artifact_threshold_invalido
+        self.artifact_threshold_duvidoso = artifact_threshold_duvidoso
+        self.dfa_range_valido = dfa_range_valido
+        self._baseline_media = None
+        self._baseline_sd = None
+        self._n_amostras_baseline = 0
     
-    def validar_redondo(self, watts: float, tolerancia: float = 2.0) -> Dict:
-        """Validar que conversão watts → pace → watts é consistente."""
-        m, s = self.converter.watts_para_pace(watts, self.modalidade)
-        watts_volta = self.converter.pace_para_watts(m, s, self.modalidade)
+    def calibrar_com_historico(self, 
+                               dfa1_historico: List[float],
+                               modalidade_historico: List[str],
+                               artifact_historico: List[float]) -> Dict:
+        """Calibrar baseline pessoal a partir de histórico válido."""
+        validos = [
+            dfa1 for dfa1, mod, art in zip(
+                dfa1_historico, modalidade_historico, artifact_historico
+            )
+            if (mod == self.modalidade and 
+                art < self.artifact_threshold_duvidoso and
+                self.dfa_range_valido[0] <= dfa1 <= self.dfa_range_valido[1])
+        ]
         
-        diferenca = abs(watts - watts_volta)
-        valido = diferenca <= tolerancia
+        if len(validos) < 10:
+            return {
+                'status': 'amostras_insuficientes',
+                'n': len(validos),
+            }
+        
+        self._baseline_media = float(np.mean(validos))
+        self._baseline_sd = float(np.std(validos, ddof=1))
+        self._n_amostras_baseline = len(validos)
         
         return {
-            'watts_original': round(watts, 1),
-            'pace': f'{m}:{s:02d}',
-            'watts_volta': round(watts_volta, 1),
-            'diferenca': round(diferenca, 1),
-            'valido': valido,
+            'status': 'calibrado',
+            'media': round(self._baseline_media, 3),
+            'sd': round(self._baseline_sd, 3),
+            'n': self._n_amostras_baseline,
+        }
+    
+    def analisar_intervalo(self,
+                          dfa1: float,
+                          hr_medio: float,
+                          hr_max: float,
+                          artifact_percent: Optional[float] = None,
+                          watts_medio: Optional[float] = None) -> DFAValidityResult:
+        """Analisar validade de um intervalo DFA-α1."""
+        flags = []
+        dfa1_norm = dfa1
+        confidence = 1.0
+        
+        if artifact_percent is None:
+            artifact_percent = self._estimar_artifacts_de_hr_dfa1(
+                dfa1, hr_medio, hr_max, watts_medio
+            )
+        
+        # Classificação por artefatos
+        if artifact_percent > self.artifact_threshold_invalido:
+            flags.append(f'dropout={artifact_percent:.1f}%')
+            esta_valido = False
+            motivo = f'Artefatos > {self.artifact_threshold_invalido}%'
+            confidence *= 0.3
+        elif artifact_percent > self.artifact_threshold_duvidoso:
+            flags.append(f'dropout={artifact_percent:.1f}% (duvidoso)')
+            esta_valido = False
+            motivo = f'Artefatos {artifact_percent:.1f}% — duvidoso'
+            confidence *= 0.6
+        else:
+            esta_valido = True
+            motivo = 'Sinal com qualidade aceitável'
+        
+        # Classificação por range DFA
+        if not (self.dfa_range_valido[0] <= dfa1 <= self.dfa_range_valido[1]):
+            flags.append(f'dfa1={dfa1:.2f} fora range {self.dfa_range_valido}')
+            esta_valido = False
+            motivo = f'DFA-α1 implausível ({dfa1:.2f})'
+            confidence *= 0.2
+        
+        # Comparação com baseline pessoal
+        if self._baseline_media is not None and esta_valido:
+            z_score = (dfa1 - self._baseline_media) / (self._baseline_sd + 1e-6)
+            if abs(z_score) > 2.0:
+                flags.append(f'z-score={z_score:.1f} (outlier)')
+                confidence *= 0.75
+        
+        return DFAValidityResult(
+            dfa1_original=round(float(dfa1), 4),
+            dfa1_normalizado=round(float(dfa1_norm), 4),
+            artifact_percent=round(float(artifact_percent), 1),
+            esta_valido=esta_valido,
+            motivo=motivo,
+            confidence=round(min(confidence, 1.0), 2),
+            flags=flags
+        )
+    
+    def _estimar_artifacts_de_hr_dfa1(self,
+                                      dfa1: float,
+                                      hr_medio: float,
+                                      hr_max: float,
+                                      watts_medio: Optional[float] = None) -> float:
+        """Estimar % artefatos via inconsistência HR ↔ DFA-α1 (heurística)."""
+        artifact_pct = 0.0
+        hr_baseline = {'Row': 50, 'Bike': 50, 'Ski': 48, 'Run': 50}.get(self.modalidade, 50)
+        
+        # HR elevado + DFA-α1 elevado (inconsistência)
+        if hr_medio > hr_baseline + 20 and dfa1 > 1.2:
+            artifact_pct += 5.0
+        
+        # HR baixo + DFA-α1 baixo (inconsistência)
+        if hr_medio < hr_baseline + 5 and dfa1 < 0.7:
+            artifact_pct += 3.0
+        
+        # DFA-α1 fora limites plausíveis
+        if dfa1 < 0.5 or dfa1 > 2.0:
+            artifact_pct += 4.0
+        
+        # Potência muito elevada + DFA-α1 elevado
+        if watts_medio is not None and watts_medio > 250 and dfa1 > 1.3:
+            artifact_pct += 3.0
+        
+        return min(artifact_pct, 25.0)
+    
+    def resumo_validacao(self, 
+                        resultados: List[DFAValidityResult]) -> Dict:
+        """Resumir estatísticas de validação."""
+        if not resultados:
+            return {'n': 0}
+        
+        n_validos = sum(1 for r in resultados if r.esta_valido)
+        n_invalidos = len(resultados) - n_validos
+        
+        return {
+            'n_total': len(resultados),
+            'n_validos': n_validos,
+            'n_invalidos': n_invalidos,
+            'pct_validos': round(100.0 * n_validos / len(resultados), 1),
+            'confidence_media': round(float(np.mean([r.confidence for r in resultados])), 2),
+            'artifact_medio': round(float(np.mean([r.artifact_percent for r in resultados])), 1),
         }

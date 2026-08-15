@@ -12,6 +12,8 @@ SLUG = 'metabol'
 # smo2_min_60s (sem smo2_max, smo2_avg!)
 # dfa1_clean (apenas um valor)
 METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1']
+
+AGREGACOES = ['min', 'avg', 'max']
 # MAP REAL: só os que existem!
 CAMPOS_DB = {
     'hr': {

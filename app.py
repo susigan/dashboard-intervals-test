@@ -139,6 +139,8 @@ def api_fisiologia_debug(activity_id):
     Exemplo: /api/fisiologia/debug/i174526190
     """
     try:
+        import traceback
+        print(f'[DEBUG] api_perfil_robusto chamada com modalidade={modalidade}', flush=True)
         import fisiologia_worker as fw
         return jsonify(fw.debug_dict(activity_id))
     except Exception as e:
@@ -195,7 +197,10 @@ def api_perfil_robusto(modalidade):
         return jsonify(resultado)
     except Exception as e:
         import traceback
-        return jsonify({'status': 'erro', 'erro': str(e), 'trace': traceback.format_exc()}), 500
+        msg = str(e)
+        trace = traceback.format_exc()
+        print(f'[ERROR] {msg}\n{trace}', flush=True)
+        return jsonify({'status': 'erro', 'erro': msg, 'trace': trace}), 500
 
 
 @app.route('/api/fisiologia/evolucao_robusta')
@@ -219,7 +224,10 @@ def api_evolucao_robusta():
         return jsonify(resultado)
     except Exception as e:
         import traceback
-        return jsonify({'status': 'erro', 'erro': str(e), 'trace': traceback.format_exc()}), 500
+        msg = str(e)
+        trace = traceback.format_exc()
+        print(f'[ERROR] {msg}\n{trace}', flush=True)
+        return jsonify({'status': 'erro', 'erro': msg, 'trace': trace}), 500
 
 
 def api_fisiologia_status():

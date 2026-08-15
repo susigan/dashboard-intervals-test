@@ -1,23 +1,17 @@
 """tab_metabol.py — CORRIGIDO: apenas campos que existem na BD."""
-
 from flask import jsonify, request
 import numpy as np
 import sqlite3
 from datetime import datetime
-
 import drive_db_fisiologia as ddf
 from tabs.base import page
-
 SLUG = 'metabol'
-
 # APENAS os campos que REALMENTE existem na BD:
 # hr_max_60s, hr_avg_60s (sem hr_min!)
 # resp_avg_60s (sem resp_min, resp_max!)
 # smo2_min_60s (sem smo2_max, smo2_avg!)
 # dfa1_clean (apenas um valor)
-
 METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1']
-
 # MAP REAL: só os que existem!
 CAMPOS_DB = {
     'hr': {
@@ -38,7 +32,6 @@ CAMPOS_DB = {
         # 'min', 'max' NÃO EXISTEM (é um único valor)
     },
 }
-
 # AGREGAÇÕES DISPONÍVEIS por métrica
 AGREGACOES_VALIDAS = {
     'hr': ['max', 'avg'],
@@ -46,32 +39,27 @@ AGREGACOES_VALIDAS = {
     'smo2': ['min'],
     'dfa1': ['avg'],
 }
-
 CORES_METAB = {
     'hr': '#E74C3C',
     'resp': '#1ABC9C',
     'smo2': '#F39C12',
     'dfa1': '#9B59B6',
 }
-
 LABELS_METAB = {
     'hr': 'HR (bpm)',
     'resp': 'Respiração (rpm)',
     'smo2': 'SmO₂ (%)',
     'dfa1': 'DFA-α1 (clean)',
 }
-
 LABELS_AGREGACAO = {
     'min': 'Mín',
     'max': 'Máx',
     'avg': 'Méd',
 }
-
 def _conn():
     conn = ddf.get_conn()
     conn.row_factory = sqlite3.Row
     return conn
-
 def _fmt_pace(segundos):
     """Segundos -> 'm:ss'. None se o valor nao fizer sentido."""
     if segundos is None:
@@ -83,28 +71,55 @@ def _fmt_pace(segundos):
     if not np.isfinite(segundos) or segundos <= 0 or segundos > 3600:
         return None
     return f'{int(segundos // 60)}:{int(segundos % 60):02d}'
-
-
+def _pace_da_faixa_concept2(watts_medio, modalidade):
+    """Calcula pace usando FÓRMULA Concepto2 baseada em WATTS.
+    
+    Isto é mais fiável que API porque watts vêm do sensor directamente.
+    Concepto2: pace(seg/500m) = 500 / ((watts/2.8)^(1/3))
+    """
+    if watts_medio is None or watts_medio <= 0:
+        return None
+    
+    try:
+        watts = float(watts_medio)
+        if watts <= 0:
+            return None
+        # Fórmula Concepto2 para segundos por 500m
+        pace_500m = 500.0 / ((watts / 2.8) ** (1.0/3.0))
+        
+        if not np.isfinite(pace_500m) or pace_500m <= 0 or pace_500m > 3600:
+            return None
+        
+        txt = _fmt_pace(pace_500m)
+        return f'{txt} /500m' if txt else None
+    except (ValueError, ZeroDivisionError):
+        return None
 def _pace_da_faixa(pace_s_km_mediano, modalidade):
     """Formata o pace medido para a unidade convencional da modalidade.
-
-    Row/Ski usam /500m (metade do pace/km). Run usa /km. Bike nao usa
-    pace — quem pedala pensa em watts e km/h, nao em min/km.
+    
+    Row/Ski: usam FÓRMULA Concepto2 (watts → pace)
+    Run: usa dados reais (API), com filtro de credibilidade
+    Bike: sem pace
     """
-    if pace_s_km_mediano is None:
-        return None
-
     if modalidade in ('Row', 'Ski'):
-        txt = _fmt_pace(pace_s_km_mediano / 2.0)
-        return f'{txt} /500m' if txt else None
-
+        return None  # Será calculado via _pace_da_faixa_concept2() baseado em watts
+    
     if modalidade == 'Run':
-        txt = _fmt_pace(pace_s_km_mediano)
+        if pace_s_km_mediano is None:
+            return None
+        try:
+            segundos = float(pace_s_km_mediano)
+        except (TypeError, ValueError):
+            return None
+        
+        # Filtro: pace >= 120s/km (2:00) é válido; < 120s é error
+        if not np.isfinite(segundos) or segundos < 120 or segundos > 3600:
+            return None
+        
+        txt = _fmt_pace(segundos)
         return f'{txt} /km' if txt else None
-
+    
     return None
-
-
 def modalidades_disponiveis():
     conn = _conn()
     resultado = conn.execute("""
@@ -119,7 +134,6 @@ def modalidades_disponiveis():
         {'modalidade': r['modalidade'], 'n': r['n'], 'n_dias': r['n_dias'], 'n_atividades': r['n_atividades']}
         for r in resultado
     ]
-
 def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largura_bin_manual=50):
     """
     Perfil com PONDERAÇÃO.
@@ -157,18 +171,14 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
            ORDER BY data DESC, activity_id DESC, interval_num DESC""",
         (modalidade,)
     ).fetchall()
-
     if len(linhas) < min_n_total:
         return {'status': 'dados_insuficientes', 'modalidade': modalidade, 'n_disponivel': len(linhas)}
-
     n_linhas = len(linhas)
     corte = int(n_linhas * 0.3)
     pesos = np.ones(n_linhas)
     pesos[:corte] = 1.5
-
     watts = np.array([l['watts_medio'] for l in linhas])
     wmin, wmax = float(watts.min()), float(watts.max())
-
     # Gerar bins — APENAS até a última faixa com dados
     # Isto evita espaço vazio à direita (problema do Run)
     inicio = int(wmin // largura_bin_manual) * largura_bin_manual
@@ -176,7 +186,6 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
     if fim == inicio:
         fim += largura_bin_manual
     limites = list(np.arange(inicio, fim + largura_bin_manual, largura_bin_manual))
-
     faixas_saida = []
     for i in range(len(limites) - 1):
         lo, hi = limites[i], limites[i + 1]
@@ -185,7 +194,6 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
         idxs = np.where(mask)[0]
         if len(idxs) == 0:
             continue
-
         watts_centro = round((lo + hi) / 2, 1)
         faixa = {
             'faixa_watts': f'{lo:.0f}-{hi:.0f}W',
@@ -195,27 +203,35 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
             'n_intervalos': len(idxs),
         }
         
-        # FASE A — pace medido (mediana da faixa), nao formula
-        # Opcional: pace_s_km pode não existir se o worker ainda não correu
-        paces = []
-        for j in idxs:
-            try:
-                v = linhas[j].get('pace_s_km') if hasattr(linhas[j], 'get') else linhas[j]['pace_s_km']
-            except (IndexError, KeyError, TypeError, AttributeError):
-                v = None
-            if v is not None and np.isfinite(v):
-                paces.append(float(v))
-        if paces:
-            # Usar a mediana dos paces válidos
-            # Se houver pelo menos 1, já é credível
-            try:
-                pace_mediano = float(np.median(paces))
-                pace_txt = _pace_da_faixa(pace_mediano, modalidade)
-                if pace_txt:
-                    faixa['pace_medio'] = pace_txt
-                    faixa['n_pace'] = len(paces)
-            except (ValueError, TypeError):
-                pass  # Sem pace se algo der errado
+        # FASE A — pace por modalidade
+        # Row/Ski: FÓRMULA Concepto2 (watts → pace), mais confiável
+        # Run: dados API com FILTRO (pace >= 2:00/km)
+        if modalidade in ('Row', 'Ski'):
+            # Concepto2: pace = 500 / ((watts/2.8)^(1/3))
+            pace_txt = _pace_da_faixa_concept2(watts_centro, modalidade)
+            if pace_txt:
+                faixa['pace_medio'] = pace_txt
+        elif modalidade == 'Run':
+            # Run: usar dados reais da API, filtrar valores inválidos
+            paces = []
+            for j in idxs:
+                try:
+                    v = linhas[j].get('pace_s_km') if hasattr(linhas[j], 'get') else linhas[j]['pace_s_km']
+                except (IndexError, KeyError, TypeError, AttributeError):
+                    v = None
+                if v is not None and np.isfinite(v):
+                    # Filtro: apenas pace >= 120s (>= 2:00/km)
+                    if float(v) >= 120:
+                        paces.append(float(v))
+            if paces:
+                try:
+                    pace_mediano = float(np.median(paces))
+                    pace_txt = _pace_da_faixa(pace_mediano, modalidade)
+                    if pace_txt:
+                        faixa['pace_medio'] = pace_txt
+                        faixa['n_pace'] = len(paces)
+                except (ValueError, TypeError):
+                    pass
         
         # Para cada métrica selecionada (VALIDADA)
         for chave_unica, coluna_db in para_buscar.items():
@@ -249,7 +265,6 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
                 }
         
         faixas_saida.append(faixa)
-
     return {
         'status': 'ok',
         'modalidade': modalidade,
@@ -257,7 +272,6 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
         'campos_selecionados': campos_selecionados,
         'faixas': faixas_saida,
     }
-
 def evolucao_temporal(modalidade, metrica, agregacao, watts_min=None, watts_max=None, min_por_periodo=3):
     """Evolução temporal com agregação dinâmica."""
     
@@ -270,28 +284,23 @@ def evolucao_temporal(modalidade, metrica, agregacao, watts_min=None, watts_max=
     conn = _conn()
     cond = ["modalidade = ?", "valido = 1", f"{coluna_db} IS NOT NULL"]
     params = [modalidade]
-
     if watts_min is not None:
         cond.append("watts_medio >= ?")
         params.append(watts_min)
     if watts_max is not None:
         cond.append("watts_medio <= ?")
         params.append(watts_max)
-
     linhas = conn.execute(
         f"""SELECT data, {coluna_db} as valor FROM fisiologia_intervalos
            WHERE {' AND '.join(cond)} ORDER BY data""",
         tuple(params)
     ).fetchall()
-
     if not linhas:
         return {'status': 'dados_insuficientes', 'n_disponivel': 0}
-
     grupos = {}
     for l in linhas:
         p = l['data'][:7]
         grupos.setdefault(p, []).append(l['valor'])
-
     saida = []
     for periodo in sorted(grupos.keys()):
         vs = [v for v in grupos[periodo] if v is not None and np.isfinite(v)]
@@ -308,24 +317,19 @@ def evolucao_temporal(modalidade, metrica, agregacao, watts_min=None, watts_max=
             'p90': round(float(np.percentile(vs_arr, 90)), 2),
             'n': len(vs),
         })
-
     return {
         'status': 'ok',
         'metrica': metrica,
         'agregacao': agregacao,
         'periodos': saida,
     }
-
 BODY = r"""
 <h1>Metabolismo</h1>
-
 <div class="tabs" style="border-bottom:1px solid #21262d; margin-bottom:20px;">
   <button class="tab-btn active" data-tab="perfil_watts">Perfil por Watts</button>
   <button class="tab-btn" data-tab="outras">Outras Análises</button>
 </div>
-
 <div id="perfil_watts" class="tab-content active">
-
 <div class="controls">
   <label class="sel">Modalidade
     <select id="modalidade"></select></label>
@@ -336,16 +340,13 @@ BODY = r"""
       <option value="100">100W</option>
     </select></label>
 </div>
-
 <div class="controls" id="agregacaoControls"></div>
-
 <h2>Perfil metabólico — ponderado (últimos 30% com 1.5x peso)</h2>
 <div id="tooltip" style="position:absolute;background:#000;color:#fff;padding:8px;border-radius:3px;font-size:11px;display:none;z-index:1000;pointer-events:none;border:1px solid #666;white-space:nowrap;"></div>
 <div class="legend" id="lgPerfil"></div>
 <div class="chartbox">
   <canvas id="chPerfil" height="300"></canvas>
 </div>
-
 <h2>Evolução ao longo do tempo</h2>
 <div class="controls">
   <label class="sel">Métrica
@@ -359,13 +360,10 @@ BODY = r"""
 <div class="chartbox">
   <canvas id="chEvolucao" height="240"></canvas>
 </div>
-
 </div>
-
 <div id="outras" class="tab-content" style="display:none;">
   <p style="color:#8b949e;">Outras análises virão aqui...</p>
 </div>
-
 <style>
 .tabs { display:flex; gap:20px; }
 .tab-btn { background:none; border:none; color:#8b949e; padding:10px 0; cursor:pointer; font-size:14px; border-bottom:2px solid transparent; }
@@ -374,14 +372,12 @@ BODY = r"""
 .tab-content.active { display:block; }
 </style>
 """
-
 JS = r"""
 let MODALIDADES = [];
 let PERFIL = null;
 let EVOLUCAO = null;
 let isLoadingPerfil = false;
 let isLoadingEvolucao = false;
-
 const CORES_METAB = {
  hr:'#E74C3C', resp:'#1ABC9C', smo2:'#F39C12', dfa1:'#9B59B6',
 };
@@ -392,7 +388,6 @@ const LABELS_AGREGACAO = {
  min:'Mín', max:'Máx', avg:'Méd',
 };
 const METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1'];
-
 // AGREGAÇÕES REAIS (apenas as que existem na BD)
 const AGREGACOES_VALIDAS = {
  hr: ['max', 'avg'],
@@ -400,10 +395,8 @@ const AGREGACOES_VALIDAS = {
  smo2: ['min'],
  dfa1: ['avg'],
 };
-
 let chartState = {chPerfil: {}, chEvolucao: {}};
 let camposSelecionados = {hr:'max', resp:'avg', smo2:'min', dfa1:'avg'};
-
 function ctx(canvasId, h){
  const canvas = document.getElementById(canvasId);
  if(!canvas) return null;
@@ -413,25 +406,21 @@ function ctx(canvasId, h){
  const g = canvas.getContext('2d');
  return {g: g, W: canvas.width, H: canvas.height};
 }
-
 function noData(g, W, H, msg){
  g.fillStyle = '#555';
  g.font = '14px sans-serif';
  g.textAlign = 'center';
  g.fillText(msg, W/2, H/2);
 }
-
 function ligado(canvasId, k){
  if(!chartState[canvasId]) chartState[canvasId] = {};
  if(chartState[canvasId][k] === undefined) chartState[canvasId][k] = true;
  return chartState[canvasId][k];
 }
-
 function alternar(canvasId, k){
  if(!chartState[canvasId]) chartState[canvasId] = {};
  chartState[canvasId][k] = !chartState[canvasId][k];
 }
-
 function drawPerfil(){
  console.log('[drawPerfil] Começando. PERFIL:', PERFIL?.status);
  const o = ctx('chPerfil', 300);
@@ -546,7 +535,6 @@ function drawPerfil(){
  faixas.forEach(function(f){
   g.fillText(Math.round(f.watts_centro)+'W', X(f.watts_centro), H-20);
  });
-
  // FASE A — faixa de pace medido, por cima do eixo dos watts
  if(temPace){
   g.fillStyle = '#FF6B6B';
@@ -608,7 +596,6 @@ function drawPerfil(){
   }
  };
 }
-
 function drawEvolucao(){
  const o = ctx('chEvolucao', 240);
  if(!o) return;
@@ -697,7 +684,6 @@ function drawEvolucao(){
   g.fillText(val, PL-5, y+3);
  }
 }
-
 async function carregarPerfil(){
  if(isLoadingPerfil) return;
  isLoadingPerfil = true;
@@ -724,7 +710,6 @@ async function carregarPerfil(){
   isLoadingPerfil = false;
  }
 }
-
 async function carregarEvolucao(){
  if(isLoadingEvolucao) return;
  isLoadingEvolucao = true;
@@ -751,7 +736,6 @@ async function carregarEvolucao(){
   isLoadingEvolucao = false;
  }
 }
-
 async function load(){
  try{
   const d = await fetch('/api/metabol').then(r => r.json());
@@ -812,7 +796,6 @@ async function load(){
   console.error('[load] ERRO:', e);
  }
 }
-
 document.querySelectorAll('.tab-btn').forEach(btn => {
  btn.addEventListener('click', function(){
   const tabName = this.dataset.tab;
@@ -822,17 +805,14 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   document.getElementById(tabName).classList.add('active');
  });
 });
-
 load();
 """
-
 def api_data():
     try:
         modalidades = modalidades_disponiveis()
     except Exception as e:
         return jsonify({'status': 'erro', 'modalidades': []})
     return jsonify({'status': 'ok', 'modalidades': modalidades, 'agregacoes_validas': AGREGACOES_VALIDAS})
-
 def render():
     from flask import render_template_string
     return render_template_string(page(SLUG, 'Metabolismo', BODY, JS))

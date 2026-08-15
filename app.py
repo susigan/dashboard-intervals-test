@@ -1,75 +1,769 @@
-"""
-APP.PY — VERSÃO FINAL COMPLETA COM AQUECIMENTO
-Todas as rotas, rota raiz, sem erros
+#!/usr/bin/env python3
+"""Intervals.icu Dashboard — servidor Flask.
+
+Estrutura:
+  app.py          rotas
+  config.py       constantes (TYPE_MAP, cores, campos)
+  api_client.py   cliente da API + cache + normalizacao
+  helpers.py      ActivityProcessor
+  tabs/           uma tab por ficheiro
 """
 
-from flask import Flask, jsonify, request
-from datetime import datetime, timedelta
+import os
 import sys
+import logging
+from flask import jsonify, request, Response
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from config import API_KEY, ATHLETE_ID, ANOS_HISTORICO
+
+if not API_KEY:
+    print("ERRO: INTERVALS_ICU_API_KEY nao configurada")
+    sys.exit(1)
+
+print(f"Config carregada | ATHLETE_ID: {ATHLETE_ID} | historico: {ANOS_HISTORICO} anos")
+
+from flask import Flask
+import db
+import sync
+from datetime import datetime, timedelta
+from api_client import (fetch_activities, cache_info, invalidar_cache,
+                        fetch_da_api)
+from tabs import (tab_volume, tab_atividades, tab_detalhe,
+                  tab_recordes, tab_pmc, tab_corporal)
+
+if db.ENABLED:
+    db.init_schema()
+    print(f"Fonte de dados: {db.DRIVER} (com a API como fallback)")
+else:
+    print("Fonte de dados: API Intervals.icu (DATABASE_URL nao definida)")
 
 app = Flask(__name__)
+app.config['JSON_SORT_KEYS'] = False
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
-# ===== IMPORTS =====
-sys.path.insert(0, './utils')
-import aquecimento_db as aq_db
 
-from tabs import tab_metabol
-
-# ===== ROTA RAIZ =====
+# ── Paginas ───────────────────────────────────────────────────────────────
 
 @app.route('/')
-def index():
-    """Rota raiz - health check."""
+def page_volume():
+    return tab_volume.render()
+
+
+@app.route('/pmc')
+def page_pmc():
+    return tab_pmc.render()
+
+
+@app.route('/corporal')
+def page_corporal():
+    return tab_corporal.render()
+
+
+@app.route('/atividades')
+def page_atividades():
+    return tab_atividades.render()
+
+
+@app.route('/activity/<activity_id>')
+def page_detalhe(activity_id):
+    return tab_detalhe.render(activity_id)
+
+
+# ── API por tab ───────────────────────────────────────────────────────────
+
+@app.route('/api/volume')
+def api_volume():
+    return tab_volume.api_data()
+
+
+@app.route('/api/pmc')
+def api_pmc():
+    return tab_pmc.api_data()
+
+
+@app.route('/api/corporal')
+def api_corporal():
+    return tab_corporal.api_data()
+
+
+@app.route('/api/debug/sheets')
+def api_debug_sheets():
+    """Estado da ligacao aos Google Sheets e colunas reconhecidas."""
+    return tab_pmc.api_sheets_debug()
+
+
+@app.route('/api/atividades')
+def api_atividades():
+    return tab_atividades.api_data()
+
+
+@app.route('/api/activity/<activity_id>/full')
+def api_activity_full(activity_id):
+    return tab_detalhe.api_full(activity_id)
+
+
+# ── Debug e servico ───────────────────────────────────────────────────────
+
+@app.route('/api/activity/<activity_id>/debug')
+def api_activity_debug(activity_id):
+    return tab_detalhe.api_debug(activity_id)
+
+
+# ── Perfil fisiológico (lag/recovery SmO2/tHb/HR/respiração) ────────────────
+#
+# Imports feitos DENTRO das funções (lazy) e envolvidos em try/except: se
+# fisiologia_worker.py tiver algum problema, só estas 2 rotas falham
+# (devolvem erro 500 em JSON) — o resto do dashboard continua de pé.
+
+@app.route('/api/fisiologia/debug/<activity_id>')
+def api_fisiologia_debug(activity_id):
+    """Mostra, para 1 atividade, como os intervalos foram interpretados:
+    resposta bruta da API, classificação WORK/REC calculada pela potência
+    (ignora o campo 'type' da API, que pode estar errado), pares
+    WORK->REC, e uma simulação do processamento completo (lags/recovery)
+    SEM gravar nada no .db.
+
+    Exemplo: /api/fisiologia/debug/i174526190
+    """
+    try:
+        import fisiologia_worker as fw
+        return jsonify(fw.debug_dict(activity_id))
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/processar')
+def api_fisiologia_processar():
+    """Processa um lote de atividades (mais recentes -> mais antigas, até
+    2024-01-01) e grava em fisiologia_perfil.db no Drive.
+
+    Query params: ?n=5 (max LOTE_WEB_MAX por pedido, evita timeout Railway)
+    Exemplo: /api/fisiologia/processar?n=5
+    """
+    try:
+        import fisiologia_worker as fw
+        n = int(request.args.get('n', 5))
+        n = min(n, fw.LOTE_WEB_MAX)
+        resumo = fw.processar_lote(n, retornar_resumo=True)
+        return jsonify(resumo)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/status')
+def api_fisiologia_status():
+    """Quantos intervalos válidos há já, por modalidade — para saber se
+    já vale a pena pedir o perfil de cada uma.
+    """
+    try:
+        from tabs import tab_metabol as tm
+        return jsonify({'status': 'ok', 'modalidades': tm.modalidades_disponiveis()})
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/perfil')
+def api_fisiologia_perfil():
+    """Curva watts -> métrica esperada (HR/SmO2/tHb/respiração/DFA1),
+    valor e tempo de resposta/recuperação, por faixas de potência
+    calculadas dinamicamente (não fixas) a partir dos dados reais.
+
+    Query params:
+      ?modalidade=Row      (obrigatório: Bike, Row, Ski ou Run)
+      ?min_n=20             (mínimo de intervalos para calcular, default 20)
+      ?n_faixas=4            (quantas faixas de watts, default 4)
+
+    Exemplo: /api/fisiologia/perfil?modalidade=Row
+    """
+    try:
+        from tabs import tab_metabol as tm
+        modalidade = request.args.get('modalidade')
+        if not modalidade:
+            return jsonify({'erro': 'falta o parametro ?modalidade='}), 400
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 4))
+        resultado = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/perfil_grafico')
+def api_fisiologia_perfil_grafico():
+    """Igual a /api/fisiologia/perfil, mas devolve HTML Plotly pronto a
+    embeber: 1 subplot por métrica (HR/SmO2/tHb/Respiração/DFA1), X =
+    faixa de watts, linha+banda p25-p75 no esforço, tracejado cinza de
+    referência em repouso.
+
+    Query params: iguais a /api/fisiologia/perfil (?modalidade=, ?min_n=,
+    ?n_faixas=)
+
+    Exemplo: /api/fisiologia/perfil_grafico?modalidade=Row
+    """
+    try:
+        from tabs import tab_metabol as tm
+        modalidade = request.args.get('modalidade')
+        if not modalidade:
+            return jsonify({'erro': 'falta o parametro ?modalidade='}), 400
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 4))
+
+        perfil = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        if perfil.get('status') != 'ok':
+            return jsonify(perfil), 200  # dados insuficientes -- devolve o motivo, sem gráfico
+
+        fig = tm.grafico_perfil_metabolico(perfil)
+        html = fig.to_html(include_plotlyjs='cdn', div_id='perfil-metabolico-chart',
+                           config={'responsive': True, 'displayModeBar': False})
+        return jsonify({'status': 'ok', 'html': html, 'modalidade': modalidade,
+                        'n_intervalos_total': perfil['n_intervalos_total']}), 200
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/evolucao')
+def api_fisiologia_evolucao():
+    """Deriva longitudinal de uma métrica, numa faixa de watts fixa
+    (ao contrário do /perfil, aqui a faixa é a que tu pedires, para
+    comparares sempre "a mesma pergunta" ao longo do tempo).
+
+    Query params:
+      ?modalidade=Row
+      ?campo=smo2_medio_work   (ver tab_metabol.TODOS_CAMPOS para a lista)
+      ?watts_min=250&watts_max=320
+      ?agregacao=mes           (ou 'semana')
+
+    Exemplo:
+      /api/fisiologia/evolucao?modalidade=Row&campo=smo2_medio_work&watts_min=250&watts_max=320
+    """
+    try:
+        from tabs import tab_metabol as tm
+        modalidade = request.args.get('modalidade')
+        campo = request.args.get('campo')
+        if not modalidade or not campo:
+            return jsonify({'erro': 'faltam parametros ?modalidade= e ?campo='}), 400
+        watts_min = request.args.get('watts_min', type=float)
+        watts_max = request.args.get('watts_max', type=float)
+        agregacao = request.args.get('agregacao', 'mes')
+        resultado = tm.evolucao_temporal(modalidade, campo, watts_min, watts_max, agregacao)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/debug/athlete')
+def api_debug_athlete():
+    return tab_detalhe.api_debug_athlete()
+
+
+@app.route('/api/cache')
+def api_cache():
+    return jsonify(cache_info())
+
+
+@app.route('/api/cache/refresh')
+def api_cache_refresh():
+    acts = fetch_activities(force=True)
+    return jsonify({'status': 'OK', 'count': len(acts or [])})
+
+
+@app.route('/api/db')
+def api_db():
+    return jsonify(db.stats())
+
+
+@app.route('/api/sync')
+def api_sync():
+    """Sync incremental: actividades + curvas de potencia.
+
+    As curvas vivem numa tabela propria e nao se actualizam sozinhas quando
+    chegam sessoes novas, por isso vao no mesmo passo. Sao 4 pedidos (um por
+    modalidade), nao um por sessao. Com ?curvas=0 ficam de fora.
+    """
+    res = sync.sync_activities('incremental')
+    invalidar_cache()
+    if res.get('ok') and request.args.get('curvas') != '0':
+        try:
+            res['curvas'] = sync.sync_power_curves()
+        except Exception as e:
+            res['curvas'] = {'ok': False, 'erro': str(e)}
+        try:
+            # le do JSON ja guardado, nao gasta pedidos
+            res['zonas'] = db.extrair_zone_times()
+        except Exception as e:
+            res['zonas'] = {'ok': False, 'erro': str(e)}
+    return jsonify(res)
+
+
+@app.route('/api/sync/full')
+def api_sync_full():
+    """Sync completo: puxa ANOS_HISTORICO anos. Correr uma vez no inicio."""
+    res = sync.sync_activities('full')
+    invalidar_cache()
+    return jsonify(res)
+
+
+@app.route('/api/export')
+@app.route('/api/export/')
+def api_export_indice():
+    """Que exportacoes existem."""
+    import export
+    return jsonify(export.indice())
+
+
+@app.route('/api/export/<nome>')
+def api_export(nome):
+    """Descarregar os dados em bruto.
+
+    /api/export/atividades.csv   /api/export/curvas.json?tipo=Bike
+    /api/export/tudo.json        todos num so ficheiro
+    """
+    import export
+    import protocolo
+    import sheets_client as sheets
+    import pmc as _pmc
+
+    base, _, ext = nome.rpartition('.')
+    base = base or nome
+    ext = (ext or 'csv').lower()
+    tipo = request.args.get('tipo')
+
+    try:
+        if base == 'tudo':
+            import csv as _csv_mod
+            import io as _io
+
+            def _linhas(txt):
+                return list(_csv_mod.DictReader(_io.StringIO(txt)))
+
+            # O wellness tem de passar pelo export.wellness(), que junta o
+            # formulario com os campos da Intervals.icu (hrvSDNN_icu,
+            # readiness_icu, etc). Usar sheets.carregar() directamente
+            # trazia so o formulario, e o hrvSDNN nunca chegava a analise.
+            wl, cp_, _erros = sheets.carregar()
+            try:
+                wl = _linhas(export.wellness(sheets))
+            except Exception as e:
+                print(f'wellness completo falhou, a usar so o formulario: {e}')
+                wl = wl or []
+            return jsonify({
+                'gerado_em': datetime.now().isoformat(),
+                'atividades': db.actividades_processadas(),
+                'wellness': wl or [],
+                'corporal': cp_ or [],
+                'curvas': db.load_power_curves(tipo) or [],
+                'cp_ajustado': db.cp_por_sessao() or [],
+                'testes_maximos': _linhas(
+                    export.testes_maximos(db, protocolo)),
+            })
+
+        if base == 'curvas':
+            texto = export.curvas(db, tipo,
+                                  'json' if ext == 'json' else 'longo')
+        elif base == 'atividades':
+            texto = export.atividades(db)
+        elif base == 'wellness':
+            texto = export.wellness(sheets)
+        elif base == 'corporal':
+            texto = export.corporal(sheets)
+        elif base == 'testes':
+            texto = export.testes_maximos(db, protocolo)
+        elif base == 'cp':
+            texto = export.cp_ajustado(db)
+        elif base == 'serie_diaria':
+            texto = export.serie_diaria(_pmc, db, sheets)
+        else:
+            return jsonify({'erro': f'"{base}" nao existe',
+                            **export.indice()}), 404
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'erro': f'{type(e).__name__}: {e}',
+                        'traceback': traceback.format_exc()[-1200:]}), 500
+
+    mime = 'application/json' if ext == 'json' else 'text/csv'
+    hoje = datetime.now().strftime('%Y%m%d')
+    return Response(texto, mimetype=f'{mime}; charset=utf-8', headers={
+        'Content-Disposition': f'attachment; filename="{base}_{hoje}.{ext}"'})
+
+
+@app.route('/api/debug/wellness-icu')
+def api_debug_wellness_icu():
+    """O wellness da Intervals.icu traz o HRV nocturno do Garmin?
+
+    A Intervals.icu sincroniza do Garmin Connect e guarda os campos em
+    /athlete/{id}/wellness. Se o teu relogio grava HRV nocturno e a
+    sincronizacao esta ligada, o campo `hrv` vem de la — e nesse caso nao
+    e preciso ir buscar nada a mao.
+
+    Este endpoint compara: quantos dias tem hrv, desde quando, e como se
+    relaciona com o que tens no formulario.
+    """
+    from api_client import icu_get, athlete_id_real
+    import sheets_client
+
+    aid = athlete_id_real()
+    oldest = request.args.get('oldest', '2023-01-01')
+    dados, err = icu_get(f'/athlete/{aid}/wellness',
+                         params={'oldest': oldest,
+                                 'newest': datetime.now().strftime('%Y-%m-%d')})
+    if err:
+        return jsonify({'erro': err}), 502
+    if not isinstance(dados, list):
+        return jsonify({'erro': 'resposta inesperada',
+                        'tipo': str(type(dados))}), 502
+
+    campos = ['hrv', 'hrvSDNN', 'restingHR', 'sleepSecs', 'sleepScore',
+              'sleepQuality', 'avgSleepingHR', 'readiness', 'respiration',
+              'spO2', 'baevskySI', 'steps', 'weight', 'bodyFat',
+              'kcalConsumed', 'carbohydrates', 'protein', 'fatTotal']
+    resumo = {}
+    for c in campos:
+        vals = [(d.get('id'), d.get(c)) for d in dados
+                if isinstance(d.get(c), (int, float))]
+        if not vals:
+            resumo[c] = {'n': 0}
+            continue
+        datas = sorted(v[0] for v in vals)
+        nums = [v[1] for v in vals]
+        resumo[c] = {
+            'n': len(vals), 'primeiro': datas[0], 'ultimo': datas[-1],
+            'media': round(sum(nums) / len(nums), 2),
+            'min': round(min(nums), 2), 'max': round(max(nums), 2)}
+
+    # cruzar com o formulario, para ver se sao a mesma medicao
+    comparacao = None
+    try:
+        w, _c, _e = sheets_client.carregar()
+        form = {x['date']: x.get('hrv') for x in (w or [])
+                if isinstance(x.get('hrv'), (int, float))}
+        pares = [(d.get('hrv'), form.get(d.get('id'))) for d in dados
+                 if isinstance(d.get('hrv'), (int, float))
+                 and isinstance(form.get(d.get('id')), (int, float))]
+        if len(pares) >= 20:
+            import statistics as st
+            xs = [p[0] for p in pares]
+            ys = [p[1] for p in pares]
+            mx, my = st.mean(xs), st.mean(ys)
+            num = sum((a - mx) * (b - my) for a, b in pares)
+            den = (sum((a - mx) ** 2 for a in xs)
+                   * sum((b - my) ** 2 for b in ys)) ** 0.5
+            r = num / den if den else None
+            comparacao = {
+                'dias_em_comum': len(pares),
+                'media_intervals': round(mx, 2),
+                'media_formulario': round(my, 2),
+                'diferenca': round(mx - my, 2),
+                'r': round(r, 4) if r else None,
+                'leitura': (
+                    'praticamente a mesma medicao — o teu formulario e a '
+                    'fonte' if r and r > 0.95 else
+                    'muito parecidas mas nao identicas' if r and r > 0.85 else
+                    'medicoes DIFERENTES — o hrv da Intervals.icu pode vir do '
+                    'Garmin, o que seria exactamente o que procuramos')}
+    except Exception as e:
+        comparacao = {'erro': str(e)}
+
     return jsonify({
-        'status': 'ok',
-        'app': 'ATHELTICA',
-        'version': '1.0',
-        'timestamp': datetime.now().isoformat()
+        'status': 'OK', 'athlete': aid,
+        'registos': len(dados),
+        'periodo': {'de': oldest, 'ate': datetime.now().strftime('%Y-%m-%d')},
+        'campos': resumo,
+        'comparacao_com_formulario': comparacao,
+        'como_ler': (
+            'Se `hrv` tiver muitos dias E a comparacao disser "medicoes '
+            'diferentes", entao a Intervals.icu ja traz o HRV do Garmin e '
+            'podemos usa-lo directamente, sem o script do Colab. Se `hrv` '
+            'vier vazio, e preciso ligar a sincronizacao Garmin -> '
+            'Intervals.icu nas definicoes da Intervals.icu.'),
     })
+
+
+@app.route('/api/protocolo')
+def api_protocolo():
+    """Testes maximos detectados e quais estao em atraso.
+
+    ?tipo=Bike   filtra por modalidade
+    """
+    import protocolo
+    curvas = db.load_power_curves(request.args.get('tipo') or None)
+    det = protocolo.detectar_testes(curvas or [])
+    return jsonify({
+        'status': 'OK',
+        'cobertura': protocolo.cobertura(det),
+        'sugestoes': protocolo.sugerir(det),
+        'robustez': protocolo.robustez(det),
+        # so os recentes na resposta: a lista completa pode ter centenas
+        'detectados': {m: {s: {k: v for k, v in d.items() if k != 'testes'}
+                           for s, d in durs.items()}
+                       for m, durs in det.items()},
+        'como_funciona': (
+            f'Uma sessao conta como teste quando o esforco numa duracao chega '
+            f'a {int(protocolo.LIMIAR_ESFORCO*100)}% do teu melhor dos ultimos '
+            f'{protocolo.JANELA_MELHOR} dias. Nao e preciso marcar nada.'),
+    })
+
+
+@app.route('/api/calibracao')
+def api_calibracao():
+    """Parametros calibrados nos dados do atleta, com a evidencia.
+
+    E o mesmo calculo que alimenta o FMT — aqui exposto sozinho, para se
+    poder ver e auditar os valores sem abrir a tab.
+    """
+    return _seguro(tab_pmc.api_calibracao_dados)
+
+
+@app.route('/api/sync/curvas')
+def api_sync_curvas():
+    """Curvas de potencia por sessao — base dos recordes.
+
+    Uma chamada por modalidade, nao uma por sessao.
+    """
+    return jsonify(sync.sync_power_curves())
+
+
+@app.route('/api/recordes')
+def api_recordes():
+    return tab_recordes.api_data()
+
+
+@app.route('/recordes')
+def page_recordes():
+    return tab_recordes.render()
+
+
+@app.route('/api/recordes/seasons')
+def api_recordes_seasons():
+    """Melhor curva por periodo. ?por=season (default) ou ?por=ano"""
+    return tab_recordes.api_seasons()
+
+
+@app.route('/api/activity/<activity_id>/prs')
+def api_activity_prs(activity_id):
+    return jsonify(db.prs_da_actividade(activity_id) or {'erro': 'sem curva guardada'})
+
+
+@app.route('/api/frescura')
+def api_frescura():
+    """Ha quanto tempo a base foi actualizada e se ha sessoes novas na API.
+
+    Compara a data mais recente na base com a data mais recente na
+    Intervals.icu, sem gravar nada. Serve para o aviso no topo das paginas.
+    """
+    if not db.ENABLED:
+        return jsonify({'db': False, 'nota': 'sem base de dados; le sempre da API'})
+
+    ult = db.ultima_data()
+    info = {'db': True,
+            'ultima_na_base': ult.isoformat() if ult else None,
+            'last_sync': None, 'novas': None}
+
+    linha = db._exec("""SELECT criado_em FROM sync_log
+                        WHERE erro IS NULL ORDER BY id DESC LIMIT 1""", fetch='one')
+    if linha and linha[0]:
+        info['last_sync'] = str(linha[0])
+
+    if request.args.get('verificar') in ('1', 'true'):
+        desde = ((ult - timedelta(days=1)).strftime("%Y-%m-%d") if ult
+                 else datetime.now().strftime("%Y-%m-%d"))
+        acts, err = fetch_da_api(desde)
+        if err:
+            info['erro'] = err
+        else:
+            ids = db.ids_existentes()
+            novas = [a for a in (acts or []) if a.get('id') not in ids]
+            info['novas'] = len(novas)
+            info['novas_detalhe'] = [{
+                'id': a.get('id'), 'date': (a.get('start_date_local') or '')[:10],
+                'name': a.get('name'), 'type': a.get('type')} for a in novas[:10]]
+    return jsonify(info)
+
+
+@app.route('/api/db/schema')
+def api_db_schema():
+    """Colunas de cada tabela — para perceber erros 500 de SQL."""
+    return jsonify({t: db.colunas_de(t) for t in
+                    ('activities', 'power_curves', 'streams', 'sync_log')})
+
+
+@app.route('/api/db/recriar-curvas')
+def api_recriar_curvas():
+    """Recria a tabela de curvas quando o esquema mudou."""
+    res = db.recriar_power_curves()
+    if res.get('ok'):
+        try:
+            res['sync'] = sync.sync_power_curves()
+        except Exception as e:
+            res['sync'] = {'ok': False, 'erro': str(e)}
+    return jsonify(res)
+
+
+@app.route('/api/debug/curvas')
+def api_debug_curvas():
+    """Testa variantes do endpoint de curvas para perceber o 403.
+
+    Compara: id "0" vs id real, com e sem extensao .json, e o endpoint por
+    actividade (que sabemos funcionar). Assim vemos qual das diferencas conta.
+    """
+    from api_client import icu_get, athlete_id_real
+    from datetime import datetime as _dt
+
+    real = athlete_id_real()
+    oldest = (_dt.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+    newest = _dt.now().strftime("%Y-%m-%d")
+    base_p = {"oldest": oldest, "newest": newest, "type": "Ride"}
+
+    uma = db._exec("""SELECT id FROM activities WHERE type = 'Bike'
+                      ORDER BY date DESC LIMIT 1""", fetch='one') if db.ENABLED else None
+    aid = uma[0] if uma else None
+
+    testes = [
+        ('activities (controlo)', f"/athlete/{ATHLETE_ID}/activities",
+         {"oldest": oldest}),
+        ('perfil id=0', f"/athlete/{ATHLETE_ID}", None),
+        ('perfil id real', f"/athlete/{real}", None),
+        ('curvas id=0', f"/athlete/{ATHLETE_ID}/activity-power-curves", base_p),
+        ('curvas id real', f"/athlete/{real}/activity-power-curves", base_p),
+        ('curvas id real .json', f"/athlete/{real}/activity-power-curves.json", base_p),
+        ('power-curves id real', f"/athlete/{real}/power-curves",
+         {"type": "Ride", "curves": "42d"}),
+    ]
+    if aid:
+        testes.append((f'power-curve da sessao {aid}', f"/activity/{aid}/power-curve", None))
+
+    out = {'athlete_id_configurado': ATHLETE_ID, 'athlete_id_resolvido': real,
+           'testes': {}}
+    for nome, path, params in testes:
+        data, err = icu_get(path, params, timeout=60)
+        if err:
+            out['testes'][nome] = {'ok': False, 'erro': err[:160]}
+        elif isinstance(data, dict):
+            out['testes'][nome] = {'ok': True, 'chaves': sorted(data.keys())[:12],
+                                   'n_curvas': len(data.get('curves') or [])}
+        elif isinstance(data, list):
+            out['testes'][nome] = {'ok': True, 'n': len(data)}
+        else:
+            out['testes'][nome] = {'ok': True, 'tipo': type(data).__name__}
+    return jsonify(out)
+
+
+@app.route('/api/db/curvas')
+def api_db_curvas():
+    """Diagnostico da tabela de curvas."""
+    return jsonify(db.diagnostico_curvas())
+
+
+@app.route('/api/debug/zonas')
+def api_debug_zonas():
+    """Que custom_zones existem por modalidade, e onde faltam."""
+    return jsonify(db.diagnostico_zonas())
+
+
+@app.route('/api/sync/zonas')
+def api_sync_zonas():
+    """Extrai o tempo por zona do JSON ja guardado. Nao gasta pedidos a API."""
+    return jsonify(db.extrair_zone_times())
+
+
+@app.route('/api/zonas')
+def api_zonas():
+    """Tempo por zona, para os graficos.
+
+    ?tipo=Bike  ?kind=power|hr|pace  ?desde=YYYY-MM-DD
+    """
+    return jsonify({
+        'status': 'OK',
+        'disponiveis': db.zonas_disponiveis(),
+        'sessoes': db.tempo_por_zona(
+            request.args.get('tipo') or None,
+            request.args.get('kind') or 'power',
+            request.args.get('desde') or None),
+    })
+
+
+def _seguro(fn, *args, **kwargs):
+    """Corre fn e devolve o erro em JSON em vez de 500.
+
+    Um endpoint de diagnostico que rebenta com 500 nao diz nada; a mensagem
+    de erro e precisamente a informacao util.
+    """
+    try:
+        return jsonify(fn(*args, **kwargs))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'ok': False, 'erro': f'{type(e).__name__}: {e}',
+                        'traceback': traceback.format_exc()[-1200:]}), 500
+
+
+@app.route('/api/sync/streams')
+def api_sync_streams():
+    """Carrega streams em bloco.
+
+    ?limite=60          quantas sessoes por chamada (1 pedido cada)
+    ?tipos=Bike,Row     so estas modalidades
+    ?desde=YYYY-MM-DD   so a partir desta data
+    Repetir ate 'faltam' chegar a zero.
+    """
+    tipos = request.args.get('tipos')
+    return _seguro(sync.sync_streams_bloco,
+                   limite=request.args.get('limite', default=60, type=int),
+                   tipos=[t.strip() for t in tipos.split(',')] if tipos else None,
+                   desde=request.args.get('desde'))
+
+
+@app.route('/api/db/streams')
+def api_db_streams():
+    """Cobertura dos streams guardados."""
+    return _seguro(db.streams_stats)
+
+
+@app.route('/health')
+def health():
+    return jsonify({'status': 'healthy'}), 200
+
 
 # ===== ROTAS AQUECIMENTO =====
 
 @app.route('/api/aquecimento/dados')
 def api_aquecimento_dados():
     """Retorna todas as sessões de aquecimento."""
+    if not aq_db:
+        return jsonify({'status': 'erro', 'mensagem': 'BD não inicializada'}), 500
     try:
         sessoes = aq_db.listar_todas()
-        return jsonify({
-            'status': 'ok',
-            'sessoes': sessoes,
-            'total': len(sessoes)
-        })
+        return jsonify({'status': 'ok', 'sessoes': sessoes, 'total': len(sessoes)})
     except Exception as e:
-        return jsonify({
-            'status': 'erro',
-            'mensagem': str(e)
-        }), 500
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
 
 @app.route('/api/aquecimento/sessao/<activity_id>')
 def api_aquecimento_sessao(activity_id):
     """Retorna dados de aquecimento de uma atividade."""
+    if not aq_db:
+        return jsonify({'status': 'erro', 'mensagem': 'BD não inicializada'}), 500
     try:
         sessao = aq_db.obter_sessao(activity_id)
-        
         if not sessao:
-            return jsonify({
-                'status': 'erro',
-                'mensagem': 'Sessão não encontrada'
-            }), 404
-        
-        return jsonify({
-            'status': 'ok',
-            'sessao': sessao
-        })
+            return jsonify({'status': 'erro', 'mensagem': 'Sessão não encontrada'}), 404
+        return jsonify({'status': 'ok', 'sessao': sessao})
     except Exception as e:
-        return jsonify({
-            'status': 'erro',
-            'mensagem': str(e)
-        }), 500
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
 
 @app.route('/api/aquecimento/calibrar', methods=['GET', 'POST'])
 def api_aquecimento_calibrar():
     """Calibra aquecimento com datas específicas."""
+    if not aq_db:
+        return jsonify({'status': 'erro', 'mensagem': 'BD não inicializada'}), 500
     try:
         if request.method == 'GET':
             modalidade = request.args.get('modalidade')
@@ -83,13 +777,13 @@ def api_aquecimento_calibrar():
             datas = data.get('datas', [])
         
         if not modalidade or not datas:
-            return jsonify({
-                'status': 'erro',
-                'mensagem': 'modalidade e datas obrigatórios'
-            }), 400
+            return jsonify({'status': 'erro', 'mensagem': 'modalidade e datas obrigatórios'}), 400
         
-        from aquecimento_analyzer import AquecimentoAnalyzer
-        import drive_db_fisiologia as ddf
+        try:
+            from aquecimento_analyzer import AquecimentoAnalyzer
+            import drive_db_fisiologia as ddf
+        except ImportError:
+            return jsonify({'status': 'erro', 'mensagem': 'módulos não disponíveis'}), 500
         
         conn = ddf.get_conn()
         atividades_para_processar = []
@@ -100,42 +794,30 @@ def api_aquecimento_calibrar():
                     data_obj = datetime.strptime(data_str, '%d/%m/%Y')
                 else:
                     data_obj = datetime.strptime(data_str, '%Y-%m-%d')
-                
                 data_inicio = data_obj.date()
                 
-                query = """
-                    SELECT DISTINCT activity_id 
-                    FROM fisiologia_intervalos 
-                    WHERE modalidade=? AND valido=1 
-                    AND DATE(data) = ?
-                """
+                query = """SELECT DISTINCT activity_id FROM fisiologia_intervalos 
+                          WHERE modalidade=? AND valido=1 AND DATE(data) = ?"""
                 resultados = conn.execute(query, (modalidade, data_inicio)).fetchall()
                 
                 for (activity_id,) in resultados:
                     atividades_para_processar.append(activity_id)
-            
             except ValueError:
                 pass
         
         atividades_para_processar = list(set(atividades_para_processar))
         
         if not atividades_para_processar:
-            return jsonify({
-                'status': 'aviso',
-                'mensagem': 'Nenhuma atividade encontrada',
-                'total': 0
-            }), 200
+            return jsonify({'status': 'aviso', 'mensagem': 'Nenhuma atividade encontrada', 'total': 0}), 200
         
         processadas = 0
         aquecimentos_detectados = 0
         detalhes = []
-        
         analyzer = AquecimentoAnalyzer(conn)
         
         for activity_id in atividades_para_processar:
             try:
                 resultado = analyzer.analisar_atividade(activity_id, modalidade)
-                
                 if resultado.get('detectado'):
                     dados_aq = {
                         'modalidade': modalidade,
@@ -159,20 +841,10 @@ def api_aquecimento_calibrar():
                     }
                     aq_db.salvar_sessao(activity_id, dados_aq)
                     aquecimentos_detectados += 1
-                
                 processadas += 1
-                detalhes.append({
-                    'activity_id': activity_id,
-                    'detectado': resultado.get('detectado'),
-                    'status': 'ok'
-                })
-            
+                detalhes.append({'activity_id': activity_id, 'detectado': resultado.get('detectado'), 'status': 'ok'})
             except Exception as e:
-                detalhes.append({
-                    'activity_id': activity_id,
-                    'erro': str(e),
-                    'status': 'erro'
-                })
+                detalhes.append({'activity_id': activity_id, 'erro': str(e), 'status': 'erro'})
         
         return jsonify({
             'status': 'calibracao_completa',
@@ -181,165 +853,12 @@ def api_aquecimento_calibrar():
             'aquecimentos_detectados': aquecimentos_detectados,
             'detalhes': detalhes
         })
-    
     except Exception as e:
         import traceback
-        return jsonify({
-            'status': 'erro',
-            'mensagem': str(e),
-            'trace': traceback.format_exc()
-        }), 500
+        return jsonify({'status': 'erro', 'mensagem': str(e), 'trace': traceback.format_exc()}), 500
 
-# ===== ROTAS METABOLISMO =====
-
-@app.route('/metabol')
-def metabolismo():
-    """Renderiza tab Metabolismo."""
-    return tab_metabol.render()
-
-@app.route('/api/metabol')
-def api_metabolismo():
-    """API do tab Metabolismo."""
-    return tab_metabol.api_data()
-
-@app.route('/api/fisiologia/processar')
-def api_fisiologia_processar():
-    """Processa lote de atividades com worker."""
-    try:
-        import fisiologia_worker
-        n = request.args.get('n', 10, type=int)
-        resultado = fisiologia_worker.processar_lote(n)
-        return jsonify(resultado)
-    except Exception as e:
-        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
-@app.route('/api/fisiologia/perfil_robusto/<modalidade>')
-def api_fisiologia_perfil_robusto(modalidade):
-    """API: Perfil metabolico robusto por modalidade."""
-    try:
-        import drive_db_fisiologia as ddf
-        conn = ddf.get_conn()
-        
-        largura_bin = int(request.args.get('largura_bin', 50))
-        hr_agg = request.args.get('hr', 'max')
-        resp_agg = request.args.get('resp', 'avg')
-        smo2_agg = request.args.get('smo2', 'min')
-        dfa1_agg = request.args.get('dfa1', 'avg')
-        
-        sql = f"""
-            SELECT 
-                ROUND(watts_medio, -CAST(LOG10(CAST(? AS FLOAT)) AS INT)) as watts_bin,
-                COUNT(*) as n,
-                ROUND(AVG(hr_{hr_agg}_60s), 1) as hr_{hr_agg},
-                ROUND(AVG(resp_{resp_agg}_60s), 1) as resp_{resp_agg},
-                ROUND(AVG(smo2_{smo2_agg}_60s), 1) as smo2_{smo2_agg},
-                ROUND(AVG(dfa1_{dfa1_agg}_60s), 3) as dfa1_{dfa1_agg}
-            FROM fisiologia_intervalos
-            WHERE modalidade = ? AND valido = 1
-            GROUP BY watts_bin
-            ORDER BY watts_bin
-        """
-        
-        resultados = conn.execute(sql, (largura_bin, modalidade)).fetchall()
-        
-        return jsonify({
-            'status': 'ok',
-            'modalidade': modalidade,
-            'dados': [dict(zip([desc[0] for desc in conn.execute(sql, (largura_bin, modalidade)).description], r)) for r in resultados]
-        })
-    except Exception as e:
-        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
-@app.route('/api/fisiologia/evolucao_robusta')
-def api_fisiologia_evolucao_robusta():
-    """API: Evolução temporal da métrica."""
-    try:
-        import drive_db_fisiologia as ddf
-        conn = ddf.get_conn()
-        
-        modalidade = request.args.get('modalidade', 'Row')
-        metrica = request.args.get('metrica', 'hr')
-        agregacao = request.args.get('agregacao', 'max')
-        watts_min = int(request.args.get('watts_min', 0))
-        watts_max = int(request.args.get('watts_max', 500))
-        
-        sql = f"""
-            SELECT 
-                DATE(data) as data,
-                ROUND(AVG({metrica}_{agregacao}_60s), 1) as valor_medio,
-                ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP(ORDER BY {metrica}_{agregacao}_60s), 1) as p25,
-                ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP(ORDER BY {metrica}_{agregacao}_60s), 1) as p50,
-                ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP(ORDER BY {metrica}_{agregacao}_60s), 1) as p75,
-                COUNT(*) as n
-            FROM fisiologia_intervalos
-            WHERE modalidade = ? AND valido = 1
-            AND watts_medio BETWEEN ? AND ?
-            GROUP BY DATE(data)
-            ORDER BY data DESC
-        """
-        
-        resultados = conn.execute(sql, (modalidade, watts_min, watts_max)).fetchall()
-        
-        return jsonify({
-            'status': 'ok',
-            'modalidade': modalidade,
-            'metrica': metrica,
-            'agregacao': agregacao,
-            'dados': [dict(zip([desc[0] for desc in conn.execute(sql, (modalidade, watts_min, watts_max)).description], r)) for r in resultados]
-        })
-    except Exception as e:
-        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
-@app.route('/api/fisiologia/dinamica_resposta')
-def api_fisiologia_dinamica_resposta():
-    """API: Dinâmica de resposta (lag/recovery)."""
-    try:
-        import drive_db_fisiologia as ddf
-        conn = ddf.get_conn()
-        
-        modalidade = request.args.get('modalidade', 'Row')
-        metrica = request.args.get('metrica', 'hr')
-        fase = request.args.get('fase', 'lag')
-        largura_bin = int(request.args.get('largura_bin', 50))
-        min_n = int(request.args.get('min_n', 15))
-        
-        col_name = f"{fase}_{metrica}_50" if fase == 'lag' else f"{fase}_{metrica}_75"
-        
-        sql = f"""
-            SELECT 
-                ROUND(watts_medio, -CAST(LOG10(CAST(? AS FLOAT)) AS INT)) as watts_bin,
-                COUNT(*) as n,
-                ROUND(AVG({col_name}), 1) as valor_medio,
-                ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP(ORDER BY {col_name}), 1) as p25,
-                ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP(ORDER BY {col_name}), 1) as p50,
-                ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP(ORDER BY {col_name}), 1) as p75
-            FROM fisiologia_intervalos
-            WHERE modalidade = ? AND valido = 1 AND {col_name} IS NOT NULL
-            GROUP BY watts_bin
-            HAVING COUNT(*) >= ?
-            ORDER BY watts_bin
-        """
-        
-        resultados = conn.execute(sql, (largura_bin, modalidade, min_n)).fetchall()
-        
-        return jsonify({
-            'status': 'ok',
-            'modalidade': modalidade,
-            'metrica': metrica,
-            'fase': fase,
-            'dados': [dict(zip([desc[0] for desc in conn.execute(sql, (largura_bin, modalidade, min_n)).description], r)) for r in resultados]
-        })
-    except Exception as e:
-        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
-# ===== HEALTH CHECK =====
-
-@app.route('/health')
-def health():
-    """Health check."""
-    return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()})
-
-# ===== RUN =====
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=5000)
+    port = int(os.getenv('PORT', 8080))
+    print(f"Starting server on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)

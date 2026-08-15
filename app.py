@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 # ===== IMPORTS AQUECIMENTO =====
 sys.path.insert(0, './utils')
-import aquecimento_db_simples as aq_db
+import aquecimento_db as aq_db
 
 # ===== IMPORTS DOS TABS EXISTENTES =====
 from tabs import tab_metabol

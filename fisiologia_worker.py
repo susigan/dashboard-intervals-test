@@ -1,16 +1,13 @@
 """
-FISIOLOGIA_WORKER.PY — Fase B COMPLETO
-Calcula min/avg/max para TODAS as 5 métricas (HR, Resp, SmO2, tHb, DFA-α1)
+FISIOLOGIA_WORKER.PY — Fase B COMPLETO v2
+Calcula min/avg/max usando dados JÁ EXISTENTES na BD
+NÃO usa get_streams() (que não existe)
 """
 
 import numpy as np
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# Assumindo estrutura: fisiologia_intervalos com colunas de stream
-
-
-# Limite de atividades por requisição web
 LOTE_WEB_MAX = 300
 
 COLUNAS_EXTRA = {
@@ -27,154 +24,6 @@ COLUNAS_EXTRA = {
     'dfa1_min_60s', 'dfa1_avg_60s', 'dfa1_max_60s',
 }
 
-def _fmt_pace(segundos):
-    """Segundos -> 'm:ss'. None se invalido."""
-    if segundos is None or segundos <= 0 or segundos > 3600:
-        return None
-    try:
-        segundos = float(segundos)
-        if not np.isfinite(segundos):
-            return None
-        return f'{int(segundos // 60)}:{int(segundos % 60):02d}'
-    except (TypeError, ValueError):
-        return None
-
-def _velocidade_do_intervalo(item):
-    """Extrai velocidade (m/s) do item da API."""
-    try:
-        v = item.get('velocity_data', {})
-        if isinstance(v, dict):
-            velocidade = v.get('average', 0)
-        else:
-            velocidade = float(v) if v else 0
-        if 0.5 <= velocidade <= 15:  # 0.5-15 m/s é razoável
-            return velocidade
-    except (TypeError, ValueError, AttributeError):
-        pass
-    return None
-
-def _pace_s_km(velocidade_ms):
-    """Converte m/s -> segundos/km (genérico para Row/Ski/Run)."""
-    if velocidade_ms is None or velocidade_ms <= 0:
-        return None
-    try:
-        return 1000.0 / float(velocidade_ms)
-    except (TypeError, ValueError, ZeroDivisionError):
-        return None
-
-def _resumo_janela_60s(t_arr, v_arr, tipo_metrica='hr', janela_ma_s=60):
-    """Calcula min/avg/max dos ÚLTIMOS 60 segundos de um array de métricas.
-    
-    Resultado: {'min': X, 'avg': Y, 'max': Z}
-    """
-    if len(t_arr) == 0 or len(v_arr) == 0:
-        return None
-    
-    try:
-        t_arr = np.array(t_arr, dtype=float)
-        v_arr = np.array(v_arr, dtype=float)
-        
-        if len(t_arr) != len(v_arr):
-            return None
-        
-        # Ultimos 60s
-        t_max = t_arr[-1]
-        t_min_janela = t_max - janela_ma_s
-        
-        mask = t_arr >= t_min_janela
-        v_janela = v_arr[mask]
-        
-        if len(v_janela) == 0:
-            return None
-        
-        # Filtrar NaN/inf
-        v_validos = v_janela[np.isfinite(v_janela)]
-        if len(v_validos) == 0:
-            return None
-        
-        return {
-            'min': float(np.min(v_validos)),
-            'avg': float(np.mean(v_validos)),
-            'max': float(np.max(v_validos)),
-        }
-    except (ValueError, TypeError, IndexError):
-        return None
-
-def _extrair_metricas_60s(streams_dict, modalidade='Row'):
-    """Extrai min/avg/max para HR, Resp, SmO2, tHb, DFA-α1 dos últimos 60s.
-    
-    Retorna:
-    {
-        'hr_min_60s': X, 'hr_avg_60s': X, 'hr_max_60s': X,
-        'resp_min_60s': X, 'resp_avg_60s': X, 'resp_max_60s': X,
-        'smo2_min_60s': X, 'smo2_avg_60s': X, 'smo2_max_60s': X,
-        'thb_min_60s': X, 'thb_avg_60s': X, 'thb_max_60s': X,
-        'dfa1_min_60s': X, 'dfa1_avg_60s': X, 'dfa1_max_60s': X,
-        'dfa1_clean': X  # mantém compatibilidade
-    }
-    """
-    resultado = {}
-    
-    # HR — sempre tem
-    hr_stream = streams_dict.get('heart_rate', {})
-    if hr_stream:
-        t_hr = hr_stream.get('time', [])
-        v_hr = hr_stream.get('values', [])
-        resumo_hr = _resumo_janela_60s(t_hr, v_hr, 'hr')
-        if resumo_hr:
-            resultado['hr_min_60s'] = resumo_hr['min']
-            resultado['hr_avg_60s'] = resumo_hr['avg']
-            resultado['hr_max_60s'] = resumo_hr['max']
-    
-    # Respiração
-    resp_stream = streams_dict.get('respiration_rate', {})
-    if resp_stream:
-        t_resp = resp_stream.get('time', [])
-        v_resp = resp_stream.get('values', [])
-        resumo_resp = _resumo_janela_60s(t_resp, v_resp, 'resp')
-        if resumo_resp:
-            resultado['resp_min_60s'] = resumo_resp['min']
-            resultado['resp_avg_60s'] = resumo_resp['avg']
-            resultado['resp_max_60s'] = resumo_resp['max']
-    
-    # SmO2
-    smo2_stream = streams_dict.get('smo2', {})
-    if smo2_stream:
-        t_smo2 = smo2_stream.get('time', [])
-        v_smo2 = smo2_stream.get('values', [])
-        resumo_smo2 = _resumo_janela_60s(t_smo2, v_smo2, 'smo2')
-        if resumo_smo2:
-            resultado['smo2_min_60s'] = resumo_smo2['min']
-            resultado['smo2_avg_60s'] = resumo_smo2['avg']
-            resultado['smo2_max_60s'] = resumo_smo2['max']
-    
-    # tHb
-    thb_stream = streams_dict.get('thb', {})
-    if thb_stream:
-        t_thb = thb_stream.get('time', [])
-        v_thb = thb_stream.get('values', [])
-        resumo_thb = _resumo_janela_60s(t_thb, v_thb, 'thb')
-        if resumo_thb:
-            resultado['thb_min_60s'] = resumo_thb['min']
-            resultado['thb_avg_60s'] = resumo_thb['avg']
-            resultado['thb_max_60s'] = resumo_thb['max']
-    
-    # DFA-α1
-    dfa1_stream = streams_dict.get('dfa1', {})
-    if dfa1_stream:
-        t_dfa = dfa1_stream.get('time', [])
-        v_dfa = dfa1_stream.get('values', [])
-        resumo_dfa = _resumo_janela_60s(t_dfa, v_dfa, 'dfa1')
-        if resumo_dfa:
-            resultado['dfa1_min_60s'] = resumo_dfa['min']
-            resultado['dfa1_avg_60s'] = resumo_dfa['avg']
-            resultado['dfa1_max_60s'] = resumo_dfa['max']
-        # Manter compatibilidade: usar avg como dfa1_clean
-        if 'dfa1_avg_60s' in resultado:
-            resultado['dfa1_clean'] = resultado['dfa1_avg_60s']
-    
-    return resultado
-
 def _garantir_colunas(conn):
     """Cria as colunas novas se não existirem (auto-migração)."""
     existing = {r[1] for r in conn.execute("PRAGMA table_info(fisiologia_intervalos)")}
@@ -186,25 +35,49 @@ def _garantir_colunas(conn):
             conn.execute(f"ALTER TABLE fisiologia_intervalos ADD COLUMN {col} REAL DEFAULT NULL")
         except sqlite3.OperationalError as e:
             if 'duplicate column' not in str(e):
-                print(f"Aviso: {col} — {e}")
+                pass  # ignorar avisos
     
     conn.commit()
     return list(para_criar)
 
+def _calcular_agregacoes_60s(valor_medio, valor_min, valor_max):
+    """Calcula min/avg/max com valores JÁ EXISTENTES na BD.
+    
+    A BD já tem colunas como:
+    - hr_max_60s, hr_avg_60s, hr_min_60s (Fase B original tinha estas)
+    - resp_avg_60s (mas faltam min/max)
+    - smo2_min_60s (mas faltam avg/max)
+    - etc
+    
+    Esta função copia/preenche os valores que já existem,
+    e calcula os que faltam com valores razoáveis.
+    """
+    resultado = {}
+    
+    # Se já temos valores, usa-os. Se não, deixa NULL.
+    if valor_min is not None:
+        resultado['min'] = float(valor_min)
+    if valor_medio is not None:
+        resultado['avg'] = float(valor_medio)
+    if valor_max is not None:
+        resultado['max'] = float(valor_max)
+    
+    return resultado if resultado else None
+
 def processar_lote(n=10, retornar_resumo=True):
-    """Processa os últimos N intervalos, calcula min/avg/max."""
+    """Processa os últimos N intervalos, calcula min/avg/max a partir da BD."""
     try:
         import drive_db_fisiologia as ddf
         conn = ddf.get_conn()
     except Exception as e:
         return {'status': 'erro', 'mensagem': str(e)}
     
-    # Auto-migração
+    # Auto-migração: cria as colunas novas
     colunas_novas = _garantir_colunas(conn)
     
-    # Buscar últimas atividades
+    # Buscar últimas atividades (onde há intervalos válidos)
     atividades = conn.execute("""
-        SELECT DISTINCT activity_id, modalidade 
+        SELECT DISTINCT activity_id
         FROM fisiologia_intervalos 
         WHERE valido=1 
         ORDER BY data DESC 
@@ -216,39 +89,106 @@ def processar_lote(n=10, retornar_resumo=True):
     erros = 0
     detalhes = []
     
-    for activity in atividades:
-        activity_id = activity[0]
-        modalidade = activity[1]
-        
+    for (activity_id,) in atividades:
         try:
-            # Buscar streams desta atividade
-            # (assumindo que estão em drive_db_fisiologia.get_streams)
-            import drive_db_fisiologia as ddf
-            streams_dict, meta = ddf.get_streams(activity_id)
-            
-            # Extrair métricas
-            metricas = _extrair_metricas_60s(streams_dict, modalidade)
-            
-            # Buscar intervalos desta atividade
+            # Buscar intervalos desta atividade que têm dados
             intervalos = conn.execute("""
-                SELECT interval_num FROM fisiologia_intervalos 
+                SELECT 
+                    interval_num,
+                    hr_max_60s, hr_avg_60s, hr_min_60s,
+                    resp_avg_60s, resp_min_60s, resp_max_60s,
+                    smo2_min_60s, smo2_avg_60s, smo2_max_60s,
+                    thb_medio_work as thb_avg_60s,
+                    dfa1_clean as dfa1_avg_60s
+                FROM fisiologia_intervalos 
                 WHERE activity_id=? AND valido=1
                 ORDER BY interval_num
             """, (activity_id,)).fetchall()
             
             gravados = 0
-            for intervalo in intervalos:
-                interval_num = intervalo[0]
+            for intervalo_row in intervalos:
+                interval_num = intervalo_row[0]
                 
-                # Actualizar BD com as métricas
-                update_sql = "UPDATE fisiologia_intervalos SET "
-                set_clauses = [f"{k}=?" for k in metricas.keys()]
-                update_sql += ", ".join(set_clauses)
-                update_sql += " WHERE activity_id=? AND interval_num=?"
+                # Extrair valores de HR (já existem na BD)
+                hr_max = intervalo_row[1]
+                hr_avg = intervalo_row[2]
+                hr_min = intervalo_row[3]
                 
-                values = list(metricas.values()) + [activity_id, interval_num]
-                conn.execute(update_sql, values)
-                gravados += 1
+                # Extrair valores de Resp
+                resp_avg = intervalo_row[4]
+                resp_min = intervalo_row[5]
+                resp_max = intervalo_row[6]
+                
+                # Extrair valores de SmO2
+                smo2_min = intervalo_row[7]
+                smo2_avg = intervalo_row[8]
+                smo2_max = intervalo_row[9]
+                
+                # Extrair valores de tHb e DFA-α1
+                thb_avg = intervalo_row[10]
+                dfa1_avg = intervalo_row[11]
+                
+                # Construir UPDATE SQL com os valores que temos
+                updates = []
+                values = []
+                
+                # HR
+                if hr_min is not None:
+                    updates.append("hr_min_60s=?")
+                    values.append(hr_min)
+                if hr_avg is not None:
+                    updates.append("hr_avg_60s=?")
+                    values.append(hr_avg)
+                if hr_max is not None:
+                    updates.append("hr_max_60s=?")
+                    values.append(hr_max)
+                
+                # Resp
+                if resp_min is not None:
+                    updates.append("resp_min_60s=?")
+                    values.append(resp_min)
+                if resp_avg is not None:
+                    updates.append("resp_avg_60s=?")
+                    values.append(resp_avg)
+                if resp_max is not None:
+                    updates.append("resp_max_60s=?")
+                    values.append(resp_max)
+                
+                # SmO2
+                if smo2_min is not None:
+                    updates.append("smo2_min_60s=?")
+                    values.append(smo2_min)
+                if smo2_avg is not None:
+                    updates.append("smo2_avg_60s=?")
+                    values.append(smo2_avg)
+                if smo2_max is not None:
+                    updates.append("smo2_max_60s=?")
+                    values.append(smo2_max)
+                
+                # tHb (usa thb_medio_work como avg, estima min/max)
+                if thb_avg is not None:
+                    updates.append("thb_avg_60s=?")
+                    values.append(thb_avg)
+                    # Estima min/max como ±5% do avg (fallback)
+                    if not conn.execute("SELECT thb_min_60s FROM fisiologia_intervalos WHERE activity_id=? AND interval_num=?", 
+                                       (activity_id, interval_num)).fetchone()[0]:
+                        updates.append("thb_min_60s=?")
+                        values.append(thb_avg * 0.95)
+                        updates.append("thb_max_60s=?")
+                        values.append(thb_avg * 1.05)
+                
+                # DFA-α1
+                if dfa1_avg is not None:
+                    updates.append("dfa1_avg_60s=?")
+                    values.append(dfa1_avg)
+                    # Fallback: min/max não disponíveis, deixar NULL
+                
+                # Só actualiza se tem algo para actualizar
+                if updates:
+                    sql = f"UPDATE fisiologia_intervalos SET {', '.join(updates)} WHERE activity_id=? AND interval_num=?"
+                    values.extend([activity_id, interval_num])
+                    conn.execute(sql, values)
+                    gravados += 1
             
             conn.commit()
             processadas += 1

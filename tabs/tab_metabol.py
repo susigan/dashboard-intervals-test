@@ -315,6 +315,8 @@ JS = r"""
 let MODALIDADES = [];
 let PERFIL = null;
 let EVOLUCAO = null;
+let isLoadingPerfil = false;
+let isLoadingEvolucao = false;
 
 const CORES_METAB = {
  hr:'#E74C3C', resp:'#1ABC9C', smo2:'#F39C12', dfa1:'#9B59B6',
@@ -360,22 +362,26 @@ function alternar(canvasId, k){
 }
 
 function drawPerfil(){
+ console.log('[drawPerfil] Começando. PERFIL:', PERFIL?.status);
  const o = ctx('chPerfil', 300);
  if(!o) return;
  const g = o.g, W = o.W, H = o.H;
  
  if(!PERFIL || PERFIL.status !== 'ok'){
+  console.warn('[drawPerfil] Erro ou vazio:', PERFIL);
   noData(g, W, H, 'Sem dados');
   return;
  }
  
  const faixas = PERFIL.faixas;
  if(!faixas || !faixas.length){
+  console.warn('[drawPerfil] Sem faixas');
   noData(g, W, H, 'Sem faixas');
   return;
  }
  
  const disponiveis = Object.keys(camposSelecionados).filter(m => faixas.some(f => f[m+'_'+camposSelecionados[m]]));
+ console.log('[drawPerfil] Disponiveis:', disponiveis, 'camposSelecionados:', camposSelecionados);
  
  document.getElementById('lgPerfil').innerHTML = disponiveis.map(function(m){
   const off = !ligado('chPerfil', m);
@@ -388,6 +394,7 @@ function drawPerfil(){
  
  const vis = disponiveis.filter(m => ligado('chPerfil', m));
  if(!vis.length){
+  console.warn('[drawPerfil] Nenhuma métrica activa');
   noData(g, W, H, 'Nenhuma métrica');
   return;
  }
@@ -515,6 +522,34 @@ function drawPerfil(){
    tooltip.style.display = 'none';
   }
  };
+ console.log('[drawPerfil] Completo');
+}
+
+async function carregarPerfil(){
+ if(isLoadingPerfil) return;
+ isLoadingPerfil = true;
+ 
+ const modalidade = document.getElementById('modalidade').value;
+ const largura = document.getElementById('larguraBin').value;
+ const params = new URLSearchParams();
+ params.append('largura_bin', largura);
+ Object.entries(camposSelecionados).forEach(([m, a]) => params.append(m, a));
+ 
+ const url = '/api/fisiologia/perfil_robusto/'+modalidade+'?'+params.toString();
+ console.log('[carregarPerfil] Iniciando:', url);
+ 
+ try{
+  const d = await fetch(url).then(r => r.json());
+  console.log('[carregarPerfil] OK:', d);
+  PERFIL = d;
+  drawPerfil();
+ }catch(e){
+  console.error('[carregarPerfil] ERRO:', e);
+  PERFIL = {status: 'erro'};
+  drawPerfil();
+ }finally{
+  isLoadingPerfil = false;
+ }
 }
 
 function drawEvolucao(){
@@ -523,7 +558,7 @@ function drawEvolucao(){
  const g = o.g, W = o.W, H = o.H;
  
  if(!EVOLUCAO || EVOLUCAO.status !== 'ok'){
-  noData(g, W, H, 'Sem dados para este período');
+  noData(g, W, H, 'Sem dados');
   return;
  }
  
@@ -535,7 +570,6 @@ function drawEvolucao(){
  
  const metrica = EVOLUCAO.metrica;
  const cor = CORES_METAB[metrica] || '#999';
- 
  const valores = periodos.map(p => p.p50);
  const vmin = Math.min.apply(null, valores);
  const vmax = Math.max.apply(null, valores);
@@ -607,42 +641,27 @@ function drawEvolucao(){
  }
 }
 
-async function carregarPerfil(){
- const modalidade = document.getElementById('modalidade').value;
- const largura = document.getElementById('larguraBin').value;
- 
- const params = new URLSearchParams();
- params.append('largura_bin', largura);
- Object.entries(camposSelecionados).forEach(([m, a]) => {
-  params.append(m, a);
- });
- 
- try{
-  const d = await fetch('/api/fisiologia/perfil_robusto/'+modalidade+'?'+params.toString()).then(r => r.json());
-  PERFIL = d;
-  if(PERFIL.status === 'ok') drawPerfil();
- }catch(e){
-  console.error('Erro:', e);
-  PERFIL = {status: 'erro'};
-  drawPerfil();
- }
-}
-
 async function carregarEvolucao(){
+ if(isLoadingEvolucao) return;
+ isLoadingEvolucao = true;
+ 
  const metrica = document.getElementById('metricaEvolucao').value;
  const agregacao = document.getElementById('agregacaoEvolucao').value;
  const modalidade = document.getElementById('modalidade').value;
  const wmin = document.getElementById('wattsMin').value || null;
  const wmax = document.getElementById('wattsMax').value || null;
  const url = '/api/fisiologia/evolucao_robusta?modalidade='+modalidade+'&metrica='+metrica+'&agregacao='+agregacao+(wmin?'&watts_min='+wmin:'')+(wmax?'&watts_max='+wmax:'');
+ 
  try{
   const d = await fetch(url).then(r => r.json());
   EVOLUCAO = d;
   drawEvolucao();
  }catch(e){
-  console.error('Erro:', e);
+  console.error('[carregarEvolucao] ERRO:', e);
   EVOLUCAO = {status: 'erro'};
   drawEvolucao();
+ }finally{
+  isLoadingEvolucao = false;
  }
 }
 
@@ -654,9 +673,12 @@ async function load(){
   
   const selMod = document.getElementById('modalidade');
   selMod.innerHTML = MODALIDADES.map(m => '<option value="'+m.modalidade+'">'+m.modalidade+' ('+m.n+')</option>').join('');
-  selMod.onchange = function(){ carregarPerfil(); carregarEvolucao(); };
+  selMod.onchange = function(){
+   console.log('[selMod.onchange] Novo:', this.value);
+   carregarPerfil();
+   carregarEvolucao();
+  };
   
-  // Criar dropdowns de agregação
   const agregControls = document.getElementById('agregacaoControls');
   agregControls.innerHTML = METRICAS_BASE.map(m => 
    '<label class="sel">'+LABELS_METAB[m]+': <select id="agr_'+m+'">'+
@@ -666,6 +688,7 @@ async function load(){
   
   METRICAS_BASE.forEach(m => {
    document.getElementById('agr_'+m).onchange = function(){
+    console.log('[agr_'+m+'.onchange] Novo:', this.value);
     camposSelecionados[m] = this.value;
     carregarPerfil();
    };
@@ -681,12 +704,15 @@ async function load(){
   selAgregacaoEvolucao.onchange = carregarEvolucao;
   
   const selBin = document.getElementById('larguraBin');
-  selBin.onchange = carregarPerfil;
+  selBin.onchange = function(){
+   console.log('[selBin.onchange] Novo:', this.value);
+   carregarPerfil();
+  };
   
   carregarPerfil();
   carregarEvolucao();
  }catch(e){
-  console.error('Erro:', e);
+  console.error('[load] ERRO:', e);
  }
 }
 
@@ -702,6 +728,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 load();
 """
+
 
 def api_data():
     try:

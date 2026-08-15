@@ -982,7 +982,7 @@ def api_aquecimento_dados():
     try:
         import sys
         sys.path.insert(0, './utils')
-        from aquecimento_db import get_db
+        from aquecimento_db_google_drive import get_db
         
         db = get_db()
         sessoes = db.listar_todas()
@@ -1004,7 +1004,7 @@ def api_aquecimento_sessao(activity_id):
     try:
         import sys
         sys.path.insert(0, './utils')
-        from aquecimento_db import get_db
+        from aquecimento_db_google_drive import get_db
         
         db = get_db()
         sessao = db.obter_sessao(activity_id)
@@ -1101,7 +1101,7 @@ def api_aquecimento_calibrar():
         import sys
         sys.path.insert(0, './utils')
         from aquecimento_analyzer import AquecimentoAnalyzer
-        from aquecimento_db import get_db as get_aq_db
+        from aquecimento_db_google_drive import get_db as get_aq_db
         
         processadas = 0
         aquecimentos_detectados = 0

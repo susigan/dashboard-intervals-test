@@ -1,83 +1,101 @@
 """
-AQUECIMENTO_DB.PY — Gestão de BD de Aquecimento
+AQUECIMENTO_DB_GOOGLE_DRIVE.PY — Gestão de BD de Aquecimento no Google Drive
 
-BD SQLite: aquecimento.db (Google Drive)
-Tabela: aquecimento_sessoes
-
-Campos:
-  - activity_id (TEXT PRIMARY KEY)
-  - modalidade (TEXT) — Row, Ski, Bike
-  - data (TEXT) — ISO date
-  - padrao_detectado (TEXT) — "5-1-5-1-5" ou "5-1-5-1-5-1-5-1-5"
-  - n_blocos (INTEGER) — número de blocos de 5min detectados
-  
-  — HR (bpm) —
-  - hr_avg (REAL)
-  - hr_min (REAL)
-  - hr_max (REAL)
-  
-  — SmO2 (%) —
-  - smo2_avg (REAL)
-  - smo2_min (REAL)
-  - smo2_max (REAL)
-  
-  — Respiração (rpm) —
-  - resp_avg (REAL)
-  - resp_min (REAL)
-  - resp_max (REAL)
-  
-  — DFA-α1 —
-  - dfa1_avg (REAL)
-  - dfa1_min (REAL)
-  - dfa1_max (REAL)
-  
-  — Metadata —
-  - tempo_aquecimento_seg (INTEGER) — segundos totais
-  - n_intervalos_analisados (INTEGER)
-  - data_criacao (TEXT)
-  - data_atualizacao (TEXT)
+Guarda a BD directamente no Google Drive (igual ao drive_db_fisiologia.py)
 """
 
 import sqlite3
 import os
 from datetime import datetime
-from googleapiclient.discovery import build
-from google.auth.transport.requests import Request
-from google.oauth2.service_account import Credentials
-import io
+from io import BytesIO
+import pickle
 
-class AquecimentoDB:
-    def __init__(self, folder_id="11oXQPkFrG6ZBCsvjDqb8RAiE_VfwBSfV"):
-        """Conecta à BD de aquecimento no Google Drive."""
+class AquecimentoDBGoogleDrive:
+    def __init__(self, folder_id="11oXQPkFrG6ZBCsvjDqb8RAiE_VfwBSfV", db_name="aquecimento.db"):
+        """Inicializa BD de aquecimento no Google Drive.
+        
+        A BD é guardada em /tmp/ e sincronizada com Google Drive.
+        """
         self.folder_id = folder_id
-        self.db_name = "aquecimento.db"
+        self.db_name = db_name
+        self.db_path = f"/tmp/{db_name}"
         self.conn = None
-        self._setup()
+        
+        # Descarregar DB do Drive se existir
+        self._download_from_drive()
+        
+        # Conectar
+        self.conn = sqlite3.connect(self.db_path)
+        self._criar_tabelas()
     
-    def _get_drive_service(self):
-        """Autentica com Google Drive."""
-        # Usar credentials do environment ou arquivo
+    def _download_from_drive(self):
+        """Descarrega DB do Google Drive (se existir)."""
         try:
+            from googleapiclient.discovery import build
+            from google.auth.transport.requests import Request
+            from google.oauth2.service_account import Credentials
+            
+            # Tentar com service account
             credentials = Credentials.from_service_account_file(
                 'service_account.json',
                 scopes=['https://www.googleapis.com/auth/drive']
             )
-        except:
-            # Fallback: assumir que está autenticado via OAuth
-            from google.auth.transport.requests import Request
-            from google.auth import default
-            credentials, _ = default(scopes=['https://www.googleapis.com/auth/drive'])
-        
-        return build('drive', 'v3', credentials=credentials)
+            service = build('drive', 'v3', credentials=credentials)
+            
+            # Procurar ficheiro
+            query = f"name='{self.db_name}' and '{self.folder_id}' in parents and trashed=false"
+            results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+            
+            files = results.get('files', [])
+            if files:
+                file_id = files[0]['id']
+                # Descarregar
+                request = service.files().get_media(fileId=file_id)
+                fh = BytesIO()
+                downloader = request.download(fh)
+                
+                with open(self.db_path, 'wb') as f:
+                    f.write(fh.getvalue())
+                
+                print(f"[AQUECIMENTO] DB descarregada do Drive")
+        except Exception as e:
+            print(f"[AQUECIMENTO] Não foi possível descarregar do Drive: {e}")
+            # Continuar com DB local (será criada nova)
     
-    def _setup(self):
-        """Descarrega DB do Drive ou cria nova."""
-        # Por enquanto, usar SQLite local (pode ser expandido para Drive depois)
-        self.db_path = f"/tmp/{self.db_name}"
-        
-        # Criar conexão
-        self.conn = sqlite3.connect(self.db_path)
-        self._criar_tabelas()
+    def _upload_to_drive(self):
+        """Envia DB para Google Drive."""
+        try:
+            from googleapiclient.discovery import build
+            from google.auth.transport.requests import Request
+            from google.oauth2.service_account import Credentials
+            from googleapiclient.http import MediaFileUpload
+            
+            credentials = Credentials.from_service_account_file(
+                'service_account.json',
+                scopes=['https://www.googleapis.com/auth/drive']
+            )
+            service = build('drive', 'v3', credentials=credentials)
+            
+            # Procurar ficheiro existente
+            query = f"name='{self.db_name}' and '{self.folder_id}' in parents and trashed=false"
+            results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+            files = results.get('files', [])
+            
+            file_metadata = {'name': self.db_name}
+            media = MediaFileUpload(self.db_path, mimetype='application/octet-stream')
+            
+            if files:
+                # Update
+                file_id = files[0]['id']
+                service.files().update(fileId=file_id, media_body=media).execute()
+                print(f"[AQUECIMENTO] DB actualizada no Drive")
+            else:
+                # Create
+                file_metadata['parents'] = [self.folder_id]
+                service.files().create(body=file_metadata, media_body=media).execute()
+                print(f"[AQUECIMENTO] DB criada no Drive")
+        except Exception as e:
+            print(f"[AQUECIMENTO] Erro ao enviar para Drive: {e}")
     
     def _criar_tabelas(self):
         """Cria as tabelas se não existirem."""
@@ -115,7 +133,7 @@ class AquecimentoDB:
         self.conn.commit()
     
     def salvar_sessao(self, activity_id, dados):
-        """Salva dados de aquecimento para uma atividade."""
+        """Salva dados de aquecimento e sincroniza com Drive."""
         sql = """
         INSERT OR REPLACE INTO aquecimento_sessoes (
             activity_id, modalidade, data, padrao_detectado, n_blocos,
@@ -159,6 +177,9 @@ class AquecimentoDB:
         
         self.conn.execute(sql, valores)
         self.conn.commit()
+        
+        # Sincronizar com Drive
+        self._upload_to_drive()
     
     def obter_sessao(self, activity_id):
         """Obtém dados de aquecimento de uma atividade."""
@@ -181,20 +202,17 @@ class AquecimentoDB:
             resultados.append(dict(zip(colunas, row)))
         return resultados
     
-    def atualizar_sessao(self, activity_id, dados):
-        """Atualiza uma sessão existente."""
-        self.salvar_sessao(activity_id, dados)
-    
     def fechar(self):
-        """Fecha a conexão."""
+        """Fecha a conexão e sincroniza."""
         if self.conn:
             self.conn.close()
+        self._upload_to_drive()
 
-# Função global de acesso
+# Instância global
 _db_instance = None
 
 def get_db():
     global _db_instance
     if _db_instance is None:
-        _db_instance = AquecimentoDB()
+        _db_instance = AquecimentoDBGoogleDrive()
     return _db_instance

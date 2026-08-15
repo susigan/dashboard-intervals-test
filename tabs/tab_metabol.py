@@ -169,9 +169,12 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
     watts = np.array([l['watts_medio'] for l in linhas])
     wmin, wmax = float(watts.min()), float(watts.max())
 
-    # Gerar bins
+    # Gerar bins — APENAS até a última faixa com dados
+    # Isto evita espaço vazio à direita (problema do Run)
     inicio = int(wmin // largura_bin_manual) * largura_bin_manual
-    fim = int(wmax // largura_bin_manual + 1) * largura_bin_manual
+    fim = int(wmax // largura_bin_manual) * largura_bin_manual  # sem +1
+    if fim == inicio:
+        fim += largura_bin_manual
     limites = list(np.arange(inicio, fim + largura_bin_manual, largura_bin_manual))
 
     faixas_saida = []
@@ -203,10 +206,16 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
             if v is not None and np.isfinite(v):
                 paces.append(float(v))
         if paces:
-            pace_txt = _pace_da_faixa(float(np.median(paces)), modalidade)
-            if pace_txt:
-                faixa['pace_medio'] = pace_txt
-                faixa['n_pace'] = len(paces)
+            # Usar a mediana dos paces válidos
+            # Se houver pelo menos 1, já é credível
+            try:
+                pace_mediano = float(np.median(paces))
+                pace_txt = _pace_da_faixa(pace_mediano, modalidade)
+                if pace_txt:
+                    faixa['pace_medio'] = pace_txt
+                    faixa['n_pace'] = len(paces)
+            except (ValueError, TypeError):
+                pass  # Sem pace se algo der errado
         
         # Para cada métrica selecionada (VALIDADA)
         for chave_unica, coluna_db in para_buscar.items():

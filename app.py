@@ -32,20 +32,7 @@ from datetime import datetime, timedelta
 from api_client import (fetch_activities, cache_info, invalidar_cache,
                         fetch_da_api)
 from tabs import (tab_volume, tab_atividades, tab_detalhe,
-                  tab_recordes, tab_pmc, tab_corporal)
-
-# ===== IMPORTS AQUECIMENTO =====
-sys.path.insert(0, './utils')
-try:
-    import aquecimento_db as aq_db
-    from aquecimento_analyzer import AquecimentoAnalyzer
-    AQUECIMENTO_ENABLED = True
-except ImportError as e:
-    aq_db = None
-    AquecimentoAnalyzer = None
-    AQUECIMENTO_ENABLED = False
-    print(f"[WARNING] Aquecimento não disponível: {e}")
-
+                  tab_recordes, tab_pmc, tab_corporal, tab_metabol)
 
 if db.ENABLED:
     db.init_schema()
@@ -75,6 +62,11 @@ def page_corporal():
     return tab_corporal.render()
 
 
+@app.route('/metabol')
+def page_metabol():
+    return tab_metabol.render()
+
+
 @app.route('/atividades')
 def page_atividades():
     return tab_atividades.render()
@@ -100,6 +92,11 @@ def api_pmc():
 @app.route('/api/corporal')
 def api_corporal():
     return tab_corporal.api_data()
+
+
+@app.route('/api/metabol')
+def api_metabol():
+    return tab_metabol.api_data()
 
 
 @app.route('/api/debug/sheets')
@@ -176,6 +173,23 @@ def api_fisiologia_status():
     try:
         from tabs import tab_metabol as tm
         return jsonify({'status': 'ok', 'modalidades': tm.modalidades_disponiveis()})
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/diagnostico')
+def api_fisiologia_diagnostico():
+    """Estado da persistência no Google Drive: credenciais, pasta, se o
+    ficheiro existe lá, quantas linhas tem o .db local agora mesmo.
+
+    Usa isto quando /api/fisiologia/processar disser "ok" mas a tab
+    Metabolismo continuar vazia — revela se o upload para o Drive está
+    mesmo a funcionar ou a falhar silenciosamente.
+    """
+    try:
+        import drive_db_fisiologia as ddf
+        return jsonify({'status': 'ok', 'diagnostico': ddf.diagnostico()})
     except Exception as e:
         import traceback
         return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
@@ -741,134 +755,102 @@ def api_db_streams():
     return _seguro(db.streams_stats)
 
 
+@app.route('/fisiologia/perfil_grafico_enhanced/<modalidade>')
+def page_perfil_grafico_enhanced(modalidade):
+    """Página HTML com gráfico dual-axis (watts + pace) do perfil."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 10))
+        enh = tme.MetabolicProfileEnhanced(modalidade)
+        perfil = enh.gerar_perfil_com_pace(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        if perfil.get('status') != 'ok':
+            return f"<h1>Perfil — {modalidade}</h1><p>Dados insuficientes</p>"
+        fig = enh.grafico_perfil_dual_axis(perfil)
+        html = fig.to_html(include_plotlyjs='cdn', div_id=f'perfil-{modalidade}',
+                          config={'responsive': True, 'displayModeBar': True})
+        return f"""<html><head><title>Perfil {modalidade}</title><meta charset="utf-8"></head><body>
+                <h1>Perfil Metabólico — {modalidade} (Dual Axis: Watts + Pace)</h1>{html}
+                <p><a href="/">← Voltar</a></p></body></html>"""
+    except Exception as e:
+        import traceback
+        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
+
+
+@app.route('/fisiologia/evolucao_grafico/<modalidade>/<campo>')
+def page_evolucao_grafico(modalidade, campo):
+    """Página HTML com gráfico evolução temporal (watts + pace)."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        watts_min = request.args.get('watts_min', type=float)
+        watts_max = request.args.get('watts_max', type=float)
+        agregacao = request.args.get('agregacao', 'mes')
+        resultado = tme.evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max, agregacao)
+        if resultado.get('status') != 'ok':
+            return f"<h1>Evolução — {modalidade}</h1><p>Dados insuficientes</p>"
+        fig = tme.grafico_evolucao_dual_axis(resultado)
+        html = fig.to_html(include_plotlyjs='cdn', div_id=f'evolucao-{modalidade}',
+                          config={'responsive': True, 'displayModeBar': True})
+        return f"""<html><head><title>Evolução {modalidade}</title><meta charset="utf-8"></head><body>
+                <h1>Evolução {campo} — {modalidade} (Dual Axis: Watts + Pace)</h1>{html}
+                <p><a href="/">← Voltar</a></p></body></html>"""
+    except Exception as e:
+        import traceback
+        return f"<h1>Erro</h1><pre>{traceback.format_exc()}</pre>", 500
+
+
+# ── Novas rotas: DFA-α1 + Pace/Watts ──────────────────────────────────────
+
+@app.route('/api/fisiologia/validacao_dfa/<modalidade>')
+def api_validacao_dfa(modalidade):
+    """Validar qualidade de DFA-α1 para uma modalidade."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        resultado = tme.validacao_lote_dfa(modalidade)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/perfil_enhanced/<modalidade>')
+def api_perfil_enhanced(modalidade):
+    """Perfil metabólico com coluna pace adicionada (Row/Ski)."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        min_n = int(request.args.get('min_n', 20))
+        n_faixas = int(request.args.get('n_faixas', 10))
+        enh = tme.MetabolicProfileEnhanced(modalidade)
+        resultado = enh.gerar_perfil_com_pace(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/evolucao_com_pace')
+def api_evolucao_com_pace():
+    """Evolução temporal com pace secundário (Row/Ski)."""
+    try:
+        from tabs import tab_metabol_enhanced as tme
+        modalidade = request.args.get('modalidade')
+        campo = request.args.get('campo')
+        if not modalidade or not campo:
+            return jsonify({'erro': 'faltam parametros ?modalidade= e ?campo='}), 400
+        watts_min = request.args.get('watts_min', type=float)
+        watts_max = request.args.get('watts_max', type=float)
+        agregacao = request.args.get('agregacao', 'mes')
+        resultado = tme.evolucao_temporal_com_pace(modalidade, campo, watts_min, watts_max, agregacao)
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        return jsonify({'erro': str(e), 'trace': traceback.format_exc()}), 500
+
+
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy'}), 200
 
-
-# ===== ROTAS AQUECIMENTO =====
-
-@app.route('/api/aquecimento/dados')
-def api_aquecimento_dados():
-    """Retorna todas as sessões de aquecimento."""
-    if not aq_db:
-        return jsonify({'status': 'erro', 'mensagem': 'BD não inicializada'}), 500
-    try:
-        sessoes = aq_db.listar_todas()
-        return jsonify({'status': 'ok', 'sessoes': sessoes, 'total': len(sessoes)})
-    except Exception as e:
-        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
-@app.route('/api/aquecimento/sessao/<activity_id>')
-def api_aquecimento_sessao(activity_id):
-    """Retorna dados de aquecimento de uma atividade."""
-    if not aq_db:
-        return jsonify({'status': 'erro', 'mensagem': 'BD não inicializada'}), 500
-    try:
-        sessao = aq_db.obter_sessao(activity_id)
-        if not sessao:
-            return jsonify({'status': 'erro', 'mensagem': 'Sessão não encontrada'}), 404
-        return jsonify({'status': 'ok', 'sessao': sessao})
-    except Exception as e:
-        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
-@app.route('/api/aquecimento/calibrar', methods=['GET', 'POST'])
-def api_aquecimento_calibrar():
-    """Calibra aquecimento com datas específicas."""
-    if not aq_db:
-        return jsonify({'status': 'erro', 'mensagem': 'BD não inicializada'}), 500
-    try:
-        if request.method == 'GET':
-            modalidade = request.args.get('modalidade')
-            datas_str = request.args.get('datas', '')
-            datas = [d.strip() for d in datas_str.split(',') if d.strip()]
-        else:
-            data = request.get_json()
-            if not data:
-                return jsonify({'status': 'erro', 'mensagem': 'Body vazio'}), 400
-            modalidade = data.get('modalidade')
-            datas = data.get('datas', [])
-        
-        if not modalidade or not datas:
-            return jsonify({'status': 'erro', 'mensagem': 'modalidade e datas obrigatórios'}), 400
-        
-        try:
-            from aquecimento_analyzer import AquecimentoAnalyzer
-            import drive_db_fisiologia as ddf
-        except ImportError:
-            return jsonify({'status': 'erro', 'mensagem': 'módulos não disponíveis'}), 500
-        
-        conn = ddf.get_conn()
-        atividades_para_processar = []
-        
-        for data_str in datas:
-            try:
-                if '/' in data_str:
-                    data_obj = datetime.strptime(data_str, '%d/%m/%Y')
-                else:
-                    data_obj = datetime.strptime(data_str, '%Y-%m-%d')
-                data_inicio = data_obj.date()
-                
-                query = """SELECT DISTINCT activity_id FROM fisiologia_intervalos 
-                          WHERE modalidade=? AND valido=1 AND DATE(data) = ?"""
-                resultados = conn.execute(query, (modalidade, data_inicio)).fetchall()
-                
-                for (activity_id,) in resultados:
-                    atividades_para_processar.append(activity_id)
-            except ValueError:
-                pass
-        
-        atividades_para_processar = list(set(atividades_para_processar))
-        
-        if not atividades_para_processar:
-            return jsonify({'status': 'aviso', 'mensagem': 'Nenhuma atividade encontrada', 'total': 0}), 200
-        
-        processadas = 0
-        aquecimentos_detectados = 0
-        detalhes = []
-        analyzer = AquecimentoAnalyzer(conn)
-        
-        for activity_id in atividades_para_processar:
-            try:
-                resultado = analyzer.analisar_atividade(activity_id, modalidade)
-                if resultado.get('detectado'):
-                    dados_aq = {
-                        'modalidade': modalidade,
-                        'data': datetime.now().isoformat(),
-                        'padrao_detectado': resultado.get('padrao'),
-                        'n_blocos': resultado.get('n_blocos'),
-                        'hr_avg': resultado.get('metricas', {}).get('hr_avg'),
-                        'hr_min': resultado.get('metricas', {}).get('hr_min'),
-                        'hr_max': resultado.get('metricas', {}).get('hr_max'),
-                        'smo2_avg': resultado.get('metricas', {}).get('smo2_avg'),
-                        'smo2_min': resultado.get('metricas', {}).get('smo2_min'),
-                        'smo2_max': resultado.get('metricas', {}).get('smo2_max'),
-                        'resp_avg': resultado.get('metricas', {}).get('resp_avg'),
-                        'resp_min': resultado.get('metricas', {}).get('resp_min'),
-                        'resp_max': resultado.get('metricas', {}).get('resp_max'),
-                        'dfa1_avg': resultado.get('metricas', {}).get('dfa1_avg'),
-                        'dfa1_min': resultado.get('metricas', {}).get('dfa1_min'),
-                        'dfa1_max': resultado.get('metricas', {}).get('dfa1_max'),
-                        'tempo_aquecimento_seg': resultado.get('tempo_aquecimento_seg'),
-                        'n_intervalos_analisados': resultado.get('n_intervalos'),
-                    }
-                    aq_db.salvar_sessao(activity_id, dados_aq)
-                    aquecimentos_detectados += 1
-                processadas += 1
-                detalhes.append({'activity_id': activity_id, 'detectado': resultado.get('detectado'), 'status': 'ok'})
-            except Exception as e:
-                detalhes.append({'activity_id': activity_id, 'erro': str(e), 'status': 'erro'})
-        
-        return jsonify({
-            'status': 'calibracao_completa',
-            'total_solicitadas': len(atividades_para_processar),
-            'processadas': processadas,
-            'aquecimentos_detectados': aquecimentos_detectados,
-            'detalhes': detalhes
-        })
-    except Exception as e:
-        import traceback
-        return jsonify({'status': 'erro', 'mensagem': str(e), 'trace': traceback.format_exc()}), 500
 
 
 
@@ -990,6 +972,7 @@ def api_aquecimento_calibrar():
     except Exception as e:
         import traceback
         return jsonify({'status': 'erro', 'mensagem': str(e), 'trace': traceback.format_exc()}), 500
+
 
 
 if __name__ == '__main__':

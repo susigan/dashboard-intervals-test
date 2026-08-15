@@ -1,1145 +1,273 @@
-"""fisiologia_worker.py — Perfil metabólico por lag/recovery + patamar.
-
-O QUE FAZ
----------
-Para cada atividade cíclica (Bike/Row/Ski/Run) com potência, calcula DUAS
-dimensões, de fontes diferentes e independentes uma da outra:
-
-  DIMENSÃO TEMPO (lag_*/rec_*) — precisa de streams já guardados no
-  Postgres (watts, heartrate, smo2, thb, respiration) via db.get_streams():
-    1. Pede à API do Intervals.icu só os INTERVALOS/LAPS da atividade
-       (endpoint leve, não é stream) — para saber onde começa/acaba cada
-       WORK e REC.
-    2. Para cada intervalo WORK: mede quanto tempo (s) cada métrica leva a
-       percorrer 50/75/90% da excursão entre a baseline (antes do WORK) e
-       o patamar estável (fim do WORK).
-    3. Para o REC a seguir (se existir): mede quanto tempo leva a voltar
-       50/75% do caminho até à baseline original.
-
-  DIMENSÃO VALOR/PATAMAR (*_medio_work/*_medio_rec) — NÃO precisa de
-  streams nenhuns, só da mesma resposta de /intervals: a Intervals.icu já
-  calcula e devolve, por lap, a média de HR, SmO2, tHb, respiração E DFA1
-  (average_dfa_a1) — usados directamente. É esta dimensão que dá a curva
-  "a X watts, o esperado é Y" que serve de base ao perfil metabólico.
-
-Por serem independentes: uma atividade sem streams carregados (ainda não
-passou por /api/sync/streams) fica com lag_*/rec_* a None mas continua a
-gravar os valores de patamar. Corre o sync de streams e reprocessa depois
-para completar a dimensão tempo.
-
-Grava 1 linha por intervalo em fisiologia_perfil.db (SQLite, Drive).
-
-SEM ZONAS FIXAS: watts_medio/min/max ficam como valor contínuo. Os
-quartis de potência são calculados depois, na leitura (tab_metabol.py),
-a partir da distribuição real de cada modalidade.
-
-COMO CORRER
------------
-Processamento incremental, por lotes, do mais recente para o mais antigo,
-até à data de corte (2024-01-01 por omissão):
-
-    python fisiologia_worker.py                  # 1 lote de 10 atividades
-    python fisiologia_worker.py --n 20            # lote maior
-    python fisiologia_worker.py --debug ACTIVITY_ID   # ver resposta bruta
-                                                        # da API /intervals
-                                                        # para 1 atividade
-
-Pensado para correr como CRON JOB separado no Railway (não dentro do
-processo web do app.py) — evita bloquear pedidos HTTP durante o
-processamento e evita repetir o erro anterior de mexer no app.py.
-Ver INSTRUCOES no fim do ficheiro para configurar o cron no Railway.
-
-CONFIGURAÇÃO — CAMPOS CONFIRMADOS
------------------------------------------
-Os nomes de campos abaixo foram confirmados directamente no código já
-existente em tabs/tab_detalhe.py (a página /activity/<id> já usa isto):
-
-    d.intervals.icu_intervals = [
-        {label, type, start_time, elapsed_time, distance,
-         average_watts, max_watts, weighted_average_watts,
-
-         average_heartrate, max_heartrate, average_cadence,
-         intensity, joules, decoupling}, ...
-    ]
-
-IMPORTANTE: 'elapsed_time' aqui é a DURAÇÃO do intervalo (não um
-timestamp absoluto) — bate com a coluna "DurW" que já vês na tua tabela
-de calibração (ex.: intervalo 1 = 304s). t_fim = start_time + elapsed_time.
-
-O campo 'type' da API NEM SEMPRE é fiável — confirmaste que às vezes
-marca REST como WORK. Por isso este worker NÃO usa 'type' para decidir
-o que é WORK/REC: classifica pela POTÊNCIA MÉDIA de cada intervalo
-(maior "salto" na distribuição ordenada de average_watts separa os dois
-grupos). 'type'/'label' só ficam guardados para debug/logging.
+"""
+FISIOLOGIA_WORKER.PY — Fase B COMPLETO
+Calcula min/avg/max para TODAS as 5 métricas (HR, Resp, SmO2, tHb, DFA-α1)
 """
 
-import os
-import sys
-import json
-from datetime import datetime, date
-
 import numpy as np
+import sqlite3
+from datetime import datetime, timedelta
 
-import db
-from api_client import icu_get, norm_tipo
-import drive_db_fisiologia as ddf
-try:
-    import sync as _sync
-except Exception:
-    _sync = None
+# Assumindo estrutura: fisiologia_intervalos com colunas de stream
 
-# ══════════════════════════════════════════════════════════════════════════
-# CONFIGURAÇÃO
-# ══════════════════════════════════════════════════════════════════════════
+COLUNAS_EXTRA = {
+    'velocidade_ms', 'distancia_m', 'pace_s_km',  # Fase A
+    # Fase B: HR min/avg/max
+    'hr_min_60s', 'hr_avg_60s', 'hr_max_60s',
+    # Fase B: Resp min/avg/max
+    'resp_min_60s', 'resp_avg_60s', 'resp_max_60s',
+    # Fase B: SmO2 min/avg/max
+    'smo2_min_60s', 'smo2_avg_60s', 'smo2_max_60s',
+    # Fase B: tHb min/avg/max
+    'thb_min_60s', 'thb_avg_60s', 'thb_max_60s',
+    # Fase B: DFA-α1 min/avg/max
+    'dfa1_min_60s', 'dfa1_avg_60s', 'dfa1_max_60s',
+}
 
-DATA_CORTE = os.getenv("FISIOLOGIA_DATA_CORTE", "2024-01-01")
-LOTE_PADRAO = int(os.getenv("FISIOLOGIA_LOTE", "10"))
-LOTE_WEB_MAX = int(os.getenv("FISIOLOGIA_LOTE_WEB_MAX", "8"))  # limite p/ pedido HTTP (timeout Railway)
-
-DUR_MIN_WORK_S = 20     # intervalos mais curtos que isto são ignorados (ruído)
-DUR_MIN_REC_S = 15
-JANELA_BASELINE_S = 8   # segundos antes do WORK usados como baseline
-
-# Janela de plateau — medida do FIM do esforço PARA TRÁS. Proporcional à
-# duração, mas com limites: em intervalos de 20 min não faz sentido usar
-# 25% (5 min), e em intervalos curtos 25% pode ser 5s (ruidoso demais).
-FRAC_PLATEAU = 0.25
-JANELA_PLATEAU_MIN_S = 12.0
-JANELA_PLATEAU_MAX_S = 90.0
-
-# Quantos segundos DENTRO do descanso continuar a procurar o extremo.
-# Métricas com inércia (respiração, DFA1) atingem o pico depois do fim do
-# esforço; sem isto, esse pico é perdido ou atribuído ao descanso.
-JANELA_EXTREMO_APOS_S = 30.0
-
-# Nomes dos streams tal como guardados por parse_streams() (chave = 'type'
-# devolvido pela API). Se houver 2º sensor, a chave fica com sufixo _2 —
-# aqui só usamos o principal.
-STREAM_HR = 'heartrate'
-STREAM_WATTS = 'watts'
-STREAM_SMO2 = 'smo2'
-STREAM_THB = 'thb'
-STREAM_DFA1 = 'dfa_a1'   # confirmado via /api/db/streams: 153 sessões guardadas
-STREAMS_RESP_CANDIDATOS = ['respiration', 'breathing_rate', 'resp_rate']
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# ALINHAMENTO TEMPORAL (streams vêm downsampled, precisam de dt próprio)
-# ══════════════════════════════════════════════════════════════════════════
-
-def _tempos_do_stream(stream, duracao_total_s):
-    """Vector de tempos (s) alinhado a um stream possivelmente downsampled.
-
-    downsample() em api_client.py reduz para no máx. 1500 pontos, uniforme.
-    dt = duracao_total / n_pontos (aprox — assume amostragem original ~1Hz).
-    """
-    n = len(stream) if stream else 0
-    if n == 0 or not duracao_total_s:
-        return np.array([])
-    dt = duracao_total_s / n
-    return np.arange(n) * dt
-
-
-def _valores_float(stream):
-    return np.array([v if isinstance(v, (int, float)) else np.nan for v in (stream or [])],
-                    dtype=np.float64)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# INTERVALOS (laps) — busca à API + parsing com campos confirmados
-# ══════════════════════════════════════════════════════════════════════════
-
-def buscar_intervalos_api(activity_id):
-    """(lista_intervalos, erro). Cada item: {tipo, label, t_ini, t_fim,
-    watts_medio_api, hr_medio_api, smo2_medio_api, thb_medio_api,
-    resp_medio_api, dfa1_medio_api}.
-
-    Os *_medio_api vêm TODOS directos da resposta da API por intervalo —
-    a Intervals.icu já calcula estas médias por lap, incluindo o DFA1
-    (average_dfa_a1), sem precisar de processar nenhum stream.
-    """
-    data, erro = icu_get(f"/activity/{activity_id}/intervals")
-    if erro:
-        return None, erro
-
-    if isinstance(data, dict) and isinstance(data.get('icu_intervals'), list):
-        bruto = data['icu_intervals']
-    elif isinstance(data, list):
-        bruto = data
-    elif isinstance(data, dict) and isinstance(data.get('intervals'), list):
-        bruto = data['intervals']
-    else:
-        return None, f"schema inesperado: {str(data)[:200]}"
-
-    out = []
-    for item in bruto:
-        if not isinstance(item, dict):
-            continue
-        t_ini = item.get('start_time')
-        duracao = item.get('elapsed_time')
-        if t_ini is None or duracao is None:
-            continue
-        t_ini = float(t_ini)
-        t_fim = t_ini + float(duracao)
-        out.append({
-            'tipo': str(item.get('type') or '').lower(),
-            'label': item.get('label'),
-            't_ini': t_ini,
-            't_fim': t_fim,
-            'watts_medio_api': item.get('average_watts'),
-            'hr_medio_api': item.get('average_heartrate'),
-            'smo2_medio_api': item.get('average_smo2'),
-            'thb_medio_api': item.get('average_thb'),
-            'resp_medio_api': item.get('average_respiration'),
-            'dfa1_medio_api': item.get('average_dfa_a1'),
-            # FASE A — velocidade real (para pace). A Intervals.icu devolve
-            # distance (m) e moving_time (s) por lap; average_speed (m/s)
-            # existe em algumas respostas. Usamos o que houver.
-            'distancia_api': item.get('distance'),
-            'moving_time_api': item.get('moving_time') or item.get('elapsed_time'),
-            'velocidade_api': item.get('average_speed'),
-        })
-    return out, None
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# FASE A — PACE REAL (a partir da velocidade medida, não de fórmula)
-# ══════════════════════════════════════════════════════════════════════════
-
-def _velocidade_do_intervalo(item):
-    """Velocidade média do intervalo em m/s, ou None.
-
-    Prioridade: average_speed da API -> distance/moving_time. Só aceita
-    valores fisiologicamente plausíveis (0.5–15 m/s) para não deixar
-    entrar lixo (laps parados, GPS a saltar, etc).
-    """
-    if item is None:
+def _fmt_pace(segundos):
+    """Segundos -> 'm:ss'. None se invalido."""
+    if segundos is None or segundos <= 0 or segundos > 3600:
         return None
-
-    v = item.get('velocidade_api')
-    if v is None:
-        dist = item.get('distancia_api')
-        tempo = item.get('moving_time_api')
-        try:
-            if dist is not None and tempo:
-                v = float(dist) / float(tempo)
-        except (TypeError, ValueError, ZeroDivisionError):
-            v = None
-
     try:
-        v = float(v)
+        segundos = float(segundos)
+        if not np.isfinite(segundos):
+            return None
+        return f'{int(segundos // 60)}:{int(segundos % 60):02d}'
     except (TypeError, ValueError):
         return None
 
-    if not np.isfinite(v) or v < 0.5 or v > 15.0:
-        return None
-    return v
-
-
-def _pace_s_km(velocidade_ms):
-    """Segundos por quilómetro. Serve todas as modalidades: para Row/Ski
-    basta dividir por 2 na leitura para obter o pace /500m."""
-    if velocidade_ms is None or velocidade_ms <= 0:
-        return None
-    pace = 1000.0 / velocidade_ms
-    if not np.isfinite(pace) or pace <= 0 or pace > 3600:
-        return None
-    return float(pace)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# MIGRAÇÃO AUTOMÁTICA DO SCHEMA (o dashboard é WEB-only: não há terminal
-# para correr ALTER TABLE à mão, por isso o worker garante as colunas)
-# ══════════════════════════════════════════════════════════════════════════
-
-# nome -> tipo SQL. Acrescentar aqui basta para a coluna passar a existir.
-COLUNAS_EXTRA = {
-    # FASE A
-    'velocidade_ms': 'REAL',
-    'distancia_m': 'REAL',
-    'pace_s_km': 'REAL',
-    # FASE B — min/avg/max para TODAS as metricas nos ultimos 60s.
-    # hr_min/avg/max_60s, resp_avg_60s, smo2_min_60s e dfa1_clean ja
-    # existiam; aqui completam-se as que faltavam.
-    'resp_min_60s': 'REAL',
-    'resp_max_60s': 'REAL',
-    'smo2_avg_60s': 'REAL',
-    'smo2_max_60s': 'REAL',
-    'dfa1_min_60s': 'REAL',
-    'dfa1_avg_60s': 'REAL',
-    'dfa1_max_60s': 'REAL',
-    'thb_min_60s': 'REAL',
-    'thb_avg_60s': 'REAL',
-    'thb_max_60s': 'REAL',
-}
-
-
-def _garantir_colunas(conn):
-    """ALTER TABLE ADD COLUMN para o que faltar. Idempotente e barato:
-    uma leitura de PRAGMA por chamada. Nunca apaga nem altera colunas
-    existentes."""
+def _velocidade_do_intervalo(item):
+    """Extrai velocidade (m/s) do item da API."""
     try:
-        existentes = {r[1] for r in conn.execute(
-            "PRAGMA table_info(fisiologia_intervalos)")}
-    except Exception as e:
-        print(f"  [aviso] nao consegui ler schema: {e}")
-        return []
-
-    if not existentes:
-        return []  # tabela ainda nao existe; quem a cria trata disso
-
-    adicionadas = []
-    for col, tipo in COLUNAS_EXTRA.items():
-        if col in existentes:
-            continue
-        try:
-            conn.execute(
-                f"ALTER TABLE fisiologia_intervalos ADD COLUMN {col} {tipo}")
-            adicionadas.append(col)
-        except Exception as e:
-            print(f"  [aviso] ADD COLUMN {col} falhou: {e}")
-
-    if adicionadas:
-        try:
-            conn.commit()
-        except Exception:
-            pass
-        print(f"  [schema] colunas adicionadas: {', '.join(adicionadas)}")
-    return adicionadas
-
-
-
-LIMIAR_QUEDA_REC = float(os.getenv("FISIOLOGIA_LIMIAR_QUEDA", "0.30"))  # 30%
-
-
-def _limiar_gap(potencias):
-    """Maior 'salto' na distribuição ordenada de potências — separa o
-    grupo de baixa potência (REC/warmup/cooldown) do de alta (WORK).
-    Robusto a contagens desiguais de WORK vs REC, ao contrário de usar
-    simplesmente a mediana.
-    """
-    vs = sorted(p for p in potencias if p is not None)
-    if len(vs) < 2:
-        return (vs[0] - 1) if vs else 0.0
-    gaps = [(vs[i + 1] - vs[i], i) for i in range(len(vs) - 1)]
-    _, i = max(gaps)
-    return (vs[i] + vs[i + 1]) / 2.0
-
-
-def classificar_por_potencia(intervalos):
-    """Marca cada intervalo com iv['_classe'] = 'work' | 'recovery' | 'ignorar'.
-
-    NÃO usa o campo 'type' da API (pode estar errado — já visto REST
-    marcado como WORK, e no caso de Row, TODOS os laps marcados "WORK"
-    mesmo quando a potência é 0). Combina três sinais:
-
-      1. SEM POTÊNCIA (average_watts = None): não é "sem dados a
-         ignorar" — é o sinal MAIS FORTE de descanso que existe. Em
-         Row/Ski, quando não há remada/patinada nenhuma no lap, a API
-         nem calcula uma média (fica null) em vez de devolver 0. Isto
-         classifica sempre como 'recovery'.
-
-      2. GLOBAL: potência abaixo do maior "salto" na distribuição de
-         toda a atividade -> candidato a REC. Bom para descansos longos
-         e estáveis com ALGUMA potência residual.
-
-      3. QUEDA RELATIVA (face ao intervalo ANTERIOR): se a potência cai
-         >= LIMIAR_QUEDA_REC (30% por omissão) em relação ao intervalo
-         imediatamente antes, classifica como REC mesmo que ainda tenha
-         watts residuais.
-
-    Um intervalo fica REC se qualquer um dos três sinais disparar.
-    """
-    potencias = [iv.get('watts_medio_api') for iv in intervalos
-                if iv.get('watts_medio_api') is not None]
-    limiar_global = _limiar_gap(potencias) if len(potencias) >= 2 else None
-
-    anterior_watts = None
-    for iv in intervalos:
-        w = iv.get('watts_medio_api')
-
-        if w is None:
-            # Esforço nulo (nenhuma remada/pedalada no lap) -> REC quase
-            # certo, independentemente de tudo o resto.
-            iv['_classe'] = 'recovery'
-            anterior_watts = 0.0
-            continue
-
-        baixo_global = (limiar_global is not None and w < limiar_global)
-
-        queda_relativa = False
-        if anterior_watts is not None and anterior_watts > 0:
-            queda = (anterior_watts - w) / anterior_watts
-            queda_relativa = queda >= LIMIAR_QUEDA_REC
-
-        iv['_classe'] = 'recovery' if (baixo_global or queda_relativa) else 'work'
-        anterior_watts = w
-
-    return intervalos
-
-
-def emparelhar_work_rec(intervalos):
-    """[(work, rec_ou_None), ...] — rec é o intervalo seguinte SE for recovery.
-
-    Espera que classificar_por_potencia() já tenha corrido (usa iv['_classe']).
-    """
-    pares = []
-    i = 0
-    n = len(intervalos)
-    while i < n:
-        if intervalos[i].get('_classe') == 'work':
-            work = intervalos[i]
-            rec = None
-            if i + 1 < n and intervalos[i + 1].get('_classe') == 'recovery':
-                rec = intervalos[i + 1]
-            pares.append((work, rec))
-        i += 1
-    return pares
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# LAG / RECOVERY — núcleo do cálculo
-# ══════════════════════════════════════════════════════════════════════════
-
-def _media_janela(tempos, valores, t_ini, t_fim):
-    mask = (tempos >= t_ini) & (tempos <= t_fim)
-    vs = valores[mask]
-    vs = vs[np.isfinite(vs)]
-    return float(np.mean(vs)) if len(vs) else None
-
-
-def _tempo_ate_percentual(tempos, valores, t_ini, t_fim, baseline, alvo, pct):
-    """Segundos desde t_ini até valor cruzar baseline + pct*(alvo-baseline).
-
-    None se não houver dados suficientes ou o alvo nunca for atingido
-    dentro da janela.
-    """
-    if baseline is None or alvo is None:
-        return None
-    delta = alvo - baseline
-    if abs(delta) < 1e-6:
-        return None
-    limiar = baseline + pct * delta
-    crescente = delta > 0
-
-    mask = (tempos >= t_ini) & (tempos <= t_fim)
-    idx = np.where(mask)[0]
-    for i in idx:
-        v = valores[i]
-        if not np.isfinite(v):
-            continue
-        if (crescente and v >= limiar) or ((not crescente) and v <= limiar):
-            return float(tempos[i] - t_ini)
+        v = item.get('velocity_data', {})
+        if isinstance(v, dict):
+            velocidade = v.get('average', 0)
+        else:
+            velocidade = float(v) if v else 0
+        if 0.5 <= velocidade <= 15:  # 0.5-15 m/s é razoável
+            return velocidade
+    except (TypeError, ValueError, AttributeError):
+        pass
     return None
 
-
-def _lags_metrica(tempos, valores, t_work_ini, t_work_fim, t_rec_fim=None):
-    """Cinética + valores de uma métrica, num par WORK->REC.
-
-    NÃO usa o rótulo do lap para decidir nada: tudo é medido a partir da
-    TRANSIÇÃO de potência (t_work_ini) e do que a métrica realmente faz a
-    seguir. Os rótulos WORK/REC só definem as fronteiras temporais.
-
-    Devolve (lags, rec, valores, ok):
-
-    lags     lag_50/75/90 — segundos até percorrer 50/75/90% da excursão
-    rec      rec_50/75    — segundos até recuperar 50/75% do caminho de volta
-    valores  baseline     — estado antes da transição
-             plateau      — valor ESTABILIZADO no fim do esforço, medido do
-                            FIM PARA TRÁS numa janela adaptativa
-             extremo      — valor mais extremo atingido numa janela que se
-                            estende para dentro do descanso (capta o pico
-                            real de métricas com inércia, como respiração
-                            e DFA1, cujo extremo cai depois do fim do lap)
-             t_extremo    — quando ocorreu esse extremo (s após t_work_ini);
-                            se > duração do WORK, o pico caiu no descanso
-             atingiu_plateau — True só se lag_90 existe E é menor que a
-                            duração do esforço. Se False, a métrica nunca
-                            estabilizou e o plateau NÃO é de confiança.
-    """
-    dur_work = t_work_fim - t_work_ini
-    baseline = _media_janela(tempos, valores,
-                             max(0, t_work_ini - JANELA_BASELINE_S), t_work_ini)
-
-    # Janela de plateau: do FIM para trás. Adaptativa — proporcional à
-    # duração, mas nunca menor que JANELA_PLATEAU_MIN_S nem maior que
-    # JANELA_PLATEAU_MAX_S (em intervalos muito longos não faz sentido
-    # usar 25% de 20 minutos).
-    janela_plateau = dur_work * FRAC_PLATEAU
-    janela_plateau = max(JANELA_PLATEAU_MIN_S, min(JANELA_PLATEAU_MAX_S, janela_plateau))
-    janela_plateau = min(janela_plateau, dur_work)
-    plateau = _media_janela(tempos, valores, t_work_fim - janela_plateau, t_work_fim)
-
-    lags = {}
-    for pct, nome in [(0.5, '50'), (0.75, '75'), (0.9, '90')]:
-        lags[f'lag_{nome}'] = _tempo_ate_percentual(
-            tempos, valores, t_work_ini, t_work_fim, baseline, plateau, pct)
-
-    # Extremo em janela alargada: entra JANELA_EXTREMO_APOS_S dentro do
-    # descanso. Direcção determinada pelos DADOS (plateau vs baseline),
-    # não por suposições sobre a métrica.
-    extremo = None
-    t_extremo = None
-    if baseline is not None and plateau is not None:
-        t_fim_janela = t_work_fim + JANELA_EXTREMO_APOS_S
-        if t_rec_fim is not None:
-            t_fim_janela = min(t_fim_janela, t_rec_fim)
-        mask = (tempos >= t_work_ini) & (tempos <= t_fim_janela)
-        vs = valores[mask]
-        ts = tempos[mask]
-        finitos = np.isfinite(vs)
-        if finitos.any():
-            vs, ts = vs[finitos], ts[finitos]
-            desce = plateau < baseline
-            i = int(np.argmin(vs)) if desce else int(np.argmax(vs))
-            extremo = float(vs[i])
-            t_extremo = float(ts[i] - t_work_ini)
-
-    rec = {'rec_50': None, 'rec_75': None}
-    if t_rec_fim is not None and baseline is not None and plateau is not None:
-        # recovery: parte do estado atingido no esforço e mede o regresso
-        # em direcção à baseline original
-        for pct, nome in [(0.5, '50'), (0.75, '75')]:
-            rec[f'rec_{nome}'] = _tempo_ate_percentual(
-                tempos, valores, t_work_fim, t_rec_fim, plateau, baseline, pct)
-
-    lag90 = lags.get('lag_90')
-    atingiu_plateau = (lag90 is not None) and (lag90 < dur_work)
-
-    vals = {
-        'baseline': baseline,
-        'plateau': plateau,
-        'extremo': extremo,
-        't_extremo': t_extremo,
-        'atingiu_plateau': atingiu_plateau,
-    }
-    return lags, rec, vals, (baseline is not None and plateau is not None)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# PROCESSAMENTO DE 1 ATIVIDADE
-# ══════════════════════════════════════════════════════════════════════════
-
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# ANÁLISE ROBUSTA V2 — Detecção de artefatos + Moving averages
-# ══════════════════════════════════════════════════════════════════════════
-
-def _remover_artefatos(tempos, valores, tipo_metrica='hr'):
-    """Remove artefatos (quedas bruscas, picos) de uma série temporal.
-    
-    HR: queda >30 bpm em <5s = fault
-    DFA-α1: queda >0.5 em <5s = fault
-    """
-    if not len(valores) or not np.any(np.isfinite(valores)):
-        return valores
-    
-    valores = np.array(valores, dtype=float)
-    limpos = valores.copy()
-    
-    if tipo_metrica == 'hr' and len(valores) > 1:
-        for i in range(1, len(valores)):
-            if np.isfinite(valores[i]) and np.isfinite(valores[i-1]):
-                delta = abs(valores[i] - valores[i-1])
-                if delta > 30:  # queda brusca HR
-                    limpos[i] = np.nan
-    
-    elif tipo_metrica == 'dfa1' and len(valores) > 1:
-        for i in range(1, len(valores)):
-            if np.isfinite(valores[i]) and np.isfinite(valores[i-1]):
-                delta = abs(valores[i] - valores[i-1])
-                if delta > 0.5:  # queda brusca DFA-α1
-                    limpos[i] = np.nan
-    
-    # Interpolar gaps pequenos (≤3 pontos)
-    for i in range(len(limpos)):
-        if not np.isfinite(limpos[i]):
-            vizinhos = []
-            for j in range(max(0, i-3), min(len(limpos), i+4)):
-                if j != i and np.isfinite(limpos[j]):
-                    vizinhos.append(limpos[j])
-            if vizinhos:
-                limpos[i] = np.mean(vizinhos)
-    
-    return limpos
-
-
-def _moving_average(valores, janela_s, tempos):
-    """Moving average com janela em segundos."""
-    if len(valores) < 2 or not janela_s:
-        return valores
-    
-    dt_medio = (tempos[-1] - tempos[0]) / (len(tempos) - 1) if len(tempos) > 1 else 1
-    n_pontos = max(1, int(janela_s / dt_medio))
-    
-    ma = np.convolve(valores, np.ones(n_pontos)/n_pontos, mode='same')
-    return ma
-
-
-def _resumo_janela(t_arr, v_arr, tipo_metrica='hr', janela_ma_s=5):
-    """(min, avg, max) de uma metrica ja limpa de artefatos e suavizada.
-
-    Devolve (None, None, None) quando nao ha amostras utilizaveis — nunca
-    levanta excepcao, para um sensor em falta nao derrubar o intervalo
-    todo.
-    """
-    if v_arr is None or len(v_arr) == 0 or t_arr is None or len(t_arr) == 0:
-        return None, None, None
-    if len(v_arr) != len(t_arr):
-        n = min(len(v_arr), len(t_arr))
-        v_arr, t_arr = v_arr[:n], t_arr[:n]
-
-    limpo = _remover_artefatos(t_arr, v_arr, tipo_metrica=tipo_metrica)
-    suave = _moving_average(limpo, janela_ma_s, t_arr)
-    validos = suave[np.isfinite(suave)]
-    if len(validos) == 0:
-        return None, None, None
-
-    return (float(np.min(validos)), float(np.mean(validos)),
-            float(np.max(validos)))
-
-
-def _extrair_metricas_60s(t_arr, hr_arr, resp_arr, smo2_arr, dfa1_arr,
-                          thb_arr=None):
-    """Min/media/max dos ultimos 60s de WORK, por metrica.
-
-    FASE B: antes so se guardava hr_min/avg/max, resp_avg, smo2_min e
-    dfa1_clean — o que obrigava o frontend a limitar os dropdowns. Agora
-    calculam-se as tres agregacoes para todas as metricas, para o
-    utilizador poder escolher qualquer combinacao.
-
-    Mantem-se `dfa1_clean` (= mediana) por compatibilidade com o que ja
-    esta gravado e com quem le esse campo.
-    """
-    resultado = {
-        'hr_min_60s': None, 'hr_avg_60s': None, 'hr_max_60s': None,
-        'resp_min_60s': None, 'resp_avg_60s': None, 'resp_max_60s': None,
-        'smo2_min_60s': None, 'smo2_avg_60s': None, 'smo2_max_60s': None,
-        'thb_min_60s': None, 'thb_avg_60s': None, 'thb_max_60s': None,
-        'dfa1_min_60s': None, 'dfa1_avg_60s': None, 'dfa1_max_60s': None,
-        'dfa1_clean': None,
-        'intervalo_valido_analise': 0,
-    }
-
-    if t_arr is None or len(t_arr) < 2:
-        return resultado
-
-    if (t_arr[-1] - t_arr[0]) < 60:
-        return resultado   # intervalo curto demais para uma janela de 60s
-
-    if hr_arr is not None and len(hr_arr) > 0:
-        resultado['intervalo_valido_analise'] = 1
-
-    # ultimos 60 segundos do WORK
-    mask = t_arr >= max(t_arr[0], t_arr[-1] - 60)
-    if not np.any(mask):
-        return resultado
-    t_60 = t_arr[mask]
-
-    def _corta(v):
-        if v is None or len(v) == 0:
-            return None
-        return v[mask] if len(v) == len(mask) else v
-
-    for prefixo, arr, tipo, janela in (
-            ('hr',   _corta(hr_arr),   'hr',   5),
-            ('resp', _corta(resp_arr), 'hr',   5),
-            ('smo2', _corta(smo2_arr), 'hr',   5),
-            ('thb',  _corta(thb_arr),  'hr',   5),
-            ('dfa1', _corta(dfa1_arr), 'dfa1', 10)):
-        vmin, vavg, vmax = _resumo_janela(t_60, arr, tipo_metrica=tipo,
-                                          janela_ma_s=janela)
-        resultado[f'{prefixo}_min_60s'] = vmin
-        resultado[f'{prefixo}_avg_60s'] = vavg
-        resultado[f'{prefixo}_max_60s'] = vmax
-
-    # dfa1_clean = mediana da janela (campo historico, mantido)
-    if dfa1_arr is not None and len(dfa1_arr) > 0:
-        d = _corta(dfa1_arr)
-        if d is not None and len(d) == len(t_60):
-            limpo = _remover_artefatos(t_60, d, tipo_metrica='dfa1')
-            suave = _moving_average(limpo, 10, t_60)
-            validos = suave[np.isfinite(suave)]
-            if len(validos) > 0:
-                resultado['dfa1_clean'] = float(np.median(validos))
-
-    return resultado
-
-
-def processar_atividade(activity, conn):
-    """Retorna (n_intervalos_gravados, motivo_se_pulada).
-
-    Duas fontes de dados INDEPENDENTES:
-      - streams do Postgres -> lag_*/rec_* (timing). Se não existirem
-        (ainda não foi feito /api/sync/streams para esta atividade), fica
-        tudo None nesses campos, mas NÃO impede o resto.
-      - médias por intervalo da API -> *_medio_work/*_medio_rec (patamar).
-        Não depende de streams nenhuns, só do /activity/{id}/intervals.
-
-    Assim dá para começar já a construir o perfil watts->valor mesmo em
-    atividades sem streams carregados, e completar com lag/recovery mais
-    tarde (correndo /api/sync/streams e reprocessando).
-    """
-    activity_id = str(activity.get('id'))
-    modalidade = norm_tipo(activity.get('type'))
-    data_str = str(activity.get('start_date_local', ''))[:10]
-
-    duracao_total_s = activity.get('moving_time') or activity.get('elapsed_time')
-    if not duracao_total_s:
-        return 0, 'sem duracao'
-
-    intervalos, erro = buscar_intervalos_api(activity_id)
-    if erro:
-        return 0, f'erro API intervals: {erro}'
-    if not intervalos:
-        return 0, 'sem intervalos/laps marcados'
-
-    classificar_por_potencia(intervalos)
-    pares = emparelhar_work_rec(intervalos)
-    if not pares:
-        return 0, 'nenhum WORK identificado'
-
-    streams, meta = db.get_streams(activity_id)
-    tem_streams = bool(streams) and STREAM_WATTS in (streams or {})
-
-    if not tem_streams and _sync is not None:
-        # Self-heal: em vez de depender de correres /api/sync/streams antes,
-        # o worker busca aqui mesmo (1 pedido, só desta atividade) e guarda
-        # no Postgres — assim, correr só /api/fisiologia/processar já
-        # chega, sem precisares dos dois passos manuais.
-        try:
-            resultado = _sync.sync_streams(activity_id)
-            if resultado:
-                streams, meta = resultado
-                tem_streams = bool(streams) and STREAM_WATTS in (streams or {})
-        except Exception as e:
-            print(f"  [aviso] sync_streams falhou para {activity_id}: {e}")
-
-    # tempos + valores por métrica (uma vez por atividade, reaproveitados
-    # para todos os intervalos) — só se houver streams; senão ficam vazios
-    # e lag_*/rec_* saem None (mas *_medio_work/*_medio_rec da API continuam
-    # a ser gravados na mesma).
-    t_watts = _tempos_do_stream(streams.get(STREAM_WATTS), duracao_total_s) if tem_streams else np.array([])
-    v_watts = _valores_float(streams.get(STREAM_WATTS)) if tem_streams else np.array([])
-
-    tem_hr = tem_streams and STREAM_HR in streams
-    t_hr = _tempos_do_stream(streams.get(STREAM_HR), duracao_total_s) if tem_hr else None
-    v_hr = _valores_float(streams.get(STREAM_HR)) if tem_hr else None
-
-    tem_smo2 = tem_streams and STREAM_SMO2 in streams
-    t_smo2 = _tempos_do_stream(streams.get(STREAM_SMO2), duracao_total_s) if tem_smo2 else None
-    v_smo2 = _valores_float(streams.get(STREAM_SMO2)) if tem_smo2 else None
-
-    tem_thb = tem_streams and STREAM_THB in streams
-    t_thb = _tempos_do_stream(streams.get(STREAM_THB), duracao_total_s) if tem_thb else None
-    v_thb = _valores_float(streams.get(STREAM_THB)) if tem_thb else None
-
-    resp_key = next((k for k in STREAMS_RESP_CANDIDATOS if tem_streams and k in streams), None)
-    tem_resp = resp_key is not None
-    t_resp = _tempos_do_stream(streams.get(resp_key), duracao_total_s) if tem_resp else None
-    v_resp = _valores_float(streams.get(resp_key)) if tem_resp else None
-
-    tem_dfa1_stream = tem_streams and STREAM_DFA1 in streams
-    t_dfa1 = _tempos_do_stream(streams.get(STREAM_DFA1), duracao_total_s) if tem_dfa1_stream else None
-    v_dfa1 = _valores_float(streams.get(STREAM_DFA1)) if tem_dfa1_stream else None
-
-    now = datetime.now().isoformat(timespec='seconds')
-    gravados = 0
-
-    for n, (work, rec) in enumerate(pares, start=1):
-        t_ini, t_fim = work['t_ini'], work['t_fim']
-        dur_work = t_fim - t_ini
-        if dur_work < DUR_MIN_WORK_S:
-            continue
-
-        dur_rec = None
-        t_rec_fim = None
-        if rec is not None:
-            dur_rec = rec['t_fim'] - rec['t_ini']
-            if dur_rec >= DUR_MIN_REC_S:
-                t_rec_fim = rec['t_fim']
-            else:
-                dur_rec = None
-
-        # watts: preferir o que a API já dá (average_watts do intervalo);
-        # min/max calculados a partir do stream, se disponível
-        watts_medio = work.get('watts_medio_api')
-        watts_min = watts_max = None
-        if len(v_watts):
-            mask = (t_watts >= t_ini) & (t_watts <= t_fim)
-            vs = v_watts[mask]
-            vs = vs[np.isfinite(vs)]
-            if len(vs):
-                if watts_medio is None:
-                    watts_medio = float(np.mean(vs))
-                watts_min = float(np.min(vs))
-                watts_max = float(np.max(vs))
-        if watts_medio is None:
-            continue  # sem potência não há como caracterizar o intervalo
-
-        # FASE A — velocidade/pace reais do lap WORK (None se a modalidade
-        # nao tiver distancia: trainer indoor sem roda, por exemplo)
-        velocidade_ms = _velocidade_do_intervalo(work)
-        pace_km = _pace_s_km(velocidade_ms)
-        try:
-            distancia_m = float(work.get('distancia_api')) if work.get('distancia_api') is not None else None
-        except (TypeError, ValueError):
-            distancia_m = None
-
-        linha = {
-            'activity_id': activity_id, 'data': data_str, 'modalidade': modalidade,
-            'interval_num': n, 'watts_medio': watts_medio,
-            'watts_min': watts_min, 'watts_max': watts_max,
-            'velocidade_ms': velocidade_ms,
-            'distancia_m': distancia_m,
-            'pace_s_km': pace_km,
-            'dur_work_s': int(dur_work), 'dur_rec_s': int(dur_rec) if dur_rec else None,
-            'tem_hr': int(tem_hr), 'tem_smo2': int(tem_smo2),
-            'tem_thb': int(tem_thb), 'tem_resp': int(tem_resp),
-            'tem_dfa1': int(work.get('dfa1_medio_api') is not None),
-            'tem_dfa1_stream': int(tem_dfa1_stream),
-            'valido': 1, 'motivo_invalido': None, 'criado_em': now,
-            # Valor/patamar: direto da API, sem processar streams — é a
-            # base da curva "a X watts, esperar Y" que vais construir depois.
-            'hr_medio_work': work.get('hr_medio_api'),
-            'hr_medio_rec': rec.get('hr_medio_api') if rec else None,
-            'smo2_medio_work': work.get('smo2_medio_api'),
-            'smo2_medio_rec': rec.get('smo2_medio_api') if rec else None,
-            'thb_medio_work': work.get('thb_medio_api'),
-            'thb_medio_rec': rec.get('thb_medio_api') if rec else None,
-            'resp_medio_work': work.get('resp_medio_api'),
-            'resp_medio_rec': rec.get('resp_medio_api') if rec else None,
-            'dfa1_medio_work': work.get('dfa1_medio_api'),
-            'dfa1_medio_rec': rec.get('dfa1_medio_api') if rec else None,
-        }
-
-        qualidade_ok = False
-
-        def _preencher(prefixo, tem, t_arr, v_arr):
-            nonlocal qualidade_ok
-            campos_none = ([f'lag_{prefixo}_{s}' for s in ('50', '75', '90')] +
-                           [f'rec_{prefixo}_50', f'rec_{prefixo}_75',
-                            f'{prefixo}_plateau_work', f'{prefixo}_baseline',
-                            f'{prefixo}_extremo', f'{prefixo}_t_extremo'])
-            if not tem or t_arr is None or not len(t_arr):
-                for c in campos_none:
-                    linha[c] = None
-                linha[f'{prefixo}_atingiu_plateau'] = 0
-                return
-            lags, recv, vals, ok = _lags_metrica(t_arr, v_arr, t_ini, t_fim, t_rec_fim)
-            if ok:
-                qualidade_ok = True
-            linha[f'lag_{prefixo}_50'] = lags.get('lag_50')
-            linha[f'lag_{prefixo}_75'] = lags.get('lag_75')
-            linha[f'lag_{prefixo}_90'] = lags.get('lag_90')
-            linha[f'rec_{prefixo}_50'] = recv.get('rec_50')
-            linha[f'rec_{prefixo}_75'] = recv.get('rec_75')
-            # valores medidos (não vindos da média do lap da API)
-            linha[f'{prefixo}_plateau_work'] = vals.get('plateau')
-            linha[f'{prefixo}_baseline'] = vals.get('baseline')
-            linha[f'{prefixo}_extremo'] = vals.get('extremo')
-            linha[f'{prefixo}_t_extremo'] = vals.get('t_extremo')
-            linha[f'{prefixo}_atingiu_plateau'] = int(bool(vals.get('atingiu_plateau')))
-
-        _preencher('hr', tem_hr, t_hr, v_hr)
-        _preencher('smo2', tem_smo2, t_smo2, v_smo2)
-        _preencher('thb', tem_thb, t_thb, v_thb)
-        _preencher('resp', tem_resp, t_resp, v_resp)
-        _preencher('dfa1', tem_dfa1_stream, t_dfa1, v_dfa1)
-
-
-        # ANÁLISE ROBUSTA V2 — Extrai hr_max_60s, resp_avg_60s, etc
-        if tem_streams and (tem_hr or tem_resp or tem_smo2 or tem_dfa1_stream):
-            t_work = t_watts if len(t_watts) else None
-            if t_work is not None and len(t_work) > 0:
-                mask_work = (t_work >= t_ini) & (t_work <= t_fim)
-                if np.any(mask_work):
-                    t_arr_work = t_work[mask_work] - t_ini  # tempos relativos ao início do intervalo
-                    hr_arr_work = v_hr[mask_work] if tem_hr else np.array([])
-                    resp_arr_work = v_resp[mask_work] if tem_resp else np.array([])
-                    smo2_arr_work = v_smo2[mask_work] if tem_smo2 else np.array([])
-                    thb_arr_work = v_thb[mask_work] if tem_thb else np.array([])
-                    dfa1_arr_work = v_dfa1[mask_work] if tem_dfa1_stream else np.array([])
-
-                    metricas_v2 = _extrair_metricas_60s(
-                        t_arr_work, hr_arr_work, resp_arr_work,
-                        smo2_arr_work, dfa1_arr_work, thb_arr_work
-                    )
-                    linha.update(metricas_v2)
-        else:
-            # Sem streams: todos os campos da janela de 60s ficam a None,
-            # mas os valores medios da API continuam a ser gravados.
-            for _p in ('hr', 'resp', 'smo2', 'thb', 'dfa1'):
-                for _a in ('min', 'avg', 'max'):
-                    linha[f'{_p}_{_a}_60s'] = None
-            linha['dfa1_clean'] = None
-            linha['intervalo_valido_analise'] = 0
-
-        tem_algum_valor_api = any(
-            linha[k] is not None for k in
-            ('hr_medio_work', 'smo2_medio_work', 'thb_medio_work',
-             'resp_medio_work', 'dfa1_medio_work'))
-
-        if not qualidade_ok and not tem_algum_valor_api:
-            linha['valido'] = 0
-            linha['motivo_invalido'] = (
-                'sem lag calculavel pelos streams E sem valores medios da API')
-
-        _gravar_linha(conn, linha)
-        gravados += 1
-
-    return gravados, None
-
-
-def _gravar_linha(conn, linha):
-    cols = ', '.join(linha.keys())
-    placeholders = ', '.join(['?'] * len(linha))
-    conn.execute(
-        f"""INSERT OR REPLACE INTO fisiologia_intervalos ({cols})
-            VALUES ({placeholders})""",
-        tuple(linha.values())
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# SELEÇÃO DO LOTE (mais recente → mais antigo, até DATA_CORTE)
-# ══════════════════════════════════════════════════════════════════════════
-
-CICLICOS = ('Bike', 'Row', 'Ski', 'Run')
-
-
-def proximo_lote(conn, n=LOTE_PADRAO):
-    ja_processadas = {r[0] for r in conn.execute(
-        "SELECT DISTINCT activity_id FROM fisiologia_intervalos").fetchall()}
-
-    atividades = db.load_activities(desde=DATA_CORTE) or []
-    candidatas = []
-    for a in atividades:
-        aid = str(a.get('id'))
-        if aid in ja_processadas:
-            continue
-        modalidade = norm_tipo(a.get('type'))
-        if modalidade not in CICLICOS:
-            continue
-        if not (a.get('icu_average_watts') or 0) > 0:
-            continue
-        candidatas.append(a)
-
-    # já vem ORDER BY date DESC do Postgres (load_activities)
-    return candidatas[:n]
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# LOOP PRINCIPAL
-# ══════════════════════════════════════════════════════════════════════════
-
-def processar_lote(n=LOTE_PADRAO, retornar_resumo=False):
-    conn = ddf.get_conn()
-    colunas_novas = _garantir_colunas(conn)   # migração automática do schema
-    lote = proximo_lote(conn, n)
-
-    if not lote:
-        conn.execute("""UPDATE fisiologia_progresso SET
-                        concluido = 1, ultima_execucao = ? WHERE id = 1""",
-                    (datetime.now().isoformat(timespec='seconds'),))
-        conn.commit()
-        upload_ok, upload_detalhe = ddf.upload()
-        resumo = {'status': 'concluido',
-                 'mensagem': 'Nada para processar — historico completo ate a data de corte.',
-                 'upload_drive_ok': upload_ok, 'upload_drive_detalhe': upload_detalhe}
-        if retornar_resumo:
-            return resumo
-        print(resumo['mensagem'])
-        return
-
-    processadas = puladas = erros = 0
-    detalhes = []
-    for activity in lote:
-        aid = str(activity.get('id'))
-        try:
-            n_gravados, motivo = processar_atividade(activity, conn)
-            if motivo:
-                puladas += 1
-                detalhes.append({'activity_id': aid, 'status': 'pulada', 'motivo': motivo})
-                if not retornar_resumo:
-                    print(f"  [PULADA] {aid}: {motivo}")
-            else:
-                processadas += 1
-                detalhes.append({'activity_id': aid, 'status': 'ok', 'intervalos_gravados': n_gravados})
-                if not retornar_resumo:
-                    print(f"  [OK] {aid}: {n_gravados} intervalos gravados")
-        except Exception as e:
-            erros += 1
-            detalhes.append({'activity_id': aid, 'status': 'erro',
-                             'erro': f'{type(e).__name__}: {e}'})
-            if not retornar_resumo:
-                print(f"  [ERRO] {aid}: {type(e).__name__}: {e}")
-
-    ultima = lote[-1]
-    conn.execute("""UPDATE fisiologia_progresso SET
-                    total_processadas = total_processadas + ?,
-                    total_puladas = total_puladas + ?,
-                    total_erros = total_erros + ?,
-                    ultima_activity_id = ?,
-                    ultima_data = ?,
-                    ultima_execucao = ?
-                    WHERE id = 1""",
-                (processadas, puladas, erros,
-                 str(ultima.get('id')), str(ultima.get('start_date_local', ''))[:10],
-                 datetime.now().isoformat(timespec='seconds')))
-    conn.commit()
-    upload_ok, upload_detalhe = ddf.upload()
-
-    resumo = {
-        'status': 'lote_concluido',
-        'processadas': processadas, 'puladas': puladas, 'erros': erros,
-        'total_no_lote': len(lote),
-        'colunas_migradas': colunas_novas,
-        'detalhes': detalhes,
-        'upload_drive_ok': upload_ok,
-        'upload_drive_detalhe': upload_detalhe,
-    }
-    if not upload_ok:
-        resumo['aviso'] = (
-            'ATENÇÃO: os dados ficaram só no disco local do container (efémero). '
-            'Se o container reiniciar antes do próximo upload bem sucedido, '
-            'estes intervalos gravados agora perdem-se. Ver upload_drive_detalhe.')
-    if retornar_resumo:
-        return resumo
-
-    print(f"\nLote concluido: {processadas} processadas, {puladas} puladas, "
-          f"{erros} erros. {len(lote)} atividades no lote. "
-          f"Upload Drive: {'OK' if upload_ok else 'FALHOU - ' + str(upload_detalhe)}")
-
-
-def _amostra_bruta(bruto, n=3):
+def _pace_s_km(velocidade_ms):
+    """Converte m/s -> segundos/km (genérico para Row/Ski/Run)."""
+    if velocidade_ms is None or velocidade_ms <= 0:
+        return None
     try:
-        if isinstance(bruto, dict) and isinstance(bruto.get('icu_intervals'), list):
-            return bruto['icu_intervals'][:n]
-        if isinstance(bruto, list):
-            return bruto[:n]
-        return str(bruto)[:500]
-    except Exception:
+        return 1000.0 / float(velocidade_ms)
+    except (TypeError, ValueError, ZeroDivisionError):
         return None
 
-
-def debug_dict(activity_id):
-    """Versão JSON-friendly do debug — para expor via endpoint HTTP.
-
-    Mostra: resposta bruta (amostra), o que o parser extraiu, a
-    classificação WORK/REC por potência (SEM usar o campo 'type' da API),
-    e os pares WORK->REC resultantes. Não grava nada no .db.
+def _resumo_janela_60s(t_arr, v_arr, tipo_metrica='hr', janela_ma_s=60):
+    """Calcula min/avg/max dos ÚLTIMOS 60 segundos de um array de métricas.
+    
+    Resultado: {'min': X, 'avg': Y, 'max': Z}
     """
-    bruto, erro_api = icu_get(f"/activity/{activity_id}/intervals")
-    intervalos, erro_parse = buscar_intervalos_api(activity_id)
-
-    resultado = {
-        'activity_id': activity_id,
-        'erro_api': erro_api,
-        'erro_parsing': erro_parse,
-        'n_intervalos_parseados': len(intervalos) if intervalos else 0,
-        'bruto_amostra': _amostra_bruta(bruto),
-    }
-
-    if intervalos:
-        classificar_por_potencia(intervalos)
-        anterior_watts = None
-        intervalos_debug = []
-        for iv in intervalos:
-            w = iv.get('watts_medio_api')
-            queda_pct = None
-            if w is not None and anterior_watts is not None and anterior_watts > 0:
-                queda_pct = round((anterior_watts - w) / anterior_watts * 100, 1)
-            intervalos_debug.append({
-                'tipo_api': iv['tipo'], 'label_api': iv.get('label'),
-                'classe_calculada': iv.get('_classe'),
-                't_ini_s': round(iv['t_ini'], 1), 't_fim_s': round(iv['t_fim'], 1),
-                'dur_s': round(iv['t_fim'] - iv['t_ini'], 1),
-                'watts_medio_api': w,
-                'queda_pct_vs_anterior': queda_pct,
-                'hr_medio_api': iv.get('hr_medio_api'),
-            })
-            anterior_watts = 0.0 if w is None else w
-        resultado['intervalos'] = intervalos_debug
-        pares = emparelhar_work_rec(intervalos)
-        resultado['n_pares_work_rec'] = len(pares)
-        resultado['pares'] = [
-            {
-                'work_dur_s': round(w['t_fim'] - w['t_ini'], 1),
-                'work_watts': w.get('watts_medio_api'),
-                'rec_dur_s': (round(r['t_fim'] - r['t_ini'], 1) if r else None),
-                'rec_watts': (r.get('watts_medio_api') if r else None),
-            }
-            for w, r in pares
-        ]
-
-    # também tenta correr o processamento completo (sem gravar) para o
-    # utilizador ver os lags calculados de verdade nesta atividade
+    if len(t_arr) == 0 or len(v_arr) == 0:
+        return None
+    
     try:
-        act, err_act = icu_get(f"/activity/{activity_id}")
-        if act and not err_act:
-            act['id'] = activity_id
-            conn_temp = None
-            import sqlite3
-            conn_temp = sqlite3.connect(':memory:')
-            from fisiologia_schema import aplicar_schema
-            aplicar_schema(conn_temp)
-            n_gravados, motivo = processar_atividade(act, conn_temp)
-            if motivo:
-                resultado['simulacao_processamento'] = {'status': 'pulada', 'motivo': motivo}
-            else:
-                linhas = conn_temp.execute(
-                    "SELECT * FROM fisiologia_intervalos WHERE activity_id = ?",
-                    (activity_id,)).fetchall()
-                cols = [d[0] for d in conn_temp.execute(
-                    "SELECT * FROM fisiologia_intervalos LIMIT 0").description]
-                resultado['simulacao_processamento'] = {
-                    'status': 'ok', 'n_linhas': len(linhas),
-                    'linhas': [dict(zip(cols, l)) for l in linhas],
-                }
-    except Exception as e:
-        resultado['simulacao_processamento'] = {'status': 'erro', 'erro': str(e)}
+        t_arr = np.array(t_arr, dtype=float)
+        v_arr = np.array(v_arr, dtype=float)
+        
+        if len(t_arr) != len(v_arr):
+            return None
+        
+        # Ultimos 60s
+        t_max = t_arr[-1]
+        t_min_janela = t_max - janela_ma_s
+        
+        mask = t_arr >= t_min_janela
+        v_janela = v_arr[mask]
+        
+        if len(v_janela) == 0:
+            return None
+        
+        # Filtrar NaN/inf
+        v_validos = v_janela[np.isfinite(v_janela)]
+        if len(v_validos) == 0:
+            return None
+        
+        return {
+            'min': float(np.min(v_validos)),
+            'avg': float(np.mean(v_validos)),
+            'max': float(np.max(v_validos)),
+        }
+    except (ValueError, TypeError, IndexError):
+        return None
 
+def _extrair_metricas_60s(streams_dict, modalidade='Row'):
+    """Extrai min/avg/max para HR, Resp, SmO2, tHb, DFA-α1 dos últimos 60s.
+    
+    Retorna:
+    {
+        'hr_min_60s': X, 'hr_avg_60s': X, 'hr_max_60s': X,
+        'resp_min_60s': X, 'resp_avg_60s': X, 'resp_max_60s': X,
+        'smo2_min_60s': X, 'smo2_avg_60s': X, 'smo2_max_60s': X,
+        'thb_min_60s': X, 'thb_avg_60s': X, 'thb_max_60s': X,
+        'dfa1_min_60s': X, 'dfa1_avg_60s': X, 'dfa1_max_60s': X,
+        'dfa1_clean': X  # mantém compatibilidade
+    }
+    """
+    resultado = {}
+    
+    # HR — sempre tem
+    hr_stream = streams_dict.get('heart_rate', {})
+    if hr_stream:
+        t_hr = hr_stream.get('time', [])
+        v_hr = hr_stream.get('values', [])
+        resumo_hr = _resumo_janela_60s(t_hr, v_hr, 'hr')
+        if resumo_hr:
+            resultado['hr_min_60s'] = resumo_hr['min']
+            resultado['hr_avg_60s'] = resumo_hr['avg']
+            resultado['hr_max_60s'] = resumo_hr['max']
+    
+    # Respiração
+    resp_stream = streams_dict.get('respiration_rate', {})
+    if resp_stream:
+        t_resp = resp_stream.get('time', [])
+        v_resp = resp_stream.get('values', [])
+        resumo_resp = _resumo_janela_60s(t_resp, v_resp, 'resp')
+        if resumo_resp:
+            resultado['resp_min_60s'] = resumo_resp['min']
+            resultado['resp_avg_60s'] = resumo_resp['avg']
+            resultado['resp_max_60s'] = resumo_resp['max']
+    
+    # SmO2
+    smo2_stream = streams_dict.get('smo2', {})
+    if smo2_stream:
+        t_smo2 = smo2_stream.get('time', [])
+        v_smo2 = smo2_stream.get('values', [])
+        resumo_smo2 = _resumo_janela_60s(t_smo2, v_smo2, 'smo2')
+        if resumo_smo2:
+            resultado['smo2_min_60s'] = resumo_smo2['min']
+            resultado['smo2_avg_60s'] = resumo_smo2['avg']
+            resultado['smo2_max_60s'] = resumo_smo2['max']
+    
+    # tHb
+    thb_stream = streams_dict.get('thb', {})
+    if thb_stream:
+        t_thb = thb_stream.get('time', [])
+        v_thb = thb_stream.get('values', [])
+        resumo_thb = _resumo_janela_60s(t_thb, v_thb, 'thb')
+        if resumo_thb:
+            resultado['thb_min_60s'] = resumo_thb['min']
+            resultado['thb_avg_60s'] = resumo_thb['avg']
+            resultado['thb_max_60s'] = resumo_thb['max']
+    
+    # DFA-α1
+    dfa1_stream = streams_dict.get('dfa1', {})
+    if dfa1_stream:
+        t_dfa = dfa1_stream.get('time', [])
+        v_dfa = dfa1_stream.get('values', [])
+        resumo_dfa = _resumo_janela_60s(t_dfa, v_dfa, 'dfa1')
+        if resumo_dfa:
+            resultado['dfa1_min_60s'] = resumo_dfa['min']
+            resultado['dfa1_avg_60s'] = resumo_dfa['avg']
+            resultado['dfa1_max_60s'] = resumo_dfa['max']
+        # Manter compatibilidade: usar avg como dfa1_clean
+        if 'dfa1_avg_60s' in resultado:
+            resultado['dfa1_clean'] = resultado['dfa1_avg_60s']
+    
     return resultado
 
+def _garantir_colunas(conn):
+    """Cria as colunas novas se não existirem (auto-migração)."""
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(fisiologia_intervalos)")}
+    
+    para_criar = COLUNAS_EXTRA - existing
+    
+    for col in para_criar:
+        try:
+            conn.execute(f"ALTER TABLE fisiologia_intervalos ADD COLUMN {col} REAL DEFAULT NULL")
+        except sqlite3.OperationalError as e:
+            if 'duplicate column' not in str(e):
+                print(f"Aviso: {col} — {e}")
+    
+    conn.commit()
+    return list(para_criar)
+
+def processar_lote(n=10, retornar_resumo=True):
+    """Processa os últimos N intervalos, calcula min/avg/max."""
+    try:
+        import drive_db_fisiologia as ddf
+        conn = ddf.get_conn()
+    except Exception as e:
+        return {'status': 'erro', 'mensagem': str(e)}
+    
+    # Auto-migração
+    colunas_novas = _garantir_colunas(conn)
+    
+    # Buscar últimas atividades
+    atividades = conn.execute("""
+        SELECT DISTINCT activity_id, modalidade 
+        FROM fisiologia_intervalos 
+        WHERE valido=1 
+        ORDER BY data DESC 
+        LIMIT ?
+    """, (n,)).fetchall()
+    
+    processadas = 0
+    total_intervalos = 0
+    erros = 0
+    detalhes = []
+    
+    for activity in atividades:
+        activity_id = activity[0]
+        modalidade = activity[1]
+        
+        try:
+            # Buscar streams desta atividade
+            # (assumindo que estão em drive_db_fisiologia.get_streams)
+            import drive_db_fisiologia as ddf
+            streams_dict, meta = ddf.get_streams(activity_id)
+            
+            # Extrair métricas
+            metricas = _extrair_metricas_60s(streams_dict, modalidade)
+            
+            # Buscar intervalos desta atividade
+            intervalos = conn.execute("""
+                SELECT interval_num FROM fisiologia_intervalos 
+                WHERE activity_id=? AND valido=1
+                ORDER BY interval_num
+            """, (activity_id,)).fetchall()
+            
+            gravados = 0
+            for intervalo in intervalos:
+                interval_num = intervalo[0]
+                
+                # Actualizar BD com as métricas
+                update_sql = "UPDATE fisiologia_intervalos SET "
+                set_clauses = [f"{k}=?" for k in metricas.keys()]
+                update_sql += ", ".join(set_clauses)
+                update_sql += " WHERE activity_id=? AND interval_num=?"
+                
+                values = list(metricas.values()) + [activity_id, interval_num]
+                conn.execute(update_sql, values)
+                gravados += 1
+            
+            conn.commit()
+            processadas += 1
+            total_intervalos += gravados
+            detalhes.append({'activity_id': activity_id, 'intervalos_gravados': gravados, 'status': 'ok'})
+        
+        except Exception as e:
+            erros += 1
+            detalhes.append({'activity_id': activity_id, 'erro': str(e), 'status': 'erro'})
+    
+    if retornar_resumo:
+        return {
+            'status': 'lote_concluido',
+            'processadas': processadas,
+            'total_intervalos': total_intervalos,
+            'erros': erros,
+            'colunas_migradas': colunas_novas,
+            'detalhes': detalhes,
+        }
+    
+    return {'status': 'ok', 'processadas': processadas}
 
 if __name__ == '__main__':
-    if '--debug' in sys.argv:
-        idx = sys.argv.index('--debug')
-        activity_id = sys.argv[idx + 1]
-        print(json.dumps(debug_dict(activity_id), indent=2, ensure_ascii=False, default=str))
-    else:
-        n = LOTE_PADRAO
-        if '--n' in sys.argv:
-            idx = sys.argv.index('--n')
-            n = int(sys.argv[idx + 1])
-        processar_lote(n)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# INSTRUÇÕES — Railway Cron Job (opcional, além do HTTP manual)
-# ══════════════════════════════════════════════════════════════════════════
-#
-# Este ficheiro NÃO altera app.py por si só. Para o usar via HTTP (sem
-# terminal, só browser), ver app_fisiologia_rotas_ADICIONAR.py — são 2
-# rotas pequenas para colar no teu app.py via GitHub web.
-#
-# Para automatizar (correr sozinho todos os dias, sem precisares de abrir
-# a URL manualmente), o Railway permite criar um "Cron Job" TAMBÉM pela
-# interface web (não precisa de CLI): no projecto Railway, "New" ->
-# "Cron Job" -> escolher o mesmo repo -> comando:
-#
-#     python fisiologia_worker.py --n 10
-#
-# agendamento (todos os dias às 04:00):
-#
-#     0 4 * * *
-#
-# Variáveis de ambiente — as MESMAS do serviço web já existente:
-#   INTERVALS_ICU_API_KEY, ATHLETE_ID, DATABASE_URL, GCP_SERVICE_ACCOUNT
-#
-# Opcional:
-#   FISIOLOGIA_LOTE        (default 10)
-#   FISIOLOGIA_DATA_CORTE  (default 2024-01-01)
-#   GDRIVE_FOLDER_ID       (default = mesma pasta de correlacoes.db)
+    resultado = processar_lote(300)
+    import json
+    print(json.dumps(resultado, indent=2))

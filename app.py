@@ -171,14 +171,15 @@ def api_fisiologia_processar():
 def api_perfil_robusto(modalidade):
     """Perfil metabólico robusta v2 — últimos 60s com artefatos removidos.
     
-    Retorna quartis (p25, p50, p75) para cada faixa de watts.
-    Campos: hr_max_60s, hr_avg_60s, resp_avg_60s, smo2_min_60s, dfa1_clean
+    Query params:
+      - min_n: número mínimo de intervalos (default 15)
+      - largura_bin: largura dos bins em watts (50 ou 100, default 100)
     """
     try:
         from tabs import tab_metabol as tm
         min_n = int(request.args.get('min_n', 15))
-        n_faixas = int(request.args.get('n_faixas', 10))
-        resultado = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, n_faixas=n_faixas)
+        largura_bin = int(request.args.get('largura_bin', 100))
+        resultado = tm.perfil_por_modalidade(modalidade, min_n_total=min_n, largura_bin_manual=largura_bin)
         return jsonify(resultado)
     except Exception as e:
         import traceback

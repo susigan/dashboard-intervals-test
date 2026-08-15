@@ -910,7 +910,7 @@ def health():
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# EMERGÊNCIA: rota para correr o worker sem acesso SSH
+# ROTA DE EMERGÊNCIA: Correr o worker sem acesso SSH
 # ══════════════════════════════════════════════════════════════════════════
 
 @app.route('/api/fisiologia/processar')
@@ -919,10 +919,11 @@ def api_processar():
     
     Query params:
       - n: número de atividades (default 10)
-      - retornar_resumo: se quer o resumo JSON (default: sim)
     
     Usa isto quando a BD está com colunas novas mas sem dados ainda.
-    Ex: /api/fisiologia/processar?n=10
+    Ex: /api/fisiologia/processar?n=100
+    
+    Retorna um JSON com status e número de atividades processadas.
     """
     try:
         import fisiologia_worker as fw

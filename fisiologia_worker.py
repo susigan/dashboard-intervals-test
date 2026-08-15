@@ -9,6 +9,10 @@ from datetime import datetime, timedelta
 
 # Assumindo estrutura: fisiologia_intervalos com colunas de stream
 
+
+# Limite de atividades por requisição web
+LOTE_WEB_MAX = 300
+
 COLUNAS_EXTRA = {
     'velocidade_ms', 'distancia_m', 'pace_s_km',  # Fase A
     # Fase B: HR min/avg/max

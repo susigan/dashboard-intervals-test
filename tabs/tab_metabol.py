@@ -48,8 +48,8 @@ SLUG = 'metabol'
 # estabilizado) a *_medio_work (média do lap inteiro dada pela API, que
 # inclui todo o transitório e enviesa sistematicamente).
 CAMPOS_VALOR = [
-    'hr_ultimos_30s_work', 'smo2_ultimos_30s_work', 'thb_ultimos_30s_work',
-    'resp_ultimos_30s_work', 'dfa1_ultimos_30s_work',
+    'hr_medio_work', 'smo2_medio_work', 'thb_medio_work',
+    'resp_medio_work', 'dfa1_medio_work',
 ]
 
 # Extremo atingido (janela que entra 30s no descanso) — capta o pico real
@@ -530,17 +530,17 @@ let PERFIL = null;
 let EVOLUCAO = null;
 
 const CORES_METAB = {
- hr_ultimos_30s_work:'#E74C3C', smo2_ultimos_30s_work:'#F39C12', thb_ultimos_30s_work:'#2980B9',
- resp_ultimos_30s_work:'#1ABC9C', dfa1_ultimos_30s_work:'#9B59B6',
+ hr_medio_work:'#E74C3C', smo2_medio_work:'#F39C12', thb_medio_work:'#2980B9',
+ resp_medio_work:'#1ABC9C', dfa1_medio_work:'#9B59B6',
 };
 const LABELS_METAB = {
- hr_ultimos_30s_work:'HR (bpm)', smo2_ultimos_30s_work:'SmO2 (%)', thb_ultimos_30s_work:'tHb (a.u.)',
- resp_ultimos_30s_work:'Respiração (rpm)', dfa1_ultimos_30s_work:'DFA-α1',
+ hr_medio_work:'HR (bpm)', smo2_medio_work:'SmO2 (%)', thb_medio_work:'tHb (a.u.)',
+ resp_medio_work:'Respiração (rpm)', dfa1_medio_work:'DFA-α1',
 };
 const EXTREMO_DE = {
- hr_ultimos_30s_work:'hr_extremo', smo2_ultimos_30s_work:'smo2_extremo',
- thb_ultimos_30s_work:'thb_extremo', resp_ultimos_30s_work:'resp_extremo',
- dfa1_ultimos_30s_work:'dfa1_extremo',
+ hr_medio_work:'hr_extremo', smo2_medio_work:'smo2_extremo',
+ thb_medio_work:'thb_extremo', resp_medio_work:'resp_extremo',
+ dfa1_medio_work:'dfa1_extremo',
 };
 const CAMPOS_METAB = Object.keys(CORES_METAB);
 
@@ -835,9 +835,9 @@ def validacao_lote_dfa(modalidade):
     analyzer = DFAArtifactAnalyzer(modalidade=modalidade)
     conn = _conn()
     intervalos = conn.execute("""
-        SELECT dfa1_ultimos_30s_work, hr_ultimos_30s_work, hr_extremo, watts_medio
+        SELECT dfa1_medio_work, hr_medio_work, hr_extremo, watts_medio
         FROM fisiologia_intervalos
-        WHERE modalidade = ? AND valido = 1 AND dfa1_ultimos_30s_work IS NOT NULL LIMIT 500
+        WHERE modalidade = ? AND valido = 1 AND dfa1_medio_work IS NOT NULL LIMIT 500
     """, (modalidade,)).fetchall()
 
     if not intervalos:
@@ -846,8 +846,8 @@ def validacao_lote_dfa(modalidade):
     resultados = []
     for iv in intervalos:
         resultado = analyzer.analisar_intervalo(
-            dfa1=float(iv['dfa1_ultimos_30s_work']) or 0.0,
-            hr_medio=float(iv['hr_ultimos_30s_work']) or 100.0,
+            dfa1=float(iv['dfa1_medio_work']) or 0.0,
+            hr_medio=float(iv['hr_medio_work']) or 100.0,
             hr_max=float(iv['hr_extremo']) or 110.0,
             watts_medio=float(iv['watts_medio']) or 0.0
         )

@@ -70,19 +70,21 @@ def _resumo(serie, i0, i1):
             round(max(vals), 3))
 
 
-def _tol_segura(alvos, tol):
-    """Impede que as janelas de dois degraus vizinhos se sobreponham.
+def _tol_segura(alvos, tol, cap_frac=0.5):
+    """Limita a tolerancia em funcao da distancia entre alvos.
 
-    Na Bike os alvos estao a 20 W de distancia: com +-12 W a janela do 80
-    tocava na do 100 e um degrau podia ser atribuido ao alvo errado.
+    Na Bike os alvos estao a 20 W: com +-12 W a janela do 80 tocava na do
+    100. Com cap_frac=0.5 as janelas nunca se tocam. Em modo assistido
+    sobe-se o cap: pode haver sobreposicao nominal, mas a escada e' lida
+    por ordem crescente, por isso cada degrau so pode vir depois do anterior.
     """
     if len(alvos) < 2:
         return tol
     menor_gap = min(b - a for a, b in zip(alvos, alvos[1:]))
-    return min(tol, max(4, (menor_gap - 2) // 2))
+    return min(tol, max(4, int(menor_gap * cap_frac)))
 
 
-def detectar_escada(watts, alvos, tol, min_blocos):
+def detectar_escada(watts, alvos, tol, min_blocos, cap_frac=0.5):
     """Procura os degraus no stream de watts, a comecar no inicio.
 
     Devolve [(i0, i1, alvo), ...] ou None. Cada degrau tem de manter-se
@@ -90,7 +92,7 @@ def detectar_escada(watts, alvos, tol, min_blocos):
     """
     if not watts:
         return None
-    tol = _tol_segura(alvos, tol)
+    tol = _tol_segura(alvos, tol, cap_frac)
     suave = _suavizar(watts)
     n = len(suave)
     i = 0
@@ -173,4 +175,80 @@ def analisar_streams(streams, modalidade, protocolos):
     return {"detectado": True, "modalidade": modalidade,
             "padrao": "-".join(str(a) for a in proto["watts"][:len(blocos)]),
             "n_blocos": len(blocos), "blocos": blocos,
+            "tempo_aquecimento_seg": sum(b["tempo_seg"] for b in blocos)}
+
+
+# ── modo assistido: datas que o utilizador garante terem aquecimento ──────
+
+NIVEIS = [
+    # (etiqueta, mult. da tolerancia, min_bloco_s, folga do gap, cap_frac)
+    ("normal",     1.0, MIN_BLOCO_S, 1.0, 0.50),
+    ("tolerante",  1.6, 180,         1.6, 0.65),
+    ("permissivo", 2.4, 120,         2.5, 0.80),
+]
+
+
+def analisar_assistido(streams, modalidade, protocolos):
+    """Para as sessoes que o utilizador CONFIRMOU terem aquecimento.
+
+    Tenta primeiro os criterios normais. Se falhar, vai relaxando a
+    tolerancia de watts e a duracao minima do degrau, e devolve o nivel que
+    resultou -- para se saber quao à-vontade foi a aceitacao.
+
+    Nao inventa dados: se nem no nivel mais permissivo a escada aparecer, e'
+    rejeitada com os watts observados, para se poder ver o que la esta.
+    """
+    global MIN_BLOCO_S, REC_S
+    proto = protocolos.get(modalidade)
+    if not proto:
+        return {"detectado": False, "motivo": f"sem protocolo para {modalidade}"}
+
+    watts = _serie(streams, "watts")
+    if not watts:
+        return {"detectado": False, "motivo": "sem stream de watts"}
+
+    min_orig, rec_orig = MIN_BLOCO_S, REC_S
+    try:
+        for etiqueta, mult, min_bloco, folga, cap in NIVEIS:
+            MIN_BLOCO_S = min_bloco
+            REC_S = (max(5, int(rec_orig[0] / folga)), int(rec_orig[1] * folga))
+            achados = detectar_escada(
+                watts, proto["watts"], proto["tol"] * mult,
+                proto.get("min_blocos", len(proto["watts"])), cap_frac=cap)
+            if achados:
+                r = _montar(streams, watts, achados, modalidade, proto)
+                r["nivel_deteccao"] = etiqueta
+                r["confianca"] = {"normal": "alta", "tolerante": "media",
+                                  "permissivo": "baixa"}[etiqueta]
+                return r
+    finally:
+        MIN_BLOCO_S, REC_S = min_orig, rec_orig
+
+    suave = _suavizar(watts)
+    return {"detectado": False,
+            "motivo": "escada nao encontrada nem em modo permissivo",
+            "duracao_s": len(watts),
+            "watts_a_cada_2min": [round(suave[k])
+                                  for k in range(0, min(len(suave), 1800), 120)]}
+
+
+def _montar(streams, watts, achados, modalidade, proto):
+    """Blocos + metricas. Cada metrica e' usada se existir; as que faltarem
+    ficam a NULL sem invalidar o bloco nem a sessao."""
+    series = {m: _serie(streams, m) for m in ("hr", "smo2", "resp", "dfa1")}
+    blocos, metricas_usadas = [], set()
+    for num, (i0, i1, alvo) in enumerate(achados, start=1):
+        wa, _wmin, _wmax = _resumo(watts, i0, i1)
+        b = {"bloco_num": num, "watts_alvo": alvo, "watts_real": wa,
+             "interval_num": num, "tempo_seg": i1 - i0}
+        for m, serie in series.items():
+            avg, mn, mx = _resumo(serie, i0, i1)
+            b[f"{m}_avg"], b[f"{m}_min"], b[f"{m}_max"] = avg, mn, mx
+            if avg is not None:
+                metricas_usadas.add(m)
+        blocos.append(b)
+    return {"detectado": True, "modalidade": modalidade,
+            "padrao": "-".join(str(a) for a in proto["watts"][:len(blocos)]),
+            "n_blocos": len(blocos), "blocos": blocos,
+            "metricas_disponiveis": sorted(metricas_usadas),
             "tempo_aquecimento_seg": sum(b["tempo_seg"] for b in blocos)}

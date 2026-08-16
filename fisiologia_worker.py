@@ -52,7 +52,7 @@ def _processar_aquecimento(conn, activity_id, modalidade):
     """
     try:
         from aquecimento_analyzer import AquecimentoAnalyzer
-        import aquecimento_db_simples as aq_db
+        import aquecimento_db as aq_db
     except ImportError as e:
         print(f"[AQUECIMENTO] Erro importar: {e}")
         return False

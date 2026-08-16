@@ -1678,6 +1678,122 @@ def api_aquecimento_ingerir():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/fisiologia/progresso')
+def api_fisiologia_progresso():
+    """Quanto falta ingerir. Serve para saber quando parar de repetir."""
+    try:
+        import db as _db
+        import drive_db_fisiologia as ddf
+        conn = ddf.get_conn()
+
+        ja = {r[0] for r in conn.execute(
+            "SELECT DISTINCT activity_id FROM fisiologia_intervalos")}
+        linhas = _db._exec(
+            "SELECT id, type FROM activities WHERE type IS NOT NULL",
+            fetch='all') or []
+
+        elegiveis, por_mod = 0, {}
+        for aid, tipo in linhas:
+            mod = CFG_MODALIDADES.get(tipo, tipo)
+            if mod not in ('Row', 'Ski', 'Bike', 'Run'):
+                continue
+            elegiveis += 1
+            d = por_mod.setdefault(mod, {'total': 0, 'ingeridas': 0})
+            d['total'] += 1
+            if str(aid) in ja:
+                d['ingeridas'] += 1
+
+        feitas = sum(d['ingeridas'] for d in por_mod.values())
+        n_int = conn.execute(
+            "SELECT COUNT(*) FROM fisiologia_intervalos WHERE valido = 1").fetchone()[0]
+
+        return jsonify({
+            'status': 'ok', 'atividades_elegiveis': elegiveis,
+            'ja_ingeridas': feitas, 'em_falta': elegiveis - feitas,
+            'percentagem': round(100.0 * feitas / elegiveis, 1) if elegiveis else 0,
+            'intervalos_na_bd': n_int, 'por_modalidade': por_mod,
+            'concluido': feitas >= elegiveis})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/ingerir_tudo')
+def api_fisiologia_ingerir_tudo():
+    """Ingere em ciclo ate acabar ou ate esgotar o tempo permitido.
+
+    ?segundos=120  -- limite de tempo, para nao rebentar o timeout do proxy.
+    Repetir enquanto 'concluido' for false.
+    """
+    try:
+        import time as _time
+        import db as _db
+        import drive_db_fisiologia as ddf
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import fisiologia_ingestor as ing
+
+        limite_s = min(request.args.get('segundos', default=120, type=int), 240)
+        t0 = _time.time()
+        conn = ddf.get_conn()
+
+        ja = {r[0] for r in conn.execute(
+            "SELECT DISTINCT activity_id FROM fisiologia_intervalos")}
+        linhas = _db._exec(
+            """SELECT id, date, type, COALESCE(elapsed_time, moving_time)
+               FROM activities WHERE type IS NOT NULL
+               ORDER BY date DESC""", fetch='all') or []
+
+        feitas, intervalos, sem_streams, sem_blocos, erros = 0, 0, 0, 0, 0
+        restantes = 0
+        for aid, data, tipo, dur in linhas:
+            mod = CFG_MODALIDADES.get(tipo, tipo)
+            if mod not in ('Row', 'Ski', 'Bike', 'Run'):
+                continue
+            aid = str(aid)
+            if aid in ja:
+                continue
+            if _time.time() - t0 > limite_s:
+                restantes += 1
+                continue
+            try:
+                streams, _m = _db.get_streams(aid)
+                if not streams:
+                    sem_streams += 1
+                    continue
+                ext = ing.extrair_intervalos(streams, duracao_s=dur, modalidade=mod)
+                if not ext:
+                    sem_blocos += 1
+                    continue
+                intervalos += ing.gravar(conn, aid,
+                                         str(data)[:10] if data else None, mod, ext)
+                feitas += 1
+            except Exception as e:
+                erros += 1
+                print(f"[INGESTOR] {aid}: {type(e).__name__}: {e}")
+
+        if feitas:
+            try:
+                ddf.upload()
+            except Exception as e:
+                print(f"[INGESTOR] upload falhou: {e}")
+
+        return jsonify({
+            'status': 'ok', 'segundos_usados': round(_time.time() - t0, 1),
+            'atividades_ingeridas': feitas, 'intervalos_criados': intervalos,
+            'sem_streams_guardados': sem_streams,
+            'sem_blocos_detectados': sem_blocos, 'erros': erros,
+            'ficaram_por_fazer': restantes,
+            'concluido': restantes == 0,
+            'nota': ('repete enquanto concluido=false; o que ja foi gravado '
+                     'esta no .db e nao se perde ao reiniciar')})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/fisiologia/ingerir')
 def api_fisiologia_ingerir():
     """Cria linhas em fisiologia_intervalos a partir dos streams.
@@ -1735,7 +1851,8 @@ def api_fisiologia_ingerir():
                 if not streams:
                     sem_streams += 1
                     continue
-                extraidos = ing.extrair_intervalos(streams, duracao_s=dur)
+                extraidos = ing.extrair_intervalos(streams, duracao_s=dur,
+                                                   modalidade=mod)
                 if not extraidos:
                     sem_blocos += 1
                     continue

@@ -11,7 +11,7 @@ SLUG = 'metabol'
 # resp_avg_60s (sem resp_min, resp_max!)
 # smo2_min_60s (sem smo2_max, smo2_avg!)
 # dfa1_clean (apenas um valor)
-METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1']
+METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1', 'rra1']
 
 AGREGACOES = ['min', 'avg', 'max']
 # MAP REAL: só os que existem!
@@ -52,6 +52,7 @@ LABELS_METAB = {
     'resp': 'Respiração (rpm)',
     'smo2': 'SmO₂ (%)',
     'dfa1': 'DFA-α1 (clean)',
+    'rra1': 'RR α1',
 }
 
 # Nem todas as colunas *_60s foram preenchidas pelo pipeline: por exemplo
@@ -93,6 +94,12 @@ FALLBACKS_DB = {
                       'aproximadas': ['dfa1_extremo']},
     ('dfa1', 'max'): {'equivalentes': ['dfa1_max_60s'],
                       'aproximadas': ['dfa1_baseline']},
+    ('rra1', 'avg'): {'equivalentes': ['rra1_avg_60s', 'rra1_medio_work',
+                                       'rra1_plateau_work'], 'aproximadas': []},
+    ('rra1', 'min'): {'equivalentes': ['rra1_min_60s'],
+                      'aproximadas': ['rra1_extremo']},
+    ('rra1', 'max'): {'equivalentes': ['rra1_max_60s'],
+                      'aproximadas': ['rra1_baseline']},
 }
 
 # Abaixo desta fracao do total, a coluna e' pouco representativa e vale a
@@ -616,12 +623,6 @@ BODY = r"""
     <select id="agregacaoEvolucao"></select></label>
   <label class="sel">Agrupar
     <select id="agruparEvolucao">
-      <option value="mes" selected>Mês</option>
-      <option value="trimestre">Trimestre</option>
-      <option value="ano">Ano</option>
-    </select></label>
-  <label class="sel">Agrupar
-    <select id="agruparEvolucao">
       <option value="semana">Semana</option>
       <option value="mes" selected>Mês</option>
       <option value="trimestre">Trimestre</option>
@@ -633,8 +634,11 @@ BODY = r"""
   <button onclick="carregarEvolucao()">Actualizar</button>
   <span id="evolAviso" style="color:#8b949e;font-size:11px;margin-left:10px;"></span>
 </div>
-<div class="chartbox">
+<div class="chartbox" style="position:relative;">
   <canvas id="chEvolucao" height="240"></canvas>
+  <div id="evolTip" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
+       border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
+       white-space:nowrap;"></div>
 </div>
 </div>
 <div id="aquecimento" class="tab-content">
@@ -719,15 +723,16 @@ let EVOLUCAO = null;
 let isLoadingPerfil = false;
 let isLoadingEvolucao = false;
 const CORES_METAB = {
- hr:'#E74C3C', resp:'#1ABC9C', smo2:'#F39C12', dfa1:'#9B59B6',
+ hr:'#E74C3C', resp:'#1ABC9C', smo2:'#F39C12', dfa1:'#9B59B6', rra1:'#58A6FF',
 };
 const LABELS_METAB = {
  hr:'HR (bpm)', resp:'Respiração (rpm)', smo2:'SmO₂ (%)', dfa1:'DFA-α1 (clean)',
+ rra1:'RR α1',
 };
 const LABELS_AGREGACAO = {
  min:'Mín', max:'Máx', avg:'Méd',
 };
-const METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1'];
+const METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1', 'rra1'];
 // AGREGAÇÕES REAIS (apenas as que existem na BD)
 // Preenchido a partir de /api/fisiologia/cobertura_metricas no arranque.
 // Estava fixo a mao ("apenas as que existem na BD"), o que deixou de ser
@@ -939,6 +944,37 @@ function drawPerfil(){
   }
  };
 }
+let EVOL_PONTOS = [];
+
+function ligarTipEvolucao(){
+ const cv = document.getElementById('chEvolucao');
+ const tip = document.getElementById('evolTip');
+ if(!cv || !tip || cv._tipLigado) return;
+ cv._tipLigado = true;
+ cv.addEventListener('mousemove', function(ev){
+  const r = cv.getBoundingClientRect();
+  const mx = (ev.clientX - r.left) * (cv.width / r.width) / (window.devicePixelRatio||1);
+  const my = (ev.clientY - r.top) * (cv.height / r.height) / (window.devicePixelRatio||1);
+  let perto = null, dmin = 18;
+  EVOL_PONTOS.forEach(function(pt){
+   const d = Math.hypot(pt.x-mx, pt.y-my);
+   if(d < dmin){ dmin = d; perto = pt; }
+  });
+  if(!perto){ tip.style.display='none'; return; }
+  const p = perto.p;
+  const lbl = LABELS_METAB[EVOLUCAO.metrica] || EVOLUCAO.metrica;
+  tip.innerHTML = '<b>' + p.periodo + '</b> \u2014 ' + lbl
+    + '<br>mediana <b>' + p.p50 + '</b>'
+    + (p.media != null ? ' &nbsp;m\u00e9dia ' + p.media : '')
+    + '<br><span style="color:#8b949e;">p25 ' + p.p25 + ' \u2013 p75 ' + p.p75
+    + ' &nbsp;|&nbsp; n=' + p.n + '</span>';
+  tip.style.display = 'block';
+  tip.style.left = Math.min(ev.clientX - r.left + 12, r.width - 180) + 'px';
+  tip.style.top  = (ev.clientY - r.top - 10) + 'px';
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
+}
+
 function drawEvolucao(){
  const o = ctx('chEvolucao', 240);
  if(!o) return;
@@ -958,6 +994,7 @@ function drawEvolucao(){
  const metrica = EVOLUCAO.metrica;
  const cor = CORES_METAB[metrica] || '#999';
  const valores = periodos.map(p => p.p50);
+ EVOL_PONTOS = [];
  const vmin = Math.min.apply(null, valores);
  const vmax = Math.max.apply(null, valores);
  const vmarg = (vmax - vmin) * 0.15 || 1;
@@ -1006,6 +1043,7 @@ function drawEvolucao(){
   const x = PL + w*i/(periodos.length-1||1);
   g.beginPath();
   g.arc(x, Y(p.p50), 3, 0, 7);
+  EVOL_PONTOS.push({x:x, y:Y(p.p50), p:p});
   g.fill();
  });
  
@@ -1168,7 +1206,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 // ═════ AQUECIMENTO ═════
 let AQ_MOD = null, AQ_DADOS = null, AQ_MODS = [], aqLoading = false;
-const AQ_LABELS = {hr:'HR (bpm)', smo2:'SmO\u2082 (%)', resp:'Respira\u00e7\u00e3o (rpm)', dfa1:'DFA-\u03b11', hrw:'HR por watt'};
+const AQ_LABELS = {hr:'HR (bpm)', smo2:'SmO\u2082 (%)', resp:'Respira\u00e7\u00e3o (rpm)', dfa1:'DFA-\u03b11', hrw:'HR por watt' ligarTipEvolucao();
+};
 const AQ_CORES_W = ['#58A6FF','#3FB950','#F0883E','#DB6D28','#F85149'];
 
 function aqInit(){

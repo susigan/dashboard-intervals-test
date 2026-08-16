@@ -30,8 +30,10 @@ PROTOCOLOS = {
 WORK_SEG = (210, 420)   # 5 min, com folga
 REST_SEG = (30, 150)    # 1 min, com folga
 
-# Quantos intervalos podem existir antes do aquecimento comecar.
-MAX_OFFSET = 4
+# O aquecimento comeca SEMPRE no primeiro intervalo da atividade.
+# Permitir folga aqui so criaria falsos positivos (degraus parecidos a meio
+# do treino a serem lidos como aquecimento).
+MAX_OFFSET = 0
 
 # Nem todas as colunas *_60s foram preenchidas pelo pipeline original.
 # Para cada metrica/agregacao tentamos varias colunas, pela ordem indicada,

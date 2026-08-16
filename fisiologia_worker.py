@@ -45,56 +45,58 @@ def _garantir_colunas(conn):
     conn.commit()
     return list(para_criar)
 
-def _processar_aquecimento(conn, activity_id, modalidade):
-    """Processa aquecimento para uma atividade.
-    
-    Retorna True se detectado e guardado, False caso contrário.
+def _processar_aquecimento(conn, activity_id, modalidade, data=None):
+    """Analisa o aquecimento de uma atividade e grava os blocos.
+
+    Devolve True se o protocolo foi detectado e gravado. Atividades que nao
+    seguem o protocolo ficam marcadas como rejeitadas, para nao voltarem a
+    ser reanalisadas em cada passagem.
     """
     try:
+        import sys, os
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
         from aquecimento_analyzer import AquecimentoAnalyzer
         import aquecimento_db as aq_db
-    except ImportError as e:
-        print(f"[AQUECIMENTO] Erro importar: {e}")
-        return False
-    
-    if modalidade not in ['Row', 'Ski', 'Bike']:
-        return False
-    
-    try:
-        analyzer = AquecimentoAnalyzer(conn)
-        resultado = analyzer.analisar_atividade(activity_id, modalidade)
-        
-        if not resultado.get('detectado'):
-            return False
-        
-        # Guardar na BD de aquecimento
-        aq_db = aq_db
-        dados_aq = {
-            'modalidade': modalidade,
-            'data': datetime.now().isoformat(),
-            'padrao_detectado': resultado.get('padrao'),
-            'n_blocos': resultado.get('n_blocos'),
-            'hr_avg': resultado.get('metricas', {}).get('hr_avg'),
-            'hr_min': resultado.get('metricas', {}).get('hr_min'),
-            'hr_max': resultado.get('metricas', {}).get('hr_max'),
-            'smo2_avg': resultado.get('metricas', {}).get('smo2_avg'),
-            'smo2_min': resultado.get('metricas', {}).get('smo2_min'),
-            'smo2_max': resultado.get('metricas', {}).get('smo2_max'),
-            'resp_avg': resultado.get('metricas', {}).get('resp_avg'),
-            'resp_min': resultado.get('metricas', {}).get('resp_min'),
-            'resp_max': resultado.get('metricas', {}).get('resp_max'),
-            'dfa1_avg': resultado.get('metricas', {}).get('dfa1_avg'),
-            'dfa1_min': resultado.get('metricas', {}).get('dfa1_min'),
-            'dfa1_max': resultado.get('metricas', {}).get('dfa1_max'),
-            'tempo_aquecimento_seg': resultado.get('tempo_aquecimento_seg'),
-            'n_intervalos_analisados': resultado.get('n_intervalos'),
-        }
-        aq_db.salvar_sessao(activity_id, dados_aq)
-        return True
-    
     except Exception as e:
-        print(f"[AQUECIMENTO] Erro ao processar {activity_id}: {e}")
+        print(f"[AQUECIMENTO] import falhou: {type(e).__name__}: {e}")
         return False
+
+    if modalidade not in ('Row', 'Ski', 'Bike'):
+        return False
+
+    try:
+        if aq_db.ja_analisada(activity_id):
+            return False
+
+        resultado = AquecimentoAnalyzer(conn).analisar_atividade(
+            activity_id, modalidade)
+
+        if not resultado.get('detectado'):
+            aq_db.marcar_rejeitada(activity_id, modalidade, data,
+                                   resultado.get('motivo', 'desconhecido'))
+            return False
+
+        aq_db.salvar_blocos(activity_id, modalidade, data,
+                            resultado['blocos'], sync=False)
+        return True
+
+    except Exception as e:
+        print(f"[AQUECIMENTO] erro em {activity_id}: {type(e).__name__}: {e}")
+        return False
+
+def _sync_aquecimento():
+    """Envia a BD de aquecimento para o Drive uma unica vez, no fim do lote."""
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import aquecimento_db as aq_db
+        return aq_db.sincronizar()
+    except Exception as e:
+        print(f"[AQUECIMENTO] sync final falhou: {type(e).__name__}: {e}")
+        return False
+
 
 def processar_lote(n=10, retornar_resumo=True):
     """Processa lote de atividades com Fase B + Aquecimento."""
@@ -109,10 +111,11 @@ def processar_lote(n=10, retornar_resumo=True):
     
     # Buscar últimas atividades
     atividades = conn.execute("""
-        SELECT DISTINCT activity_id, modalidade
-        FROM fisiologia_intervalos 
-        WHERE valido=1 
-        ORDER BY data DESC 
+        SELECT activity_id, modalidade, MAX(data) AS data
+        FROM fisiologia_intervalos
+        WHERE valido=1
+        GROUP BY activity_id, modalidade
+        ORDER BY data DESC
         LIMIT ?
     """, (n,)).fetchall()
     
@@ -122,7 +125,7 @@ def processar_lote(n=10, retornar_resumo=True):
     erros = 0
     detalhes = []
     
-    for (activity_id, modalidade) in atividades:
+    for (activity_id, modalidade, data_atividade) in atividades:
         try:
             # FASE B: processar min/avg/max
             intervalos = conn.execute("""
@@ -221,7 +224,7 @@ def processar_lote(n=10, retornar_resumo=True):
             total_intervalos += gravados
             
             # NOVO: AQUECIMENTO — processar automaticamente
-            aq_detectado = _processar_aquecimento(conn, activity_id, modalidade)
+            aq_detectado = _processar_aquecimento(conn, activity_id, modalidade, data_atividade)
             if aq_detectado:
                 aquecimentos_detectados += 1
             
@@ -247,6 +250,7 @@ def processar_lote(n=10, retornar_resumo=True):
             'processadas': processadas,
             'total_intervalos': total_intervalos,
             'aquecimentos_detectados': aquecimentos_detectados,
+            'aquecimento_sincronizado': _sync_aquecimento(),
             'erros': erros,
             'colunas_migradas': colunas_novas,
             'detalhes': detalhes,

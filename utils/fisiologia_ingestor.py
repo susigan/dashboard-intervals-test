@@ -212,11 +212,46 @@ def analisar_resposta(serie, i0, i1, dt, atraso_s, nbase, janela_medida_s=30):
                 tau = None
                 out["tau_r2"] = round(r2, 2)
 
+    # Antes de julgar o plateau: ha' sequer um patamar a atingir?
+    #
+    # Acima do limiar nao existe estado estacionario -- a SmO2 continua a
+    # dessaturar e a HR continua a subir enquanto durar o esforco (componente
+    # lenta). Nesses blocos "nao estabilizou" NAO quer dizer bloco curto:
+    # quer dizer que aquela intensidade nao tem patamar nenhum.
+    #
+    # Distingue-se comparando o ajuste exponencial (que assume assintota)
+    # com um ajuste LINEAR (deriva continua). Se a recta explica tanto ou
+    # mais que a exponencial, a metrica esta em deriva, nao a convergir.
+    if n_work >= 8:
+        y = vals[:n_work]
+        t = [(idxs[a] - i0) * dt for a in range(n_work)]
+        n_ = len(t)
+        mt, my2 = statistics.fmean(t), statistics.fmean(y)
+        den_l = sum((ti - mt) ** 2 for ti in t)
+        if den_l > 0:
+            decl = sum((ti - mt) * (yi - my2) for ti, yi in zip(t, y)) / den_l
+            ss_lin = sum((yi - (my2 + decl * (ti - mt))) ** 2
+                         for ti, yi in zip(t, y))
+            ss_tot2 = sum((yi - my2) ** 2 for yi in y)
+            r2_lin = 1 - ss_lin / ss_tot2 if ss_tot2 else 0
+            out["r2_linear"] = round(r2_lin, 2)
+            out["deriva_por_min"] = round(decl * 60, 4)
+            if r2 is not None and r2_lin >= r2 - 0.02 and r2_lin >= 0.5:
+                out["regime"] = "deriva continua (sem patamar)"
+                out["atingiu_plateau"] = 0
+                out["sem_steady_state"] = 1
+            elif r2 is not None:
+                out["regime"] = "convergente"
+
     # Plateau: com tau fiavel, a regra e' duracao >= 3 tau (95% da resposta).
     # Sem tau fiavel nao se inventa: fica indeterminado (None), e quem le
     # sabe que nao pode contar com aquele bloco para julgar o efeito.
     inicio_plateau = None
     dur_work_s = (i1 - i0) * dt
+    if out.get("sem_steady_state"):
+        tau = None          # nao faz sentido falar de tau numa deriva
+        out.pop("tau_estimado_s", None)
+        out.pop("duracao_para_plateau_s", None)
     if tau:
         if dur_work_s >= 3 * tau:
             out["atingiu_plateau"] = 1
@@ -410,6 +445,10 @@ def extrair_intervalos(streams, duracao_s=None, modalidade=None):
                     linha[f"{m}_tau_fiavel"] = resp["tau_fiavel"]
                 if "fraccao_da_resposta" in resp:
                     linha[f"{m}_fraccao_resposta"] = resp["fraccao_da_resposta"]
+                if "sem_steady_state" in resp:
+                    linha[f"{m}_sem_steady_state"] = resp["sem_steady_state"]
+                if "deriva_por_min" in resp:
+                    linha[f"{m}_deriva_por_min"] = resp["deriva_por_min"]
                 # ESTE e' o valor que representa o efeito da potencia:
                 # medido na janela estabilizada, antes de comecar a inverter
                 if "valor_estabilizado" in resp:
@@ -488,6 +527,10 @@ COLUNAS_NOVAS = {
     **{f"{m}_tau_r2": "REAL" for m in
        ("hr", "smo2", "resp", "dfa1", "thb", "rra1")},
     **{f"{m}_tau_fiavel": "INTEGER" for m in
+       ("hr", "smo2", "resp", "dfa1", "thb", "rra1")},
+    **{f"{m}_sem_steady_state": "INTEGER" for m in
+       ("hr", "smo2", "resp", "dfa1", "thb", "rra1")},
+    **{f"{m}_deriva_por_min": "REAL" for m in
        ("hr", "smo2", "resp", "dfa1", "thb", "rra1")},
     **{f"{m}_fraccao_resposta": "REAL" for m in
        ("hr", "smo2", "resp", "dfa1", "thb", "rra1")},

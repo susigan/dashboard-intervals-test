@@ -153,47 +153,81 @@ def analisar_resposta(serie, i0, i1, dt, atraso_s, nbase, janela_medida_s=30):
     # A taxa e' o que distingue "estabilizou" de "ainda esta a caminho":
     # numa resposta exponencial, ao fim de 3 tau a taxa cai para ~5% da
     # inicial; ao fim de 1,5 tau ainda esta em ~22%.
-    jan = max(2, int(20 / dt))
     vals = [v for _, v in trecho]
     idxs = [k for k, _ in trecho]
     n_work = sum(1 for k in idxs if k < i1)
 
-    # Estabilizou ou nao?
+    # Estabilizou ou nao? E com que constante de tempo?
     #
-    # Comparar a variacao com a AMPLITUDE nao funciona: num bloco curto a
-    # amplitude observada e' truncada, e qualquer criterio relativo a ela
-    # auto-satisfaz-se. O que distingue mesmo e' a razao entre a taxa de
-    # variacao no fim e no inicio do esforco. Numa resposta de primeira
-    # ordem essa razao e' exp(-t/tau), ou seja diz quantas constantes de
-    # tempo passaram, independentemente de onde a curva foi parar:
-    #   1 tau -> 37%   2 tau -> 14%   3 tau -> 5%
-    # Abaixo de 10% (~2,3 tau) considera-se estabilizado.
-    taxas = []
-    for a in range(max(0, n_work - jan)):
-        taxas.append(abs(vals[a + jan] - vals[a]) / (jan * dt))
+    # A primeira versao estimava tau pela razao entre a taxa no fim e no
+    # inicio (tau = T / -ln(razao)). Funcionava em curvas limpas e falhou
+    # redondamente nos dados reais: o ruido NAO decai, a razao fica perto
+    # de 1, o -ln aproxima-se de zero e o tau explodia -- deu 560 s para a
+    # HR na bicicleta e 1178 s no remo, quando o valor fisiologico ronda os
+    # 30-60 s.
+    #
+    # Agora ajusta-se mesmo a exponencial v(t) = vf + (v0-vf)*exp(-t/tau)
+    # por minimos quadrados, varrendo tau numa grelha. O ruido dispersa-se
+    # no residuo em vez de contaminar a estimativa.
+    tau = None
+    r2 = None
+    if n_work >= 8:
+        y = vals[:n_work]
+        t = [(idxs[a] - i0) * dt for a in range(n_work)]
+        v0 = statistics.fmean(y[:max(2, n_work // 10)])
+        dur_w = t[-1] if t else 0
+        media_y = statistics.fmean(y)
+        ss_tot = sum((yi - media_y) ** 2 for yi in y)
 
-    inicio_plateau = None
-    razao = None
-    if len(taxas) >= 3:
-        taxa_ini = max(taxas[:max(1, len(taxas) // 3)])
-        taxa_fim = statistics.fmean(taxas[-max(1, len(taxas) // 5):])
-        if taxa_ini > 0:
-            razao = taxa_fim / taxa_ini
-            out["razao_taxa_fim_inicio"] = round(razao, 3)
-            # tau estimado a partir da razao, util para saber quanto tempo
-            # de bloco seria preciso para esta metrica estabilizar
-            if 0 < razao < 1:
-                dur_work_s = (i1 - i0) * dt
-                tau = dur_work_s / max(1e-6, -math.log(razao))
+        melhor = None
+        for cand in (5, 8, 11, 15, 20, 26, 33, 40, 50, 60, 75, 90,
+                     110, 135, 165, 200, 250, 300):
+            if cand > max(dur_w * 3, 60):
+                break
+            # vf otimo para este tau (minimos quadrados fechado)
+            pesos = [1 - math.exp(-ti / cand) for ti in t]
+            den = sum(p * p for p in pesos)
+            if den <= 1e-9:
+                continue
+            num = sum(p * (yi - v0) for p, yi in zip(pesos, y))
+            delta = num / den
+            ss = sum((yi - (v0 + delta * p)) ** 2 for p, yi in zip(pesos, y))
+            if melhor is None or ss < melhor[0]:
+                melhor = (ss, cand, v0 + delta)
+
+        if melhor and ss_tot > 0:
+            ss, tau, assintota = melhor
+            r2 = 1 - ss / ss_tot
+            # so se aceita o tau se a exponencial explicar mesmo a curva
+            if r2 >= 0.5:
                 out["tau_estimado_s"] = round(tau, 1)
+                out["tau_r2"] = round(r2, 2)
+                # Se o bloco durou menos de ~1,5 tau, so vimos o inicio da
+                # curva: o tau e' extrapolacao e nao deve ser usado como
+                # valor fisiologico, apenas para dizer "nao estabilizou".
+                out["tau_fiavel"] = 1 if dur_w >= 1.5 * tau else 0
+                out["assintota_estimada"] = round(assintota, 3)
                 out["duracao_para_plateau_s"] = round(3 * tau, 1)
-            if razao <= 0.10:
-                for a in range(len(taxas)):
-                    if taxas[a] <= 0.10 * taxa_ini:
-                        inicio_plateau = idxs[a]
-                        break
+            else:
+                tau = None
+                out["tau_r2"] = round(r2, 2)
 
-    out["atingiu_plateau"] = 1 if inicio_plateau is not None else 0
+    # Plateau: com tau fiavel, a regra e' duracao >= 3 tau (95% da resposta).
+    # Sem tau fiavel nao se inventa: fica indeterminado (None), e quem le
+    # sabe que nao pode contar com aquele bloco para julgar o efeito.
+    inicio_plateau = None
+    dur_work_s = (i1 - i0) * dt
+    if tau:
+        if dur_work_s >= 3 * tau:
+            out["atingiu_plateau"] = 1
+            for a in range(n_work):
+                if (idxs[a] - i0) * dt >= 3 * tau:
+                    inicio_plateau = idxs[a]
+                    break
+        else:
+            out["atingiu_plateau"] = 0
+            out["fraccao_da_resposta"] = round(1 - math.exp(-dur_work_s / tau), 2)
+
     if inicio_plateau is not None:
         out["inicio_plateau_s"] = round((inicio_plateau - i0) * dt, 1)
 
@@ -370,6 +404,12 @@ def extrair_intervalos(streams, duracao_s=None, modalidade=None):
                     linha[f"{m}_inicio_plateau_s"] = resp["inicio_plateau_s"]
                 if "tau_estimado_s" in resp:
                     linha[f"{m}_tau_s"] = resp["tau_estimado_s"]
+                if "tau_r2" in resp:
+                    linha[f"{m}_tau_r2"] = resp["tau_r2"]
+                if "tau_fiavel" in resp:
+                    linha[f"{m}_tau_fiavel"] = resp["tau_fiavel"]
+                if "fraccao_da_resposta" in resp:
+                    linha[f"{m}_fraccao_resposta"] = resp["fraccao_da_resposta"]
                 # ESTE e' o valor que representa o efeito da potencia:
                 # medido na janela estabilizada, antes de comecar a inverter
                 if "valor_estabilizado" in resp:
@@ -444,6 +484,12 @@ COLUNAS_NOVAS = {
     **{f"{m}_amplitude": "REAL" for m in
        ("hr", "smo2", "resp", "dfa1", "thb", "rra1")},
     **{f"{m}_tau_s": "REAL" for m in
+       ("hr", "smo2", "resp", "dfa1", "thb", "rra1")},
+    **{f"{m}_tau_r2": "REAL" for m in
+       ("hr", "smo2", "resp", "dfa1", "thb", "rra1")},
+    **{f"{m}_tau_fiavel": "INTEGER" for m in
+       ("hr", "smo2", "resp", "dfa1", "thb", "rra1")},
+    **{f"{m}_fraccao_resposta": "REAL" for m in
        ("hr", "smo2", "resp", "dfa1", "thb", "rra1")},
     **{f"lag_{m}_{f}": "REAL" for m in ("thb", "rra1") for f in ("50", "75", "90")},
     "rra1_avg_60s": "REAL", "rra1_min_60s": "REAL", "rra1_max_60s": "REAL",

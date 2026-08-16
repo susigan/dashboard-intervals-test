@@ -1678,6 +1678,16 @@ def api_aquecimento_ingerir():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/fisiologia/cobertura_metricas')
+def api_fisiologia_cobertura_metricas():
+    """Que metrica/agregacao tem mesmo dados na BD do perfil por watts."""
+    try:
+        from tabs import tab_metabol as tm
+        return jsonify({'status': 'ok', 'cobertura': tm.cobertura_metricas()})
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+
 @app.route('/api/fisiologia/cobertura')
 def api_fisiologia_cobertura():
     """Onde estao os dados: atividades no Postgres, streams guardados, e

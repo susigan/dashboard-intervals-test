@@ -1,10 +1,10 @@
 # ===== IMPORTS AQUECIMENTO (com proteção) =====
-sys.path.insert(0, './utils')
 AQUECIMENTO_ENABLED = False
 aq_db = None
 AquecimentoAnalyzer = None
 
 try:
+    sys.path.insert(0, './utils')
     import aquecimento_db as aq_db
     from aquecimento_analyzer import AquecimentoAnalyzer
     AQUECIMENTO_ENABLED = True

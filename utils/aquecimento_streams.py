@@ -252,3 +252,52 @@ def _montar(streams, watts, achados, modalidade, proto):
             "n_blocos": len(blocos), "blocos": blocos,
             "metricas_disponiveis": sorted(metricas_usadas),
             "tempo_aquecimento_seg": sum(b["tempo_seg"] for b in blocos)}
+
+
+# ── engenharia inversa: descobrir a escada real de uma sessao ─────────────
+
+def perfil_degraus(watts, min_dur=45, tol_patamar=12):
+    """Segmenta o stream em patamares estaveis, SEM assumir protocolo.
+
+    Serve para descobrir o que a sessao tem mesmo, quando a escada esperada
+    nao aparece. Devolve [(inicio_s, duracao_s, watts_mediano), ...].
+    """
+    if not watts:
+        return []
+    suave = _suavizar(watts)
+    segmentos, ini, buf = [], 0, []
+
+    for i, v in enumerate(suave):
+        if not buf:
+            buf = [v]
+            ini = i
+            continue
+        med = statistics.median(buf)
+        if abs(v - med) <= tol_patamar:
+            buf.append(v)
+        else:
+            if i - ini >= min_dur:
+                segmentos.append((ini, i - ini, round(statistics.median(buf), 1)))
+            buf, ini = [v], i
+
+    if buf and len(suave) - ini >= min_dur:
+        segmentos.append((ini, len(suave) - ini,
+                          round(statistics.median(buf), 1)))
+    return segmentos
+
+
+def resumir_inicio(streams, minutos=30):
+    """Retrato dos primeiros minutos: degraus encontrados e watts amostrados."""
+    watts = _serie(streams, "watts")
+    if not watts:
+        return {"erro": "sem stream de watts"}
+    corte = watts[:minutos * 60]
+    suave = _suavizar(corte)
+    degraus = perfil_degraus(corte)
+    return {
+        "duracao_total_s": len(watts),
+        "degraus": [{"inicio_s": a, "duracao_s": b, "watts": c}
+                    for a, b, c in degraus[:12]],
+        "watts_cada_30s": [round(suave[k]) for k in range(0, len(suave), 30)],
+        "streams_presentes": sorted(streams.keys()),
+    }

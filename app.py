@@ -1177,6 +1177,61 @@ def api_aquecimento_auditoria():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/listagem')
+def api_aquecimento_listagem():
+    """Todas as sessoes de aquecimento analisadas, para conferencia.
+
+    ?modalidade=Row  -- sem parametro devolve as tres.
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        mod = request.args.get('modalidade')
+        conn = aq_db.get_conn()
+        cond, params = [], []
+        if mod:
+            cond.append("modalidade = ?")
+            params.append(mod)
+        where = f"WHERE {' AND '.join(cond)}" if cond else ""
+        linhas = conn.execute(
+            f"""SELECT modalidade, data, activity_id,
+                       COUNT(*)                AS n_blocos,
+                       GROUP_CONCAT(watts_alvo) AS alvos,
+                       ROUND(AVG(watts_real), 1) AS watts_medio,
+                       SUM(tempo_seg)           AS tempo_total_s,
+                       SUM(CASE WHEN hr_avg   IS NOT NULL THEN 1 ELSE 0 END) AS c_hr,
+                       SUM(CASE WHEN smo2_avg IS NOT NULL THEN 1 ELSE 0 END) AS c_smo2,
+                       SUM(CASE WHEN resp_avg IS NOT NULL THEN 1 ELSE 0 END) AS c_resp,
+                       SUM(CASE WHEN dfa1_avg IS NOT NULL THEN 1 ELSE 0 END) AS c_dfa1
+                FROM aquecimento_blocos {where}
+                GROUP BY activity_id
+                ORDER BY modalidade, data DESC""", tuple(params)).fetchall()
+
+        sessoes = []
+        for l in linhas:
+            d = dict(l)
+            n = d.pop('n_blocos')
+            metricas = []
+            for m in ('hr', 'smo2', 'resp', 'dfa1'):
+                c = d.pop(f'c_{m}')
+                if c:
+                    metricas.append(m if c == n else f"{m}({c}/{n})")
+            d['n_blocos'] = n
+            d['metricas'] = metricas
+            sessoes.append(d)
+
+        por_mod = {}
+        for s_ in sessoes:
+            por_mod[s_['modalidade']] = por_mod.get(s_['modalidade'], 0) + 1
+
+        return jsonify({'status': 'ok', 'total': len(sessoes),
+                        'por_modalidade': por_mod, 'sessoes': sessoes})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/aquecimento/perfil')
 def api_aquecimento_perfil():
     """Descobre a escada REAL das sessoes, sem assumir protocolo.
@@ -1233,10 +1288,13 @@ def api_aquecimento_perfil():
                 saida.append({'activity_id': aid, 'data': dt,
                               'erro': 'sem streams guardados'})
                 continue
-            saida.append({'activity_id': aid, 'data': dt,
-                          **aqs.resumir_inicio(
-                              streams, duracao_s=_duracao_atividade(aid),
-                              protocolo=aa.PROTOCOLOS.get(mod))})
+            dur_s = _duracao_atividade(aid)
+            saida.append({
+                'activity_id': aid, 'data': dt,
+                **aqs.resumir_inicio(streams, duracao_s=dur_s,
+                                     protocolo=aa.PROTOCOLOS.get(mod)),
+                'diagnostico': aqs.diagnosticar_escada(
+                    streams, mod, aa.PROTOCOLOS, duracao_s=dur_s)})
 
         return jsonify({'status': 'ok', 'modalidade': mod,
                         'protocolo_assumido': aa.PROTOCOLOS.get(mod),

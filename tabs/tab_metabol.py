@@ -383,6 +383,8 @@ BODY = r"""
     <button id="aqBtnScan" onclick="aqScan()">Procurar aquecimentos em falta</button>
     <button id="aqBtnRe" onclick="aqScan(true)" style="margin-left:8px;">Reanalisar tudo</button>
     <button id="aqBtnAud" onclick="aqAuditar()" style="margin-left:8px;">Auditar as minhas datas</button>
+    <button id="aqBtnPq" onclick="aqPorque()" style="margin-left:8px;">Porque falhou?</button>
+    <button id="aqBtnIng" onclick="aqIngerir()" style="margin-left:8px;">Analisar histórico (streams)</button>
     <span id="aqScanEstado" style="color:#8b949e;font-size:12px;margin-left:10px;"></span>
   </div>
   <div id="aqDiag" style="color:#8b949e;font-size:11px;margin-bottom:12px;"></div>
@@ -967,6 +969,61 @@ function aqAuditar(){
   if(primeiro && primeiro.diagnostico) h += '<p style="margin-top:6px;">' + primeiro.diagnostico + '</p>';
   diag.innerHTML = h;
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
+}
+
+function aqPorque(){
+ const est = document.getElementById('aqScanEstado');
+ const diag = document.getElementById('aqDiag');
+ const mod = AQ_MOD || '';
+ est.textContent = 'a inspeccionar uma sess\u00e3o ignorada...';
+ fetch('/api/aquecimento/inspeccionar?rejeitada=1' + (mod ? '&modalidade='+mod : ''))
+ .then(r=>r.json()).then(function(d){
+  est.textContent = '';
+  if(d.status !== 'ok'){ diag.innerHTML = d.mensagem || 'sem sess\u00f5es ignoradas'; return; }
+  const p = d.protocolo_esperado || {};
+  let h = '<b>' + d.modalidade + ' ' + d.activity_id + '</b> \u2014 esperado: '
+   + (p.watts||[]).join('-') + 'W (\u00b1' + p.tol + 'W, m\u00edn ' + p.min_blocos + ' blocos)<br>'
+   + 'motivo: <span style="color:#F0883E;">' + (d.resultado||{}).motivo + '</span>'
+   + ' &nbsp;|&nbsp; ' + d.n_intervalos + ' intervalos na sess\u00e3o<br>'
+   + '<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+   + '<tr style="color:#8b949e;text-align:left;"><th style="padding:3px 10px 3px 0;">#</th>'
+   + '<th style="padding-right:10px;">Watts</th><th style="padding-right:10px;">Work (s)</th><th>Rec (s)</th></tr>';
+  (d.intervalos||[]).forEach(function(iv){
+   h += '<tr><td style="padding:2px 10px 2px 0;">'+iv.n+'</td><td>'+(iv.watts!=null?iv.watts:'\u2014')
+     +'</td><td>'+(iv.dur_work_s!=null?iv.dur_work_s:'\u2014')
+     +'</td><td>'+(iv.dur_rec_s!=null?iv.dur_rec_s:'\u2014')+'</td></tr>';
+  });
+  h += '</table>';
+  diag.innerHTML = h;
+ }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
+}
+
+function aqIngerir(){
+ const btn = document.getElementById('aqBtnIng');
+ const est = document.getElementById('aqScanEstado');
+ btn.disabled = true;
+ let total = {det:0, rej:0, sem:0, vistas:0};
+ const mods = ['Row','Ski','Bike'];
+ let i = 0;
+
+ function passo(){
+  if(i >= mods.length){
+   est.textContent = total.det + ' aquecimentos novos | ' + total.rej + ' ignorados | '
+     + total.sem + ' sem streams guardados';
+   btn.disabled = false; aqInit(); return;
+  }
+  const m = mods[i];
+  est.textContent = 'a analisar ' + m + ' a partir dos streams...';
+  fetch('/api/aquecimento/ingerir?modalidade=' + m + '&limite=60')
+  .then(r=>r.json()).then(function(d){
+   if(d.status === 'ok'){
+    total.det += d.detectados; total.rej += d.rejeitados;
+    total.sem += d.sem_streams_guardados; total.vistas += d.atividades_vistas;
+   }
+   i++; passo();
+  }).catch(function(){ i++; passo(); });
+ }
+ passo();
 }
 
 function aqCarregar(){

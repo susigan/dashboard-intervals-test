@@ -929,7 +929,19 @@ function drawPerfil(){
   }
   
   const watts = xmin + (mx-PL)/w*(xmax-xmin);
-  const faixa = faixas.find(f => Math.abs(f.watts_centro - watts) < 30);
+
+  // A faixa MAIS PROXIMA, nao a primeira dentro de uma tolerancia fixa.
+  // Com bins de 20 W varias faixas caiam dentro dos 30 W do criterio antigo
+  // e o find() devolvia a primeira: o tooltip mostrava os valores de uma
+  // faixa enquanto a linha por baixo do cursor era de outra.
+  let faixa = null, melhor = Infinity;
+  const larg = faixas.length > 1
+    ? Math.abs(faixas[1].watts_centro - faixas[0].watts_centro) : 50;
+  faixas.forEach(function(f){
+   const d = Math.abs(f.watts_centro - watts);
+   if(d < melhor){ melhor = d; faixa = f; }
+  });
+  if(melhor > larg * 0.75) faixa = null;
   
   if(faixa){
    let txt = '<b>'+faixa.faixa_watts+'</b><br/>'+faixa.n_intervalos+' int.<br/>';
@@ -940,6 +952,9 @@ function drawPerfil(){
      txt += LABELS_METAB[m]+' ('+LABELS_AGREGACAO[camposSelecionados[m]]+'): '+faixa[chave].p50+'<br/>';
     }
    });
+   // qual e' o ponto realmente destacado
+   txt += '<span style="color:#8b949e;font-size:10px;">centro ' 
+     + Math.round(faixa.watts_centro) + 'W</span>';
    tooltip.innerHTML = txt;
    tooltip.style.left = (evt.clientX + 10) + 'px';
    tooltip.style.top = (evt.clientY + 10) + 'px';

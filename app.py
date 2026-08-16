@@ -1683,7 +1683,19 @@ def api_fisiologia_cobertura_metricas():
     """Que metrica/agregacao tem mesmo dados na BD do perfil por watts."""
     try:
         from tabs import tab_metabol as tm
-        return jsonify({'status': 'ok', 'cobertura': tm.cobertura_metricas()})
+        cob = tm.cobertura_metricas()
+        fracas = []
+        for m, ags in cob.items():
+            if m.startswith('_'):
+                continue
+            for a, info in ags.items():
+                if not info.get('utilizavel'):
+                    fracas.append(f"{m}/{a}: {info.get('cobertura_pct')}%")
+        return jsonify({'status': 'ok', 'cobertura': cob,
+                        'cobertura_baixa': fracas,
+                        'nota': ('Colunas abaixo de 20% de cobertura dao graficos '
+                                 'com poucos pontos; a escolha e feita pela '
+                                 'coluna equivalente com mais dados.')})
     except Exception as e:
         return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
 

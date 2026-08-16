@@ -54,6 +54,63 @@ LABELS_METAB = {
     'dfa1': 'DFA-α1 (clean)',
 }
 
+# Nem todas as colunas *_60s foram preenchidas pelo pipeline: por exemplo
+# smo2_avg_60s esta vazia, porque o worker le e escreve na MESMA coluna.
+# Para cada metrica/agregacao tentam-se varias colunas, pela ordem indicada,
+# e usa-se a primeira que exista E tenha dados.
+FALLBACKS_DB = {
+    ('hr', 'avg'):   ['hr_avg_60s', 'hr_medio_work', 'hr_plateau_work'],
+    ('hr', 'min'):   ['hr_min_60s', 'hr_baseline'],
+    ('hr', 'max'):   ['hr_max_60s', 'hr_extremo'],
+    ('smo2', 'avg'): ['smo2_avg_60s', 'smo2_medio_work', 'smo2_plateau_work'],
+    ('smo2', 'min'): ['smo2_min_60s', 'smo2_extremo'],
+    ('smo2', 'max'): ['smo2_max_60s', 'smo2_baseline'],
+    ('resp', 'avg'): ['resp_avg_60s', 'resp_medio_work', 'resp_plateau_work'],
+    ('resp', 'min'): ['resp_min_60s', 'resp_baseline'],
+    ('resp', 'max'): ['resp_max_60s', 'resp_extremo'],
+    ('dfa1', 'avg'): ['dfa1_avg_60s', 'dfa1_clean', 'dfa1_medio_work'],
+    ('dfa1', 'min'): ['dfa1_min_60s', 'dfa1_extremo'],
+    ('dfa1', 'max'): ['dfa1_max_60s', 'dfa1_baseline'],
+}
+
+_COBERTURA_CACHE = {}
+
+
+def coluna_com_dados(conn, metrica, agregacao):
+    """Primeira coluna candidata que existe e tem valores. None se nenhuma.
+
+    Sem isto, escolher SmO2=Med devolvia uma coluna vazia e o grafico saia
+    em branco sem explicacao.
+    """
+    chave = (metrica, agregacao)
+    if chave in _COBERTURA_CACHE:
+        return _COBERTURA_CACHE[chave]
+    try:
+        existentes = {r[1] for r in conn.execute(
+            "PRAGMA table_info(fisiologia_intervalos)")}
+    except Exception:
+        existentes = set()
+    escolhida = None
+    for col in FALLBACKS_DB.get(chave, []):
+        if col not in existentes:
+            continue
+        try:
+            n = conn.execute(
+                f"SELECT COUNT({col}) FROM fisiologia_intervalos WHERE valido = 1"
+            ).fetchone()[0]
+        except Exception:
+            n = 0
+        if n:
+            escolhida = col
+            break
+    _COBERTURA_CACHE[chave] = escolhida
+    return escolhida
+
+
+def agregacoes_com_dados(conn, metrica):
+    return [a for a in AGREGACOES if coluna_com_dados(conn, metrica, a)]
+
+
 CAMPOS_DB = {
     m: {a: f'{m}_{a}_60s' for a in AGREGACOES} for m in METRICAS_BASE
 }
@@ -136,6 +193,13 @@ def _pace_da_faixa(pace_s_km_mediano, modalidade):
         return f'{txt} /km' if txt else None
     
     return None
+def cobertura_metricas():
+    """Que agregacoes tem mesmo dados, por metrica. Serve para nao oferecer
+    ao utilizador opcoes que devolvem grafico vazio."""
+    conn = _conn()
+    return {m: agregacoes_com_dados(conn, m) for m in METRICAS_BASE}
+
+
 def modalidades_disponiveis():
     conn = _conn()
     resultado = conn.execute("""
@@ -159,15 +223,22 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
     conn = _conn()
     
     # VALIDAR que as agregações são válidas
-    para_buscar = {}
+    para_buscar, ignoradas = {}, {}
     for metrica_base, agregacao in campos_selecionados.items():
-        if agregacao in AGREGACOES_VALIDAS.get(metrica_base, []):
-            coluna_db = CAMPOS_DB[metrica_base][agregacao]
-            para_buscar[f'{metrica_base}_{agregacao}'] = coluna_db
-        # Se agregação inválida, ignora (não inclui na query)
+        if agregacao not in AGREGACOES:
+            ignoradas[f'{metrica_base}_{agregacao}'] = 'agregacao desconhecida'
+            continue
+        coluna_db = coluna_com_dados(conn, metrica_base, agregacao)
+        if not coluna_db:
+            # a coluna existe mas esta vazia -> dizer, em vez de devolver nada
+            ignoradas[f'{metrica_base}_{agregacao}'] = 'sem dados na BD'
+            continue
+        para_buscar[f'{metrica_base}_{agregacao}'] = coluna_db
     
     if not para_buscar:
-        return {'status': 'erro', 'mensagem': 'Nenhuma métrica válida selecionada'}
+        return {'status': 'erro',
+                'mensagem': 'Nenhuma métrica com dados para esta selecção',
+                'ignoradas': ignoradas}
     
     todas_colunas = set(['watts_medio', 'data', 'activity_id', 'interval_num'])
     # pace_s_km é opcional — criada pelo worker mas pode não existir ainda
@@ -269,14 +340,24 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
                 vs_sorted = vs_arr[vs_sorted_idx]
                 ps_sorted = ps_arr[vs_sorted_idx]
                 
-                ps_cum = np.cumsum(ps_sorted) / np.sum(ps_sorted)
-                
+                # Percentil ponderado: a posicao de cada valor e' o centro da
+                # sua "fatia" de peso, nao o fim dela. A versao anterior usava
+                # o acumulado simples, o que empurrava todos os percentis para
+                # cima -- vies sistematico, pior quanto menos valores na faixa.
+                ps_cum = (np.cumsum(ps_sorted) - 0.5 * ps_sorted) / np.sum(ps_sorted)
+
+                def _pct(q):
+                    if len(vs_sorted) == 1:
+                        return float(vs_sorted[0])
+                    return float(np.interp(q, ps_cum, vs_sorted))
+
                 faixa[chave_unica] = {
-                    'p10': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.10), len(vs_sorted)-1)]), 2),
-                    'p25': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.25), len(vs_sorted)-1)]), 2),
-                    'p50': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.50), len(vs_sorted)-1)]), 2),
-                    'p75': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.75), len(vs_sorted)-1)]), 2),
-                    'p90': round(float(vs_sorted[min(np.searchsorted(ps_cum, 0.90), len(vs_sorted)-1)]), 2),
+                    'p10': round(_pct(0.10), 2),
+                    'p25': round(_pct(0.25), 2),
+                    'p50': round(_pct(0.50), 2),
+                    'p75': round(_pct(0.75), 2),
+                    'p90': round(_pct(0.90), 2),
+                    'media': round(float(np.average(vs_arr, weights=ps_arr)), 2),
                     'n': len(vs_validos),
                 }
         
@@ -286,6 +367,8 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
         'modalidade': modalidade,
         'n_intervalos_total': len(linhas),
         'campos_selecionados': campos_selecionados,
+        'colunas_usadas': para_buscar,
+        'ignoradas': ignoradas,
         'faixas': faixas_saida,
     }
 def evolucao_temporal(modalidade, metrica, agregacao, watts_min=None, watts_max=None, min_por_periodo=3):
@@ -409,15 +492,25 @@ BODY = r"""
     <label class="sel" style="cursor:pointer;white-space:nowrap;">
       <input type="checkbox" id="aqTrend" checked style="vertical-align:middle;margin-right:4px;"><span style="vertical-align:middle;">Tendência</span></label>
   </div>
-  <h2 id="aqTitulo">Aquecimento por escalão de watts</h2>
+  <h2 id="aqTituloRange">Dispersão por escalão de watts</h2>
+  <div class="chartbox"><canvas id="chRange" height="300"></canvas></div>
+
+  <h2 id="aqTitulo">Evolução temporal</h2>
   <div class="legend" id="aqLegenda"></div>
   <div class="chartbox"><canvas id="chAquecimento" height="320"></canvas></div>
-  <h2>Tendência por período</h2>
-  <div id="aqTendencia" style="overflow-x:auto;"></div>
-  <h2>Fiabilidade por escalão</h2>
-  <div id="aqTabela" style="overflow-x:auto;"></div>
-  <h2>Efeito de treino no mesmo dia</h2>
-  <div id="aqContexto" style="overflow-x:auto;"></div>
+
+  <details style="margin-top:18px;">
+    <summary style="cursor:pointer;font-size:15px;font-weight:600;padding:6px 0;">Tendência por período</summary>
+    <div id="aqTendencia" style="overflow-x:auto;margin-top:8px;"></div>
+  </details>
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;font-size:15px;font-weight:600;padding:6px 0;">Fiabilidade por escalão (SEM / MDC)</summary>
+    <div id="aqTabela" style="overflow-x:auto;margin-top:8px;"></div>
+  </details>
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;font-size:15px;font-weight:600;padding:6px 0;">Efeito de treino no mesmo dia</summary>
+    <div id="aqContexto" style="overflow-x:auto;margin-top:8px;"></div>
+  </details>
 </div>
 <style>
 .tabs { display:flex; gap:20px; }
@@ -858,7 +951,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   this.classList.add('active');
   document.getElementById(tabName).classList.add('active');
-  if(tabName === 'aquecimento'){ aqDraw(); aqTabela(); }
+  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); }
  });
 });
 // ═════ AQUECIMENTO ═════
@@ -1265,7 +1358,7 @@ function aqCarregar(){
   AQ_DADOS = d;
   document.getElementById('aqTitulo').textContent =
     AQ_LABELS[met] + ' \u2014 ' + AQ_MOD + ' por escal\u00e3o de watts';
-  aqDraw(); aqTabela(); aqTendencia(met, agr); aqContexto(met, agr);
+  aqDraw(); aqRange(); aqTabela(); aqTendencia(met, agr); aqContexto(met, agr);
  }).catch(function(e){
   console.error('[aqCarregar]', e);
   AQ_DADOS = {status:'erro'}; aqDraw();
@@ -1390,6 +1483,94 @@ function aqDraw(){
   return '<span style="margin-right:16px;color:'+cor+';">\u25CF ' + s.watts_alvo
    + 'W' + wr + ' (n=' + s.n + ')</span>';
  }).join('');
+}
+
+function aqRange(){
+ const o = ctx('chRange', 300);
+ if(!o) return;
+ const g = o.g, W = o.W, H = o.H;
+ if(!AQ_DADOS || AQ_DADOS.status !== 'ok' || !(AQ_DADOS.series||[]).length){
+  noData(g, W, H, 'Sem dados'); return;
+ }
+ const series = AQ_DADOS.series.filter(s => s.valores && s.valores.length);
+ if(!series.length){ noData(g, W, H, 'Sem dados'); return; }
+
+ const met = document.getElementById('aqMetrica').value;
+ document.getElementById('aqTituloRange').textContent =
+   AQ_LABELS[met] + ' \u2014 dispers\u00e3o por escal\u00e3o (m\u00e9dia \u00b1 MDC\u2089\u2085)';
+
+ let vmin = Infinity, vmax = -Infinity;
+ series.forEach(function(s){
+  s.valores.forEach(function(v){ if(v<vmin) vmin=v; if(v>vmax) vmax=v; });
+  const m = s.reliability && s.reliability.mdc95;
+  if(m){
+   const md = s.valores.reduce((a,b)=>a+b,0)/s.valores.length;
+   if(md-m < vmin) vmin = md-m;
+   if(md+m > vmax) vmax = md+m;
+  }
+ });
+ const marg = (vmax-vmin)*0.12 || 1;
+ const va = vmin-marg, vb = vmax+marg;
+ const PL=70, PR=30, PB=40, PT=16, w=W-PL-PR, h=H-PT-PB;
+ const Y = v => PT + h - (v-va)/(vb-va)*h;
+
+ const wattsMin = Math.min.apply(null, series.map(s=>s.watts_alvo));
+ const wattsMax = Math.max.apply(null, series.map(s=>s.watts_alvo));
+ const span = (wattsMax - wattsMin) || 1;
+ const X = wv => PL + (wv - wattsMin)/span * w;
+
+ g.strokeStyle = '#21262d'; g.lineWidth = 1;
+ g.fillStyle = '#8b949e'; g.font = '11px sans-serif'; g.textAlign = 'right';
+ for(let k=0;k<=4;k++){
+  const y = PT + h*k/4;
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.fillText((vb - (vb-va)*k/4).toFixed(1), PL-8, y+4);
+ }
+
+ // banda MDC + pontos por escalao
+ series.forEach(function(s, si){
+  const cor = AQ_CORES_W[si % AQ_CORES_W.length];
+  const vals = s.valores;
+  const media = vals.reduce((a,b)=>a+b,0)/vals.length;
+  const mdc = s.reliability && s.reliability.mdc95;
+  const x = X(s.watts_alvo);
+  const meia = Math.max(14, w/(series.length*3));
+
+  if(mdc){
+   const r=parseInt(cor.substring(1,3),16), gg=parseInt(cor.substring(3,5),16), bb=parseInt(cor.substring(5,7),16);
+   g.fillStyle = 'rgba('+r+','+gg+','+bb+',0.10)';
+   g.fillRect(x-meia, Y(media+mdc), meia*2, Y(media-mdc)-Y(media+mdc));
+   g.strokeStyle = 'rgba('+r+','+gg+','+bb+',0.4)'; g.setLineDash([3,3]);
+   [media+mdc, media-mdc].forEach(function(v){
+    g.beginPath(); g.moveTo(x-meia, Y(v)); g.lineTo(x+meia, Y(v)); g.stroke();
+   });
+   g.setLineDash([]);
+  }
+
+  g.fillStyle = 'rgba(139,148,158,0.55)';
+  vals.forEach(function(v, i){
+   const jx = x + ((i*37)%100/100 - 0.5) * meia * 1.5;
+   g.beginPath(); g.arc(jx, Y(v), 2, 0, 6.2832); g.fill();
+  });
+
+  g.strokeStyle = cor; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(x-meia*0.7, Y(media)); g.lineTo(x+meia*0.7, Y(media)); g.stroke();
+  g.fillStyle = cor;
+  g.beginPath(); g.arc(x, Y(media), 4, 0, 6.2832); g.fill();
+
+  g.fillStyle = '#8b949e'; g.font = '11px sans-serif'; g.textAlign = 'center';
+  g.fillText(s.watts_alvo + 'W', x, H-20);
+  g.fillText('n=' + s.n, x, H-6);
+ });
+
+ // linha que liga as medias (o "perfil" da metrica vs potencia)
+ g.strokeStyle = '#58A6FF'; g.lineWidth = 1.5; g.setLineDash([5,4]);
+ g.beginPath();
+ series.forEach(function(s, i){
+  const md = s.valores.reduce((a,b)=>a+b,0)/s.valores.length;
+  i ? g.lineTo(X(s.watts_alvo), Y(md)) : g.moveTo(X(s.watts_alvo), Y(md));
+ });
+ g.stroke(); g.setLineDash([]);
 }
 
 function aqTabela(){

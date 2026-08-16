@@ -1038,6 +1038,49 @@ def api_aquecimento_serie():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/scan')
+def api_aquecimento_scan():
+    """Varre TODO o historico, todas as modalidades, so o que ainda nao foi
+    analisado. Idempotente -- pode correr as vezes que forem precisas."""
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        import drive_db_fisiologia as ddf
+        conn = ddf.get_conn()
+        atividades = conn.execute(
+            """SELECT activity_id, modalidade, MAX(data) AS data
+               FROM fisiologia_intervalos
+               WHERE valido = 1 AND modalidade IN ('Row', 'Ski', 'Bike')
+               GROUP BY activity_id, modalidade
+               ORDER BY data ASC""").fetchall()
+
+        analyzer = AquecimentoAnalyzer(conn)
+        det, rej, salt, motivos = 0, 0, 0, {}
+        for row in atividades:
+            aid, mod, data = row[0], row[1], row[2]
+            if aq_db.ja_analisada(aid):
+                salt += 1
+                continue
+            r = analyzer.analisar_atividade(aid, mod)
+            if r.get('detectado'):
+                aq_db.salvar_blocos(aid, mod, data, r['blocos'], sync=False)
+                det += 1
+            else:
+                m = r.get('motivo', 'desconhecido')
+                aq_db.marcar_rejeitada(aid, mod, data, m)
+                motivos[m] = motivos.get(m, 0) + 1
+                rej += 1
+        if det or rej:
+            aq_db.sincronizar()
+        return jsonify({'status': 'ok', 'total_atividades': len(atividades),
+                        'detectados': det, 'rejeitados': rej,
+                        'ja_analisadas': salt, 'motivos': motivos})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/aquecimento/calibrar', methods=['GET', 'POST'])
 def api_aquecimento_calibrar():
     """Varre atividades historicas a procura do protocolo.

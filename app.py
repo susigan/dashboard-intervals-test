@@ -899,12 +899,12 @@ def api_fisiologia_perfil_robusto(modalidade):
         largura = int(request.args.get('largura_bin', 50))
         min_n = int(request.args.get('min_n', 15))
         campos = {k: v for k, v in request.args.items()
-                  if k not in ('largura_bin', 'min_n')}
+                  if k not in ('largura_bin', 'min_n', 'so_estabilizados')}
         if not campos:
             campos = {'hr': 'max', 'resp': 'avg', 'smo2': 'min', 'dfa1': 'avg'}
-        res = tm.perfil_por_modalidade(modalidade, campos,
-                                       min_n_total=min_n,
-                                       largura_bin_manual=largura)
+        res = tm.perfil_por_modalidade(
+            modalidade, campos, min_n_total=min_n, largura_bin_manual=largura,
+            so_estabilizados=request.args.get('so_estabilizados') in ('1', 'true'))
         return jsonify(res), 200
     except Exception as e:
         import traceback

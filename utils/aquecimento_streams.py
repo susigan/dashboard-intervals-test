@@ -70,6 +70,25 @@ def _resumo(serie, i0, i1):
             round(max(vals), 3))
 
 
+def _com_escala(dt, fn):
+    """Corre fn() com os limiares convertidos de segundos para AMOSTRAS.
+
+    Todos os limites do modulo estao escritos em segundos (mais legiveis);
+    aqui sao divididos pelo passo temporal antes da deteccao.
+    """
+    global SUAVIZA_S, MIN_BLOCO_S, MAX_BLOCO_S, MAX_RAMPA_S, REC_S
+    orig = (SUAVIZA_S, MIN_BLOCO_S, MAX_BLOCO_S, MAX_RAMPA_S, REC_S)
+    try:
+        SUAVIZA_S = max(3, int(SUAVIZA_S / dt))
+        MIN_BLOCO_S = max(8, int(MIN_BLOCO_S / dt))
+        MAX_BLOCO_S = max(MIN_BLOCO_S + 4, int(MAX_BLOCO_S / dt))
+        MAX_RAMPA_S = max(4, int(MAX_RAMPA_S / dt))
+        REC_S = (max(2, int(REC_S[0] / dt)), max(4, int(REC_S[1] / dt)))
+        return fn()
+    finally:
+        SUAVIZA_S, MIN_BLOCO_S, MAX_BLOCO_S, MAX_RAMPA_S, REC_S = orig
+
+
 def _tol_segura(alvos, tol, cap_frac=0.5):
     """Limita a tolerancia em funcao da distancia entre alvos.
 
@@ -142,7 +161,23 @@ def detectar_escada(watts, alvos, tol, min_blocos, cap_frac=0.5):
     return achados
 
 
-def analisar_streams(streams, modalidade, protocolos):
+def passo_temporal(streams, duracao_s=None):
+    """Segundos por amostra do stream.
+
+    Os streams da Intervals.icu NAO sao 1 Hz: consoante o dispositivo, uma
+    amostra pode valer 2 s, 4 s ou mais. Assumir 1 s fazia um bloco de 5 min
+    parecer ter 80 s e ser rejeitado por ser curto de mais.
+
+    Sem a duracao da atividade nao ha como saber, e devolve-se 1.0.
+    """
+    watts = _serie(streams, "watts")
+    if not watts or not duracao_s:
+        return 1.0
+    dt = float(duracao_s) / len(watts)
+    return dt if 0.2 <= dt <= 30 else 1.0
+
+
+def analisar_streams(streams, modalidade, protocolos, duracao_s=None):
     """Analisa uma atividade a partir dos streams ja carregados."""
     proto = protocolos.get(modalidade)
     if not proto:
@@ -152,30 +187,21 @@ def analisar_streams(streams, modalidade, protocolos):
     if not watts:
         return {"detectado": False, "motivo": "sem stream de watts"}
 
-    achados = detectar_escada(watts, proto["watts"], proto["tol"],
-                              proto.get("min_blocos", len(proto["watts"])))
+    dt = passo_temporal(streams, duracao_s)
+    achados = _com_escala(dt, lambda: detectar_escada(
+        watts, proto["watts"], proto["tol"],
+        proto.get("min_blocos", len(proto["watts"]))))
     if not achados:
         suave = _suavizar(watts)
-        amostra = [round(suave[k]) for k in range(0, min(len(suave), 1200), 120)]
+        passo = max(1, int(120 / dt))
+        amostra = [round(suave[k]) for k in range(0, min(len(suave), passo * 10), passo)]
         return {"detectado": False, "motivo": "escada nao encontrada no stream",
+                "passo_temporal_s": round(dt, 2),
                 "watts_a_cada_2min": amostra}
 
-    series = {m: _serie(streams, m) for m in ("hr", "smo2", "resp", "dfa1")}
-
-    blocos = []
-    for num, (i0, i1, alvo) in enumerate(achados, start=1):
-        wa, wmin, wmax = _resumo(watts, i0, i1)
-        b = {"bloco_num": num, "watts_alvo": alvo, "watts_real": wa,
-             "interval_num": num, "tempo_seg": i1 - i0}
-        for m, serie in series.items():
-            avg, mn, mx = _resumo(serie, i0, i1)
-            b[f"{m}_avg"], b[f"{m}_min"], b[f"{m}_max"] = avg, mn, mx
-        blocos.append(b)
-
-    return {"detectado": True, "modalidade": modalidade,
-            "padrao": "-".join(str(a) for a in proto["watts"][:len(blocos)]),
-            "n_blocos": len(blocos), "blocos": blocos,
-            "tempo_aquecimento_seg": sum(b["tempo_seg"] for b in blocos)}
+    r = _montar(streams, watts, achados, modalidade, proto, dt)
+    r["passo_temporal_s"] = round(dt, 2)
+    return r
 
 
 # ── modo assistido: datas que o utilizador garante terem aquecimento ──────
@@ -188,7 +214,7 @@ NIVEIS = [
 ]
 
 
-def analisar_assistido(streams, modalidade, protocolos):
+def analisar_assistido(streams, modalidade, protocolos, duracao_s=None):
     """Para as sessoes que o utilizador CONFIRMOU terem aquecimento.
 
     Tenta primeiro os criterios normais. Se falhar, vai relaxando a
@@ -207,16 +233,18 @@ def analisar_assistido(streams, modalidade, protocolos):
     if not watts:
         return {"detectado": False, "motivo": "sem stream de watts"}
 
+    dt = passo_temporal(streams, duracao_s)
     min_orig, rec_orig = MIN_BLOCO_S, REC_S
     try:
         for etiqueta, mult, min_bloco, folga, cap in NIVEIS:
             MIN_BLOCO_S = min_bloco
             REC_S = (max(5, int(rec_orig[0] / folga)), int(rec_orig[1] * folga))
-            achados = detectar_escada(
+            achados = _com_escala(dt, lambda: detectar_escada(
                 watts, proto["watts"], proto["tol"] * mult,
-                proto.get("min_blocos", len(proto["watts"])), cap_frac=cap)
+                proto.get("min_blocos", len(proto["watts"])), cap_frac=cap))
             if achados:
-                r = _montar(streams, watts, achados, modalidade, proto)
+                r = _montar(streams, watts, achados, modalidade, proto, dt)
+                r["passo_temporal_s"] = round(dt, 2)
                 r["nivel_deteccao"] = etiqueta
                 r["confianca"] = {"normal": "alta", "tolerante": "media",
                                   "permissivo": "baixa"}[etiqueta]
@@ -227,12 +255,13 @@ def analisar_assistido(streams, modalidade, protocolos):
     suave = _suavizar(watts)
     return {"detectado": False,
             "motivo": "escada nao encontrada nem em modo permissivo",
-            "duracao_s": len(watts),
+            "passo_temporal_s": round(dt, 2),
+            "duracao_s": int(len(watts) * dt),
             "watts_a_cada_2min": [round(suave[k])
                                   for k in range(0, min(len(suave), 1800), 120)]}
 
 
-def _montar(streams, watts, achados, modalidade, proto):
+def _montar(streams, watts, achados, modalidade, proto, dt=1.0):
     """Blocos + metricas. Cada metrica e' usada se existir; as que faltarem
     ficam a NULL sem invalidar o bloco nem a sessao."""
     series = {m: _serie(streams, m) for m in ("hr", "smo2", "resp", "dfa1")}
@@ -240,7 +269,7 @@ def _montar(streams, watts, achados, modalidade, proto):
     for num, (i0, i1, alvo) in enumerate(achados, start=1):
         wa, _wmin, _wmax = _resumo(watts, i0, i1)
         b = {"bloco_num": num, "watts_alvo": alvo, "watts_real": wa,
-             "interval_num": num, "tempo_seg": i1 - i0}
+             "interval_num": num, "tempo_seg": int((i1 - i0) * dt)}
         for m, serie in series.items():
             avg, mn, mx = _resumo(serie, i0, i1)
             b[f"{m}_avg"], b[f"{m}_min"], b[f"{m}_max"] = avg, mn, mx
@@ -286,18 +315,23 @@ def perfil_degraus(watts, min_dur=45, tol_patamar=12):
     return segmentos
 
 
-def resumir_inicio(streams, minutos=30):
-    """Retrato dos primeiros minutos: degraus encontrados e watts amostrados."""
+def resumir_inicio(streams, minutos=30, duracao_s=None):
+    """Retrato dos primeiros minutos: degraus reais, ja em segundos."""
     watts = _serie(streams, "watts")
     if not watts:
         return {"erro": "sem stream de watts"}
-    corte = watts[:minutos * 60]
-    suave = _suavizar(corte)
-    degraus = perfil_degraus(corte)
+    dt = passo_temporal(streams, duracao_s)
+    corte = watts[:int(minutos * 60 / dt)]
+    suave = _com_escala(dt, lambda: _suavizar(corte))
+    degraus = _com_escala(dt, lambda: perfil_degraus(
+        corte, min_dur=max(6, int(45 / dt))))
+    passo30 = max(1, int(30 / dt))
     return {
-        "duracao_total_s": len(watts),
-        "degraus": [{"inicio_s": a, "duracao_s": b, "watts": c}
-                    for a, b, c in degraus[:12]],
-        "watts_cada_30s": [round(suave[k]) for k in range(0, len(suave), 30)],
+        "passo_temporal_s": round(dt, 2),
+        "amostras": len(watts),
+        "duracao_total_s": int(len(watts) * dt),
+        "degraus": [{"inicio_s": int(a * dt), "duracao_s": int(b * dt),
+                     "watts": c} for a, b, c in degraus[:12]],
+        "watts_cada_30s": [round(suave[k]) for k in range(0, len(suave), passo30)],
         "streams_presentes": sorted(streams.keys()),
     }

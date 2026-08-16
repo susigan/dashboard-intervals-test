@@ -27,9 +27,15 @@ STREAM_KEYS = {
 }
 
 SUAVIZA_S = 15      # media movel: os watts por stroke oscilam muito
-MIN_BLOCO_S = 210   # um degrau tem de durar pelo menos isto
+MIN_BLOCO_S = 210   # um degrau tem de durar pelo menos isto (5 min com folga)
 MAX_BLOCO_S = 420
 MAX_RAMPA_S = 90    # transicao tolerada entre degraus
+REC_S = (20, 160)   # o "1" do 5-1-5: recuperacao entre degraus
+
+# A recuperacao NAO e' paragem. Na Bike costuma ser rodada a ~60 W, e no
+# Row/Ski pode ficar com potencia residual. Por isso nao se exige que caia a
+# zero -- so que saia da janela do degrau. Os laps tambem sao ignorados de
+# proposito: o sinal manda, mesmo que um "rest" esteja marcado como WORK.
 
 
 def _serie(streams, nome):
@@ -64,6 +70,18 @@ def _resumo(serie, i0, i1):
             round(max(vals), 3))
 
 
+def _tol_segura(alvos, tol):
+    """Impede que as janelas de dois degraus vizinhos se sobreponham.
+
+    Na Bike os alvos estao a 20 W de distancia: com +-12 W a janela do 80
+    tocava na do 100 e um degrau podia ser atribuido ao alvo errado.
+    """
+    if len(alvos) < 2:
+        return tol
+    menor_gap = min(b - a for a, b in zip(alvos, alvos[1:]))
+    return min(tol, max(4, (menor_gap - 2) // 2))
+
+
 def detectar_escada(watts, alvos, tol, min_blocos):
     """Procura os degraus no stream de watts, a comecar no inicio.
 
@@ -72,10 +90,12 @@ def detectar_escada(watts, alvos, tol, min_blocos):
     """
     if not watts:
         return None
+    tol = _tol_segura(alvos, tol)
     suave = _suavizar(watts)
     n = len(suave)
     i = 0
     achados = []
+    fim_anterior = None
 
     for alvo in alvos:
         # saltar a rampa/transicao ate entrar no alvo
@@ -105,7 +125,14 @@ def detectar_escada(watts, alvos, tol, min_blocos):
         if dur > MAX_BLOCO_S:
             fim = inicio + MAX_BLOCO_S
 
+        # o "1" do 5-1-5: a pausa entre degraus tem de ser curta
+        if fim_anterior is not None:
+            gap = inicio - fim_anterior
+            if not (REC_S[0] <= gap <= REC_S[1]):
+                break
+
         achados.append((inicio, fim, alvo))
+        fim_anterior = fim
         i = fim
 
     if len(achados) < min_blocos:

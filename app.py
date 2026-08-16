@@ -1700,12 +1700,18 @@ def api_fisiologia_qualidade():
     """
     try:
         import drive_db_fisiologia as ddf
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import fisiologia_ingestor as ing
         conn = ddf.get_conn()
+        # a migracao so corria dentro de gravar(); sem ingestao nova as
+        # colunas nunca eram criadas e este endpoint rebentava
+        criadas = ing.garantir_colunas(conn)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(fisiologia_intervalos)")}
         out = {}
         for m in ('hr', 'smo2', 'resp', 'dfa1', 'rra1'):
             c_plat, c_tau = f'{m}_atingiu_plateau', f'{m}_tau_s'
-            if c_plat not in cols:
+            if c_plat not in cols or c_tau not in cols:
                 continue
             linhas = conn.execute(
                 f"""SELECT modalidade, COUNT(*) AS n,
@@ -1725,8 +1731,17 @@ def api_fisiologia_qualidade():
                 """SELECT dfa1_qualidade, COUNT(*) FROM fisiologia_intervalos
                    WHERE valido = 1 AND dfa1_qualidade IS NOT NULL
                    GROUP BY dfa1_qualidade""").fetchall()}
-        return jsonify({'status': 'ok', 'plateau_por_metrica': out,
+        preenchidas = sum(1 for mm in out.values()
+                          for v in mm.values() if v.get('n'))
+        return jsonify({'status': 'ok',
+                        'colunas_criadas_agora': criadas,
+                        'plateau_por_metrica': out,
                         'dfa1_artefactos': qual,
+                        'aviso': ('sem dados de cinetica: as atividades ja '
+                                  'ingeridas foram gravadas antes destes campos. '
+                                  'Corre /api/fisiologia/ingerir?refazer=1 para '
+                                  'as reprocessar')
+                        if not preenchidas else None,
                         'nota': ('bloco_minimo_sugerido = 3 x tau: abaixo disso a '
                                  'metrica nao chega ao valor que aquela potencia '
                                  'produz, e a media do bloco subestima o efeito')})
@@ -1951,6 +1966,12 @@ def api_fisiologia_cobertura_metricas():
     try:
         from tabs import tab_metabol as tm
         cob = tm.cobertura_metricas()
+        opcionais = []
+        for m in getattr(tm, 'METRICAS_OPCIONAIS', []):
+            info = cob.get(m) or {}
+            if any((v or {}).get('coluna_usada') and (v or {}).get('cobertura_pct', 0) >= 5
+                   for v in info.values()):
+                opcionais.append(m)
         fracas = []
         for m, ags in cob.items():
             if m.startswith('_'):
@@ -1959,6 +1980,7 @@ def api_fisiologia_cobertura_metricas():
                 if not info.get('utilizavel'):
                     fracas.append(f"{m}/{a}: {info.get('cobertura_pct')}%")
         return jsonify({'status': 'ok', 'cobertura': cob,
+                        'opcionais_com_dados': opcionais,
                         'cobertura_baixa': fracas,
                         'nota': ('Colunas abaixo de 20% de cobertura dao graficos '
                                  'com poucos pontos; a escolha e feita pela '

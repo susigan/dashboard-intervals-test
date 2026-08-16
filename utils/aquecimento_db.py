@@ -152,6 +152,9 @@ def salvar_blocos(activity_id, modalidade, data, blocos, sync=True):
     conn = get_conn()
     agora = datetime.now().isoformat(timespec="seconds")
     conn.execute("DELETE FROM aquecimento_blocos WHERE activity_id = ?", (activity_id,))
+    # se tinha sido rejeitada por uma versao anterior do detector, o registo
+    # de rejeicao tem de sair -- senao a sessao aparece aceite E ignorada
+    conn.execute("DELETE FROM aquecimento_rejeitadas WHERE activity_id = ?", (activity_id,))
     n_campos = 8 + len(_COLS) + 1
     for b in blocos:
         conn.execute(

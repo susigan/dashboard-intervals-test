@@ -1185,6 +1185,67 @@ def api_aquecimento_auditoria():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/tendencia')
+def api_aquecimento_tendencia():
+    """Tendencia por janelas temporais (60d, 90d, 1a, 2a, 3a).
+
+    Por escalao de watts, diz se a metrica esta a subir, a descer ou estavel
+    -- e estavel significa "mudanca menor que o MDC", ou seja, indistinguivel
+    do ruido de medicao.
+
+    ?modalidade=Row&metrica=hrw&agregacao=avg
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        from aquecimento_analyzer import tendencia, sem_por_pares, DIRECAO_BOA
+
+        mod = request.args.get('modalidade')
+        metrica = request.args.get('metrica', 'hr')
+        agreg = request.args.get('agregacao', 'avg')
+        if not mod:
+            return jsonify({'status': 'erro', 'mensagem': 'falta ?modalidade='}), 400
+
+        hrw = metrica in ('hrw', 'hr_por_w')
+        campo = f'hr_{agreg}' if hrw else f'{metrica}_{agreg}'
+        chave = 'hrw' if hrw else metrica
+
+        blocos = aq_db.listar_blocos(mod)
+        if not blocos:
+            return jsonify({'status': 'sem_dados', 'modalidade': mod}), 200
+
+        def valor(b):
+            v = b.get(campo)
+            if hrw and v is not None:
+                w = b.get('watts_real') or b.get('watts_alvo')
+                return v / w if w else None
+            return v
+
+        escaloes = []
+        for w in sorted({b['watts_alvo'] for b in blocos}):
+            pts = [(b['data'], valor(b)) for b in blocos if b['watts_alvo'] == w]
+            pts = [(d, v) for d, v in pts if v is not None]
+            ref = sem_por_pares(pts)
+            escaloes.append({
+                'watts_alvo': w, 'n_total': len(pts),
+                'sem': ref.get('sem'), 'mdc95': ref.get('mdc95'),
+                'janelas': tendencia(pts, metrica=chave, mdc=ref.get('mdc95')),
+            })
+
+        return jsonify({
+            'status': 'ok', 'modalidade': mod,
+            'metrica': 'HR/W' if hrw else metrica, 'agregacao': agreg,
+            'direccao_boa': DIRECAO_BOA.get(chave),
+            'escaloes': escaloes,
+            'nota': ('"Estavel" = mudanca menor que o MDC, logo nao '
+                     'distinguivel do ruido. O SmO2 nao tem direccao de '
+                     'melhoria inequivoca, por isso so se indica o sentido.')})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/aquecimento/contexto')
 def api_aquecimento_contexto():
     """Houve outro treino no mesmo dia, ANTES do aquecimento? Muda alguma coisa?

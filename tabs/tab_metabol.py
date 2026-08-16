@@ -380,13 +380,10 @@ BODY = r"""
 <div id="aquecimento" class="tab-content">
   <div class="tabs" id="aqModTabs" style="border-bottom:1px solid #21262d; margin-bottom:16px;"></div>
   <div class="controls" style="margin-bottom:12px;">
-    <button id="aqBtnScan" onclick="aqScan()">Procurar aquecimentos em falta</button>
-    <button id="aqBtnRe" onclick="aqScan(true)" style="margin-left:8px;">Reanalisar tudo</button>
-    <button id="aqBtnAud" onclick="aqAuditar()" style="margin-left:8px;">Auditar as minhas datas</button>
-    <button id="aqBtnPq" onclick="aqPorque()" style="margin-left:8px;">Porque falhou?</button>
-    <button id="aqBtnIng" onclick="aqIngerir()" style="margin-left:8px;">Analisar histórico (streams)</button>
-    <button id="aqBtnFor" onclick="aqForcar()" style="margin-left:8px;">Processar as minhas datas</button>
+    <button id="aqBtnScan" onclick="aqScan()">Actualizar</button>
     <button id="aqBtnLst" onclick="aqListar()" style="margin-left:8px;">Datas analisadas</button>
+    <a href="#" id="aqLnkDiag" onclick="aqPorque();return false;"
+       style="margin-left:12px;color:#8b949e;font-size:11px;">diagnóstico</a>
     <span id="aqScanEstado" style="color:#8b949e;font-size:12px;margin-left:10px;"></span>
   </div>
   <div id="aqDiag" style="color:#8b949e;font-size:11px;margin-bottom:12px;"></div>
@@ -397,6 +394,7 @@ BODY = r"""
         <option value="smo2">SmO&#8322; (%)</option>
         <option value="resp">Respiração (rpm)</option>
         <option value="dfa1">DFA-&#945;1</option>
+        <option value="hrw">HR por watt (eficiência)</option>
       </select></label>
     <label class="sel">Agregação
       <select id="aqAgregacao">
@@ -416,6 +414,8 @@ BODY = r"""
   <div class="chartbox"><canvas id="chAquecimento" height="320"></canvas></div>
   <h2>Fiabilidade por escalão</h2>
   <div id="aqTabela" style="overflow-x:auto;"></div>
+  <h2>Efeito de treino no mesmo dia</h2>
+  <div id="aqContexto" style="overflow-x:auto;"></div>
 </div>
 <style>
 .tabs { display:flex; gap:20px; }
@@ -861,7 +861,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 // ═════ AQUECIMENTO ═════
 let AQ_MOD = null, AQ_DADOS = null, AQ_MODS = [], aqLoading = false;
-const AQ_LABELS = {hr:'HR (bpm)', smo2:'SmO\u2082 (%)', resp:'Respira\u00e7\u00e3o (rpm)', dfa1:'DFA-\u03b11'};
+const AQ_LABELS = {hr:'HR (bpm)', smo2:'SmO\u2082 (%)', resp:'Respira\u00e7\u00e3o (rpm)', dfa1:'DFA-\u03b11', hrw:'HR por watt'};
 const AQ_CORES_W = ['#58A6FF','#3FB950','#F0883E','#DB6D28','#F85149'];
 
 function aqInit(){
@@ -929,20 +929,31 @@ function aqInit(){
  }).catch(function(e){ console.error('[aqInit]', e); });
 }
 
-function aqScan(forcar){
+function aqScan(){
  const btn = document.getElementById('aqBtnScan');
- const btn2 = document.getElementById('aqBtnRe');
  const est = document.getElementById('aqScanEstado');
- if(forcar && !confirm('Reanalisar todas as atividades do zero?')) return;
- btn.disabled = true; btn2.disabled = true;
- est.textContent = forcar ? 'a reanalisar tudo...' : 'a procurar em todo o historico...';
- fetch('/api/aquecimento/scan' + (forcar ? '?forcar=1' : '')).then(r=>r.json()).then(function(d){
-  if(d.status !== 'ok'){ est.textContent = 'erro: ' + (d.mensagem||'?'); return; }
-  est.textContent = d.detectados + ' detectados, ' + d.rejeitados
-    + ' ignorados, ' + d.ja_analisadas + ' ja conhecidos';
-  aqInit();
- }).catch(function(e){ est.textContent = 'erro: ' + e.message; })
-  .finally(function(){ btn.disabled = false; btn2.disabled = false; });
+ btn.disabled = true;
+ const mods = ['Row','Ski','Bike'];
+ let i = 0, tot = {det:0, rej:0, sem:0};
+
+ function passo(){
+  if(i >= mods.length){
+   est.textContent = tot.det + ' novos aquecimentos'
+     + (tot.sem ? ' | ' + tot.sem + ' sem streams' : '');
+   btn.disabled = false; aqInit(); return;
+  }
+  const m = mods[i];
+  est.textContent = 'a analisar ' + m + '...';
+  fetch('/api/aquecimento/ingerir?modalidade=' + m + '&limite=60')
+  .then(r=>r.json()).then(function(d){
+   if(d.status === 'ok'){
+    tot.det += d.detectados||0; tot.rej += d.rejeitados||0;
+    tot.sem += d.sem_streams_guardados||0;
+   }
+   i++; passo();
+  }).catch(function(){ i++; passo(); });
+ }
+ passo();
 }
 
 function aqAuditar(){
@@ -1091,6 +1102,45 @@ function aqForcar(){
  passo();
 }
 
+function aqContexto(met, agr){
+ const box = document.getElementById('aqContexto');
+ if(!box || !AQ_MOD) return;
+ box.innerHTML = '<span style="color:#8b949e;font-size:11px;">a calcular...</span>';
+ fetch('/api/aquecimento/contexto?modalidade='+AQ_MOD+'&metrica='+met+'&agregacao='+agr)
+ .then(r=>r.json()).then(function(d){
+  if(d.status !== 'ok'){ box.innerHTML = '<span style="color:#8b949e;font-size:11px;">'
+    + (d.mensagem||'sem dados') + '</span>'; return; }
+  const dc = d.dias_por_contexto || {};
+  const nome = {sessao_isolada:'S\u00f3 esta sess\u00e3o', forca_antes:'For\u00e7a antes',
+                outra_ciclica:'Outra c\u00edclica no dia'};
+  let h = '<span style="color:#8b949e;font-size:11px;">Dias: '
+    + Object.keys(dc).map(k=>(nome[k]||k)+' '+dc[k]).join(' | ') + '</span>'
+    + '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px;">'
+    + '<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+    + '<th style="padding:6px;">Watts</th><th>Contexto</th><th>n</th><th>M\u00e9dia</th>'
+    + '<th>\u0394 vs isolada</th><th>MDC\u2089\u2085</th><th>Leitura</th></tr>';
+  (d.escaloes||[]).forEach(function(e){
+   const gs = e.grupos || {};
+   Object.keys(gs).forEach(function(g, idx){
+    const info = gs[g];
+    let cor = '#8b949e';
+    if(info.leitura === 'acima do ruido') cor = info.diferenca > 0 ? '#F0883E' : '#3FB950';
+    h += '<tr style="border-bottom:1px solid #161b22;">'
+      + '<td style="padding:6px;">' + (idx===0 ? e.watts_alvo+'W' : '') + '</td>'
+      + '<td>' + (nome[g]||g) + '</td><td>' + info.n + '</td>'
+      + '<td>' + info.media + '</td>'
+      + '<td style="color:'+cor+';">' + (info.diferenca!=null ?
+          (info.diferenca>0?'+':'')+info.diferenca : '\u2014') + '</td>'
+      + '<td>' + (idx===0 && e.mdc95!=null ? Math.round(e.mdc95*100)/100 : '') + '</td>'
+      + '<td style="color:'+cor+';">' + (info.leitura||'refer\u00eancia')
+      + (info.aviso ? ' \u26A0 '+info.aviso : '') + '</td></tr>';
+   });
+  });
+  h += '</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">' + (d.nota||'') + '</p>';
+  box.innerHTML = h;
+ }).catch(function(){ box.innerHTML = ''; });
+}
+
 function aqListar(){
  const est = document.getElementById('aqScanEstado');
  const diag = document.getElementById('aqDiag');
@@ -1163,7 +1213,7 @@ function aqCarregar(){
   AQ_DADOS = d;
   document.getElementById('aqTitulo').textContent =
     AQ_LABELS[met] + ' \u2014 ' + AQ_MOD + ' por escal\u00e3o de watts';
-  aqDraw(); aqTabela();
+  aqDraw(); aqTabela(); aqContexto(met, agr);
  }).catch(function(e){
   console.error('[aqCarregar]', e);
   AQ_DADOS = {status:'erro'}; aqDraw();

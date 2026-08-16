@@ -926,22 +926,50 @@ def _aq_indisponivel():
 
 @app.route('/api/aquecimento/estado')
 def api_aquecimento_estado():
-    """Diagnostico: modulos, BD e o que ja' foi analisado."""
+    """Diagnostico completo: modulos, protocolos, deteccoes, rejeicoes
+    agrupadas por motivo, e cobertura das colunas de metricas."""
     if not AQUECIMENTO_ENABLED:
         return _aq_indisponivel()
     try:
+        import aquecimento_analyzer as aa
         conn = aq_db.get_conn()
-        rej = conn.execute("SELECT COUNT(*) FROM aquecimento_rejeitadas").fetchone()[0]
+
+        rejeitadas = [dict(r) for r in conn.execute(
+            """SELECT modalidade, motivo, COUNT(*) AS n
+               FROM aquecimento_rejeitadas
+               GROUP BY modalidade, motivo ORDER BY n DESC""").fetchall()]
+
+        # que colunas de metrica tem mesmo dados na BD de fisiologia
+        cobertura = {}
+        try:
+            import drive_db_fisiologia as ddf
+            fc = ddf.get_conn()
+            existentes = {r[1] for r in fc.execute(
+                "PRAGMA table_info(fisiologia_intervalos)")}
+            for col in aa.COLUNAS_METRICA:
+                if col in existentes:
+                    n = fc.execute(
+                        f"SELECT COUNT({col}) FROM fisiologia_intervalos "
+                        f"WHERE valido = 1").fetchone()[0]
+                    cobertura[col] = n
+                else:
+                    cobertura[col] = 'coluna inexistente'
+        except Exception as e:
+            cobertura = {'erro': str(e)}
+
         return jsonify({
             'status': 'ok',
             'modulos_carregados': True,
-            'protocolos': __import__('aquecimento_analyzer').PROTOCOLOS,
+            'protocolos': aa.PROTOCOLOS,
             'modalidades': aq_db.modalidades_disponiveis(),
             'sessoes_detectadas': len(aq_db.listar_sessoes()),
-            'atividades_rejeitadas': rej,
+            'rejeitadas_por_motivo': rejeitadas,
+            'cobertura_colunas': cobertura,
         })
     except Exception as e:
-        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
 
 
 @app.route('/api/aquecimento/dados')
@@ -1022,8 +1050,11 @@ def api_aquecimento_serie():
                     ini = max(0, i - jan + 1)
                     suav.append(sum(valores[ini:i + 1]) / len(valores[ini:i + 1]))
                 valores = suav
+            reais = [b.get('watts_real') for b in blocos
+                     if b['watts_alvo'] == w and b.get('watts_real') is not None]
             saida.append({
                 'watts_alvo': w,
+                'watts_reais_medio': (sum(reais)/len(reais)) if reais else None,
                 'n': len(pts),
                 'datas': [d for d, _ in pts],
                 'valores': valores,
@@ -1046,7 +1077,13 @@ def api_aquecimento_scan():
         return _aq_indisponivel()
     try:
         import drive_db_fisiologia as ddf
+        forcar = request.args.get('forcar') in ('1', 'true', 'sim')
         conn = ddf.get_conn()
+        if forcar:
+            c = aq_db.get_conn()
+            c.execute("DELETE FROM aquecimento_blocos")
+            c.execute("DELETE FROM aquecimento_rejeitadas")
+            c.commit()
         atividades = conn.execute(
             """SELECT activity_id, modalidade, MAX(data) AS data
                FROM fisiologia_intervalos
@@ -1073,8 +1110,9 @@ def api_aquecimento_scan():
         if det or rej:
             aq_db.sincronizar()
         return jsonify({'status': 'ok', 'total_atividades': len(atividades),
-                        'detectados': det, 'rejeitados': rej,
-                        'ja_analisadas': salt, 'motivos': motivos})
+                        'forcado': forcar, 'detectados': det,
+                        'rejeitados': rej, 'ja_analisadas': salt,
+                        'motivos': motivos})
     except Exception as e:
         import traceback
         return jsonify({'status': 'erro', 'mensagem': str(e),

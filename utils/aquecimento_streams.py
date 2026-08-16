@@ -17,6 +17,12 @@ a meio, os blocos afectados ficam a NULL e a sessao conta na mesma.
 
 import statistics
 
+# Sobe sempre que a logica de deteccao muda. As sessoes rejeitadas guardam a
+# versao com que foram avaliadas: quando esta sobe, sao reanalisadas
+# automaticamente, em vez de ficarem presas a um veredicto de um algoritmo
+# que entretanto foi corrigido.
+VERSAO_DETECTOR = 4
+
 # Nomes possiveis de cada stream (a API varia consoante o sensor).
 STREAM_KEYS = {
     "watts": ["watts", "power"],
@@ -30,7 +36,12 @@ SUAVIZA_S = 15      # media movel: os watts por stroke oscilam muito
 MIN_BLOCO_S = 210   # um degrau tem de durar pelo menos isto (5 min com folga)
 MAX_BLOCO_S = 420
 MAX_RAMPA_S = 90    # transicao tolerada entre degraus
-REC_S = (20, 160)   # o "1" do 5-1-5: recuperacao entre degraus
+# O "1" do 5-1-5. So se valida o MAXIMO: a suavizacao borra a transicao e
+# absorve parte da recuperacao no fim do bloco anterior, por isso o gap
+# medido pode colapsar para zero mesmo havendo pausa real. Exigir um minimo
+# rejeitava sessoes validas; o maximo e' que impede juntar degraus separados
+# por uma pausa longa (isso ja e' outro treino).
+REC_S = (0, 200)
 
 # A recuperacao NAO e' paragem. Na Bike costuma ser rodada a ~60 W, e no
 # Row/Ski pode ficar com potencia residual. Por isso nao se exige que caia a
@@ -146,11 +157,9 @@ def detectar_escada(watts, alvos, tol, min_blocos, cap_frac=0.5):
         if dur > MAX_BLOCO_S:
             fim = inicio + MAX_BLOCO_S
 
-        # o "1" do 5-1-5: a pausa entre degraus tem de ser curta
-        if fim_anterior is not None:
-            gap = inicio - fim_anterior
-            if not (REC_S[0] <= gap <= REC_S[1]):
-                break
+        # a pausa entre degraus tem de ser curta (ver nota em REC_S)
+        if fim_anterior is not None and (inicio - fim_anterior) > REC_S[1]:
+            break
 
         achados.append((inicio, fim, alvo))
         fim_anterior = fim
@@ -315,8 +324,12 @@ def perfil_degraus(watts, min_dur=45, tol_patamar=12):
     return segmentos
 
 
-def resumir_inicio(streams, minutos=30, duracao_s=None):
-    """Retrato dos primeiros minutos: degraus reais, ja em segundos."""
+def resumir_inicio(streams, minutos=30, duracao_s=None, protocolo=None):
+    """Retrato do inicio da sessao: degraus reais, ja em segundos.
+
+    Depois do ultimo degrau do aquecimento nao interessa o que vem a seguir
+    (e' o treino), por isso a listagem para ai.
+    """
     watts = _serie(streams, "watts")
     if not watts:
         return {"erro": "sem stream de watts"}
@@ -325,6 +338,15 @@ def resumir_inicio(streams, minutos=30, duracao_s=None):
     suave = _com_escala(dt, lambda: _suavizar(corte))
     degraus = _com_escala(dt, lambda: perfil_degraus(
         corte, min_dur=max(6, int(45 / dt))))
+    # cortar assim que o ultimo alvo do protocolo for atingido
+    if protocolo and protocolo.get("watts"):
+        ultimo = protocolo["watts"][-1]
+        tol = protocolo.get("tol", 12) * 1.5
+        for k, (a, b, wv) in enumerate(degraus):
+            if abs(wv - ultimo) <= tol and b >= max(6, int(150 / dt)):
+                degraus = degraus[:k + 1]
+                break
+
     passo30 = max(1, int(30 / dt))
     return {
         "passo_temporal_s": round(dt, 2),
@@ -332,6 +354,7 @@ def resumir_inicio(streams, minutos=30, duracao_s=None):
         "duracao_total_s": int(len(watts) * dt),
         "degraus": [{"inicio_s": int(a * dt), "duracao_s": int(b * dt),
                      "watts": c} for a, b, c in degraus[:12]],
+        "termina_no_ultimo_degrau": bool(protocolo),
         "watts_cada_30s": [round(suave[k]) for k in range(0, len(suave), passo30)],
         "streams_presentes": sorted(streams.keys()),
     }

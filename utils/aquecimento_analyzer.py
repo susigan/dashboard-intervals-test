@@ -1,245 +1,250 @@
 """
-AQUECIMENTO_ANALYZER.PY — Detecta padrão de aquecimento e extrai métricas
+AQUECIMENTO_ANALYZER.PY — Deteccao do aquecimento por protocolo fixo
 
-Padrões:
-  - Row/Ski: 5-1-5-1-5 (3 blocos de 5min com power, separados por 1min)
-  - Bike: 5-1-5-1-5-1-5-1-5 (5 blocos de 5min)
+O aquecimento e' uma escada de watts ALVO, sempre a mesma por modalidade,
+com blocos de ~5 min separados por ~1 min de recuperacao:
 
-Detecta automaticamente baseado em modalidade + padrão de watts.
+    Row   140 - 160 - 180 W                (3 blocos)
+    Ski   120 - 140 - 160 W                (3 blocos)
+    Bike   80 - 100 - 120 - 140 - 160 W    (5 blocos)
+
+Tolerancia diferente por modalidade: Row e Ski nao tem erg-mode, o atleta
+persegue o alvo a' mao e os watts oscilam; a Bike tem erg-mode e fica
+praticamente colada ao alvo.
+
+Se a atividade nao bater no protocolo, e' IGNORADA (detectado=False) --
+nem todas as sessoes comecam com este aquecimento.
 """
 
 import numpy as np
 
+PROTOCOLOS = {
+    "Row":  {"watts": [140, 160, 180],          "tol": 15},
+    "Ski":  {"watts": [120, 140, 160],          "tol": 15},
+    "Bike": {"watts": [80, 100, 120, 140, 160], "tol": 8},
+}
+
+# Duracao aceite para blocos de trabalho e de recuperacao (segundos).
+WORK_SEG = (210, 420)   # 5 min, com folga
+REST_SEG = (30, 150)    # 1 min, com folga
+
+# Quantos intervalos podem existir antes do aquecimento comecar.
+MAX_OFFSET = 4
+
+
 class AquecimentoAnalyzer:
     def __init__(self, conn=None):
-        """Inicializa o analisador.
-        
-        Args:
-            conn: conexão SQLite à BD fisiologia_intervalos
-        """
+        """conn: ligacao a' BD fisiologia (tabela fisiologia_intervalos)."""
         self.conn = conn
-    
-    def detectar_padrao(self, modalidade):
-        """Detecta se existe padrão de aquecimento para modalidade.
-        
-        Retorna padrão esperado:
-          - Row/Ski: "5-1-5-1-5" (3 blocos)
-          - Bike: "5-1-5-1-5-1-5-1-5" (5 blocos)
-        """
-        if modalidade in ['Row', 'Ski']:
-            return "5-1-5-1-5", 3
-        elif modalidade == 'Bike':
-            return "5-1-5-1-5-1-5-1-5", 5
-        else:
-            return None, 0
-    
-    def analisar_atividade(self, activity_id, modalidade):
-        """Analisa uma atividade em busca de aquecimento.
-        
-        Args:
-            activity_id: ID da atividade
-            modalidade: Row, Ski ou Bike
-        
-        Returns:
-            {
-                'detectado': True/False,
-                'padrao': "5-1-5-1-5" ou similar,
-                'n_blocos': número de blocos encontrados,
-                'intervalos_aquecimento': [lista de interval_num],
-                'metricas': {
-                    'hr_avg': float,
-                    'hr_min': float,
-                    'hr_max': float,
-                    'smo2_avg': float,
-                    ...
-                },
-                'tempo_seg': tempo total de aquecimento,
-                'n_intervalos': número de intervalos analisados
-            }
-        """
-        
-        padrao_esperado, n_blocos_esperados = self.detectar_padrao(modalidade)
-        if not padrao_esperado:
-            return {'detectado': False, 'motivo': 'Modalidade não suportada'}
-        
-        # Buscar intervalos da atividade
+
+    # ── protocolo ─────────────────────────────────────────────────────────
+
+    def protocolo(self, modalidade):
+        return PROTOCOLOS.get(modalidade)
+
+    # ── leitura dos intervalos ────────────────────────────────────────────
+
+    def _colunas_existentes(self):
         try:
-            intervalos = self.conn.execute("""
-                SELECT 
-                    interval_num, 
-                    watts_medio,
-                    tempo_intervalo_sec,
-                    hr_avg_60s, hr_min_60s, hr_max_60s,
-                    smo2_avg_60s, smo2_min_60s, smo2_max_60s,
-                    resp_avg_60s, resp_min_60s, resp_max_60s,
-                    dfa1_clean
-                FROM fisiologia_intervalos
+            return {r[1] for r in self.conn.execute(
+                "PRAGMA table_info(fisiologia_intervalos)")}
+        except Exception:
+            return set()
+
+    def _carregar_intervalos(self, activity_id):
+        """Lista de dicts por ordem de interval_num.
+
+        So pede colunas que existem mesmo -- o schema foi crescendo e nem
+        todas as instalacoes tem as mesmas.
+        """
+        existentes = self._colunas_existentes()
+        base = ["interval_num", "watts_medio"]
+        opcionais = ["tempo_intervalo_sec", "duracao_sec", "tempo_seg",
+                     "hr_avg_60s", "hr_min_60s", "hr_max_60s",
+                     "smo2_avg_60s", "smo2_min_60s", "smo2_max_60s",
+                     "resp_avg_60s", "resp_min_60s", "resp_max_60s",
+                     "dfa1_avg_60s", "dfa1_min_60s", "dfa1_max_60s",
+                     "dfa1_clean"]
+        faltam = [c for c in base if c not in existentes]
+        if faltam:
+            raise RuntimeError(f"colunas em falta na BD: {faltam}")
+        cols = base + [c for c in opcionais if c in existentes]
+
+        linhas = self.conn.execute(
+            f"""SELECT {', '.join(cols)} FROM fisiologia_intervalos
                 WHERE activity_id = ? AND valido = 1
-                ORDER BY interval_num
-            """, (activity_id,)).fetchall()
+                ORDER BY interval_num""", (activity_id,)).fetchall()
+        return [dict(zip(cols, l)) for l in linhas]
+
+    @staticmethod
+    def _duracao(iv):
+        for c in ("tempo_intervalo_sec", "duracao_sec", "tempo_seg"):
+            if iv.get(c):
+                return float(iv[c])
+        return None
+
+    # ── deteccao ──────────────────────────────────────────────────────────
+
+    def _bate_alvo(self, watts, alvo, tol):
+        return watts is not None and abs(watts - alvo) <= tol
+
+    def _duracao_ok(self, dur, janela):
+        """Duracao desconhecida nao invalida -- so nao confirma."""
+        return dur is None or janela[0] <= dur <= janela[1]
+
+    def _procurar_escada(self, intervalos, alvos, tol):
+        """Procura work-rest-work-...-work que bata na escada de alvos.
+
+        Devolve os indices (na lista `intervalos`) dos blocos de trabalho,
+        ou None.
+        """
+        n_alvos = len(alvos)
+        precisos = 2 * n_alvos - 1          # work e rest intercalados
+        for off in range(0, MAX_OFFSET + 1):
+            if off + precisos > len(intervalos):
+                break
+            janela = intervalos[off:off + precisos]
+            idx_work, ok = [], True
+            for pos, iv in enumerate(janela):
+                dur = self._duracao(iv)
+                if pos % 2 == 0:                        # bloco de trabalho
+                    alvo = alvos[pos // 2]
+                    if not self._bate_alvo(iv.get("watts_medio"), alvo, tol):
+                        ok = False
+                        break
+                    if not self._duracao_ok(dur, WORK_SEG):
+                        ok = False
+                        break
+                    idx_work.append(off + pos)
+                else:                                    # recuperacao
+                    w = iv.get("watts_medio")
+                    if w is not None and w >= alvos[0] - tol:
+                        ok = False                       # nao houve alivio
+                        break
+                    if not self._duracao_ok(dur, REST_SEG):
+                        ok = False
+                        break
+            if ok and len(idx_work) == n_alvos:
+                return idx_work
+        return None
+
+    # ── metricas ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _tripla(iv, base):
+        """(avg, min, max) de uma metrica, tolerando colunas em falta."""
+        avg = iv.get(f"{base}_avg_60s")
+        mn = iv.get(f"{base}_min_60s")
+        mx = iv.get(f"{base}_max_60s")
+        if base == "dfa1" and avg is None:
+            avg = iv.get("dfa1_clean")
+        return avg, mn, mx
+
+    def _metricas_do_bloco(self, iv):
+        out = {}
+        for base in ("hr", "smo2", "resp", "dfa1"):
+            avg, mn, mx = self._tripla(iv, base)
+            out[f"{base}_avg"] = float(avg) if avg is not None else None
+            out[f"{base}_min"] = float(mn) if mn is not None else None
+            out[f"{base}_max"] = float(mx) if mx is not None else None
+        return out
+
+    # ── API ───────────────────────────────────────────────────────────────
+
+    def analisar_atividade(self, activity_id, modalidade):
+        """Analisa uma atividade. Se 'detectado', devolve 'blocos' com uma
+        entrada por bloco de trabalho da escada."""
+        proto = self.protocolo(modalidade)
+        if not proto:
+            return {"detectado": False,
+                    "motivo": f"modalidade sem protocolo: {modalidade}"}
+
+        try:
+            intervalos = self._carregar_intervalos(activity_id)
         except Exception as e:
-            return {'detectado': False, 'motivo': f'Erro BD: {str(e)}'}
-        
+            return {"detectado": False,
+                    "motivo": f"erro BD: {type(e).__name__}: {e}"}
+
         if not intervalos:
-            return {'detectado': False, 'motivo': 'Sem intervalos'}
-        
-        # Detectar padrão
-        # Procura padrão: watts altos (5min) alternando com watts baixos (1min)
-        
-        # Threshold de watts (adaptativo por modalidade)
-        if modalidade == 'Row':
-            watts_on_min = 150  # watts mínimo para "ON"
-            watts_off_max = 100  # watts máximo para "OFF"
-        elif modalidade == 'Ski':
-            watts_on_min = 120
-            watts_off_max = 80
-        else:  # Bike
-            watts_on_min = 180
-            watts_off_max = 120
-        
-        # Encontrar sequência 5-1-5-1-5 ou 5-1-5-1-5-1-5-1-5
-        padrao_encontrado = self._detectar_sequencia(
-            intervalos, watts_on_min, watts_off_max, modalidade
-        )
-        
-        if not padrao_encontrado['detectado']:
-            return {'detectado': False, 'motivo': 'Padrão não encontrado'}
-        
-        # Extrair métricas dos blocos de "ON"
-        intervalos_on = padrao_encontrado['intervalos_on']
-        
-        metricas = self._extrair_metricas(intervalos, intervalos_on)
-        
-        # Calcular tempo total de aquecimento
-        tempo_total = sum(
-            int.tuple[2] if int.tuple[2] else 0 
-            for int.tuple in [intervalos[i-1] for i in intervalos_on]
-        )
-        
+            return {"detectado": False, "motivo": "sem intervalos validos"}
+
+        alvos, tol = proto["watts"], proto["tol"]
+        if len(intervalos) < 2 * len(alvos) - 1:
+            return {"detectado": False, "motivo": "intervalos a menos para a escada"}
+
+        idx_work = self._procurar_escada(intervalos, alvos, tol)
+        if idx_work is None:
+            return {"detectado": False, "motivo": "nao bate no protocolo"}
+
+        blocos = []
+        for n, i in enumerate(idx_work, start=1):
+            iv = intervalos[i]
+            dur = self._duracao(iv)
+            w = iv.get("watts_medio")
+            blocos.append({
+                "bloco_num": n,
+                "watts_alvo": alvos[n - 1],
+                "watts_real": float(w) if w is not None else None,
+                "interval_num": iv.get("interval_num"),
+                "tempo_seg": int(dur) if dur else None,
+                **self._metricas_do_bloco(iv),
+            })
+
         return {
-            'detectado': True,
-            'padrao': padrao_encontrado['padrao'],
-            'n_blocos': padrao_encontrado['n_blocos'],
-            'intervalos_aquecimento': intervalos_on,
-            'metricas': metricas,
-            'tempo_aquecimento_seg': tempo_total,
-            'n_intervalos': len(intervalos_on),
+            "detectado": True,
+            "modalidade": modalidade,
+            "padrao": "-".join(str(a) for a in alvos),
+            "n_blocos": len(blocos),
+            "blocos": blocos,
+            "tempo_aquecimento_seg": sum(b["tempo_seg"] or 0 for b in blocos),
         }
-    
-    def _detectar_sequencia(self, intervalos, watts_on_min, watts_off_max, modalidade):
-        """Detecta a sequência 5-1-5-1-5 ou 5-1-5-1-5-1-5-1-5."""
-        
-        # Classificar intervalos como ON (watts alto) ou OFF (watts baixo)
-        classificacao = []
-        for intervalo in intervalos:
-            watts = intervalo[1]
-            if watts is None or watts < 10:
-                classificacao.append('OFF')
-            elif watts >= watts_on_min:
-                classificacao.append('ON')
-            else:
-                classificacao.append('LOW')  # Ambíguo
-        
-        # Procurar padrão no início da atividade
-        # Padrão esperado: ON-OFF-ON-OFF-ON ou ON-OFF-ON-OFF-ON-OFF-ON-OFF-ON
-        
-        padrao_alvo = 'ON-OFF-ON-OFF-ON' if modalidade in ['Row', 'Ski'] else 'ON-OFF-ON-OFF-ON-OFF-ON-OFF-ON'
-        
-        # Procurar na sequência de classificação
-        for inicio in range(len(classificacao) - 4):
-            seq = '-'.join(classificacao[inicio:inicio+5])
-            
-            if modalidade in ['Row', 'Ski']:
-                if seq == 'ON-OFF-ON-OFF-ON':
-                    # Encontrado padrão 5-1-5-1-5
-                    intervalos_on = [inicio+1, inicio+3, inicio+5]  # interval_num (1-indexed)
-                    return {
-                        'detectado': True,
-                        'padrao': '5-1-5-1-5',
-                        'n_blocos': 3,
-                        'intervalos_on': intervalos_on
-                    }
-            else:  # Bike
-                # Procurar padrão de 9 intervalos (5-1-5-1-5-1-5-1-5)
-                if inicio + 8 < len(classificacao):
-                    seq9 = '-'.join(classificacao[inicio:inicio+9])
-                    if seq9 == 'ON-OFF-ON-OFF-ON-OFF-ON-OFF-ON':
-                        intervalos_on = [inicio+1, inicio+3, inicio+5, inicio+7, inicio+9]
-                        return {
-                            'detectado': True,
-                            'padrao': '5-1-5-1-5-1-5-1-5',
-                            'n_blocos': 5,
-                            'intervalos_on': intervalos_on
-                        }
-        
-        return {'detectado': False}
-    
-    def _extrair_metricas(self, intervalos, intervalos_indices):
-        """Extrai min/avg/max de HR, SmO2, Resp, DFA1 dos intervalos especificados."""
-        
-        metricas = {
-            'hr_avg': None, 'hr_min': None, 'hr_max': None,
-            'smo2_avg': None, 'smo2_min': None, 'smo2_max': None,
-            'resp_avg': None, 'resp_min': None, 'resp_max': None,
-            'dfa1_avg': None, 'dfa1_min': None, 'dfa1_max': None,
-        }
-        
-        # Recolher valores dos intervalos "ON"
-        hr_values = []
-        smo2_values = []
-        resp_values = []
-        dfa1_values = []
-        
-        for idx in intervalos_indices:
-            if idx < 1 or idx > len(intervalos):
-                continue
-            
-            intervalo = intervalos[idx - 1]  # Converter para 0-indexed
-            
-            # HR (índice 4,5,6 — avg, min, max)
-            if intervalo[4] is not None:  # hr_avg_60s
-                hr_values.append(intervalo[4])
-            
-            # SmO2 (índice 7,8,9)
-            if intervalo[7] is not None:  # smo2_avg_60s
-                smo2_values.append(intervalo[7])
-            
-            # Respiração (índice 10,11,12)
-            if intervalo[10] is not None:  # resp_avg_60s
-                resp_values.append(intervalo[10])
-            
-            # DFA1 (índice 13)
-            if intervalo[13] is not None:  # dfa1_clean
-                dfa1_values.append(intervalo[13])
-        
-        # Calcular estatísticas
-        if hr_values:
-            metricas['hr_avg'] = float(np.mean(hr_values))
-            metricas['hr_min'] = float(np.min(hr_values))
-            metricas['hr_max'] = float(np.max(hr_values))
-        
-        if smo2_values:
-            metricas['smo2_avg'] = float(np.mean(smo2_values))
-            metricas['smo2_min'] = float(np.min(smo2_values))
-            metricas['smo2_max'] = float(np.max(smo2_values))
-        
-        if resp_values:
-            metricas['resp_avg'] = float(np.mean(resp_values))
-            metricas['resp_min'] = float(np.min(resp_values))
-            metricas['resp_max'] = float(np.max(resp_values))
-        
-        if dfa1_values:
-            metricas['dfa1_avg'] = float(np.mean(dfa1_values))
-            metricas['dfa1_min'] = float(np.min(dfa1_values))
-            metricas['dfa1_max'] = float(np.max(dfa1_values))
-        
-        return metricas
 
-# Função de acesso global
-_analyzer = None
 
-def get_analyzer(conn):
-    global _analyzer
-    if _analyzer is None:
-        _analyzer = AquecimentoAnalyzer(conn)
-    return _analyzer
+# ── estatistica: SEM / MDC ────────────────────────────────────────────────
+
+def sem_por_pares(valores_datados, dias_max=10, min_pares=5):
+    """SEM estimado a partir de sessoes proximas no tempo.
+
+    valores_datados: lista de (data_iso, valor) do MESMO escalao de watts e
+    da MESMA modalidade. Pares separados por <= dias_max assumem-se sem
+    adaptacao verdadeira, logo a diferenca e' ruido de medicao.
+
+        SEM   = sd(diferencas) / sqrt(2)
+        MDC95 = SEM * 1.96 * sqrt(2)
+
+    Nao usar o SD de todas as sessoes do ano: isso mete variacao biologica
+    real dentro do termo de erro e inflaciona o MDC, escondendo justamente
+    as mudancas que se quer detectar.
+
+    Devolve sem=None se nao houver pares suficientes -- melhor nao mostrar
+    banda nenhuma do que mostrar uma banda inventada.
+    """
+    from datetime import datetime as _dt
+
+    pts = []
+    for d, v in valores_datados:
+        if v is None:
+            continue
+        try:
+            pts.append((_dt.fromisoformat(str(d)[:19]), float(v)))
+        except Exception:
+            continue
+    pts.sort(key=lambda p: p[0])
+
+    difs = []
+    for i in range(len(pts) - 1):
+        delta = (pts[i + 1][0] - pts[i][0]).days
+        if 0 <= delta <= dias_max:
+            difs.append(pts[i + 1][1] - pts[i][1])
+
+    if len(difs) < min_pares:
+        return {"sem": None, "mdc95": None, "n_pares": len(difs),
+                "fiavel": False,
+                "nota": f"pares a menos para estimar o SEM (minimo {min_pares})"}
+
+    sem = float(np.std(difs, ddof=1) / np.sqrt(2))
+    return {"sem": sem,
+            "mdc95": float(sem * 1.96 * np.sqrt(2)),
+            "n_pares": len(difs),
+            "fiavel": len(difs) >= 10,
+            "nota": None if len(difs) >= 10 else "poucos pares; banda indicativa"}

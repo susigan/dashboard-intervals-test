@@ -1165,6 +1165,118 @@ def api_aquecimento_auditoria():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/forcar_datas')
+def api_aquecimento_forcar_datas():
+    """Processa as datas dos JSON de calibracao -- as que o utilizador
+    garante terem aquecimento.
+
+    Para cada data: encontra a atividade, garante os streams (descarrega-os
+    se faltarem) e analisa em modo assistido, relaxando a tolerancia ate
+    encontrar a escada. Usa as metricas que existirem; se faltar SmO2 num
+    bloco, o bloco conta na mesma com HR e as restantes.
+
+    ?modalidade=Bike[&limite=40][&trazer_streams=1]
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        import json as _json
+        import db as _db
+        import aquecimento_streams as aqs
+        import aquecimento_analyzer as aa
+
+        mod = request.args.get('modalidade')
+        if not mod:
+            return jsonify({'status': 'erro', 'mensagem': 'falta ?modalidade='}), 400
+        limite = request.args.get('limite', default=40, type=int)
+        trazer = request.args.get('trazer_streams') in ('1', 'true', 'sim')
+
+        caminho = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'utils', f'calibracao_{mod.lower()}.json')
+        if not os.path.exists(caminho):
+            return jsonify({'status': 'erro',
+                            'mensagem': f'{caminho} nao existe'}), 404
+        with open(caminho) as f:
+            datas = _json.load(f).get('datas', [])
+
+        variantes = [k for k, v in CFG_MODALIDADES.items() if v == mod]
+        det, rej, salt, sem_act, sem_str = 0, 0, 0, 0, 0
+        niveis, motivos, exemplos = {}, {}, []
+
+        for bruta in datas:
+            if det + rej >= limite:
+                break
+            d = str(bruta).strip()
+            if '/' in d:
+                dia, mes, ano = d.split('/')
+                d = f'{ano}-{mes.zfill(2)}-{dia.zfill(2)}'
+
+            marcas = ",".join("?" * len(variantes)) if variantes else None
+            q = "SELECT id FROM activities WHERE date = ?"
+            p = [d]
+            if marcas:
+                q += f" AND type IN ({marcas})"
+                p.extend(variantes)
+            linha = _db._exec(q + " LIMIT 1", tuple(p), fetch='one')
+            if not linha:
+                sem_act += 1
+                continue
+
+            aid = str(linha[0])
+            if aq_db.ja_analisada(aid):
+                salt += 1
+                continue
+
+            streams, _m = _db.get_streams(aid)
+            if not streams and trazer:
+                try:
+                    import sync as _sync
+                    _sync.sync_streams(aid)
+                    streams, _m = _db.get_streams(aid)
+                except Exception as e:
+                    print(f"[FORCAR] sync_streams {aid}: {e}")
+            if not streams:
+                sem_str += 1
+                continue
+
+            r = aqs.analisar_assistido(streams, mod, aa.PROTOCOLOS)
+            if r.get('detectado'):
+                aq_db.salvar_blocos(aid, mod, d, r['blocos'], sync=False)
+                det += 1
+                nivel = r.get('nivel_deteccao', 'normal')
+                niveis[nivel] = niveis.get(nivel, 0) + 1
+            else:
+                m = r.get('motivo', 'desconhecido')
+                motivos[m] = motivos.get(m, 0) + 1
+                aq_db.marcar_rejeitada(aid, mod, d, m)
+                rej += 1
+                if len(exemplos) < 3:
+                    exemplos.append({'data': d, 'activity_id': aid,
+                                     'watts_a_cada_2min': r.get('watts_a_cada_2min'),
+                                     'duracao_s': r.get('duracao_s')})
+
+        if det or rej:
+            aq_db.sincronizar()
+
+        return jsonify({
+            'status': 'ok', 'modalidade': mod,
+            'datas_no_ficheiro': len(datas),
+            'detectados': det, 'niveis_usados': niveis,
+            'rejeitados': rej, 'motivos': motivos,
+            'ja_analisadas': salt,
+            'sem_atividade_na_bd': sem_act,
+            'sem_streams_guardados': sem_str,
+            'exemplos_rejeitados': exemplos,
+            'sugestao': ('junta &trazer_streams=1 para descarregar os streams '
+                         'em falta (mais lento, respeita o limite da API)')
+            if sem_str else None,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/aquecimento/ingerir')
 def api_aquecimento_ingerir():
     """Analisa o aquecimento a partir dos STREAMS (Postgres), sem depender

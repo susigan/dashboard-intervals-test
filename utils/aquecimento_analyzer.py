@@ -279,3 +279,103 @@ def sem_por_pares(valores_datados, dias_max=10, min_pares=5):
             "n_pares": len(difs),
             "fiavel": len(difs) >= 10,
             "nota": None if len(difs) >= 10 else "poucos pares; banda indicativa"}
+
+
+# ── tendencia por janelas temporais ───────────────────────────────────────
+
+# Direccao que representa melhoria. None = ambiguo, e nesse caso NAO se
+# rotula como "melhor" ou "pior" -- so se diz para onde foi.
+DIRECAO_BOA = {
+    "hr":   -1,    # menos batimentos para a mesma potencia
+    "hrw":  -1,    # menos batimentos por watt
+    "resp": -1,    # menos ventilacao para a mesma potencia
+    "dfa1": +1,    # mais alto = menos stress autonomico aquela intensidade
+    "smo2": None,  # ambiguo: pode subir por melhor entrega OU menor extraccao
+}
+
+JANELAS = [("60 dias", 60), ("90 dias", 90), ("1 ano", 365),
+           ("2 anos", 730), ("3 anos", 1095)]
+
+
+def tendencia(pontos, metrica=None, mdc=None, min_n=6):
+    """Tendencia por janelas temporais, com o MDC como limiar.
+
+    pontos: [(data_iso, valor), ...] do MESMO escalao de watts.
+
+    A mudanca estimada e' o declive da recta multiplicado pelo intervalo
+    realmente coberto pelos dados dessa janela -- nao pela janela nominal,
+    senao extrapolava-se para alem do que existe.
+
+    Uma mudanca menor que o MDC e' classificada como estavel: nao e'
+    distinguivel do ruido de medicao, por muito bonita que a recta seja.
+    """
+    from datetime import datetime as _dt
+
+    pts = []
+    for d, v in pontos:
+        if v is None:
+            continue
+        try:
+            pts.append((_dt.fromisoformat(str(d)[:19]), float(v)))
+        except Exception:
+            continue
+    if not pts:
+        return []
+    pts.sort(key=lambda p: p[0])
+    fim = pts[-1][0]
+
+    saida = []
+    for etiqueta, dias in JANELAS:
+        janela = [(t, v) for t, v in pts if (fim - t).days <= dias]
+        if len(janela) < min_n:
+            if janela:
+                saida.append({"janela": etiqueta, "n": len(janela),
+                              "estado": "dados insuficientes",
+                              "nota": f"minimo {min_n} sessoes"})
+            continue
+
+        x = [(t - janela[0][0]).days for t, _ in janela]
+        y = [v for _, v in janela]
+        n = len(x)
+        mx, my = sum(x) / n, sum(y) / n
+        den = sum((xi - mx) ** 2 for xi in x)
+        if den == 0:
+            continue
+        declive = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y)) / den
+        cobertura = x[-1] - x[0]
+        mudanca = declive * cobertura
+
+        # r2, para se saber se a recta descreve mesmo os pontos
+        ss_tot = sum((yi - my) ** 2 for yi in y)
+        ss_res = sum((yi - (my + declive * (xi - mx))) ** 2
+                     for xi, yi in zip(x, y))
+        r2 = (1 - ss_res / ss_tot) if ss_tot else None
+
+        if mdc and abs(mudanca) < mdc:
+            estado, sentido = "estavel", 0
+        else:
+            sentido = 1 if mudanca > 0 else -1
+            estado = "a subir" if sentido > 0 else "a descer"
+
+        item = {"janela": etiqueta, "n": n,
+                "dias_cobertos": cobertura,
+                "mudanca": round(mudanca, 3),
+                "por_30_dias": round(declive * 30, 4),
+                "r2": round(r2, 2) if r2 is not None else None,
+                "estado": estado,
+                "primeiro": round(y[0], 2), "ultimo": round(y[-1], 2)}
+
+        boa = DIRECAO_BOA.get(metrica)
+        if estado == "estavel":
+            item["leitura"] = "sem mudanca alem do ruido"
+        elif boa is None:
+            item["leitura"] = "sem direccao clara para esta metrica"
+        else:
+            item["leitura"] = "melhoria" if sentido == boa else "piora"
+        if mdc is None:
+            item["aviso"] = "sem MDC: mudanca nao comparada com o ruido"
+        elif r2 is not None and r2 < 0.15 and estado != "estavel":
+            item["aviso"] = "recta explica pouco (r2 baixo); dispersao alta"
+        saida.append(item)
+
+    return saida

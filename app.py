@@ -1713,17 +1713,24 @@ def api_fisiologia_qualidade():
             c_plat, c_tau = f'{m}_atingiu_plateau', f'{m}_tau_s'
             if c_plat not in cols or c_tau not in cols:
                 continue
+            c_fi = f'{m}_tau_fiavel'
+            tem_fi = c_fi in cols
+            filtro_tau = f"CASE WHEN {c_fi} = 1 THEN {c_tau} END" if tem_fi else c_tau
             linhas = conn.execute(
                 f"""SELECT modalidade, COUNT(*) AS n,
                            SUM(CASE WHEN {c_plat} = 1 THEN 1 ELSE 0 END) AS estab,
-                           ROUND(AVG({c_tau}), 1) AS tau_medio
+                           ROUND(AVG({filtro_tau}), 1) AS tau_medio,
+                           COUNT({filtro_tau}) AS n_tau
                     FROM fisiologia_intervalos
                     WHERE valido = 1 AND {c_plat} IS NOT NULL
                     GROUP BY modalidade""").fetchall()
             out[m] = {r[0]: {'n': r[1], 'estabilizados': r[2],
                              'pct': round(100.0 * r[2] / r[1], 1) if r[1] else 0,
                              'tau_medio_s': r[3],
-                             'bloco_minimo_sugerido_s': round(3 * r[3]) if r[3] else None}
+                             'bloco_minimo_sugerido_s': round(3 * r[3]) if r[3] else None,
+                             'n_com_tau_fiavel': r[4],
+                             'origem': ('ingestor' if r[3] is not None
+                                        else 'processo anterior (sem tau)')}
                       for r in linhas}
         qual = {}
         if 'dfa1_qualidade' in cols:
@@ -1737,6 +1744,13 @@ def api_fisiologia_qualidade():
                         'colunas_criadas_agora': criadas,
                         'plateau_por_metrica': out,
                         'dfa1_artefactos': qual,
+                        'como_ler': (
+                            'tau_medio_s = null significa que a linha foi '
+                            'gravada por um processo anterior, que calculou '
+                            'atingiu_plateau por um criterio que desconhecemos. '
+                            'Essas percentagens NAO vem do calculo novo. Só '
+                            'depois de reprocessar com ?refazer=1 e que passam '
+                            'a ser comparaveis.'),
                         'aviso': ('sem dados de cinetica: as atividades ja '
                                   'ingeridas foram gravadas antes destes campos. '
                                   'Corre /api/fisiologia/ingerir?refazer=1 para '
@@ -1745,6 +1759,31 @@ def api_fisiologia_qualidade():
                         'nota': ('bloco_minimo_sugerido = 3 x tau: abaixo disso a '
                                  'metrica nao chega ao valor que aquela potencia '
                                  'produz, e a media do bloco subestima o efeito')})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/carregar_streams')
+def api_fisiologia_carregar_streams():
+    """Descarrega streams em falta da Intervals.icu.
+
+    E' o passo que destranca a ingestao: sem streams guardados nao ha nada
+    para extrair. Um pedido por sessao, por isso vai em blocos -- o limite
+    da API sao 2500 pedidos por 15 min.
+
+    ?limite=60[&tipos=Ride,Rowing]  -- repetir enquanto 'faltam' > 0.
+    """
+    try:
+        import sync as _sync
+        limite = min(request.args.get('limite', default=60, type=int), 150)
+        tipos = request.args.get('tipos')
+        tipos = [t.strip() for t in tipos.split(',')] if tipos else None
+        res = _sync.sync_streams_bloco(limite=limite, tipos=tipos)
+        res['proximo_passo'] = ('corre /api/fisiologia/ingerir_tudo depois de '
+                                'carregar os streams')
+        return jsonify(res)
     except Exception as e:
         import traceback
         return jsonify({'status': 'erro', 'mensagem': str(e),
@@ -1780,12 +1819,23 @@ def api_fisiologia_progresso():
         n_int = conn.execute(
             "SELECT COUNT(*) FROM fisiologia_intervalos WHERE valido = 1").fetchone()[0]
 
+        streams_info = {}
+        try:
+            streams_info = _db.streams_stats()
+        except Exception as e:
+            streams_info = {'erro': str(e)}
+
         return jsonify({
             'status': 'ok', 'atividades_elegiveis': elegiveis,
             'ja_ingeridas': feitas, 'em_falta': elegiveis - feitas,
             'percentagem': round(100.0 * feitas / elegiveis, 1) if elegiveis else 0,
             'intervalos_na_bd': n_int, 'por_modalidade': por_mod,
-            'concluido': feitas >= elegiveis})
+            'streams': streams_info,
+            'concluido': feitas >= elegiveis,
+            'travao': ('faltam streams guardados: corre '
+                       '/api/fisiologia/carregar_streams?limite=60 varias '
+                       'vezes antes de voltar a ingerir')
+            if (elegiveis - feitas) > 0 else None})
     except Exception as e:
         import traceback
         return jsonify({'status': 'erro', 'mensagem': str(e),

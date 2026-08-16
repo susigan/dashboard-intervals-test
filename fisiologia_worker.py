@@ -197,7 +197,8 @@ def _ingerir_novas(conn, limite=40):
             if not streams:
                 sem_streams += 1
                 continue
-            extraidos = ing.extrair_intervalos(streams, duracao_s=dur)
+            extraidos = ing.extrair_intervalos(streams, duracao_s=dur,
+                                               modalidade=mod)
             if not extraidos:
                 continue
             intervalos += ing.gravar(conn, aid,

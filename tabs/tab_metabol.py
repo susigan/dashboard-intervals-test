@@ -608,6 +608,7 @@ BODY = r"""
 """
 JS = r"""
 let MODALIDADES = [];
+let COBERTURA_METRICAS = {};
 let PERFIL = null;
 let EVOLUCAO = null;
 let isLoadingPerfil = false;
@@ -623,7 +624,10 @@ const LABELS_AGREGACAO = {
 };
 const METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1'];
 // AGREGAÇÕES REAIS (apenas as que existem na BD)
-const AGREGACOES_VALIDAS = {
+// Preenchido a partir de /api/fisiologia/cobertura_metricas no arranque.
+// Estava fixo a mao ("apenas as que existem na BD"), o que deixou de ser
+// verdade assim que o pipeline passou a preencher mais colunas.
+let AGREGACOES_VALIDAS = {
  hr: ['max', 'avg'],
  resp: ['avg'],
  smo2: ['min'],
@@ -987,8 +991,14 @@ async function load(){
   const agregControls = document.getElementById('agregacaoControls');
   agregControls.innerHTML = METRICAS_BASE.map(m => {
    const aggs = AGREGACOES_VALIDAS[m] || [];
+   const info = COBERTURA_METRICAS[m] || {};
    return '<label class="sel">'+LABELS_METAB[m]+': <select id="agr_'+m+'">'+
-   aggs.map(a => '<option value="'+a+'"'+(camposSelecionados[m]===a?' selected':'')+'> '+LABELS_AGREGACAO[a]+'</option>').join('')+
+   aggs.map(a => {
+     const c = info[a] || {};
+     const suf = c.cobertura_pct != null ? ' ('+c.cobertura_pct+'%)' : '';
+     return '<option value="'+a+'"'+(camposSelecionados[m]===a?' selected':'')+'>'
+       + LABELS_AGREGACAO[a] + suf + '</option>';
+   }).join('')+
    '</select></label>';
   }).join('');
   
@@ -1699,8 +1709,31 @@ function aqTabela(){
  box.innerHTML = html;
 }
 
+function carregarCobertura(){
+ return fetch('/api/fisiologia/cobertura_metricas').then(r=>r.json()).then(function(d){
+  if(d.status !== 'ok') return;
+  COBERTURA_METRICAS = d.cobertura || {};
+  const novo = {};
+  METRICAS_BASE.forEach(function(m){
+   const info = COBERTURA_METRICAS[m] || {};
+   // ordenar por cobertura e esconder as que quase nao tem dados
+   const validas = Object.keys(info)
+     .filter(a => info[a] && info[a].coluna_usada && info[a].cobertura_pct >= 5)
+     .sort((a,b) => info[b].cobertura_pct - info[a].cobertura_pct);
+   if(validas.length) novo[m] = validas;
+  });
+  if(Object.keys(novo).length) AGREGACOES_VALIDAS = novo;
+  METRICAS_BASE.forEach(function(m){
+   const aggs = AGREGACOES_VALIDAS[m] || [];
+   if(aggs.length && aggs.indexOf(camposSelecionados[m]) === -1){
+    camposSelecionados[m] = aggs[0];
+   }
+  });
+ }).catch(function(){});
+}
+
 aqInit();
-load();
+carregarCobertura().then(load);
 """
 def api_data():
     try:

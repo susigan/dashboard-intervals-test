@@ -385,6 +385,7 @@ BODY = r"""
     <button id="aqBtnAud" onclick="aqAuditar()" style="margin-left:8px;">Auditar as minhas datas</button>
     <button id="aqBtnPq" onclick="aqPorque()" style="margin-left:8px;">Porque falhou?</button>
     <button id="aqBtnIng" onclick="aqIngerir()" style="margin-left:8px;">Analisar histórico (streams)</button>
+    <button id="aqBtnFor" onclick="aqForcar()" style="margin-left:8px;">Processar as minhas datas</button>
     <span id="aqScanEstado" style="color:#8b949e;font-size:12px;margin-left:10px;"></span>
   </div>
   <div id="aqDiag" style="color:#8b949e;font-size:11px;margin-bottom:12px;"></div>
@@ -1020,6 +1021,46 @@ function aqIngerir(){
     total.det += d.detectados; total.rej += d.rejeitados;
     total.sem += d.sem_streams_guardados; total.vistas += d.atividades_vistas;
    }
+   i++; passo();
+  }).catch(function(){ i++; passo(); });
+ }
+ passo();
+}
+
+function aqForcar(){
+ const btn = document.getElementById('aqBtnFor');
+ const est = document.getElementById('aqScanEstado');
+ const diag = document.getElementById('aqDiag');
+ btn.disabled = true;
+ const mods = ['Row','Ski','Bike'];
+ let i = 0, linhas = [];
+
+ function passo(){
+  if(i >= mods.length){
+   let h = '<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+    + '<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+    + '<th style="padding:5px;">Modalidade</th><th>Datas</th><th>Detectadas</th>'
+    + '<th>Confian\u00e7a</th><th>Rejeitadas</th><th>Sem atividade</th><th>Sem streams</th></tr>';
+   linhas.forEach(function(d){
+    const nv = Object.keys(d.niveis_usados||{}).map(k=>k+':'+d.niveis_usados[k]).join(' ') || '\u2014';
+    h += '<tr style="border-bottom:1px solid #161b22;"><td style="padding:5px;">'+d.modalidade+'</td>'
+      + '<td>'+d.datas_no_ficheiro+'</td><td style="color:#3FB950;">'+d.detectados+'</td>'
+      + '<td>'+nv+'</td><td>'+d.rejeitados+'</td><td>'+d.sem_atividade_na_bd+'</td>'
+      + '<td style="color:'+(d.sem_streams_guardados>0?'#F0883E':'#8b949e')+';">'+d.sem_streams_guardados+'</td></tr>';
+   });
+   h += '</table>';
+   const semStr = linhas.some(d=>d.sem_streams_guardados>0);
+   if(semStr) h += '<p style="margin-top:6px;color:#F0883E;">Sess\u00f5es sem streams guardados: '
+     + 'carrega outra vez com "trazer streams" para os descarregar.</p>';
+   diag.innerHTML = h;
+   est.textContent = '';
+   btn.disabled = false; aqInit(); return;
+  }
+  const m = mods[i];
+  est.textContent = 'a processar as datas confirmadas de ' + m + '...';
+  fetch('/api/aquecimento/forcar_datas?modalidade=' + m + '&limite=40&trazer_streams=1')
+  .then(r=>r.json()).then(function(d){
+   if(d.status === 'ok') linhas.push(d);
    i++; passo();
   }).catch(function(){ i++; passo(); });
  }

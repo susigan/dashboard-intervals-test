@@ -25,6 +25,10 @@ STREAM_KEYS = {
     "thb":   ["thb", "tHb"],
     "resp":  ["respiration", "resp", "breathing_rate"],
     "dfa1":  ["dfa_a1", "dfa1", "DFA_a1"],
+    # RRa1: alpha1 calculado a partir dos RR pelo proprio dispositivo
+    "rra1":  ["RRa1", "rra1", "rr_a1"],
+    # percentagem de artefactos nos RR, para validar o DFA-a1
+    "artefactos": ["artifacts", "artefacts", "artifact_percent"],
 }
 
 # Limites de sanidade fisica por modalidade. Blocos fora disto sao lixo de
@@ -37,6 +41,25 @@ WATTS_PLAUSIVEIS = {
     "Ski":  (30, 700),
     "Run":  (30, 700),
 }
+
+# Cada metrica tem a sua constante de tempo. Quando a potencia cai, a
+# resposta NAO para: o DFA-a1 continua a subir durante ~1 min, a SmO2
+# reoxigena em ~30-60 s, a HR desce depressa mas nao instantaneamente.
+# Medir so ate ao fim do bloco corta a resposta a meio -- e' por isso que a
+# janela de analise se estende para dentro da recuperacao, por metrica.
+ATRASO_RESPOSTA_S = {
+    "hr":   30,
+    "smo2": 45,
+    "resp": 30,
+    "dfa1": 75,   # a mais lenta das quatro
+    "thb":  30,
+    "rra1": 60,
+}
+
+# Artefactos de RR: acima disto o DFA-a1 do bloco nao e' de confianca.
+# Mesmos limiares do dfa_artifacts_analyzer do projecto.
+ARTEFACTOS_INVALIDO = 10.0
+ARTEFACTOS_DUVIDOSO = 5.0
 
 SUAVIZA_S = 10
 MIN_WORK_S = 60          # blocos mais curtos nao servem ao perfil por watts
@@ -136,7 +159,9 @@ def extrair_intervalos(streams, duracao_s=None, modalidade=None):
     if not blocos:
         return []
 
-    series = {m: _serie(streams, m) for m in ("hr", "smo2", "thb", "resp", "dfa1")}
+    series = {m: _serie(streams, m)
+              for m in ("hr", "smo2", "thb", "resp", "dfa1", "rra1")}
+    artefactos = _serie(streams, "artefactos")
     n60 = max(2, int(JANELA_FINAL_S / dt))
     nbase = max(2, int(JANELA_BASELINE_S / dt))
     nrec = max(1, int(ENTRADA_REC_S / dt))
@@ -176,15 +201,34 @@ def extrair_intervalos(streams, duracao_s=None, modalidade=None):
             if avg is not None:
                 linha[f"{m}_plateau_work"] = round(avg, 3)
 
+            # tempo de recuperacao: quanto demora a voltar a meio caminho
+            # da baseline depois de a potencia cair (so se houver REC)
+            if rec_fim and rec_fim > i1:
+                base_r, _, _ = _stats(serie, max(0, i0 - nbase), i0)
+                fim_v, _, _ = _stats(serie, max(i0, i1 - n60), i1)
+                if base_r is not None and fim_v is not None and abs(fim_v - base_r) > 1e-6:
+                    alvo50 = fim_v + 0.5 * (base_r - fim_v)
+                    subida = base_r > fim_v
+                    for k in range(i1, min(rec_fim, len(serie))):
+                        v = serie[k]
+                        if v is None:
+                            continue
+                        if (v >= alvo50) if subida else (v <= alvo50):
+                            linha[f"rec_{m}_50"] = round((k - i1) * dt, 1)
+                            break
+
             # baseline: estado imediatamente ANTES da transicao
             base, _, _ = _stats(serie, max(0, i0 - nbase), i0)
             if base is not None:
                 linha[f"{m}_baseline"] = round(base, 3)
 
             # extremo: valor mais afastado da baseline numa janela que entra
-            # no descanso (capta picos com inercia, como resp. e DFA1)
-            fim_janela = (rec_fim or i1) if rec_fim else i1
-            fim_janela = min(len(serie), max(i1, min(i1 + nrec, fim_janela)))
+            # na recuperacao pelo ATRASO proprio da metrica. Sem isto o pico
+            # do DFA-a1, que so chega ~1 min depois de a potencia cair,
+            # ficava de fora e a amplitude da resposta saia subestimada.
+            atraso = max(1, int(ATRASO_RESPOSTA_S.get(m, 30) / dt))
+            limite_rec = rec_fim if rec_fim else min(len(serie), i1 + atraso)
+            fim_janela = min(len(serie), max(i1, min(i1 + atraso, limite_rec)))
             a2, mn2, mx2 = _stats(serie, i0, fim_janela)
             if a2 is not None and base is not None:
                 extremo = mx2 if abs(mx2 - base) >= abs(mn2 - base) else mn2
@@ -202,6 +246,19 @@ def extrair_intervalos(streams, duracao_s=None, modalidade=None):
             if m == "dfa1":
                 linha["tem_dfa1"] = 1
                 linha["tem_dfa1_stream"] = 1
+                # qualidade: com muitos artefactos de RR o DFA-a1 e' ruido
+                if artefactos:
+                    art, _, _ = _stats(artefactos, i0, i1)
+                    if art is not None:
+                        linha["dfa1_artefactos_pct"] = round(art, 2)
+                        if art > ARTEFACTOS_INVALIDO:
+                            linha["dfa1_qualidade"] = "invalido"
+                            # nao se apaga o valor: fica gravado e marcado,
+                            # para se poder filtrar sem perder o historico
+                        elif art > ARTEFACTOS_DUVIDOSO:
+                            linha["dfa1_qualidade"] = "duvidoso"
+                        else:
+                            linha["dfa1_qualidade"] = "ok"
 
         saida.append(linha)
     return saida
@@ -217,6 +274,7 @@ def gravar(conn, activity_id, data, modalidade, linhas):
     """Substitui as linhas dessa atividade. Ignora colunas inexistentes."""
     if not linhas:
         return 0
+    garantir_colunas(conn)
     existentes = _colunas(conn)
     conn.execute("DELETE FROM fisiologia_intervalos WHERE activity_id = ?",
                  (str(activity_id),))
@@ -236,3 +294,45 @@ def gravar(conn, activity_id, data, modalidade, linhas):
         gravadas += 1
     conn.commit()
     return gravadas
+
+
+# ── migracao ──────────────────────────────────────────────────────────────
+
+COLUNAS_NOVAS = {
+    "rra1_avg_60s": "REAL", "rra1_min_60s": "REAL", "rra1_max_60s": "REAL",
+    "rra1_medio_work": "REAL", "rra1_plateau_work": "REAL",
+    "rra1_baseline": "REAL", "rra1_extremo": "REAL", "rra1_t_extremo": "REAL",
+    "rec_rra1_50": "REAL",
+    "dfa1_artefactos_pct": "REAL",
+    "dfa1_qualidade": "TEXT",
+    "origem": "TEXT",
+}
+
+
+def garantir_colunas(conn):
+    """Cria as colunas novas se faltarem. Assim nao e' preciso substituir o
+    .db a mao no Drive -- a migracao corre sozinha e e' idempotente."""
+    try:
+        existentes = _colunas(conn)
+    except Exception:
+        return []
+    criadas = []
+    for col, tipo in COLUNAS_NOVAS.items():
+        if col not in existentes:
+            try:
+                conn.execute(f"ALTER TABLE fisiologia_intervalos ADD COLUMN {col} {tipo}")
+                criadas.append(col)
+            except Exception as e:
+                print(f"[INGESTOR] nao criou {col}: {e}")
+    # rec_* das restantes metricas, se o schema original nao as tiver
+    for m in ("hr", "smo2", "resp", "dfa1", "thb"):
+        col = f"rec_{m}_50"
+        if col not in existentes and col not in criadas:
+            try:
+                conn.execute(f"ALTER TABLE fisiologia_intervalos ADD COLUMN {col} REAL")
+                criadas.append(col)
+            except Exception:
+                pass
+    if criadas:
+        conn.commit()
+    return criadas

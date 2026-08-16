@@ -31,6 +31,27 @@ REST_SEG = (30, 150)    # 1 min, com folga
 # Quantos intervalos podem existir antes do aquecimento comecar.
 MAX_OFFSET = 4
 
+# Nem todas as colunas *_60s foram preenchidas pelo pipeline original.
+# Para cada metrica/agregacao tentamos varias colunas, pela ordem indicada,
+# e usamos a primeira que tenha valor.
+FALLBACKS = {
+    ("hr", "avg"):   ["hr_avg_60s", "hr_medio_work", "hr_plateau_work"],
+    ("hr", "min"):   ["hr_min_60s", "hr_baseline"],
+    ("hr", "max"):   ["hr_max_60s", "hr_extremo"],
+    ("smo2", "avg"): ["smo2_avg_60s", "smo2_medio_work", "smo2_plateau_work"],
+    ("smo2", "min"): ["smo2_min_60s", "smo2_extremo", "smo2_baseline"],
+    ("smo2", "max"): ["smo2_max_60s", "smo2_baseline"],
+    ("resp", "avg"): ["resp_avg_60s", "resp_medio_work", "resp_plateau_work"],
+    ("resp", "min"): ["resp_min_60s", "resp_baseline"],
+    ("resp", "max"): ["resp_max_60s", "resp_extremo"],
+    ("dfa1", "avg"): ["dfa1_avg_60s", "dfa1_clean", "dfa1_medio_work",
+                      "dfa1_plateau_work"],
+    ("dfa1", "min"): ["dfa1_min_60s", "dfa1_extremo"],
+    ("dfa1", "max"): ["dfa1_max_60s", "dfa1_baseline"],
+}
+
+COLUNAS_METRICA = sorted({c for v in FALLBACKS.values() for c in v})
+
 
 class AquecimentoAnalyzer:
     def __init__(self, conn=None):
@@ -59,12 +80,7 @@ class AquecimentoAnalyzer:
         """
         existentes = self._colunas_existentes()
         base = ["interval_num", "watts_medio"]
-        opcionais = ["dur_work_s", "dur_rec_s",
-                     "hr_avg_60s", "hr_min_60s", "hr_max_60s",
-                     "smo2_avg_60s", "smo2_min_60s", "smo2_max_60s",
-                     "resp_avg_60s", "resp_min_60s", "resp_max_60s",
-                     "dfa1_avg_60s", "dfa1_min_60s", "dfa1_max_60s",
-                     "dfa1_clean"]
+        opcionais = ["dur_work_s", "dur_rec_s"] + COLUNAS_METRICA
         faltam = [c for c in base if c not in existentes]
         if faltam:
             raise RuntimeError(f"colunas em falta na BD: {faltam}")
@@ -124,22 +140,28 @@ class AquecimentoAnalyzer:
     # ── metricas ──────────────────────────────────────────────────────────
 
     @staticmethod
-    def _tripla(iv, base):
-        """(avg, min, max) de uma metrica, tolerando colunas em falta."""
-        avg = iv.get(f"{base}_avg_60s")
-        mn = iv.get(f"{base}_min_60s")
-        mx = iv.get(f"{base}_max_60s")
-        if base == "dfa1" and avg is None:
-            avg = iv.get("dfa1_clean")
-        return avg, mn, mx
+    def _primeiro_valor(iv, candidatas):
+        for c in candidatas:
+            v = iv.get(c)
+            if v is not None:
+                return float(v), c
+        return None, None
 
     def _metricas_do_bloco(self, iv):
-        out = {}
+        """Valor de cada metrica/agregacao, com fallback de coluna.
+
+        Guarda tambem que coluna foi usada, para se poder diagnosticar
+        depois porque e' que uma metrica veio vazia.
+        """
+        out, origem = {}, {}
         for base in ("hr", "smo2", "resp", "dfa1"):
-            avg, mn, mx = self._tripla(iv, base)
-            out[f"{base}_avg"] = float(avg) if avg is not None else None
-            out[f"{base}_min"] = float(mn) if mn is not None else None
-            out[f"{base}_max"] = float(mx) if mx is not None else None
+            for agreg in ("avg", "min", "max"):
+                v, col = self._primeiro_valor(
+                    iv, FALLBACKS.get((base, agreg), []))
+                out[f"{base}_{agreg}"] = v
+                if col:
+                    origem[f"{base}_{agreg}"] = col
+        self.ultima_origem = origem
         return out
 
     # ── API ───────────────────────────────────────────────────────────────

@@ -1690,6 +1690,52 @@ def api_fisiologia_faixa_sugerida(modalidade):
         return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
 
 
+@app.route('/api/fisiologia/qualidade')
+def api_fisiologia_qualidade():
+    """Quantos blocos chegaram a estabilizar, por metrica e modalidade.
+
+    Um bloco onde a metrica nao estabilizou nao mede o efeito daquela
+    potencia -- mede um ponto qualquer do caminho ate la. Isto diz quantos
+    dos dados estao nessa situacao.
+    """
+    try:
+        import drive_db_fisiologia as ddf
+        conn = ddf.get_conn()
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(fisiologia_intervalos)")}
+        out = {}
+        for m in ('hr', 'smo2', 'resp', 'dfa1', 'rra1'):
+            c_plat, c_tau = f'{m}_atingiu_plateau', f'{m}_tau_s'
+            if c_plat not in cols:
+                continue
+            linhas = conn.execute(
+                f"""SELECT modalidade, COUNT(*) AS n,
+                           SUM(CASE WHEN {c_plat} = 1 THEN 1 ELSE 0 END) AS estab,
+                           ROUND(AVG({c_tau}), 1) AS tau_medio
+                    FROM fisiologia_intervalos
+                    WHERE valido = 1 AND {c_plat} IS NOT NULL
+                    GROUP BY modalidade""").fetchall()
+            out[m] = {r[0]: {'n': r[1], 'estabilizados': r[2],
+                             'pct': round(100.0 * r[2] / r[1], 1) if r[1] else 0,
+                             'tau_medio_s': r[3],
+                             'bloco_minimo_sugerido_s': round(3 * r[3]) if r[3] else None}
+                      for r in linhas}
+        qual = {}
+        if 'dfa1_qualidade' in cols:
+            qual = {r[0]: r[1] for r in conn.execute(
+                """SELECT dfa1_qualidade, COUNT(*) FROM fisiologia_intervalos
+                   WHERE valido = 1 AND dfa1_qualidade IS NOT NULL
+                   GROUP BY dfa1_qualidade""").fetchall()}
+        return jsonify({'status': 'ok', 'plateau_por_metrica': out,
+                        'dfa1_artefactos': qual,
+                        'nota': ('bloco_minimo_sugerido = 3 x tau: abaixo disso a '
+                                 'metrica nao chega ao valor que aquela potencia '
+                                 'produz, e a media do bloco subestima o efeito')})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/fisiologia/progresso')
 def api_fisiologia_progresso():
     """Quanto falta ingerir. Serve para saber quando parar de repetir."""

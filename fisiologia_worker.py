@@ -155,6 +155,62 @@ def _varrer_aquecimento_pendente(conn=None, limite=80):
             'sem_streams_guardados': sem_streams}
 
 
+def _ingerir_novas(conn, limite=40):
+    """Cria intervalos para atividades que ainda nao os tem.
+
+    Corre ANTES da Fase B, para que as linhas novas ja sejam apanhadas por
+    ela no mesmo lote. Assim uma atividade nova entra sozinha no Perfil por
+    Watts, sem o utilizador ter de chamar nada.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import fisiologia_ingestor as ing
+        import db as _db
+        from config import TYPE_MAP
+    except Exception as e:
+        return {'novas': 0, 'erro_import': f"{type(e).__name__}: {e}"}
+
+    try:
+        ja_tem = {r[0] for r in conn.execute(
+            "SELECT DISTINCT activity_id FROM fisiologia_intervalos")}
+        linhas = _db._exec(
+            """SELECT id, date, type, COALESCE(elapsed_time, moving_time)
+               FROM activities WHERE type IS NOT NULL
+               ORDER BY date DESC LIMIT ?""", (limite * 3,), fetch='all') or []
+    except Exception as e:
+        return {'novas': 0, 'erro_query': f"{type(e).__name__}: {e}"}
+
+    novas, intervalos, sem_streams = 0, 0, 0
+    for aid, data, tipo, dur in linhas:
+        if novas >= limite:
+            break
+        mod = TYPE_MAP.get(tipo, tipo)
+        if mod not in ('Row', 'Ski', 'Bike', 'Run'):
+            continue
+        aid = str(aid)
+        if aid in ja_tem:
+            continue
+        try:
+            streams, _m = _db.get_streams(aid)
+            if not streams:
+                sem_streams += 1
+                continue
+            extraidos = ing.extrair_intervalos(streams, duracao_s=dur)
+            if not extraidos:
+                continue
+            intervalos += ing.gravar(conn, aid,
+                                     str(data)[:10] if data else None,
+                                     mod, extraidos)
+            novas += 1
+        except Exception as e:
+            print(f"[INGESTOR] {aid}: {type(e).__name__}: {e}")
+
+    return {'novas': novas, 'intervalos_criados': intervalos,
+            'sem_streams_guardados': sem_streams}
+
+
 def _sync_aquecimento():
     """Envia a BD de aquecimento para o Drive uma unica vez, no fim do lote."""
     try:
@@ -173,6 +229,9 @@ def processar_lote(n=10, retornar_resumo=True):
     try:
         import drive_db_fisiologia as ddf
         conn = ddf.get_conn()
+        # ingerir atividades novas ANTES da Fase B,
+        # para que as linhas criadas entrem no mesmo lote
+        _ingestao = _ingerir_novas(conn)
     except Exception as e:
         return {'status': 'erro', 'mensagem': str(e)}
     
@@ -320,6 +379,7 @@ def processar_lote(n=10, retornar_resumo=True):
             'processadas': processadas,
             'total_intervalos': total_intervalos,
             'aquecimentos_detectados': aquecimentos_detectados,
+            'ingestao_novas': _ingestao,
             'aquecimento_historico': _varrer_aquecimento_pendente(conn),
             'aquecimento_sincronizado': _sync_aquecimento(),
             'erros': erros,

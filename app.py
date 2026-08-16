@@ -1165,6 +1165,74 @@ def api_aquecimento_auditoria():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/perfil')
+def api_aquecimento_perfil():
+    """Descobre a escada REAL das sessoes, sem assumir protocolo.
+
+    Quando a Bike (ou outra) nao e' detectada, isto mostra os degraus que
+    a sessao tem mesmo -- duracao e watts de cada patamar. E' assim que se
+    corrige o protocolo em vez de continuar a adivinhar.
+
+    ?modalidade=Bike[&n=3][&data=2026-07-20]
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        import db as _db
+        import aquecimento_streams as aqs
+
+        mod = request.args.get('modalidade')
+        n = request.args.get('n', default=3, type=int)
+        data = request.args.get('data')
+        alvos = []
+
+        if data:
+            if '/' in data:
+                dia, mes, ano = data.split('/')
+                data = f'{ano}-{mes.zfill(2)}-{dia.zfill(2)}'
+            variantes = [k for k, v in CFG_MODALIDADES.items() if v == mod] if mod else []
+            q = "SELECT id, date FROM activities WHERE date = ?"
+            p = [data]
+            if variantes:
+                q += f" AND type IN ({','.join('?' * len(variantes))})"
+                p.extend(variantes)
+            linhas = _db._exec(q + " LIMIT 1", tuple(p), fetch='all') or []
+            alvos = [(str(r[0]), str(r[1])[:10]) for r in linhas]
+        else:
+            ac = aq_db.get_conn()
+            q = "SELECT activity_id, data FROM aquecimento_rejeitadas"
+            p = ()
+            if mod:
+                q += " WHERE modalidade = ?"
+                p = (mod,)
+            q += " ORDER BY data DESC LIMIT ?"
+            p = p + (n,)
+            alvos = [(r[0], r[1]) for r in ac.execute(q, p).fetchall()]
+
+        if not alvos:
+            return jsonify({'status': 'nao_encontrada',
+                            'mensagem': 'nenhuma sessao para inspeccionar'}), 200
+
+        import aquecimento_analyzer as aa
+        saida = []
+        for aid, dt in alvos:
+            streams, _m = _db.get_streams(str(aid))
+            if not streams:
+                saida.append({'activity_id': aid, 'data': dt,
+                              'erro': 'sem streams guardados'})
+                continue
+            saida.append({'activity_id': aid, 'data': dt,
+                          **aqs.resumir_inicio(streams)})
+
+        return jsonify({'status': 'ok', 'modalidade': mod,
+                        'protocolo_assumido': aa.PROTOCOLOS.get(mod),
+                        'sessoes': saida})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/aquecimento/forcar_datas')
 def api_aquecimento_forcar_datas():
     """Processa as datas dos JSON de calibracao -- as que o utilizador

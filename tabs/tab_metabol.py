@@ -349,8 +349,26 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
     n_linhas = len(linhas)
     corte = int(n_linhas * 0.3)
     pesos = np.ones(n_linhas)
-    pesos[:corte] = 1.5
+    pesos[:corte] = 1.5   # linhas vem por data DESC: peso extra ao recente
     watts = np.array([l['watts_medio'] for l in linhas])
+
+    # Outliers de potencia: no Run os watts sao estimados e um unico bloco a
+    # 1900 W estica o eixo e esvazia o resto do grafico. Corta-se pelo metodo
+    # de Tukey (1.5 x IQR), que nao assume distribuicao normal, e guarda-se
+    # quantos sairam para o utilizador saber.
+    q1, q3 = np.percentile(watts, [25, 75])
+    iqr = q3 - q1
+    lim_hi = q3 + 1.5 * iqr
+    lim_lo = max(0, q1 - 1.5 * iqr)
+    manter = (watts >= lim_lo) & (watts <= lim_hi)
+    n_outliers = int((~manter).sum())
+    watts_out = sorted({round(float(w)) for w in watts[~manter]}, reverse=True)[:5]
+    if n_outliers and manter.sum() >= min_n_total:
+        linhas = [l for l, k in zip(linhas, manter) if k]
+        pesos = pesos[manter]
+        watts = watts[manter]
+        n_linhas = len(linhas)
+
     wmin, wmax = float(watts.min()), float(watts.max())
     # Gerar bins — APENAS até a última faixa com dados
     # Isto evita espaço vazio à direita (problema do Run)
@@ -455,6 +473,9 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
         'campos_selecionados': campos_selecionados,
         'colunas_usadas': para_buscar,
         'ignoradas': ignoradas,
+        'outliers_watts_removidos': n_outliers,
+        'outliers_watts_valores': watts_out,
+        'limite_outlier_watts': round(float(lim_hi), 1),
         'faixas': faixas_saida,
     }
 def evolucao_temporal(modalidade, metrica, agregacao, watts_min=None, watts_max=None, min_por_periodo=3):
@@ -579,7 +600,21 @@ BODY = r"""
       <input type="checkbox" id="aqTrend" checked style="vertical-align:middle;margin-right:4px;"><span style="vertical-align:middle;">Tendência</span></label>
   </div>
   <h2 id="aqTituloRange">Dispersão por escalão de watts</h2>
-  <div class="chartbox"><canvas id="chRange" height="300"></canvas></div>
+  <div class="controls" style="margin-bottom:6px;">
+    <span style="color:#8b949e;font-size:12px;">Sobrepor:</span>
+    <label class="sel" style="cursor:pointer;"><input type="checkbox" class="aqOv" value="hr"> HR</label>
+    <label class="sel" style="cursor:pointer;"><input type="checkbox" class="aqOv" value="smo2"> SmO&#8322;</label>
+    <label class="sel" style="cursor:pointer;"><input type="checkbox" class="aqOv" value="resp"> Resp</label>
+    <label class="sel" style="cursor:pointer;"><input type="checkbox" class="aqOv" value="dfa1"> DFA-&#945;1</label>
+    <label class="sel" style="cursor:pointer;"><input type="checkbox" class="aqOv" value="hrw"> HR/W</label>
+    <span style="color:#8b949e;font-size:11px;margin-left:8px;">(normalizado 0–1 quando há mais de uma)</span>
+  </div>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chRange" height="300"></canvas>
+    <div id="aqTip" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
+         border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
+         white-space:nowrap;"></div>
+  </div>
 
   <h2 id="aqTitulo">Evolução temporal</h2>
   <div class="legend" id="aqLegenda"></div>
@@ -1067,6 +1102,9 @@ function aqInit(){
  ['aqMetrica','aqAgregacao','aqRolling'].forEach(function(id){
   const el = document.getElementById(id);
   if(el) el.addEventListener('change', aqCarregar);
+ });
+ Array.prototype.slice.call(document.querySelectorAll('.aqOv')).forEach(function(c){
+  c.addEventListener('change', aqCarregarOverlay);
  });
  ['aqMDC','aqTrend'].forEach(function(id){
   const el = document.getElementById(id);
@@ -1581,6 +1619,29 @@ function aqDraw(){
  }).join('');
 }
 
+let AQ_OVERLAY = {};   // metrica -> series carregadas
+
+function aqOverlaySel(){
+ return Array.prototype.slice.call(document.querySelectorAll('.aqOv:checked'))
+   .map(function(c){ return c.value; });
+}
+
+function aqCarregarOverlay(){
+ const sel = aqOverlaySel();
+ const agr = document.getElementById('aqAgregacao').value;
+ if(!sel.length || !AQ_MOD){ AQ_OVERLAY = {}; aqRange(); return; }
+ let pend = sel.length;
+ const novo = {};
+ sel.forEach(function(m){
+  fetch('/api/aquecimento/serie?modalidade='+AQ_MOD+'&metrica='+m+'&agregacao='+agr)
+  .then(r=>r.json()).then(function(d){
+   if(d.status === 'ok') novo[m] = d.series;
+  }).catch(function(){}).finally(function(){
+   if(--pend === 0){ AQ_OVERLAY = novo; aqRange(); }
+  });
+ });
+}
+
 function aqRange(){
  const o = ctx('chRange', 300);
  if(!o) return;
@@ -1588,30 +1649,58 @@ function aqRange(){
  if(!AQ_DADOS || AQ_DADOS.status !== 'ok' || !(AQ_DADOS.series||[]).length){
   noData(g, W, H, 'Sem dados'); return;
  }
- const series = AQ_DADOS.series.filter(s => s.valores && s.valores.length);
- if(!series.length){ noData(g, W, H, 'Sem dados'); return; }
+ const metPrinc = document.getElementById('aqMetrica').value;
 
- const met = document.getElementById('aqMetrica').value;
- document.getElementById('aqTituloRange').textContent =
-   AQ_LABELS[met] + ' \u2014 dispers\u00e3o por escal\u00e3o (m\u00e9dia \u00b1 MDC\u2089\u2085)';
+ // conjunto a desenhar: a metrica escolhida + as sobrepostas
+ const conjuntos = [];
+ conjuntos.push({metrica: metPrinc, series: AQ_DADOS.series});
+ Object.keys(AQ_OVERLAY).forEach(function(m){
+  if(m !== metPrinc) conjuntos.push({metrica: m, series: AQ_OVERLAY[m]});
+ });
+ const multi = conjuntos.length > 1;
+
+ document.getElementById('aqTituloRange').textContent = multi
+   ? 'Dispers\u00e3o por escal\u00e3o \u2014 ' + conjuntos.map(c=>AQ_LABELS[c.metrica]).join(' + ')
+     + ' (normalizado)'
+   : AQ_LABELS[metPrinc] + ' \u2014 dispers\u00e3o por escal\u00e3o (m\u00e9dia \u00b1 MDC\u2089\u2085)';
+
+ // escala: valores reais quando ha' so uma metrica, 0-1 quando ha' varias
+ conjuntos.forEach(function(c){
+  let lo = Infinity, hi = -Infinity;
+  (c.series||[]).forEach(function(s){
+   (s.valores||[]).forEach(function(v){ if(v<lo) lo=v; if(v>hi) hi=v; });
+  });
+  c.lo = lo; c.hi = hi;
+  c.norm = function(v){
+   if(!multi) return v;
+   return (c.hi === c.lo) ? 0.5 : (v - c.lo)/(c.hi - c.lo);
+  };
+ });
 
  let vmin = Infinity, vmax = -Infinity;
- series.forEach(function(s){
-  s.valores.forEach(function(v){ if(v<vmin) vmin=v; if(v>vmax) vmax=v; });
-  const m = s.reliability && s.reliability.mdc95;
-  if(m){
-   const md = s.valores.reduce((a,b)=>a+b,0)/s.valores.length;
-   if(md-m < vmin) vmin = md-m;
-   if(md+m > vmax) vmax = md+m;
-  }
+ conjuntos.forEach(function(c){
+  (c.series||[]).forEach(function(s){
+   (s.valores||[]).forEach(function(v){
+    const nv = c.norm(v); if(nv<vmin) vmin=nv; if(nv>vmax) vmax=nv;
+   });
+   const m = s.reliability && s.reliability.mdc95;
+   if(m && !multi){
+    const md = s.valores.reduce((a,b)=>a+b,0)/s.valores.length;
+    if(md-m < vmin) vmin = md-m;
+    if(md+m > vmax) vmax = md+m;
+   }
+  });
  });
- const marg = (vmax-vmin)*0.12 || 1;
+ if(!isFinite(vmin)){ noData(g, W, H, 'Sem dados'); return; }
+ const marg = (vmax-vmin)*0.12 || 0.1;
  const va = vmin-marg, vb = vmax+marg;
  const PL=70, PR=30, PB=40, PT=16, w=W-PL-PR, h=H-PT-PB;
  const Y = v => PT + h - (v-va)/(vb-va)*h;
 
- const wattsMin = Math.min.apply(null, series.map(s=>s.watts_alvo));
- const wattsMax = Math.max.apply(null, series.map(s=>s.watts_alvo));
+ const todosW = [];
+ conjuntos.forEach(c => (c.series||[]).forEach(s => todosW.push(s.watts_alvo)));
+ const wattsMin = Math.min.apply(null, todosW);
+ const wattsMax = Math.max.apply(null, todosW);
  const span = (wattsMax - wattsMin) || 1;
  const X = wv => PL + (wv - wattsMin)/span * w;
 
@@ -1620,53 +1709,116 @@ function aqRange(){
  for(let k=0;k<=4;k++){
   const y = PT + h*k/4;
   g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
-  g.fillText((vb - (vb-va)*k/4).toFixed(1), PL-8, y+4);
+  const val = vb - (vb-va)*k/4;
+  g.fillText(multi ? val.toFixed(2) : val.toFixed(1), PL-8, y+4);
  }
 
- // banda MDC + pontos por escalao
- series.forEach(function(s, si){
-  const cor = AQ_CORES_W[si % AQ_CORES_W.length];
-  const vals = s.valores;
-  const media = vals.reduce((a,b)=>a+b,0)/vals.length;
-  const mdc = s.reliability && s.reliability.mdc95;
-  const x = X(s.watts_alvo);
-  const meia = Math.max(14, w/(series.length*3));
+ AQ_PONTOS = [];   // para o tooltip
 
-  if(mdc){
-   const r=parseInt(cor.substring(1,3),16), gg=parseInt(cor.substring(3,5),16), bb=parseInt(cor.substring(5,7),16);
-   g.fillStyle = 'rgba('+r+','+gg+','+bb+',0.10)';
-   g.fillRect(x-meia, Y(media+mdc), meia*2, Y(media-mdc)-Y(media+mdc));
-   g.strokeStyle = 'rgba('+r+','+gg+','+bb+',0.4)'; g.setLineDash([3,3]);
-   [media+mdc, media-mdc].forEach(function(v){
-    g.beginPath(); g.moveTo(x-meia, Y(v)); g.lineTo(x+meia, Y(v)); g.stroke();
+ conjuntos.forEach(function(c, ci){
+  const corBase = AQ_CORES_M[c.metrica] || AQ_CORES_W[ci % AQ_CORES_W.length];
+  (c.series||[]).forEach(function(s, si){
+   const vals = s.valores || [];
+   if(!vals.length) return;
+   const cor = multi ? corBase : AQ_CORES_W[si % AQ_CORES_W.length];
+   const media = vals.reduce((a,b)=>a+b,0)/vals.length;
+   const mdc = s.reliability && s.reliability.mdc95;
+   const x = X(s.watts_alvo) + (multi ? (ci - (conjuntos.length-1)/2) * 12 : 0);
+   const meia = Math.max(12, w/((c.series.length||1)*3.2));
+
+   if(mdc && !multi){
+    const r=parseInt(cor.substring(1,3),16), gg=parseInt(cor.substring(3,5),16), bb=parseInt(cor.substring(5,7),16);
+    g.fillStyle = 'rgba('+r+','+gg+','+bb+',0.10)';
+    g.fillRect(x-meia, Y(media+mdc), meia*2, Y(media-mdc)-Y(media+mdc));
+    g.strokeStyle = 'rgba('+r+','+gg+','+bb+',0.4)'; g.setLineDash([3,3]);
+    [media+mdc, media-mdc].forEach(function(v){
+     g.beginPath(); g.moveTo(x-meia, Y(v)); g.lineTo(x+meia, Y(v)); g.stroke();
+    });
+    g.setLineDash([]);
+   }
+
+   g.fillStyle = multi ? 'rgba(139,148,158,0.35)' : 'rgba(139,148,158,0.55)';
+   vals.forEach(function(v, i){
+    const jx = x + ((i*37)%100/100 - 0.5) * meia * 1.4;
+    const py = Y(c.norm(v));
+    g.beginPath(); g.arc(jx, py, 2, 0, 6.2832); g.fill();
+    AQ_PONTOS.push({x:jx, y:py, valor:v, metrica:c.metrica,
+                    watts:s.watts_alvo, data:(s.datas||[])[i]});
    });
-   g.setLineDash([]);
-  }
 
-  g.fillStyle = 'rgba(139,148,158,0.55)';
-  vals.forEach(function(v, i){
-   const jx = x + ((i*37)%100/100 - 0.5) * meia * 1.5;
-   g.beginPath(); g.arc(jx, Y(v), 2, 0, 6.2832); g.fill();
+   const ym = Y(c.norm(media));
+   g.strokeStyle = cor; g.lineWidth = 2;
+   g.beginPath(); g.moveTo(x-meia*0.7, ym); g.lineTo(x+meia*0.7, ym); g.stroke();
+   g.fillStyle = cor;
+   g.beginPath(); g.arc(x, ym, 4, 0, 6.2832); g.fill();
+   AQ_PONTOS.push({x:x, y:ym, valor:media, metrica:c.metrica, media:true,
+                   watts:s.watts_alvo, n:s.n,
+                   mdc:mdc, sem:(s.reliability||{}).sem});
+
+   if(ci === 0){
+    g.fillStyle = '#8b949e'; g.font = '11px sans-serif'; g.textAlign = 'center';
+    g.fillText(s.watts_alvo + 'W', X(s.watts_alvo), H-20);
+    g.fillText('n=' + s.n, X(s.watts_alvo), H-6);
+   }
   });
 
-  g.strokeStyle = cor; g.lineWidth = 2;
-  g.beginPath(); g.moveTo(x-meia*0.7, Y(media)); g.lineTo(x+meia*0.7, Y(media)); g.stroke();
-  g.fillStyle = cor;
-  g.beginPath(); g.arc(x, Y(media), 4, 0, 6.2832); g.fill();
-
-  g.fillStyle = '#8b949e'; g.font = '11px sans-serif'; g.textAlign = 'center';
-  g.fillText(s.watts_alvo + 'W', x, H-20);
-  g.fillText('n=' + s.n, x, H-6);
+  // linha a ligar as medias
+  g.strokeStyle = corBase; g.lineWidth = 1.5; g.setLineDash([5,4]);
+  g.beginPath();
+  (c.series||[]).filter(s=>s.valores && s.valores.length).forEach(function(s, i){
+   const md = s.valores.reduce((a,b)=>a+b,0)/s.valores.length;
+   const x = X(s.watts_alvo) + (multi ? (ci - (conjuntos.length-1)/2) * 12 : 0);
+   i ? g.lineTo(x, Y(c.norm(md))) : g.moveTo(x, Y(c.norm(md)));
+  });
+  g.stroke(); g.setLineDash([]);
  });
 
- // linha que liga as medias (o "perfil" da metrica vs potencia)
- g.strokeStyle = '#58A6FF'; g.lineWidth = 1.5; g.setLineDash([5,4]);
- g.beginPath();
- series.forEach(function(s, i){
-  const md = s.valores.reduce((a,b)=>a+b,0)/s.valores.length;
-  i ? g.lineTo(X(s.watts_alvo), Y(md)) : g.moveTo(X(s.watts_alvo), Y(md));
+ if(multi){
+  g.textAlign = 'left'; g.font = '11px sans-serif';
+  conjuntos.forEach(function(c, i){
+   g.fillStyle = AQ_CORES_M[c.metrica] || '#8b949e';
+   g.fillText('\u25CF ' + AQ_LABELS[c.metrica] + ' ('
+     + c.lo.toFixed(1) + '\u2013' + c.hi.toFixed(1) + ')', PL + 6 + i*150, PT + 12);
+  });
+ }
+ aqLigarTooltip(o);
+}
+
+const AQ_CORES_M = {hr:'#F85149', smo2:'#F0883E', resp:'#3FB950',
+                    dfa1:'#A371F7', hrw:'#58A6FF'};
+let AQ_PONTOS = [];
+
+function aqLigarTooltip(o){
+ const cv = document.getElementById('chRange');
+ const tip = document.getElementById('aqTip');
+ if(!cv || !tip || cv._tipLigado) return;
+ cv._tipLigado = true;
+ cv.addEventListener('mousemove', function(ev){
+  const r = cv.getBoundingClientRect();
+  const mx = (ev.clientX - r.left) * (cv.width / r.width) / (window.devicePixelRatio||1);
+  const my = (ev.clientY - r.top) * (cv.height / r.height) / (window.devicePixelRatio||1);
+  let perto = null, dmin = 14;
+  AQ_PONTOS.forEach(function(p){
+   const d = Math.hypot(p.x-mx, p.y-my);
+   if(d < dmin){ dmin = d; perto = p; }
+  });
+  if(!perto){ tip.style.display='none'; return; }
+  const v = Math.round(perto.valor*1000)/1000;
+  let html = '<b>' + (AQ_LABELS[perto.metrica]||perto.metrica) + '</b><br>'
+    + perto.watts + 'W &nbsp; <b>' + v + '</b>';
+  if(perto.media){
+   html += '<br><span style="color:#8b949e;">m\u00e9dia de ' + perto.n + ' sess\u00f5es';
+   if(perto.mdc) html += ' &nbsp;MDC ' + (Math.round(perto.mdc*100)/100);
+   html += '</span>';
+  } else if(perto.data){
+   html += '<br><span style="color:#8b949e;">' + perto.data + '</span>';
+  }
+  tip.innerHTML = html;
+  tip.style.display = 'block';
+  tip.style.left = Math.min(ev.clientX - r.left + 12, r.width - 170) + 'px';
+  tip.style.top  = (ev.clientY - r.top - 10) + 'px';
  });
- g.stroke(); g.setLineDash([]);
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
 }
 
 function aqTabela(){

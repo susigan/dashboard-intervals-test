@@ -377,8 +377,12 @@ BODY = r"""
   <canvas id="chEvolucao" height="240"></canvas>
 </div>
 </div>
-<div id="aquecimento" class="tab-content" style="display:none;">
+<div id="aquecimento" class="tab-content">
   <div class="tabs" id="aqModTabs" style="border-bottom:1px solid #21262d; margin-bottom:16px;"></div>
+  <div class="controls" style="margin-bottom:12px;">
+    <button id="aqBtnScan" onclick="aqScan()">Procurar aquecimentos em falta</button>
+    <span id="aqScanEstado" style="color:#8b949e;font-size:12px;margin-left:10px;"></span>
+  </div>
   <div class="controls">
     <label class="sel">Métrica
       <select id="aqMetrica">
@@ -894,6 +898,20 @@ function aqInit(){
   AQ_MOD = AQ_MODS[0].modalidade;
   aqCarregar();
  }).catch(function(e){ console.error('[aqInit]', e); });
+}
+
+function aqScan(){
+ const btn = document.getElementById('aqBtnScan');
+ const est = document.getElementById('aqScanEstado');
+ btn.disabled = true;
+ est.textContent = 'a procurar em todo o historico...';
+ fetch('/api/aquecimento/scan').then(r=>r.json()).then(function(d){
+  if(d.status !== 'ok'){ est.textContent = 'erro: ' + (d.mensagem||'?'); return; }
+  est.textContent = d.detectados + ' novos aquecimentos, ' + d.rejeitados
+    + ' ignorados, ' + d.ja_analisadas + ' ja conhecidos';
+  aqInit();
+ }).catch(function(e){ est.textContent = 'erro: ' + e.message; })
+  .finally(function(){ btn.disabled = false; });
 }
 
 function aqCarregar(){

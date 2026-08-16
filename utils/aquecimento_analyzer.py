@@ -59,7 +59,7 @@ class AquecimentoAnalyzer:
         """
         existentes = self._colunas_existentes()
         base = ["interval_num", "watts_medio"]
-        opcionais = ["tempo_intervalo_sec", "duracao_sec", "tempo_seg",
+        opcionais = ["dur_work_s", "dur_rec_s",
                      "hr_avg_60s", "hr_min_60s", "hr_max_60s",
                      "smo2_avg_60s", "smo2_min_60s", "smo2_max_60s",
                      "resp_avg_60s", "resp_min_60s", "resp_max_60s",
@@ -78,10 +78,11 @@ class AquecimentoAnalyzer:
 
     @staticmethod
     def _duracao(iv):
-        for c in ("tempo_intervalo_sec", "duracao_sec", "tempo_seg"):
-            if iv.get(c):
-                return float(iv[c])
-        return None
+        return float(iv["dur_work_s"]) if iv.get("dur_work_s") else None
+
+    @staticmethod
+    def _duracao_rec(iv):
+        return float(iv["dur_rec_s"]) if iv.get("dur_rec_s") else None
 
     # ── deteccao ──────────────────────────────────────────────────────────
 
@@ -93,39 +94,31 @@ class AquecimentoAnalyzer:
         return dur is None or janela[0] <= dur <= janela[1]
 
     def _procurar_escada(self, intervalos, alvos, tol):
-        """Procura work-rest-work-...-work que bata na escada de alvos.
+        """Procura N linhas CONSECUTIVAS que batam na escada de alvos.
 
-        Devolve os indices (na lista `intervalos`) dos blocos de trabalho,
-        ou None.
+        No schema desta BD cada linha ja' e' um bloco de trabalho com a sua
+        recuperacao (dur_work_s + dur_rec_s) -- nao existem linhas de rest.
         """
-        n_alvos = len(alvos)
-        precisos = 2 * n_alvos - 1          # work e rest intercalados
+        n = len(alvos)
         for off in range(0, MAX_OFFSET + 1):
-            if off + precisos > len(intervalos):
+            if off + n > len(intervalos):
                 break
-            janela = intervalos[off:off + precisos]
-            idx_work, ok = [], True
+            janela = intervalos[off:off + n]
+            ok = True
             for pos, iv in enumerate(janela):
-                dur = self._duracao(iv)
-                if pos % 2 == 0:                        # bloco de trabalho
-                    alvo = alvos[pos // 2]
-                    if not self._bate_alvo(iv.get("watts_medio"), alvo, tol):
+                if not self._bate_alvo(iv.get("watts_medio"), alvos[pos], tol):
+                    ok = False
+                    break
+                if not self._duracao_ok(self._duracao(iv), WORK_SEG):
+                    ok = False
+                    break
+                # a recuperacao entre blocos (a ultima pode nao existir)
+                if pos < n - 1:
+                    if not self._duracao_ok(self._duracao_rec(iv), REST_SEG):
                         ok = False
                         break
-                    if not self._duracao_ok(dur, WORK_SEG):
-                        ok = False
-                        break
-                    idx_work.append(off + pos)
-                else:                                    # recuperacao
-                    w = iv.get("watts_medio")
-                    if w is not None and w >= alvos[0] - tol:
-                        ok = False                       # nao houve alivio
-                        break
-                    if not self._duracao_ok(dur, REST_SEG):
-                        ok = False
-                        break
-            if ok and len(idx_work) == n_alvos:
-                return idx_work
+            if ok:
+                return list(range(off, off + n))
         return None
 
     # ── metricas ──────────────────────────────────────────────────────────
@@ -169,7 +162,7 @@ class AquecimentoAnalyzer:
             return {"detectado": False, "motivo": "sem intervalos validos"}
 
         alvos, tol = proto["watts"], proto["tol"]
-        if len(intervalos) < 2 * len(alvos) - 1:
+        if len(intervalos) < len(alvos):
             return {"detectado": False, "motivo": "intervalos a menos para a escada"}
 
         idx_work = self._procurar_escada(intervalos, alvos, tol)

@@ -1069,6 +1069,160 @@ def api_aquecimento_serie():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/auditoria')
+def api_aquecimento_auditoria():
+    """Cruza as listas de datas (utils/calibracao_*.json) com a realidade.
+
+    Para cada data que o utilizador declarou ter aquecimento, diz em que
+    estado esta': detectada, rejeitada (com motivo), ou nem sequer existe
+    na BD de fisiologia (atividade ainda por processar).
+
+    ?modalidade=Bike   (sem parametro audita as tres)
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        import json as _json
+        import drive_db_fisiologia as ddf
+
+        alvo = request.args.get('modalidade')
+        mods = [alvo] if alvo else ['Row', 'Ski', 'Bike']
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'utils')
+        fc = ddf.get_conn()
+        ac = aq_db.get_conn()
+        out = {}
+
+        for mod in mods:
+            caminho = os.path.join(base, f'calibracao_{mod.lower()}.json')
+            if not os.path.exists(caminho):
+                out[mod] = {'erro': f'{caminho} nao existe'}
+                continue
+            with open(caminho) as f:
+                datas = _json.load(f).get('datas', [])
+
+            iso = []
+            for d in datas:
+                d = str(d).strip()
+                try:
+                    if '/' in d:
+                        dia, mes, ano = d.split('/')
+                        iso.append(f'{ano}-{mes.zfill(2)}-{dia.zfill(2)}')
+                    else:
+                        iso.append(d[:10])
+                except Exception:
+                    pass
+
+            na_bd, detectadas, rejeitadas, ausentes, motivos = 0, 0, 0, [], {}
+            for d in iso:
+                linha = fc.execute(
+                    """SELECT activity_id FROM fisiologia_intervalos
+                       WHERE modalidade = ? AND valido = 1 AND data LIKE ?
+                       LIMIT 1""", (mod, d + '%')).fetchone()
+                if not linha:
+                    ausentes.append(d)
+                    continue
+                na_bd += 1
+                aid = linha[0]
+                if ac.execute("SELECT 1 FROM aquecimento_blocos WHERE activity_id=? LIMIT 1",
+                              (aid,)).fetchone():
+                    detectadas += 1
+                else:
+                    r = ac.execute("SELECT motivo FROM aquecimento_rejeitadas WHERE activity_id=?",
+                                   (aid,)).fetchone()
+                    if r:
+                        rejeitadas += 1
+                        motivos[r[0]] = motivos.get(r[0], 0) + 1
+
+            total_bd = fc.execute(
+                """SELECT COUNT(DISTINCT activity_id) FROM fisiologia_intervalos
+                   WHERE modalidade = ? AND valido = 1""", (mod,)).fetchone()[0]
+
+            out[mod] = {
+                'datas_declaradas': len(iso),
+                'existem_na_bd_fisiologia': na_bd,
+                'ausentes_da_bd': len(ausentes),
+                'detectadas': detectadas,
+                'rejeitadas': rejeitadas,
+                'motivos': motivos,
+                'total_atividades_na_bd': total_bd,
+                'exemplos_ausentes': ausentes[:8],
+                'diagnostico': (
+                    'a maioria das sessoes ainda nao foi processada para a BD '
+                    'de fisiologia -- corre /api/fisiologia/processar mais vezes'
+                    if len(ausentes) > na_bd else
+                    'as sessoes estao na BD; ver o campo motivos'),
+            }
+
+        return jsonify({'status': 'ok', 'auditoria': out})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/aquecimento/inspeccionar')
+def api_aquecimento_inspeccionar():
+    """Mostra os watts e duracoes reais de uma sessao, para se perceber
+    porque e' que nao bateu no protocolo.
+
+    ?data=2024-01-03&modalidade=Bike   ou   ?activity_id=i12345
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        import aquecimento_analyzer as aa
+        import drive_db_fisiologia as ddf
+        fc = ddf.get_conn()
+
+        aid = request.args.get('activity_id')
+        mod = request.args.get('modalidade')
+        if not aid:
+            data = request.args.get('data')
+            if not data:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'usa ?activity_id= ou ?data=&modalidade='}), 400
+            if '/' in data:
+                dia, mes, ano = data.split('/')
+                data = f'{ano}-{mes.zfill(2)}-{dia.zfill(2)}'
+            cond = "data LIKE ?"
+            params = [data + '%']
+            if mod:
+                cond += " AND modalidade = ?"
+                params.append(mod)
+            linha = fc.execute(
+                f"""SELECT activity_id, modalidade FROM fisiologia_intervalos
+                    WHERE {cond} AND valido = 1 LIMIT 1""", tuple(params)).fetchone()
+            if not linha:
+                return jsonify({'status': 'nao_encontrada',
+                                'mensagem': f'sem atividade na BD para {data}',
+                                'nota': 'a atividade ainda nao foi processada'}), 200
+            aid, mod = linha[0], linha[1]
+
+        analyzer = aa.AquecimentoAnalyzer(fc)
+        intervalos = analyzer._carregar_intervalos(aid)
+        proto = aa.PROTOCOLOS.get(mod, {})
+        resultado = analyzer.analisar_atividade(aid, mod)
+
+        return jsonify({
+            'status': 'ok',
+            'activity_id': aid,
+            'modalidade': mod,
+            'protocolo_esperado': proto,
+            'n_intervalos': len(intervalos),
+            'intervalos': [{
+                'n': iv.get('interval_num'),
+                'watts': round(iv['watts_medio']) if iv.get('watts_medio') else None,
+                'dur_work_s': iv.get('dur_work_s'),
+                'dur_rec_s': iv.get('dur_rec_s'),
+            } for iv in intervalos[:15]],
+            'resultado': {k: v for k, v in resultado.items() if k != 'blocos'},
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/aquecimento/scan')
 def api_aquecimento_scan():
     """Varre TODO o historico, todas as modalidades, so o que ainda nao foi

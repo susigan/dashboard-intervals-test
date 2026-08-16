@@ -1046,7 +1046,10 @@ def api_aquecimento_serie():
         if not mod:
             return jsonify({'status': 'erro', 'mensagem': 'falta ?modalidade='}), 400
 
-        campo = f'{metrica}_{agreg}'
+        hrw = metrica in ('hrw', 'hr_por_w')
+        campo = 'hr_avg' if hrw else f'{metrica}_{agreg}'
+        if hrw:
+            campo = f'hr_{agreg}'
         blocos = aq_db.listar_blocos(mod)
         if not blocos:
             return jsonify({'status': 'sem_dados', 'modalidade': mod,
@@ -1054,7 +1057,12 @@ def api_aquecimento_serie():
 
         por_watts = {}
         for b in blocos:
-            por_watts.setdefault(b['watts_alvo'], []).append((b['data'], b.get(campo)))
+            v = b.get(campo)
+            if hrw:
+                # batimentos por watt: quanto MENOR, mais eficiente
+                w = b.get('watts_real') or b.get('watts_alvo')
+                v = (v / w) if (v is not None and w) else None
+            por_watts.setdefault(b['watts_alvo'], []).append((b['data'], v))
 
         saida = []
         for w in sorted(por_watts):
@@ -1171,6 +1179,122 @@ def api_aquecimento_auditoria():
             }
 
         return jsonify({'status': 'ok', 'auditoria': out})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/aquecimento/contexto')
+def api_aquecimento_contexto():
+    """Houve outro treino no mesmo dia, ANTES do aquecimento? Muda alguma coisa?
+
+    Assume-se que o WeightTraining foi feito antes da sessao ciclica (como o
+    utilizador indicou). Para as outras atividades ciclicas usa-se a hora de
+    inicio quando existe.
+
+    Compara os grupos por escalao de watts e mede a diferenca CONTRA O MDC da
+    propria metrica -- e' o unico limiar com significado aqui. Isto e' um
+    estudo observacional: os dias com forca podem diferir noutras coisas
+    (dia da semana, sono, fase do plano), por isso a leitura e' indicativa.
+
+    ?modalidade=Row&metrica=hr&agregacao=avg
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        import db as _db
+        from aquecimento_analyzer import sem_por_pares
+        import statistics as _st
+
+        mod = request.args.get('modalidade')
+        metrica = request.args.get('metrica', 'hr')
+        agreg = request.args.get('agregacao', 'avg')
+        if not mod:
+            return jsonify({'status': 'erro', 'mensagem': 'falta ?modalidade='}), 400
+
+        hrw = metrica in ('hrw', 'hr_por_w')
+        campo = f'hr_{agreg}' if hrw else f'{metrica}_{agreg}'
+        blocos = aq_db.listar_blocos(mod)
+        if not blocos:
+            return jsonify({'status': 'sem_dados', 'modalidade': mod}), 200
+
+        # que tipos de treino houve em cada dia
+        datas = sorted({b['data'] for b in blocos if b['data']})
+        contexto = {}
+        for d in datas:
+            try:
+                linhas = _db._exec(
+                    """SELECT type, start_local FROM activities
+                       WHERE date = ? ORDER BY start_local""", (d,), fetch='all') or []
+            except Exception:
+                linhas = []
+            forca = any(CFG_MODALIDADES.get(t, t) == 'WeightTraining' for t, _ in linhas)
+            ciclicas = [CFG_MODALIDADES.get(t, t) for t, _ in linhas
+                        if CFG_MODALIDADES.get(t, t) in ('Row', 'Ski', 'Bike', 'Run')]
+            outra_ciclica = len([c for c in ciclicas]) > 1
+            if forca:
+                contexto[d] = 'forca_antes'
+            elif outra_ciclica:
+                contexto[d] = 'outra_ciclica'
+            else:
+                contexto[d] = 'sessao_isolada'
+
+        grupos = ('sessao_isolada', 'forca_antes', 'outra_ciclica')
+        saida = []
+        for w in sorted({b['watts_alvo'] for b in blocos}):
+            do_w = [b for b in blocos if b['watts_alvo'] == w]
+
+            def valor(b):
+                v = b.get(campo)
+                if hrw and v is not None:
+                    ww = b.get('watts_real') or b.get('watts_alvo')
+                    return v / ww if ww else None
+                return v
+
+            ref = sem_por_pares([(b['data'], valor(b)) for b in do_w])
+            mdc = ref.get('mdc95')
+
+            linha = {'watts_alvo': w, 'mdc95': mdc,
+                     'sem': ref.get('sem'), 'grupos': {}}
+            base = None
+            for g in grupos:
+                vals = [valor(b) for b in do_w
+                        if contexto.get(b['data']) == g and valor(b) is not None]
+                if not vals:
+                    continue
+                m = _st.fmean(vals)
+                info = {'n': len(vals), 'media': round(m, 3),
+                        'sd': round(_st.stdev(vals), 3) if len(vals) > 1 else None}
+                if g == 'sessao_isolada':
+                    base = m
+                linha['grupos'][g] = info
+
+            if base is not None:
+                for g, info in linha['grupos'].items():
+                    if g == 'sessao_isolada':
+                        continue
+                    dif = info['media'] - base
+                    info['diferenca'] = round(dif, 3)
+                    if mdc is None:
+                        info['leitura'] = 'sem MDC para comparar'
+                    elif abs(dif) >= mdc:
+                        info['leitura'] = 'acima do ruido'
+                    else:
+                        info['leitura'] = 'dentro do ruido'
+                    if info['n'] < 5:
+                        info['aviso'] = f"apenas {info['n']} sessoes"
+            saida.append(linha)
+
+        return jsonify({
+            'status': 'ok', 'modalidade': mod,
+            'metrica': 'HR/W' if hrw else metrica, 'agregacao': agreg,
+            'dias_por_contexto': {g: sum(1 for v in contexto.values() if v == g)
+                                  for g in grupos},
+            'escaloes': saida,
+            'nota': ('Observacional: os dias com forca podem diferir noutras '
+                     'coisas alem da forca. Diferenca abaixo do MDC nao e '
+                     'distinguivel do ruido de medicao.')})
     except Exception as e:
         import traceback
         return jsonify({'status': 'erro', 'mensagem': str(e),

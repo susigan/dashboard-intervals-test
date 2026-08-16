@@ -1765,6 +1765,156 @@ def api_fisiologia_qualidade():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/fisiologia/estado')
+def api_fisiologia_estado():
+    """Resumo unico: o que esta feito, o que falta e qual o proximo passo."""
+    try:
+        import db as _db
+        import drive_db_fisiologia as ddf
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import fisiologia_ingestor as ing
+
+        conn = ddf.get_conn()
+        ing.garantir_colunas(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(fisiologia_intervalos)")}
+
+        ja = {r[0] for r in conn.execute(
+            "SELECT DISTINCT activity_id FROM fisiologia_intervalos")}
+        elegiveis = 0
+        for aid, tipo in (_db._exec(
+                "SELECT id, type FROM activities WHERE type IS NOT NULL",
+                fetch='all') or []):
+            if CFG_MODALIDADES.get(tipo, tipo) in ('Row', 'Ski', 'Bike', 'Run'):
+                elegiveis += 1
+
+        sem_cinetica = 0
+        if 'hr_tau_s' in cols:
+            sem_cinetica = conn.execute(
+                """SELECT COUNT(*) FROM (
+                     SELECT activity_id FROM fisiologia_intervalos
+                     WHERE valido = 1 GROUP BY activity_id
+                     HAVING COUNT(hr_tau_s) = 0 AND COUNT(hr_avg_60s) > 0)"""
+            ).fetchone()[0]
+
+        try:
+            st = _db.streams_stats()
+        except Exception:
+            st = {}
+        faltam_streams = st.get('sem_streams') or st.get('faltam') or 0
+
+        passos = []
+        if faltam_streams:
+            passos.append(f"1. /api/fisiologia/carregar_streams?limite=60 "
+                          f"({faltam_streams} sessoes sem streams) - repetir")
+        if len(ja) < elegiveis:
+            passos.append(f"2. /api/fisiologia/ingerir_tudo?segundos=180 "
+                          f"({elegiveis - len(ja)} por ingerir) - repetir")
+        if sem_cinetica:
+            passos.append(f"3. /api/fisiologia/recalcular?segundos=180 "
+                          f"({sem_cinetica} sem cinetica nova) - repetir")
+        if not passos:
+            passos.append("nada a fazer: tudo ingerido e com cinetica calculada")
+
+        return jsonify({
+            'status': 'ok',
+            'atividades_elegiveis': elegiveis,
+            'ingeridas': len(ja),
+            'por_ingerir': max(0, elegiveis - len(ja)),
+            'sem_cinetica_nova': sem_cinetica,
+            'streams': st,
+            'intervalos_na_bd': conn.execute(
+                "SELECT COUNT(*) FROM fisiologia_intervalos WHERE valido = 1").fetchone()[0],
+            'proximos_passos': passos,
+            'tudo_pronto': not faltam_streams and len(ja) >= elegiveis and not sem_cinetica})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/recalcular')
+def api_fisiologia_recalcular():
+    """Reprocessa as atividades gravadas ANTES dos campos de cinetica.
+
+    Ao contrario de ingerir?refazer=1, esta rota sabe o que ja foi feito:
+    escolhe as atividades cujas linhas ainda nao tem tau calculado. Assim
+    cada chamada avanca, em vez de refazer sempre as mesmas.
+
+    ?segundos=120 -- repetir enquanto 'faltam' > 0.
+    """
+    try:
+        import time as _time
+        import db as _db
+        import drive_db_fisiologia as ddf
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import fisiologia_ingestor as ing
+
+        limite_s = min(request.args.get('segundos', default=120, type=int), 240)
+        t0 = _time.time()
+        conn = ddf.get_conn()
+        ing.garantir_colunas(conn)
+
+        # atividades sem cinetica nova (a coluna existe mas esta a NULL)
+        pendentes = [r[0] for r in conn.execute(
+            """SELECT activity_id FROM fisiologia_intervalos
+               WHERE valido = 1
+               GROUP BY activity_id
+               HAVING COUNT(hr_tau_s) = 0 AND COUNT(hr_avg_60s) > 0
+               ORDER BY MAX(data) DESC""").fetchall()]
+
+        meta = {}
+        try:
+            for aid, data, tipo, dur in (_db._exec(
+                """SELECT id, date, type, COALESCE(elapsed_time, moving_time)
+                   FROM activities WHERE type IS NOT NULL""", fetch='all') or []):
+                meta[str(aid)] = (str(data)[:10] if data else None,
+                                  CFG_MODALIDADES.get(tipo, tipo), dur)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+        feitas, intervalos, sem_streams, restantes = 0, 0, 0, 0
+        for aid in pendentes:
+            if _time.time() - t0 > limite_s:
+                restantes += 1
+                continue
+            info = meta.get(aid)
+            if not info:
+                continue
+            data, mod, dur = info
+            try:
+                streams, _m = _db.get_streams(aid)
+                if not streams:
+                    sem_streams += 1
+                    continue
+                ext = ing.extrair_intervalos(streams, duracao_s=dur, modalidade=mod)
+                if not ext:
+                    continue
+                intervalos += ing.gravar(conn, aid, data, mod, ext)
+                feitas += 1
+            except Exception as e:
+                print(f"[RECALC] {aid}: {type(e).__name__}: {e}")
+
+        if feitas:
+            try:
+                ddf.upload()
+            except Exception as e:
+                print(f"[RECALC] upload falhou: {e}")
+
+        return jsonify({
+            'status': 'ok', 'segundos_usados': round(_time.time() - t0, 1),
+            'recalculadas': feitas, 'intervalos_reescritos': intervalos,
+            'sem_streams_guardados': sem_streams,
+            'faltam': restantes + max(0, len(pendentes) - feitas - sem_streams - restantes),
+            'concluido': restantes == 0,
+            'nota': 'repete enquanto concluido=false'})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/fisiologia/carregar_streams')
 def api_fisiologia_carregar_streams():
     """Descarrega streams em falta da Intervals.icu.

@@ -11,7 +11,12 @@ SLUG = 'metabol'
 # resp_avg_60s (sem resp_min, resp_max!)
 # smo2_min_60s (sem smo2_max, smo2_avg!)
 # dfa1_clean (apenas um valor)
-METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1', 'rra1']
+METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1']
+
+# Metricas que so aparecem se a BD as tiver mesmo preenchidas.
+# O RRa1 vem do dispositivo e nem todas as atividades o tem;
+# oferece-lo sem dados dava graficos vazios.
+METRICAS_OPCIONAIS = ['rra1']
 
 AGREGACOES = ['min', 'avg', 'max']
 # MAP REAL: só os que existem!
@@ -271,7 +276,7 @@ def cobertura_metricas(detalhe=True):
         existentes, total = set(), 0
 
     out = {'_total_intervalos': total}
-    for m in METRICAS_BASE:
+    for m in list(METRICAS_BASE) + list(METRICAS_OPCIONAIS):
         out[m] = {}
         for a in AGREGACOES:
             grupos = FALLBACKS_DB.get((m, a), {})
@@ -732,7 +737,7 @@ const LABELS_METAB = {
 const LABELS_AGREGACAO = {
  min:'Mín', max:'Máx', avg:'Méd',
 };
-const METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1', 'rra1'];
+let METRICAS_BASE = ['hr', 'resp', 'smo2', 'dfa1'];
 // AGREGAÇÕES REAIS (apenas as que existem na BD)
 // Preenchido a partir de /api/fisiologia/cobertura_metricas no arranque.
 // Estava fixo a mao ("apenas as que existem na BD"), o que deixou de ser
@@ -1044,6 +1049,7 @@ function drawEvolucao(){
   g.beginPath();
   g.arc(x, Y(p.p50), 3, 0, 7);
   EVOL_PONTOS.push({x:x, y:Y(p.p50), p:p});
+  if(i === periodos.length-1) ligarTipEvolucao();
   g.fill();
  });
  
@@ -1206,8 +1212,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 // ═════ AQUECIMENTO ═════
 let AQ_MOD = null, AQ_DADOS = null, AQ_MODS = [], aqLoading = false;
-const AQ_LABELS = {hr:'HR (bpm)', smo2:'SmO\u2082 (%)', resp:'Respira\u00e7\u00e3o (rpm)', dfa1:'DFA-\u03b11', hrw:'HR por watt' ligarTipEvolucao();
-};
+const AQ_LABELS = {hr:'HR (bpm)', smo2:'SmO\u2082 (%)', resp:'Respira\u00e7\u00e3o (rpm)', dfa1:'DFA-\u03b11', hrw:'HR por watt'};
 const AQ_CORES_W = ['#58A6FF','#3FB950','#F0883E','#DB6D28','#F85149'];
 
 function aqInit(){
@@ -1985,6 +1990,10 @@ function carregarCobertura(){
  return fetch('/api/fisiologia/cobertura_metricas').then(r=>r.json()).then(function(d){
   if(d.status !== 'ok') return;
   COBERTURA_METRICAS = d.cobertura || {};
+  // metricas opcionais (ex. RRa1) so entram se houver dados a serio
+  (d.opcionais_com_dados || []).forEach(function(m){
+   if(METRICAS_BASE.indexOf(m) === -1) METRICAS_BASE.push(m);
+  });
   const novo = {};
   METRICAS_BASE.forEach(function(m){
    const info = COBERTURA_METRICAS[m] || {};

@@ -58,52 +58,110 @@ LABELS_METAB = {
 # smo2_avg_60s esta vazia, porque o worker le e escreve na MESMA coluna.
 # Para cada metrica/agregacao tentam-se varias colunas, pela ordem indicada,
 # e usa-se a primeira que exista E tenha dados.
+# Para cada metrica/agregacao, as colunas candidatas em dois grupos:
+#
+#   equivalentes -- medem A MESMA grandeza, podem substituir-se sem mudar a
+#                   interpretacao (media da janela vs media do bloco: ambas
+#                   sao "o valor tipico durante o esforco")
+#   aproximadas  -- medem OUTRA COISA. baseline e' o estado ANTES da
+#                   transicao, nao o minimo do esforco; extremo e' o pico
+#                   numa janela que entra no descanso, nao o maximo do
+#                   bloco. Usa-se so se for pedido explicitamente, e a
+#                   resposta di-lo, porque muda o significado do numero.
 FALLBACKS_DB = {
-    ('hr', 'avg'):   ['hr_avg_60s', 'hr_medio_work', 'hr_plateau_work'],
-    ('hr', 'min'):   ['hr_min_60s', 'hr_baseline'],
-    ('hr', 'max'):   ['hr_max_60s', 'hr_extremo'],
-    ('smo2', 'avg'): ['smo2_avg_60s', 'smo2_medio_work', 'smo2_plateau_work'],
-    ('smo2', 'min'): ['smo2_min_60s', 'smo2_extremo'],
-    ('smo2', 'max'): ['smo2_max_60s', 'smo2_baseline'],
-    ('resp', 'avg'): ['resp_avg_60s', 'resp_medio_work', 'resp_plateau_work'],
-    ('resp', 'min'): ['resp_min_60s', 'resp_baseline'],
-    ('resp', 'max'): ['resp_max_60s', 'resp_extremo'],
-    ('dfa1', 'avg'): ['dfa1_avg_60s', 'dfa1_clean', 'dfa1_medio_work'],
-    ('dfa1', 'min'): ['dfa1_min_60s', 'dfa1_extremo'],
-    ('dfa1', 'max'): ['dfa1_max_60s', 'dfa1_baseline'],
+    ('hr', 'avg'):   {'equivalentes': ['hr_avg_60s', 'hr_medio_work',
+                                       'hr_plateau_work'], 'aproximadas': []},
+    ('hr', 'min'):   {'equivalentes': ['hr_min_60s'],
+                      'aproximadas': ['hr_baseline']},
+    ('hr', 'max'):   {'equivalentes': ['hr_max_60s'],
+                      'aproximadas': ['hr_extremo']},
+    ('smo2', 'avg'): {'equivalentes': ['smo2_avg_60s', 'smo2_medio_work',
+                                       'smo2_plateau_work'], 'aproximadas': []},
+    ('smo2', 'min'): {'equivalentes': ['smo2_min_60s'],
+                      'aproximadas': ['smo2_extremo']},
+    ('smo2', 'max'): {'equivalentes': ['smo2_max_60s'],
+                      'aproximadas': ['smo2_baseline']},
+    ('resp', 'avg'): {'equivalentes': ['resp_avg_60s', 'resp_medio_work',
+                                       'resp_plateau_work'], 'aproximadas': []},
+    ('resp', 'min'): {'equivalentes': ['resp_min_60s'],
+                      'aproximadas': ['resp_baseline']},
+    ('resp', 'max'): {'equivalentes': ['resp_max_60s'],
+                      'aproximadas': ['resp_extremo']},
+    ('dfa1', 'avg'): {'equivalentes': ['dfa1_avg_60s', 'dfa1_clean',
+                                       'dfa1_medio_work'], 'aproximadas': []},
+    ('dfa1', 'min'): {'equivalentes': ['dfa1_min_60s'],
+                      'aproximadas': ['dfa1_extremo']},
+    ('dfa1', 'max'): {'equivalentes': ['dfa1_max_60s'],
+                      'aproximadas': ['dfa1_baseline']},
 }
+
+# Abaixo desta fracao do total, a coluna e' pouco representativa e vale a
+# pena preferir uma equivalente com mais cobertura.
+COBERTURA_MINIMA = 0.40
 
 _COBERTURA_CACHE = {}
 
 
-def coluna_com_dados(conn, metrica, agregacao):
-    """Primeira coluna candidata que existe e tem valores. None se nenhuma.
+def _contar(conn, col, existentes, total):
+    if col not in existentes:
+        return None
+    try:
+        return conn.execute(
+            f"SELECT COUNT({col}) FROM fisiologia_intervalos WHERE valido = 1"
+        ).fetchone()[0]
+    except Exception:
+        return None
 
-    Sem isto, escolher SmO2=Med devolvia uma coluna vazia e o grafico saia
-    em branco sem explicacao.
+
+def coluna_com_dados(conn, metrica, agregacao, permitir_aproximadas=False):
+    """Melhor coluna para esta metrica/agregacao.
+
+    Escolhe pela COBERTURA, nao pela ordem: 'a primeira que tem algum dado'
+    fazia o SmO2 medio sair de uma coluna com 16 valores em 677 (2,4%),
+    quando havia uma equivalente com 384.
+
+    A preferida e' a *_60s se tiver cobertura razoavel; abaixo disso usa-se
+    a equivalente com mais dados. Colunas aproximadas ficam de fora salvo
+    pedido explicito -- medem outra grandeza.
     """
     chave = (metrica, agregacao)
-    if chave in _COBERTURA_CACHE:
-        return _COBERTURA_CACHE[chave]
+    cache = (chave, permitir_aproximadas)
+    if cache in _COBERTURA_CACHE:
+        return _COBERTURA_CACHE[cache]
+
     try:
         existentes = {r[1] for r in conn.execute(
             "PRAGMA table_info(fisiologia_intervalos)")}
+        total = conn.execute(
+            "SELECT COUNT(*) FROM fisiologia_intervalos WHERE valido = 1"
+        ).fetchone()[0] or 0
     except Exception:
-        existentes = set()
+        existentes, total = set(), 0
+
+    grupos = FALLBACKS_DB.get(chave, {})
+    equivalentes = grupos.get('equivalentes', [])
+
+    contagens = [(c, _contar(conn, c, existentes, total)) for c in equivalentes]
+    contagens = [(c, n) for c, n in contagens if n]
+
     escolhida = None
-    for col in FALLBACKS_DB.get(chave, []):
-        if col not in existentes:
-            continue
-        try:
-            n = conn.execute(
-                f"SELECT COUNT({col}) FROM fisiologia_intervalos WHERE valido = 1"
-            ).fetchone()[0]
-        except Exception:
-            n = 0
-        if n:
-            escolhida = col
-            break
-    _COBERTURA_CACHE[chave] = escolhida
+    if contagens:
+        preferida, n_pref = contagens[0]
+        melhor, n_melhor = max(contagens, key=lambda x: x[1])
+        # fica-se pela preferida se ela cobrir o suficiente
+        if total and n_pref >= COBERTURA_MINIMA * total:
+            escolhida = preferida
+        else:
+            escolhida = melhor
+
+    if not escolhida and permitir_aproximadas:
+        aprox = [(c, _contar(conn, c, existentes, total))
+                 for c in grupos.get('aproximadas', [])]
+        aprox = [(c, n) for c, n in aprox if n]
+        if aprox:
+            escolhida = max(aprox, key=lambda x: x[1])[0]
+
+    _COBERTURA_CACHE[cache] = escolhida
     return escolhida
 
 
@@ -194,46 +252,37 @@ def _pace_da_faixa(pace_s_km_mediano, modalidade):
     
     return None
 def cobertura_metricas(detalhe=True):
-    """Que agregacoes tem dados e, sobretudo, DE QUE COLUNA vieram.
-
-    Sem o detalhe nao se distingue "a coluna *_60s esta preenchida" de
-    "a coluna *_60s esta vazia e caiu-se no fallback" -- e isso muda a
-    interpretacao dos numeros (plateau nao e o mesmo que media dos 60s).
-    """
+    """Que coluna alimenta cada metrica/agregacao, e com que cobertura."""
     conn = _conn()
-    if not detalhe:
-        return {m: agregacoes_com_dados(conn, m) for m in METRICAS_BASE}
     try:
         existentes = {r[1] for r in conn.execute(
             "PRAGMA table_info(fisiologia_intervalos)")}
+        total = conn.execute(
+            "SELECT COUNT(*) FROM fisiologia_intervalos WHERE valido = 1"
+        ).fetchone()[0] or 0
     except Exception:
-        existentes = set()
-    total = conn.execute(
-        "SELECT COUNT(*) FROM fisiologia_intervalos WHERE valido = 1").fetchone()[0]
-    out = {}
+        existentes, total = set(), 0
+
+    out = {'_total_intervalos': total}
     for m in METRICAS_BASE:
         out[m] = {}
         for a in AGREGACOES:
-            candidatas = []
-            for col in FALLBACKS_DB.get((m, a), []):
-                if col not in existentes:
-                    candidatas.append({col: 'coluna inexistente'})
-                    continue
-                n = conn.execute(
-                    f"SELECT COUNT({col}) FROM fisiologia_intervalos WHERE valido = 1"
-                ).fetchone()[0]
-                candidatas.append({col: n})
-            escolhida = coluna_com_dados(conn, m, a)
-            n_esc = None
-            if escolhida:
-                n_esc = conn.execute(
-                    f"SELECT COUNT({escolhida}) FROM fisiologia_intervalos WHERE valido = 1"
-                ).fetchone()[0]
-            out[m][a] = {'coluna_usada': escolhida, 'n': n_esc,
-                         'cobertura_pct': round(100.0*n_esc/total, 1) if (n_esc and total) else 0,
-                         'candidatas': candidatas,
-                         'e_fallback': bool(escolhida and not escolhida.endswith('_60s'))}
-    out['_total_intervalos'] = total
+            grupos = FALLBACKS_DB.get((m, a), {})
+            det = {}
+            for tipo in ('equivalentes', 'aproximadas'):
+                det[tipo] = {c: _contar(conn, c, existentes, total)
+                             for c in grupos.get(tipo, [])}
+            col = coluna_com_dados(conn, m, a)
+            n = _contar(conn, col, existentes, total) if col else None
+            pct = round(100.0 * n / total, 1) if (n and total) else 0
+            out[m][a] = {
+                'coluna_usada': col, 'n': n, 'cobertura_pct': pct,
+                'preferida': (grupos.get('equivalentes') or [None])[0],
+                'usou_alternativa': bool(
+                    col and col != (grupos.get('equivalentes') or [None])[0]),
+                'utilizavel': bool(col) and pct >= 20,
+                'detalhe': det,
+            }
     return out
 
 

@@ -193,11 +193,48 @@ def _pace_da_faixa(pace_s_km_mediano, modalidade):
         return f'{txt} /km' if txt else None
     
     return None
-def cobertura_metricas():
-    """Que agregacoes tem mesmo dados, por metrica. Serve para nao oferecer
-    ao utilizador opcoes que devolvem grafico vazio."""
+def cobertura_metricas(detalhe=True):
+    """Que agregacoes tem dados e, sobretudo, DE QUE COLUNA vieram.
+
+    Sem o detalhe nao se distingue "a coluna *_60s esta preenchida" de
+    "a coluna *_60s esta vazia e caiu-se no fallback" -- e isso muda a
+    interpretacao dos numeros (plateau nao e o mesmo que media dos 60s).
+    """
     conn = _conn()
-    return {m: agregacoes_com_dados(conn, m) for m in METRICAS_BASE}
+    if not detalhe:
+        return {m: agregacoes_com_dados(conn, m) for m in METRICAS_BASE}
+    try:
+        existentes = {r[1] for r in conn.execute(
+            "PRAGMA table_info(fisiologia_intervalos)")}
+    except Exception:
+        existentes = set()
+    total = conn.execute(
+        "SELECT COUNT(*) FROM fisiologia_intervalos WHERE valido = 1").fetchone()[0]
+    out = {}
+    for m in METRICAS_BASE:
+        out[m] = {}
+        for a in AGREGACOES:
+            candidatas = []
+            for col in FALLBACKS_DB.get((m, a), []):
+                if col not in existentes:
+                    candidatas.append({col: 'coluna inexistente'})
+                    continue
+                n = conn.execute(
+                    f"SELECT COUNT({col}) FROM fisiologia_intervalos WHERE valido = 1"
+                ).fetchone()[0]
+                candidatas.append({col: n})
+            escolhida = coluna_com_dados(conn, m, a)
+            n_esc = None
+            if escolhida:
+                n_esc = conn.execute(
+                    f"SELECT COUNT({escolhida}) FROM fisiologia_intervalos WHERE valido = 1"
+                ).fetchone()[0]
+            out[m][a] = {'coluna_usada': escolhida, 'n': n_esc,
+                         'cobertura_pct': round(100.0*n_esc/total, 1) if (n_esc and total) else 0,
+                         'candidatas': candidatas,
+                         'e_fallback': bool(escolhida and not escolhida.endswith('_60s'))}
+    out['_total_intervalos'] = total
+    return out
 
 
 def modalidades_disponiveis():

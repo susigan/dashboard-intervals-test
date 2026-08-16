@@ -381,8 +381,10 @@ BODY = r"""
   <div class="tabs" id="aqModTabs" style="border-bottom:1px solid #21262d; margin-bottom:16px;"></div>
   <div class="controls" style="margin-bottom:12px;">
     <button id="aqBtnScan" onclick="aqScan()">Procurar aquecimentos em falta</button>
+    <button id="aqBtnRe" onclick="aqScan(true)" style="margin-left:8px;">Reanalisar tudo</button>
     <span id="aqScanEstado" style="color:#8b949e;font-size:12px;margin-left:10px;"></span>
   </div>
+  <div id="aqDiag" style="color:#8b949e;font-size:11px;margin-bottom:12px;"></div>
   <div class="controls">
     <label class="sel">Métrica
       <select id="aqMetrica">
@@ -399,10 +401,10 @@ BODY = r"""
       </select></label>
     <label class="sel">Rolling (sessões)
       <select id="aqRolling"></select></label>
-    <label class="sel" style="cursor:pointer;">
-      <input type="checkbox" id="aqMDC" checked> Banda MDC&#8329;&#8325;</label>
-    <label class="sel" style="cursor:pointer;">
-      <input type="checkbox" id="aqTrend" checked> Tendência</label>
+    <label class="sel" style="cursor:pointer;white-space:nowrap;">
+      <input type="checkbox" id="aqMDC" checked style="vertical-align:middle;margin-right:4px;"><span style="vertical-align:middle;">Banda MDC&#8329;&#8325;</span></label>
+    <label class="sel" style="cursor:pointer;white-space:nowrap;">
+      <input type="checkbox" id="aqTrend" checked style="vertical-align:middle;margin-right:4px;"><span style="vertical-align:middle;">Tendência</span></label>
   </div>
   <h2 id="aqTitulo">Aquecimento por escalão de watts</h2>
   <div class="legend" id="aqLegenda"></div>
@@ -877,6 +879,25 @@ function aqInit(){
  fetch('/api/aquecimento/estado').then(r=>r.json()).then(function(d){
   const box = document.getElementById('aqModTabs');
   if(!box) return;
+
+  const diag = document.getElementById('aqDiag');
+  if(diag){
+   let txt = '';
+   const rej = d.rejeitadas_por_motivo || [];
+   if(rej.length){
+    txt += '<b>Atividades ignoradas:</b> ' + rej.map(function(r){
+     return r.modalidade + ' &times;' + r.n + ' (' + r.motivo + ')';
+    }).join(' &nbsp;|&nbsp; ');
+   }
+   const cob = d.cobertura_colunas || {};
+   const vazias = Object.keys(cob).filter(function(k){ return cob[k] === 0; });
+   if(vazias.length){
+    txt += (txt ? '<br>' : '') + '<b>Colunas sem dados na BD:</b> ' + vazias.join(', ')
+        + ' \u2014 estas m\u00e9tricas usam coluna alternativa.';
+   }
+   diag.innerHTML = txt;
+  }
+
   AQ_MODS = (d.modalidades||[]).filter(m=>m.modalidade);
   if(!AQ_MODS.length){
    box.innerHTML = '<span style="color:#8b949e;padding:10px 0;">Nenhum aquecimento detectado. Corre /api/aquecimento/calibrar?modalidade=Row</span>';
@@ -900,18 +921,20 @@ function aqInit(){
  }).catch(function(e){ console.error('[aqInit]', e); });
 }
 
-function aqScan(){
+function aqScan(forcar){
  const btn = document.getElementById('aqBtnScan');
+ const btn2 = document.getElementById('aqBtnRe');
  const est = document.getElementById('aqScanEstado');
- btn.disabled = true;
- est.textContent = 'a procurar em todo o historico...';
- fetch('/api/aquecimento/scan').then(r=>r.json()).then(function(d){
+ if(forcar && !confirm('Reanalisar todas as atividades do zero?')) return;
+ btn.disabled = true; btn2.disabled = true;
+ est.textContent = forcar ? 'a reanalisar tudo...' : 'a procurar em todo o historico...';
+ fetch('/api/aquecimento/scan' + (forcar ? '?forcar=1' : '')).then(r=>r.json()).then(function(d){
   if(d.status !== 'ok'){ est.textContent = 'erro: ' + (d.mensagem||'?'); return; }
-  est.textContent = d.detectados + ' novos aquecimentos, ' + d.rejeitados
+  est.textContent = d.detectados + ' detectados, ' + d.rejeitados
     + ' ignorados, ' + d.ja_analisadas + ' ja conhecidos';
   aqInit();
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; })
-  .finally(function(){ btn.disabled = false; });
+  .finally(function(){ btn.disabled = false; btn2.disabled = false; });
 }
 
 function aqCarregar(){
@@ -1026,17 +1049,30 @@ function aqDraw(){
   g.fillText(s.watts_alvo + 'W', PL+w+8, Y(vals[vals.length-1])+4);
  });
 
- // datas nos extremos
+ // eixo X: ate 5 datas distribuidas + marcas verticais
  const s0 = series[0];
  if(s0.datas && s0.datas.length){
+  const nd = s0.datas.length;
+  const passos = Math.min(5, nd);
   g.fillStyle = '#8b949e'; g.font = '10px sans-serif';
-  g.textAlign = 'left';  g.fillText(s0.datas[0], PL, H-12);
-  g.textAlign = 'right'; g.fillText(s0.datas[s0.datas.length-1], PL+w, H-12);
+  g.strokeStyle = '#21262d';
+  for(let k=0;k<passos;k++){
+   const i = Math.round(k*(nd-1)/((passos-1)||1));
+   const x = X(i);
+   g.beginPath(); g.moveTo(x, PT); g.lineTo(x, PT+h); g.stroke();
+   g.textAlign = k===0 ? 'left' : (k===passos-1 ? 'right' : 'center');
+   g.fillText(s0.datas[i].substring(5), x, H-12);
+  }
+  g.textAlign = 'center';
+  g.fillText(s0.datas[0].substring(0,4), PL+w/2, H-1);
  }
 
  document.getElementById('aqLegenda').innerHTML = series.map(function(s, si){
   const cor = AQ_CORES_W[si % AQ_CORES_W.length];
-  return '<span style="margin-right:16px;color:'+cor+';">\u25CF ' + s.watts_alvo + 'W (n=' + s.n + ')</span>';
+  const wr = (s.watts_reais_medio != null)
+    ? ' \u2014 real ' + s.watts_reais_medio.toFixed(0) + 'W' : '';
+  return '<span style="margin-right:16px;color:'+cor+';">\u25CF ' + s.watts_alvo
+   + 'W' + wr + ' (n=' + s.n + ')</span>';
  }).join('');
 }
 

@@ -27,6 +27,17 @@ STREAM_KEYS = {
     "dfa1":  ["dfa_a1", "dfa1", "DFA_a1"],
 }
 
+# Limites de sanidade fisica por modalidade. Blocos fora disto sao lixo de
+# medicao -- no Run os watts sao ESTIMADOS e podem disparar para milhares
+# quando o GPS ou a cadencia falham, e um unico bloco desses distorce todo
+# o perfil por watts.
+WATTS_PLAUSIVEIS = {
+    "Bike": (30, 900),
+    "Row":  (30, 700),
+    "Ski":  (30, 700),
+    "Run":  (30, 700),
+}
+
 SUAVIZA_S = 10
 MIN_WORK_S = 60          # blocos mais curtos nao servem ao perfil por watts
 MAX_WORK_S = 1800
@@ -114,11 +125,12 @@ def detectar_blocos(watts, dt, limiar_frac=0.55):
     return blocos
 
 
-def extrair_intervalos(streams, duracao_s=None):
+def extrair_intervalos(streams, duracao_s=None, modalidade=None):
     """Uma entrada por bloco, pronta a inserir em fisiologia_intervalos."""
     watts = _serie(streams, "watts")
     if not watts:
         return []
+    lo, hi = WATTS_PLAUSIVEIS.get(modalidade, (0, 10000))
     dt = passo_temporal(watts, duracao_s)
     blocos = detectar_blocos(watts, dt)
     if not blocos:
@@ -129,9 +141,13 @@ def extrair_intervalos(streams, duracao_s=None):
     nbase = max(2, int(JANELA_BASELINE_S / dt))
     nrec = max(1, int(ENTRADA_REC_S / dt))
 
-    saida = []
-    for num, (i0, i1, rec_fim) in enumerate(blocos, start=1):
+    saida, num = [], 0
+    for (i0, i1, rec_fim) in blocos:
         wa, wmin, wmax = _stats(watts, i0, i1)
+        # descartar blocos com potencia implausivel para a modalidade
+        if wa is None or not (lo <= wa <= hi):
+            continue
+        num += 1
         linha = {
             "interval_num": num,
             "watts_medio": round(wa, 1) if wa is not None else None,

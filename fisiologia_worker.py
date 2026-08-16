@@ -85,6 +85,54 @@ def _processar_aquecimento(conn, activity_id, modalidade, data=None):
         print(f"[AQUECIMENTO] erro em {activity_id}: {type(e).__name__}: {e}")
         return False
 
+def _varrer_aquecimento_pendente(conn, limite=400):
+    """Analisa atividades antigas que ainda nao passaram pelo aquecimento.
+
+    Corre a seguir ao lote normal, por isso o utilizador nunca precisa de
+    chamar /calibrar a mao: basta processar. E' idempotente -- o que ja foi
+    aceite ou rejeitado nao volta a ser analisado.
+    """
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        from aquecimento_analyzer import AquecimentoAnalyzer
+        import aquecimento_db as aq_db
+    except Exception as e:
+        print(f"[AQUECIMENTO] varrimento indisponivel: {type(e).__name__}: {e}")
+        return {'novos': 0, 'analisadas': 0}
+
+    try:
+        pendentes = conn.execute(
+            """SELECT activity_id, modalidade, MAX(data) AS data
+               FROM fisiologia_intervalos
+               WHERE valido = 1 AND modalidade IN ('Row', 'Ski', 'Bike')
+               GROUP BY activity_id, modalidade
+               ORDER BY data DESC LIMIT ?""", (limite,)).fetchall()
+    except Exception as e:
+        print(f"[AQUECIMENTO] query do varrimento falhou: {e}")
+        return {'novos': 0, 'analisadas': 0}
+
+    analyzer = AquecimentoAnalyzer(conn)
+    novos, vistas = 0, 0
+    for row in pendentes:
+        aid, mod, data = row[0], row[1], row[2]
+        try:
+            if aq_db.ja_analisada(aid):
+                continue
+            vistas += 1
+            r = analyzer.analisar_atividade(aid, mod)
+            if r.get('detectado'):
+                aq_db.salvar_blocos(aid, mod, data, r['blocos'], sync=False)
+                novos += 1
+            else:
+                aq_db.marcar_rejeitada(aid, mod, data,
+                                       r.get('motivo', 'desconhecido'))
+        except Exception as e:
+            print(f"[AQUECIMENTO] {aid}: {type(e).__name__}: {e}")
+    return {'novos': novos, 'analisadas': vistas}
+
+
 def _sync_aquecimento():
     """Envia a BD de aquecimento para o Drive uma unica vez, no fim do lote."""
     try:
@@ -250,6 +298,7 @@ def processar_lote(n=10, retornar_resumo=True):
             'processadas': processadas,
             'total_intervalos': total_intervalos,
             'aquecimentos_detectados': aquecimentos_detectados,
+            'aquecimento_historico': _varrer_aquecimento_pendente(conn),
             'aquecimento_sincronizado': _sync_aquecimento(),
             'erros': erros,
             'colunas_migradas': colunas_novas,

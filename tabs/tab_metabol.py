@@ -382,6 +382,7 @@ BODY = r"""
   <div class="controls" style="margin-bottom:12px;">
     <button id="aqBtnScan" onclick="aqScan()">Procurar aquecimentos em falta</button>
     <button id="aqBtnRe" onclick="aqScan(true)" style="margin-left:8px;">Reanalisar tudo</button>
+    <button id="aqBtnAud" onclick="aqAuditar()" style="margin-left:8px;">Auditar as minhas datas</button>
     <span id="aqScanEstado" style="color:#8b949e;font-size:12px;margin-left:10px;"></span>
   </div>
   <div id="aqDiag" style="color:#8b949e;font-size:11px;margin-bottom:12px;"></div>
@@ -935,6 +936,37 @@ function aqScan(forcar){
   aqInit();
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; })
   .finally(function(){ btn.disabled = false; btn2.disabled = false; });
+}
+
+function aqAuditar(){
+ const est = document.getElementById('aqScanEstado');
+ const diag = document.getElementById('aqDiag');
+ est.textContent = 'a cruzar as listas de datas com a BD...';
+ fetch('/api/aquecimento/auditoria').then(r=>r.json()).then(function(d){
+  if(d.status !== 'ok'){ est.textContent = 'erro: ' + (d.mensagem||'?'); return; }
+  est.textContent = '';
+  let h = '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px;">'
+   + '<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+   + '<th style="padding:5px;">Modalidade</th><th>Datas na lista</th><th>J\u00e1 na BD</th>'
+   + '<th>Por processar</th><th>Detectadas</th><th>Ignoradas</th><th>Porqu\u00ea</th></tr>';
+  Object.keys(d.auditoria).forEach(function(m){
+   const a = d.auditoria[m];
+   if(a.erro){ h += '<tr><td colspan="7" style="padding:5px;color:#F85149;">'+m+': '+a.erro+'</td></tr>'; return; }
+   const mot = Object.keys(a.motivos||{}).map(k=>k+' \u00d7'+a.motivos[k]).join(', ') || '\u2014';
+   h += '<tr style="border-bottom:1px solid #161b22;">'
+    + '<td style="padding:5px;">'+m+'</td>'
+    + '<td>'+a.datas_declaradas+'</td>'
+    + '<td>'+a.existem_na_bd_fisiologia+'</td>'
+    + '<td style="color:'+(a.ausentes_da_bd>0?'#F0883E':'#8b949e')+';">'+a.ausentes_da_bd+'</td>'
+    + '<td style="color:#3FB950;">'+a.detectadas+'</td>'
+    + '<td>'+a.rejeitadas+'</td>'
+    + '<td>'+mot+'</td></tr>';
+  });
+  h += '</table>';
+  const primeiro = d.auditoria[Object.keys(d.auditoria)[0]];
+  if(primeiro && primeiro.diagnostico) h += '<p style="margin-top:6px;">' + primeiro.diagnostico + '</p>';
+  diag.innerHTML = h;
+ }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
 }
 
 function aqCarregar(){

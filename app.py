@@ -917,129 +917,194 @@ def api_fisiologia_evolucao_robusta():
                         'trace': traceback.format_exc()}), 200
 
 
-# ===== ROTAS AQUECIMENTO (com proteção) =====
+# ===== ROTAS AQUECIMENTO =====
+
+def _aq_indisponivel():
+    return jsonify({'status': 'erro', 'mensagem': 'Aquecimento não disponível',
+                    'causa': AQUECIMENTO_ERRO}), 503
+
+
+@app.route('/api/aquecimento/estado')
+def api_aquecimento_estado():
+    """Diagnostico: modulos, BD e o que ja' foi analisado."""
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        conn = aq_db.get_conn()
+        rej = conn.execute("SELECT COUNT(*) FROM aquecimento_rejeitadas").fetchone()[0]
+        return jsonify({
+            'status': 'ok',
+            'modulos_carregados': True,
+            'protocolos': __import__('aquecimento_analyzer').PROTOCOLOS,
+            'modalidades': aq_db.modalidades_disponiveis(),
+            'sessoes_detectadas': len(aq_db.listar_sessoes()),
+            'atividades_rejeitadas': rej,
+        })
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
 
 @app.route('/api/aquecimento/dados')
 def api_aquecimento_dados():
-    """Retorna todas as sessões de aquecimento."""
+    """Sessoes detectadas. ?modalidade=Row para filtrar."""
     if not AQUECIMENTO_ENABLED:
-        return jsonify({'status': 'erro', 'mensagem': 'Aquecimento não disponível', 'causa': AQUECIMENTO_ERRO}), 503
-    if not aq_db:
-        return jsonify({'status': 'erro', 'mensagem': 'BD não inicializada'}), 503
+        return _aq_indisponivel()
     try:
-        sessoes = aq_db.listar_todas()
-        return jsonify({'status': 'ok', 'sessoes': sessoes, 'total': len(sessoes)})
+        mod = request.args.get('modalidade')
+        sessoes = aq_db.listar_sessoes(mod)
+        return jsonify({'status': 'ok', 'modalidade': mod,
+                        'sessoes': sessoes, 'total': len(sessoes)})
     except Exception as e:
         return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+
+@app.route('/api/aquecimento/blocos')
+def api_aquecimento_blocos():
+    """Blocos individuais. ?modalidade=Row&watts_alvo=160"""
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        blocos = aq_db.listar_blocos(request.args.get('modalidade'),
+                                     request.args.get('watts_alvo', type=int))
+        return jsonify({'status': 'ok', 'blocos': blocos, 'total': len(blocos)})
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
 
 @app.route('/api/aquecimento/sessao/<activity_id>')
 def api_aquecimento_sessao(activity_id):
-    """Retorna dados de aquecimento de uma atividade."""
     if not AQUECIMENTO_ENABLED:
-        return jsonify({'status': 'erro', 'mensagem': 'Aquecimento não disponível', 'causa': AQUECIMENTO_ERRO}), 503
-    if not aq_db:
-        return jsonify({'status': 'erro', 'mensagem': 'BD não inicializada'}), 503
+        return _aq_indisponivel()
     try:
-        sessao = aq_db.obter_sessao(activity_id)
-        if not sessao:
-            return jsonify({'status': 'erro', 'mensagem': 'Sessão não encontrada'}), 404
-        return jsonify({'status': 'ok', 'sessao': sessao})
+        s = aq_db.obter_sessao(activity_id)
+        if not s:
+            return jsonify({'status': 'erro', 'mensagem': 'sessao nao encontrada'}), 404
+        return jsonify({'status': 'ok', 'sessao': s})
     except Exception as e:
         return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
 
-@app.route('/api/aquecimento/calibrar', methods=['GET', 'POST'])
-def api_aquecimento_calibrar():
-    """Calibra aquecimento com datas específicas."""
+
+@app.route('/api/aquecimento/serie')
+def api_aquecimento_serie():
+    """Serie temporal por escalao de watts, com SEM/MDC.
+
+    ?modalidade=Row&metrica=hr&agregacao=avg[&rolling=3]
+    """
     if not AQUECIMENTO_ENABLED:
-        return jsonify({'status': 'erro', 'mensagem': 'Aquecimento não disponível', 'causa': AQUECIMENTO_ERRO}), 503
+        return _aq_indisponivel()
     try:
-        if request.method == 'GET':
-            modalidade = request.args.get('modalidade')
-            datas_str = request.args.get('datas', '')
-            datas = [d.strip() for d in datas_str.split(',') if d.strip()]
-        else:
-            data = request.get_json()
-            if not data:
-                return jsonify({'status': 'erro', 'mensagem': 'Body vazio'}), 400
-            modalidade = data.get('modalidade')
-            datas = data.get('datas', [])
-        
-        if not modalidade or not datas:
-            return jsonify({'status': 'erro', 'mensagem': 'modalidade e datas obrigatórios'}), 400
-        
-        import drive_db_fisiologia as ddf
-        conn = ddf.get_conn()
-        atividades_para_processar = []
-        
-        for data_str in datas:
-            try:
-                if '/' in data_str:
-                    data_obj = datetime.strptime(data_str, '%d/%m/%Y')
-                else:
-                    data_obj = datetime.strptime(data_str, '%Y-%m-%d')
-                data_inicio = data_obj.date()
-                
-                query = """SELECT DISTINCT activity_id FROM fisiologia_intervalos 
-                          WHERE modalidade=? AND valido=1 AND DATE(data) = ?"""
-                resultados = conn.execute(query, (modalidade, data_inicio)).fetchall()
-                
-                for (activity_id,) in resultados:
-                    atividades_para_processar.append(activity_id)
-            except ValueError:
-                pass
-        
-        atividades_para_processar = list(set(atividades_para_processar))
-        
-        if not atividades_para_processar:
-            return jsonify({'status': 'aviso', 'mensagem': 'Nenhuma atividade encontrada', 'total': 0}), 200
-        
-        processadas = 0
-        aquecimentos_detectados = 0
-        detalhes = []
-        analyzer = AquecimentoAnalyzer(conn)
-        
-        for activity_id in atividades_para_processar:
-            try:
-                resultado = analyzer.analisar_atividade(activity_id, modalidade)
-                if resultado.get('detectado'):
-                    dados_aq = {
-                        'modalidade': modalidade,
-                        'data': datetime.now().isoformat(),
-                        'padrao_detectado': resultado.get('padrao'),
-                        'n_blocos': resultado.get('n_blocos'),
-                        'hr_avg': resultado.get('metricas', {}).get('hr_avg'),
-                        'hr_min': resultado.get('metricas', {}).get('hr_min'),
-                        'hr_max': resultado.get('metricas', {}).get('hr_max'),
-                        'smo2_avg': resultado.get('metricas', {}).get('smo2_avg'),
-                        'smo2_min': resultado.get('metricas', {}).get('smo2_min'),
-                        'smo2_max': resultado.get('metricas', {}).get('smo2_max'),
-                        'resp_avg': resultado.get('metricas', {}).get('resp_avg'),
-                        'resp_min': resultado.get('metricas', {}).get('resp_min'),
-                        'resp_max': resultado.get('metricas', {}).get('resp_max'),
-                        'dfa1_avg': resultado.get('metricas', {}).get('dfa1_avg'),
-                        'dfa1_min': resultado.get('metricas', {}).get('dfa1_min'),
-                        'dfa1_max': resultado.get('metricas', {}).get('dfa1_max'),
-                        'tempo_aquecimento_seg': resultado.get('tempo_aquecimento_seg'),
-                        'n_intervalos_analisados': resultado.get('n_intervalos'),
-                    }
-                    aq_db.salvar_sessao(activity_id, dados_aq)
-                    aquecimentos_detectados += 1
-                processadas += 1
-                detalhes.append({'activity_id': activity_id, 'detectado': resultado.get('detectado'), 'status': 'ok'})
-            except Exception as e:
-                detalhes.append({'activity_id': activity_id, 'erro': str(e), 'status': 'erro'})
-        
-        return jsonify({
-            'status': 'calibracao_completa',
-            'total_solicitadas': len(atividades_para_processar),
-            'processadas': processadas,
-            'aquecimentos_detectados': aquecimentos_detectados,
-            'detalhes': detalhes
-        })
+        from aquecimento_analyzer import sem_por_pares
+        mod = request.args.get('modalidade')
+        metrica = request.args.get('metrica', 'hr')
+        agreg = request.args.get('agregacao', 'avg')
+        rolling = request.args.get('rolling', type=int)
+        if not mod:
+            return jsonify({'status': 'erro', 'mensagem': 'falta ?modalidade='}), 400
+
+        campo = f'{metrica}_{agreg}'
+        blocos = aq_db.listar_blocos(mod)
+        if not blocos:
+            return jsonify({'status': 'sem_dados', 'modalidade': mod,
+                            'mensagem': 'nenhum aquecimento detectado ainda'}), 200
+
+        por_watts = {}
+        for b in blocos:
+            por_watts.setdefault(b['watts_alvo'], []).append((b['data'], b.get(campo)))
+
+        saida = []
+        for w in sorted(por_watts):
+            pts = [(d, v) for d, v in por_watts[w] if v is not None]
+            pts.sort(key=lambda p: p[0])
+            valores = [v for _, v in pts]
+            if rolling and rolling > 1 and valores:
+                suav, jan = [], max(1, min(rolling, 12))
+                for i in range(len(valores)):
+                    ini = max(0, i - jan + 1)
+                    suav.append(sum(valores[ini:i + 1]) / len(valores[ini:i + 1]))
+                valores = suav
+            saida.append({
+                'watts_alvo': w,
+                'n': len(pts),
+                'datas': [d for d, _ in pts],
+                'valores': valores,
+                'reliability': sem_por_pares(pts),
+            })
+
+        return jsonify({'status': 'ok', 'modalidade': mod, 'metrica': metrica,
+                        'agregacao': agreg, 'rolling': rolling, 'series': saida})
     except Exception as e:
         import traceback
-        return jsonify({'status': 'erro', 'mensagem': str(e), 'trace': traceback.format_exc()}), 500
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
 
+
+@app.route('/api/aquecimento/calibrar', methods=['GET', 'POST'])
+def api_aquecimento_calibrar():
+    """Varre atividades historicas a procura do protocolo.
+
+    ?modalidade=Row[&desde=2024-01-01][&limite=500]
+    Sem ?desde=, comeca na atividade mais antiga da modalidade.
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        import drive_db_fisiologia as ddf
+        if request.method == 'POST' and request.get_json(silent=True):
+            body = request.get_json()
+            mod = body.get('modalidade')
+            desde = body.get('desde')
+            limite = int(body.get('limite', 500))
+        else:
+            mod = request.args.get('modalidade')
+            desde = request.args.get('desde')
+            limite = request.args.get('limite', default=500, type=int)
+
+        conn = ddf.get_conn()
+        cond, params = ['valido = 1'], []
+        if mod:
+            cond.append('modalidade = ?')
+            params.append(mod)
+        if desde:
+            cond.append('data >= ?')
+            params.append(desde)
+        params.append(limite)
+
+        atividades = conn.execute(
+            f"""SELECT activity_id, modalidade, MAX(data) AS data
+                FROM fisiologia_intervalos
+                WHERE {' AND '.join(cond)}
+                GROUP BY activity_id, modalidade
+                ORDER BY data ASC LIMIT ?""", tuple(params)).fetchall()
+
+        analyzer = AquecimentoAnalyzer(conn)
+        detectados, rejeitados, saltados, motivos = 0, 0, 0, {}
+
+        for row in atividades:
+            aid, modalidade, data = row[0], row[1], row[2]
+            if modalidade not in ('Row', 'Ski', 'Bike'):
+                continue
+            if aq_db.ja_analisada(aid):
+                saltados += 1
+                continue
+            r = analyzer.analisar_atividade(aid, modalidade)
+            if r.get('detectado'):
+                aq_db.salvar_blocos(aid, modalidade, data, r['blocos'], sync=False)
+                detectados += 1
+            else:
+                motivo = r.get('motivo', 'desconhecido')
+                aq_db.marcar_rejeitada(aid, modalidade, data, motivo)
+                motivos[motivo] = motivos.get(motivo, 0) + 1
+                rejeitados += 1
+
+        aq_db.sincronizar()
+        return jsonify({'status': 'ok', 'modalidade': mod, 'desde': desde,
+                        'analisadas': len(atividades), 'detectados': detectados,
+                        'rejeitados': rejeitados, 'ja_analisadas': saltados,
+                        'motivos': motivos})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
 
 
 if __name__ == '__main__':

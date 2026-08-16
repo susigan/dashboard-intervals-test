@@ -19,9 +19,11 @@ nem todas as sessoes comecam com este aquecimento.
 import numpy as np
 
 PROTOCOLOS = {
-    "Row":  {"watts": [140, 160, 180],          "tol": 15},
-    "Ski":  {"watts": [120, 140, 160],          "tol": 15},
-    "Bike": {"watts": [80, 100, 120, 140, 160], "tol": 8},
+    "Row":  {"watts": [140, 160, 180],          "tol": 15, "min_blocos": 3},
+    "Ski":  {"watts": [120, 140, 160],          "tol": 15, "min_blocos": 3},
+    # A Bike tem erg-mode, mas o numero de degraus pode variar entre 4 e 5.
+    # min_blocos=4 aceita 80-100-140-160 e 80-100-120-140-160.
+    "Bike": {"watts": [80, 100, 120, 140, 160], "tol": 12, "min_blocos": 4},
 }
 
 # Duracao aceite para blocos de trabalho e de recuperacao (segundos).
@@ -109,33 +111,41 @@ class AquecimentoAnalyzer:
         """Duracao desconhecida nao invalida -- so nao confirma."""
         return dur is None or janela[0] <= dur <= janela[1]
 
-    def _procurar_escada(self, intervalos, alvos, tol):
-        """Procura N linhas CONSECUTIVAS que batam na escada de alvos.
+    def _procurar_escada(self, intervalos, alvos, tol, min_blocos):
+        """Procura linhas CONSECUTIVAS que sigam a escada de alvos.
 
-        No schema desta BD cada linha ja' e' um bloco de trabalho com a sua
-        recuperacao (dur_work_s + dur_rec_s) -- nao existem linhas de rest.
+        Aceita um PREFIXO da escada: basta bater em min_blocos degraus
+        seguidos, a comecar no primeiro alvo. Assim uma Bike de 4 degraus
+        e uma de 5 sao ambas aceites.
+
+        Nao olha para metricas: uma sessao sem SmO2, ou com o sensor a cair
+        a meio, e' aceite na mesma -- as metricas em falta ficam a NULL.
         """
-        n = len(alvos)
-        for off in range(0, MAX_OFFSET + 1):
-            if off + n > len(intervalos):
-                break
-            janela = intervalos[off:off + n]
-            ok = True
-            for pos, iv in enumerate(janela):
-                if not self._bate_alvo(iv.get("watts_medio"), alvos[pos], tol):
-                    ok = False
+        melhor = None
+        for n in range(len(alvos), min_blocos - 1, -1):   # tenta a mais longa
+            sub = alvos[:n]
+            for off in range(0, MAX_OFFSET + 1):
+                if off + n > len(intervalos):
                     break
-                if not self._duracao_ok(self._duracao(iv), WORK_SEG):
-                    ok = False
-                    break
-                # a recuperacao entre blocos (a ultima pode nao existir)
-                if pos < n - 1:
-                    if not self._duracao_ok(self._duracao_rec(iv), REST_SEG):
+                janela = intervalos[off:off + n]
+                ok = True
+                for pos, iv in enumerate(janela):
+                    if not self._bate_alvo(iv.get("watts_medio"), sub[pos], tol):
                         ok = False
                         break
-            if ok:
-                return list(range(off, off + n))
-        return None
+                    if not self._duracao_ok(self._duracao(iv), WORK_SEG):
+                        ok = False
+                        break
+                    if pos < n - 1 and not self._duracao_ok(
+                            self._duracao_rec(iv), REST_SEG):
+                        ok = False
+                        break
+                if ok:
+                    melhor = (list(range(off, off + n)), sub)
+                    break
+            if melhor:
+                break
+        return melhor
 
     # ── metricas ──────────────────────────────────────────────────────────
 
@@ -184,12 +194,16 @@ class AquecimentoAnalyzer:
             return {"detectado": False, "motivo": "sem intervalos validos"}
 
         alvos, tol = proto["watts"], proto["tol"]
-        if len(intervalos) < len(alvos):
+        if len(intervalos) < proto.get("min_blocos", len(alvos)):
             return {"detectado": False, "motivo": "intervalos a menos para a escada"}
 
-        idx_work = self._procurar_escada(intervalos, alvos, tol)
-        if idx_work is None:
-            return {"detectado": False, "motivo": "nao bate no protocolo"}
+        min_blocos = proto.get("min_blocos", len(alvos))
+        achado = self._procurar_escada(intervalos, alvos, tol, min_blocos)
+        if achado is None:
+            watts = [iv.get("watts_medio") for iv in intervalos[:8]]
+            return {"detectado": False, "motivo": "nao bate no protocolo",
+                    "watts_vistos": [round(w) if w else None for w in watts]}
+        idx_work, alvos = achado
 
         blocos = []
         for n, i in enumerate(idx_work, start=1):

@@ -53,6 +53,11 @@ if db.ENABLED:
 else:
     print("Fonte de dados: API Intervals.icu (DATABASE_URL nao definida)")
 
+try:
+    from config import TYPE_MAP as CFG_MODALIDADES
+except Exception:
+    CFG_MODALIDADES = {}
+
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
@@ -1160,6 +1165,128 @@ def api_aquecimento_auditoria():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/ingerir')
+def api_aquecimento_ingerir():
+    """Analisa o aquecimento a partir dos STREAMS (Postgres), sem depender
+    da fisiologia_intervalos.
+
+    ?modalidade=Bike&limite=50   -- corre por blocos para nao demorar de mais.
+    Idempotente: salta o que ja foi analisado.
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        import db as _db
+        import aquecimento_streams as aqs
+        import aquecimento_analyzer as aa
+
+        mod_alvo = request.args.get('modalidade')
+        limite = request.args.get('limite', default=50, type=int)
+
+        cond, params = ["type IS NOT NULL"], []
+        if mod_alvo:
+            variantes = [k for k, v in CFG_MODALIDADES.items() if v == mod_alvo]
+            if variantes:
+                cond.append("(" + " OR ".join(["type = ?"] * len(variantes)) + ")")
+                params.extend(variantes)
+        params.append(limite)
+
+        linhas = _db._exec(
+            f"""SELECT id, date, type FROM activities
+                WHERE {' AND '.join(cond)}
+                ORDER BY date DESC LIMIT ?""", tuple(params), fetch='all') or []
+
+        det, rej, salt, sem_streams, motivos = 0, 0, 0, 0, {}
+        for aid, data, tipo in linhas:
+            mod = CFG_MODALIDADES.get(tipo, tipo)
+            if mod not in aa.PROTOCOLOS:
+                continue
+            if mod_alvo and mod != mod_alvo:
+                continue
+            if aq_db.ja_analisada(str(aid)):
+                salt += 1
+                continue
+            streams, _meta = _db.get_streams(str(aid))
+            if not streams:
+                sem_streams += 1
+                continue
+            r = aqs.analisar_streams(streams, mod, aa.PROTOCOLOS)
+            data_iso = str(data)[:10] if data else None
+            if r.get('detectado'):
+                aq_db.salvar_blocos(str(aid), mod, data_iso, r['blocos'], sync=False)
+                det += 1
+            else:
+                m = r.get('motivo', 'desconhecido')
+                aq_db.marcar_rejeitada(str(aid), mod, data_iso, m)
+                motivos[m] = motivos.get(m, 0) + 1
+                rej += 1
+
+        if det or rej:
+            aq_db.sincronizar()
+
+        return jsonify({'status': 'ok', 'modalidade': mod_alvo,
+                        'atividades_vistas': len(linhas), 'detectados': det,
+                        'rejeitados': rej, 'ja_analisadas': salt,
+                        'sem_streams_guardados': sem_streams, 'motivos': motivos,
+                        'nota': ('sessoes sem streams precisam de '
+                                 'sync_streams_bloco primeiro')
+                        if sem_streams else None})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/cobertura')
+def api_fisiologia_cobertura():
+    """Onde estao os dados: atividades no Postgres, streams guardados, e
+    quantas chegaram mesmo a' BD de fisiologia.
+
+    Serve para perceber porque e' que sessoes antigas nao aparecem no
+    aquecimento: se estao em 'activities' mas nao em 'fisiologia_intervalos',
+    falta o passo de extraccao de intervalos.
+    """
+    try:
+        import db as _db
+        import drive_db_fisiologia as ddf
+        out = {'status': 'ok'}
+
+        try:
+            out['streams'] = _db.streams_stats()
+        except Exception as e:
+            out['streams'] = {'erro': str(e)}
+
+        try:
+            linhas = _db._exec(
+                """SELECT type, COUNT(*) FROM activities
+                   GROUP BY type ORDER BY COUNT(*) DESC""", fetch='all') or []
+            out['activities_por_tipo'] = {r[0]: r[1] for r in linhas}
+        except Exception as e:
+            out['activities_por_tipo'] = {'erro': str(e)}
+
+        try:
+            fc = ddf.get_conn()
+            linhas = fc.execute(
+                """SELECT modalidade, COUNT(DISTINCT activity_id),
+                          MIN(data), MAX(data)
+                   FROM fisiologia_intervalos WHERE valido = 1
+                   GROUP BY modalidade""").fetchall()
+            out['fisiologia_intervalos'] = {
+                r[0]: {'atividades': r[1], 'de': r[2], 'ate': r[3]}
+                for r in linhas}
+        except Exception as e:
+            out['fisiologia_intervalos'] = {'erro': str(e)}
+
+        out['nota'] = ('Se activities_por_tipo tiver muito mais sessoes do que '
+                       'fisiologia_intervalos, faltam extrair intervalos dessas '
+                       'atividades -- e nao ha, neste repo, codigo que o faca.')
+        return jsonify(out)
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/aquecimento/inspeccionar')
 def api_aquecimento_inspeccionar():
     """Mostra os watts e duracoes reais de uma sessao, para se perceber
@@ -1176,11 +1303,27 @@ def api_aquecimento_inspeccionar():
 
         aid = request.args.get('activity_id')
         mod = request.args.get('modalidade')
+
+        # ?rejeitada=1 -> apanha automaticamente uma que tenha falhado
+        if not aid and request.args.get('rejeitada') in ('1', 'true', 'sim'):
+            ac = aq_db.get_conn()
+            q = "SELECT activity_id, modalidade FROM aquecimento_rejeitadas"
+            p = ()
+            if mod:
+                q += " WHERE modalidade = ?"
+                p = (mod,)
+            q += " ORDER BY data DESC LIMIT 1"
+            r = ac.execute(q, p).fetchone()
+            if not r:
+                return jsonify({'status': 'nao_encontrada',
+                                'mensagem': 'nenhuma atividade rejeitada'}), 200
+            aid, mod = r[0], r[1]
+
         if not aid:
             data = request.args.get('data')
             if not data:
                 return jsonify({'status': 'erro',
-                                'mensagem': 'usa ?activity_id= ou ?data=&modalidade='}), 400
+                                'mensagem': 'usa ?activity_id=, ?data=&modalidade= ou ?rejeitada=1'}), 400
             if '/' in data:
                 dia, mes, ano = data.split('/')
                 data = f'{ano}-{mes.zfill(2)}-{dia.zfill(2)}'

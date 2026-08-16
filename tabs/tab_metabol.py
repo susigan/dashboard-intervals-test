@@ -412,6 +412,8 @@ BODY = r"""
   <h2 id="aqTitulo">Aquecimento por escalão de watts</h2>
   <div class="legend" id="aqLegenda"></div>
   <div class="chartbox"><canvas id="chAquecimento" height="320"></canvas></div>
+  <h2>Tendência por período</h2>
+  <div id="aqTendencia" style="overflow-x:auto;"></div>
   <h2>Fiabilidade por escalão</h2>
   <div id="aqTabela" style="overflow-x:auto;"></div>
   <h2>Efeito de treino no mesmo dia</h2>
@@ -1102,6 +1104,56 @@ function aqForcar(){
  passo();
 }
 
+function aqTendencia(met, agr){
+ const box = document.getElementById('aqTendencia');
+ if(!box || !AQ_MOD) return;
+ box.innerHTML = '<span style="color:#8b949e;font-size:11px;">a calcular...</span>';
+ fetch('/api/aquecimento/tendencia?modalidade='+AQ_MOD+'&metrica='+met+'&agregacao='+agr)
+ .then(r=>r.json()).then(function(d){
+  if(d.status !== 'ok'){ box.innerHTML = '<span style="color:#8b949e;font-size:11px;">'
+    + (d.mensagem||'sem dados') + '</span>'; return; }
+  const seta = {'a subir':'\u2191', 'a descer':'\u2193', 'estavel':'\u2192'};
+  let h = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+   + '<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+   + '<th style="padding:6px;">Watts</th><th>Per\u00edodo</th><th>n</th>'
+   + '<th>In\u00edcio \u2192 fim</th><th>Mudan\u00e7a</th><th>Por 30d</th>'
+   + '<th>r\u00b2</th><th>Tend\u00eancia</th><th>Leitura</th></tr>';
+  (d.escaloes||[]).forEach(function(e){
+   const js = e.janelas||[];
+   if(!js.length){
+    h += '<tr><td style="padding:6px;">'+e.watts_alvo+'W</td>'
+      + '<td colspan="8" style="color:#8b949e;">sess\u00f5es a menos</td></tr>';
+    return;
+   }
+   js.forEach(function(j, idx){
+    let cor = '#8b949e';
+    if(j.leitura === 'melhoria') cor = '#3FB950';
+    else if(j.leitura === 'piora') cor = '#F85149';
+    const primeira = idx===0 ? e.watts_alvo+'W' : '';
+    if(j.estado === 'dados insuficientes'){
+     h += '<tr style="border-bottom:1px solid #161b22;"><td style="padding:6px;">'+primeira+'</td>'
+       + '<td>'+j.janela+'</td><td>'+j.n+'</td>'
+       + '<td colspan="6" style="color:#8b949e;">'+(j.nota||j.estado)+'</td></tr>';
+     return;
+    }
+    h += '<tr style="border-bottom:1px solid #161b22;">'
+      + '<td style="padding:6px;">'+primeira+'</td>'
+      + '<td>'+j.janela+'</td><td>'+j.n+'</td>'
+      + '<td style="color:#8b949e;">'+j.primeiro+' \u2192 '+j.ultimo+'</td>'
+      + '<td style="color:'+cor+';">'+(j.mudanca>0?'+':'')+j.mudanca+'</td>'
+      + '<td style="color:#8b949e;">'+(j.por_30_dias>0?'+':'')+j.por_30_dias+'</td>'
+      + '<td style="color:#8b949e;">'+(j.r2!=null?j.r2:'\u2014')+'</td>'
+      + '<td style="color:'+cor+';">'+(seta[j.estado]||'')+' '+j.estado+'</td>'
+      + '<td style="color:'+cor+';">'+(j.leitura||'')
+      + (j.aviso ? ' <span style="color:#F0883E;">\u26A0 '+j.aviso+'</span>' : '')
+      + '</td></tr>';
+   });
+  });
+  h += '</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">'+(d.nota||'')+'</p>';
+  box.innerHTML = h;
+ }).catch(function(){ box.innerHTML = ''; });
+}
+
 function aqContexto(met, agr){
  const box = document.getElementById('aqContexto');
  if(!box || !AQ_MOD) return;
@@ -1213,7 +1265,7 @@ function aqCarregar(){
   AQ_DADOS = d;
   document.getElementById('aqTitulo').textContent =
     AQ_LABELS[met] + ' \u2014 ' + AQ_MOD + ' por escal\u00e3o de watts';
-  aqDraw(); aqTabela(); aqContexto(met, agr);
+  aqDraw(); aqTabela(); aqTendencia(met, agr); aqContexto(met, agr);
  }).catch(function(e){
   console.error('[aqCarregar]', e);
   AQ_DADOS = {status:'erro'}; aqDraw();

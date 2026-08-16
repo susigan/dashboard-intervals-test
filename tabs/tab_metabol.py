@@ -903,6 +903,9 @@ function aqInit(){
   }
 
   AQ_MODS = (d.modalidades||[]).filter(m=>m.modalidade);
+  ['Row','Ski','Bike'].forEach(function(m){
+   if(!AQ_MODS.some(x=>x.modalidade===m)) AQ_MODS.push({modalidade:m, n_sessoes:0});
+  });
   if(!AQ_MODS.length){
    box.innerHTML = '<span style="color:#8b949e;padding:10px 0;">Nenhum aquecimento detectado. Corre /api/aquecimento/calibrar?modalidade=Row</span>';
    return;
@@ -975,26 +978,35 @@ function aqAuditar(){
 function aqPorque(){
  const est = document.getElementById('aqScanEstado');
  const diag = document.getElementById('aqDiag');
- const mod = AQ_MOD || '';
- est.textContent = 'a inspeccionar uma sess\u00e3o ignorada...';
- fetch('/api/aquecimento/inspeccionar?rejeitada=1' + (mod ? '&modalidade='+mod : ''))
+ const mod = AQ_MOD || 'Bike';
+ est.textContent = 'a ler os degraus reais de sess\u00f5es ignoradas...';
+ fetch('/api/aquecimento/perfil?n=3&modalidade=' + mod)
  .then(r=>r.json()).then(function(d){
   est.textContent = '';
-  if(d.status !== 'ok'){ diag.innerHTML = d.mensagem || 'sem sess\u00f5es ignoradas'; return; }
-  const p = d.protocolo_esperado || {};
-  let h = '<b>' + d.modalidade + ' ' + d.activity_id + '</b> \u2014 esperado: '
-   + (p.watts||[]).join('-') + 'W (\u00b1' + p.tol + 'W, m\u00edn ' + p.min_blocos + ' blocos)<br>'
-   + 'motivo: <span style="color:#F0883E;">' + (d.resultado||{}).motivo + '</span>'
-   + ' &nbsp;|&nbsp; ' + d.n_intervalos + ' intervalos na sess\u00e3o<br>'
-   + '<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
-   + '<tr style="color:#8b949e;text-align:left;"><th style="padding:3px 10px 3px 0;">#</th>'
-   + '<th style="padding-right:10px;">Watts</th><th style="padding-right:10px;">Work (s)</th><th>Rec (s)</th></tr>';
-  (d.intervalos||[]).forEach(function(iv){
-   h += '<tr><td style="padding:2px 10px 2px 0;">'+iv.n+'</td><td>'+(iv.watts!=null?iv.watts:'\u2014')
-     +'</td><td>'+(iv.dur_work_s!=null?iv.dur_work_s:'\u2014')
-     +'</td><td>'+(iv.dur_rec_s!=null?iv.dur_rec_s:'\u2014')+'</td></tr>';
+  if(d.status !== 'ok'){ diag.innerHTML = d.mensagem || 'sem sess\u00f5es'; return; }
+  const p = d.protocolo_assumido || {};
+  let h = '<b>' + (d.modalidade||'') + '</b> \u2014 protocolo assumido: '
+    + (p.watts||[]).join('-') + 'W (\u00b1' + p.tol + 'W, m\u00edn '
+    + p.min_blocos + ' degraus de ~5min)<br>'
+    + '<span style="color:#8b949e;">Degraus reais encontrados nos primeiros 30 min:</span>';
+  (d.sessoes||[]).forEach(function(sx){
+   h += '<div style="margin-top:8px;"><b>' + (sx.data||'') + '</b> ' + sx.activity_id;
+   if(sx.erro){ h += ' \u2014 <span style="color:#F85149;">' + sx.erro + '</span></div>'; return; }
+   h += ' <span style="color:#8b949e;">(streams: ' + (sx.streams_presentes||[]).join(', ') + ')</span><br>';
+   if(!(sx.degraus||[]).length){ h += '<i>nenhum patamar est\u00e1vel</i>'; }
+   else {
+    h += '<table style="border-collapse:collapse;font-size:11px;margin-top:3px;">'
+      + '<tr style="color:#8b949e;text-align:left;"><th style="padding-right:12px;">In\u00edcio</th>'
+      + '<th style="padding-right:12px;">Dura\u00e7\u00e3o</th><th>Watts</th></tr>';
+    sx.degraus.forEach(function(g){
+     const min = Math.floor(g.inicio_s/60) + ':' + String(g.inicio_s%60).padStart(2,'0');
+     h += '<tr><td style="padding-right:12px;">'+min+'</td><td style="padding-right:12px;">'
+       + g.duracao_s + 's</td><td>' + g.watts + 'W</td></tr>';
+    });
+    h += '</table>';
+   }
+   h += '</div>';
   });
-  h += '</table>';
   diag.innerHTML = h;
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
 }

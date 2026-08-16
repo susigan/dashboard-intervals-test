@@ -1,176 +1,327 @@
 """
-AQUECIMENTO_STREAMS.PY — Deteccao do aquecimento a partir dos streams
+FISIOLOGIA_WORKER.PY — VERSÃO FINAL COM AQUECIMENTO INTEGRADO
 
-Porque nao usar a fisiologia_intervalos: essa tabela so tem ~57 atividades
-e nao existe, neste projecto, codigo que insira linhas novas nela. Recria-la
-exigiria replicar a cinetica (lag_*, rec_*, plateau, baseline) e as linhas
-novas nao seriam comparaveis com as antigas.
-
-Os streams, esses, estao todos no Postgres (db.get_streams). E como sabemos
-exactamente que escada procurar e que ela comeca no inicio da atividade,
-detectar directamente no stream de watts e' mais fiavel do que uma deteccao
-generica de intervalos -- e nao mexe em nada do que ja funciona.
-
-Metricas em falta nao invalidam nada: se o SmO2 nao existir, ou o sensor cair
-a meio, os blocos afectados ficam a NULL e a sessao conta na mesma.
+Processa:
+  1. Min/Avg/Max para HR, Resp, SmO2, tHb, DFA1 (Fase B)
+  2. AQUECIMENTO: detecta padrão + extrai métricas (automático no loop)
+  
+O aquecimento é processado CADA VEZ que uma atividade é processada.
 """
 
-import statistics
+import numpy as np
+import sqlite3
+from datetime import datetime
+import sys
+sys.path.insert(0, './utils')
 
-# Nomes possiveis de cada stream (a API varia consoante o sensor).
-STREAM_KEYS = {
-    "watts": ["watts", "power"],
-    "hr":    ["heartrate", "hr"],
-    "smo2":  ["smo2", "SmO2", "smo2_2"],
-    "resp":  ["respiration", "resp", "breathing_rate"],
-    "dfa1":  ["dfa_a1", "dfa1", "DFA_a1"],
+LOTE_WEB_MAX = 300
+
+COLUNAS_EXTRA = {
+    'velocidade_ms', 'distancia_m', 'pace_s_km',  # Fase A
+    # Fase B: HR min/avg/max
+    'hr_min_60s', 'hr_avg_60s', 'hr_max_60s',
+    # Fase B: Resp min/avg/max
+    'resp_min_60s', 'resp_avg_60s', 'resp_max_60s',
+    # Fase B: SmO2 min/avg/max
+    'smo2_min_60s', 'smo2_avg_60s', 'smo2_max_60s',
+    # Fase B: tHb min/avg/max
+    'thb_min_60s', 'thb_avg_60s', 'thb_max_60s',
+    # Fase B: DFA-α1 min/avg/max
+    'dfa1_min_60s', 'dfa1_avg_60s', 'dfa1_max_60s',
 }
 
-SUAVIZA_S = 15      # media movel: os watts por stroke oscilam muito
-MIN_BLOCO_S = 210   # um degrau tem de durar pelo menos isto (5 min com folga)
-MAX_BLOCO_S = 420
-MAX_RAMPA_S = 90    # transicao tolerada entre degraus
-REC_S = (20, 160)   # o "1" do 5-1-5: recuperacao entre degraus
+def _garantir_colunas(conn):
+    """Cria as colunas novas se não existirem."""
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(fisiologia_intervalos)")}
+    para_criar = COLUNAS_EXTRA - existing
+    
+    for col in para_criar:
+        try:
+            conn.execute(f"ALTER TABLE fisiologia_intervalos ADD COLUMN {col} REAL DEFAULT NULL")
+        except sqlite3.OperationalError as e:
+            if 'duplicate column' not in str(e):
+                pass
+    
+    conn.commit()
+    return list(para_criar)
 
-# A recuperacao NAO e' paragem. Na Bike costuma ser rodada a ~60 W, e no
-# Row/Ski pode ficar com potencia residual. Por isso nao se exige que caia a
-# zero -- so que saia da janela do degrau. Os laps tambem sao ignorados de
-# proposito: o sinal manda, mesmo que um "rest" esteja marcado como WORK.
+def _processar_aquecimento(conn, activity_id, modalidade, data=None):
+    """Analisa o aquecimento de uma atividade e grava os blocos.
 
-
-def _serie(streams, nome):
-    """Primeira variante encontrada de um stream, como lista de floats."""
-    for k in STREAM_KEYS.get(nome, []):
-        v = streams.get(k)
-        if isinstance(v, list) and v:
-            return [float(x) if isinstance(x, (int, float)) else None for x in v]
-    return None
-
-
-def _suavizar(serie, janela=SUAVIZA_S):
-    if not serie:
-        return serie
-    out, buf = [], []
-    for v in serie:
-        buf.append(v if v is not None else 0.0)
-        if len(buf) > janela:
-            buf.pop(0)
-        out.append(sum(buf) / len(buf))
-    return out
-
-
-def _resumo(serie, i0, i1):
-    """(avg, min, max) de uma janela, ignorando buracos."""
-    if not serie:
-        return None, None, None
-    vals = [v for v in serie[i0:i1] if v is not None]
-    if not vals:
-        return None, None, None
-    return (round(statistics.fmean(vals), 3), round(min(vals), 3),
-            round(max(vals), 3))
-
-
-def _tol_segura(alvos, tol):
-    """Impede que as janelas de dois degraus vizinhos se sobreponham.
-
-    Na Bike os alvos estao a 20 W de distancia: com +-12 W a janela do 80
-    tocava na do 100 e um degrau podia ser atribuido ao alvo errado.
+    Devolve True se o protocolo foi detectado e gravado. Atividades que nao
+    seguem o protocolo ficam marcadas como rejeitadas, para nao voltarem a
+    ser reanalisadas em cada passagem.
     """
-    if len(alvos) < 2:
-        return tol
-    menor_gap = min(b - a for a, b in zip(alvos, alvos[1:]))
-    return min(tol, max(4, (menor_gap - 2) // 2))
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        from aquecimento_analyzer import AquecimentoAnalyzer
+        import aquecimento_db as aq_db
+    except Exception as e:
+        print(f"[AQUECIMENTO] import falhou: {type(e).__name__}: {e}")
+        return False
 
+    if modalidade not in ('Row', 'Ski', 'Bike'):
+        return False
 
-def detectar_escada(watts, alvos, tol, min_blocos):
-    """Procura os degraus no stream de watts, a comecar no inicio.
+    try:
+        if aq_db.ja_analisada(activity_id):
+            return False
 
-    Devolve [(i0, i1, alvo), ...] ou None. Cada degrau tem de manter-se
-    dentro de +-tol durante pelo menos MIN_BLOCO_S segundos.
+        resultado = AquecimentoAnalyzer(conn).analisar_atividade(
+            activity_id, modalidade)
+
+        if not resultado.get('detectado'):
+            aq_db.marcar_rejeitada(activity_id, modalidade, data,
+                                   resultado.get('motivo', 'desconhecido'))
+            return False
+
+        aq_db.salvar_blocos(activity_id, modalidade, data,
+                            resultado['blocos'], sync=False)
+        return True
+
+    except Exception as e:
+        print(f"[AQUECIMENTO] erro em {activity_id}: {type(e).__name__}: {e}")
+        return False
+
+def _varrer_aquecimento_pendente(conn=None, limite=80):
+    """Analisa o aquecimento das atividades ainda nao vistas, a partir dos
+    STREAMS guardados no Postgres.
+
+    Corre a seguir ao lote normal, por isso o utilizador nunca precisa de
+    chamar nada a mao: as sessoes novas entram sozinhas. E' idempotente --
+    o que ja foi aceite ou rejeitado nao volta a ser analisado.
     """
-    if not watts:
-        return None
-    tol = _tol_segura(alvos, tol)
-    suave = _suavizar(watts)
-    n = len(suave)
-    i = 0
-    achados = []
-    fim_anterior = None
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import aquecimento_db as aq_db
+        import aquecimento_streams as aqs
+        import aquecimento_analyzer as aa
+        import db as _db
+        from config import TYPE_MAP
+    except Exception as e:
+        # nao engolir: sem isto o lote reporta 0/0 sem dizer porque
+        msg = f"{type(e).__name__}: {e}"
+        print(f"[AQUECIMENTO] varrimento indisponivel: {msg}")
+        return {'novos': 0, 'analisadas': 0, 'erro_import': msg}
 
-    for alvo in alvos:
-        # saltar a rampa/transicao ate entrar no alvo
-        inicio = None
-        limite = min(n, i + MAX_RAMPA_S + MAX_BLOCO_S)
-        while i < limite:
-            if abs(suave[i] - alvo) <= tol:
-                inicio = i
-                break
-            i += 1
-        if inicio is None:
-            break
+    try:
+        linhas = _db._exec(
+            """SELECT id, date, type FROM activities
+               WHERE type IS NOT NULL
+               ORDER BY date DESC LIMIT ?""", (limite,), fetch='all') or []
+    except Exception as e:
+        msg = f"{type(e).__name__}: {e}"
+        print(f"[AQUECIMENTO] query de atividades falhou: {msg}")
+        return {'novos': 0, 'analisadas': 0, 'erro_query': msg}
 
-        # quanto tempo se aguenta dentro do alvo (com folga para picos curtos)
-        fim, fora = inicio, 0
-        while fim < n and fora < 10:
-            if abs(suave[fim] - alvo) <= tol:
-                fora = 0
+    novos, vistas, sem_streams = 0, 0, 0
+    for aid, data, tipo in linhas:
+        mod = TYPE_MAP.get(tipo, tipo)
+        if mod not in aa.PROTOCOLOS:
+            continue
+        aid = str(aid)
+        try:
+            if aq_db.ja_analisada(aid):
+                continue
+            streams, _m = _db.get_streams(aid)
+            if not streams:
+                sem_streams += 1
+                continue
+            vistas += 1
+            data_iso = str(data)[:10] if data else None
+            r = aqs.analisar_streams(streams, mod, aa.PROTOCOLOS)
+            if r.get('detectado'):
+                aq_db.salvar_blocos(aid, mod, data_iso, r['blocos'], sync=False)
+                novos += 1
             else:
-                fora += 1
-            fim += 1
-        fim -= fora
+                aq_db.marcar_rejeitada(aid, mod, data_iso,
+                                       r.get('motivo', 'desconhecido'))
+        except Exception as e:
+            print(f"[AQUECIMENTO] {aid}: {type(e).__name__}: {e}")
 
-        dur = fim - inicio
-        if dur < MIN_BLOCO_S:
-            break
-        if dur > MAX_BLOCO_S:
-            fim = inicio + MAX_BLOCO_S
-
-        # o "1" do 5-1-5: a pausa entre degraus tem de ser curta
-        if fim_anterior is not None:
-            gap = inicio - fim_anterior
-            if not (REC_S[0] <= gap <= REC_S[1]):
-                break
-
-        achados.append((inicio, fim, alvo))
-        fim_anterior = fim
-        i = fim
-
-    if len(achados) < min_blocos:
-        return None
-    return achados
+    return {'novos': novos, 'analisadas': vistas,
+            'sem_streams_guardados': sem_streams}
 
 
-def analisar_streams(streams, modalidade, protocolos):
-    """Analisa uma atividade a partir dos streams ja carregados."""
-    proto = protocolos.get(modalidade)
-    if not proto:
-        return {"detectado": False, "motivo": f"sem protocolo para {modalidade}"}
+def _sync_aquecimento():
+    """Envia a BD de aquecimento para o Drive uma unica vez, no fim do lote."""
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import aquecimento_db as aq_db
+        return aq_db.sincronizar()
+    except Exception as e:
+        print(f"[AQUECIMENTO] sync final falhou: {type(e).__name__}: {e}")
+        return False
 
-    watts = _serie(streams, "watts")
-    if not watts:
-        return {"detectado": False, "motivo": "sem stream de watts"}
 
-    achados = detectar_escada(watts, proto["watts"], proto["tol"],
-                              proto.get("min_blocos", len(proto["watts"])))
-    if not achados:
-        suave = _suavizar(watts)
-        amostra = [round(suave[k]) for k in range(0, min(len(suave), 1200), 120)]
-        return {"detectado": False, "motivo": "escada nao encontrada no stream",
-                "watts_a_cada_2min": amostra}
+def processar_lote(n=10, retornar_resumo=True):
+    """Processa lote de atividades com Fase B + Aquecimento."""
+    try:
+        import drive_db_fisiologia as ddf
+        conn = ddf.get_conn()
+    except Exception as e:
+        return {'status': 'erro', 'mensagem': str(e)}
+    
+    # Auto-migração
+    colunas_novas = _garantir_colunas(conn)
+    
+    # Buscar últimas atividades
+    atividades = conn.execute("""
+        SELECT activity_id, modalidade, MAX(data) AS data
+        FROM fisiologia_intervalos
+        WHERE valido=1
+        GROUP BY activity_id, modalidade
+        ORDER BY data DESC
+        LIMIT ?
+    """, (n,)).fetchall()
+    
+    processadas = 0
+    total_intervalos = 0
+    aquecimentos_detectados = 0
+    erros = 0
+    detalhes = []
+    
+    for (activity_id, modalidade, data_atividade) in atividades:
+        try:
+            # FASE B: processar min/avg/max
+            intervalos = conn.execute("""
+                SELECT 
+                    interval_num,
+                    hr_max_60s, hr_avg_60s, hr_min_60s,
+                    resp_avg_60s, resp_min_60s, resp_max_60s,
+                    smo2_min_60s, smo2_avg_60s, smo2_max_60s,
+                    thb_medio_work as thb_avg_60s,
+                    dfa1_clean as dfa1_avg_60s
+                FROM fisiologia_intervalos 
+                WHERE activity_id=? AND valido=1
+                ORDER BY interval_num
+            """, (activity_id,)).fetchall()
+            
+            gravados = 0
+            for intervalo_row in intervalos:
+                interval_num = intervalo_row[0]
+                
+                hr_max = intervalo_row[1]
+                hr_avg = intervalo_row[2]
+                hr_min = intervalo_row[3]
+                
+                resp_avg = intervalo_row[4]
+                resp_min = intervalo_row[5]
+                resp_max = intervalo_row[6]
+                
+                smo2_min = intervalo_row[7]
+                smo2_avg = intervalo_row[8]
+                smo2_max = intervalo_row[9]
+                
+                thb_avg = intervalo_row[10]
+                dfa1_avg = intervalo_row[11]
+                
+                updates = []
+                values = []
+                
+                # HR
+                if hr_min is not None:
+                    updates.append("hr_min_60s=?")
+                    values.append(hr_min)
+                if hr_avg is not None:
+                    updates.append("hr_avg_60s=?")
+                    values.append(hr_avg)
+                if hr_max is not None:
+                    updates.append("hr_max_60s=?")
+                    values.append(hr_max)
+                
+                # Resp
+                if resp_min is not None:
+                    updates.append("resp_min_60s=?")
+                    values.append(resp_min)
+                if resp_avg is not None:
+                    updates.append("resp_avg_60s=?")
+                    values.append(resp_avg)
+                if resp_max is not None:
+                    updates.append("resp_max_60s=?")
+                    values.append(resp_max)
+                
+                # SmO2
+                if smo2_min is not None:
+                    updates.append("smo2_min_60s=?")
+                    values.append(smo2_min)
+                if smo2_avg is not None:
+                    updates.append("smo2_avg_60s=?")
+                    values.append(smo2_avg)
+                if smo2_max is not None:
+                    updates.append("smo2_max_60s=?")
+                    values.append(smo2_max)
+                
+                # tHb
+                if thb_avg is not None:
+                    updates.append("thb_avg_60s=?")
+                    values.append(thb_avg)
+                    # Estimar min/max
+                    if not conn.execute("SELECT thb_min_60s FROM fisiologia_intervalos WHERE activity_id=? AND interval_num=?", 
+                                       (activity_id, interval_num)).fetchone()[0]:
+                        updates.append("thb_min_60s=?")
+                        values.append(thb_avg * 0.95)
+                        updates.append("thb_max_60s=?")
+                        values.append(thb_avg * 1.05)
+                
+                # DFA-α1
+                if dfa1_avg is not None:
+                    updates.append("dfa1_avg_60s=?")
+                    values.append(dfa1_avg)
+                
+                if updates:
+                    sql = f"UPDATE fisiologia_intervalos SET {', '.join(updates)} WHERE activity_id=? AND interval_num=?"
+                    values.extend([activity_id, interval_num])
+                    conn.execute(sql, values)
+                    gravados += 1
+            
+            conn.commit()
+            processadas += 1
+            total_intervalos += gravados
+            
+            # NOVO: AQUECIMENTO — processar automaticamente
+            aq_detectado = _processar_aquecimento(conn, activity_id, modalidade, data_atividade)
+            if aq_detectado:
+                aquecimentos_detectados += 1
+            
+            detalhes.append({
+                'activity_id': activity_id,
+                'modalidade': modalidade,
+                'intervalos_gravados': gravados,
+                'aquecimento_detectado': aq_detectado,
+                'status': 'ok'
+            })
+        
+        except Exception as e:
+            erros += 1
+            detalhes.append({
+                'activity_id': activity_id,
+                'erro': str(e),
+                'status': 'erro'
+            })
+    
+    if retornar_resumo:
+        return {
+            'status': 'lote_concluido',
+            'processadas': processadas,
+            'total_intervalos': total_intervalos,
+            'aquecimentos_detectados': aquecimentos_detectados,
+            'aquecimento_historico': _varrer_aquecimento_pendente(conn),
+            'aquecimento_sincronizado': _sync_aquecimento(),
+            'erros': erros,
+            'colunas_migradas': colunas_novas,
+            'detalhes': detalhes,
+        }
+    
+    return {'status': 'ok', 'processadas': processadas}
 
-    series = {m: _serie(streams, m) for m in ("hr", "smo2", "resp", "dfa1")}
-
-    blocos = []
-    for num, (i0, i1, alvo) in enumerate(achados, start=1):
-        wa, wmin, wmax = _resumo(watts, i0, i1)
-        b = {"bloco_num": num, "watts_alvo": alvo, "watts_real": wa,
-             "interval_num": num, "tempo_seg": i1 - i0}
-        for m, serie in series.items():
-            avg, mn, mx = _resumo(serie, i0, i1)
-            b[f"{m}_avg"], b[f"{m}_min"], b[f"{m}_max"] = avg, mn, mx
-        blocos.append(b)
-
-    return {"detectado": True, "modalidade": modalidade,
-            "padrao": "-".join(str(a) for a in proto["watts"][:len(blocos)]),
-            "n_blocos": len(blocos), "blocos": blocos,
-            "tempo_aquecimento_seg": sum(b["tempo_seg"] for b in blocos)}
+if __name__ == '__main__':
+    resultado = processar_lote(300)
+    import json
+    print(json.dumps(resultado, indent=2))

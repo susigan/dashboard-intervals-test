@@ -21,7 +21,7 @@ import statistics
 # versao com que foram avaliadas: quando esta sobe, sao reanalisadas
 # automaticamente, em vez de ficarem presas a um veredicto de um algoritmo
 # que entretanto foi corrigido.
-VERSAO_DETECTOR = 4
+VERSAO_DETECTOR = 5
 
 # Nomes possiveis de cada stream (a API varia consoante o sensor).
 STREAM_KEYS = {
@@ -340,10 +340,18 @@ def resumir_inicio(streams, minutos=30, duracao_s=None, protocolo=None):
         corte, min_dur=max(6, int(45 / dt))))
     # cortar assim que o ultimo alvo do protocolo for atingido
     if protocolo and protocolo.get("watts"):
-        ultimo = protocolo["watts"][-1]
-        tol = protocolo.get("tol", 12) * 1.5
+        alvos = protocolo["watts"]
+        ultimo = alvos[-1]
+        # tolerancia APERTADA: com a folga antiga, um degrau de 160 W caia
+        # dentro de 180+-22 e a listagem parava antes do ultimo degrau real
+        tol = min(protocolo.get("tol", 12), (ultimo - alvos[-2]) / 2 if len(alvos) > 1 else 12)
+        vistos = 0
         for k, (a, b, wv) in enumerate(degraus):
-            if abs(wv - ultimo) <= tol and b >= max(6, int(150 / dt)):
+            if b < max(6, int(150 / dt)):
+                continue
+            vistos += 1
+            # so pode ser o fim se ja passamos por degraus suficientes
+            if abs(wv - ultimo) <= tol and vistos >= len(alvos):
                 degraus = degraus[:k + 1]
                 break
 
@@ -358,3 +366,70 @@ def resumir_inicio(streams, minutos=30, duracao_s=None, protocolo=None):
         "watts_cada_30s": [round(suave[k]) for k in range(0, len(suave), passo30)],
         "streams_presentes": sorted(streams.keys()),
     }
+
+
+def diagnosticar_escada(streams, modalidade, protocolos, duracao_s=None):
+    """Percorre a escada alvo a alvo e diz onde e' que parou.
+
+    Sem isto, "escada nao encontrada" nao distingue entre um degrau com os
+    watts errados, um degrau curto de mais, ou uma pausa longa a meio.
+    """
+    proto = protocolos.get(modalidade)
+    watts = _serie(streams, "watts")
+    if not proto or not watts:
+        return {"erro": "sem protocolo ou sem stream de watts"}
+
+    dt = passo_temporal(streams, duracao_s)
+    alvos = proto["watts"]
+
+    def correr():
+        tol = _tol_segura(alvos, proto["tol"])
+        suave = _suavizar(watts)
+        n = len(suave)
+        i, fim_ant, passos = 0, None, []
+        for alvo in alvos:
+            ini, limite = None, min(n, i + MAX_RAMPA_S + MAX_BLOCO_S)
+            while i < limite:
+                if abs(suave[i] - alvo) <= tol:
+                    ini = i
+                    break
+                i += 1
+            if ini is None:
+                janela = suave[min(i, n - 1):min(i + 60, n)]
+                passos.append({
+                    "alvo_W": alvo, "estado": "nao encontrado",
+                    "procurou_ate_s": int(limite * dt),
+                    "watts_por_ali": round(statistics.fmean(janela), 1) if janela else None,
+                    "tolerancia_W": tol})
+                break
+            fim, fora = ini, 0
+            while fim < n and fora < 10:
+                fora = 0 if abs(suave[fim] - alvo) <= tol else fora + 1
+                fim += 1
+            fim -= fora
+            dur, gap = fim - ini, (ini - fim_ant) if fim_ant is not None else None
+            p = {"alvo_W": alvo, "inicio_s": int(ini * dt),
+                 "duracao_s": int(dur * dt), "watts_medidos": round(
+                     statistics.fmean(suave[ini:fim]), 1) if fim > ini else None,
+                 "pausa_antes_s": int(gap * dt) if gap is not None else None,
+                 "tolerancia_W": tol}
+            if dur < MIN_BLOCO_S:
+                p["estado"] = f"curto de mais (minimo {int(MIN_BLOCO_S * dt)}s)"
+                passos.append(p)
+                break
+            if gap is not None and gap > REC_S[1]:
+                p["estado"] = f"pausa longa antes (maximo {int(REC_S[1] * dt)}s)"
+                passos.append(p)
+                break
+            p["estado"] = "ok"
+            passos.append(p)
+            fim_ant, i = fim, fim
+        return passos
+
+    passos = _com_escala(dt, correr)
+    ok = sum(1 for p in passos if p.get("estado") == "ok")
+    return {"passo_temporal_s": round(dt, 2),
+            "min_blocos_exigido": proto.get("min_blocos", len(alvos)),
+            "degraus_ok": ok, "passos": passos,
+            "veredicto": ("aceite" if ok >= proto.get("min_blocos", len(alvos))
+                          else "rejeitada")}

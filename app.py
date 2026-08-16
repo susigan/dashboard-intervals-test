@@ -1,20 +1,3 @@
-# ===== IMPORTS AQUECIMENTO (com proteção) =====
-AQUECIMENTO_ENABLED = False
-aq_db = None
-AquecimentoAnalyzer = None
-
-try:
-    sys.path.insert(0, './utils')
-    import aquecimento_db as aq_db
-    from aquecimento_analyzer import AquecimentoAnalyzer
-    AQUECIMENTO_ENABLED = True
-    print("[AQUECIMENTO] Módulos carregados com sucesso")
-except ImportError as e:
-    print(f"[AQUECIMENTO] Modules not available: {e}")
-except Exception as e:
-    print(f"[AQUECIMENTO] Erro ao carregar: {e}")
-
-
 #!/usr/bin/env python3
 """Intervals.icu Dashboard — servidor Flask.
 
@@ -29,6 +12,19 @@ Estrutura:
 import os
 import sys
 import logging
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'utils'))
+
+AQUECIMENTO_ERRO = None
+try:
+    import aquecimento_db as aq_db
+    from aquecimento_analyzer import AquecimentoAnalyzer
+    AQUECIMENTO_ENABLED = True
+except Exception as e:
+    aq_db = None
+    AquecimentoAnalyzer = None
+    AQUECIMENTO_ENABLED = False
+    AQUECIMENTO_ERRO = f"{type(e).__name__}: {e}"
+    print(f"[AQUECIMENTO] indisponivel -> {AQUECIMENTO_ERRO}")
 from flask import jsonify, request, Response
 from dotenv import load_dotenv
 
@@ -875,13 +871,59 @@ def health():
 
 
 
+
+# ===== ROTAS QUE A TAB METABOLISMO CONSOME =====
+
+@app.route('/api/fisiologia/perfil_robusto/<modalidade>')
+def api_fisiologia_perfil_robusto(modalidade):
+    """Perfil ponderado por faixas de watts. Consumido por carregarPerfil()."""
+    try:
+        from tabs import tab_metabol as tm
+        largura = int(request.args.get('largura_bin', 50))
+        min_n = int(request.args.get('min_n', 15))
+        campos = {k: v for k, v in request.args.items()
+                  if k not in ('largura_bin', 'min_n')}
+        if not campos:
+            campos = {'hr': 'max', 'resp': 'avg', 'smo2': 'min', 'dfa1': 'avg'}
+        res = tm.perfil_por_modalidade(modalidade, campos,
+                                       min_n_total=min_n,
+                                       largura_bin_manual=largura)
+        return jsonify(res), 200
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 200
+
+
+@app.route('/api/fisiologia/evolucao_robusta')
+def api_fisiologia_evolucao_robusta():
+    """Evolucao temporal de uma metrica. Consumido por carregarEvolucao()."""
+    try:
+        from tabs import tab_metabol as tm
+        modalidade = request.args.get('modalidade')
+        metrica = request.args.get('metrica')
+        agregacao = request.args.get('agregacao')
+        if not (modalidade and metrica and agregacao):
+            return jsonify({'status': 'erro',
+                            'mensagem': 'faltam modalidade/metrica/agregacao'}), 200
+        res = tm.evolucao_temporal(
+            modalidade, metrica, agregacao,
+            watts_min=request.args.get('watts_min', type=float),
+            watts_max=request.args.get('watts_max', type=float))
+        return jsonify(res), 200
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 200
+
+
 # ===== ROTAS AQUECIMENTO (com proteção) =====
 
 @app.route('/api/aquecimento/dados')
 def api_aquecimento_dados():
     """Retorna todas as sessões de aquecimento."""
     if not AQUECIMENTO_ENABLED:
-        return jsonify({'status': 'erro', 'mensagem': 'Aquecimento não disponível'}), 503
+        return jsonify({'status': 'erro', 'mensagem': 'Aquecimento não disponível', 'causa': AQUECIMENTO_ERRO}), 503
     if not aq_db:
         return jsonify({'status': 'erro', 'mensagem': 'BD não inicializada'}), 503
     try:
@@ -894,7 +936,7 @@ def api_aquecimento_dados():
 def api_aquecimento_sessao(activity_id):
     """Retorna dados de aquecimento de uma atividade."""
     if not AQUECIMENTO_ENABLED:
-        return jsonify({'status': 'erro', 'mensagem': 'Aquecimento não disponível'}), 503
+        return jsonify({'status': 'erro', 'mensagem': 'Aquecimento não disponível', 'causa': AQUECIMENTO_ERRO}), 503
     if not aq_db:
         return jsonify({'status': 'erro', 'mensagem': 'BD não inicializada'}), 503
     try:
@@ -909,7 +951,7 @@ def api_aquecimento_sessao(activity_id):
 def api_aquecimento_calibrar():
     """Calibra aquecimento com datas específicas."""
     if not AQUECIMENTO_ENABLED:
-        return jsonify({'status': 'erro', 'mensagem': 'Aquecimento não disponível'}), 503
+        return jsonify({'status': 'erro', 'mensagem': 'Aquecimento não disponível', 'causa': AQUECIMENTO_ERRO}), 503
     try:
         if request.method == 'GET':
             modalidade = request.args.get('modalidade')

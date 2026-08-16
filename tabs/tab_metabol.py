@@ -478,16 +478,27 @@ def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largu
         'limite_outlier_watts': round(float(lim_hi), 1),
         'faixas': faixas_saida,
     }
-def evolucao_temporal(modalidade, metrica, agregacao, watts_min=None, watts_max=None, min_por_periodo=3):
-    """Evolução temporal com agregação dinâmica."""
-    
-    # VALIDAR agregação
-    if agregacao not in AGREGACOES_VALIDAS.get(metrica, []):
-        return {'status': 'erro', 'mensagem': f'agregacao inválida: {metrica} não tem {agregacao}'}
-    
-    coluna_db = CAMPOS_DB[metrica][agregacao]
-    
+def evolucao_temporal(modalidade, metrica, agregacao, watts_min=None,
+                      watts_max=None, min_por_periodo=3, agrupar='mes'):
+    """Evolucao temporal de uma metrica, por periodo.
+
+    Correcoes face a versao anterior:
+      - usa a coluna com mais cobertura (antes ia sempre a *_60s, que no SmO2
+        medio tem 16 valores em 677)
+      - a validacao da agregacao e' feita contra os dados, nao contra uma
+        lista fixa que ja nao correspondia a' BD
+      - o agrupamento e' escolhivel (semana / mes / trimestre / ano); antes
+        era sempre mensal, independentemente do que se pedisse
+      - periodos com poucas sessoes deixam de desaparecer em silencio: sao
+        contados e devolvidos, para o utilizador saber que ha buracos
+    """
     conn = _conn()
+
+    coluna_db = coluna_com_dados(conn, metrica, agregacao)
+    if not coluna_db:
+        return {'status': 'erro',
+                'mensagem': f'{metrica}/{agregacao} sem dados na BD'}
+
     cond = ["modalidade = ?", "valido = 1", f"{coluna_db} IS NOT NULL"]
     params = [modalidade]
     if watts_min is not None:
@@ -496,39 +507,83 @@ def evolucao_temporal(modalidade, metrica, agregacao, watts_min=None, watts_max=
     if watts_max is not None:
         cond.append("watts_medio <= ?")
         params.append(watts_max)
+
     linhas = conn.execute(
-        f"""SELECT data, {coluna_db} as valor FROM fisiologia_intervalos
-           WHERE {' AND '.join(cond)} ORDER BY data""",
-        tuple(params)
-    ).fetchall()
+        f"""SELECT data, watts_medio, {coluna_db} AS valor
+            FROM fisiologia_intervalos
+            WHERE {' AND '.join(cond)} ORDER BY data""",
+        tuple(params)).fetchall()
     if not linhas:
-        return {'status': 'dados_insuficientes', 'n_disponivel': 0}
+        return {'status': 'dados_insuficientes', 'n_disponivel': 0,
+                'coluna_usada': coluna_db}
+
+    # outliers de potencia (Tukey): sem isto um bloco a 1900 W entra na media
+    ws = np.array([l['watts_medio'] for l in linhas
+                   if l['watts_medio'] is not None], dtype=float)
+    n_out = 0
+    if len(ws) >= 8:
+        q1, q3 = np.percentile(ws, [25, 75])
+        lim_hi = q3 + 1.5 * (q3 - q1)
+        lim_lo = max(0, q1 - 1.5 * (q3 - q1))
+        antes = len(linhas)
+        linhas = [l for l in linhas
+                  if l['watts_medio'] is None or lim_lo <= l['watts_medio'] <= lim_hi]
+        n_out = antes - len(linhas)
+
+    def chave(d):
+        ano, mes = d[:4], d[5:7]
+        if agrupar == 'ano':
+            return ano
+        if agrupar == 'trimestre':
+            return f"{ano}-T{(int(mes) - 1) // 3 + 1}"
+        if agrupar == 'semana':
+            from datetime import date as _date
+            iso = _date(int(ano), int(mes), int(d[8:10])).isocalendar()
+            return f"{iso[0]}-S{iso[1]:02d}"
+        return d[:7]
+
     grupos = {}
     for l in linhas:
-        p = l['data'][:7]
-        grupos.setdefault(p, []).append(l['valor'])
-    saida = []
-    for periodo in sorted(grupos.keys()):
+        if not l['data']:
+            continue
+        try:
+            grupos.setdefault(chave(l['data']), []).append(l['valor'])
+        except Exception:
+            continue
+
+    saida, omitidos = [], 0
+    for periodo in sorted(grupos):
         vs = [v for v in grupos[periodo] if v is not None and np.isfinite(v)]
         if len(vs) < min_por_periodo:
+            omitidos += 1
             continue
-        
-        vs_arr = np.array(vs)
+        a = np.array(vs, dtype=float)
         saida.append({
             'periodo': periodo,
-            'p10': round(float(np.percentile(vs_arr, 10)), 2),
-            'p25': round(float(np.percentile(vs_arr, 25)), 2),
-            'p50': round(float(np.percentile(vs_arr, 50)), 2),
-            'p75': round(float(np.percentile(vs_arr, 75)), 2),
-            'p90': round(float(np.percentile(vs_arr, 90)), 2),
+            'media': round(float(a.mean()), 2),
+            'p10': round(float(np.percentile(a, 10)), 2),
+            'p25': round(float(np.percentile(a, 25)), 2),
+            'p50': round(float(np.percentile(a, 50)), 2),
+            'p75': round(float(np.percentile(a, 75)), 2),
+            'p90': round(float(np.percentile(a, 90)), 2),
             'n': len(vs),
         })
+
     return {
         'status': 'ok',
         'metrica': metrica,
         'agregacao': agregacao,
+        'agrupar': agrupar,
+        'coluna_usada': coluna_db,
+        'e_alternativa': coluna_db != f'{metrica}_{agregacao}_60s',
+        'outliers_watts_removidos': n_out,
+        'periodos_omitidos': omitidos,
+        'min_por_periodo': min_por_periodo,
+        'n_total': sum(p['n'] for p in saida),
         'periodos': saida,
     }
+
+
 BODY = r"""
 <h1>Metabolismo</h1>
 <div class="tabs" style="border-bottom:1px solid #21262d; margin-bottom:20px;">
@@ -559,9 +614,24 @@ BODY = r"""
     <select id="metricaEvolucao"></select></label>
   <label class="sel">Agregação
     <select id="agregacaoEvolucao"></select></label>
+  <label class="sel">Agrupar
+    <select id="agruparEvolucao">
+      <option value="mes" selected>Mês</option>
+      <option value="trimestre">Trimestre</option>
+      <option value="ano">Ano</option>
+    </select></label>
+  <label class="sel">Agrupar
+    <select id="agruparEvolucao">
+      <option value="semana">Semana</option>
+      <option value="mes" selected>Mês</option>
+      <option value="trimestre">Trimestre</option>
+      <option value="ano">Ano</option>
+    </select></label>
   <label class="sel">Watts min <input type="number" id="wattsMin" value="200" style="width:70px"></label>
   <label class="sel">Watts max <input type="number" id="wattsMax" value="350" style="width:70px"></label>
+  <span id="evolAviso" style="color:#8b949e;font-size:11px;margin-left:8px;"></span>
   <button onclick="carregarEvolucao()">Actualizar</button>
+  <span id="evolAviso" style="color:#8b949e;font-size:11px;margin-left:10px;"></span>
 </div>
 <div class="chartbox">
   <canvas id="chEvolucao" height="240"></canvas>
@@ -992,7 +1062,7 @@ async function carregarEvolucao(){
  const modalidade = document.getElementById('modalidade').value;
  const wmin = document.getElementById('wattsMin').value || null;
  const wmax = document.getElementById('wattsMax').value || null;
- const url = '/api/fisiologia/evolucao_robusta?modalidade='+modalidade+'&metrica='+metrica+'&agregacao='+agregacao+(wmin?'&watts_min='+wmin:'')+(wmax?'&watts_max='+wmax:'');
+ const url = '/api/fisiologia/evolucao_robusta?modalidade='+modalidade+'&metrica='+metrica+'&agregacao='+agregacao+(wmin?'&watts_min='+wmin:'')+(wmax?'&watts_max='+wmax:'') + '&agrupar=' + (document.getElementById('agruparEvolucao')||{value:'mes'}).value;
  
  console.log('[carregarEvolucao]', url);
  
@@ -1000,6 +1070,15 @@ async function carregarEvolucao(){
   const d = await fetch(url).then(r => r.json());
   console.log('[carregarEvolucao] OK:', d);
   EVOLUCAO = d;
+  const av = document.getElementById('evolAviso');
+  if(av){
+   const p = [];
+   if(d.coluna_usada) p.push('fonte: ' + d.coluna_usada);
+   if(d.n_total != null) p.push('n=' + d.n_total);
+   if(d.outliers_watts_removidos) p.push(d.outliers_watts_removidos + ' outlier(s) de watts removido(s)');
+   if(d.periodos_omitidos) p.push(d.periodos_omitidos + ' per\u00edodo(s) com menos de ' + d.min_por_periodo + ' sess\u00f5es omitido(s)');
+   av.textContent = p.join(' | ');
+  }
   drawEvolucao();
  }catch(e){
   console.error('[carregarEvolucao] ERRO:', e);
@@ -1048,6 +1127,8 @@ async function load(){
    }
   });
   
+  const selAgrupar = document.getElementById('agruparEvolucao');
+  if(selAgrupar) selAgrupar.onchange = carregarEvolucao;
   const selMetricaEvolucao = document.getElementById('metricaEvolucao');
   selMetricaEvolucao.innerHTML = METRICAS_BASE.map(m => '<option value="'+m+'">'+LABELS_METAB[m]+'</option>').join('');
   

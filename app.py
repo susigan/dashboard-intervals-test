@@ -58,6 +58,18 @@ try:
 except Exception:
     CFG_MODALIDADES = {}
 
+def _duracao_atividade(aid):
+    """Segundos de uma atividade. Necessario para saber o passo temporal
+    dos streams (nao sao 1 Hz)."""
+    try:
+        import db as _db
+        r = _db._exec("""SELECT COALESCE(elapsed_time, moving_time)
+                         FROM activities WHERE id = ?""", (str(aid),), fetch='one')
+        return float(r[0]) if r and r[0] else None
+    except Exception:
+        return None
+
+
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
@@ -1222,7 +1234,8 @@ def api_aquecimento_perfil():
                               'erro': 'sem streams guardados'})
                 continue
             saida.append({'activity_id': aid, 'data': dt,
-                          **aqs.resumir_inicio(streams)})
+                          **aqs.resumir_inicio(
+                              streams, duracao_s=_duracao_atividade(aid))})
 
         return jsonify({'status': 'ok', 'modalidade': mod,
                         'protocolo_assumido': aa.PROTOCOLOS.get(mod),
@@ -1307,7 +1320,8 @@ def api_aquecimento_forcar_datas():
                 sem_str += 1
                 continue
 
-            r = aqs.analisar_assistido(streams, mod, aa.PROTOCOLOS)
+            r = aqs.analisar_assistido(streams, mod, aa.PROTOCOLOS,
+                                       duracao_s=_duracao_atividade(aid))
             if r.get('detectado'):
                 aq_db.salvar_blocos(aid, mod, d, r['blocos'], sync=False)
                 det += 1
@@ -1390,7 +1404,8 @@ def api_aquecimento_ingerir():
             if not streams:
                 sem_streams += 1
                 continue
-            r = aqs.analisar_streams(streams, mod, aa.PROTOCOLOS)
+            r = aqs.analisar_streams(streams, mod, aa.PROTOCOLOS,
+                                     duracao_s=_duracao_atividade(aid))
             data_iso = str(data)[:10] if data else None
             if r.get('detectado'):
                 aq_db.salvar_blocos(str(aid), mod, data_iso, r['blocos'], sync=False)

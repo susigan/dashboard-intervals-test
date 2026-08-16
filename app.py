@@ -1678,6 +1678,98 @@ def api_aquecimento_ingerir():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/fisiologia/ingerir')
+def api_fisiologia_ingerir():
+    """Cria linhas em fisiologia_intervalos a partir dos streams.
+
+    E' o passo que faltava: sem isto o Perfil por Watts ficava preso as
+    atividades que alguem inseriu por fora do projecto.
+
+    ?limite=40[&modalidade=Bike][&refazer=1]
+    Idempotente: salta as atividades que ja tem intervalos, salvo &refazer=1.
+    """
+    try:
+        import db as _db
+        import drive_db_fisiologia as ddf
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import fisiologia_ingestor as ing
+
+        limite = request.args.get('limite', default=40, type=int)
+        mod_alvo = request.args.get('modalidade')
+        refazer = request.args.get('refazer') in ('1', 'true', 'sim')
+
+        conn = ddf.get_conn()
+        ja_tem = {r[0] for r in conn.execute(
+            "SELECT DISTINCT activity_id FROM fisiologia_intervalos")}
+
+        cond, params = ["type IS NOT NULL"], []
+        if mod_alvo:
+            variantes = [k for k, v in CFG_MODALIDADES.items() if v == mod_alvo]
+            if variantes:
+                cond.append(f"type IN ({','.join('?' * len(variantes))})")
+                params.extend(variantes)
+        params.append(limite * 3)
+
+        linhas = _db._exec(
+            f"""SELECT id, date, type, COALESCE(elapsed_time, moving_time)
+                FROM activities WHERE {' AND '.join(cond)}
+                ORDER BY date DESC LIMIT ?""", tuple(params), fetch='all') or []
+
+        feitas, saltadas, sem_streams, sem_blocos, erros = 0, 0, 0, 0, 0
+        total_intervalos = 0
+        detalhe = []
+
+        for aid, data, tipo, dur in linhas:
+            if feitas >= limite:
+                break
+            mod = CFG_MODALIDADES.get(tipo, tipo)
+            if mod not in ('Row', 'Ski', 'Bike', 'Run'):
+                continue
+            aid = str(aid)
+            if aid in ja_tem and not refazer:
+                saltadas += 1
+                continue
+            try:
+                streams, _m = _db.get_streams(aid)
+                if not streams:
+                    sem_streams += 1
+                    continue
+                extraidos = ing.extrair_intervalos(streams, duracao_s=dur)
+                if not extraidos:
+                    sem_blocos += 1
+                    continue
+                n = ing.gravar(conn, aid, str(data)[:10] if data else None,
+                               mod, extraidos)
+                feitas += 1
+                total_intervalos += n
+                detalhe.append({'activity_id': aid, 'modalidade': mod,
+                                'data': str(data)[:10] if data else None,
+                                'intervalos': n})
+            except Exception as e:
+                erros += 1
+                detalhe.append({'activity_id': aid, 'erro': f"{type(e).__name__}: {e}"})
+
+        if feitas:
+            try:
+                ddf.upload()
+            except Exception as e:
+                print(f"[INGESTOR] sync falhou: {e}")
+
+        return jsonify({
+            'status': 'ok', 'atividades_ingeridas': feitas,
+            'intervalos_criados': total_intervalos,
+            'ja_tinham_intervalos': saltadas,
+            'sem_streams_guardados': sem_streams,
+            'sem_blocos_detectados': sem_blocos,
+            'erros': erros, 'detalhe': detalhe[:20],
+            'nota': 'corre varias vezes ate ja_tinham_intervalos estabilizar'})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/fisiologia/cobertura_metricas')
 def api_fisiologia_cobertura_metricas():
     """Que metrica/agregacao tem mesmo dados na BD do perfil por watts."""

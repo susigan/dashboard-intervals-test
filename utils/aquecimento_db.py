@@ -115,7 +115,8 @@ CREATE TABLE IF NOT EXISTS aquecimento_rejeitadas (
     modalidade  TEXT,
     data        TEXT,
     motivo      TEXT,
-    verificada  TEXT
+    verificada  TEXT,
+    versao      INTEGER DEFAULT 0
 );
 """
 
@@ -168,32 +169,53 @@ def salvar_blocos(activity_id, modalidade, data, blocos, sync=True):
     return len(blocos)
 
 
-def marcar_rejeitada(activity_id, modalidade, data, motivo, sync=False):
+def _garantir_coluna_versao(conn):
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(aquecimento_rejeitadas)")}
+        if "versao" not in cols:
+            conn.execute("ALTER TABLE aquecimento_rejeitadas ADD COLUMN versao INTEGER DEFAULT 0")
+            conn.commit()
+    except Exception as e:
+        print(f"[AQUECIMENTO] migracao versao: {e}")
+
+
+def marcar_rejeitada(activity_id, modalidade, data, motivo, sync=False, versao=0):
     """Regista que a atividade foi analisada e NAO segue o protocolo.
 
     Evita reanalisar a mesma atividade em cada passagem do worker.
     """
     conn = get_conn()
+    _garantir_coluna_versao(conn)
     conn.execute(
         """INSERT OR REPLACE INTO aquecimento_rejeitadas
-           (activity_id, modalidade, data, motivo, verificada)
-           VALUES (?, ?, ?, ?, ?)""",
+           (activity_id, modalidade, data, motivo, verificada, versao)
+           VALUES (?, ?, ?, ?, ?, ?)""",
         (activity_id, modalidade, data, motivo,
-         datetime.now().isoformat(timespec="seconds")))
+         datetime.now().isoformat(timespec="seconds"), versao))
     conn.commit()
     if sync:
         sincronizar()
 
 
-def ja_analisada(activity_id):
-    """True se a atividade ja foi aceite ou rejeitada antes."""
+def ja_analisada(activity_id, versao_atual=None):
+    """True se ja foi aceite, ou rejeitada por um detector ATUAL.
+
+    Uma rejeicao feita por uma versao antiga do detector nao conta: a
+    atividade volta a ser analisada com a logica corrigida.
+    """
     conn = get_conn()
+    if conn.execute("SELECT 1 FROM aquecimento_blocos WHERE activity_id = ? LIMIT 1",
+                    (activity_id,)).fetchone():
+        return True
+    _garantir_coluna_versao(conn)
     r = conn.execute(
-        """SELECT 1 FROM aquecimento_blocos WHERE activity_id = ?
-           UNION ALL
-           SELECT 1 FROM aquecimento_rejeitadas WHERE activity_id = ?
-           LIMIT 1""", (activity_id, activity_id)).fetchone()
-    return r is not None
+        "SELECT COALESCE(versao, 0) FROM aquecimento_rejeitadas WHERE activity_id = ?",
+        (activity_id,)).fetchone()
+    if not r:
+        return False
+    if versao_atual is None:
+        return True
+    return int(r[0]) >= int(versao_atual)
 
 
 # ── Leitura ───────────────────────────────────────────────────────────────

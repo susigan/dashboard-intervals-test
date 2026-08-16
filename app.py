@@ -926,7 +926,8 @@ def api_fisiologia_evolucao_robusta():
         res = tm.evolucao_temporal(
             modalidade, metrica, agregacao,
             watts_min=request.args.get('watts_min', type=float),
-            watts_max=request.args.get('watts_max', type=float))
+            watts_max=request.args.get('watts_max', type=float),
+            agrupar=request.args.get('agrupar', 'mes'))
         return jsonify(res), 200
     except Exception as e:
         import traceback
@@ -1676,6 +1677,17 @@ def api_aquecimento_ingerir():
         import traceback
         return jsonify({'status': 'erro', 'mensagem': str(e),
                         'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/fisiologia/faixa_sugerida/<modalidade>')
+def api_fisiologia_faixa_sugerida(modalidade):
+    """Faixa de watts util para esta modalidade (p10-p90 sem outliers)."""
+    try:
+        from tabs import tab_metabol as tm
+        return jsonify({'status': 'ok', 'modalidade': modalidade,
+                        **tm.faixa_watts_sugerida(modalidade)})
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
 
 
 @app.route('/api/fisiologia/progresso')

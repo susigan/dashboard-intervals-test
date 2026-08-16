@@ -312,7 +312,8 @@ def modalidades_disponiveis():
         {'modalidade': r['modalidade'], 'n': r['n'], 'n_dias': r['n_dias'], 'n_atividades': r['n_atividades']}
         for r in resultado
     ]
-def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15, largura_bin_manual=50):
+def perfil_por_modalidade(modalidade, campos_selecionados, min_n_total=15,
+                          largura_bin_manual=50, so_estabilizados=False):
     """
     Perfil com PONDERAÇÃO.
     campos_selecionados: dict {metrica_base: agregacao}
@@ -614,6 +615,14 @@ BODY = r"""
     </select></label>
 </div>
 <div class="controls" id="agregacaoControls"></div>
+<div class="controls" style="margin-bottom:4px;">
+  <label class="sel" style="cursor:pointer;white-space:nowrap;">
+    <input type="checkbox" id="soEstabilizados" style="vertical-align:middle;margin-right:4px;">
+    <span style="vertical-align:middle;">Só blocos onde a métrica estabilizou</span></label>
+  <span style="color:#8b949e;font-size:11px;margin-left:6px;">
+    blocos curtos medem o caminho, não o efeito da potência</span>
+  <span id="perfAviso" style="color:#8b949e;font-size:11px;margin-left:10px;"></span>
+</div>
 <h2>Perfil metabólico — ponderado (últimos 30% com 1.5x peso)</h2>
 <div id="tooltip" style="position:absolute;background:#000;color:#fff;padding:8px;border-radius:3px;font-size:11px;display:none;z-index:1000;pointer-events:none;border:1px solid #666;white-space:nowrap;"></div>
 <div class="legend" id="lgPerfil"></div>
@@ -1103,6 +1112,15 @@ async function carregarPerfil(){
   const d = await fetch(url).then(r => r.json());
   console.log('[carregarPerfil] OK:', d);
   PERFIL = d;
+  const pa = document.getElementById('perfAviso');
+  if(pa){
+   const p = [];
+   if(d.n_intervalos_total != null) p.push('n=' + d.n_intervalos_total);
+   if(d.outliers_watts_removidos) p.push(d.outliers_watts_removidos + ' outlier(s) de watts');
+   const ig = Object.keys(d.ignoradas || {});
+   if(ig.length) p.push('sem dados: ' + ig.join(', '));
+   pa.textContent = p.join(' | ');
+  }
   drawPerfil();
  }catch(e){
   console.error('[carregarPerfil] ERRO:', e);
@@ -1186,6 +1204,8 @@ async function load(){
    }
   });
   
+  const chkEst = document.getElementById('soEstabilizados');
+  if(chkEst) chkEst.onchange = carregarPerfil;
   const selAgrupar = document.getElementById('agruparEvolucao');
   if(selAgrupar) selAgrupar.onchange = carregarEvolucao;
   const selMetricaEvolucao = document.getElementById('metricaEvolucao');

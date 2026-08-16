@@ -1235,7 +1235,8 @@ def api_aquecimento_perfil():
                 continue
             saida.append({'activity_id': aid, 'data': dt,
                           **aqs.resumir_inicio(
-                              streams, duracao_s=_duracao_atividade(aid))})
+                              streams, duracao_s=_duracao_atividade(aid),
+                              protocolo=aa.PROTOCOLOS.get(mod))})
 
         return jsonify({'status': 'ok', 'modalidade': mod,
                         'protocolo_assumido': aa.PROTOCOLOS.get(mod),
@@ -1304,7 +1305,7 @@ def api_aquecimento_forcar_datas():
                 continue
 
             aid = str(linha[0])
-            if aq_db.ja_analisada(aid):
+            if aq_db.ja_analisada(aid, aqs.VERSAO_DETECTOR):
                 salt += 1
                 continue
 
@@ -1330,7 +1331,8 @@ def api_aquecimento_forcar_datas():
             else:
                 m = r.get('motivo', 'desconhecido')
                 motivos[m] = motivos.get(m, 0) + 1
-                aq_db.marcar_rejeitada(aid, mod, d, m)
+                aq_db.marcar_rejeitada(aid, mod, d, m,
+                                       versao=aqs.VERSAO_DETECTOR)
                 rej += 1
                 if len(exemplos) < 3:
                     exemplos.append({'data': d, 'activity_id': aid,
@@ -1397,7 +1399,7 @@ def api_aquecimento_ingerir():
                 continue
             if mod_alvo and mod != mod_alvo:
                 continue
-            if aq_db.ja_analisada(str(aid)):
+            if aq_db.ja_analisada(str(aid), aqs.VERSAO_DETECTOR):
                 salt += 1
                 continue
             streams, _meta = _db.get_streams(str(aid))
@@ -1412,7 +1414,8 @@ def api_aquecimento_ingerir():
                 det += 1
             else:
                 m = r.get('motivo', 'desconhecido')
-                aq_db.marcar_rejeitada(str(aid), mod, data_iso, m)
+                aq_db.marcar_rejeitada(str(aid), mod, data_iso, m,
+                                       versao=aqs.VERSAO_DETECTOR)
                 motivos[m] = motivos.get(m, 0) + 1
                 rej += 1
 
@@ -1587,7 +1590,7 @@ def api_aquecimento_scan():
         det, rej, salt, motivos = 0, 0, 0, {}
         for row in atividades:
             aid, mod, data = row[0], row[1], row[2]
-            if aq_db.ja_analisada(aid):
+            if aq_db.ja_analisada(aid, aqs.VERSAO_DETECTOR):
                 salt += 1
                 continue
             r = analyzer.analisar_atividade(aid, mod)
@@ -1656,7 +1659,7 @@ def api_aquecimento_calibrar():
             aid, modalidade, data = row[0], row[1], row[2]
             if modalidade not in ('Row', 'Ski', 'Bike'):
                 continue
-            if aq_db.ja_analisada(aid):
+            if aq_db.ja_analisada(aid, aqs.VERSAO_DETECTOR):
                 saltados += 1
                 continue
             r = analyzer.analisar_atividade(aid, modalidade)

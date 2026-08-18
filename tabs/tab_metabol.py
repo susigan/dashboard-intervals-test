@@ -602,6 +602,7 @@ BODY = r"""
 <div class="tabs" style="border-bottom:1px solid #21262d; margin-bottom:20px;">
   <button class="tab-btn active" data-tab="perfil_watts">Perfil por Watts</button>
   <button class="tab-btn" data-tab="aquecimento">Aquecimento</button>
+  <button class="tab-btn" data-tab="perfilmet">Perfil Metabólico</button>
 </div>
 <div id="perfil_watts" class="tab-content active">
 <div class="controls">
@@ -655,6 +656,39 @@ BODY = r"""
        white-space:nowrap;"></div>
 </div>
 </div>
+<div id="perfilmet" class="tab-content">
+  <div class="controls">
+    <label class="sel">Modalidade
+      <select id="pmModalidade">
+        <option value="Bike">Bike</option>
+        <option value="Row">Row</option>
+        <option value="Ski">Ski</option>
+        <option value="Run">Run</option>
+      </select></label>
+    <label class="sel">Altura (cm) <input type="number" id="pmAltura" value="186" style="width:70px"></label>
+    <label class="sel">Idade <input type="number" id="pmIdade" value="40" style="width:60px"></label>
+    <label class="sel">Peso (kg) <input type="number" id="pmPeso" step="0.1" placeholder="auto" style="width:75px"></label>
+    <label class="sel">% gordura <input type="number" id="pmBf" step="0.1" placeholder="opcional" style="width:80px"></label>
+    <button onclick="pmCarregar()">Actualizar</button>
+    <span id="pmEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
+  </div>
+  <div id="pmAviso" style="color:#F0883E;font-size:11px;margin-bottom:8px;"></div>
+  <div id="pmResumo"></div>
+  <h2>Substratos — gordura e hidratos vs potência</h2>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chSubstratos" height="300"></canvas>
+    <div id="pmTip" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
+         border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
+         white-space:nowrap;"></div>
+  </div>
+  <h2>Zonas ancoradas no MLSS</h2>
+  <div id="pmZonas" style="overflow-x:auto;"></div>
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">MMP usados e validade do modelo</summary>
+    <div id="pmDetalhe" style="margin-top:6px;"></div>
+  </details>
+</div>
+
 <div id="aquecimento" class="tab-content">
   <div class="tabs" id="aqModTabs" style="border-bottom:1px solid #21262d; margin-bottom:16px;"></div>
   <div class="controls" style="margin-bottom:12px;">
@@ -1243,6 +1277,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   this.classList.add('active');
   document.getElementById(tabName).classList.add('active');
   if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); }
+  if(tabName === 'perfilmet'){ if(!PM) pmCarregar(); else pmDraw(); }
  });
 });
 // ═════ AQUECIMENTO ═════
@@ -2046,6 +2081,189 @@ function carregarCobertura(){
    }
   });
  }).catch(function(){});
+}
+
+// ═════ PERFIL METABOLICO ═════
+let PM = null;
+
+function pmCarregar(){
+ const mod = document.getElementById('pmModalidade').value;
+ const est = document.getElementById('pmEstado');
+ const p = new URLSearchParams();
+ ['Altura','Idade','Peso','Bf'].forEach(function(k){
+  const el = document.getElementById('pm'+k);
+  if(el && el.value !== '') p.set(k.toLowerCase(), el.value);
+ });
+ est.textContent = 'a calcular...';
+ fetch('/api/metabol/perfil_metabolico/'+mod+'?'+p.toString())
+ .then(r=>r.json()).then(function(d){
+  PM = d;
+  const av = document.getElementById('pmAviso');
+  if(d.status !== 'ok'){
+   est.textContent = '';
+   document.getElementById('pmResumo').innerHTML =
+     '<span style="color:#8b949e;">' + (d.mensagem||'sem dados') + '</span>';
+   av.textContent = (d.duracoes_em_falta_s||[]).length
+     ? 'faltam MMP de: ' + d.duracoes_em_falta_s.map(x=>Math.round(x/60)+'min').join(', ') : '';
+   pmDraw(); return;
+  }
+  est.textContent = 'season ' + (d.season||'?') + ' · ' + d.n_curvas_na_season + ' curvas';
+  av.textContent = d.aviso_datas || '';
+  pmResumo(); pmDraw(); pmZonas(); pmDetalhe();
+ }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
+}
+
+function pmCartao(titulo, valor, sub, cor){
+ return '<div style="flex:1;min-width:150px;background:#0d1117;border:1px solid #21262d;'
+  + 'border-radius:6px;padding:10px 12px;margin:4px;">'
+  + '<div style="color:#8b949e;font-size:11px;">' + titulo + '</div>'
+  + '<div style="font-size:20px;font-weight:600;color:' + (cor||'#c9d1d9') + ';">' + valor + '</div>'
+  + (sub ? '<div style="color:#8b949e;font-size:11px;margin-top:2px;">' + sub + '</div>' : '')
+  + '</div>';
+}
+
+function pmResumo(){
+ const m = PM.mader || {};
+ let h = '<div style="display:flex;flex-wrap:wrap;">';
+ h += pmCartao('VO\u2082max', (PM.vo2max||'—') + ' <span style="font-size:12px;">ml/min/kg</span>',
+               PM.vo2max_validade, '#58A6FF');
+ h += pmCartao('VLamax', (PM.vlamax||'—') + ' <span style="font-size:12px;">mmol/L/s</span>',
+               PM.perfil + (PM.vlamax_saturado ? ' \u26A0 no limite do modelo' : ''), '#F0883E');
+ h += pmCartao('MLSS / AT', (m.mlss_at_w||'—') + ' W',
+               m.pct_vo2max_at ? m.pct_vo2max_at + '% do VO\u2082max' : '', '#3FB950');
+ h += pmCartao('FatMax', (m.fatmax_w||'—') + ' W',
+               (m.pct_vo2max_fatmax ? m.pct_vo2max_fatmax + '% VO\u2082max' : '')
+               + (m.fatmax_pct_mlss ? ' · ' + m.fatmax_pct_mlss + '% do MLSS' : ''), '#A371F7');
+ h += pmCartao('Gordura no FatMax', (m.fat_no_fatmax_g_h||'—') + ' g/h', '');
+ h += pmCartao('CHO no MLSS', (m.cho_no_at_g_h||'—') + ' g/h', '');
+ if(m.glicogenio) h += pmCartao('Glicogénio', m.glicogenio.total_g + ' g',
+   m.glicogenio.nivel + ' · ' + m.glicogenio.musculo_kg + ' kg músculo');
+ h += '</div>';
+ document.getElementById('pmResumo').innerHTML = h;
+}
+
+let PM_PONTOS = [];
+
+function pmDraw(){
+ const o = ctx('chSubstratos', 300);
+ if(!o) return;
+ const g = o.g, W = o.W, H = o.H;
+ const curva = (PM && PM.mader && PM.mader.curva) || [];
+ if(!curva.length){ noData(g, W, H, 'Sem dados'); return; }
+
+ const xs = curva.map(p=>p.watts);
+ const xa = Math.min.apply(null,xs), xb = Math.max.apply(null,xs);
+ const maxG = Math.max.apply(null, curva.map(p=>Math.max(p.fat_g_h||0, p.cho_g_h||0)));
+ const PL=62, PR=62, PB=34, PT=16, w=W-PL-PR, h=H-PT-PB;
+ const X = v => PL + (v-xa)/((xb-xa)||1)*w;
+ const Y = v => PT + h - v/(maxG||1)*h;
+
+ g.strokeStyle='#21262d'; g.lineWidth=1; g.fillStyle='#8b949e';
+ g.font='11px sans-serif'; g.textAlign='right';
+ for(let k=0;k<=4;k++){
+  const y=PT+h*k/4;
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.fillText(Math.round(maxG-maxG*k/4)+'', PL-8, y+4);
+ }
+ g.textAlign='center';
+ for(let k=0;k<=5;k++){
+  const wv = xa+(xb-xa)*k/5;
+  g.fillText(Math.round(wv)+'W', X(wv), H-12);
+ }
+
+ PM_PONTOS = [];
+ [['fat_g_h','#3FB950','Gordura'],['cho_g_h','#F0883E','CHO']].forEach(function(cfg){
+  const [campo, cor, nome] = cfg;
+  g.strokeStyle=cor; g.lineWidth=2; g.beginPath();
+  let primeiro=true;
+  curva.forEach(function(p){
+   if(p[campo]==null) return;
+   const x=X(p.watts), y=Y(p[campo]);
+   primeiro ? (g.moveTo(x,y), primeiro=false) : g.lineTo(x,y);
+   PM_PONTOS.push({x:x,y:y,watts:p.watts,valor:p[campo],nome:nome,
+                   lactato:p.lactato,vo2:p.vo2});
+  });
+  g.stroke();
+ });
+
+ const m = PM.mader||{};
+ [[m.fatmax_w,'#A371F7','FatMax'],[m.mlss_at_w,'#58A6FF','MLSS']].forEach(function(mk){
+  if(!mk[0]) return;
+  const x=X(mk[0]);
+  g.strokeStyle=mk[1]; g.setLineDash([5,4]); g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke(); g.setLineDash([]);
+  g.fillStyle=mk[1]; g.textAlign='center'; g.font='10px sans-serif';
+  g.fillText(mk[2]+' '+mk[0]+'W', x, PT+11);
+ });
+
+ g.textAlign='left'; g.font='11px sans-serif';
+ g.fillStyle='#3FB950'; g.fillText('\u25CF Gordura (g/h)', PL+4, PT+11);
+ g.fillStyle='#F0883E'; g.fillText('\u25CF CHO (g/h)', PL+110, PT+11);
+ pmLigarTip();
+}
+
+function pmLigarTip(){
+ const cv=document.getElementById('chSubstratos');
+ const tip=document.getElementById('pmTip');
+ if(!cv||!tip||cv._tipPM) return;
+ cv._tipPM=true;
+ cv.addEventListener('mousemove', function(ev){
+  const r=cv.getBoundingClientRect();
+  const mx=(ev.clientX-r.left)*(cv.width/r.width)/(window.devicePixelRatio||1);
+  const my=(ev.clientY-r.top)*(cv.height/r.height)/(window.devicePixelRatio||1);
+  let perto=null,dmin=12;
+  PM_PONTOS.forEach(function(p){
+   const d=Math.hypot(p.x-mx,p.y-my);
+   if(d<dmin){dmin=d;perto=p;}
+  });
+  if(!perto){tip.style.display='none';return;}
+  tip.innerHTML='<b>'+Math.round(perto.watts)+'W</b><br>'+perto.nome+': <b>'
+    +Math.round(perto.valor)+' g/h</b>'
+    +(perto.lactato!=null?'<br><span style="color:#8b949e;">lactato '+perto.lactato+' mmol/L</span>':'')
+    +(perto.vo2!=null?'<br><span style="color:#8b949e;">VO\u2082 '+perto.vo2+'</span>':'');
+  tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+12, r.width-170)+'px';
+  tip.style.top=(ev.clientY-r.top-10)+'px';
+ });
+ cv.addEventListener('mouseleave',function(){tip.style.display='none';});
+}
+
+function pmZonas(){
+ const z=(PM&&PM.zonas)||[];
+ if(!z.length){document.getElementById('pmZonas').innerHTML='';return;}
+ let h='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+  +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+  +'<th style="padding:6px;">Zona</th><th>% do MLSS</th><th>Watts</th></tr>';
+ z.forEach(function(x){
+  h+='<tr style="border-bottom:1px solid #161b22;"><td style="padding:6px;">'+x.zona+'</td>'
+   +'<td style="color:#8b949e;">'+x.pct_at+'</td><td>'+x.de_w+' – '+x.ate_w+' W</td></tr>';
+ });
+ h+='</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+  +'Ancoradas no MLSS do modelo, não numa FTP fixa.</p>';
+ document.getElementById('pmZonas').innerHTML=h;
+}
+
+function pmDetalhe(){
+ const d=PM||{};
+ const mm=d.mmp_usados||{}, dt=d.datas_dos_mmp||{};
+ let h='<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:16px;">Duração</th>'
+  +'<th style="padding-right:16px;">Watts</th><th>Data</th></tr>';
+ Object.keys(mm).forEach(function(k){
+  h+='<tr><td style="padding-right:16px;">'+Math.round(k/60)+' min</td>'
+   +'<td style="padding-right:16px;">'+mm[k]+' W</td>'
+   +'<td style="color:#8b949e;">'+(dt[k]||'—')+'</td></tr>';
+ });
+ if(d.pmax_w) h+='<tr><td style="padding-right:16px;">Pmax (1s)</td>'
+   +'<td style="padding-right:16px;">'+Math.round(d.pmax_w)+' W</td>'
+   +'<td style="color:#8b949e;">'+(d.pmax_data||'—')+'</td></tr>';
+ h+='</table>';
+ if(d.dispersao_datas_dias!=null)
+  h+='<p style="color:#8b949e;font-size:11px;">MMP separados por '+d.dispersao_datas_dias+' dias.</p>';
+ h+='<p style="color:#8b949e;font-size:11px;">'+(d.vo2max_validade||'')
+  +'<br>VLamax é estimado a partir de potências máximas (konaendu/Mader), não medido. '
+  +'Serve para acompanhar o próprio atleta ao longo do tempo, não como valor absoluto.</p>';
+ document.getElementById('pmDetalhe').innerHTML=h;
 }
 
 aqInit();

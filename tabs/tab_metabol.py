@@ -2424,7 +2424,10 @@ function pmResumo(){
  h += pmCartao('CHO no MLSS', (m.cho_no_at_g_h||'—') + ' g/h', '');
  const lim = PM.limiares || {};
  if(lim.lt1_w) h += pmCartao('LT1 (aeróbio)', lim.lt1_w + ' W',
-   (lim.lt1_lactato!=null? lim.lt1_lactato + ' mmol/L' : ''), '#3FB950');
+   (lim.lt1_lactato!=null? lim.lt1_lactato + ' mmol/L' : '')
+   + (lim.lt1_convencao_w!=null && lim.lt1_convencao_w!==lim.lt1_w
+      ? ' · convenção +0,5 mmol/L daria ' + lim.lt1_convencao_w + ' W' : ''),
+   '#3FB950');
  if(lim.lt2_w) h += pmCartao('LT2 (anaeróbio)', lim.lt2_w + ' W',
    (lim.lt2_lactato!=null? lim.lt2_lactato + ' mmol/L' : '')
    + (lim.lt2_vs_mlss_w!=null? ' · ' + (lim.lt2_vs_mlss_w>0?'+':'') + lim.lt2_vs_mlss_w + 'W vs MLSS' : ''),

@@ -489,45 +489,89 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
 # 'compara_com' aponta para a chave equivalente no resultado de calcular().
 # None = nao ha equivalente no modelo, e' informacao complementar.
 CAMPOS_EXTERNOS = [
-    {"chave": "EBP", "unidade": "W", "compara_com": "lt2_w",
-     "aliases": ["ebp", "estimatedbreakingpoint", "breakingpoint"],
+    # ── em watts ─────────────────────────────────────────────────────────
+    {"chave": "EBP", "unidade": "W", "eixo": "W", "compara_com": "lt2_w",
+     "aliases": ["ebp", "estimatedbreakingpoint", "breakingpoint",
+                 "ebp_w", "estimatedpoweratbreakingpoint"],
      "descricao": "Estimated Power at Breaking Point (entre LT1 e LT2)"},
-    {"chave": "Pvo2max", "unidade": "W", "compara_com": "pvo2max_w",
-     "aliases": ["pvo2max", "pvo2max_w", "powervo2max"],
+    {"chave": "PBP", "unidade": "W", "eixo": "W", "compara_com": "lt2_w",
+     "aliases": ["pbp", "pbp_w", "poweratbreakingpoint"],
+     "descricao": "Power at Breaking Point"},
+    {"chave": "Pvo2max", "unidade": "W", "eixo": "W", "compara_com": "pvo2max_w",
+     "aliases": ["pvo2max", "pvo2max_w", "powervo2max", "pvo2"],
      "descricao": "Estimated Power at VO2max"},
-    {"chave": "MSS", "unidade": "W", "compara_com": "lt1_w",
-     "aliases": ["mss", "maximalsteadystate", "steadystate"],
+    {"chave": "MSS", "unidade": "W", "eixo": "W", "compara_com": "lt1_w",
+     "aliases": ["mss", "maximalsteadystate", "steadystate", "mss_w"],
      "descricao": "Steady state abaixo do eFTP (controlmetrics.es)"},
-    {"chave": "Fractional Utilization", "unidade": "%",
+    {"chave": "FatMax", "unidade": "W", "eixo": "W", "compara_com": "fatmax_w",
+     "aliases": ["fatmax", "fatmax_w", "fatmaxpower"],
+     "descricao": "Potencia de oxidacao maxima de gordura"},
+    {"chave": "Aet", "unidade": "W", "eixo": "W", "compara_com": "lt1_w",
+     "aliases": ["aet", "aet_w", "aerobicthreshold"],
+     "descricao": "Limiar aerobio em potencia"},
+
+    # ── em bpm ───────────────────────────────────────────────────────────
+    {"chave": "AeTHR", "unidade": "bpm", "eixo": "bpm", "compara_com": "lt1_w",
+     "aliases": ["aethr", "aethr_bpm", "aerobicthresholdhr"],
+     "descricao": "Frequencia cardiaca no limiar aerobio"},
+    {"chave": "HRVT1", "unidade": "bpm", "eixo": "bpm", "compara_com": "lt1_w",
+     "aliases": ["hrvt1", "hrvt1_bpm"],
+     "descricao": "Primeiro limiar ventilatorio por HRV (DFA-a1 = 0.75)"},
+    {"chave": "HRVT2", "unidade": "bpm", "eixo": "bpm", "compara_com": "lt2_w",
+     "aliases": ["hrvt2", "hrvt2_bpm"],
+     "descricao": "Segundo limiar ventilatorio por HRV (DFA-a1 = 0.50)"},
+
+    # ── sem equivalente no modelo ────────────────────────────────────────
+    {"chave": "Fractional Utilization", "unidade": "%", "eixo": None,
      "compara_com": "fractional_utilization_pct",
-     "aliases": ["fractionalutilization", "fracutil", "fu", "fuovo2max"],
+     "aliases": ["fractionalutilization", "fracutil", "fuovo2max",
+                 "fractionalutilisation", "fractionalutilizationofvo2max"],
      "descricao": "eFTP como percentagem do MAP. 75-85% e' o intervalo "
                   "habitual em atletas de endurance treinados; abaixo de 75% "
                   "o tecto esta alto e o chao baixo (trabalhar limiar), acima "
                   "de 85% o chao esta encostado ao tecto (trabalhar VO2max)"},
-    {"chave": "FractionalUtilization6minPower", "unidade": "%",
+    {"chave": "FractionalUtilization6minPower", "unidade": "%", "eixo": None,
      "compara_com": None,
      "aliases": ["fractionalutilization6minpower", "fractionalutilization6min",
-                 "fu6min", "fractionalutilisation6minpower"],
+                 "fu6min", "fractionalutilisation6minpower",
+                 "fractionalutilization6mpower"],
      "descricao": "FTP como % da potencia de 6 min de 42 dias (proxy de "
                   "VO2max). Muda pouco por construcao -- serve de tendencia, "
                   "nao de valor pontual"},
-    {"chave": "CompoundScore(5m)", "unidade": "—", "compara_com": None,
+    {"chave": "CompoundScore(5m)", "unidade": "—", "eixo": None,
+     "compara_com": None,
      "aliases": ["compoundscore5m", "compoundscore", "compoundscore_5m"],
      "descricao": "Compound score de 5 min (Predictors of cycling "
                   "performance success, U23 road cyclists)"},
-    {"chave": "CPR", "unidade": "kJ", "compara_com": None,
+    {"chave": "CPR", "unidade": "kJ", "eixo": None, "compara_com": None,
      "aliases": ["cpr", "cpr_kj", "frc"],
      "descricao": "FRC / W' pela regressao P vs 1/t sobre a curva de 60 "
                   "dias (2, 3, 5, 12 e 20 min). Janela de 60 dias, diferente "
                   "da season -- nao e' directamente comparavel com o W' do "
                   "modelo de CP"},
-    {"chave": "MeanRRA1", "unidade": "—", "compara_com": None,
+    {"chave": "MeanRRA1", "unidade": "—", "eixo": None, "compara_com": None,
      "aliases": ["meanrra1", "meanrr_a1", "meanrra_1"],
      "descricao": "Media do racio Respiration Rate (Hz) / DFA-a1 na sessao"},
-    {"chave": "PCr", "unidade": "W", "compara_com": None,
-     "aliases": ["pcr", "ss_p_max", "sspmax"],
-     "descricao": "icu.activity.ss_p_max (season best de Pmax)"},
+    {"chave": "PCr", "unidade": "—", "eixo": None, "compara_com": None,
+     "aliases": ["pcr"],
+     "descricao": "Custom field do atleta. NAO se assume que seja o "
+                  "ss_p_max: o campo standard ss_p_max e' recolhido a parte, "
+                  "e se os dois coincidirem isso aparece na coluna de "
+                  "duplicados em vez de se juntarem as escondidas"},
+]
+
+# Campos standard da API que interessam ao perfil, recolhidos a parte dos
+# custom fields para nao se confundirem com eles.
+CAMPOS_STANDARD = [
+    {"chave": "ss_p_max", "unidade": "W", "eixo": None, "compara_com": None,
+     "aliases": ["ss_p_max"],
+     "descricao": "p_max do season best, campo standard da Intervals.icu"},
+    {"chave": "ss_cp", "unidade": "W", "eixo": "W", "compara_com": "mlss_at_w",
+     "aliases": ["ss_cp"],
+     "descricao": "CP do season best, campo standard da Intervals.icu"},
+    {"chave": "icu_pm_ftp", "unidade": "W", "eixo": "W", "compara_com": "mlss_at_w",
+     "aliases": ["icu_pm_ftp"],
+     "descricao": "eFTP do power meter model da Intervals.icu"},
 ]
 
 
@@ -535,23 +579,95 @@ def _normaliza(nome):
     return ''.join(c for c in str(nome).lower() if c.isalnum())
 
 
-def mapear_campos_externos(nomes_presentes):
-    """Nome real no JSON -> definicao, por comparacao normalizada.
+def mapear_campos_externos(nomes_presentes, definicoes=None):
+    """Nome real no JSON -> definicao, sem duplicar a mesma definicao.
 
     Cada atleta escreve o custom field como quer ('Fractional Utilization',
     'FractionalUtilization', 'fractional_utilization'), por isso compara-se
-    sem maiusculas, espacos nem underscores.
+    sem maiusculas, espacos nem underscores. Mas se dois nomes diferentes
+    caem na mesma definicao -- por exemplo um custom field 'Pcr' e o campo
+    standard 'ss_p_max' -- so um pode ganhar, senao a mesma grandeza aparece
+    duas vezes na tabela como se fossem medidas independentes. Ganha o que
+    corresponde a chave exacta; os outros ficam registados como duplicados,
+    a vista, para se decidir o que fazer com eles.
     """
+    defs = definicoes if definicoes is not None else CAMPOS_EXTERNOS
     idx = {}
-    for definicao in CAMPOS_EXTERNOS:
+    for definicao in defs:
         for a in [definicao["chave"]] + definicao["aliases"]:
             idx[_normaliza(a)] = definicao
-    encontrados = {}
+
+    candidatos = {}
     for nome in nomes_presentes:
         definicao = idx.get(_normaliza(nome))
-        if definicao is not None:
-            encontrados[nome] = definicao
-    return encontrados
+        if definicao is None:
+            continue
+        candidatos.setdefault(definicao["chave"], []).append(nome)
+
+    encontrados, duplicados = {}, {}
+    for chave, nomes in candidatos.items():
+        definicao = next(d for d in defs if d["chave"] == chave)
+        exacto = next((n for n in nomes if _normaliza(n) == _normaliza(chave)),
+                      None)
+        vencedor = exacto or sorted(nomes)[0]
+        encontrados[vencedor] = definicao
+        resto = [n for n in nomes if n != vencedor]
+        if resto:
+            duplicados[chave] = resto
+    return encontrados, duplicados
+
+
+def regressao_hr_watts(pontos):
+    """Recta HR = a x Watts + b a partir dos pares do proprio atleta.
+
+    Serve para pousar num mesmo grafico as grandezas em watts e as em bpm:
+    sem uma relacao medida, comparar EBP (W) com HRVT2 (bpm) e' impossivel.
+    A recta e' do atleta, nao de tabela -- e devolve-se o r2 e o n para se
+    ver se e' de confianca antes de se olhar para as conversoes.
+
+    Limite conhecido: a relacao potencia-FC nao e' linear em todo o
+    dominio (achata perto do maximo) nem estavel ao longo do ano (deriva
+    com a forma e com o calor). Serve para situar pontos proximos uns dos
+    outros, nao para converter extremos.
+    """
+    pts = [(float(w), float(h)) for w, h in pontos
+           if w is not None and h is not None and w > 0 and h > 0]
+    n = len(pts)
+    if n < 8:
+        return {"n": n, "suficiente": False,
+                "nota": "menos de 8 pares validos; sem recta"}
+    mx = sum(p[0] for p in pts) / n
+    my = sum(p[1] for p in pts) / n
+    sxx = sum((p[0] - mx) ** 2 for p in pts)
+    sxy = sum((p[0] - mx) * (p[1] - my) for p in pts)
+    if sxx <= 0:
+        return {"n": n, "suficiente": False, "nota": "sem variacao em watts"}
+    a = sxy / sxx
+    b = my - a * mx
+    syy = sum((p[1] - my) ** 2 for p in pts)
+    r2 = (sxy ** 2 / (sxx * syy)) if syy > 0 else 0.0
+    return {"n": n, "suficiente": True,
+            "declive_bpm_por_w": round(a, 4),
+            "intercepto_bpm": round(b, 1),
+            "r2": round(r2, 3),
+            "watts_min": round(min(p[0] for p in pts)),
+            "watts_max": round(max(p[0] for p in pts)),
+            "pontos": [{"w": round(w, 1), "hr": round(h, 1)} for w, h in pts]}
+
+
+def hr_de_watts(rel, watts):
+    if not rel or not rel.get("suficiente") or watts is None:
+        return None
+    return round(rel["declive_bpm_por_w"] * watts + rel["intercepto_bpm"], 1)
+
+
+def watts_de_hr(rel, hr):
+    if not rel or not rel.get("suficiente") or hr is None:
+        return None
+    a = rel["declive_bpm_por_w"]
+    if not a:
+        return None
+    return round((hr - rel["intercepto_bpm"]) / a, 1)
 
 
 def quartis(valores):

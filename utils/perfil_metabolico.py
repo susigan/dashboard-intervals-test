@@ -278,24 +278,37 @@ def _descomprimir(secs, watts):
     return _lista(secs), _lista(watts)
 
 
-def melhores_mmp(linhas, modalidade, pmax_max=None):
+def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None):
     """Melhor MMP de cada duracao necessaria, e o pico de 1 s.
 
-    linhas: [{'date':..., 'secs':..., 'watts':...}] ja filtradas pela season
-    e pela modalidade. Devolve tambem a DATA de cada maximo, para se ver se
-    os valores sao contemporaneos -- um Pmax de ha dois anos com um MMP12
-    recente produz um VLamax sem significado.
+    linhas: [{'date':..., 'secs':..., 'watts':..., 'season':...}] ja
+    filtradas pela modalidade -- mas NAO pela season: o filtro e' feito
+    aqui, para poder recuar quando falta.
+
+    Regra: o valor de cada duracao e' o melhor da season activa. Se essa
+    duracao nao existir na season activa (nao houve nenhum esforco maximo
+    desse tempo), recua para a season anterior mais recente que a tenha,
+    em vez de devolver None e bloquear o modelo inteiro. Cada duracao
+    recua de forma independente -- e por isso que se devolve a season e a
+    data de cada uma: um MMP3 desta epoca com um MMP12 de ha dois anos
+    descreve um atleta que nunca existiu, e isso tem de ficar visivel.
     """
     duracoes = DURACOES_MMP.get(modalidade, [])
-    melhor = {d: (None, None) for d in duracoes}
-    pico1s = (None, None)
     tecto = pmax_max or PMAX_PLAUSIVEL.get(modalidade, 2000)
+
+    # duracao -> season -> (watts, data)
+    por_season = {d: {} for d in duracoes}
+    pico_por_season = {}
+    ultima_data = {}          # season -> data mais recente vista
 
     for l in linhas:
         secs, watts = _descomprimir(l.get('secs'), l.get('watts'))
         if not secs or not watts or len(secs) != len(watts):
             continue
         data = str(l.get('date'))[:10] if l.get('date') else None
+        sea = l.get('season')
+        if data and (sea not in ultima_data or data > ultima_data[sea]):
+            ultima_data[sea] = data
         indice = {int(s): w for s, w in zip(secs, watts) if w is not None}
 
         for d in duracoes:
@@ -303,17 +316,52 @@ def melhores_mmp(linhas, modalidade, pmax_max=None):
             if w is None:                      # duracao exacta em falta
                 proximos = [k for k in indice if abs(k - d) <= max(5, d * 0.05)]
                 w = max((indice[k] for k in proximos), default=None)
-            if w is not None and (melhor[d][0] is None or w > melhor[d][0]):
-                melhor[d] = (float(w), data)
+            if w is None:
+                continue
+            actual = por_season[d].get(sea)
+            if actual is None or w > actual[0]:
+                por_season[d][sea] = (float(w), data)
 
         w1 = indice.get(1)
-        if w1 is not None and w1 <= tecto and (pico1s[0] is None or w1 > pico1s[0]):
-            pico1s = (float(w1), data)
+        if w1 is not None and w1 <= tecto:
+            actual = pico_por_season.get(sea)
+            if actual is None or w1 > actual[0]:
+                pico_por_season[sea] = (float(w1), data)
 
-    return {"mmp": {d: melhor[d][0] for d in duracoes},
-            "datas": {d: melhor[d][1] for d in duracoes},
-            "pmax_w": pico1s[0], "pmax_data": pico1s[1],
-            "pmax_tecto_aplicado": tecto}
+    # seasons por ordem de recencia real (data mais recente), nao por nome:
+    # etiquetas como "2025/26" nao ordenam bem alfabeticamente
+    ordem = sorted(ultima_data, key=lambda s: ultima_data[s], reverse=True)
+
+    def _escolher(mapa):
+        """-> (watts, data, season, recuou)"""
+        if not mapa:
+            return None, None, None, False
+        if season_activa is None:              # sem filtro: melhor de sempre
+            sea = max(mapa, key=lambda s: mapa[s][0])
+            return mapa[sea][0], mapa[sea][1], sea, False
+        if season_activa in mapa:
+            w, dt = mapa[season_activa]
+            return w, dt, season_activa, False
+        for s in ordem:                        # recua para a season anterior
+            if s in mapa:
+                return mapa[s][0], mapa[s][1], s, True
+        return None, None, None, False
+
+    mmp, datas, seasons, recuou = {}, {}, {}, {}
+    for d in duracoes:
+        w, dt, sea, fb = _escolher(por_season[d])
+        mmp[d], datas[d], seasons[d], recuou[d] = w, dt, sea, fb
+
+    pw, pdt, psea, pfb = _escolher(pico_por_season)
+
+    return {"mmp": mmp, "datas": datas,
+            "seasons": seasons, "recuou": recuou,
+            "pmax_w": pw, "pmax_data": pdt,
+            "pmax_season": psea, "pmax_recuou": pfb,
+            "pmax_tecto_aplicado": tecto,
+            "seasons_disponiveis": ordem,
+            "n_por_season": {s: sum(1 for d in duracoes if seasons.get(d) == s)
+                             for s in ordem}}
 
 
 # ── limiares de lactato a partir da curva do modelo ──────────────────────

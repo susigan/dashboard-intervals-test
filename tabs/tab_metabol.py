@@ -2124,7 +2124,7 @@ function pmCarregar(usarManuais){
   est.textContent = 'season ' + (d.season||'?') + ' · ' + d.n_curvas_na_season + ' curvas'
     + (ct.peso ? ' · peso ' + ct.peso + 'kg (média de ' + ct.n_peso + ' registos do trimestre)' : '')
     + (ct.bf ? ' · BF ' + ct.bf + '%' : '');
-  av.textContent = d.aviso_datas || '';
+  av.textContent = [d.aviso_recuo, d.aviso_datas].filter(Boolean).join(' | ');
   pmResumo(); pmMMPEdit(); pmDraw(); pmZonas(); pmDetalhe();
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
 }
@@ -2262,9 +2262,14 @@ function pmMMPEdit(){
  let h = '<div style="color:#8b949e;font-size:11px;margin-bottom:6px;">'
    + 'MMP usados no cálculo — podes alterar os watts ou os segundos para testar</div>'
    + '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;">';
+ const se = (PM && PM.seasons_dos_mmp) || {};
+ const rc = (PM && PM.recuou_de_season) || {};
  Object.keys(mm).forEach(function(sec, i){
+  const cor = rc[sec] ? '#F0883E' : '#8b949e';
+  const eti = (dt[sec]||'—') + (se[sec] && se[sec] !== 'manual'
+    ? ' · ' + se[sec] + (rc[sec] ? ' (recuou)' : '') : '');
   h += '<div style="margin-right:14px;margin-bottom:6px;">'
-    + '<div style="color:#8b949e;font-size:10px;">' + (dt[sec]||'—') + '</div>'
+    + '<div style="color:' + cor + ';font-size:10px;">' + eti + '</div>'
     + '<input type="number" class="pmSec" value="' + sec + '" style="width:64px" title="segundos">'
     + ' <span style="color:#8b949e;">s</span> '
     + '<input type="number" class="pmW" data-sec="' + sec + '" value="'
@@ -2272,7 +2277,10 @@ function pmMMPEdit(){
     + ' <span style="color:#8b949e;">W</span></div>';
  });
  if(PM.pmax_w) h += '<div style="margin-right:14px;margin-bottom:6px;">'
-   + '<div style="color:#8b949e;font-size:10px;">' + (PM.pmax_data||'—') + '</div>'
+   + '<div style="color:' + (PM.pmax_recuou ? '#F0883E' : '#8b949e')
+   + ';font-size:10px;">' + (PM.pmax_data||'—')
+   + (PM.pmax_season ? ' · ' + PM.pmax_season
+      + (PM.pmax_recuou ? ' (recuou)' : '') : '') + '</div>'
    + 'Pmax <input type="number" id="pmPmax" value="' + Math.round(PM.pmax_w)
    + '" style="width:75px"> <span style="color:#8b949e;">W</span></div>';
  h += '<button onclick="pmCarregar(true)" style="margin-bottom:6px;">Recalcular</button>'
@@ -2301,18 +2309,29 @@ function pmZonas(){
 function pmDetalhe(){
  const d=PM||{};
  const mm=d.mmp_usados||{}, dt=d.datas_dos_mmp||{};
+ const se=d.seasons_dos_mmp||{}, rc=d.recuou_de_season||{};
  let h='<table style="border-collapse:collapse;font-size:11px;">'
   +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:16px;">Duração</th>'
-  +'<th style="padding-right:16px;">Watts</th><th>Data</th></tr>';
+  +'<th style="padding-right:16px;">Watts</th><th style="padding-right:16px;">Data</th>'
+  +'<th>Season</th></tr>';
  Object.keys(mm).forEach(function(k){
   h+='<tr><td style="padding-right:16px;">'+Math.round(k/60)+' min</td>'
    +'<td style="padding-right:16px;">'+mm[k]+' W</td>'
-   +'<td style="color:#8b949e;">'+(dt[k]||'—')+'</td></tr>';
+   +'<td style="color:#8b949e;padding-right:16px;">'+(dt[k]||'—')+'</td>'
+   +'<td style="color:'+(rc[k]?'#F0883E':'#8b949e')+';">'+(se[k]||'—')
+   +(rc[k]?' (recuou)':'')+'</td></tr>';
  });
  if(d.pmax_w) h+='<tr><td style="padding-right:16px;">Pmax (1s)</td>'
    +'<td style="padding-right:16px;">'+Math.round(d.pmax_w)+' W</td>'
-   +'<td style="color:#8b949e;">'+(d.pmax_data||'—')+'</td></tr>';
+   +'<td style="color:#8b949e;padding-right:16px;">'+(d.pmax_data||'—')+'</td>'
+   +'<td style="color:'+(d.pmax_recuou?'#F0883E':'#8b949e')+';">'
+   +(d.pmax_season||'—')+(d.pmax_recuou?' (recuou)':'')+'</td></tr>';
  h+='</table>';
+ if(d.n_curvas_na_season!=null)
+  h+='<p style="color:#8b949e;font-size:11px;">'+d.n_curvas_na_season
+   +' curvas na season '+(d.season||'?')+' de '+(d.n_curvas_total||0)
+   +' na base'+((d.seasons_disponiveis||[]).length>1
+     ? ' · seasons: '+d.seasons_disponiveis.join(', ') : '')+'</p>';
  if(d.dispersao_datas_dias!=null)
   h+='<p style="color:#8b949e;font-size:11px;">MMP separados por '+d.dispersao_datas_dias+' dias.</p>';
  h+='<p style="color:#8b949e;font-size:11px;">'+(d.vo2max_validade||'')

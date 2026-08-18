@@ -231,9 +231,13 @@ def calcular(modalidade, mmps, peso, altura_cm, idade, pmax=None, bf_pct=None):
     vlamax = vlamax_konaendu(vo2max, pmax, peso, altura_cm, idade, vr=vr)
     mader = modelo_mader(vo2max, vlamax, peso, bf_pct)
 
+    limiares = limiares_lactato(mader.get("curva") if mader else None,
+                                mader.get("mlss_at_w") if mader else None)
+
     return {
         "status": "ok",
         "modalidade": modalidade,
+        "limiares": limiares,
         "duracoes_usadas_s": duracoes,
         "mmp_usados": {str(d): v for d, v in zip(duracoes, valores)},
         "pmax_w": pmax,
@@ -310,3 +314,69 @@ def melhores_mmp(linhas, modalidade, pmax_max=None):
             "datas": {d: melhor[d][1] for d in duracoes},
             "pmax_w": pico1s[0], "pmax_data": pico1s[1],
             "pmax_tecto_aplicado": tecto}
+
+
+# ── limiares de lactato a partir da curva do modelo ──────────────────────
+
+def limiares_lactato(curva, mlss_w=None):
+    """LT1 e LT2 a partir da curva de lactato estacionario do modelo.
+
+    LT1 (limiar aerobio): primeiro aumento sustentado acima da linha de
+        base -- convencao +0.5 mmol/L sobre o minimo observado.
+    LT2 (limiar anaerobio): maxima curvatura da curva de lactato, que e' a
+        definicao geometrica do ponto de inflexao. Nao se usa o "4 mmol/L"
+        fixo: esse valor e' uma convencao de laboratorio que varia muito
+        entre atletas, e num modelo derivado de potencias maximas seria uma
+        falsa precisao.
+
+    Devolve tambem mlss_w para comparacao -- no modelo de Mader o MLSS ja e'
+    onde producao e combustao se igualam, por isso LT2 e MLSS devem estar
+    proximos. Se divergirem muito, o modelo nao esta a descrever bem o atleta.
+    """
+    pts = [(p["watts"], p["lactato"]) for p in (curva or [])
+           if p.get("lactato") is not None and p.get("watts")]
+    if len(pts) < 8:
+        return None
+    pts.sort()
+    ws = [p[0] for p in pts]
+    la = [p[1] for p in pts]
+
+    base = min(la)
+    lt1 = None
+    for w, v in zip(ws, la):
+        if v >= base + 0.5:
+            lt1 = w
+            break
+
+    # LT2: maxima segunda derivada (curvatura) da curva de lactato
+    lt2 = None
+    if len(ws) >= 5:
+        curv = []
+        for k in range(1, len(ws) - 1):
+            h1, h2 = ws[k] - ws[k - 1], ws[k + 1] - ws[k]
+            if h1 <= 0 or h2 <= 0:
+                continue
+            d2 = 2 * (la[k - 1] / (h1 * (h1 + h2))
+                      - la[k] / (h1 * h2)
+                      + la[k + 1] / (h2 * (h1 + h2)))
+            curv.append((d2, ws[k], la[k]))
+        if curv:
+            _, lt2, _ = max(curv, key=lambda c: c[0])
+
+    def _la_em(w):
+        if w is None:
+            return None
+        k = min(range(len(ws)), key=lambda i: abs(ws[i] - w))
+        return round(la[k], 2)
+
+    return {
+        "lt1_w": round(lt1) if lt1 else None,
+        "lt1_lactato": _la_em(lt1),
+        "lt2_w": round(lt2) if lt2 else None,
+        "lt2_lactato": _la_em(lt2),
+        "mlss_w": mlss_w,
+        "lt2_vs_mlss_w": (round(lt2 - mlss_w) if (lt2 and mlss_w) else None),
+        "nota": ("LT2 pela maxima curvatura, nao pelo 4 mmol/L fixo. "
+                 "LT2 e MLSS devem ficar proximos; grande divergencia indica "
+                 "que o modelo nao descreve bem este atleta."),
+    }

@@ -1765,6 +1765,73 @@ def api_fisiologia_qualidade():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/metabol/custom_fields')
+def api_metabol_custom_fields():
+    """Descobre que campos existem mesmo no JSON das atividades.
+
+    Nao ha lista fixa de custom fields: cada atleta configura os seus. Isto
+    varre o 'raw' guardado e devolve os campos numericos com a frequencia,
+    o intervalo de valores e um exemplo, para se decidir quais servem para
+    montar limiares.
+
+    ?contem=lt&limite=400  -- filtra pelo nome
+    """
+    try:
+        import json as _json
+        import db as _db
+        filtro = (request.args.get('contem') or '').lower()
+        limite = request.args.get('limite', default=400, type=int)
+
+        linhas = _db._exec(
+            "SELECT type, raw FROM activities WHERE raw IS NOT NULL "
+            "ORDER BY date DESC LIMIT ?", (limite,), fetch='all') or []
+
+        campos = {}
+        for tipo, raw in linhas:
+            try:
+                d = raw if isinstance(raw, dict) else _json.loads(raw)
+            except Exception:
+                continue
+            mod = CFG_MODALIDADES.get(tipo, tipo)
+            for k, v in (d or {}).items():
+                if isinstance(v, bool) or v is None:
+                    continue
+                if not isinstance(v, (int, float)):
+                    continue
+                if filtro and filtro not in k.lower():
+                    continue
+                c = campos.setdefault(k, {'n': 0, 'min': v, 'max': v,
+                                          'exemplo': v, 'modalidades': {}})
+                c['n'] += 1
+                c['min'] = min(c['min'], v)
+                c['max'] = max(c['max'], v)
+                c['modalidades'][mod] = c['modalidades'].get(mod, 0) + 1
+
+        # candidatos a limiar: nome sugestivo e valores plausiveis
+        def _e_limiar(nome, info):
+            n = nome.lower()
+            pistas = ('lt1', 'lt2', 'vt1', 'vt2', 'threshold', 'limiar', 'aet',
+                      'ant', 'mlss', 'ftp', 'cp', 'vo2', 'lactate', 'lactato',
+                      'hrvt', 'fatmax', 'vlamax', 'pmax', 'mmp')
+            return any(p in n for p in pistas)
+
+        ordenados = sorted(campos.items(), key=lambda kv: -kv[1]['n'])
+        return jsonify({
+            'status': 'ok',
+            'atividades_analisadas': len(linhas),
+            'campos_numericos': len(campos),
+            'candidatos_a_limiar': {k: v for k, v in ordenados if _e_limiar(k, v)},
+            'todos': {k: {'n': v['n'], 'min': v['min'], 'max': v['max'],
+                          'modalidades': v['modalidades']}
+                      for k, v in ordenados[:120]},
+            'nota': ('usa ?contem=lt para filtrar. Os candidatos sao escolhidos '
+                     'pelo nome; confirma os valores antes de os usar como limiar')})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/metabol/perfil_metabolico/<modalidade>')
 def api_perfil_metabolico(modalidade):
     """VO2max, VLamax, MLSS/AT, FatMax e zonas, a partir dos MMP da season.
@@ -1815,12 +1882,58 @@ def api_perfil_metabolico(modalidade):
 
         extraido = pmet.melhores_mmp(registos, modalidade)
 
+        # o utilizador pode substituir qualquer MMP: ?mmp_180=345&mmp_300=312
+        # e ate mudar as duracoes: ?duracoes=180,300,900
+        duracoes_pedidas = request.args.get('duracoes')
+        if duracoes_pedidas:
+            try:
+                novas = [int(x) for x in duracoes_pedidas.split(',') if x.strip()]
+                if novas:
+                    pmet.DURACOES_MMP[modalidade] = novas
+                    extraido = pmet.melhores_mmp(registos, modalidade)
+            except Exception:
+                pass
+        overrides = {}
+        for k, v in request.args.items():
+            if k.startswith('mmp_'):
+                try:
+                    d = int(k[4:])
+                    extraido['mmp'][d] = float(v)
+                    extraido['datas'][d] = 'manual'
+                    overrides[d] = float(v)
+                except Exception:
+                    pass
+
+        # Peso e % de gordura: media do ultimo trimestre (dos Sheets, via
+        # tab Corporal). Um peso de um dia isolado propaga-se a VO2max,
+        # VLamax e a toda a curva -- a media trimestral e' mais estavel.
+        corp_media = {}
+        try:
+            import corporal as _corp
+            import sheets_client as _sheets
+            wel, cor, _err = _sheets.carregar()
+            linhas_c = _corp.preparar(cor or [], wel or [])
+            corte = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+            recentes = [l for l in linhas_c if str(l.get('data') or '')[:10] >= corte]
+            for campo in ('peso', 'bf'):
+                vals = [float(l[campo]) for l in recentes
+                        if l.get(campo) not in (None, '')]
+                if vals:
+                    corp_media[campo] = round(sum(vals) / len(vals), 2)
+                    corp_media[f'n_{campo}'] = len(vals)
+        except Exception as e:
+            corp_media = {'erro': f'{type(e).__name__}: {e}'}
+
         peso = request.args.get('peso', type=float)
+        if not peso:
+            peso = corp_media.get('peso')
         if not peso and pesos:
             peso = sorted(pesos, key=lambda p: p[0] or '')[-1][1]
         altura = request.args.get('altura', type=float) or pmet.ALTURA_CM_DEFEITO
         idade = request.args.get('idade', type=float) or pmet.IDADE_DEFEITO
         bf = request.args.get('bf', type=float)
+        if bf is None:
+            bf = corp_media.get('bf')
         pmax = request.args.get('pmax', type=float) or extraido['pmax_w']
 
         if not peso:
@@ -1836,6 +1949,9 @@ def api_perfil_metabolico(modalidade):
         res['pmax_tecto'] = extraido['pmax_tecto_aplicado']
         res['entradas'] = {'peso': peso, 'altura_cm': altura,
                            'idade': idade, 'bf_pct': bf}
+        res['corporal_trimestre'] = corp_media
+        res['mmp_manuais'] = {str(k): v for k, v in overrides.items()}
+        res['duracoes_editaveis'] = True
 
         # os MMP sao contemporaneos entre si?
         ds = [v for v in extraido['datas'].values() if v] + \

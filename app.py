@@ -1889,7 +1889,20 @@ def api_metabol_limiares_externos(modalidade):
                 continue
             nomes.update(k for k, v in (j or {}).items()
                          if isinstance(v, (int, float)) and not isinstance(v, bool))
-        encontrados = pmet.mapear_campos_externos(nomes)
+        encontrados, duplicados = pmet.mapear_campos_externos(nomes)
+        std, dup_std = pmet.mapear_campos_externos(nomes, pmet.CAMPOS_STANDARD)
+        encontrados.update(std)
+        duplicados.update(dup_std)
+
+        # tudo o que existe e nao foi reconhecido: e' aqui que aparecem os
+        # nomes reais dos custom fields que faltam no registo, sem ser
+        # preciso adivinhar como e' que o atleta os escreveu
+        from config import STD_FIELDS as _STD
+        nao_reconhecidos = sorted(
+            n for n in nomes
+            if n not in encontrados and n not in _STD
+            and not n.startswith('icu_') and not n.startswith('Z')
+        )
 
         # 2a passagem: recolher valores
         recolha = {n: [] for n in encontrados}
@@ -1915,6 +1928,37 @@ def api_metabol_limiares_externos(modalidade):
                     ultimo[nome] = {'valor': round(float(v), 2), 'data': d10,
                                     'season': sea}
 
+        # ── relacao HR <-> Watts do proprio atleta ────────────────────
+        # Sem isto nao se pode por num mesmo grafico o EBP (W) e o HRVT2
+        # (bpm). A melhor fonte sao os patamares dos intervalos ja
+        # processados (esforco estabilizado); so' na falta deles se usam
+        # as medias por sessao, que incluem aquecimentos e pausas e
+        # achatam a recta.
+        pares, fonte_rel = [], None
+        try:
+            import drive_db_fisiologia as _ddf
+            _cn = _ddf.get_conn()
+            _rs = _cn.execute(
+                """SELECT watts_medio, hr_plateau_work FROM fisiologia_intervalos
+                     WHERE modalidade = ? AND valido = 1
+                       AND watts_medio > 0 AND hr_plateau_work > 0""",
+                (modalidade,)).fetchall()
+            if len(_rs) >= 8:
+                pares = [(r[0], r[1]) for r in _rs]
+                fonte_rel = 'patamares dos intervalos (fisiologia_intervalos)'
+        except Exception:
+            pares = []
+        if not pares:
+            _rs = _db._exec(
+                f"""SELECT avg_watts, avg_hr FROM activities
+                     WHERE avg_watts > 0 AND avg_hr > 0
+                       AND type IN ({','.join('?' * len(variantes))})""",
+                tuple(variantes), fetch='all') or []
+            pares = [(r[0], r[1]) for r in _rs]
+            fonte_rel = 'medias por sessao (inclui aquecimento e pausas)'
+        relacao = pmet.regressao_hr_watts(pares)
+        relacao['fonte'] = fonte_rel
+
         # modelo, para comparar
         modelo, erro_modelo = {}, None
         try:
@@ -1938,10 +1982,22 @@ def api_metabol_limiares_externos(modalidade):
                          'diferenca': round(q['p50'] - valor_modelo, 2),
                          'diferenca_pct': round(
                              (q['p50'] - valor_modelo) / valor_modelo * 100, 1)}
+            # conversao para o outro eixo, para tudo caber num grafico
+            eixo = definicao.get('eixo')
+            p50 = q['p50'] if q else None
+            watts_eq = hr_eq = None
+            if eixo == 'W' and p50 is not None:
+                watts_eq, hr_eq = p50, pmet.hr_de_watts(relacao, p50)
+            elif eixo == 'bpm' and p50 is not None:
+                hr_eq, watts_eq = p50, pmet.watts_de_hr(relacao, p50)
+
             saida.append({
                 'campo': nome,
                 'rotulo': definicao['chave'],
                 'unidade': definicao['unidade'],
+                'eixo': eixo,
+                'watts_equivalente': watts_eq,
+                'hr_equivalente': hr_eq,
                 'descricao': definicao['descricao'],
                 'compara_com': comp,
                 'quartis': q,
@@ -1954,8 +2010,9 @@ def api_metabol_limiares_externos(modalidade):
             })
         saida.sort(key=lambda x: (x['compara_com'] is None, x['rotulo']))
 
+        _presentes = {x['rotulo'] for x in saida}
         em_falta = [d['chave'] for d in pmet.CAMPOS_EXTERNOS
-                    if d['chave'] not in {x['rotulo'] for x in saida}]
+                    if d['chave'] not in _presentes]
 
         return jsonify({
             'status': 'ok',
@@ -1964,13 +2021,26 @@ def api_metabol_limiares_externos(modalidade):
             'ambito': 'todo o historico' if todas else 'season',
             'actividades': len(linhas),
             'modelo': modelo,
+            'modelo_em_hr': {k: pmet.hr_de_watts(relacao, v)
+                             for k, v in modelo.items()
+                             if k in ('lt1_w', 'lt2_w', 'mlss_at_w',
+                                      'fatmax_w', 'pvo2max_w') and v},
+            'relacao_hr_watts': {k: v for k, v in relacao.items()
+                                 if k != 'pontos'},
+            'nuvem_hr_watts': relacao.get('pontos', [])[:1500],
             'erro_modelo': erro_modelo,
             'campos': saida,
             'campos_nao_encontrados': em_falta,
+            'campos_duplicados': duplicados,
+            'campos_por_reconhecer': nao_reconhecidos,
             'nota': ('quartis e nao media: estes campos sao estimados sessao '
                      'a sessao e tem cauda pesada. Compara o p50 externo com '
                      'o valor do modelo -- divergencia sistematica significa '
-                     'que o modelo nao descreve este atleta')})
+                     'que o modelo nao descreve este atleta'),
+            'nota_campos': ('campos_por_reconhecer traz os nomes reais dos '
+                            'custom fields que ainda nao estao no registo: '
+                            'basta acrescentar o nome como alias em '
+                            'CAMPOS_EXTERNOS')})
     except Exception as e:
         import traceback
         return jsonify({'status': 'erro', 'mensagem': str(e),

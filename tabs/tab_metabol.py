@@ -698,8 +698,10 @@ BODY = r"""
     Losangos: pontos do modelo de Mader. Círculos: mediana dos campos da
     Intervals.icu. Os campos em watts são convertidos para bpm (e os em bpm
     para watts) pela recta HR↔Watts do próprio atleta — a nuvem cinzenta são
-    os pares reais que a produziram. Se dois pontos que deviam ser a mesma
-    coisa ficam afastados, um dos dois caminhos está errado.</p>
+    os pares reais que a produziram. Círculos vazios com asterisco são campos
+    iguais em todas as sessões: definições do perfil, não medições, e por isso
+    não contam como confirmação independente. Se dois pontos que deviam ser a
+    mesma coisa ficam afastados, um dos dois caminhos está errado.</p>
   <div id="pmExtTabela" style="overflow-x:auto;margin-top:8px;"></div>
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">O que é cada campo</summary>
@@ -2179,13 +2181,50 @@ function pmExtCarregar(){
 function pmExtTabela(){
  const cs = (PMEXT && PMEXT.campos) || [];
  const box = document.getElementById('pmExtTabela');
- if(!cs.length){ box.innerHTML = '<span style="color:#8b949e;">nenhum campo reconhecido</span>'; return; }
- let h='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+ if(!cs.length){ box.innerHTML='<span style="color:#8b949e;">nenhum campo reconhecido</span>'; return; }
+ const rel = PMEXT.relacao_hr_watts || {};
+
+ // ── coerência entre estimativas independentes do mesmo limiar ──
+ const co = PMEXT.coerencia_por_grupo || {};
+ let h='';
+ if(Object.keys(co).length){
+  h+='<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px;">'
+   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+   +'<th style="padding:6px;">Limiar</th><th>Estimativas</th><th>Intervalo</th>'
+   +'<th>Mediana</th><th>Amplitude</th><th>Modelo</th></tr>';
+  Object.keys(co).forEach(function(k){
+   const c=co[k];
+   const cor = c.amplitude_pct<15 ? '#3FB950' : c.amplitude_pct<35 ? '#F0883E' : '#F85149';
+   h+='<tr style="border-bottom:1px solid #161b22;">'
+    +'<td style="padding:6px;">'+c.rotulo+'</td>'
+    +'<td style="color:#8b949e;">'+c.detalhe.map(function(d){
+        return d.campo+' '+d.w+'W';}).join(' · ')+'</td>'
+    +'<td style="color:#8b949e;">'+c.min_w+'–'+c.max_w+' W</td>'
+    +'<td><b>'+c.mediana_w+' W</b></td>'
+    +'<td style="color:'+cor+';">'+c.amplitude_w+' W ('+c.amplitude_pct+'%)</td>'
+    +'<td>'+(c.modelo_w!=null?c.modelo_w+' W':'—')+'</td></tr>';
+  });
+  h+='</table><p style="color:#8b949e;font-size:11px;margin:-8px 0 14px 0;">'
+   +'Cada linha junta métodos independentes que deviam apontar ao mesmo '
+   +'limiar. Amplitude pequena significa que concordam e que a mediana é '
+   +'uma âncora sólida; amplitude grande significa que não estão a medir a '
+   +'mesma coisa, e aí a comparação com o modelo não decide nada.</p>';
+ }
+
+ // ── tabela por grupo ──
+ let grupoActual = null;
+ h+='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
   +'<th style="padding:6px;">Campo</th><th>n</th><th>p25</th><th>Mediana</th>'
   +'<th>p75</th><th>W eq.</th><th>bpm eq.</th><th>Último</th>'
   +'<th>Modelo</th><th>Δ</th></tr>';
  cs.forEach(function(c){
+  if(c.grupo !== grupoActual){
+   grupoActual = c.grupo;
+   h+='<tr><td colspan="10" style="padding:10px 6px 4px 6px;color:#58A6FF;'
+    +'font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">'
+    +(c.grupo_rotulo||c.grupo||'outros')+'</td></tr>';
+  }
   const q=c.quartis||{}, u=c.ultimo||{}, cm=c.comparacao;
   let dcor='#8b949e', dtxt='—';
   if(cm){
@@ -2195,23 +2234,32 @@ function pmExtTabela(){
   }
   h+='<tr style="border-bottom:1px solid #161b22;">'
    +'<td style="padding:6px;">'+c.rotulo
+   +(c.constante ? ' <span style="color:#F0883E;font-size:10px;" title="igual '
+     +'em todas as sessões — é uma definição do perfil, não uma medição">'
+     +'definição</span>' : '')
    +(c.usou_historico_por_falta_na_season
-     ? ' <span style="color:#F0883E;font-size:10px;">(histórico)</span>' : '')
+     ? ' <span style="color:#F0883E;font-size:10px;">histórico</span>' : '')
    +'</td>'
    +'<td style="color:#8b949e;">'+(q.n!=null?q.n:'—')+'</td>'
    +'<td style="color:#8b949e;">'+(q.p25!=null?q.p25:'—')+'</td>'
    +'<td><b>'+(q.p50!=null?q.p50:'—')+'</b> '
    +'<span style="color:#8b949e;font-size:10px;">'+(c.unidade||'')+'</span></td>'
    +'<td style="color:#8b949e;">'+(q.p75!=null?q.p75:'—')+'</td>'
+   +'<td style="color:'+(c.eixo==='W'?'#c9d1d9':'#8b949e')+';">'
+   +(c.watts_equivalente!=null?Math.round(c.watts_equivalente):'—')+'</td>'
+   +'<td style="color:'+(c.eixo==='bpm'?'#c9d1d9':'#8b949e')+';">'
+   +(c.hr_equivalente!=null?Math.round(c.hr_equivalente):'—')+'</td>'
    +'<td style="color:#8b949e;">'+(u.valor!=null?u.valor+' · '+(u.data||''):'—')+'</td>'
    +'<td>'+(cm?cm.modelo:'—')+'</td>'
    +'<td style="color:'+dcor+';">'+dtxt+'</td></tr>';
  });
  h+='</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">'
-  +'Δ = mediana do campo menos o valor do modelo, em %. Verde &lt;10%, laranja '
-  +'&lt;25%, vermelho acima disso. Divergência sistemática significa que o '
-  +'modelo de Mader, que parte de potências máximas, não descreve este atleta.'
-  +'</p>';
+  +'Colunas a cinzento claro são conversões, não medições: um campo medido '
+  +'em bpm tem os watts calculados pela recta HR↔Watts'
+  +(rel.suficiente ? ' (r²='+rel.r2+', n='+rel.n
+     +(rel.descartados?', '+rel.descartados+' pares descartados por FC implausível':'')
+     +')' : ' — que aqui não existe')
+  +'. Δ = mediana menos o valor do modelo, em %.</p>';
  box.innerHTML=h;
 }
 
@@ -2222,7 +2270,8 @@ function pmExtDraw(){
  const rel = (PMEXT && PMEXT.relacao_hr_watts) || {};
  const nuvem = (PMEXT && PMEXT.nuvem_hr_watts) || [];
  const cs = ((PMEXT && PMEXT.campos) || []).filter(function(c){
-   return c.watts_equivalente!=null && c.hr_equivalente!=null; });
+   return c.watts_equivalente!=null && c.hr_equivalente!=null
+     && ['aerobio','limiar','vo2max'].indexOf(c.grupo)>=0; });
  const md = (PMEXT && PMEXT.modelo) || {};
  const mdhr = (PMEXT && PMEXT.modelo_em_hr) || {};
  const refs = [
@@ -2287,11 +2336,13 @@ function pmExtDraw(){
  // medianas dos campos externos — circulos
  cs.forEach(function(c){
   const x=X(c.watts_equivalente), y=Y(c.hr_equivalente);
-  const medido = c.eixo==='bpm';
-  g.strokeStyle='#E3B341'; g.fillStyle='rgba(227,179,65,0.75)'; g.lineWidth=2;
-  g.beginPath(); g.arc(x,y,5,0,Math.PI*2); g.fill(); g.stroke(); g.lineWidth=1;
+  const medido = c.eixo==='bpm' ? ' (bpm)' : c.eixo==='wkg' ? ' (W/kg)' : ' (W)';
+  g.strokeStyle='#E3B341'; g.lineWidth=2;
+  g.beginPath(); g.arc(x,y,5,0,Math.PI*2);
+  if(!c.constante){ g.fillStyle='rgba(227,179,65,0.75)'; g.fill(); }
+  g.stroke(); g.lineWidth=1;
   g.fillStyle='#E3B341'; g.textAlign='left';
-  g.fillText(c.rotulo + (medido?' (bpm)':' (W)'), x+9, y+12);
+  g.fillText(c.rotulo + medido + (c.constante?' *':''), x+9, y+12);
  });
 
  // legenda
@@ -2300,6 +2351,8 @@ function pmExtDraw(){
  g.fillText('◆ modelo', PL+w+8, PT+12);
  g.fillStyle='#E3B341';
  g.fillText('● campos icu', PL+w+8, PT+26);
+ g.fillStyle='#8b949e';
+ g.fillText('○ * = definição fixa', PL+w+8, PT+54);
  g.fillStyle='#8b949e';
  g.fillText(rel.suficiente ? 'r²='+rel.r2+' n='+rel.n : 'sem recta',
             PL+w+8, PT+40);

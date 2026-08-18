@@ -1876,20 +1876,20 @@ def api_metabol_mmp_diagnostico(modalidade):
 
         por_duracao = {d: [] for d in duracoes}
         seasons, sem_parse = {}, 0
+        comprimentos = {}
         for data, secs, watts in linhas:
-            d10 = str(data)[:10] if data else None
             s, w = pmet._descomprimir(secs, watts)
-            if not s or not w or len(s) != len(w):
+            comprimentos[f'{len(s)}s/{len(w)}w'] = \
+                comprimentos.get(f'{len(s)}s/{len(w)}w', 0) + 1
+            d10, _sea_ign, indice = pmet._indice_curva(
+                {'date': data, 'secs': secs, 'watts': watts})
+            if not indice:
                 sem_parse += 1
                 continue
             sea = season_de(d10, marcos)
             seasons[sea] = seasons.get(sea, 0) + 1
-            indice = {int(x): y for x, y in zip(s, w) if y is not None}
             for dur in duracoes:
-                v = indice.get(dur)
-                if v is None:
-                    perto = [k for k in indice if abs(k - dur) <= max(5, dur * 0.05)]
-                    v = max((indice[k] for k in perto), default=None)
+                v = pmet._watts_em(indice, dur)
                 if v is not None:
                     por_duracao[dur].append((float(v), d10, sea))
 
@@ -1916,6 +1916,8 @@ def api_metabol_mmp_diagnostico(modalidade):
             'marcos_season': marcos,
             'curvas_na_base': len(linhas),
             'curvas_sem_parse': sem_parse,
+            'comprimentos_secs_watts': dict(sorted(
+                comprimentos.items(), key=lambda kv: -kv[1])),
             'data_mais_recente_na_base': str(linhas[0][0])[:10] if linhas else None,
             'curvas_por_season': dict(sorted(seasons.items(),
                                              key=lambda kv: str(kv[0]))),
@@ -1985,8 +1987,9 @@ def api_perfil_metabolico(modalidade):
             return jsonify({'status': 'sem_dados', 'season': season_pedida,
                             'mensagem': f'sem power_curves para {modalidade}'}), 200
 
-        extraido = pmet.melhores_mmp(registos, modalidade,
-                                     season_activa=season_pedida)
+        extraido = pmet.melhores_mmp(
+            registos, modalidade, season_activa=season_pedida,
+            limiar_max=request.args.get('limiar_max', type=float))
 
         # o utilizador pode substituir qualquer MMP: ?mmp_180=345&mmp_300=312
         # e ate mudar as duracoes: ?duracoes=180,300,900
@@ -1996,8 +1999,9 @@ def api_perfil_metabolico(modalidade):
                 novas = [int(x) for x in duracoes_pedidas.split(',') if x.strip()]
                 if novas:
                     pmet.DURACOES_MMP[modalidade] = novas
-                    extraido = pmet.melhores_mmp(registos, modalidade,
-                                                 season_activa=season_pedida)
+                    extraido = pmet.melhores_mmp(
+                        registos, modalidade, season_activa=season_pedida,
+                        limiar_max=request.args.get('limiar_max', type=float))
             except Exception:
                 pass
         overrides = {}
@@ -2059,9 +2063,15 @@ def api_perfil_metabolico(modalidade):
         res['recuou_de_season'] = {str(k): bool(v)
                                    for k, v in extraido['recuou'].items()}
         res['seasons_disponiveis'] = extraido['seasons_disponiveis']
+        res['qualidade_dos_mmp'] = {str(k): v
+                                    for k, v in extraido['qualidade'].items()}
+        res['limiar_esforco_maximo'] = extraido['limiar_esforco_maximo']
+        res['curvas_lidas'] = extraido['curvas_lidas']
+        res['curvas_ignoradas'] = extraido['curvas_ignoradas']
         res['pmax_data'] = extraido['pmax_data']
         res['pmax_season'] = extraido['pmax_season']
         res['pmax_recuou'] = bool(extraido['pmax_recuou'])
+        res['pmax_racio_na_season'] = extraido['pmax_racio_na_season']
         res['pmax_tecto'] = extraido['pmax_tecto_aplicado']
 
         # que duracoes tiveram de recuar para uma season anterior
@@ -2074,8 +2084,9 @@ def api_perfil_metabolico(modalidade):
                 f" -> {extraido['pmax_season'] if d == 'pmax' else extraido['seasons'][d]}"
                 for d in recuadas)
             res['aviso_recuo'] = (
-                f'sem esforco maximo destas duracoes na season {season_pedida}; '
-                f'usados valores de seasons anteriores ({det}). '
+                f'sem esforco maximo destas duracoes na season {season_pedida} '
+                f'(abaixo de {int(extraido["limiar_esforco_maximo"] * 100)}% do '
+                f'melhor historico); usados valores de seasons anteriores ({det}). '
                 'O perfil mistura momentos diferentes -- confirma antes de o '
                 'usar para prescrever zonas.')
         res['entradas'] = {'peso': peso, 'altura_cm': altura,

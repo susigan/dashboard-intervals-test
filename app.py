@@ -1890,9 +1890,6 @@ def api_metabol_limiares_externos(modalidade):
             nomes.update(k for k, v in (j or {}).items()
                          if isinstance(v, (int, float)) and not isinstance(v, bool))
         encontrados, duplicados = pmet.mapear_campos_externos(nomes)
-        std, dup_std = pmet.mapear_campos_externos(nomes, pmet.CAMPOS_STANDARD)
-        encontrados.update(std)
-        duplicados.update(dup_std)
 
         # tudo o que existe e nao foi reconhecido: e' aqui que aparecem os
         # nomes reais dos custom fields que faltam no registo, sem ser
@@ -1960,11 +1957,12 @@ def api_metabol_limiares_externos(modalidade):
         relacao['fonte'] = fonte_rel
 
         # modelo, para comparar
-        modelo, erro_modelo = {}, None
+        modelo, erro_modelo, peso = {}, None, None
         try:
             _args = {} if todas else {'season': season_pedida}
             _corpo, _ = perfil_metabolico_dados(modalidade, _args)
             modelo = pmet.valores_do_modelo(_corpo or {})
+            peso = ((_corpo or {}).get('entradas') or {}).get('peso')
         except Exception as e:
             erro_modelo = f'{type(e).__name__}: {e}'
 
@@ -1986,18 +1984,28 @@ def api_metabol_limiares_externos(modalidade):
             eixo = definicao.get('eixo')
             p50 = q['p50'] if q else None
             watts_eq = hr_eq = None
-            if eixo == 'W' and p50 is not None:
-                watts_eq, hr_eq = p50, pmet.hr_de_watts(relacao, p50)
-            elif eixo == 'bpm' and p50 is not None:
-                hr_eq, watts_eq = p50, pmet.watts_de_hr(relacao, p50)
+            if p50 is not None:
+                if eixo == 'W':
+                    watts_eq = p50
+                elif eixo == 'wkg' and peso:
+                    watts_eq = round(p50 * float(peso), 1)
+                elif eixo == 'bpm':
+                    hr_eq = p50
+                    watts_eq = pmet.watts_de_hr(relacao, p50)
+                if watts_eq is not None and hr_eq is None:
+                    hr_eq = pmet.hr_de_watts(relacao, watts_eq)
+            constante = pmet.e_constante(q)
 
             saida.append({
                 'campo': nome,
                 'rotulo': definicao['chave'],
                 'unidade': definicao['unidade'],
                 'eixo': eixo,
+                'grupo': definicao.get('grupo'),
+                'grupo_rotulo': pmet.ROTULO_GRUPO.get(definicao.get('grupo')),
                 'watts_equivalente': watts_eq,
                 'hr_equivalente': hr_eq,
+                'constante': constante,
                 'descricao': definicao['descricao'],
                 'compara_com': comp,
                 'quartis': q,
@@ -2008,7 +2016,12 @@ def api_metabol_limiares_externos(modalidade):
                                    if pmet.quartis(v)},
                 'comparacao': delta,
             })
-        saida.sort(key=lambda x: (x['compara_com'] is None, x['rotulo']))
+        _ordem = {g: i for i, g in enumerate(pmet.ORDEM_GRUPOS)}
+        saida.sort(key=lambda x: (_ordem.get(x.get('grupo'), 99),
+                                  x['watts_equivalente'] is None,
+                                  x['watts_equivalente'] or 0,
+                                  x['rotulo']))
+        coerencia = pmet.coerencia_por_grupo(saida, modelo)
 
         _presentes = {x['rotulo'] for x in saida}
         em_falta = [d['chave'] for d in pmet.CAMPOS_EXTERNOS
@@ -2030,6 +2043,8 @@ def api_metabol_limiares_externos(modalidade):
             'nuvem_hr_watts': relacao.get('pontos', [])[:1500],
             'erro_modelo': erro_modelo,
             'campos': saida,
+            'coerencia_por_grupo': coerencia,
+            'peso_usado_kg': peso,
             'campos_nao_encontrados': em_falta,
             'campos_duplicados': duplicados,
             'campos_por_reconhecer': nao_reconhecidos,

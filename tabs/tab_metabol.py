@@ -685,15 +685,21 @@ BODY = r"""
   </div>
   <h2>Zonas ancoradas no MLSS</h2>
   <div id="pmZonas" style="overflow-x:auto;"></div>
-  <h2>Validação externa — campos da Intervals.icu</h2>
+  <h2>Validação externa — HR × Watts</h2>
   <div class="controls" style="margin-bottom:8px;">
     <label class="sel"><input type="checkbox" id="pmExtTodas" onchange="pmExtCarregar()">
       todo o histórico (em vez de só a season)</label>
     <span id="pmExtEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
   <div class="chartbox" style="position:relative;">
-    <canvas id="chExternos" height="260"></canvas>
+    <canvas id="chExternos" height="300"></canvas>
   </div>
+  <p style="color:#8b949e;font-size:11px;margin:4px 0 0 0;">
+    Losangos: pontos do modelo de Mader. Círculos: mediana dos campos da
+    Intervals.icu. Os campos em watts são convertidos para bpm (e os em bpm
+    para watts) pela recta HR↔Watts do próprio atleta — a nuvem cinzenta são
+    os pares reais que a produziram. Se dois pontos que deviam ser a mesma
+    coisa ficam afastados, um dos dois caminhos está errado.</p>
   <div id="pmExtTabela" style="overflow-x:auto;margin-top:8px;"></div>
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">O que é cada campo</summary>
@@ -2160,11 +2166,12 @@ function pmExtCarregar(){
    document.getElementById('pmExtTabela').innerHTML = '';
    pmExtDraw(); return;
   }
+  const rel = d.relacao_hr_watts || {};
   est.textContent = d.actividades + ' actividades · ' + d.ambito
     + (d.season ? ' ' + d.season : '')
-    + ' · ' + (d.campos||[]).length + ' campos encontrados'
-    + ((d.campos_nao_encontrados||[]).length
-       ? ' · em falta: ' + d.campos_nao_encontrados.join(', ') : '');
+    + ' · ' + (d.campos||[]).length + ' campos'
+    + (rel.suficiente ? ' · HR↔W r²=' + rel.r2 + ' (n=' + rel.n + ')'
+                      : ' · sem recta HR↔W');
   pmExtTabela(); pmExtDraw(); pmExtGlossario();
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
 }
@@ -2176,7 +2183,8 @@ function pmExtTabela(){
  let h='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
   +'<th style="padding:6px;">Campo</th><th>n</th><th>p25</th><th>Mediana</th>'
-  +'<th>p75</th><th>Último</th><th>Modelo</th><th>Δ</th></tr>';
+  +'<th>p75</th><th>W eq.</th><th>bpm eq.</th><th>Último</th>'
+  +'<th>Modelo</th><th>Δ</th></tr>';
  cs.forEach(function(c){
   const q=c.quartis||{}, u=c.ultimo||{}, cm=c.comparacao;
   let dcor='#8b949e', dtxt='—';
@@ -2208,65 +2216,94 @@ function pmExtTabela(){
 }
 
 function pmExtDraw(){
- const o = ctx('chExternos', 260);
+ const o = ctx('chExternos', 300);
  if(!o) return;
  const g=o.g, W=o.W, H=o.H;
+ const rel = (PMEXT && PMEXT.relacao_hr_watts) || {};
+ const nuvem = (PMEXT && PMEXT.nuvem_hr_watts) || [];
  const cs = ((PMEXT && PMEXT.campos) || []).filter(function(c){
-   return c.unidade==='W' && c.quartis && c.quartis.p50!=null; });
- if(!cs.length){ noData(g, W, H, 'Sem campos em watts para comparar'); return; }
-
+   return c.watts_equivalente!=null && c.hr_equivalente!=null; });
  const md = (PMEXT && PMEXT.modelo) || {};
+ const mdhr = (PMEXT && PMEXT.modelo_em_hr) || {};
  const refs = [
-  {k:'lt1_w',   rot:'LT1',      cor:'#3FB950'},
-  {k:'mlss_at_w',rot:'MLSS',    cor:'#F0883E'},
-  {k:'lt2_w',   rot:'LT2',      cor:'#F85149'},
-  {k:'pvo2max_w',rot:'Pvo2max', cor:'#A371F7'},
- ].filter(function(r){ return md[r.k]!=null; });
+  {k:'fatmax_w', rot:'FatMax', cor:'#A371F7'},
+  {k:'lt1_w',    rot:'LT1',    cor:'#3FB950'},
+  {k:'mlss_at_w',rot:'MLSS',   cor:'#F0883E'},
+  {k:'lt2_w',    rot:'LT2',    cor:'#F85149'},
+  {k:'pvo2max_w',rot:'Pvo\u2082max', cor:'#58A6FF'},
+ ].filter(function(r){ return md[r.k]!=null && mdhr[r.k]!=null; });
 
- let vmax=0;
- cs.forEach(function(c){ vmax=Math.max(vmax, c.quartis.max||c.quartis.p75||0); });
- refs.forEach(function(r){ vmax=Math.max(vmax, md[r.k]); });
- vmax = vmax*1.08 || 1;
+ if(!nuvem.length && !cs.length && !refs.length){
+  noData(g, W, H, 'Sem relação HR↔Watts nem campos comparáveis'); return; }
 
- const PL=54, PR=96, PT=14, PB=42, w=W-PL-PR, h=H-PT-PB;
- const Y = v => PT + h - v/vmax*h;
- const passo = w/cs.length;
+ // dominio
+ let xs=[], ys=[];
+ nuvem.forEach(function(p){ xs.push(p.w); ys.push(p.hr); });
+ cs.forEach(function(c){ xs.push(c.watts_equivalente); ys.push(c.hr_equivalente); });
+ refs.forEach(function(r){ xs.push(md[r.k]); ys.push(mdhr[r.k]); });
+ const xa=Math.min.apply(null,xs)*0.92, xb=Math.max.apply(null,xs)*1.06;
+ const ya=Math.min.apply(null,ys)*0.94, yb=Math.max.apply(null,ys)*1.05;
 
- // eixo Y
- g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
- g.textAlign='right'; g.lineWidth=1;
+ const PL=54, PR=118, PT=14, PB=40, w=W-PL-PR, h=H-PT-PB;
+ const X = v => PL + (v-xa)/((xb-xa)||1)*w;
+ const Y = v => PT + h - (v-ya)/((yb-ya)||1)*h;
+
+ // grelha
+ g.strokeStyle='#21262d'; g.lineWidth=1; g.fillStyle='#8b949e';
+ g.font='11px sans-serif';
  for(let i=0;i<=4;i++){
-  const v=vmax*i/4, y=Y(v);
+  const yv=ya+(yb-ya)*i/4, y=Y(yv);
   g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
-  g.fillText(Math.round(v)+'W', PL-6, y+4);
+  g.textAlign='right'; g.fillText(Math.round(yv)+' bpm', PL-6, y+4);
+ }
+ for(let i=0;i<=4;i++){
+  const xv=xa+(xb-xa)*i/4, x=X(xv);
+  g.textAlign='center'; g.fillText(Math.round(xv)+'W', x, PT+h+18);
  }
 
- // linhas de referencia do modelo
- refs.forEach(function(r){
-  const y=Y(md[r.k]);
-  g.strokeStyle=r.cor; g.setLineDash([5,4]); g.beginPath();
-  g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke(); g.setLineDash([]);
-  g.fillStyle=r.cor; g.textAlign='left';
-  g.fillText(r.rot+' '+Math.round(md[r.k])+'W', PL+w+6, y+4);
+ // nuvem de pontos do atleta
+ g.fillStyle='rgba(139,148,158,0.30)';
+ nuvem.forEach(function(p){
+  g.beginPath(); g.arc(X(p.w), Y(p.hr), 2, 0, Math.PI*2); g.fill();
  });
 
- // caixas p25-p75 com mediana
- cs.forEach(function(c,i){
-  const q=c.quartis;
-  const cx=PL+passo*i+passo/2, bw=Math.min(46, passo*0.5);
-  const y25=Y(q.p25), y75=Y(q.p75), y50=Y(q.p50);
-  g.strokeStyle='#8b949e'; g.beginPath();
-  g.moveTo(cx, Y(q.min)); g.lineTo(cx, Y(q.max)); g.stroke();
-  g.fillStyle='rgba(88,166,255,0.28)';
-  g.fillRect(cx-bw/2, y75, bw, Math.max(1, y25-y75));
-  g.strokeStyle='#58A6FF'; g.strokeRect(cx-bw/2, y75, bw, Math.max(1, y25-y75));
-  g.strokeStyle='#58A6FF'; g.lineWidth=2; g.beginPath();
-  g.moveTo(cx-bw/2, y50); g.lineTo(cx+bw/2, y50); g.stroke(); g.lineWidth=1;
-  g.fillStyle='#c9d1d9'; g.textAlign='center';
-  g.fillText(c.rotulo, cx, PT+h+16);
-  g.fillStyle='#8b949e';
-  g.fillText('n='+q.n, cx, PT+h+30);
+ // recta da regressao
+ if(rel.suficiente){
+  const a=rel.declive_bpm_por_w, b=rel.intercepto_bpm;
+  g.strokeStyle='#8b949e'; g.setLineDash([6,4]); g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(X(xa), Y(a*xa+b)); g.lineTo(X(xb), Y(a*xb+b));
+  g.stroke(); g.setLineDash([]); g.lineWidth=1;
+ }
+
+ // pontos do modelo — losangos
+ refs.forEach(function(r){
+  const x=X(md[r.k]), y=Y(mdhr[r.k]);
+  g.fillStyle=r.cor;
+  g.beginPath(); g.moveTo(x,y-7); g.lineTo(x+7,y); g.lineTo(x,y+7);
+  g.lineTo(x-7,y); g.closePath(); g.fill();
+  g.textAlign='left'; g.fillText(r.rot, x+10, y-8);
  });
+
+ // medianas dos campos externos — circulos
+ cs.forEach(function(c){
+  const x=X(c.watts_equivalente), y=Y(c.hr_equivalente);
+  const medido = c.eixo==='bpm';
+  g.strokeStyle='#E3B341'; g.fillStyle='rgba(227,179,65,0.75)'; g.lineWidth=2;
+  g.beginPath(); g.arc(x,y,5,0,Math.PI*2); g.fill(); g.stroke(); g.lineWidth=1;
+  g.fillStyle='#E3B341'; g.textAlign='left';
+  g.fillText(c.rotulo + (medido?' (bpm)':' (W)'), x+9, y+12);
+ });
+
+ // legenda
+ g.textAlign='left'; g.font='10px sans-serif';
+ g.fillStyle='#8b949e';
+ g.fillText('◆ modelo', PL+w+8, PT+12);
+ g.fillStyle='#E3B341';
+ g.fillText('● campos icu', PL+w+8, PT+26);
+ g.fillStyle='#8b949e';
+ g.fillText(rel.suficiente ? 'r²='+rel.r2+' n='+rel.n : 'sem recta',
+            PL+w+8, PT+40);
+ g.font='11px sans-serif';
 }
 
 function pmExtGlossario(){
@@ -2279,10 +2316,23 @@ function pmExtGlossario(){
    +'<br>'+c.descricao+'</p>';
  });
  if((PMEXT.campos_nao_encontrados||[]).length)
-  h+='<p style="font-size:11px;color:#F0883E;">Não encontrados no JSON das '
-   +'actividades: '+PMEXT.campos_nao_encontrados.join(', ')
-   +'. Ou não estão configurados na Intervals.icu, ou o nome do custom field '
-   +'difere dos aliases em <code>CAMPOS_EXTERNOS</code>.</p>';
+  h+='<p style="font-size:11px;color:#F0883E;">Não encontrados: '
+   +PMEXT.campos_nao_encontrados.join(', ')
+   +'. Ou não estão configurados na Intervals.icu, ou o nome difere dos '
+   +'aliases em <code>CAMPOS_EXTERNOS</code>.</p>';
+ const dup=PMEXT.campos_duplicados||{};
+ if(Object.keys(dup).length){
+  h+='<p style="font-size:11px;color:#8b949e;">Nomes que caem na mesma '
+   +'definição e foram deixados de fora para não contar duas vezes: '
+   +Object.keys(dup).map(function(k){return k+' ← '+dup[k].join(', ');}).join(' · ')
+   +'</p>';
+ }
+ const nr=PMEXT.campos_por_reconhecer||[];
+ if(nr.length)
+  h+='<p style="font-size:11px;color:#8b949e;">Campos numéricos presentes e '
+   +'ainda sem definição — se algum for o EBP ou a Fractional Utilization, '
+   +'basta acrescentar o nome como alias: <code>'+nr.join('</code>, <code>')
+   +'</code></p>';
  document.getElementById('pmExtGlossario').innerHTML=h;
 }
 

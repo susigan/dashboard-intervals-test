@@ -672,6 +672,8 @@ BODY = r"""
     <button onclick="pmCarregar()">Actualizar</button>
     <span id="pmEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
+  <div id="pmMMP" style="margin:8px 0;padding:8px 10px;background:#0d1117;
+       border:1px solid #21262d;border-radius:6px;"></div>
   <div id="pmAviso" style="color:#F0883E;font-size:11px;margin-bottom:8px;"></div>
   <div id="pmResumo"></div>
   <h2>Substratos — gordura e hidratos vs potência</h2>
@@ -2086,7 +2088,7 @@ function carregarCobertura(){
 // ═════ PERFIL METABOLICO ═════
 let PM = null;
 
-function pmCarregar(){
+function pmCarregar(usarManuais){
  const mod = document.getElementById('pmModalidade').value;
  const est = document.getElementById('pmEstado');
  const p = new URLSearchParams();
@@ -2094,6 +2096,17 @@ function pmCarregar(){
   const el = document.getElementById('pm'+k);
   if(el && el.value !== '') p.set(k.toLowerCase(), el.value);
  });
+ if(usarManuais){
+  const secs = Array.prototype.slice.call(document.querySelectorAll('.pmSec'))
+    .map(function(e){ return parseInt(e.value); }).filter(function(x){ return x>0; });
+  if(secs.length) p.set('duracoes', secs.join(','));
+  Array.prototype.slice.call(document.querySelectorAll('.pmW')).forEach(function(e, i){
+   const sec = secs[i];
+   if(sec && e.value !== '') p.set('mmp_'+sec, e.value);
+  });
+  const pmx = document.getElementById('pmPmax');
+  if(pmx && pmx.value !== '') p.set('pmax', pmx.value);
+ }
  est.textContent = 'a calcular...';
  fetch('/api/metabol/perfil_metabolico/'+mod+'?'+p.toString())
  .then(r=>r.json()).then(function(d){
@@ -2107,9 +2120,12 @@ function pmCarregar(){
      ? 'faltam MMP de: ' + d.duracoes_em_falta_s.map(x=>Math.round(x/60)+'min').join(', ') : '';
    pmDraw(); return;
   }
-  est.textContent = 'season ' + (d.season||'?') + ' · ' + d.n_curvas_na_season + ' curvas';
+  const ct = d.corporal_trimestre || {};
+  est.textContent = 'season ' + (d.season||'?') + ' · ' + d.n_curvas_na_season + ' curvas'
+    + (ct.peso ? ' · peso ' + ct.peso + 'kg (média de ' + ct.n_peso + ' registos do trimestre)' : '')
+    + (ct.bf ? ' · BF ' + ct.bf + '%' : '');
   av.textContent = d.aviso_datas || '';
-  pmResumo(); pmDraw(); pmZonas(); pmDetalhe();
+  pmResumo(); pmMMPEdit(); pmDraw(); pmZonas(); pmDetalhe();
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
 }
 
@@ -2136,6 +2152,13 @@ function pmResumo(){
                + (m.fatmax_pct_mlss ? ' · ' + m.fatmax_pct_mlss + '% do MLSS' : ''), '#A371F7');
  h += pmCartao('Gordura no FatMax', (m.fat_no_fatmax_g_h||'—') + ' g/h', '');
  h += pmCartao('CHO no MLSS', (m.cho_no_at_g_h||'—') + ' g/h', '');
+ const lim = PM.limiares || {};
+ if(lim.lt1_w) h += pmCartao('LT1 (aeróbio)', lim.lt1_w + ' W',
+   (lim.lt1_lactato!=null? lim.lt1_lactato + ' mmol/L' : ''), '#3FB950');
+ if(lim.lt2_w) h += pmCartao('LT2 (anaeróbio)', lim.lt2_w + ' W',
+   (lim.lt2_lactato!=null? lim.lt2_lactato + ' mmol/L' : '')
+   + (lim.lt2_vs_mlss_w!=null? ' · ' + (lim.lt2_vs_mlss_w>0?'+':'') + lim.lt2_vs_mlss_w + 'W vs MLSS' : ''),
+   '#F85149');
  if(m.glicogenio) h += pmCartao('Glicogénio', m.glicogenio.total_g + ' g',
    m.glicogenio.nivel + ' · ' + m.glicogenio.musculo_kg + ' kg músculo');
  h += '</div>';
@@ -2187,7 +2210,9 @@ function pmDraw(){
  });
 
  const m = PM.mader||{};
- [[m.fatmax_w,'#A371F7','FatMax'],[m.mlss_at_w,'#58A6FF','MLSS']].forEach(function(mk){
+ const lm = PM.limiares || {};
+ [[m.fatmax_w,'#A371F7','FatMax'],[lm.lt1_w,'#3FB950','LT1'],
+  [lm.lt2_w,'#F85149','LT2'],[m.mlss_at_w,'#58A6FF','MLSS']].forEach(function(mk){
   if(!mk[0]) return;
   const x=X(mk[0]);
   g.strokeStyle=mk[1]; g.setLineDash([5,4]); g.lineWidth=1.5;
@@ -2226,6 +2251,36 @@ function pmLigarTip(){
   tip.style.top=(ev.clientY-r.top-10)+'px';
  });
  cv.addEventListener('mouseleave',function(){tip.style.display='none';});
+}
+
+function pmMMPEdit(){
+ const box = document.getElementById('pmMMP');
+ if(!box) return;
+ const mm = (PM && PM.mmp_usados) || {};
+ const dt = (PM && PM.datas_dos_mmp) || {};
+ if(!Object.keys(mm).length){ box.innerHTML = ''; return; }
+ let h = '<div style="color:#8b949e;font-size:11px;margin-bottom:6px;">'
+   + 'MMP usados no cálculo — podes alterar os watts ou os segundos para testar</div>'
+   + '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;">';
+ Object.keys(mm).forEach(function(sec, i){
+  h += '<div style="margin-right:14px;margin-bottom:6px;">'
+    + '<div style="color:#8b949e;font-size:10px;">' + (dt[sec]||'—') + '</div>'
+    + '<input type="number" class="pmSec" value="' + sec + '" style="width:64px" title="segundos">'
+    + ' <span style="color:#8b949e;">s</span> '
+    + '<input type="number" class="pmW" data-sec="' + sec + '" value="'
+    + Math.round(mm[sec]) + '" style="width:70px" title="watts">'
+    + ' <span style="color:#8b949e;">W</span></div>';
+ });
+ if(PM.pmax_w) h += '<div style="margin-right:14px;margin-bottom:6px;">'
+   + '<div style="color:#8b949e;font-size:10px;">' + (PM.pmax_data||'—') + '</div>'
+   + 'Pmax <input type="number" id="pmPmax" value="' + Math.round(PM.pmax_w)
+   + '" style="width:75px"> <span style="color:#8b949e;">W</span></div>';
+ h += '<button onclick="pmCarregar(true)" style="margin-bottom:6px;">Recalcular</button>'
+   + '<button onclick="pmCarregar(false)" style="margin-left:6px;margin-bottom:6px;">Repor automáticos</button>'
+   + '</div>';
+ if(Object.keys(PM.mmp_manuais||{}).length)
+  h += '<div style="color:#F0883E;font-size:11px;">a usar valores manuais</div>';
+ box.innerHTML = h;
 }
 
 function pmZonas(){

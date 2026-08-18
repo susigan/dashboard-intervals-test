@@ -54,6 +54,14 @@ VOL_REL = 0.45           # fraccao de massa muscular activa (notebook Mader)
 # E' derivado da carga: (MMP_curto + MMP_medio) / 3 / peso. Usar 0.45 aqui
 # satura o VLamax no tecto (1.8) e destroi o calculo -- foi o que aconteceu
 # na primeira versao deste modulo.
+#
+# Sao duas grandezas com o mesmo nome e magnitudes muito diferentes:
+#   VOL_REL      = 0.45  -- fraccao de massa muscular activa, na curva de Mader
+#   vol_rel_vlamax ~ 2-3 -- carga relativa (W/kg x fator), so' na formula do
+#                           VLamax. Um valor na casa dos 2.4 e' o esperado,
+#                           nao um erro. Confirmado contra o tab_cp_model.py
+#                           do repo Streamlit, que usa exactamente
+#                           _mb_volrel_vla = (MMP3 + MMP5) / 3 / peso.
 
 GLICOGENIO_POR_KG = {"elite": 17, "advanced": 15,
                      "intermediate": 14, "beginner": 13}
@@ -175,6 +183,12 @@ def modelo_mader(vo2max, vlamax, peso, bf_pct=None, passo=0.01):
     w_at = watts[i_at]
     w_fm = watts[i_fm] if i_fm < len(watts) else None
 
+    # Potencia aerobia maxima (MAP / Pvo2max): a potencia que corresponde a
+    # consumir o VO2max, sem o acrescimo glicolitico. E' esta que se compara
+    # com o campo Pvo2max da Intervals.icu e que serve de denominador a
+    # utilizacao fraccional (MLSS como % do MAP).
+    w_vo2max = vo2max * peso / WATT_O2
+
     # curva para grafico (amostrada, para nao mandar milhares de pontos)
     passo_g = max(1, len(watts) // 120)
     curva = [{"watts": round(watts[k], 1),
@@ -193,6 +207,9 @@ def modelo_mader(vo2max, vlamax, peso, bf_pct=None, passo=0.01):
         "fat_no_fatmax_g_h": round(fat[i_fm], 1) if fat else None,
         "cho_no_at_g_h": round(cho[i_at - 1], 1) if i_at > 0 and cho else None,
         "fatmax_pct_mlss": round(w_fm / w_at * 100, 1) if (w_fm and w_at) else None,
+        "pvo2max_w": round(w_vo2max),
+        "fractional_utilization_pct": (round(w_at / w_vo2max * 100, 1)
+                                       if w_vo2max else None),
         "glicogenio": glicogenio,
         "curva": curva,
     }
@@ -411,9 +428,49 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
 
     pw, pdt, psea, pfb, prc, phist = _escolher(pico_por_season)
 
+    # ── coerencia da curva ────────────────────────────────────────────────
+    # Escolher cada duracao de forma independente entre seasons pode produzir
+    # um MMP5 acima do MMP3 -- o que nenhum atleta faz. No repo Streamlit
+    # (tab_cp_model.py) o problema nao existe porque o valor vem de uma
+    # coluna unica com o PR corrente, coerente por construcao; aqui, como se
+    # recua duracao a duracao, ha que impor a monotonia explicitamente.
+    # Percorre-se da duracao mais curta para a mais longa e, sempre que uma
+    # excede a anterior, re-escolhe-se o melhor valor que ja' nao a exceda,
+    # dando prioridade a season activa.
+    ajustado = {d: False for d in duracoes}
+    ordenadas = sorted(duracoes)
+    for k in range(1, len(ordenadas)):
+        d, ant = ordenadas[k], ordenadas[k - 1]
+        if mmp[d] is None or mmp[ant] is None or mmp[d] <= mmp[ant]:
+            continue
+        cands = []
+        if season_activa and por_season[d].get(season_activa):
+            w0, dt0 = por_season[d][season_activa]
+            cands.append((season_activa, w0, dt0))
+        for sea in ordem:
+            if sea != season_activa and por_season[d].get(sea):
+                w0, dt0 = por_season[d][sea]
+                cands.append((sea, w0, dt0))
+        viaveis = [c for c in cands if c[1] <= mmp[ant]]
+        escolha = (max(viaveis, key=lambda c: c[1]) if viaveis
+                   else (min(cands, key=lambda c: c[1]) if cands else None))
+        if escolha is None:
+            continue
+        sea, w0, dt0 = escolha
+        mmp[d], datas[d], seasons[d] = w0, dt0, sea
+        recuou[d] = (season_activa is not None and sea != season_activa)
+        ajustado[d] = True
+
+    # o pico de 1 s tambem nao pode ficar abaixo da duracao mais curta
+    if pw is not None and ordenadas and mmp.get(ordenadas[0]) is not None \
+            and pw < mmp[ordenadas[0]]:
+        pw = None
+        pdt = psea = None
+
     return {"mmp": mmp, "datas": datas,
             "seasons": seasons, "recuou": recuou,
             "qualidade": qualidade,
+            "ajustado_por_coerencia": ajustado,
             "limiar_esforco_maximo": limiar,
             "pmax_w": pw, "pmax_data": pdt,
             "pmax_season": psea, "pmax_recuou": pfb,
@@ -421,6 +478,116 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
             "pmax_tecto_aplicado": tecto,
             "seasons_disponiveis": ordem,
             "curvas_lidas": lidas, "curvas_ignoradas": ignoradas}
+
+
+# ── campos externos da Intervals.icu ─────────────────────────────────────
+# Estimativas das MESMAS grandezas que o modelo calcula, mas por outro
+# caminho (custom fields e scripts do atleta). Servem de controlo externo:
+# o modelo vem de potencias maximas, estes vem dos streams da sessao. Se
+# divergirem sistematicamente, e' o modelo que nao descreve o atleta.
+#
+# 'compara_com' aponta para a chave equivalente no resultado de calcular().
+# None = nao ha equivalente no modelo, e' informacao complementar.
+CAMPOS_EXTERNOS = [
+    {"chave": "EBP", "unidade": "W", "compara_com": "lt2_w",
+     "aliases": ["ebp", "estimatedbreakingpoint", "breakingpoint"],
+     "descricao": "Estimated Power at Breaking Point (entre LT1 e LT2)"},
+    {"chave": "Pvo2max", "unidade": "W", "compara_com": "pvo2max_w",
+     "aliases": ["pvo2max", "pvo2max_w", "powervo2max"],
+     "descricao": "Estimated Power at VO2max"},
+    {"chave": "MSS", "unidade": "W", "compara_com": "lt1_w",
+     "aliases": ["mss", "maximalsteadystate", "steadystate"],
+     "descricao": "Steady state abaixo do eFTP (controlmetrics.es)"},
+    {"chave": "Fractional Utilization", "unidade": "%",
+     "compara_com": "fractional_utilization_pct",
+     "aliases": ["fractionalutilization", "fracutil", "fu", "fuovo2max"],
+     "descricao": "eFTP como percentagem do MAP. 75-85% e' o intervalo "
+                  "habitual em atletas de endurance treinados; abaixo de 75% "
+                  "o tecto esta alto e o chao baixo (trabalhar limiar), acima "
+                  "de 85% o chao esta encostado ao tecto (trabalhar VO2max)"},
+    {"chave": "FractionalUtilization6minPower", "unidade": "%",
+     "compara_com": None,
+     "aliases": ["fractionalutilization6minpower", "fractionalutilization6min",
+                 "fu6min", "fractionalutilisation6minpower"],
+     "descricao": "FTP como % da potencia de 6 min de 42 dias (proxy de "
+                  "VO2max). Muda pouco por construcao -- serve de tendencia, "
+                  "nao de valor pontual"},
+    {"chave": "CompoundScore(5m)", "unidade": "—", "compara_com": None,
+     "aliases": ["compoundscore5m", "compoundscore", "compoundscore_5m"],
+     "descricao": "Compound score de 5 min (Predictors of cycling "
+                  "performance success, U23 road cyclists)"},
+    {"chave": "CPR", "unidade": "kJ", "compara_com": None,
+     "aliases": ["cpr", "cpr_kj", "frc"],
+     "descricao": "FRC / W' pela regressao P vs 1/t sobre a curva de 60 "
+                  "dias (2, 3, 5, 12 e 20 min). Janela de 60 dias, diferente "
+                  "da season -- nao e' directamente comparavel com o W' do "
+                  "modelo de CP"},
+    {"chave": "MeanRRA1", "unidade": "—", "compara_com": None,
+     "aliases": ["meanrra1", "meanrr_a1", "meanrra_1"],
+     "descricao": "Media do racio Respiration Rate (Hz) / DFA-a1 na sessao"},
+    {"chave": "PCr", "unidade": "W", "compara_com": None,
+     "aliases": ["pcr", "ss_p_max", "sspmax"],
+     "descricao": "icu.activity.ss_p_max (season best de Pmax)"},
+]
+
+
+def _normaliza(nome):
+    return ''.join(c for c in str(nome).lower() if c.isalnum())
+
+
+def mapear_campos_externos(nomes_presentes):
+    """Nome real no JSON -> definicao, por comparacao normalizada.
+
+    Cada atleta escreve o custom field como quer ('Fractional Utilization',
+    'FractionalUtilization', 'fractional_utilization'), por isso compara-se
+    sem maiusculas, espacos nem underscores.
+    """
+    idx = {}
+    for definicao in CAMPOS_EXTERNOS:
+        for a in [definicao["chave"]] + definicao["aliases"]:
+            idx[_normaliza(a)] = definicao
+    encontrados = {}
+    for nome in nomes_presentes:
+        definicao = idx.get(_normaliza(nome))
+        if definicao is not None:
+            encontrados[nome] = definicao
+    return encontrados
+
+
+def quartis(valores):
+    """p25/p50/p75 sem numpy, por interpolacao linear (metodo 7 do R)."""
+    vs = sorted(v for v in valores if v is not None)
+    if not vs:
+        return None
+    def _p(q):
+        if len(vs) == 1:
+            return vs[0]
+        pos = q * (len(vs) - 1)
+        lo = int(pos)
+        hi = min(lo + 1, len(vs) - 1)
+        return vs[lo] + (vs[hi] - vs[lo]) * (pos - lo)
+    return {"n": len(vs),
+            "min": round(vs[0], 2), "p25": round(_p(0.25), 2),
+            "p50": round(_p(0.50), 2), "p75": round(_p(0.75), 2),
+            "max": round(vs[-1], 2)}
+
+
+def valores_do_modelo(res):
+    """Achata o resultado de calcular() nas chaves usadas em 'compara_com'."""
+    if not res or res.get("status") != "ok":
+        return {}
+    lim = res.get("limiares") or {}
+    mad = res.get("mader") or {}
+    return {
+        "lt1_w": lim.get("lt1_w"),
+        "lt2_w": lim.get("lt2_w"),
+        "mlss_at_w": mad.get("mlss_at_w"),
+        "fatmax_w": mad.get("fatmax_w"),
+        "pvo2max_w": mad.get("pvo2max_w"),
+        "fractional_utilization_pct": mad.get("fractional_utilization_pct"),
+        "vo2max": res.get("vo2max"),
+        "vlamax": res.get("vlamax"),
+    }
 
 
 # ── limiares de lactato a partir da curva do modelo ──────────────────────

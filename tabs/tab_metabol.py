@@ -685,6 +685,20 @@ BODY = r"""
   </div>
   <h2>Zonas ancoradas no MLSS</h2>
   <div id="pmZonas" style="overflow-x:auto;"></div>
+  <h2>Validação externa — campos da Intervals.icu</h2>
+  <div class="controls" style="margin-bottom:8px;">
+    <label class="sel"><input type="checkbox" id="pmExtTodas" onchange="pmExtCarregar()">
+      todo o histórico (em vez de só a season)</label>
+    <span id="pmExtEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
+  </div>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chExternos" height="260"></canvas>
+  </div>
+  <div id="pmExtTabela" style="overflow-x:auto;margin-top:8px;"></div>
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">O que é cada campo</summary>
+    <div id="pmExtGlossario" style="margin-top:6px;"></div>
+  </details>
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">MMP usados e validade do modelo</summary>
     <div id="pmDetalhe" style="margin-top:6px;"></div>
@@ -2124,9 +2138,152 @@ function pmCarregar(usarManuais){
   est.textContent = 'season ' + (d.season||'?') + ' · ' + d.n_curvas_na_season + ' curvas'
     + (ct.peso ? ' · peso ' + ct.peso + 'kg (média de ' + ct.n_peso + ' registos do trimestre)' : '')
     + (ct.bf ? ' · BF ' + ct.bf + '%' : '');
-  av.textContent = [d.aviso_recuo, d.aviso_datas].filter(Boolean).join(' | ');
-  pmResumo(); pmMMPEdit(); pmDraw(); pmZonas(); pmDetalhe();
+  av.textContent = [d.aviso_coerencia, d.aviso_recuo, d.aviso_datas]
+    .filter(Boolean).join(' | ');
+  pmResumo(); pmMMPEdit(); pmDraw(); pmZonas(); pmDetalhe(); pmExtCarregar();
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
+}
+
+// ═════ VALIDACAO EXTERNA — campos da Intervals.icu ═════
+let PMEXT = null;
+
+function pmExtCarregar(){
+ const mod = document.getElementById('pmModalidade').value;
+ const est = document.getElementById('pmExtEstado');
+ const todas = document.getElementById('pmExtTodas').checked ? '?todas=1' : '';
+ est.textContent = 'a carregar...';
+ fetch('/api/metabol/limiares_externos/'+mod+todas)
+ .then(r=>r.json()).then(function(d){
+  PMEXT = d;
+  if(d.status !== 'ok'){
+   est.textContent = d.mensagem || 'sem dados';
+   document.getElementById('pmExtTabela').innerHTML = '';
+   pmExtDraw(); return;
+  }
+  est.textContent = d.actividades + ' actividades · ' + d.ambito
+    + (d.season ? ' ' + d.season : '')
+    + ' · ' + (d.campos||[]).length + ' campos encontrados'
+    + ((d.campos_nao_encontrados||[]).length
+       ? ' · em falta: ' + d.campos_nao_encontrados.join(', ') : '');
+  pmExtTabela(); pmExtDraw(); pmExtGlossario();
+ }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
+}
+
+function pmExtTabela(){
+ const cs = (PMEXT && PMEXT.campos) || [];
+ const box = document.getElementById('pmExtTabela');
+ if(!cs.length){ box.innerHTML = '<span style="color:#8b949e;">nenhum campo reconhecido</span>'; return; }
+ let h='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+  +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+  +'<th style="padding:6px;">Campo</th><th>n</th><th>p25</th><th>Mediana</th>'
+  +'<th>p75</th><th>Último</th><th>Modelo</th><th>Δ</th></tr>';
+ cs.forEach(function(c){
+  const q=c.quartis||{}, u=c.ultimo||{}, cm=c.comparacao;
+  let dcor='#8b949e', dtxt='—';
+  if(cm){
+   const ap=Math.abs(cm.diferenca_pct);
+   dcor = ap<10 ? '#3FB950' : ap<25 ? '#F0883E' : '#F85149';
+   dtxt = (cm.diferenca_pct>0?'+':'')+cm.diferenca_pct+'%';
+  }
+  h+='<tr style="border-bottom:1px solid #161b22;">'
+   +'<td style="padding:6px;">'+c.rotulo
+   +(c.usou_historico_por_falta_na_season
+     ? ' <span style="color:#F0883E;font-size:10px;">(histórico)</span>' : '')
+   +'</td>'
+   +'<td style="color:#8b949e;">'+(q.n!=null?q.n:'—')+'</td>'
+   +'<td style="color:#8b949e;">'+(q.p25!=null?q.p25:'—')+'</td>'
+   +'<td><b>'+(q.p50!=null?q.p50:'—')+'</b> '
+   +'<span style="color:#8b949e;font-size:10px;">'+(c.unidade||'')+'</span></td>'
+   +'<td style="color:#8b949e;">'+(q.p75!=null?q.p75:'—')+'</td>'
+   +'<td style="color:#8b949e;">'+(u.valor!=null?u.valor+' · '+(u.data||''):'—')+'</td>'
+   +'<td>'+(cm?cm.modelo:'—')+'</td>'
+   +'<td style="color:'+dcor+';">'+dtxt+'</td></tr>';
+ });
+ h+='</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+  +'Δ = mediana do campo menos o valor do modelo, em %. Verde &lt;10%, laranja '
+  +'&lt;25%, vermelho acima disso. Divergência sistemática significa que o '
+  +'modelo de Mader, que parte de potências máximas, não descreve este atleta.'
+  +'</p>';
+ box.innerHTML=h;
+}
+
+function pmExtDraw(){
+ const o = ctx('chExternos', 260);
+ if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const cs = ((PMEXT && PMEXT.campos) || []).filter(function(c){
+   return c.unidade==='W' && c.quartis && c.quartis.p50!=null; });
+ if(!cs.length){ noData(g, W, H, 'Sem campos em watts para comparar'); return; }
+
+ const md = (PMEXT && PMEXT.modelo) || {};
+ const refs = [
+  {k:'lt1_w',   rot:'LT1',      cor:'#3FB950'},
+  {k:'mlss_at_w',rot:'MLSS',    cor:'#F0883E'},
+  {k:'lt2_w',   rot:'LT2',      cor:'#F85149'},
+  {k:'pvo2max_w',rot:'Pvo2max', cor:'#A371F7'},
+ ].filter(function(r){ return md[r.k]!=null; });
+
+ let vmax=0;
+ cs.forEach(function(c){ vmax=Math.max(vmax, c.quartis.max||c.quartis.p75||0); });
+ refs.forEach(function(r){ vmax=Math.max(vmax, md[r.k]); });
+ vmax = vmax*1.08 || 1;
+
+ const PL=54, PR=96, PT=14, PB=42, w=W-PL-PR, h=H-PT-PB;
+ const Y = v => PT + h - v/vmax*h;
+ const passo = w/cs.length;
+
+ // eixo Y
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
+ g.textAlign='right'; g.lineWidth=1;
+ for(let i=0;i<=4;i++){
+  const v=vmax*i/4, y=Y(v);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.fillText(Math.round(v)+'W', PL-6, y+4);
+ }
+
+ // linhas de referencia do modelo
+ refs.forEach(function(r){
+  const y=Y(md[r.k]);
+  g.strokeStyle=r.cor; g.setLineDash([5,4]); g.beginPath();
+  g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke(); g.setLineDash([]);
+  g.fillStyle=r.cor; g.textAlign='left';
+  g.fillText(r.rot+' '+Math.round(md[r.k])+'W', PL+w+6, y+4);
+ });
+
+ // caixas p25-p75 com mediana
+ cs.forEach(function(c,i){
+  const q=c.quartis;
+  const cx=PL+passo*i+passo/2, bw=Math.min(46, passo*0.5);
+  const y25=Y(q.p25), y75=Y(q.p75), y50=Y(q.p50);
+  g.strokeStyle='#8b949e'; g.beginPath();
+  g.moveTo(cx, Y(q.min)); g.lineTo(cx, Y(q.max)); g.stroke();
+  g.fillStyle='rgba(88,166,255,0.28)';
+  g.fillRect(cx-bw/2, y75, bw, Math.max(1, y25-y75));
+  g.strokeStyle='#58A6FF'; g.strokeRect(cx-bw/2, y75, bw, Math.max(1, y25-y75));
+  g.strokeStyle='#58A6FF'; g.lineWidth=2; g.beginPath();
+  g.moveTo(cx-bw/2, y50); g.lineTo(cx+bw/2, y50); g.stroke(); g.lineWidth=1;
+  g.fillStyle='#c9d1d9'; g.textAlign='center';
+  g.fillText(c.rotulo, cx, PT+h+16);
+  g.fillStyle='#8b949e';
+  g.fillText('n='+q.n, cx, PT+h+30);
+ });
+}
+
+function pmExtGlossario(){
+ const cs=(PMEXT&&PMEXT.campos)||[];
+ let h='';
+ cs.forEach(function(c){
+  h+='<p style="font-size:11px;color:#8b949e;margin:4px 0;"><b style="color:#c9d1d9;">'
+   +c.rotulo+'</b> ('+(c.unidade||'')+')'
+   +(c.compara_com?' · compara com <code>'+c.compara_com+'</code>':' · sem equivalente no modelo')
+   +'<br>'+c.descricao+'</p>';
+ });
+ if((PMEXT.campos_nao_encontrados||[]).length)
+  h+='<p style="font-size:11px;color:#F0883E;">Não encontrados no JSON das '
+   +'actividades: '+PMEXT.campos_nao_encontrados.join(', ')
+   +'. Ou não estão configurados na Intervals.icu, ou o nome do custom field '
+   +'difere dos aliases em <code>CAMPOS_EXTERNOS</code>.</p>';
+ document.getElementById('pmExtGlossario').innerHTML=h;
 }
 
 function pmCartao(titulo, valor, sub, cor){
@@ -2147,6 +2304,16 @@ function pmResumo(){
                PM.perfil + (PM.vlamax_saturado ? ' \u26A0 no limite do modelo' : ''), '#F0883E');
  h += pmCartao('MLSS / AT', (m.mlss_at_w||'—') + ' W',
                m.pct_vo2max_at ? m.pct_vo2max_at + '% do VO\u2082max' : '', '#3FB950');
+ if(m.pvo2max_w){
+  const fu = m.fractional_utilization_pct;
+  const fuNota = fu==null ? '' :
+    (fu<75 ? 'tecto alto, chão baixo — trabalhar limiar'
+     : fu<=85 ? 'intervalo habitual em endurance treinado'
+     : 'chão encostado ao tecto — trabalhar VO\u2082max');
+  h += pmCartao('Pvo\u2082max (MAP)', m.pvo2max_w + ' W',
+                (fu!=null ? 'utilização fraccional ' + fu + '% · ' : '') + fuNota,
+                '#A371F7');
+ }
  h += pmCartao('FatMax', (m.fatmax_w||'—') + ' W',
                (m.pct_vo2max_fatmax ? m.pct_vo2max_fatmax + '% VO\u2082max' : '')
                + (m.fatmax_pct_mlss ? ' · ' + m.fatmax_pct_mlss + '% do MLSS' : ''), '#A371F7');

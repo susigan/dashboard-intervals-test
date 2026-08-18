@@ -1765,6 +1765,97 @@ def api_fisiologia_qualidade():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/metabol/perfil_metabolico/<modalidade>')
+def api_perfil_metabolico(modalidade):
+    """VO2max, VLamax, MLSS/AT, FatMax e zonas, a partir dos MMP da season.
+
+    ?altura=186&idade=40&peso=86.3&bf=15[&season=2026][&pmax=1182]
+    Sem peso, usa o mais recente registado nas power_curves.
+    """
+    try:
+        import db as _db
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import perfil_metabolico as pmet
+        from config import season_de
+        try:
+            from api_client import seasons_do_atleta
+            marcos = seasons_do_atleta() or []
+        except Exception:
+            marcos = []
+
+        variantes = [k for k, v in CFG_MODALIDADES.items() if v == modalidade]
+        if not variantes:
+            return jsonify({'status': 'erro',
+                            'mensagem': f'modalidade desconhecida: {modalidade}'}), 400
+
+        linhas = _db._exec(
+            f"""SELECT date, weight, secs, watts FROM power_curves
+                WHERE type IN ({','.join('?' * len(variantes))})
+                ORDER BY date DESC""", tuple(variantes), fetch='all') or []
+        if not linhas:
+            return jsonify({'status': 'sem_dados',
+                            'mensagem': f'sem power_curves para {modalidade}'}), 200
+
+        hoje = datetime.now().strftime('%Y-%m-%d')
+        season_pedida = request.args.get('season') or season_de(hoje, marcos)
+
+        registos, pesos = [], []
+        for data, peso_l, secs, watts in linhas:
+            d = str(data)[:10] if data else None
+            if season_pedida and season_de(d, marcos) != season_pedida:
+                continue
+            registos.append({'date': d, 'secs': secs, 'watts': watts})
+            if peso_l:
+                pesos.append((d, float(peso_l)))
+
+        if not registos:
+            return jsonify({'status': 'sem_dados', 'season': season_pedida,
+                            'mensagem': 'sem curvas nesta season'}), 200
+
+        extraido = pmet.melhores_mmp(registos, modalidade)
+
+        peso = request.args.get('peso', type=float)
+        if not peso and pesos:
+            peso = sorted(pesos, key=lambda p: p[0] or '')[-1][1]
+        altura = request.args.get('altura', type=float) or pmet.ALTURA_CM_DEFEITO
+        idade = request.args.get('idade', type=float) or pmet.IDADE_DEFEITO
+        bf = request.args.get('bf', type=float)
+        pmax = request.args.get('pmax', type=float) or extraido['pmax_w']
+
+        if not peso:
+            return jsonify({'status': 'erro',
+                            'mensagem': 'sem peso: passa ?peso='}), 400
+
+        res = pmet.calcular(modalidade, extraido['mmp'], peso=peso,
+                            altura_cm=altura, idade=idade, pmax=pmax, bf_pct=bf)
+        res['season'] = season_pedida
+        res['n_curvas_na_season'] = len(registos)
+        res['datas_dos_mmp'] = {str(k): v for k, v in extraido['datas'].items()}
+        res['pmax_data'] = extraido['pmax_data']
+        res['pmax_tecto'] = extraido['pmax_tecto_aplicado']
+        res['entradas'] = {'peso': peso, 'altura_cm': altura,
+                           'idade': idade, 'bf_pct': bf}
+
+        # os MMP sao contemporaneos entre si?
+        ds = [v for v in extraido['datas'].values() if v] + \
+             ([extraido['pmax_data']] if extraido['pmax_data'] else [])
+        if len(ds) >= 2:
+            span = (datetime.fromisoformat(max(ds)) -
+                    datetime.fromisoformat(min(ds))).days
+            res['dispersao_datas_dias'] = span
+            if span > 120:
+                res['aviso_datas'] = (
+                    f'os MMP usados estao separados por {span} dias; '
+                    'valores de alturas diferentes da epoca produzem um '
+                    'perfil que nao corresponde a nenhum momento concreto')
+        return jsonify(res)
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/fisiologia/estado')
 def api_fisiologia_estado():
     """Resumo unico: o que esta feito, o que falta e qual o proximo passo."""

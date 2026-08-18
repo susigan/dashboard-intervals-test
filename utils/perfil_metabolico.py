@@ -497,6 +497,24 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
 # 'eixo'        W | wkg | bpm | None -- serve para converter tudo para
 #               watts e comparar num so' grafico
 # 'compara_com' chave equivalente no resultado de calcular()
+# So' os campos que estimam limiares. Ficaram deliberadamente de fora:
+#   PCr, ss_p_max, ss_cp, Pmax   -- valores degenerados neste atleta (p50 = 0)
+#   icu_pm_ftp, Cp, EFTP,
+#   ThresholdPower               -- FTP configurada ou derivada, nao um
+#                                   limiar medido. O CP passa a vir da tab
+#                                   CP-Model, com SE% e escolha de modelo
+#   Peak5m                       -- pico de 5 min da sessao, nao uma
+#                                   estimativa de potencia a VO2max
+#   Smo2, RespirationRateAvg,
+#   MeanRRA1, HRVREC, RecoveryHR,
+#   CardiacDrift, CompoundScore  -- sinais de sessao, nao limiares
+#   Cp1min..Cp20min, Wprime,
+#   MaxPwr, Best1minpower        -- curva de potencia, pertence a tab CP-Model
+#
+# 'grupo'       agrupa por aquilo que a grandeza estima, para se ver se
+#               estimativas independentes do mesmo limiar concordam
+# 'eixo'        W | wkg | bpm | None -- para converter tudo para watts
+# 'compara_com' chave equivalente no resultado de calcular()
 CAMPOS_EXTERNOS = [
     # ── limiar aerobio (LT1 / VT1) ───────────────────────────────────────
     {"chave": "Aet", "unidade": "W", "eixo": "W", "grupo": "aerobio",
@@ -538,93 +556,20 @@ CAMPOS_EXTERNOS = [
     {"chave": "LTHRdetected", "unidade": "bpm", "eixo": "bpm", "grupo": "limiar",
      "compara_com": "lt2_w", "aliases": ["lthrdetected", "lthr_detected", "lthr"],
      "descricao": "LTHR detectada pela Intervals.icu"},
-    {"chave": "EFTP", "unidade": "W", "eixo": "W", "grupo": "limiar",
-     "compara_com": "mlss_at_w", "aliases": ["eftp"],
-     "descricao": "eFTP (custom field do atleta)"},
-    {"chave": "ThresholdPower", "unidade": "W", "eixo": "W", "grupo": "limiar",
-     "compara_com": "mlss_at_w", "aliases": ["thresholdpower", "threshold_power"],
-     "descricao": "Potencia de limiar definida no perfil"},
-    {"chave": "icu_pm_ftp", "unidade": "W", "eixo": "W", "grupo": "limiar",
-     "compara_com": "mlss_at_w", "aliases": ["icu_pm_ftp"],
-     "descricao": "eFTP do power meter model da Intervals.icu"},
-    {"chave": "Cp", "unidade": "W", "eixo": "W", "grupo": "limiar",
-     "compara_com": "mlss_at_w", "aliases": ["cp"],
-     "descricao": "Critical Power do modelo da Intervals.icu"},
 
     # ── VO2max ───────────────────────────────────────────────────────────
     {"chave": "Pvo2max", "unidade": "W", "eixo": "W", "grupo": "vo2max",
      "compara_com": "pvo2max_w", "aliases": ["pvo2max", "pvo2max_w", "pvo2"],
      "descricao": "Estimated Power at VO2max"},
-    {"chave": "Peak5m", "unidade": "W", "eixo": "W", "grupo": "vo2max",
-     "compara_com": "pvo2max_w", "aliases": ["peak5m", "peak5min"],
-     "descricao": "Pico de 5 min -- proxy habitual da potencia a VO2max"},
-    {"chave": "PercentWmin", "unidade": "%", "eixo": None, "grupo": "vo2max",
-     "compara_com": None, "aliases": ["percentwmin", "percent_wmin"],
-     "descricao": "Percentagem da potencia maxima aerobia"},
     {"chave": "FractionalUtilizationusing6mPower", "unidade": "%", "eixo": None,
      "grupo": "vo2max", "compara_com": "fractional_utilization_pct",
      "aliases": ["fractionalutilizationusing6mpower",
                  "fractionalutilization6minpower", "fu6min",
-                 "fractionalutilisationusing6mpower"],
+                 "fractionalutilisationusing6mpower", "fractionalutilization"],
      "descricao": "FTP como % da potencia de 6 min de 42 dias (proxy de "
                   "VO2max). Muda pouco por construcao -- tendencia, nao "
                   "valor pontual. 75-85% e' o intervalo habitual; abaixo de "
                   "75% trabalhar limiar, acima de 85% trabalhar VO2max"},
-
-    # ── curva de potencia ────────────────────────────────────────────────
-    {"chave": "Cp1min", "unidade": "W", "eixo": "W", "grupo": "curva",
-     "compara_com": None, "aliases": ["cp1min"], "descricao": "CP a 1 min"},
-    {"chave": "Cp3min", "unidade": "W", "eixo": "W", "grupo": "curva",
-     "compara_com": None, "aliases": ["cp3min"], "descricao": "CP a 3 min"},
-    {"chave": "Cp5min", "unidade": "W", "eixo": "W", "grupo": "curva",
-     "compara_com": None, "aliases": ["cp5min"], "descricao": "CP a 5 min"},
-    {"chave": "Cp12min", "unidade": "W", "eixo": "W", "grupo": "curva",
-     "compara_com": None, "aliases": ["cp12min"], "descricao": "CP a 12 min"},
-    {"chave": "Cp20min", "unidade": "W", "eixo": "W", "grupo": "curva",
-     "compara_com": None, "aliases": ["cp20min"], "descricao": "CP a 20 min"},
-    {"chave": "Best1minpower", "unidade": "W", "eixo": "W", "grupo": "curva",
-     "compara_com": None, "aliases": ["best1minpower", "best1min"],
-     "descricao": "Melhor potencia de 1 min"},
-    {"chave": "MaxPwr", "unidade": "W", "eixo": None, "grupo": "curva",
-     "compara_com": None, "aliases": ["maxpwr", "maxpower"],
-     "descricao": "Potencia maxima da sessao"},
-    {"chave": "Pmax", "unidade": "W", "eixo": None, "grupo": "curva",
-     "compara_com": None, "aliases": ["pmax"],
-     "descricao": "Pmax do modelo da Intervals.icu"},
-    {"chave": "Wprime", "unidade": "J", "eixo": None, "grupo": "curva",
-     "compara_com": None, "aliases": ["wprime", "w_prime"],
-     "descricao": "W' do modelo da Intervals.icu"},
-    {"chave": "CPR", "unidade": "kJ", "eixo": None, "grupo": "curva",
-     "compara_com": None, "aliases": ["cpr", "cpr_kj", "frc"],
-     "descricao": "FRC / W' pela regressao P vs 1/t sobre a curva de 60 "
-                  "dias. Janela de 60 dias, diferente da season -- nao e' "
-                  "comparavel directamente com o W' do modelo de CP"},
-
-    # ── sinais fisiologicos da sessao ────────────────────────────────────
-    {"chave": "HRVREC", "unidade": "—", "eixo": None, "grupo": "sinais",
-     "compara_com": None, "aliases": ["hrvrec", "hrv_rec"],
-     "descricao": "Recuperacao de HRV apos a sessao"},
-    {"chave": "RecoveryHR", "unidade": "bpm", "eixo": None, "grupo": "sinais",
-     "compara_com": None, "aliases": ["recoveryhr", "recovery_hr"],
-     "descricao": "Queda de FC no primeiro minuto de recuperacao"},
-    {"chave": "CardiacDrift", "unidade": "%", "eixo": None, "grupo": "sinais",
-     "compara_com": None, "aliases": ["cardiacdrift", "cardiac_drift"],
-     "descricao": "Deriva cardiaca ao longo da sessao"},
-    {"chave": "RespirationRateAvg", "unidade": "rpm", "eixo": None,
-     "grupo": "sinais", "compara_com": None,
-     "aliases": ["respirationrateavg", "respiration_rate_avg"],
-     "descricao": "Frequencia respiratoria media"},
-    {"chave": "Smo2", "unidade": "%", "eixo": None, "grupo": "sinais",
-     "compara_com": None, "aliases": ["smo2", "smo_2"],
-     "descricao": "SmO2 medio da sessao"},
-    {"chave": "MeanRRA1", "unidade": "—", "eixo": None, "grupo": "sinais",
-     "compara_com": None, "aliases": ["meanrra1", "meanrr_a1", "meanrra_1"],
-     "descricao": "Media do racio Respiration Rate (Hz) / DFA-a1 na sessao"},
-    {"chave": "CompoundScore(5m)", "unidade": "—", "eixo": None,
-     "grupo": "sinais", "compara_com": None,
-     "aliases": ["compoundscore5m", "compoundscore", "compoundscore_5m"],
-     "descricao": "Compound score de 5 min (Predictors of cycling "
-                  "performance success, U23 road cyclists)"},
 ]
 
 # Que valor do modelo serve de referencia a cada grupo
@@ -634,14 +579,12 @@ REFERENCIA_DO_GRUPO = {
     "vo2max":  "pvo2max_w",
 }
 
-ORDEM_GRUPOS = ["aerobio", "limiar", "vo2max", "curva", "sinais"]
+ORDEM_GRUPOS = ["aerobio", "limiar", "vo2max"]
 
 ROTULO_GRUPO = {
     "aerobio": "Limiar aerobio (LT1 / VT1)",
     "limiar":  "Limiar / MLSS (LT2 / VT2)",
     "vo2max":  "VO2max",
-    "curva":   "Curva de potencia",
-    "sinais":  "Sinais da sessao",
 }
 
 
@@ -844,6 +787,38 @@ def valores_do_modelo(res):
 
 # ── limiares de lactato a partir da curva do modelo ──────────────────────
 
+def _breakpoint_2seg(xs, ys):
+    """Ponto de quebra por dois segmentos de recta unidos (minimos quadrados).
+
+    Ajusta duas rectas que se encontram num no' e devolve o no' que minimiza
+    o erro total. E' a mesma familia de metodo que ja' se usa para os
+    breakpoints de SmO2 (Feldmann): sai da geometria da propria curva, sem
+    constante emprestada de tabela.
+    """
+    n = len(xs)
+    if n < 8:
+        return None, None
+    melhor, melhor_erro = None, None
+    for k in range(3, n - 3):
+        erro = 0.0
+        for seg_x, seg_y in ((xs[:k + 1], ys[:k + 1]), (xs[k:], ys[k:])):
+            m = len(seg_x)
+            mx = sum(seg_x) / m
+            my = sum(seg_y) / m
+            sxx = sum((v - mx) ** 2 for v in seg_x)
+            if sxx <= 0:
+                continue
+            sxy = sum((seg_x[t] - mx) * (seg_y[t] - my) for t in range(m))
+            a = sxy / sxx
+            b = my - a * mx
+            erro += sum((seg_y[t] - (a * seg_x[t] + b)) ** 2 for t in range(m))
+        if melhor_erro is None or erro < melhor_erro:
+            melhor_erro, melhor = erro, k
+    if melhor is None:
+        return None, None
+    return xs[melhor], melhor_erro
+
+
 def limiares_lactato(curva, mlss_w=None):
     """LT1 e LT2 a partir da curva de lactato estacionario do modelo.
 
@@ -867,11 +842,25 @@ def limiares_lactato(curva, mlss_w=None):
     ws = [p[0] for p in pts]
     la = [p[1] for p in pts]
 
+    # ── LT1 ──────────────────────────────────────────────────────────────
+    # A convencao classica "+0.5 mmol/L acima da linha de base" foi feita
+    # para um teste incremental, onde a base e' o lactato medido em repouso
+    # ou no aquecimento (tipicamente 0.8-1.2 mmol/L) e as etapas sao poucas.
+    # Aqui a curva e' varrida desde VO2 = 0.5, praticamente repouso, com um
+    # lactato modelado de ~0.2 mmol/L. Somar 0.5 a esse minimo dispara
+    # muito cedo -- foi o que produziu um LT1 de 103 W neste atleta, abaixo
+    # do MSS (170 W) e do PBP (197 W), o que nao e' defensavel.
+    #
+    # Passa a usar-se o ponto de quebra da curva, pelo mesmo criterio
+    # geometrico do LT2: onde a subida do lactato deixa de ser plana e
+    # comeca a acelerar. Fica restrito a zona abaixo do LT2, senao os dois
+    # metodos convergiriam para o mesmo ponto. A convencao antiga continua
+    # a ser devolvida em lt1_convencao_w, para comparacao.
     base = min(la)
-    lt1 = None
+    lt1_conv = None
     for w, v in zip(ws, la):
         if v >= base + 0.5:
-            lt1 = w
+            lt1_conv = w
             break
 
     # LT2: maxima segunda derivada (curvatura) da curva de lactato
@@ -889,6 +878,17 @@ def limiares_lactato(curva, mlss_w=None):
         if curv:
             _, lt2, _ = max(curv, key=lambda c: c[0])
 
+    # LT1 pelo ponto de quebra, abaixo do LT2
+    corte = lt2 if lt2 else ws[-1]
+    idx = [k for k in range(len(ws)) if ws[k] <= corte]
+    lt1, lt1_metodo = None, None
+    if len(idx) >= 8:
+        lt1, _erro = _breakpoint_2seg([ws[k] for k in idx],
+                                      [la[k] for k in idx])
+        lt1_metodo = 'ponto de quebra (dois segmentos) abaixo do LT2'
+    if lt1 is None:
+        lt1, lt1_metodo = lt1_conv, 'convencao +0.5 mmol/L (sem pontos para o ajuste)'
+
     def _la_em(w):
         if w is None:
             return None
@@ -898,11 +898,17 @@ def limiares_lactato(curva, mlss_w=None):
     return {
         "lt1_w": round(lt1) if lt1 else None,
         "lt1_lactato": _la_em(lt1),
+        "lt1_metodo": lt1_metodo,
+        "lt1_convencao_w": round(lt1_conv) if lt1_conv else None,
+        "lt1_convencao_lactato": _la_em(lt1_conv),
         "lt2_w": round(lt2) if lt2 else None,
         "lt2_lactato": _la_em(lt2),
         "mlss_w": mlss_w,
         "lt2_vs_mlss_w": (round(lt2 - mlss_w) if (lt2 and mlss_w) else None),
-        "nota": ("LT2 pela maxima curvatura, nao pelo 4 mmol/L fixo. "
-                 "LT2 e MLSS devem ficar proximos; grande divergencia indica "
-                 "que o modelo nao descreve bem este atleta."),
+        "nota": ("LT1 pelo ponto de quebra da curva, nao pelo '+0.5 mmol/L "
+                 "acima do minimo' -- essa convencao pressupoe um lactato de "
+                 "repouso medido, e num varrimento que comeca perto do zero "
+                 "dispara cedo demais. LT2 pela maxima curvatura, nao pelo "
+                 "4 mmol/L fixo. LT2 e MLSS devem ficar proximos; grande "
+                 "divergencia indica que o modelo nao descreve este atleta."),
     }

@@ -2309,28 +2309,42 @@ function pmZonas(){
 function pmDetalhe(){
  const d=PM||{};
  const mm=d.mmp_usados||{}, dt=d.datas_dos_mmp||{};
- const se=d.seasons_dos_mmp||{}, rc=d.recuou_de_season||{};
+ const se=d.seasons_dos_mmp||{}, rc=d.recuou_de_season||{}, ql=d.qualidade_dos_mmp||{};
  let h='<table style="border-collapse:collapse;font-size:11px;">'
   +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:16px;">Duração</th>'
   +'<th style="padding-right:16px;">Watts</th><th style="padding-right:16px;">Data</th>'
-  +'<th>Season</th></tr>';
+  +'<th style="padding-right:16px;">Season</th><th>Na season / histórico</th></tr>';
  Object.keys(mm).forEach(function(k){
+  const q=ql[k]||{};
+  const qtxt = q.racio_na_season!=null
+    ? (q.melhor_na_season_w||'—')+' / '+(q.melhor_historico_w||'—')+' W = '
+      +Math.round(q.racio_na_season*100)+'%'
+    : '—';
   h+='<tr><td style="padding-right:16px;">'+Math.round(k/60)+' min</td>'
    +'<td style="padding-right:16px;">'+mm[k]+' W</td>'
    +'<td style="color:#8b949e;padding-right:16px;">'+(dt[k]||'—')+'</td>'
-   +'<td style="color:'+(rc[k]?'#F0883E':'#8b949e')+';">'+(se[k]||'—')
-   +(rc[k]?' (recuou)':'')+'</td></tr>';
+   +'<td style="color:'+(rc[k]?'#F0883E':'#8b949e')+';padding-right:16px;">'+(se[k]||'—')
+   +(rc[k]?' (recuou)':'')+'</td>'
+   +'<td style="color:'+(rc[k]?'#F0883E':'#8b949e')+';">'+qtxt+'</td></tr>';
  });
  if(d.pmax_w) h+='<tr><td style="padding-right:16px;">Pmax (1s)</td>'
    +'<td style="padding-right:16px;">'+Math.round(d.pmax_w)+' W</td>'
    +'<td style="color:#8b949e;padding-right:16px;">'+(d.pmax_data||'—')+'</td>'
-   +'<td style="color:'+(d.pmax_recuou?'#F0883E':'#8b949e')+';">'
-   +(d.pmax_season||'—')+(d.pmax_recuou?' (recuou)':'')+'</td></tr>';
+   +'<td style="color:'+(d.pmax_recuou?'#F0883E':'#8b949e')+';padding-right:16px;">'
+   +(d.pmax_season||'—')+(d.pmax_recuou?' (recuou)':'')+'</td>'
+   +'<td style="color:#8b949e;">'+(d.pmax_racio_na_season!=null
+     ? Math.round(d.pmax_racio_na_season*100)+'%' : '—')+'</td></tr>';
  h+='</table>';
+ if(d.limiar_esforco_maximo!=null)
+  h+='<p style="color:#8b949e;font-size:11px;">Considera-se esforço máximo a partir de '
+   +Math.round(d.limiar_esforco_maximo*100)+'% do melhor histórico dessa duração. '
+   +'Abaixo disso recua para a season anterior. Critério de decisão, não constante '
+   +'fisiológica — ajustável em <code>?limiar_max=</code>.</p>';
  if(d.n_curvas_na_season!=null)
   h+='<p style="color:#8b949e;font-size:11px;">'+d.n_curvas_na_season
    +' curvas na season '+(d.season||'?')+' de '+(d.n_curvas_total||0)
-   +' na base'+((d.seasons_disponiveis||[]).length>1
+   +' na base'+(d.curvas_ignoradas ? ' · '+d.curvas_ignoradas+' ilegíveis' : '')
+   +((d.seasons_disponiveis||[]).length>1
      ? ' · seasons: '+d.seasons_disponiveis.join(', ') : '')+'</p>';
  if(d.dispersao_datas_dias!=null)
   h+='<p style="color:#8b949e;font-size:11px;">MMP separados por '+d.dispersao_datas_dias+' dias.</p>';

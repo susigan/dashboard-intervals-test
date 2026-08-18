@@ -1832,6 +1832,104 @@ def api_metabol_custom_fields():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/metabol/mmp_diagnostico/<modalidade>')
+def api_metabol_mmp_diagnostico(modalidade):
+    """Porque e' que o MMP de uma duracao aparece mais baixo do que devia.
+
+    Para cada duracao: melhor de sempre vs melhor na season activa, com as
+    datas e as 10 melhores sessoes. Se os dois divergirem, a causa e' o
+    filtro de season. Se nem o melhor de sempre bater com o Intervals.icu,
+    faltam curvas na base -- correr /api/sync/curvas.
+
+    ?season=2026&duracoes=180,300,720
+    """
+    try:
+        import db as _db
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import perfil_metabolico as pmet
+        from config import season_de
+        try:
+            from api_client import seasons_do_atleta
+            marcos = seasons_do_atleta() or []
+        except Exception:
+            marcos = []
+
+        variantes = [k for k, v in CFG_MODALIDADES.items() if v == modalidade]
+        if not variantes:
+            return jsonify({'status': 'erro',
+                            'mensagem': f'modalidade desconhecida: {modalidade}'}), 400
+
+        linhas = _db._exec(
+            f"""SELECT date, secs, watts FROM power_curves
+                WHERE type IN ({','.join('?' * len(variantes))})
+                ORDER BY date DESC""", tuple(variantes), fetch='all') or []
+        if not linhas:
+            return jsonify({'status': 'sem_dados',
+                            'mensagem': f'sem power_curves para {modalidade}'}), 200
+
+        hoje = datetime.now().strftime('%Y-%m-%d')
+        season_activa = request.args.get('season') or season_de(hoje, marcos)
+        pedidas = [int(x) for x in (request.args.get('duracoes') or '').split(',')
+                   if x.strip().isdigit()]
+        duracoes = pedidas or pmet.DURACOES_MMP.get(modalidade, [])
+
+        por_duracao = {d: [] for d in duracoes}
+        seasons, sem_parse = {}, 0
+        for data, secs, watts in linhas:
+            d10 = str(data)[:10] if data else None
+            s, w = pmet._descomprimir(secs, watts)
+            if not s or not w or len(s) != len(w):
+                sem_parse += 1
+                continue
+            sea = season_de(d10, marcos)
+            seasons[sea] = seasons.get(sea, 0) + 1
+            indice = {int(x): y for x, y in zip(s, w) if y is not None}
+            for dur in duracoes:
+                v = indice.get(dur)
+                if v is None:
+                    perto = [k for k in indice if abs(k - dur) <= max(5, dur * 0.05)]
+                    v = max((indice[k] for k in perto), default=None)
+                if v is not None:
+                    por_duracao[dur].append((float(v), d10, sea))
+
+        out = {}
+        for dur, vals in por_duracao.items():
+            vals.sort(key=lambda t: -t[0])
+            na_season = [v for v in vals if v[2] == season_activa]
+            out[str(dur)] = {
+                'melhor_de_sempre_w': round(vals[0][0]) if vals else None,
+                'melhor_de_sempre_data': vals[0][1] if vals else None,
+                'melhor_de_sempre_season': vals[0][2] if vals else None,
+                'melhor_na_season_w': round(na_season[0][0]) if na_season else None,
+                'melhor_na_season_data': na_season[0][1] if na_season else None,
+                'n_sessoes': len(vals),
+                'n_sessoes_na_season': len(na_season),
+                'top10_de_sempre': [{'w': round(v), 'data': dt, 'season': sea}
+                                    for v, dt, sea in vals[:10]],
+            }
+
+        return jsonify({
+            'status': 'ok',
+            'modalidade': modalidade,
+            'season_activa': season_activa,
+            'marcos_season': marcos,
+            'curvas_na_base': len(linhas),
+            'curvas_sem_parse': sem_parse,
+            'data_mais_recente_na_base': str(linhas[0][0])[:10] if linhas else None,
+            'curvas_por_season': dict(sorted(seasons.items(),
+                                             key=lambda kv: str(kv[0]))),
+            'duracoes_analisadas': duracoes,
+            'por_duracao': out,
+            'nota': ('melhor_de_sempre != melhor_na_season -> e o filtro de '
+                     'season; melhor_de_sempre abaixo do que o Intervals.icu '
+                     'mostra -> faltam curvas, correr /api/sync/curvas')})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/metabol/perfil_metabolico/<modalidade>')
 def api_perfil_metabolico(modalidade):
     """VO2max, VLamax, MLSS/AT, FatMax e zonas, a partir dos MMP da season.
@@ -1867,20 +1965,28 @@ def api_perfil_metabolico(modalidade):
         hoje = datetime.now().strftime('%Y-%m-%d')
         season_pedida = request.args.get('season') or season_de(hoje, marcos)
 
+        # NAO se filtra aqui pela season: manda-se tudo com a etiqueta da
+        # season e e' o melhores_mmp que escolhe. Assim, uma duracao que
+        # nao exista na season activa recua para a anterior em vez de
+        # deixar o modelo sem dados.
         registos, pesos = [], []
+        n_na_season = 0
         for data, peso_l, secs, watts in linhas:
             d = str(data)[:10] if data else None
-            if season_pedida and season_de(d, marcos) != season_pedida:
-                continue
-            registos.append({'date': d, 'secs': secs, 'watts': watts})
+            sea = season_de(d, marcos)
+            registos.append({'date': d, 'secs': secs, 'watts': watts,
+                             'season': sea})
+            if sea == season_pedida:
+                n_na_season += 1
             if peso_l:
                 pesos.append((d, float(peso_l)))
 
         if not registos:
             return jsonify({'status': 'sem_dados', 'season': season_pedida,
-                            'mensagem': 'sem curvas nesta season'}), 200
+                            'mensagem': f'sem power_curves para {modalidade}'}), 200
 
-        extraido = pmet.melhores_mmp(registos, modalidade)
+        extraido = pmet.melhores_mmp(registos, modalidade,
+                                     season_activa=season_pedida)
 
         # o utilizador pode substituir qualquer MMP: ?mmp_180=345&mmp_300=312
         # e ate mudar as duracoes: ?duracoes=180,300,900
@@ -1890,7 +1996,8 @@ def api_perfil_metabolico(modalidade):
                 novas = [int(x) for x in duracoes_pedidas.split(',') if x.strip()]
                 if novas:
                     pmet.DURACOES_MMP[modalidade] = novas
-                    extraido = pmet.melhores_mmp(registos, modalidade)
+                    extraido = pmet.melhores_mmp(registos, modalidade,
+                                                 season_activa=season_pedida)
             except Exception:
                 pass
         overrides = {}
@@ -1900,6 +2007,8 @@ def api_perfil_metabolico(modalidade):
                     d = int(k[4:])
                     extraido['mmp'][d] = float(v)
                     extraido['datas'][d] = 'manual'
+                    extraido['seasons'][d] = 'manual'
+                    extraido['recuou'][d] = False
                     overrides[d] = float(v)
                 except Exception:
                     pass
@@ -1943,10 +2052,32 @@ def api_perfil_metabolico(modalidade):
         res = pmet.calcular(modalidade, extraido['mmp'], peso=peso,
                             altura_cm=altura, idade=idade, pmax=pmax, bf_pct=bf)
         res['season'] = season_pedida
-        res['n_curvas_na_season'] = len(registos)
+        res['n_curvas_na_season'] = n_na_season
+        res['n_curvas_total'] = len(registos)
         res['datas_dos_mmp'] = {str(k): v for k, v in extraido['datas'].items()}
+        res['seasons_dos_mmp'] = {str(k): v for k, v in extraido['seasons'].items()}
+        res['recuou_de_season'] = {str(k): bool(v)
+                                   for k, v in extraido['recuou'].items()}
+        res['seasons_disponiveis'] = extraido['seasons_disponiveis']
         res['pmax_data'] = extraido['pmax_data']
+        res['pmax_season'] = extraido['pmax_season']
+        res['pmax_recuou'] = bool(extraido['pmax_recuou'])
         res['pmax_tecto'] = extraido['pmax_tecto_aplicado']
+
+        # que duracoes tiveram de recuar para uma season anterior
+        recuadas = [d for d, v in extraido['recuou'].items() if v]
+        if extraido['pmax_recuou']:
+            recuadas = recuadas + ['pmax']
+        if recuadas:
+            det = ', '.join(
+                f"{'Pmax' if d == 'pmax' else str(int(d)) + 's'}"
+                f" -> {extraido['pmax_season'] if d == 'pmax' else extraido['seasons'][d]}"
+                for d in recuadas)
+            res['aviso_recuo'] = (
+                f'sem esforco maximo destas duracoes na season {season_pedida}; '
+                f'usados valores de seasons anteriores ({det}). '
+                'O perfil mistura momentos diferentes -- confirma antes de o '
+                'usar para prescrever zonas.')
         res['entradas'] = {'peso': peso, 'altura_cm': altura,
                            'idade': idade, 'bf_pct': bf}
         res['corporal_trimestre'] = corp_media
@@ -1954,11 +2085,17 @@ def api_perfil_metabolico(modalidade):
         res['duracoes_editaveis'] = True
 
         # os MMP sao contemporaneos entre si?
-        ds = [v for v in extraido['datas'].values() if v] + \
-             ([extraido['pmax_data']] if extraido['pmax_data'] else [])
+        # 'manual' e' truthy e ordena acima de qualquer data ('m' > '2'),
+        # por isso entrava no max() e rebentava o fromisoformat em todos
+        # os recalculos com valores manuais
+        def _e_data(v):
+            return bool(v) and len(str(v)) >= 10 and str(v)[:4].isdigit()
+
+        ds = [v for v in extraido['datas'].values() if _e_data(v)] + \
+             ([extraido['pmax_data']] if _e_data(extraido['pmax_data']) else [])
         if len(ds) >= 2:
-            span = (datetime.fromisoformat(max(ds)) -
-                    datetime.fromisoformat(min(ds))).days
+            span = (datetime.fromisoformat(max(ds)[:10]) -
+                    datetime.fromisoformat(min(ds)[:10])).days
             res['dispersao_datas_dias'] = span
             if span > 120:
                 res['aviso_datas'] = (

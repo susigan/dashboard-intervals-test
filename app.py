@@ -1832,6 +1832,151 @@ def api_metabol_custom_fields():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/metabol/limiares_externos/<modalidade>')
+def api_metabol_limiares_externos(modalidade):
+    """Campos da Intervals.icu que estimam o mesmo que o modelo, com quartis.
+
+    O modelo de Mader parte de potencias maximas; estes campos vem dos
+    streams de cada sessao. Sao dois caminhos independentes para as mesmas
+    grandezas -- EBP contra LT2, MSS contra LT1, Pvo2max contra o MAP,
+    Fractional Utilization contra MLSS/MAP. E' a unica validacao externa
+    disponivel sem laboratorio: se divergirem de forma sistematica, o
+    modelo nao esta a descrever este atleta.
+
+    Quartis em vez de media: estes campos sao estimados sessao a sessao e
+    tem cauda pesada (sessoes curtas, aquecimentos, falhas de sensor). A
+    mediana e o intervalo p25-p75 dizem mais do que uma media puxada por
+    dois outliers.
+
+    ?season=January 2026 (default: activa) | ?todas=1 para ignorar a season
+    """
+    try:
+        import json as _json
+        import db as _db
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'utils'))
+        import perfil_metabolico as pmet
+        from config import season_de
+        try:
+            from api_client import seasons_do_atleta
+            marcos = seasons_do_atleta() or []
+        except Exception:
+            marcos = []
+
+        variantes = [k for k, v in CFG_MODALIDADES.items() if v == modalidade]
+        if not variantes:
+            return jsonify({'status': 'erro',
+                            'mensagem': f'modalidade desconhecida: {modalidade}'}), 400
+
+        linhas = _db._exec(
+            f"""SELECT date, raw FROM activities
+                WHERE raw IS NOT NULL AND type IN ({','.join('?' * len(variantes))})
+                ORDER BY date DESC""", tuple(variantes), fetch='all') or []
+        if not linhas:
+            return jsonify({'status': 'sem_dados',
+                            'mensagem': f'sem actividades para {modalidade}'}), 200
+
+        hoje = datetime.now().strftime('%Y-%m-%d')
+        todas = request.args.get('todas') in ('1', 'true', 'sim')
+        season_pedida = request.args.get('season') or season_de(hoje, marcos)
+
+        # 1a passagem: que nomes existem mesmo no JSON deste atleta
+        nomes = set()
+        for _d, raw in linhas[:400]:
+            try:
+                j = raw if isinstance(raw, dict) else _json.loads(raw)
+            except Exception:
+                continue
+            nomes.update(k for k, v in (j or {}).items()
+                         if isinstance(v, (int, float)) and not isinstance(v, bool))
+        encontrados = pmet.mapear_campos_externos(nomes)
+
+        # 2a passagem: recolher valores
+        recolha = {n: [] for n in encontrados}
+        recolha_season = {n: [] for n in encontrados}
+        ultimo = {}
+        por_season = {n: {} for n in encontrados}
+        for data, raw in linhas:
+            try:
+                j = raw if isinstance(raw, dict) else _json.loads(raw)
+            except Exception:
+                continue
+            d10 = str(data)[:10] if data else None
+            sea = season_de(d10, marcos)
+            for nome in encontrados:
+                v = (j or {}).get(nome)
+                if v is None or isinstance(v, bool) or not isinstance(v, (int, float)):
+                    continue
+                recolha[nome].append(float(v))
+                por_season[nome].setdefault(sea, []).append(float(v))
+                if sea == season_pedida:
+                    recolha_season[nome].append(float(v))
+                if nome not in ultimo:      # linhas vem por data decrescente
+                    ultimo[nome] = {'valor': round(float(v), 2), 'data': d10,
+                                    'season': sea}
+
+        # modelo, para comparar
+        modelo, erro_modelo = {}, None
+        try:
+            _args = {} if todas else {'season': season_pedida}
+            _corpo, _ = perfil_metabolico_dados(modalidade, _args)
+            modelo = pmet.valores_do_modelo(_corpo or {})
+        except Exception as e:
+            erro_modelo = f'{type(e).__name__}: {e}'
+
+        saida = []
+        for nome, definicao in encontrados.items():
+            base = recolha[nome] if todas else (recolha_season[nome] or recolha[nome])
+            usou_historico = (not todas) and not recolha_season[nome]
+            q = pmet.quartis(base)
+            comp = definicao['compara_com']
+            valor_modelo = modelo.get(comp) if comp else None
+            delta = None
+            if valor_modelo and q and q['p50']:
+                delta = {'modelo': valor_modelo,
+                         'externo_p50': q['p50'],
+                         'diferenca': round(q['p50'] - valor_modelo, 2),
+                         'diferenca_pct': round(
+                             (q['p50'] - valor_modelo) / valor_modelo * 100, 1)}
+            saida.append({
+                'campo': nome,
+                'rotulo': definicao['chave'],
+                'unidade': definicao['unidade'],
+                'descricao': definicao['descricao'],
+                'compara_com': comp,
+                'quartis': q,
+                'usou_historico_por_falta_na_season': usou_historico,
+                'ultimo': ultimo.get(nome),
+                'p50_por_season': {s: pmet.quartis(v)['p50']
+                                   for s, v in sorted(por_season[nome].items())
+                                   if pmet.quartis(v)},
+                'comparacao': delta,
+            })
+        saida.sort(key=lambda x: (x['compara_com'] is None, x['rotulo']))
+
+        em_falta = [d['chave'] for d in pmet.CAMPOS_EXTERNOS
+                    if d['chave'] not in {x['rotulo'] for x in saida}]
+
+        return jsonify({
+            'status': 'ok',
+            'modalidade': modalidade,
+            'season': None if todas else season_pedida,
+            'ambito': 'todo o historico' if todas else 'season',
+            'actividades': len(linhas),
+            'modelo': modelo,
+            'erro_modelo': erro_modelo,
+            'campos': saida,
+            'campos_nao_encontrados': em_falta,
+            'nota': ('quartis e nao media: estes campos sao estimados sessao '
+                     'a sessao e tem cauda pesada. Compara o p50 externo com '
+                     'o valor do modelo -- divergencia sistematica significa '
+                     'que o modelo nao descreve este atleta')})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/metabol/mmp_diagnostico/<modalidade>')
 def api_metabol_mmp_diagnostico(modalidade):
     """Porque e' que o MMP de uma duracao aparece mais baixo do que devia.
@@ -1934,11 +2079,46 @@ def api_metabol_mmp_diagnostico(modalidade):
 
 @app.route('/api/metabol/perfil_metabolico/<modalidade>')
 def api_perfil_metabolico(modalidade):
+    """Rota do perfil metabolico. A logica vive em perfil_metabolico_dados,
+    para poder ser reutilizada pelo cruzamento com os campos externos sem
+    ter de fazer um pedido HTTP a nos proprios."""
+    corpo, codigo = perfil_metabolico_dados(modalidade, request.args)
+    return jsonify(corpo), codigo
+
+
+class _Args:
+    """Aceita request.args (MultiDict) ou um dict simples.
+
+    Existe para o perfil metabolico poder ser chamado directamente por
+    outro endpoint, sem fingir um pedido HTTP a nos proprios.
+    """
+
+    def __init__(self, origem):
+        self._o = origem or {}
+
+    def get(self, chave, default=None, type=None):
+        try:
+            return self._o.get(chave, default, type=type)
+        except TypeError:
+            v = self._o.get(chave, default)
+            if type is not None and v is not None and v is not default:
+                try:
+                    return type(v)
+                except (ValueError, TypeError):
+                    return default
+            return v
+
+    def items(self):
+        return self._o.items()
+
+
+def perfil_metabolico_dados(modalidade, args):
     """VO2max, VLamax, MLSS/AT, FatMax e zonas, a partir dos MMP da season.
 
     ?altura=186&idade=40&peso=86.3&bf=15[&season=2026][&pmax=1182]
     Sem peso, usa o mais recente registado nas power_curves.
     """
+    args = _Args(args)
     try:
         import db as _db
         sys.path.insert(0, os.path.join(
@@ -1953,19 +2133,19 @@ def api_perfil_metabolico(modalidade):
 
         variantes = [k for k, v in CFG_MODALIDADES.items() if v == modalidade]
         if not variantes:
-            return jsonify({'status': 'erro',
-                            'mensagem': f'modalidade desconhecida: {modalidade}'}), 400
+            return {'status': 'erro',
+                    'mensagem': f'modalidade desconhecida: {modalidade}'}, 400
 
         linhas = _db._exec(
             f"""SELECT date, weight, secs, watts FROM power_curves
                 WHERE type IN ({','.join('?' * len(variantes))})
                 ORDER BY date DESC""", tuple(variantes), fetch='all') or []
         if not linhas:
-            return jsonify({'status': 'sem_dados',
-                            'mensagem': f'sem power_curves para {modalidade}'}), 200
+            return {'status': 'sem_dados',
+                    'mensagem': f'sem power_curves para {modalidade}'}, 200
 
         hoje = datetime.now().strftime('%Y-%m-%d')
-        season_pedida = request.args.get('season') or season_de(hoje, marcos)
+        season_pedida = args.get('season') or season_de(hoje, marcos)
 
         # NAO se filtra aqui pela season: manda-se tudo com a etiqueta da
         # season e e' o melhores_mmp que escolhe. Assim, uma duracao que
@@ -1984,16 +2164,16 @@ def api_perfil_metabolico(modalidade):
                 pesos.append((d, float(peso_l)))
 
         if not registos:
-            return jsonify({'status': 'sem_dados', 'season': season_pedida,
-                            'mensagem': f'sem power_curves para {modalidade}'}), 200
+            return {'status': 'sem_dados', 'season': season_pedida,
+                    'mensagem': f'sem power_curves para {modalidade}'}, 200
 
         extraido = pmet.melhores_mmp(
             registos, modalidade, season_activa=season_pedida,
-            limiar_max=request.args.get('limiar_max', type=float))
+            limiar_max=args.get('limiar_max', type=float))
 
         # o utilizador pode substituir qualquer MMP: ?mmp_180=345&mmp_300=312
         # e ate mudar as duracoes: ?duracoes=180,300,900
-        duracoes_pedidas = request.args.get('duracoes')
+        duracoes_pedidas = args.get('duracoes')
         if duracoes_pedidas:
             try:
                 novas = [int(x) for x in duracoes_pedidas.split(',') if x.strip()]
@@ -2001,11 +2181,11 @@ def api_perfil_metabolico(modalidade):
                     pmet.DURACOES_MMP[modalidade] = novas
                     extraido = pmet.melhores_mmp(
                         registos, modalidade, season_activa=season_pedida,
-                        limiar_max=request.args.get('limiar_max', type=float))
+                        limiar_max=args.get('limiar_max', type=float))
             except Exception:
                 pass
         overrides = {}
-        for k, v in request.args.items():
+        for k, v in args.items():
             if k.startswith('mmp_'):
                 try:
                     d = int(k[4:])
@@ -2037,21 +2217,21 @@ def api_perfil_metabolico(modalidade):
         except Exception as e:
             corp_media = {'erro': f'{type(e).__name__}: {e}'}
 
-        peso = request.args.get('peso', type=float)
+        peso = args.get('peso', type=float)
         if not peso:
             peso = corp_media.get('peso')
         if not peso and pesos:
             peso = sorted(pesos, key=lambda p: p[0] or '')[-1][1]
-        altura = request.args.get('altura', type=float) or pmet.ALTURA_CM_DEFEITO
-        idade = request.args.get('idade', type=float) or pmet.IDADE_DEFEITO
-        bf = request.args.get('bf', type=float)
+        altura = args.get('altura', type=float) or pmet.ALTURA_CM_DEFEITO
+        idade = args.get('idade', type=float) or pmet.IDADE_DEFEITO
+        bf = args.get('bf', type=float)
         if bf is None:
             bf = corp_media.get('bf')
-        pmax = request.args.get('pmax', type=float) or extraido['pmax_w']
+        pmax = args.get('pmax', type=float) or extraido['pmax_w']
 
         if not peso:
-            return jsonify({'status': 'erro',
-                            'mensagem': 'sem peso: passa ?peso='}), 400
+            return {'status': 'erro',
+                    'mensagem': 'sem peso: passa ?peso='}, 400
 
         res = pmet.calcular(modalidade, extraido['mmp'], peso=peso,
                             altura_cm=altura, idade=idade, pmax=pmax, bf_pct=bf)
@@ -2065,6 +2245,8 @@ def api_perfil_metabolico(modalidade):
         res['seasons_disponiveis'] = extraido['seasons_disponiveis']
         res['qualidade_dos_mmp'] = {str(k): v
                                     for k, v in extraido['qualidade'].items()}
+        res['ajustado_por_coerencia'] = {
+            str(k): bool(v) for k, v in extraido['ajustado_por_coerencia'].items()}
         res['limiar_esforco_maximo'] = extraido['limiar_esforco_maximo']
         res['curvas_lidas'] = extraido['curvas_lidas']
         res['curvas_ignoradas'] = extraido['curvas_ignoradas']
@@ -2113,11 +2295,18 @@ def api_perfil_metabolico(modalidade):
                     f'os MMP usados estao separados por {span} dias; '
                     'valores de alturas diferentes da epoca produzem um '
                     'perfil que nao corresponde a nenhum momento concreto')
-        return jsonify(res)
+        coer = [d for d, v in extraido['ajustado_por_coerencia'].items() if v]
+        if coer:
+            res['aviso_coerencia'] = (
+                'a curva escolhida entre seasons nao decrescia com a duracao '
+                f"({', '.join(str(int(d)) + 's' for d in coer)} acima da duracao "
+                'mais curta); esses valores foram re-escolhidos para manter a '
+                'curva fisicamente possivel')
+        return res, 200
     except Exception as e:
         import traceback
-        return jsonify({'status': 'erro', 'mensagem': str(e),
-                        'trace': traceback.format_exc()}), 500
+        return {'status': 'erro', 'mensagem': str(e),
+                'trace': traceback.format_exc()}, 500
 
 
 @app.route('/api/fisiologia/estado')

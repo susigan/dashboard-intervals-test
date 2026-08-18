@@ -488,91 +488,161 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
 #
 # 'compara_com' aponta para a chave equivalente no resultado de calcular().
 # None = nao ha equivalente no modelo, e' informacao complementar.
+# Nomes reais dos custom fields deste atleta, apanhados pelo
+# campos_por_reconhecer do endpoint. Nao se inventam nomes: o que nao
+# estiver aqui aparece nessa lista e acrescenta-se depois.
+#
+# 'grupo'       agrupa por aquilo que a grandeza estima, para se poder ver
+#               se estimativas independentes do mesmo limiar concordam
+# 'eixo'        W | wkg | bpm | None -- serve para converter tudo para
+#               watts e comparar num so' grafico
+# 'compara_com' chave equivalente no resultado de calcular()
 CAMPOS_EXTERNOS = [
-    # ── em watts ─────────────────────────────────────────────────────────
-    {"chave": "EBP", "unidade": "W", "eixo": "W", "compara_com": "lt2_w",
-     "aliases": ["ebp", "estimatedbreakingpoint", "breakingpoint",
-                 "ebp_w", "estimatedpoweratbreakingpoint"],
-     "descricao": "Estimated Power at Breaking Point (entre LT1 e LT2)"},
-    {"chave": "PBP", "unidade": "W", "eixo": "W", "compara_com": "lt2_w",
-     "aliases": ["pbp", "pbp_w", "poweratbreakingpoint"],
-     "descricao": "Power at Breaking Point"},
-    {"chave": "Pvo2max", "unidade": "W", "eixo": "W", "compara_com": "pvo2max_w",
-     "aliases": ["pvo2max", "pvo2max_w", "powervo2max", "pvo2"],
-     "descricao": "Estimated Power at VO2max"},
-    {"chave": "MSS", "unidade": "W", "eixo": "W", "compara_com": "lt1_w",
-     "aliases": ["mss", "maximalsteadystate", "steadystate", "mss_w"],
-     "descricao": "Steady state abaixo do eFTP (controlmetrics.es)"},
-    {"chave": "FatMax", "unidade": "W", "eixo": "W", "compara_com": "fatmax_w",
-     "aliases": ["fatmax", "fatmax_w", "fatmaxpower"],
-     "descricao": "Potencia de oxidacao maxima de gordura"},
-    {"chave": "Aet", "unidade": "W", "eixo": "W", "compara_com": "lt1_w",
-     "aliases": ["aet", "aet_w", "aerobicthreshold"],
+    # ── limiar aerobio (LT1 / VT1) ───────────────────────────────────────
+    {"chave": "Aet", "unidade": "W", "eixo": "W", "grupo": "aerobio",
+     "compara_com": "lt1_w", "aliases": ["aet", "aet_w", "aerobicthreshold"],
      "descricao": "Limiar aerobio em potencia"},
-
-    # ── em bpm ───────────────────────────────────────────────────────────
-    {"chave": "AeTHR", "unidade": "bpm", "eixo": "bpm", "compara_com": "lt1_w",
-     "aliases": ["aethr", "aethr_bpm", "aerobicthresholdhr"],
+    {"chave": "AeTwkg", "unidade": "W/kg", "eixo": "wkg", "grupo": "aerobio",
+     "compara_com": "lt1_w", "aliases": ["aetwkg", "aet_wkg", "aetwattskg"],
+     "descricao": "Limiar aerobio em watts por quilo"},
+    {"chave": "AeTHR", "unidade": "bpm", "eixo": "bpm", "grupo": "aerobio",
+     "compara_com": "lt1_w", "aliases": ["aethr", "aethr_bpm"],
      "descricao": "Frequencia cardiaca no limiar aerobio"},
-    {"chave": "HRVT1", "unidade": "bpm", "eixo": "bpm", "compara_com": "lt1_w",
-     "aliases": ["hrvt1", "hrvt1_bpm"],
-     "descricao": "Primeiro limiar ventilatorio por HRV (DFA-a1 = 0.75)"},
-    {"chave": "HRVT2", "unidade": "bpm", "eixo": "bpm", "compara_com": "lt2_w",
-     "aliases": ["hrvt2", "hrvt2_bpm"],
-     "descricao": "Segundo limiar ventilatorio por HRV (DFA-a1 = 0.50)"},
+    {"chave": "HRVT1", "unidade": "bpm", "eixo": "bpm", "grupo": "aerobio",
+     "compara_com": "lt1_w", "aliases": ["hrvt1", "hrvt1_bpm"],
+     "descricao": "Primeiro limiar por DFA-a1 (a1 = 0.75)"},
+    {"chave": "HRVT1PLUS", "unidade": "bpm", "eixo": "bpm", "grupo": "aerobio",
+     "compara_com": "lt1_w",
+     # nao por "hrvt1+": a normalizacao remove o '+' e ficaria igual a
+     # "hrvt1", roubando o campo HRVT1 no indice de aliases
+     "aliases": ["hrvt1plus", "hrvt1_plus", "hrvt1mais"],
+     "descricao": "HRVT1 no limite superior da banda de DFA-a1"},
 
-    # ── sem equivalente no modelo ────────────────────────────────────────
-    {"chave": "Fractional Utilization", "unidade": "%", "eixo": None,
-     "compara_com": "fractional_utilization_pct",
-     "aliases": ["fractionalutilization", "fracutil", "fuovo2max",
-                 "fractionalutilisation", "fractionalutilizationofvo2max"],
-     "descricao": "eFTP como percentagem do MAP. 75-85% e' o intervalo "
-                  "habitual em atletas de endurance treinados; abaixo de 75% "
-                  "o tecto esta alto e o chao baixo (trabalhar limiar), acima "
-                  "de 85% o chao esta encostado ao tecto (trabalhar VO2max)"},
-    {"chave": "FractionalUtilization6minPower", "unidade": "%", "eixo": None,
-     "compara_com": None,
-     "aliases": ["fractionalutilization6minpower", "fractionalutilization6min",
-                 "fu6min", "fractionalutilisation6minpower",
-                 "fractionalutilization6mpower"],
+    # ── limiar / MLSS (LT2 / VT2) ────────────────────────────────────────
+    {"chave": "MSS", "unidade": "W", "eixo": "W", "grupo": "limiar",
+     "compara_com": "mlss_at_w", "aliases": ["mss", "maximalsteadystate"],
+     "descricao": "Maximal steady state abaixo do eFTP (controlmetrics.es)"},
+    {"chave": "HRVTMSS", "unidade": "bpm", "eixo": "bpm", "grupo": "limiar",
+     "compara_com": "mlss_at_w", "aliases": ["hrvtmss", "hrvt_mss"],
+     "descricao": "FC do maximal steady state por DFA-a1"},
+    {"chave": "PBP", "unidade": "W", "eixo": "W", "grupo": "limiar",
+     "compara_com": "lt2_w", "aliases": ["pbp", "pbp_w", "poweratbreakingpoint"],
+     "descricao": "Power at Breaking Point"},
+    {"chave": "EBP", "unidade": "W", "eixo": "W", "grupo": "limiar",
+     "compara_com": "lt2_w",
+     "aliases": ["ebp", "estimatedbreakingpoint", "breakingpoint"],
+     "descricao": "Estimated Power at Breaking Point (entre LT1 e LT2)"},
+    {"chave": "HRVT2", "unidade": "bpm", "eixo": "bpm", "grupo": "limiar",
+     "compara_com": "lt2_w", "aliases": ["hrvt2", "hrvt2_bpm"],
+     "descricao": "Segundo limiar por DFA-a1 (a1 = 0.50)"},
+    {"chave": "LTHRdetected", "unidade": "bpm", "eixo": "bpm", "grupo": "limiar",
+     "compara_com": "lt2_w", "aliases": ["lthrdetected", "lthr_detected", "lthr"],
+     "descricao": "LTHR detectada pela Intervals.icu"},
+    {"chave": "EFTP", "unidade": "W", "eixo": "W", "grupo": "limiar",
+     "compara_com": "mlss_at_w", "aliases": ["eftp"],
+     "descricao": "eFTP (custom field do atleta)"},
+    {"chave": "ThresholdPower", "unidade": "W", "eixo": "W", "grupo": "limiar",
+     "compara_com": "mlss_at_w", "aliases": ["thresholdpower", "threshold_power"],
+     "descricao": "Potencia de limiar definida no perfil"},
+    {"chave": "icu_pm_ftp", "unidade": "W", "eixo": "W", "grupo": "limiar",
+     "compara_com": "mlss_at_w", "aliases": ["icu_pm_ftp"],
+     "descricao": "eFTP do power meter model da Intervals.icu"},
+    {"chave": "Cp", "unidade": "W", "eixo": "W", "grupo": "limiar",
+     "compara_com": "mlss_at_w", "aliases": ["cp"],
+     "descricao": "Critical Power do modelo da Intervals.icu"},
+
+    # ── VO2max ───────────────────────────────────────────────────────────
+    {"chave": "Pvo2max", "unidade": "W", "eixo": "W", "grupo": "vo2max",
+     "compara_com": "pvo2max_w", "aliases": ["pvo2max", "pvo2max_w", "pvo2"],
+     "descricao": "Estimated Power at VO2max"},
+    {"chave": "Peak5m", "unidade": "W", "eixo": "W", "grupo": "vo2max",
+     "compara_com": "pvo2max_w", "aliases": ["peak5m", "peak5min"],
+     "descricao": "Pico de 5 min -- proxy habitual da potencia a VO2max"},
+    {"chave": "PercentWmin", "unidade": "%", "eixo": None, "grupo": "vo2max",
+     "compara_com": None, "aliases": ["percentwmin", "percent_wmin"],
+     "descricao": "Percentagem da potencia maxima aerobia"},
+    {"chave": "FractionalUtilizationusing6mPower", "unidade": "%", "eixo": None,
+     "grupo": "vo2max", "compara_com": "fractional_utilization_pct",
+     "aliases": ["fractionalutilizationusing6mpower",
+                 "fractionalutilization6minpower", "fu6min",
+                 "fractionalutilisationusing6mpower"],
      "descricao": "FTP como % da potencia de 6 min de 42 dias (proxy de "
-                  "VO2max). Muda pouco por construcao -- serve de tendencia, "
-                  "nao de valor pontual"},
+                  "VO2max). Muda pouco por construcao -- tendencia, nao "
+                  "valor pontual. 75-85% e' o intervalo habitual; abaixo de "
+                  "75% trabalhar limiar, acima de 85% trabalhar VO2max"},
+
+    # ── curva de potencia ────────────────────────────────────────────────
+    {"chave": "Cp1min", "unidade": "W", "eixo": "W", "grupo": "curva",
+     "compara_com": None, "aliases": ["cp1min"], "descricao": "CP a 1 min"},
+    {"chave": "Cp3min", "unidade": "W", "eixo": "W", "grupo": "curva",
+     "compara_com": None, "aliases": ["cp3min"], "descricao": "CP a 3 min"},
+    {"chave": "Cp5min", "unidade": "W", "eixo": "W", "grupo": "curva",
+     "compara_com": None, "aliases": ["cp5min"], "descricao": "CP a 5 min"},
+    {"chave": "Cp12min", "unidade": "W", "eixo": "W", "grupo": "curva",
+     "compara_com": None, "aliases": ["cp12min"], "descricao": "CP a 12 min"},
+    {"chave": "Cp20min", "unidade": "W", "eixo": "W", "grupo": "curva",
+     "compara_com": None, "aliases": ["cp20min"], "descricao": "CP a 20 min"},
+    {"chave": "Best1minpower", "unidade": "W", "eixo": "W", "grupo": "curva",
+     "compara_com": None, "aliases": ["best1minpower", "best1min"],
+     "descricao": "Melhor potencia de 1 min"},
+    {"chave": "MaxPwr", "unidade": "W", "eixo": None, "grupo": "curva",
+     "compara_com": None, "aliases": ["maxpwr", "maxpower"],
+     "descricao": "Potencia maxima da sessao"},
+    {"chave": "Pmax", "unidade": "W", "eixo": None, "grupo": "curva",
+     "compara_com": None, "aliases": ["pmax"],
+     "descricao": "Pmax do modelo da Intervals.icu"},
+    {"chave": "Wprime", "unidade": "J", "eixo": None, "grupo": "curva",
+     "compara_com": None, "aliases": ["wprime", "w_prime"],
+     "descricao": "W' do modelo da Intervals.icu"},
+    {"chave": "CPR", "unidade": "kJ", "eixo": None, "grupo": "curva",
+     "compara_com": None, "aliases": ["cpr", "cpr_kj", "frc"],
+     "descricao": "FRC / W' pela regressao P vs 1/t sobre a curva de 60 "
+                  "dias. Janela de 60 dias, diferente da season -- nao e' "
+                  "comparavel directamente com o W' do modelo de CP"},
+
+    # ── sinais fisiologicos da sessao ────────────────────────────────────
+    {"chave": "HRVREC", "unidade": "—", "eixo": None, "grupo": "sinais",
+     "compara_com": None, "aliases": ["hrvrec", "hrv_rec"],
+     "descricao": "Recuperacao de HRV apos a sessao"},
+    {"chave": "RecoveryHR", "unidade": "bpm", "eixo": None, "grupo": "sinais",
+     "compara_com": None, "aliases": ["recoveryhr", "recovery_hr"],
+     "descricao": "Queda de FC no primeiro minuto de recuperacao"},
+    {"chave": "CardiacDrift", "unidade": "%", "eixo": None, "grupo": "sinais",
+     "compara_com": None, "aliases": ["cardiacdrift", "cardiac_drift"],
+     "descricao": "Deriva cardiaca ao longo da sessao"},
+    {"chave": "RespirationRateAvg", "unidade": "rpm", "eixo": None,
+     "grupo": "sinais", "compara_com": None,
+     "aliases": ["respirationrateavg", "respiration_rate_avg"],
+     "descricao": "Frequencia respiratoria media"},
+    {"chave": "Smo2", "unidade": "%", "eixo": None, "grupo": "sinais",
+     "compara_com": None, "aliases": ["smo2", "smo_2"],
+     "descricao": "SmO2 medio da sessao"},
+    {"chave": "MeanRRA1", "unidade": "—", "eixo": None, "grupo": "sinais",
+     "compara_com": None, "aliases": ["meanrra1", "meanrr_a1", "meanrra_1"],
+     "descricao": "Media do racio Respiration Rate (Hz) / DFA-a1 na sessao"},
     {"chave": "CompoundScore(5m)", "unidade": "—", "eixo": None,
-     "compara_com": None,
+     "grupo": "sinais", "compara_com": None,
      "aliases": ["compoundscore5m", "compoundscore", "compoundscore_5m"],
      "descricao": "Compound score de 5 min (Predictors of cycling "
                   "performance success, U23 road cyclists)"},
-    {"chave": "CPR", "unidade": "kJ", "eixo": None, "compara_com": None,
-     "aliases": ["cpr", "cpr_kj", "frc"],
-     "descricao": "FRC / W' pela regressao P vs 1/t sobre a curva de 60 "
-                  "dias (2, 3, 5, 12 e 20 min). Janela de 60 dias, diferente "
-                  "da season -- nao e' directamente comparavel com o W' do "
-                  "modelo de CP"},
-    {"chave": "MeanRRA1", "unidade": "—", "eixo": None, "compara_com": None,
-     "aliases": ["meanrra1", "meanrr_a1", "meanrra_1"],
-     "descricao": "Media do racio Respiration Rate (Hz) / DFA-a1 na sessao"},
-    {"chave": "PCr", "unidade": "—", "eixo": None, "compara_com": None,
-     "aliases": ["pcr"],
-     "descricao": "Custom field do atleta. NAO se assume que seja o "
-                  "ss_p_max: o campo standard ss_p_max e' recolhido a parte, "
-                  "e se os dois coincidirem isso aparece na coluna de "
-                  "duplicados em vez de se juntarem as escondidas"},
 ]
 
-# Campos standard da API que interessam ao perfil, recolhidos a parte dos
-# custom fields para nao se confundirem com eles.
-CAMPOS_STANDARD = [
-    {"chave": "ss_p_max", "unidade": "W", "eixo": None, "compara_com": None,
-     "aliases": ["ss_p_max"],
-     "descricao": "p_max do season best, campo standard da Intervals.icu"},
-    {"chave": "ss_cp", "unidade": "W", "eixo": "W", "compara_com": "mlss_at_w",
-     "aliases": ["ss_cp"],
-     "descricao": "CP do season best, campo standard da Intervals.icu"},
-    {"chave": "icu_pm_ftp", "unidade": "W", "eixo": "W", "compara_com": "mlss_at_w",
-     "aliases": ["icu_pm_ftp"],
-     "descricao": "eFTP do power meter model da Intervals.icu"},
-]
+# Que valor do modelo serve de referencia a cada grupo
+REFERENCIA_DO_GRUPO = {
+    "aerobio": "lt1_w",
+    "limiar":  "mlss_at_w",
+    "vo2max":  "pvo2max_w",
+}
+
+ORDEM_GRUPOS = ["aerobio", "limiar", "vo2max", "curva", "sinais"]
+
+ROTULO_GRUPO = {
+    "aerobio": "Limiar aerobio (LT1 / VT1)",
+    "limiar":  "Limiar / MLSS (LT2 / VT2)",
+    "vo2max":  "VO2max",
+    "curva":   "Curva de potencia",
+    "sinais":  "Sinais da sessao",
+}
 
 
 def _normaliza(nome):
@@ -617,6 +687,10 @@ def mapear_campos_externos(nomes_presentes, definicoes=None):
     return encontrados, duplicados
 
 
+HR_PLAUSIVEL = (60.0, 220.0)     # bpm num patamar de esforco
+W_PLAUSIVEL = (20.0, 2000.0)     # W num patamar de esforco
+
+
 def regressao_hr_watts(pontos):
     """Recta HR = a x Watts + b a partir dos pares do proprio atleta.
 
@@ -630,8 +704,15 @@ def regressao_hr_watts(pontos):
     com a forma e com o calor). Serve para situar pontos proximos uns dos
     outros, nao para converter extremos.
     """
+    # Filtro de plausibilidade: aparecem patamares com FC de 7 ou 41 bpm
+    # (sensor a falhar no arranque do intervalo). Um punhado destes puxa a
+    # recta em todo o dominio e estraga todas as conversoes.
     pts = [(float(w), float(h)) for w, h in pontos
-           if w is not None and h is not None and w > 0 and h > 0]
+           if w is not None and h is not None
+           and HR_PLAUSIVEL[0] <= float(h) <= HR_PLAUSIVEL[1]
+           and W_PLAUSIVEL[0] <= float(w) <= W_PLAUSIVEL[1]]
+    descartados = len([1 for w, h in pontos
+                       if w is not None and h is not None]) - len(pts)
     n = len(pts)
     if n < 8:
         return {"n": n, "suficiente": False,
@@ -646,7 +727,7 @@ def regressao_hr_watts(pontos):
     b = my - a * mx
     syy = sum((p[1] - my) ** 2 for p in pts)
     r2 = (sxy ** 2 / (sxx * syy)) if syy > 0 else 0.0
-    return {"n": n, "suficiente": True,
+    return {"n": n, "suficiente": True, "descartados": descartados,
             "declive_bpm_por_w": round(a, 4),
             "intercepto_bpm": round(b, 1),
             "r2": round(r2, 3),
@@ -686,6 +767,61 @@ def quartis(valores):
             "min": round(vs[0], 2), "p25": round(_p(0.25), 2),
             "p50": round(_p(0.50), 2), "p75": round(_p(0.75), 2),
             "max": round(vs[-1], 2)}
+
+
+def e_constante(q):
+    """O campo muda de sessao para sessao ou e' uma definicao fixa?
+
+    O AeTHR, por exemplo, vem igual em todas as sessoes e em todas as
+    seasons: e' um valor que o atleta configurou no perfil, nao uma
+    medicao. Confundir os dois leva a tratar uma definicao como se fosse
+    evidencia independente -- que e' o contrario do que esta tabela serve
+    para fazer.
+    """
+    if not q or q.get("min") is None or q.get("max") is None:
+        return None
+    if q["max"] == q["min"]:
+        return True
+    escala = abs(q["p50"]) or 1
+    return (q["max"] - q["min"]) / escala < 0.01
+
+
+def coerencia_por_grupo(campos, modelo):
+    """Estimativas independentes do mesmo limiar concordam entre si?
+
+    Todos os campos de um grupo sao postos em watts (os que vem em bpm
+    passam pela recta HR<->Watts, os que vem em W/kg pelo peso) e ve-se a
+    dispersao. Se tres metodos diferentes dizem 111 W, 170 W e 198 W para
+    o limiar aerobio, a pergunta deixa de ser "qual e' o valor" e passa a
+    ser "estes campos nao estao a medir a mesma coisa".
+
+    Campos constantes ficam de fora: uma definicao do perfil nao e' uma
+    estimativa independente.
+    """
+    out = {}
+    for grupo, ref in REFERENCIA_DO_GRUPO.items():
+        membros = [c for c in campos
+                   if c.get("grupo") == grupo and c.get("watts_equivalente")
+                   and not c.get("constante")]
+        if len(membros) < 2:
+            continue
+        ws = sorted(c["watts_equivalente"] for c in membros)
+        mediana = quartis(ws)["p50"]
+        out[grupo] = {
+            "rotulo": ROTULO_GRUPO.get(grupo, grupo),
+            "n_estimativas": len(ws),
+            "min_w": round(min(ws)), "max_w": round(max(ws)),
+            "mediana_w": round(mediana),
+            "amplitude_w": round(max(ws) - min(ws)),
+            "amplitude_pct": round((max(ws) - min(ws)) / mediana * 100, 1),
+            "modelo_w": modelo.get(ref),
+            "referencia_do_modelo": ref,
+            "detalhe": sorted(
+                [{"campo": c["rotulo"], "w": round(c["watts_equivalente"]),
+                  "medido_em": c.get("unidade")} for c in membros],
+                key=lambda d: d["w"]),
+        }
+    return out
 
 
 def valores_do_modelo(res):

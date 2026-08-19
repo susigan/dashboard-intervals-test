@@ -62,6 +62,8 @@ def registar(app):
         """Todos os modelos de CP para a modalidade, com SEE% e W'.
 
         ?season=  (default: activa)   ?min_pts=3   ?limiar_max=0.85
+        ?usar_pmax=0        nao ancorar os modelos de 3 parametros no Pmax
+        ?duplicados=manter  nao excluir duracoes com potencia igual
         """
         try:
             sys.path.insert(0, _UTILS)
@@ -82,8 +84,11 @@ def registar(app):
 
             dados = cpm.pontos_de_curvas(
                 registos, modalidade, season_activa=season,
-                limiar_max=request.args.get('limiar_max', type=float))
-            res = cpm.calcular_cp_completo(dados, modalidade, min_pts=min_pts)
+                limiar_max=request.args.get('limiar_max', type=float),
+                excluir_duplicados=(request.args.get('duplicados') != 'manter'))
+            res = cpm.calcular_cp_completo(
+                dados, modalidade, min_pts=min_pts,
+                usar_pmax=(request.args.get('usar_pmax') != '0'))
             res['status'] = 'ok'
             res['season'] = season
             res['seasons_disponiveis'] = dados.get('seasons_disponiveis')

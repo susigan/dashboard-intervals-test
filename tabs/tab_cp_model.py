@@ -43,6 +43,15 @@ BODY = """
     <span id="cpEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
 
+  <div id="cpValidacao" style="margin-bottom:12px;"></div>
+
+  <div class="controls" style="margin-bottom:8px;">
+    <label class="sel"><input type="checkbox" id="cpUsarPmax" checked onchange="cpCarregar()">
+      ancorar 3 parâmetros no Pmax</label>
+    <label class="sel"><input type="checkbox" id="cpExclDup" checked onchange="cpCarregar()">
+      excluir durações com potência igual</label>
+  </div>
+
   <h2>Modelos</h2>
   <div id="cpModelos" style="overflow-x:auto;"></div>
 
@@ -120,6 +129,8 @@ function cpCarregar(){
  const est = document.getElementById('cpEstado');
  est.textContent = 'a calcular...';
  let q = '?min_pts=' + mp + (sea ? '&season=' + encodeURIComponent(sea) : '');
+ if(!document.getElementById('cpUsarPmax').checked) q += '&usar_pmax=0';
+ if(!document.getElementById('cpExclDup').checked) q += '&duplicados=manter';
  fetch('/api/cp/modelos/' + mod + q).then(r=>r.json()).then(function(d){
   CP = d;
   if(d.status !== 'ok' || !d.ok){
@@ -129,7 +140,7 @@ function cpCarregar(){
   }
   est.textContent = d.n_mmp + ' MMP · season ' + (d.season||'?')
     + (d.melhor ? ' · menor SEE%: ' + d.melhor.nome : '');
-  cpSeasons(d); cpTabela(); cpDraw(); cpGloss(); cpDetalhe();
+  cpSeasons(d); cpValidacao(); cpTabela(); cpDraw(); cpGloss(); cpDetalhe();
   document.getElementById('cpC2Bloco').style.display =
     d.tem_calculadora_c2 ? 'block' : 'none';
  }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
@@ -142,6 +153,22 @@ function cpSeasons(d){
   const o = document.createElement('option'); o.value = s; o.textContent = s;
   sel.appendChild(o);
  });
+}
+
+function cpValidacao(){
+ const av = (CP && CP.validacao) || [];
+ const box = document.getElementById('cpValidacao');
+ if(!av.length){ box.innerHTML=''; return; }
+ const cores = {alto:'#F85149', medio:'#F0883E', baixo:'#8b949e', ok:'#3FB950'};
+ const icones = {alto:'\u25CF', medio:'\u25CF', baixo:'\u25CB', ok:'\u2713'};
+ let h = '';
+ av.forEach(function(a){
+  const c = cores[a.gravidade] || '#8b949e';
+  h += '<p style="font-size:11px;color:#8b949e;margin:4px 0;border-left:2px solid '
+   + c + ';padding-left:8px;"><b style="color:' + c + ';">'
+   + (icones[a.gravidade]||'') + '</b> ' + a.texto + '</p>';
+ });
+ box.innerHTML = h;
 }
 
 function cpTabela(){

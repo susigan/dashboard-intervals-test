@@ -179,17 +179,21 @@ function cpTabela(){
  let h = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
   +'<th style="padding:6px;">Modelo</th><th>CP</th><th>W\\u2032</th>'
-  +'<th>SEE%</th><th>k</th><th>Pontos</th><th>Durações usadas</th></tr>';
+  +'<th>SEE%</th><th>df</th><th>Pontos</th><th>Durações usadas</th></tr>';
  nomes.forEach(function(n,i){
   const m = ms[n];
+  const df = m.n_pts - m.k_params;
+  const wpOk = m.wp_kj==null || (m.wp_kj>=5 && m.wp_kj<=30);
   const cor = m.see_pct<2 ? '#3FB950' : m.see_pct<5 ? '#F0883E' : '#F85149';
   h += '<tr style="border-bottom:1px solid #161b22;'
     + (i===0?'background:rgba(88,166,255,0.06);':'') + '">'
     + '<td style="padding:6px;">' + n + (i===0?' <span style="color:#58A6FF;font-size:10px;">menor SEE%</span>':'') + '</td>'
     + '<td><b>' + m.cp + ' W</b></td>'
-    + '<td>' + (m.wp_kj!=null ? m.wp_kj + ' kJ' : '—') + '</td>'
+    + '<td style="color:' + (wpOk?'#c9d1d9':'#F85149') + ';">'
+    + (m.wp_kj!=null ? m.wp_kj + ' kJ' : '—')
+    + (wpOk?'':' <span style="font-size:10px;">implausível</span>') + '</td>'
     + '<td style="color:' + cor + ';">' + m.see_pct + '%</td>'
-    + '<td style="color:#8b949e;">' + m.k_params + '</td>'
+    + '<td style="color:' + (df<=1?'#F0883E':'#8b949e') + ';">' + df + '</td>'
     + '<td style="color:#8b949e;">' + m.n_pts + '</td>'
     + '<td style="color:#8b949e;">'
     + (m.pontos_usados||[]).map(p=>Math.round(p.t/60*10)/10+'min').join(', ')
@@ -324,18 +328,24 @@ function cpGloss(){
 }
 
 function cpDetalhe(){
- const v = CP.veloclinic;
  let h = '';
- if(v){
-  h += '<p style="font-size:12px;">' + v.classificacao + ' · CV do W\\u2032 = '
+ const jn = CP.janela_cp || [120,1200];
+ [['Todos os pontos', CP.veloclinic],
+  ['Só ' + Math.round(jn[0]/60) + '–' + Math.round(jn[1]/60) + ' min',
+   CP.veloclinic_janela]].forEach(function(par){
+  const v = par[1]; if(!v) return;
+  h += '<p style="font-size:12px;margin:4px 0;"><b style="color:#8b949e;">'
+    + par[0] + ' (n=' + v.n + ')</b> — ' + v.classificacao
+    + '<br><span style="color:#8b949e;font-size:11px;">CV do W\u2032 = '
     + v.metricas.cv + '% · média ' + Math.round(v.metricas.mean/1000*100)/100
-    + ' kJ · declive ' + v.metricas.slope + '</p>'
-    + '<p style="color:#8b949e;font-size:11px;">Veloclinic: se o modelo de CP'
-    + ' descrevesse bem o atleta, o W\\u2032 calculado em cada ponto'
-    + ' (t × (P − CP)) seria constante. A dispersão desse valor é o'
-    + ' diagnóstico; um declive marcado contra a potência significa que o'
-    + ' modelo hiperbólico não serve neste intervalo de durações.</p>';
- }
+    + ' kJ · a tendência contra a potência explica '
+    + v.metricas.efeito_declive_pct + '% do W\u2032</span></p>';
+ });
+ h += '<p style="color:#8b949e;font-size:11px;">Veloclinic: se o modelo de CP'
+   + ' descrevesse bem o atleta, o W\u2032 calculado em cada ponto'
+   + ' (t × (P − CP)) seria constante. A dispersão é o diagnóstico. Comparar'
+   + ' as duas linhas diz se a inconsistência vem do modelo ou apenas dos'
+   + ' pontos fora da janela onde ele é válido.</p>';
  h += '<table style="border-collapse:collapse;font-size:11px;">'
   +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:16px;">Duração</th>'
   +'<th style="padding-right:16px;">Watts</th><th style="padding-right:16px;">Data</th>'

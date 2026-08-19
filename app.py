@@ -2299,22 +2299,59 @@ def perfil_metabolico_dados(modalidade, args):
         # Peso e % de gordura: media do ultimo trimestre (dos Sheets, via
         # tab Corporal). Um peso de um dia isolado propaga-se a VO2max,
         # VLamax e a toda a curva -- a media trimestral e' mais estavel.
+        # BUG que estava aqui: o corporal.preparar devolve linhas com a chave
+        # 'date', e este bloco procurava 'data'. O filtro por datas nunca
+        # apanhava nada, corp_media vinha sempre {} sem erro nenhum a
+        # denunciar, e o peso caia para o ultimo valor das power_curves.
+        #
+        # Janelas: preferir o mes, que e' o que o atleta reconhece como "o
+        # meu peso agora"; recuar para o trimestre se o mes nao tiver
+        # registos, e ate' 180 dias se necessario. Um peso de um dia
+        # isolado propaga-se ao VO2max, ao VLamax e a curva toda.
         corp_media = {}
         try:
             import corporal as _corp
             import sheets_client as _sheets
             wel, cor, _err = _sheets.carregar()
-            linhas_c = _corp.preparar(cor or [], wel or [])
-            corte = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
-            recentes = [l for l in linhas_c if str(l.get('data') or '')[:10] >= corte]
+            linhas_c = _corp.preparar(cor or [], wel or []) or []
+            corp_media['n_linhas_corporal'] = len(linhas_c)
+            if _err:
+                corp_media['erro_sheets'] = str(_err)
+
+            def _media(campo, dias):
+                corte = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+                vals = []
+                for l in linhas_c:
+                    d = str(l.get('date') or l.get('data') or '')[:10]
+                    if d < corte:
+                        continue
+                    v = l.get(campo)
+                    if v in (None, ''):
+                        continue
+                    try:
+                        vals.append(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                return vals
+
             for campo in ('peso', 'bf'):
-                vals = [float(l[campo]) for l in recentes
-                        if l.get(campo) not in (None, '')]
-                if vals:
-                    corp_media[campo] = round(sum(vals) / len(vals), 2)
-                    corp_media[f'n_{campo}'] = len(vals)
+                for dias, etiqueta in ((30, 'mes'), (90, 'trimestre'),
+                                       (180, 'semestre')):
+                    vals = _media(campo, dias)
+                    if vals:
+                        corp_media[campo] = round(sum(vals) / len(vals), 2)
+                        corp_media[f'n_{campo}'] = len(vals)
+                        corp_media[f'janela_{campo}'] = etiqueta
+                        corp_media[f'min_{campo}'] = round(min(vals), 2)
+                        corp_media[f'max_{campo}'] = round(max(vals), 2)
+                        break
+            if linhas_c:
+                datas = sorted(str(l.get('date') or '')[:10]
+                               for l in linhas_c if l.get('date'))
+                if datas:
+                    corp_media['ultima_data'] = datas[-1]
         except Exception as e:
-            corp_media = {'erro': f'{type(e).__name__}: {e}'}
+            corp_media['erro'] = f'{type(e).__name__}: {e}'
 
         peso = args.get('peso', type=float)
         if not peso:

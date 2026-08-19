@@ -669,6 +669,7 @@ BODY = r"""
     <label class="sel">Idade <input type="number" id="pmIdade" value="40" style="width:60px"></label>
     <label class="sel">Peso (kg) <input type="number" id="pmPeso" step="0.1" placeholder="auto" style="width:75px"></label>
     <label class="sel">% gordura <input type="number" id="pmBf" step="0.1" placeholder="opcional" style="width:80px"></label>
+    <span id="pmCorporal" style="color:#8b949e;font-size:11px;"></span>
     <button onclick="pmCarregar()">Actualizar</button>
     <span id="pmEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
@@ -690,6 +691,17 @@ BODY = r"""
 
   <h2>Zonas ancoradas no MLSS</h2>
   <div id="pmZonas" style="overflow-x:auto;"></div>
+  <div class="controls" style="margin:6px 0 14px 0;">
+    <label class="sel">Guardar como
+      <input type="date" id="pmDataRef" style="width:150px"></label>
+    <button onclick="pmGuardar()">Guardar instantâneo</button>
+    <span id="pmGuardarEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
+  </div>
+  <p style="color:#8b949e;font-size:11px;margin-top:-8px;">
+    Grava este perfil e os intervalos dos campos na base histórica, para
+    depois se poder ver o que mudou. O CP e os modelos gravam-se na tab
+    CP-Model — aqui só o perfil metabólico e os campos.</p>
+
   <h2>Validação externa — HR × Watts</h2>
   <div class="controls" style="margin-bottom:8px;">
     <label class="sel"><input type="checkbox" id="pmExtTodas" onchange="pmExtCarregar()">
@@ -2156,7 +2168,8 @@ function pmCarregar(usarManuais){
     + (ct.bf ? ' · BF ' + ct.bf + '%' : '');
   av.textContent = [d.aviso_coerencia, d.aviso_recuo, d.aviso_datas]
     .filter(Boolean).join(' | ');
-  pmResumo(); pmMMPEdit(); pmDraw(); pmZonas(); pmDetalhe(); pmExtCarregar();
+  pmCorporal(); pmResumo(); pmMMPEdit(); pmDraw(); pmZonas(); pmDetalhe();
+  pmExtCarregar();
   pmCarregarCP();
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
 }
@@ -2164,6 +2177,56 @@ function pmCarregar(usarManuais){
 // ═════ VALIDACAO EXTERNA — campos da Intervals.icu ═════
 let PMEXT = null;
 let PM_CP = null;
+
+function pmGuardar(){
+ const est = document.getElementById('pmGuardarEstado');
+ est.textContent = 'a guardar...';
+ fetch('/api/perfil/guardar', {method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body: JSON.stringify({
+   modalidade: document.getElementById('pmModalidade').value,
+   season: (PM||{}).season,
+   data_referencia: document.getElementById('pmDataRef').value || null,
+   guardar: ['perfil','limiares']})})
+ .then(r=>r.json()).then(function(d){
+  if(d.status==='erro'){ est.textContent = 'erro: ' + d.mensagem; return; }
+  const p = (d.escrito||{}).perfil || {};
+  est.textContent = 'guardado em ' + d.data_referencia
+   + (p.mlss_w ? ' · MLSS ' + p.mlss_w + ' W' : '')
+   + (d.status==='gravado_sem_upload' ? ' (local; Drive falhou)' : '')
+   + ' — histórico na tab CP-Model';
+ }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
+}
+
+function pmCorporal(){
+ // Pre-preencher peso e %BF com a media do mes vinda da tab Corporal, em
+ // vez de deixar em branco. Os campos ficam editaveis: sobrepor um valor
+ // continua a funcionar, e a etiqueta diz de onde veio o que la' esta.
+ const el = document.getElementById('pmCorporal');
+ const c = (PM && PM.corporal_trimestre) || {};
+ const ent = (PM && PM.entradas) || {};
+ const iP = document.getElementById('pmPeso'), iB = document.getElementById('pmBf');
+ if(iP && !iP.value && c.peso) iP.value = c.peso;
+ if(iB && !iB.value && c.bf) iB.value = c.bf;
+ if(!el) return;
+ if(c.erro || c.erro_sheets){
+  el.innerHTML = '<span style="color:#F0883E;">corporal indisponível: '
+    + (c.erro || c.erro_sheets) + '</span>';
+  return;
+ }
+ const partes = [];
+ if(c.peso) partes.push('peso ' + c.peso + ' kg (média do ' + (c.janela_peso||'?')
+   + ', n=' + c.n_peso + ', ' + c.min_peso + '–' + c.max_peso + ')');
+ if(c.bf) partes.push('%BF ' + c.bf + ' (média do ' + (c.janela_bf||'?')
+   + ', n=' + c.n_bf + ')');
+ if(!partes.length){
+  el.innerHTML = 'sem registos corporais recentes'
+    + (c.ultima_data ? ' — o último é de ' + c.ultima_data : '')
+    + (ent.peso ? '; a usar ' + ent.peso + ' kg das power curves' : '');
+  return;
+ }
+ el.textContent = 'da tab Corporal: ' + partes.join(' · ');
+}
 
 function pmCarregarCP(){
  // O CP nao e' calculado aqui: vem da tab CP-Model, que corre os varios
@@ -2919,6 +2982,10 @@ function pmDetalhe(){
  document.getElementById('pmDetalhe').innerHTML=h;
 }
 
+(function(){
+ const _dr = document.getElementById('pmDataRef');
+ if(_dr && !_dr.value) _dr.value = new Date().toISOString().slice(0,10);
+})();
 aqInit();
 carregarCobertura().then(load);
 """

@@ -231,9 +231,14 @@ function cpMMPEdit(){
  });
  h += '</div><div style="margin-top:6px;">'
   + '<button onclick="cpAplicarMMP()">Aplicar</button> '
-  + '<button onclick="CP_AJUSTES=\'\';cpCarregar()">Repor automáticos</button>'
+  + '<button onclick="cpReporMMP()">Repor automáticos</button>'
   + '</div>';
  box.innerHTML = h;
+}
+
+function cpReporMMP(){
+ CP_AJUSTES = '';
+ cpCarregar();
 }
 
 function cpAplicarMMP(){
@@ -823,8 +828,9 @@ function histTabela(){
    + '<td>' + c(r.pvo2max_w) + '</td>'
    + '<td>' + c(r.vo2max) + '</td><td>' + c(r.vlamax) + '</td>'
    + '<td style="color:#8b949e;">' + c(r.peso_kg) + '</td>'
-   + '<td><a href="#" style="color:#F85149;font-size:11px;" '
-   + 'onclick="cpApagar(\\'' + dt + '\\',\\'' + (r.season||'') + '\\');return false;">apagar</a></td>'
+   + '<td><button class="cpDel" data-dt="' + dt + '" data-sea="'
+   + (r.season||'') + '" style="background:none;border:none;color:#F85149;'
+   + 'font-size:11px;cursor:pointer;padding:0;">apagar</button></td>'
    + '</tr>';
  });
  h += '</table>';

@@ -276,6 +276,74 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/cp/actual/<modalidade>')
+    def api_cp_actual(modalidade):
+        """O CP em vigor para esta modalidade.
+
+        Prioridade ao ultimo instantaneo gravado: e' onde vive a ESCOLHA do
+        modelo, feita na tab CP-Model. Sem instantaneo, calcula na hora e
+        devolve o de menor SEE%, marcando que ainda nao foi confirmado --
+        para nao dar a impressao de que um valor automatico foi validado.
+        """
+        try:
+            sys.path.insert(0, _UTILS)
+            import cp_model as cpm
+            from config import season_de
+            try:
+                from api_client import seasons_do_atleta
+                marcos = seasons_do_atleta() or []
+            except Exception:
+                marcos = []
+            hoje = datetime.now().strftime('%Y-%m-%d')
+            season = request.args.get('season') or season_de(hoje, marcos)
+
+            try:
+                import drive_db_perfil as ddp
+                conn = ddp.get_conn()
+                r = conn.execute(
+                    """SELECT data_referencia, season, modelo_escolhido, cp_w,
+                              wp_j, see_pct, n_pts, k_params
+                         FROM cp_resultados
+                        WHERE modalidade = ? AND cp_w IS NOT NULL
+                        ORDER BY data_referencia DESC LIMIT 1""",
+                    (modalidade,)).fetchone()
+                conn.close()
+                if r:
+                    return jsonify({
+                        'status': 'ok', 'origem': 'instantaneo gravado',
+                        'confirmado': True, 'modalidade': modalidade,
+                        'data_referencia': r[0], 'season': r[1],
+                        'modelo': r[2], 'cp_w': r[3], 'wp_j': r[4],
+                        'wp_kj': round(r[4] / 1000, 2) if r[4] else None,
+                        'see_pct': r[5], 'n_pts': r[6], 'k_params': r[7]})
+            except Exception as e:
+                pass
+
+            registos, _l, _m = _registos(modalidade)
+            if not registos:
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': f'sem power_curves para {modalidade}'}), 200
+            dados = cpm.pontos_de_curvas(registos, modalidade, season_activa=season)
+            res = cpm.calcular_cp_completo(dados, modalidade)
+            melhor = res.get('melhor') or {}
+            if not melhor.get('cp'):
+                return jsonify({'status': 'sem_dados', 'modalidade': modalidade,
+                                'mensagem': 'nenhum modelo convergiu'}), 200
+            return jsonify({
+                'status': 'ok', 'origem': 'calculado agora (menor SEE%)',
+                'confirmado': False, 'modalidade': modalidade,
+                'season': season, 'modelo': melhor.get('nome'),
+                'cp_w': melhor.get('cp'), 'wp_j': melhor.get('wp'),
+                'wp_kj': melhor.get('wp_kj'), 'see_pct': melhor.get('see_pct'),
+                'n_pts': melhor.get('n_pts'), 'k_params': melhor.get('k_params'),
+                'validacao': res.get('validacao'),
+                'nota': ('nao ha instantaneo gravado para esta modalidade; '
+                         'este e o modelo de menor SEE%, que nao foi '
+                         'confirmado por ninguem. Fixar na tab CP-Model.')})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/perfil/historico/<modalidade>')
     def api_perfil_historico(modalidade):
         """Serie temporal dos instantaneos.  ?de=2025-01-01&ate=2026-12-31"""

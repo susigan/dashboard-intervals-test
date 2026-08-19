@@ -555,7 +555,36 @@ MMP_COLS = {'MMP1': 60, 'MMP3': 180, 'MMP5': 300,
             'MMP12': 720, 'MMP20': 1200, 'MMP60': 3600}
 
 
-def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None):
+def marcar_duplicados(pontos, tolerancia=0.005):
+    """Duracoes diferentes com praticamente a mesma potencia.
+
+    Acontece quando um esforco longo e constante e' o melhor de varias
+    duracoes ao mesmo tempo: 20 minutos a 242 W fazem com que o melhor de
+    12 minutos dentro deles seja tambem 242 W. O ponto mais curto nao traz
+    informacao nova -- pior, entra no ajuste como se fosse uma observacao
+    independente e obriga a curva a ser plana onde devia decair, o que
+    empurra o CP para cima.
+
+    Devolve (pontos_limpos, descartados). Fica o mais longo de cada par,
+    que e' o que mais informa sobre o CP.
+    """
+    ordenados = sorted(pontos, key=lambda x: x[1])
+    manter, fora = [], []
+    for i, (w, t) in enumerate(ordenados):
+        dup = False
+        for w2, t2 in ordenados[i + 1:]:
+            if w2 > 0 and abs(w - w2) / max(w, w2) <= tolerancia:
+                dup = True
+                fora.append({'t': int(t), 'w': round(w, 1),
+                             'igual_a_t': int(t2)})
+                break
+        if not dup:
+            manter.append((w, t))
+    return manter, fora
+
+
+def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
+                     excluir_duplicados=True):
     """MMP1..MMP60 a partir das power_curves, com a mesma regra da season.
 
     Reutiliza o melhores_mmp do perfil metabolico -- melhor da season activa,
@@ -601,9 +630,17 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None):
             classicos.append((float(v), d))
             completos.append((float(v), d))
 
+    classicos = sorted(set(classicos), key=lambda x: x[1])
+    completos = sorted(set(completos), key=lambda x: x[1])
+    dup_cl, dup_full = [], []
+    if excluir_duplicados:
+        classicos, dup_cl = marcar_duplicados(classicos)
+        completos, dup_full = marcar_duplicados(completos)
+
     return {
-        'all_mmp_pts': sorted(set(classicos), key=lambda x: x[1]),
-        'all_mmp_pts_full': sorted(set(completos), key=lambda x: x[1]),
+        'all_mmp_pts': classicos,
+        'all_mmp_pts_full': completos,
+        'duplicados_excluidos': dup_cl or dup_full,
         'mmp60_val': mmp.get(3600),
         'pmax': extraido.get('pmax_w'),
         'datas': {str(k): v for k, v in extraido['datas'].items()},
@@ -619,7 +656,80 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None):
 # ORQUESTRADORA
 # ══════════════════════════════════════════════════════════════════════════
 
-def calcular_cp_completo(dados, modalidade, min_pts=3):
+def validar(res, dados):
+    """Verificacoes que nao dependem do ajuste, so' de fisiologia.
+
+    O SEE% diz se a curva passa perto dos pontos. Nao diz nada sobre se os
+    pontos sao esforcos maximos, nem se o CP resultante e' possivel. Estas
+    verificacoes dizem.
+    """
+    avisos = []
+    melhor = res.get('melhor') or {}
+    cp = melhor.get('cp')
+    mmp60 = dados.get('mmp60_val')
+    pts = dados.get('all_mmp_pts_full') or dados.get('all_mmp_pts') or []
+
+    if cp and mmp60 and cp > mmp60:
+        avisos.append({
+            'gravidade': 'alto', 'chave': 'cp_acima_do_mmp60',
+            'texto': (f'CP de {round(cp)} W acima do melhor de 60 min '
+                      f'({round(mmp60)} W). Por definicao o CP e sustentavel '
+                      'mais de uma hora, portanto ou o esforco de 60 min nao '
+                      'foi maximo -- o caso habitual, e uma saida longa em '
+                      'endurance nao e um teste -- ou os MMP curtos estao a '
+                      'puxar o CP para cima. Enquanto o MMP60 for so o melhor '
+                      'de uma saida qualquer, esta verificacao nao invalida o '
+                      'CP; deixa de a poder usar como validacao.')})
+    elif cp and mmp60:
+        avisos.append({
+            'gravidade': 'ok', 'chave': 'cp_abaixo_do_mmp60',
+            'texto': (f'CP de {round(cp)} W abaixo do melhor de 60 min '
+                      f'({round(mmp60)} W), como tem de ser.')})
+
+    dups = dados.get('duplicados_excluidos') or []
+    if dups:
+        det = ', '.join(f"{d['t']}s = {d['igual_a_t']}s ({d['w']} W)" for d in dups)
+        avisos.append({
+            'gravidade': 'medio', 'chave': 'duracoes_duplicadas',
+            'texto': (f'Duracoes com potencia praticamente igual ({det}): '
+                      'vem do mesmo esforco longo e constante, onde o melhor '
+                      'de uma duracao curta e simplesmente um pedaco da longa. '
+                      'Foram excluidas do ajuste por nao serem observacoes '
+                      'independentes.')})
+
+    if len(pts) < 4:
+        avisos.append({
+            'gravidade': 'medio', 'chave': 'poucos_pontos',
+            'texto': (f'So {len(pts)} duracoes utilizaveis. Com tres pontos '
+                      'qualquer modelo de dois parametros passa quase '
+                      'exactamente por eles, e o SEE% baixo nao significa '
+                      'nada -- so que ha graus de liberdade a mais.')})
+
+    v = res.get('veloclinic') or {}
+    m = v.get('metricas') or {}
+    if m.get('cv', 0) > 15:
+        avisos.append({
+            'gravidade': 'medio', 'chave': 'wprime_inconsistente',
+            'texto': (f"W' calculado ponto a ponto varia {m['cv']}% "
+                      f"(declive {m.get('slope')} contra a potencia). Se o "
+                      'modelo hiperbolico descrevesse este atleta, o W\' seria '
+                      'constante em todos os pontos. Um declive marcado '
+                      'significa que uma reserva finita unica nao chega para '
+                      'descrever o intervalo de duracoes usado.')})
+
+    if dados.get('pmax') and cp:
+        avisos.append({
+            'gravidade': 'baixo', 'chave': 'pmax_ancora',
+            'texto': (f"Pmax de {round(dados['pmax'])} W (pico de 1 s) e usado "
+                      'como ancora nos modelos de tres parametros. E um valor '
+                      'neuromuscular, de um dominio diferente do que o CP '
+                      'descreve; forcar a curva a passar por la distorce o '
+                      'resto. Comparar com ?usar_pmax=0 antes de escolher um '
+                      'modelo de tres parametros.')})
+    return avisos
+
+
+def calcular_cp_completo(dados, modalidade, min_pts=3, usar_pmax=True):
     """Corre todos os modelos e ordena-os por SEE%.
 
     'dados' e' o dict devolvido por pontos_de_curvas.
@@ -659,10 +769,10 @@ def calcular_cp_completo(dados, modalidade, min_pts=3):
         if len(base) < min_pts:
             continue
         try:
-            best = _grid_search_model(fit_fn, base,
-                                      min_pts=min(min_pts, len(base)),
-                                      pmax_ext=(pmax if kp == 3 else None),
-                                      k_params=kp)
+            best = _grid_search_model(
+                fit_fn, base, min_pts=min(min_pts, len(base)),
+                pmax_ext=(pmax if (kp == 3 and usar_pmax) else None),
+                k_params=kp)
             if best and best.get('result'):
                 res = best['result']
                 cp = float(res[0]) if res[0] is not None else None
@@ -696,12 +806,15 @@ def calcular_cp_completo(dados, modalidade, min_pts=3):
                       'pontos': [{'p': round(a, 1), 'wp': round(b)}
                                  for a, b in zip(p_pts, wp_pts)]}
 
-    return {'ok': len(modelos) > 0, 'modalidade': modalidade,
-            'n_mmp': len(pts), 'min_pts': min_pts,
+    saida = {'ok': len(modelos) > 0, 'modalidade': modalidade,
+            'n_mmp': len(pts), 'min_pts': min_pts, 'usou_pmax': usar_pmax,
+            'duplicados_excluidos': dados.get('duplicados_excluidos') or [],
             'mmp_pts': [{'w': round(p, 1), 't': int(t)} for p, t in pts],
             'mmp_pts_full': [{'w': round(p, 1), 't': int(t)} for p, t in pts_full],
             'pmax': pmax, 'mmp60_val': dados.get('mmp60_val'),
             'modelos': modelos, 'melhor': melhor, 'veloclinic': veloclinic}
+    saida['validacao'] = validar(saida, dados)
+    return saida
 
 
 def curva_do_modelo(cp, wp, t_min=30, t_max=3600, n=120):

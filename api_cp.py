@@ -21,8 +21,10 @@ _UTILS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'utils')
 
 
 def _mods():
-    from config import MODALIDADES
-    return MODALIDADES
+    """Mapa tipo-da-API -> modalidade. No config chama-se TYPE_MAP; o
+    app.py importa-o como CFG_MODALIDADES, dai o engano inicial."""
+    from config import TYPE_MAP
+    return TYPE_MAP
 
 
 def _variantes(modalidade):

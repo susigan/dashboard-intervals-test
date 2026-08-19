@@ -683,6 +683,11 @@ BODY = r"""
          border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
          white-space:nowrap;"></div>
   </div>
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">O que representa cada risca do gráfico</summary>
+    <div id="pmGlossarioMarcos" style="margin-top:6px;"></div>
+  </details>
+
   <h2>Zonas ancoradas no MLSS</h2>
   <div id="pmZonas" style="overflow-x:auto;"></div>
   <h2>Validação externa — HR × Watts</h2>
@@ -2149,11 +2154,75 @@ function pmCarregar(usarManuais){
   av.textContent = [d.aviso_coerencia, d.aviso_recuo, d.aviso_datas]
     .filter(Boolean).join(' | ');
   pmResumo(); pmMMPEdit(); pmDraw(); pmZonas(); pmDetalhe(); pmExtCarregar();
+  pmCarregarCP();
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
 }
 
 // ═════ VALIDACAO EXTERNA — campos da Intervals.icu ═════
 let PMEXT = null;
+let PM_CP = null;
+
+function pmCarregarCP(){
+ // O CP nao e' calculado aqui: vem da tab CP-Model, que corre os varios
+ // modelos e deixa a escolha ao utilizador. Aqui so' se desenha, para se
+ // ver onde ele cai em relacao ao MLSS e ao LT2 -- se ficarem longe, um
+ // dos dois caminhos esta errado.
+ const mod = document.getElementById('pmModalidade').value;
+ const sea = (PM && PM.season) ? '?season=' + encodeURIComponent(PM.season) : '';
+ fetch('/api/cp/modelos/' + mod + sea).then(r=>r.json()).then(function(d){
+  PM_CP = (d && d.melhor && d.melhor.cp) ? d.melhor.cp : null;
+  PM_CP_NOME = (d && d.melhor) ? d.melhor.nome : null;
+  pmDraw(); pmGlossarioMarcos();
+ }).catch(function(){ PM_CP = null; });
+}
+let PM_CP_NOME = null;
+
+function pmGlossarioMarcos(){
+ const el = document.getElementById('pmGlossarioMarcos');
+ if(!el) return;
+ const m = (PM && PM.mader) || {}, lm = (PM && PM.limiares) || {};
+ const linhas = [
+  ['FatMax', '#A371F7', m.fatmax_w, 'W',
+   'Potência de oxidação máxima de gordura — o pico da curva verde. Não é '
+   + 'um limiar: é onde a gordura contribui mais em valor absoluto. Treinar '
+   + 'aqui não "queima mais gordura" a longo prazo do que treinar acima, '
+   + 'porque o que conta é o gasto total e a adaptação.'],
+  ['LT1', '#3FB950', lm.lt1_w, 'W',
+   'Primeiro limiar de lactato, pelo ponto de quebra da curva — onde a '
+   + 'subida deixa de ser plana. Fronteira entre o domínio moderado e o '
+   + 'pesado; abaixo dele o lactato estabiliza indefinidamente. '
+   + (lm.lt1_convencao_w!=null ? 'A convenção clássica de +0,5 mmol/L daria '
+      + lm.lt1_convencao_w + ' W, mas pressupõe um lactato de repouso medido.' : '')],
+  ['MLSS', '#58A6FF', m.mlss_at_w, 'W',
+   'Máximo estado estacionário de lactato, do modelo de Mader: a potência '
+   + 'mais alta em que a produção e a remoção ainda se equilibram. É o '
+   + 'valor que ancora as zonas desta tab.'],
+  ['LT2', '#F85149', lm.lt2_w, 'W',
+   'Segundo limiar, pela máxima curvatura da curva de lactato — não pelo '
+   + '4 mmol/L fixo. Deve ficar perto do MLSS'
+   + (lm.lt2_vs_mlss_w!=null ? ' (aqui difere ' + lm.lt2_vs_mlss_w + ' W)' : '')
+   + '; grande divergência significa que o modelo não descreve este atleta.'],
+  ['CP', '#E3B341', PM_CP, 'W',
+   'Critical Power, vindo da tab CP-Model'
+   + (PM_CP_NOME ? ' (modelo ' + PM_CP_NOME + ')' : '')
+   + '. É calculado por outro caminho — ajuste à curva de potência, não à '
+   + 'curva de lactato — e por isso serve de verificação: CP e MLSS deviam '
+   + 'ficar próximos. Se não ficarem, ou os MMP não são esforços máximos '
+   + 'ou o modelo de Mader não serve aqui.'],
+ ];
+ let h = '';
+ linhas.forEach(function(l){
+  h += '<p style="font-size:11px;color:#8b949e;margin:6px 0;">'
+   + '<b style="color:' + l[1] + ';">\u2502 ' + l[0] + '</b> '
+   + (l[2]!=null ? '<b style="color:#c9d1d9;">' + Math.round(l[2]) + ' ' + l[3] + '</b>' : '<i>sem valor</i>')
+   + '<br>' + l[4] + '</p>';
+ });
+ h += '<p style="font-size:11px;color:#8b949e;margin-top:8px;">As riscas '
+  + 'horizontais partem de cada vertical até ao eixo e marcam quanta gordura '
+  + 'e quantos hidratos estão a ser oxidados nesse ponto, em g/h — é a '
+  + 'leitura que interessa para nutrição em prova.</p>';
+ el.innerHTML = h;
+}
 
 function pmExtCarregar(){
  const mod = document.getElementById('pmModalidade').value;
@@ -2484,14 +2553,47 @@ function pmDraw(){
 
  const m = PM.mader||{};
  const lm = PM.limiares || {};
- [[m.fatmax_w,'#A371F7','FatMax'],[lm.lt1_w,'#3FB950','LT1'],
-  [lm.lt2_w,'#F85149','LT2'],[m.mlss_at_w,'#58A6FF','MLSS']].forEach(function(mk){
-  if(!mk[0]) return;
-  const x=X(mk[0]);
-  g.strokeStyle=mk[1]; g.setLineDash([5,4]); g.lineWidth=1.5;
-  g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke(); g.setLineDash([]);
-  g.fillStyle=mk[1]; g.textAlign='center'; g.font='10px sans-serif';
-  g.fillText(mk[2]+' '+mk[0]+'W', x, PT+11);
+ const marcos = [
+  [m.fatmax_w,   '#A371F7', 'FatMax'],
+  [lm.lt1_w,     '#3FB950', 'LT1'],
+  [m.mlss_at_w,  '#58A6FF', 'MLSS'],
+  [lm.lt2_w,     '#F85149', 'LT2'],
+  [PM_CP,        '#E3B341', 'CP'],
+ ].filter(mk => mk[0]);
+
+ // valor da curva a uma dada potencia, para a risca horizontal saber onde parar
+ function _valorEm(campo, watts){
+  let melhor = null, dist = 1e9;
+  curva.forEach(function(p){
+   if(p[campo]==null) return;
+   const d = Math.abs(p.watts - watts);
+   if(d < dist){ dist = d; melhor = p[campo]; }
+  });
+  return melhor;
+ }
+
+ marcos.forEach(function(mk, i){
+  const wv = mk[0], cor = mk[1], rot = mk[2];
+  if(wv < xa || wv > xb) return;
+  const x = X(wv);
+  // vertical
+  g.strokeStyle=cor; g.setLineDash([5,4]); g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
+  // horizontais: onde cada curva de substrato e' cortada por esta vertical
+  [['fat_g_h','#3FB950'],['cho_g_h','#F0883E']].forEach(function(cfg){
+   const v = _valorEm(cfg[0], wv);
+   if(v==null) return;
+   const y = Y(v);
+   g.strokeStyle=cor; g.globalAlpha=0.45; g.lineWidth=1;
+   g.beginPath(); g.moveTo(PL,y); g.lineTo(x,y); g.stroke();
+   g.globalAlpha=1;
+   g.fillStyle=cfg[1]; g.textAlign='left'; g.font='9px sans-serif';
+   g.fillText(Math.round(v*10)/10, PL+2, y-3);
+  });
+  g.setLineDash([]); g.lineWidth=1;
+  // etiqueta alternada para nao se sobreporem quando ficam perto
+  g.fillStyle=cor; g.textAlign='center'; g.font='10px sans-serif';
+  g.fillText(rot+' '+Math.round(wv)+'W', x, PT + 11 + (i%2)*12);
  });
 
  g.textAlign='left'; g.font='11px sans-serif';

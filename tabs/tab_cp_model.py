@@ -27,7 +27,15 @@ BODY = """
         <option>Ski</option><option>Run</option>
       </select>
     </label>
-    <label class="sel">Season
+    <label class="sel">Âmbito
+      <select id="cpAmbito" onchange="cpAmbitoMudou()">
+        <option value="season">season</option>
+        <option value="365">últimos 365 dias</option>
+        <option value="180">últimos 180 dias</option>
+        <option value="730">últimos 2 anos</option>
+      </select>
+    </label>
+    <label class="sel" id="cpSeasonWrap">Season
       <select id="cpSeason" onchange="cpCarregar()">
         <option value="">activa</option>
       </select>
@@ -55,8 +63,16 @@ BODY = """
   <h2>Modelos</h2>
   <div id="cpModelos" style="overflow-x:auto;"></div>
 
+  <h2>MMP usados</h2>
+  <div id="cpMMP"></div>
+
   <h2>Curva de potência</h2>
-  <div class="chartbox"><canvas id="chCP" height="320"></canvas></div>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chCP" height="320"></canvas>
+    <div id="cpTip" style="display:none;position:absolute;pointer-events:none;
+      background:#161b22;border:1px solid #30363d;border-radius:6px;
+      padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;max-width:220px;"></div>
+  </div>
   <div id="cpLegenda" style="margin-top:6px;"></div>
 
   <details style="margin-top:10px;">
@@ -64,8 +80,23 @@ BODY = """
     <div id="cpGlossario" style="margin-top:6px;"></div>
   </details>
 
+  <h2>Análise do ajuste</h2>
+  <div style="display:flex;flex-wrap:wrap;gap:12px;">
+    <div style="flex:1;min-width:320px;">
+      <div style="color:#8b949e;font-size:12px;margin-bottom:4px;">
+        W&prime; ponto a ponto — deveria ser constante</div>
+      <div class="chartbox"><canvas id="chVelo" height="240"></canvas></div>
+    </div>
+    <div style="flex:1;min-width:320px;">
+      <div style="color:#8b949e;font-size:12px;margin-bottom:4px;">
+        Resíduos — observado menos previsto</div>
+      <div class="chartbox"><canvas id="chResid" height="240"></canvas></div>
+    </div>
+  </div>
+  <div id="cpAnaliseTexto" style="margin-top:6px;"></div>
+
   <details style="margin-top:10px;">
-    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Diagnóstico Veloclinic e MMP usados</summary>
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Diagnóstico Veloclinic em detalhe</summary>
     <div id="cpDetalhe" style="margin-top:6px;overflow-x:auto;"></div>
   </details>
 
@@ -120,7 +151,8 @@ BODY = """
 """
 
 JS = """
-let CP = null, HIST = null;
+let CP = null, HIST = null, CP_AJUSTES = '';
+let CP_ESCALA = null, CP_PONTOS = [];
 
 function cpCarregar(){
  const mod = document.getElementById('cpModalidade').value;
@@ -128,9 +160,13 @@ function cpCarregar(){
  const mp  = document.getElementById('cpMinPts').value;
  const est = document.getElementById('cpEstado');
  est.textContent = 'a calcular...';
- let q = '?min_pts=' + mp + (sea ? '&season=' + encodeURIComponent(sea) : '');
+ const amb = document.getElementById('cpAmbito').value;
+ let q = '?min_pts=' + mp;
+ if(amb === 'season'){ if(sea) q += '&season=' + encodeURIComponent(sea); }
+ else { q += '&janela=' + amb; }
  if(!document.getElementById('cpUsarPmax').checked) q += '&usar_pmax=0';
  if(!document.getElementById('cpExclDup').checked) q += '&duplicados=manter';
+ q += CP_AJUSTES;
  fetch('/api/cp/modelos/' + mod + q).then(r=>r.json()).then(function(d){
   CP = d;
   if(d.status !== 'ok' || !d.ok){
@@ -138,9 +174,12 @@ function cpCarregar(){
    document.getElementById('cpModelos').innerHTML = '';
    cpDraw(); return;
   }
-  est.textContent = d.n_mmp + ' MMP · season ' + (d.season||'?')
-    + (d.melhor ? ' · menor SEE%: ' + d.melhor.nome : '');
-  cpSeasons(d); cpValidacao(); cpTabela(); cpDraw(); cpGloss(); cpDetalhe();
+  est.textContent = d.n_mmp + ' MMP · ' + (d.ambito||'')
+    + ' · ' + (d.n_registos||0) + ' curvas'
+    + (d.melhor ? ' · menor SEE%: ' + d.melhor.nome : '')
+    + (Object.keys(d.overrides_aplicados||{}).length ? ' · VALORES EDITADOS' : '');
+  cpSeasons(d); cpValidacao(); cpMMPEdit(); cpTabela(); cpDraw();
+  cpVeloDraw(); cpResidDraw(); cpAnalise(); cpGloss(); cpDetalhe();
   document.getElementById('cpC2Bloco').style.display =
     d.tem_calculadora_c2 ? 'block' : 'none';
  }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
@@ -153,6 +192,64 @@ function cpSeasons(d){
   const o = document.createElement('option'); o.value = s; o.textContent = s;
   sel.appendChild(o);
  });
+}
+
+function cpAmbitoMudou(){
+ const amb = document.getElementById('cpAmbito').value;
+ document.getElementById('cpSeasonWrap').style.display =
+   amb === 'season' ? '' : 'none';
+ cpCarregar();
+}
+
+// ── quadro editável dos MMP ──────────────────────────────────────────────
+function cpMMPEdit(){
+ const box = document.getElementById('cpMMP');
+ if(!box) return;
+ const todas = (CP && CP.todas_as_duracoes) || [];
+ const usados = {};
+ (CP.mmp_pts_full||[]).forEach(p=>{ usados[p.t] = true; });
+ const ov = CP.overrides_aplicados || {};
+ if(!todas.length){ box.innerHTML=''; return; }
+ let h = '<div style="color:#8b949e;font-size:11px;margin-bottom:6px;">'
+  + 'Watts e segundos que entram no ajuste. Podes alterar qualquer um para '
+  + 'ver quanto do CP depende dele — com um grau de liberdade, isso diz mais '
+  + 'do que o SEE%. Cinzento = excluído do ajuste.</div>'
+  + '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;">';
+ todas.forEach(function(p){
+  const dentro = !!usados[p.t];
+  const editado = ov[String(p.t)] != null;
+  const dt = (CP.datas_dos_mmp||{})[String(p.t)] || '';
+  const sea = (CP.seasons_dos_mmp||{})[String(p.t)] || '';
+  const cor = editado ? '#E3B341' : dentro ? '#8b949e' : '#484f58';
+  h += '<div style="margin-right:14px;margin-bottom:6px;opacity:'
+   + (dentro?1:0.55) + ';">'
+   + '<div style="color:' + cor + ';font-size:10px;">'
+   + (editado ? 'editado' : (dt || '—')) + (sea ? ' · ' + sea : '') + '</div>'
+   + '<input type="number" class="cpSec" value="' + p.t + '" style="width:64px" title="segundos">'
+   + ' <input type="number" class="cpW" data-sec="' + p.t + '" value="'
+   + Math.round(p.w) + '" style="width:70px" title="watts"> W</div>';
+ });
+ h += '</div><div style="margin-top:6px;">'
+  + '<button onclick="cpAplicarMMP()">Aplicar</button> '
+  + '<button onclick="CP_AJUSTES=\'\';cpCarregar()">Repor automáticos</button>'
+  + '</div>';
+ box.innerHTML = h;
+}
+
+function cpAplicarMMP(){
+ const secs = Array.from(document.querySelectorAll('.cpSec')).map(i=>parseInt(i.value));
+ const ws = Array.from(document.querySelectorAll('.cpW')).map(i=>parseFloat(i.value));
+ const originais = {};
+ (CP.todas_as_duracoes||[]).forEach(p=>{ originais[p.t] = p.w; });
+ let q = '&duracoes=' + secs.filter(s=>s>0).join(',');
+ secs.forEach(function(sec, i){
+  if(!sec || !ws[i]) return;
+  // só manda como override o que foi mesmo alterado
+  if(originais[sec] == null || Math.abs(originais[sec] - ws[i]) > 0.5)
+   q += '&mmp_' + sec + '=' + ws[i];
+ });
+ CP_AJUSTES = q;
+ cpCarregar();
 }
 
 function cpValidacao(){
@@ -232,6 +329,8 @@ function cpDraw(){
  const lt=Math.log(tmin), lT=Math.log(tmax);
  const X = t => PL + (Math.log(t)-lt)/((lT-lt)||1)*w;
  const Y = p => PT + h - (p-pmin)/((pmax-pmin)||1)*h;
+ CP_ESCALA = {X:X, Y:Y, PL:PL, PT:PT, w:w, h:h,
+              tmin:tmin, tmax:tmax, pmin:pmin, pmax:pmax, lt:lt, lT:lT};
 
  g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
  for(let i=0;i<=4;i++){
@@ -285,10 +384,14 @@ function cpDraw(){
  }
 
  // pontos MMP reais
+ CP_PONTOS = [];
  pts.forEach(function(p){
   const x=X(p.t), y=Y(p.w);
-  g.fillStyle='#c9d1d9'; g.beginPath(); g.arc(x,y,4,0,Math.PI*2); g.fill();
+  const usado = m && (m.pontos_usados||[]).some(u=>Math.abs(u.t-p.t)<1);
+  g.fillStyle = usado ? '#c9d1d9' : '#6e7681';
+  g.beginPath(); g.arc(x,y,usado?5:4,0,Math.PI*2); g.fill();
   g.strokeStyle='#0d1117'; g.stroke();
+  CP_PONTOS.push({x:x, y:y, t:p.t, w:p.w, usado:usado});
  });
 
  // legenda
@@ -298,6 +401,185 @@ function cpDraw(){
   g.fillText(n, PL+w+6, PT+14+i*13);
  });
  g.font='11px sans-serif';
+ cpLigarTip();
+}
+
+function cpLigarTip(){
+ const cv=document.getElementById('chCP');
+ const tip=document.getElementById('cpTip');
+ if(!cv||!tip||cv._tipCP) return;
+ cv._tipCP=true;
+ cv.addEventListener('mousemove', function(ev){
+  if(!CP_ESCALA || !CP){ tip.style.display='none'; return; }
+  const r=cv.getBoundingClientRect();
+  const esc=(cv.width/r.width)/(window.devicePixelRatio||1);
+  const mx=(ev.clientX-r.left)*esc, my=(ev.clientY-r.top)*esc;
+  const e=CP_ESCALA;
+
+  let perto=null, dmin=14;
+  CP_PONTOS.forEach(function(p){
+   const d=Math.hypot(p.x-mx,p.y-my);
+   if(d<dmin){ dmin=d; perto=p; }
+  });
+  if(perto){
+   const k=String(perto.t);
+   const rs=(CP.residuos||[]).find(x=>x.t===perto.t) || {};
+   let h='<b>'+(Math.round(perto.t/60*10)/10)+' min · '+Math.round(perto.w)+' W</b>'
+    +'<br><span style="color:#8b949e;">'+((CP.datas_dos_mmp||{})[k]||'—')
+    +' · '+((CP.seasons_dos_mmp||{})[k]||'—')+'</span>'
+    +'<br><span style="color:'+(perto.usado?'#3FB950':'#8b949e')+';">'
+    +(perto.usado?'usado no ajuste':'fora do ajuste')+'</span>';
+   if(rs.previsto!=null) h+='<br><span style="color:#8b949e;">previsto '
+    +rs.previsto+' W · erro '+(rs.erro_w>0?'+':'')+rs.erro_w+' W ('+rs.erro_pct+'%)</span>';
+   tip.innerHTML=h; tip.style.display='block';
+   tip.style.left=Math.min(ev.clientX-r.left+14, r.width-230)+'px';
+   tip.style.top=Math.max(4, ev.clientY-r.top-46)+'px';
+   return;
+  }
+
+  if(mx<e.PL||mx>e.PL+e.w||my<e.PT||my>e.PT+e.h){ tip.style.display='none'; return; }
+  const t = Math.exp(e.lt + (mx-e.PL)/e.w*(e.lT-e.lt));
+  const nomes = Object.keys(CP.modelos||{}).sort(function(a,b){
+    return CP.modelos[a].see_pct - CP.modelos[b].see_pct; }).slice(0,4);
+  const mm = Math.floor(t/60), ss = Math.round(t%60);
+  let h='<b>'+(mm?mm+' min ':'')+ss+' s</b>';
+  nomes.forEach(function(n,i){
+   const mo=CP.modelos[n];
+   if(!mo.cp||!mo.wp) return;
+   h+='<br><span style="color:'+CP_CORES[i%CP_CORES.length]+';">'+n+'</span> <b>'
+    +Math.round(mo.cp+mo.wp/t)+' W</b>';
+  });
+  const sel = document.getElementById('cpModeloEscolhido');
+  const mo = (CP.modelos||{})[sel ? sel.value : ''] || CP.melhor;
+  if(mo && mo.cp && mo.wp && t>0){
+   h+='<br><span style="color:#8b949e;">'+Math.round(mo.wp/t)
+    +' W acima do CP — esgota o W\u2032 exactamente neste tempo</span>';
+  }
+  tip.innerHTML=h; tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+14, r.width-230)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
+}
+
+// ── W' ponto a ponto ─────────────────────────────────────────────────────
+function cpVeloDraw(){
+ const o = ctx('chVelo', 240); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const v = CP && CP.veloclinic;
+ if(!v || !v.pontos || v.pontos.length<2){ noData(g,W,H,'Sem diagnóstico'); return; }
+ const jn = CP.janela_cp || [120,1200];
+ const pts = v.pontos.map(function(p){
+  const mp = (CP.mmp_pts_full||[]).find(x=>Math.abs(x.w-p.p)<0.5) || {};
+  return {p:p.p, wp:p.wp, t:mp.t, dentro: mp.t>=jn[0] && mp.t<=jn[1]};
+ });
+ const ps=pts.map(x=>x.p), ws=pts.map(x=>x.wp);
+ const xa=Math.min.apply(null,ps)*0.95, xb=Math.max.apply(null,ps)*1.05;
+ const ya=Math.min.apply(null,ws)*0.85, yb=Math.max.apply(null,ws)*1.12;
+ const PL=58,PR=16,PT=14,PB=34,w=W-PL-PR,h=H-PT-PB;
+ const X=v2=>PL+(v2-xa)/((xb-xa)||1)*w, Y=v2=>PT+h-(v2-ya)/((yb-ya)||1)*h;
+
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
+ for(let i=0;i<=4;i++){
+  const vv=ya+(yb-ya)*i/4, y=Y(vv);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText((vv/1000).toFixed(1)+'kJ', PL-6, y+4);
+ }
+ // média e banda de ±10%
+ const dentro = pts.filter(x=>x.dentro);
+ const base = dentro.length>=2 ? dentro : pts;
+ const media = base.reduce((a,b)=>a+b.wp,0)/base.length;
+ g.fillStyle='rgba(88,166,255,0.12)';
+ g.fillRect(PL, Y(media*1.1), w, Math.abs(Y(media*0.9)-Y(media*1.1)));
+ g.strokeStyle='#58A6FF'; g.setLineDash([5,4]);
+ g.beginPath(); g.moveTo(PL,Y(media)); g.lineTo(PL+w,Y(media)); g.stroke();
+ g.setLineDash([]);
+ g.fillStyle='#58A6FF'; g.textAlign='left'; g.font='10px sans-serif';
+ g.fillText('média ' + (media/1000).toFixed(2) + ' kJ ±10%', PL+4, Y(media)-5);
+
+ g.font='11px sans-serif';
+ pts.forEach(function(x){
+  const px=X(x.p), py=Y(x.wp);
+  g.fillStyle = x.dentro ? '#3FB950' : '#F0883E';
+  g.beginPath(); g.arc(px,py,5,0,Math.PI*2); g.fill();
+  g.strokeStyle='#0d1117'; g.stroke();
+  g.fillStyle='#8b949e'; g.textAlign='center';
+  g.fillText((x.t? Math.round(x.t/60*10)/10+'min' : Math.round(x.p)+'W'), px, py-10);
+ });
+ g.textAlign='center'; g.fillStyle='#8b949e';
+ g.fillText('Potência (W)', PL+w/2, PT+h+22);
+ g.textAlign='left'; g.font='10px sans-serif';
+ g.fillStyle='#3FB950'; g.fillText('\u25CF dentro da janela', PL+4, PT+12);
+ g.fillStyle='#F0883E'; g.fillText('\u25CF fora', PL+124, PT+12);
+}
+
+// ── resíduos ─────────────────────────────────────────────────────────────
+function cpResidDraw(){
+ const o = ctx('chResid', 240); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const rs = (CP && CP.residuos) || [];
+ if(!rs.length){ noData(g,W,H,'Sem resíduos'); return; }
+ const maxE = Math.max(2, Math.max.apply(null, rs.map(r=>Math.abs(r.erro_w)))*1.3);
+ const PL=52,PR=16,PT=14,PB=34,w=W-PL-PR,h=H-PT-PB;
+ const passo = w/rs.length;
+ const Y = e => PT + h/2 - e/maxE*(h/2);
+
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
+ [-maxE,-maxE/2,0,maxE/2,maxE].forEach(function(e){
+  const y=Y(e);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText((e>0?'+':'')+e.toFixed(1)+'W', PL-6, y+4);
+ });
+ g.strokeStyle='#8b949e'; g.beginPath();
+ g.moveTo(PL,Y(0)); g.lineTo(PL+w,Y(0)); g.stroke();
+
+ rs.forEach(function(r,i){
+  const cx=PL+passo*i+passo/2, bw=Math.min(38, passo*0.55);
+  const y=Y(r.erro_w), y0=Y(0);
+  g.fillStyle = r.no_ajuste
+    ? (r.erro_w>=0 ? 'rgba(63,185,80,0.65)' : 'rgba(248,81,73,0.65)')
+    : 'rgba(139,148,158,0.45)';
+  g.fillRect(cx-bw/2, Math.min(y,y0), bw, Math.abs(y-y0)||1);
+  g.fillStyle='#c9d1d9'; g.textAlign='center'; g.font='10px sans-serif';
+  g.fillText((r.erro_w>0?'+':'')+r.erro_w, cx, y + (r.erro_w>=0?-6:14));
+  g.fillStyle='#8b949e';
+  g.fillText(Math.round(r.t/60*10)/10+'min', cx, PT+h+16);
+  if(!r.no_ajuste) g.fillText('(fora)', cx, PT+h+28);
+ });
+ g.font='11px sans-serif';
+}
+
+function cpAnalise(){
+ const el = document.getElementById('cpAnaliseTexto');
+ if(!el) return;
+ const v = CP && CP.veloclinic, vj = CP && CP.veloclinic_janela;
+ const rs = (CP && CP.residuos) || [];
+ const jn = CP.janela_cp || [120,1200];
+ const noAjuste = rs.filter(r=>r.no_ajuste);
+ const maxErro = noAjuste.length
+   ? Math.max.apply(null, noAjuste.map(r=>Math.abs(r.erro_pct))) : null;
+ let h = '';
+ h += '<p style="font-size:11px;color:#8b949e;"><b style="color:#c9d1d9;">'
+  + 'W\u2032 ponto a ponto</b> — t × (P − CP) calculado em cada duração. Se '
+  + 'uma reserva finita única descrevesse o esforço, os pontos cairiam todos '
+  + 'sobre a média. Verde são os que estão dentro de '
+  + Math.round(jn[0]/60) + '–' + Math.round(jn[1]/60) + ' min, onde o modelo '
+  + 'hiperbólico é válido; laranja os que estão fora e não deviam pesar.';
+ if(v && vj) h += ' Aqui: ' + v.metricas.cv + '% de variação em todos os '
+  + 'pontos contra ' + vj.metricas.cv + '% só dentro da janela.';
+ h += '</p>';
+ h += '<p style="font-size:11px;color:#8b949e;"><b style="color:#c9d1d9;">'
+  + 'Resíduos</b> — quanto o modelo erra em cada duração, em watts. As '
+  + 'coloridas entraram no ajuste; as cinzentas foram excluídas pelo grid '
+  + 'search e servem de teste fora da amostra, que é a única verificação '
+  + 'honesta com tão poucos pontos.';
+ if(maxErro!=null) h += ' O maior erro dentro da amostra é ' + maxErro + '%.';
+ const fora = rs.filter(r=>!r.no_ajuste);
+ if(fora.length) h += ' Fora da amostra: '
+  + fora.map(r=>Math.round(r.t/60*10)/10+'min erra '
+      +(r.erro_w>0?'+':'')+r.erro_w+'W ('+r.erro_pct+'%)').join(', ') + '.';
+ h += '</p>';
+ el.innerHTML = h;
 }
 
 function cpGloss(){
@@ -593,7 +875,8 @@ document.addEventListener('DOMContentLoaded', function(){
  document.getElementById('cpHistAte').value = hoje;
  cpCarregar(); cpHistorico();
 });
-window.addEventListener('resize', function(){ cpDraw(); histDraw(); });
+window.addEventListener('resize', function(){
+ cpDraw(); cpVeloDraw(); cpResidDraw(); histDraw(); });
 """
 
 

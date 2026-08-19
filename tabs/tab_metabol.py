@@ -2169,13 +2169,16 @@ function pmCarregarCP(){
  // dos dois caminhos esta errado.
  const mod = document.getElementById('pmModalidade').value;
  const sea = (PM && PM.season) ? '?season=' + encodeURIComponent(PM.season) : '';
- fetch('/api/cp/modelos/' + mod + sea).then(r=>r.json()).then(function(d){
-  PM_CP = (d && d.melhor && d.melhor.cp) ? d.melhor.cp : null;
-  PM_CP_NOME = (d && d.melhor) ? d.melhor.nome : null;
-  pmDraw(); pmGlossarioMarcos();
- }).catch(function(){ PM_CP = null; });
+ PM_CP = null; PM_CP_INFO = null;
+ fetch('/api/cp/actual/' + mod + sea).then(r=>r.json()).then(function(d){
+  if(d && d.status==='ok' && d.cp_w){
+   PM_CP = d.cp_w; PM_CP_INFO = d;
+   PM_CP_NOME = d.modelo;
+  }
+  pmDraw(); pmGlossarioMarcos(); pmResumo();
+ }).catch(function(){ PM_CP = null; PM_CP_INFO = null; pmDraw(); });
 }
-let PM_CP_NOME = null;
+let PM_CP_NOME = null, PM_CP_INFO = null;
 
 function pmGlossarioMarcos(){
  const el = document.getElementById('pmGlossarioMarcos');
@@ -2205,6 +2208,12 @@ function pmGlossarioMarcos(){
   ['CP', '#E3B341', PM_CP, 'W',
    'Critical Power, vindo da tab CP-Model'
    + (PM_CP_NOME ? ' (modelo ' + PM_CP_NOME + ')' : '')
+   + (PM_CP_INFO && !PM_CP_INFO.confirmado
+      ? '. Ainda não há instantâneo gravado para esta modalidade, portanto '
+        + 'este é o de menor SEE% — que ninguém confirmou. Fixa-o na tab '
+        + 'CP-Model antes de o usares para decidir alguma coisa'
+      : (PM_CP_INFO && PM_CP_INFO.data_referencia
+         ? '. Instantâneo de ' + PM_CP_INFO.data_referencia : ''))
    + '. É calculado por outro caminho — ajuste à curva de potência, não à '
    + 'curva de lactato — e por isso serve de verificação: CP e MLSS deviam '
    + 'ficar próximos. Se não ficarem, ou os MMP não são esforços máximos '
@@ -2217,6 +2226,15 @@ function pmGlossarioMarcos(){
    + (l[2]!=null ? '<b style="color:#c9d1d9;">' + Math.round(l[2]) + ' ' + l[3] + '</b>' : '<i>sem valor</i>')
    + '<br>' + l[4] + '</p>';
  });
+ h += '<p style="font-size:11px;color:#8b949e;margin-top:8px;">O fundo está '
+  + 'dividido nos três domínios de intensidade: <b style="color:#3FB950;">'
+  + 'moderado</b> abaixo do LT1, onde o lactato estabiliza e o esforço é '
+  + 'sustentável horas; <b style="color:#F0883E;">pesado</b> entre o LT1 e o '
+  + 'MLSS, onde estabiliza mais alto e aguenta dezenas de minutos; '
+  + '<b style="color:#F85149;">severo</b> acima do MLSS, onde não estabiliza '
+  + 'e o esforço termina em exaustão. A fronteira não é uma convenção de '
+  + 'zonas percentuais — é o que decide se o lactato chega ou não a um '
+  + 'patamar.</p>';
  h += '<p style="font-size:11px;color:#8b949e;margin-top:8px;">As riscas '
   + 'horizontais partem de cada vertical até ao eixo e marcam quanta gordura '
   + 'e quantos hidratos estão a ser oxidados nesse ponto, em g/h — é a '
@@ -2476,6 +2494,15 @@ function pmResumo(){
                PM.perfil + (PM.vlamax_saturado ? ' \u26A0 no limite do modelo' : ''), '#F0883E');
  h += pmCartao('MLSS / AT', (m.mlss_at_w||'—') + ' W',
                m.pct_vo2max_at ? m.pct_vo2max_at + '% do VO\u2082max' : '', '#3FB950');
+ if(PM_CP_INFO && PM_CP_INFO.cp_w){
+  const i = PM_CP_INFO;
+  h += pmCartao('CP', Math.round(i.cp_w) + ' W',
+    (i.wp_kj!=null ? "W\u2032 " + i.wp_kj + ' kJ · ' : '')
+    + (i.modelo||'') + (i.confirmado ? '' : ' · não confirmado')
+    + (m.mlss_at_w ? ' · ' + (i.cp_w>m.mlss_at_w?'+':'')
+       + Math.round(i.cp_w-m.mlss_at_w) + ' W vs MLSS' : ''),
+    i.confirmado ? '#E3B341' : '#8b949e');
+ }
  if(m.pvo2max_w){
   const fu = m.fractional_utilization_pct;
   const fuNota = fu==null ? '' :
@@ -2507,22 +2534,60 @@ function pmResumo(){
  document.getElementById('pmResumo').innerHTML = h;
 }
 
-let PM_PONTOS = [];
+let PM_PONTOS = [], PM_ESCALA = null, PM_ZONAS = [], PM_MARCOS = [];
 
 function pmDraw(){
- const o = ctx('chSubstratos', 300);
+ const o = ctx('chSubstratos', 340);
  if(!o) return;
  const g = o.g, W = o.W, H = o.H;
  const curva = (PM && PM.mader && PM.mader.curva) || [];
  if(!curva.length){ noData(g, W, H, 'Sem dados'); return; }
 
- const xs = curva.map(p=>p.watts);
- const xa = Math.min.apply(null,xs), xb = Math.max.apply(null,xs);
- const maxG = Math.max.apply(null, curva.map(p=>Math.max(p.fat_g_h||0, p.cho_g_h||0)));
- const PL=62, PR=62, PB=34, PT=16, w=W-PL-PR, h=H-PT-PB;
- const X = v => PL + (v-xa)/((xb-xa)||1)*w;
- const Y = v => PT + h - v/(maxG||1)*h;
+ const m = PM.mader||{}, lm = PM.limiares||{};
 
+ // Janela: começar no FatMax menos uma folga em vez de em 3 W. O varrimento
+ // arranca praticamente do repouso, e mostrar isso tudo esmaga a zona que
+ // interessa (140–260 W) nos últimos 20% do gráfico — foi por isso que os
+ // marcos pareciam não existir: estavam todos empilhados na borda direita.
+ const xsTodos = curva.map(p=>p.watts);
+ const xbAll = Math.max.apply(null,xsTodos);
+ const ancora = m.fatmax_w || lm.lt1_w || xbAll*0.4;
+ const xa = Math.max(0, Math.min(ancora*0.45, xbAll*0.25));
+ const xb = xbAll;
+ const dentro = p => p.watts>=xa && p.watts<=xb;
+ const vis = curva.filter(dentro);
+ const maxG = Math.max.apply(null, vis.map(p=>Math.max(p.fat_g_h||0, p.cho_g_h||0))) || 1;
+
+ const PL=62, PR=62, PB=46, PT=44, w=W-PL-PR, h=H-PT-PB;
+ const X = v => PL + (v-xa)/((xb-xa)||1)*w;
+ const Y = v => PT + h - v/maxG*h;
+ PM_ESCALA = {X:X, Y:Y, PL:PL, PT:PT, w:w, h:h, xa:xa, xb:xb, maxG:maxG};
+
+ // ── bandas dos três domínios de intensidade ───────────────────────────
+ // Moderado abaixo do LT1, pesado entre LT1 e MLSS, severo acima. Não são
+ // decoração: é a divisão que determina se o lactato estabiliza, se
+ // estabiliza mais alto, ou se não estabiliza de todo.
+ const limA = lm.lt1_w, limB = m.mlss_at_w || lm.lt2_w;
+ PM_ZONAS = [];
+ if(limA && limB){
+  PM_ZONAS = [
+   {de:xa,   ate:limA, nome:'Moderado', cor:'rgba(63,185,80,0.07)',  rot:'#3FB950',
+    desc:'lactato estabiliza — sustentável horas'},
+   {de:limA, ate:limB, nome:'Pesado',   cor:'rgba(240,136,62,0.07)', rot:'#F0883E',
+    desc:'lactato estabiliza mais alto — sustentável dezenas de minutos'},
+   {de:limB, ate:xb,   nome:'Severo',   cor:'rgba(248,81,73,0.07)',  rot:'#F85149',
+    desc:'lactato não estabiliza — termina em exaustão'},
+  ];
+  PM_ZONAS.forEach(function(z){
+   const x0=X(Math.max(z.de,xa)), x1=X(Math.min(z.ate,xb));
+   if(x1<=x0) return;
+   g.fillStyle=z.cor; g.fillRect(x0, PT, x1-x0, h);
+   g.fillStyle=z.rot; g.font='10px sans-serif'; g.textAlign='center';
+   if(x1-x0>52) g.fillText(z.nome, (x0+x1)/2, PT-6);
+  });
+ }
+
+ // ── grelha ────────────────────────────────────────────────────────────
  g.strokeStyle='#21262d'; g.lineWidth=1; g.fillStyle='#8b949e';
  g.font='11px sans-serif'; g.textAlign='right';
  for(let k=0;k<=4;k++){
@@ -2533,15 +2598,16 @@ function pmDraw(){
  g.textAlign='center';
  for(let k=0;k<=5;k++){
   const wv = xa+(xb-xa)*k/5;
-  g.fillText(Math.round(wv)+'W', X(wv), H-12);
+  g.fillText(Math.round(wv)+'W', X(wv), PT+h+18);
  }
 
+ // ── curvas ────────────────────────────────────────────────────────────
  PM_PONTOS = [];
  [['fat_g_h','#3FB950','Gordura'],['cho_g_h','#F0883E','CHO']].forEach(function(cfg){
   const [campo, cor, nome] = cfg;
   g.strokeStyle=cor; g.lineWidth=2; g.beginPath();
   let primeiro=true;
-  curva.forEach(function(p){
+  vis.forEach(function(p){
    if(p[campo]==null) return;
    const x=X(p.watts), y=Y(p[campo]);
    primeiro ? (g.moveTo(x,y), primeiro=false) : g.lineTo(x,y);
@@ -2551,54 +2617,41 @@ function pmDraw(){
   g.stroke();
  });
 
- const m = PM.mader||{};
- const lm = PM.limiares || {};
- const marcos = [
+ // ── marcos ────────────────────────────────────────────────────────────
+ PM_MARCOS = [
   [m.fatmax_w,   '#A371F7', 'FatMax'],
   [lm.lt1_w,     '#3FB950', 'LT1'],
   [m.mlss_at_w,  '#58A6FF', 'MLSS'],
   [lm.lt2_w,     '#F85149', 'LT2'],
   [PM_CP,        '#E3B341', 'CP'],
- ].filter(mk => mk[0]);
+ ].filter(mk => mk[0] && mk[0]>=xa && mk[0]<=xb)
+  .sort((a,b)=> a[0]-b[0]);
 
- // valor da curva a uma dada potencia, para a risca horizontal saber onde parar
- function _valorEm(campo, watts){
-  let melhor = null, dist = 1e9;
-  curva.forEach(function(p){
-   if(p[campo]==null) return;
-   const d = Math.abs(p.watts - watts);
-   if(d < dist){ dist = d; melhor = p[campo]; }
-  });
-  return melhor;
- }
-
- marcos.forEach(function(mk, i){
+ // Escalonar as etiquetas por níveis: LT2, MLSS e CP caem quase no mesmo
+ // sítio e sobrepunham-se. Cada etiqueta desce um nível enquanto colidir
+ // com a anterior, em vez de alternar cegamente entre duas linhas.
+ const ocupado = [];
+ PM_MARCOS.forEach(function(mk){
   const wv = mk[0], cor = mk[1], rot = mk[2];
-  if(wv < xa || wv > xb) return;
   const x = X(wv);
-  // vertical
   g.strokeStyle=cor; g.setLineDash([5,4]); g.lineWidth=1.5;
   g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
-  // horizontais: onde cada curva de substrato e' cortada por esta vertical
-  [['fat_g_h','#3FB950'],['cho_g_h','#F0883E']].forEach(function(cfg){
-   const v = _valorEm(cfg[0], wv);
-   if(v==null) return;
-   const y = Y(v);
-   g.strokeStyle=cor; g.globalAlpha=0.45; g.lineWidth=1;
-   g.beginPath(); g.moveTo(PL,y); g.lineTo(x,y); g.stroke();
-   g.globalAlpha=1;
-   g.fillStyle=cfg[1]; g.textAlign='left'; g.font='9px sans-serif';
-   g.fillText(Math.round(v*10)/10, PL+2, y-3);
-  });
   g.setLineDash([]); g.lineWidth=1;
-  // etiqueta alternada para nao se sobreporem quando ficam perto
-  g.fillStyle=cor; g.textAlign='center'; g.font='10px sans-serif';
-  g.fillText(rot+' '+Math.round(wv)+'W', x, PT + 11 + (i%2)*12);
+
+  const txt = rot+' '+Math.round(wv)+'W';
+  g.font='10px sans-serif';
+  const larg = g.measureText(txt).width;
+  let nivel = 0;
+  while(ocupado.some(o => o.nivel===nivel && x-larg/2 < o.fim+6)) nivel++;
+  ocupado.push({nivel:nivel, fim:x+larg/2});
+  const yTxt = PT + 12 + nivel*12;
+  g.fillStyle='#0d1117'; g.fillRect(x-larg/2-2, yTxt-9, larg+4, 12);
+  g.fillStyle=cor; g.textAlign='center'; g.fillText(txt, x, yTxt);
  });
 
  g.textAlign='left'; g.font='11px sans-serif';
- g.fillStyle='#3FB950'; g.fillText('\u25CF Gordura (g/h)', PL+4, PT+11);
- g.fillStyle='#F0883E'; g.fillText('\u25CF CHO (g/h)', PL+110, PT+11);
+ g.fillStyle='#3FB950'; g.fillText('\u25CF Gordura (g/h)', PL+4, PT+h-6);
+ g.fillStyle='#F0883E'; g.fillText('\u25CF CHO (g/h)', PL+112, PT+h-6);
  pmLigarTip();
 }
 
@@ -2610,22 +2663,62 @@ function pmLigarTip(){
  cv.addEventListener('mousemove', function(ev){
   const r=cv.getBoundingClientRect();
   const mx=(ev.clientX-r.left)*(cv.width/r.width)/(window.devicePixelRatio||1);
-  const my=(ev.clientY-r.top)*(cv.height/r.height)/(window.devicePixelRatio||1);
-  let perto=null,dmin=12;
+  if(!PM_ESCALA){ tip.style.display='none'; return; }
+  const e=PM_ESCALA;
+  if(mx<e.PL || mx>e.PL+e.w){ tip.style.display='none'; pmDraw(); return; }
+  // watts sob o cursor, e o ponto da curva mais próximo em X — assim o
+  // tooltip responde em toda a altura do gráfico, não só em cima da linha
+  const watts = e.xa + (mx-e.PL)/e.w*(e.xb-e.xa);
+  let fat=null, cho=null, lac=null, vo2=null, melhorD=1e9;
   PM_PONTOS.forEach(function(p){
-   const d=Math.hypot(p.x-mx,p.y-my);
-   if(d<dmin){dmin=d;perto=p;}
+   const d=Math.abs(p.watts-watts);
+   if(d<melhorD-1e-9){ melhorD=d; lac=p.lactato; vo2=p.vo2; }
   });
-  if(!perto){tip.style.display='none';return;}
-  tip.innerHTML='<b>'+Math.round(perto.watts)+'W</b><br>'+perto.nome+': <b>'
-    +Math.round(perto.valor)+' g/h</b>'
-    +(perto.lactato!=null?'<br><span style="color:#8b949e;">lactato '+perto.lactato+' mmol/L</span>':'')
-    +(perto.vo2!=null?'<br><span style="color:#8b949e;">VO\u2082 '+perto.vo2+'</span>':'');
+  PM_PONTOS.forEach(function(p){
+   if(Math.abs(p.watts-watts) > melhorD+1e-6) return;
+   if(p.nome==='Gordura') fat=p.valor; else cho=p.valor;
+  });
+
+  pmDraw();
+  const g=cv.getContext('2d');
+  const x=e.PL+(watts-e.xa)/(e.xb-e.xa)*e.w;
+  g.strokeStyle='rgba(201,209,217,0.55)'; g.setLineDash([2,3]);
+  g.beginPath(); g.moveTo(x,e.PT); g.lineTo(x,e.PT+e.h); g.stroke();
+  g.setLineDash([]);
+  [[fat,'#3FB950'],[cho,'#F0883E']].forEach(function(par){
+   if(par[0]==null) return;
+   g.fillStyle=par[1]; g.beginPath();
+   g.arc(x, e.Y(par[0]), 4, 0, Math.PI*2); g.fill();
+   g.strokeStyle='#0d1117'; g.stroke();
+  });
+
+  const z = (PM_ZONAS||[]).find(z => watts>=z.de && watts<z.ate);
+  const perto = (PM_MARCOS||[]).slice().sort((a,b)=>
+    Math.abs(a[0]-watts)-Math.abs(b[0]-watts))[0];
+  let h='<b>'+Math.round(watts)+' W</b>';
+  if(z) h+=' <span style="color:'+z.rot+';">'+z.nome+'</span>'
+        +'<br><span style="color:#8b949e;font-size:10px;">'+z.desc+'</span>';
+  if(fat!=null) h+='<br><span style="color:#3FB950;">Gordura</span> <b>'
+    +(Math.round(fat*10)/10)+' g/h</b>';
+  if(cho!=null) h+='<br><span style="color:#F0883E;">CHO</span> <b>'
+    +(Math.round(cho*10)/10)+' g/h</b>';
+  if(fat!=null&&cho!=null){
+   const kcal = fat*9 + cho*4;
+   h+='<br><span style="color:#8b949e;">'+Math.round(kcal)+' kcal/h · '
+     +Math.round(cho*4/kcal*100)+'% de CHO</span>';
+  }
+  if(lac!=null) h+='<br><span style="color:#8b949e;">lactato '+lac+' mmol/L</span>';
+  if(vo2!=null) h+='<br><span style="color:#8b949e;">VO\u2082 '+vo2+' ml/kg/min</span>';
+  if(perto) h+='<br><span style="color:'+perto[1]+';font-size:10px;">'
+    +Math.abs(Math.round(watts-perto[0]))+' W do '+perto[2]+'</span>';
+  tip.innerHTML=h;
   tip.style.display='block';
-  tip.style.left=Math.min(ev.clientX-r.left+12, r.width-170)+'px';
-  tip.style.top=(ev.clientY-r.top-10)+'px';
+  tip.style.left=Math.min(ev.clientX-r.left+14, r.width-190)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-40)+'px';
  });
- cv.addEventListener('mouseleave',function(){tip.style.display='none';});
+ cv.addEventListener('mouseleave',function(){
+  tip.style.display='none'; pmDraw();
+ });
 }
 
 function pmMMPEdit(){

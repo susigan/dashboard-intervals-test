@@ -259,17 +259,41 @@ def vc_metrics(tests, cp, wp):
             sl,_,_,_,_ = linregress(p_pts, wp_pts)
         except Exception:
             sl = 0.0
+    amp = (max(p_pts) - min(p_pts)) if len(p_pts) >= 2 else 0.0
+    efeito = (abs(sl) * amp / mean_w * 100) if mean_w else 0.0
     return {"std":round(std_w,1),"cv":round(cv_w,1),
-            "mean":round(mean_w,0),"slope":round(float(sl),4)}
+            "mean":round(mean_w,0),"slope":round(float(sl),4),
+            "amplitude_p":round(amp,1),
+            "efeito_declive_pct":round(efeito,1)}
 
 def classify_fatigue(vm):
-    cv,sl = vm["cv"],abs(vm["slope"])
-    if cv<10 and sl<1:   return "✅ Bom fit — W′ consistente"
-    if cv>30:             return "🔵 Fadiga central (variabilidade)"
-    if vm["mean"]<vm["std"]*2 and vm["mean"]>0:
-                          return "🔴 Fadiga periférica (W′ reduzido)"
-    if cv>15:             return "🟠 Fadiga sistémica"
-    return "⚠️ Dados inconsistentes"
+    """Classificacao a partir da dispersao do W\' ponto a ponto.
+
+    O criterio original comparava o declive absoluto com 1, o que nao tem
+    escala: um declive de -8 J/W sobre um intervalo de 64 W desloca o W\' em
+    512 J, meio por cento de uma reserva de 13 kJ, e mesmo assim caia em
+    "dados inconsistentes". Aqui o declive e' normalizado -- quanto do W\'
+    medio e' explicado pela tendencia ao longo do intervalo de potencias
+    observado -- para que a classificacao nao dependa das unidades nem do
+    numero de pontos.
+    """
+    cv = vm.get("cv", 0)
+    media = vm.get("mean", 0) or 0
+    amplitude = vm.get("amplitude_p", 0) or 0
+    efeito = (abs(vm.get("slope", 0)) * amplitude / media * 100) if media else 0
+
+    if cv < 10 and efeito < 15:
+        return "✅ Bom fit — W′ consistente"
+    if cv > 30:
+        return "🔵 Fadiga central (variabilidade)"
+    if media and vm.get("std", 0) and media < vm["std"] * 2:
+        return "🔴 Fadiga periférica (W′ reduzido)"
+    if efeito >= 30:
+        return "🟠 W′ depende da potência — modelo hiperbólico não serve aqui"
+    if cv > 15:
+        return "🟠 Fadiga sistémica"
+    return "🟡 Fit aceitável com reservas"
+
 
 def fit_2p_hyperbolic(tests):
     """2P Hiperbólico: P = W′/t + CP  (trabalho-tempo linear)
@@ -656,7 +680,20 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
 # ORQUESTRADORA
 # ══════════════════════════════════════════════════════════════════════════
 
-def validar(res, dados):
+# Janela de duracoes em que o modelo hiperbolico e' valido. Abaixo de ~2 min
+# domina a componente neuromuscular e a reserva finita unica deixa de
+# descrever o esforco; acima de ~20 min entram a deriva e o substrato. Nao e'
+# uma convencao de tabela sem base: neste atleta, incluir o ponto de 60 s
+# faz o W' calculado ponto a ponto variar 14.8%, e exclui-lo baixa para 3.3%.
+JANELA_CP = (120.0, 1200.0)
+
+# W' plausivel em Joules. Fora disto o ajuste convergiu para uma solucao
+# matematicamente valida e fisiologicamente impossivel -- acontece sempre
+# que ha parametros a mais para os pontos disponiveis.
+WPRIME_PLAUSIVEL = (5000.0, 30000.0)
+
+
+def validar(res, dados, janela=JANELA_CP):
     """Verificacoes que nao dependem do ajuste, so' de fisiologia.
 
     O SEE% diz se a curva passa perto dos pontos. Nao diz nada sobre se os
@@ -686,6 +723,43 @@ def validar(res, dados):
             'texto': (f'CP de {round(cp)} W abaixo do melhor de 60 min '
                       f'({round(mmp60)} W), como tem de ser.')})
 
+    # graus de liberdade
+    if melhor.get('n_pts') and melhor.get('k_params'):
+        df = melhor['n_pts'] - melhor['k_params']
+        if df <= 1:
+            avisos.append({
+                'gravidade': 'alto', 'chave': 'sem_graus_de_liberdade',
+                'texto': (f"O modelo escolhido usa {melhor['n_pts']} pontos "
+                          f"para {melhor['k_params']} parametros: {df} grau de "
+                          'liberdade. Com tao poucos, a curva passa quase '
+                          'exactamente pelos pontos e o SEE% baixo nao mede '
+                          'qualidade nenhuma -- mede so que ha parametros a '
+                          'mais. Nao usar o SEE% para escolher entre modelos '
+                          'nestas condicoes.')})
+
+    # W' plausivel
+    wp = melhor.get('wp')
+    if wp and not (WPRIME_PLAUSIVEL[0] <= wp <= WPRIME_PLAUSIVEL[1]):
+        avisos.append({
+            'gravidade': 'alto', 'chave': 'wprime_implausivel',
+            'texto': (f"W' de {round(wp/1000, 1)} kJ fora do intervalo "
+                      f'plausivel ({WPRIME_PLAUSIVEL[0]/1000:.0f}-'
+                      f'{WPRIME_PLAUSIVEL[1]/1000:.0f} kJ). O ajuste '
+                      'convergiu para uma solucao matematicamente valida e '
+                      'fisiologicamente impossivel. Rejeitar este modelo.')})
+
+    # pontos fora da janela de validade
+    fora = [p for p in pts if not (janela[0] <= p[1] <= janela[1])]
+    if fora:
+        det = ', '.join(f'{int(t)}s' for _w, t in sorted(fora, key=lambda x: x[1]))
+        avisos.append({
+            'gravidade': 'medio', 'chave': 'fora_da_janela',
+            'texto': (f'Pontos fora da janela de {int(janela[0])}-'
+                      f'{int(janela[1])} s onde o modelo hiperbolico e valido '
+                      f'({det}). Abaixo de 2 min domina a componente '
+                      'neuromuscular e uma reserva finita unica deixa de '
+                      'descrever o esforco.')})
+
     dups = dados.get('duplicados_excluidos') or []
     if dups:
         det = ', '.join(f"{d['t']}s = {d['igual_a_t']}s ({d['w']} W)" for d in dups)
@@ -697,17 +771,23 @@ def validar(res, dados):
                       'Foram excluidas do ajuste por nao serem observacoes '
                       'independentes.')})
 
-    if len(pts) < 4:
-        avisos.append({
-            'gravidade': 'medio', 'chave': 'poucos_pontos',
-            'texto': (f'So {len(pts)} duracoes utilizaveis. Com tres pontos '
-                      'qualquer modelo de dois parametros passa quase '
-                      'exactamente por eles, e o SEE% baixo nao significa '
-                      'nada -- so que ha graus de liberdade a mais.')})
-
+    # Veloclinic: comparar dentro e fora da janela diz se o desalinhamento
+    # e' do modelo ou so' dos pontos curtos
     v = res.get('veloclinic') or {}
     m = v.get('metricas') or {}
-    if m.get('cv', 0) > 15:
+    vj = res.get('veloclinic_janela') or {}
+    mj = vj.get('metricas') or {}
+    if m.get('cv') is not None and mj.get('cv') is not None and fora:
+        if mj['cv'] < m['cv'] * 0.6:
+            avisos.append({
+                'gravidade': 'ok', 'chave': 'wprime_consistente_na_janela',
+                'texto': (f"W' varia {m['cv']}% em todos os pontos mas so "
+                          f"{mj['cv']}% dentro da janela de "
+                          f'{int(janela[0])}-{int(janela[1])} s. O modelo '
+                          'descreve bem o atleta no intervalo onde e valido; '
+                          'a inconsistencia vinha dos pontos curtos, que nao '
+                          'deviam pesar no ajuste.')})
+    if (mj.get('cv') if mj else m.get('cv', 0)) > 15:
         avisos.append({
             'gravidade': 'medio', 'chave': 'wprime_inconsistente',
             'texto': (f"W' calculado ponto a ponto varia {m['cv']}% "
@@ -717,7 +797,7 @@ def validar(res, dados):
                       'significa que uma reserva finita unica nao chega para '
                       'descrever o intervalo de duracoes usado.')})
 
-    if dados.get('pmax') and cp:
+    if dados.get('pmax') and cp and res.get('usou_pmax'):
         avisos.append({
             'gravidade': 'baixo', 'chave': 'pmax_ancora',
             'texto': (f"Pmax de {round(dados['pmax'])} W (pico de 1 s) e usado "
@@ -797,14 +877,25 @@ def calcular_cp_completo(dados, modalidade, min_pts=3, usar_pmax=True):
         nome = min(modelos, key=lambda n: modelos[n]['see_pct'])
         melhor = {'nome': nome, **modelos[nome]}
 
-    # diagnostico Veloclinic com o melhor CP
-    veloclinic = None
+    # diagnostico Veloclinic com o melhor CP, em todos os pontos e so' na
+    # janela de validade -- a diferenca entre os dois e' o diagnostico util
+    veloclinic = veloclinic_janela = None
+    base_v = pts_full or pts
     if melhor and melhor['cp']:
-        vm = vc_metrics(pts_full or pts, melhor['cp'], melhor.get('wp') or 0)
-        p_pts, wp_pts = veloclinic_points(pts_full or pts, melhor['cp'])
-        veloclinic = {'metricas': vm, 'classificacao': classify_fatigue(vm),
-                      'pontos': [{'p': round(a, 1), 'wp': round(b)}
-                                 for a, b in zip(p_pts, wp_pts)]}
+        def _velo(conjunto):
+            if len(conjunto) < 2:
+                return None
+            vm = vc_metrics(conjunto, melhor['cp'], melhor.get('wp') or 0)
+            p_pts, wp_pts = veloclinic_points(conjunto, melhor['cp'])
+            return {'metricas': vm, 'classificacao': classify_fatigue(vm),
+                    'n': len(conjunto),
+                    'pontos': [{'p': round(a, 1), 'wp': round(b)}
+                               for a, b in zip(p_pts, wp_pts)]}
+        veloclinic = _velo(base_v)
+        na_janela = [p for p in base_v
+                     if JANELA_CP[0] <= p[1] <= JANELA_CP[1]]
+        if len(na_janela) < len(base_v):
+            veloclinic_janela = _velo(na_janela)
 
     saida = {'ok': len(modelos) > 0, 'modalidade': modalidade,
             'n_mmp': len(pts), 'min_pts': min_pts, 'usou_pmax': usar_pmax,
@@ -812,7 +903,9 @@ def calcular_cp_completo(dados, modalidade, min_pts=3, usar_pmax=True):
             'mmp_pts': [{'w': round(p, 1), 't': int(t)} for p, t in pts],
             'mmp_pts_full': [{'w': round(p, 1), 't': int(t)} for p, t in pts_full],
             'pmax': pmax, 'mmp60_val': dados.get('mmp60_val'),
-            'modelos': modelos, 'melhor': melhor, 'veloclinic': veloclinic}
+            'modelos': modelos, 'melhor': melhor, 'veloclinic': veloclinic,
+            'veloclinic_janela': veloclinic_janela,
+            'janela_cp': list(JANELA_CP)}
     saida['validacao'] = validar(saida, dados)
     return saida
 

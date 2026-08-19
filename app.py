@@ -45,7 +45,8 @@ from datetime import datetime, timedelta
 from api_client import (fetch_activities, cache_info, invalidar_cache,
                         fetch_da_api)
 from tabs import (tab_volume, tab_atividades, tab_detalhe,
-                  tab_recordes, tab_pmc, tab_corporal, tab_metabol)
+                  tab_recordes, tab_pmc, tab_corporal, tab_metabol,
+                  tab_cp_model)
 
 if db.ENABLED:
     db.init_schema()
@@ -95,6 +96,11 @@ def page_corporal():
 @app.route('/metabol')
 def page_metabol():
     return tab_metabol.render()
+
+
+@app.route('/cp-model')
+def page_cp_model():
+    return tab_cp_model.render()
 
 
 @app.route('/atividades')
@@ -1834,6 +1840,13 @@ def api_metabol_custom_fields():
 
 @app.route('/api/metabol/limiares_externos/<modalidade>')
 def api_metabol_limiares_externos(modalidade):
+    """Rota. A logica vive em limiares_externos_dados, para o historico a
+    poder gravar sem fazer um pedido HTTP a nos proprios."""
+    corpo = limiares_externos_dados(modalidade, request.args)
+    return jsonify(corpo), (200 if corpo.get('status') != 'erro' else 500)
+
+
+def limiares_externos_dados(modalidade, args):
     """Campos da Intervals.icu que estimam o mesmo que o modelo, com quartis.
 
     O modelo de Mader parte de potencias maximas; estes campos vem dos
@@ -1851,6 +1864,7 @@ def api_metabol_limiares_externos(modalidade):
     ?season=January 2026 (default: activa) | ?todas=1 para ignorar a season
     """
     try:
+        args = _Args(args)
         import json as _json
         import db as _db
         sys.path.insert(0, os.path.join(
@@ -1865,20 +1879,20 @@ def api_metabol_limiares_externos(modalidade):
 
         variantes = [k for k, v in CFG_MODALIDADES.items() if v == modalidade]
         if not variantes:
-            return jsonify({'status': 'erro',
-                            'mensagem': f'modalidade desconhecida: {modalidade}'}), 400
+            return {'status': 'erro',
+                            'mensagem': f'modalidade desconhecida: {modalidade}'}
 
         linhas = _db._exec(
             f"""SELECT date, raw FROM activities
                 WHERE raw IS NOT NULL AND type IN ({','.join('?' * len(variantes))})
                 ORDER BY date DESC""", tuple(variantes), fetch='all') or []
         if not linhas:
-            return jsonify({'status': 'sem_dados',
-                            'mensagem': f'sem actividades para {modalidade}'}), 200
+            return {'status': 'sem_dados',
+                            'mensagem': f'sem actividades para {modalidade}'}
 
         hoje = datetime.now().strftime('%Y-%m-%d')
-        todas = request.args.get('todas') in ('1', 'true', 'sim')
-        season_pedida = request.args.get('season') or season_de(hoje, marcos)
+        todas = args.get('todas') in ('1', 'true', 'sim')
+        season_pedida = args.get('season') or season_de(hoje, marcos)
 
         # 1a passagem: que nomes existem mesmo no JSON deste atleta
         nomes = set()
@@ -2027,7 +2041,7 @@ def api_metabol_limiares_externos(modalidade):
         em_falta = [d['chave'] for d in pmet.CAMPOS_EXTERNOS
                     if d['chave'] not in _presentes]
 
-        return jsonify({
+        return {
             'status': 'ok',
             'modalidade': modalidade,
             'season': None if todas else season_pedida,
@@ -2055,11 +2069,11 @@ def api_metabol_limiares_externos(modalidade):
             'nota_campos': ('campos_por_reconhecer traz os nomes reais dos '
                             'custom fields que ainda nao estao no registo: '
                             'basta acrescentar o nome como alias em '
-                            'CAMPOS_EXTERNOS')})
+                            'CAMPOS_EXTERNOS')}
     except Exception as e:
         import traceback
-        return jsonify({'status': 'erro', 'mensagem': str(e),
-                        'trace': traceback.format_exc()}), 500
+        return {'status': 'erro', 'mensagem': str(e),
+                'trace': traceback.format_exc()}
 
 
 @app.route('/api/metabol/mmp_diagnostico/<modalidade>')
@@ -3064,6 +3078,13 @@ def api_aquecimento_calibrar():
         import traceback
         return jsonify({'status': 'erro', 'mensagem': str(e),
                         'trace': traceback.format_exc()}), 500
+
+
+# Endpoints de CP e do historico do perfil (api_cp.py), registados no fim
+# para que o perfil_metabolico_dados e o limiares_externos_dados ja' existam
+# quando o modulo for importado.
+import api_cp
+api_cp.registar(app)
 
 
 if __name__ == '__main__':

@@ -31,8 +31,14 @@ def _variantes(modalidade):
     return [k for k, v in _mods().items() if v == modalidade]
 
 
-def _registos(modalidade):
-    """power_curves da modalidade, com a season de cada uma."""
+def _registos(modalidade, janela_dias=None):
+    """power_curves da modalidade, com a season de cada uma.
+
+    janela_dias filtra por data em vez de por season. As seasons deste
+    atleta sao irregulares -- January 2023 cobre dois anos e meio, January
+    2026 sete meses -- e comparar CP entre elas compara janelas de
+    tamanhos diferentes. Uma janela movel fixa (365 dias) resolve isso.
+    """
     import db as _db
     from config import season_de
     try:
@@ -43,10 +49,16 @@ def _registos(modalidade):
     variantes = _variantes(modalidade)
     if not variantes:
         return None, None, marcos
+    cond, args = [f"type IN ({','.join('?' * len(variantes))})"], list(variantes)
+    if janela_dias:
+        from datetime import timedelta
+        limite = (datetime.now() - timedelta(days=int(janela_dias))).strftime('%Y-%m-%d')
+        cond.append("date >= ?")
+        args.append(limite)
     linhas = _db._exec(
         f"""SELECT date, secs, watts FROM power_curves
-             WHERE type IN ({','.join('?' * len(variantes))})
-             ORDER BY date DESC""", tuple(variantes), fetch='all') or []
+             WHERE {' AND '.join(cond)}
+             ORDER BY date DESC""", tuple(args), fetch='all') or []
     registos = [{'date': str(d)[:10] if d else None, 'secs': s, 'watts': w,
                  'season': season_de(str(d)[:10] if d else None, marcos)}
                 for d, s, w in linhas]
@@ -64,6 +76,9 @@ def registar(app):
         ?season=  (default: activa)   ?min_pts=3   ?limiar_max=0.85
         ?usar_pmax=0        nao ancorar os modelos de 3 parametros no Pmax
         ?duplicados=manter  nao excluir duracoes com potencia igual
+        ?janela=365         janela movel em dias, em vez da season
+        ?duracoes=60,180,300,720,1200
+        ?mmp_180=306        substituir o valor de uma duracao
         """
         try:
             sys.path.insert(0, _UTILS)
@@ -73,24 +88,48 @@ def registar(app):
             if not _variantes(modalidade):
                 return jsonify({'status': 'erro',
                                 'mensagem': f'modalidade desconhecida: {modalidade}'}), 400
-            registos, _linhas, marcos = _registos(modalidade)
+            janela = request.args.get('janela', type=int)
+            registos, _linhas, marcos = _registos(modalidade, janela)
             if not registos:
                 return jsonify({'status': 'sem_dados',
                                 'mensagem': f'sem power_curves para {modalidade}'}), 200
 
             hoje = datetime.now().strftime('%Y-%m-%d')
-            season = request.args.get('season') or season_de(hoje, marcos)
+            # com janela movel nao se filtra por season: o filtro e a janela
+            season = (None if janela else
+                      (request.args.get('season') or season_de(hoje, marcos)))
             min_pts = request.args.get('min_pts', type=int) or 3
+            sem_dup = request.args.get('duplicados') != 'manter'
 
             dados = cpm.pontos_de_curvas(
                 registos, modalidade, season_activa=season,
                 limiar_max=request.args.get('limiar_max', type=float),
-                excluir_duplicados=(request.args.get('duplicados') != 'manter'))
+                excluir_duplicados=sem_dup)
+
+            overrides, durs = {}, []
+            for k, v in request.args.items():
+                if k.startswith('mmp_'):
+                    try:
+                        overrides[int(k[4:])] = float(v)
+                    except (ValueError, TypeError):
+                        pass
+            durs = [int(x) for x in (request.args.get('duracoes') or '').split(',')
+                    if x.strip().isdigit()]
+            if overrides or durs:
+                dados = cpm.aplicar_ajustes(dados, modalidade, overrides, durs,
+                                            excluir_duplicados=sem_dup)
+
             res = cpm.calcular_cp_completo(
                 dados, modalidade, min_pts=min_pts,
                 usar_pmax=(request.args.get('usar_pmax') != '0'))
             res['status'] = 'ok'
             res['season'] = season
+            res['janela_dias'] = janela
+            res['ambito'] = (f'ultimos {janela} dias' if janela
+                             else f'season {season}')
+            res['todas_as_duracoes'] = dados.get('todas_as_duracoes')
+            res['overrides_aplicados'] = dados.get('overrides_aplicados') or {}
+            res['n_registos'] = len(registos)
             res['seasons_disponiveis'] = dados.get('seasons_disponiveis')
             res['datas_dos_mmp'] = dados.get('datas')
             res['seasons_dos_mmp'] = dados.get('seasons')
@@ -319,7 +358,10 @@ def registar(app):
             except Exception as e:
                 pass
 
-            registos, _l, _m = _registos(modalidade)
+            janela = request.args.get('janela', type=int)
+            registos, _l, _m = _registos(modalidade, janela)
+            if janela:
+                season = None
             if not registos:
                 return jsonify({'status': 'sem_dados',
                                 'mensagem': f'sem power_curves para {modalidade}'}), 200

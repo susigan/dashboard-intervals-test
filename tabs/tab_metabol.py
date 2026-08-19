@@ -697,7 +697,10 @@ BODY = r"""
     <span id="pmExtEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
   <div class="chartbox" style="position:relative;">
-    <canvas id="chExternos" height="300"></canvas>
+    <canvas id="chExternos" height="320"></canvas>
+    <div id="pmExtTip" style="display:none;position:absolute;pointer-events:none;
+      background:#161b22;border:1px solid #30363d;border-radius:6px;
+      padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;max-width:200px;"></div>
   </div>
   <p style="color:#8b949e;font-size:11px;margin:4px 0 0 0;">
     Losangos: pontos do modelo de Mader. Círculos: mediana dos campos da
@@ -2350,8 +2353,10 @@ function pmExtTabela(){
  box.innerHTML=h;
 }
 
+let PMEXT_ESCALA = null, PMEXT_ITENS = [];
+
 function pmExtDraw(){
- const o = ctx('chExternos', 300);
+ const o = ctx('chExternos', 320);
  if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  const rel = (PMEXT && PMEXT.relacao_hr_watts) || {};
@@ -2364,27 +2369,49 @@ function pmExtDraw(){
  const refs = [
   {k:'fatmax_w', rot:'FatMax', cor:'#A371F7'},
   {k:'lt1_w',    rot:'LT1',    cor:'#3FB950'},
-  {k:'mlss_at_w',rot:'MLSS',   cor:'#F0883E'},
+  {k:'mlss_at_w',rot:'MLSS',   cor:'#58A6FF'},
   {k:'lt2_w',    rot:'LT2',    cor:'#F85149'},
-  {k:'pvo2max_w',rot:'Pvo\u2082max', cor:'#58A6FF'},
+  {k:'pvo2max_w',rot:'Pvo\u2082max', cor:'#79C0FF'},
  ].filter(function(r){ return md[r.k]!=null && mdhr[r.k]!=null; });
+ if(PM_CP) refs.push({k:'__cp', rot:'CP', cor:'#E3B341'});
 
  if(!nuvem.length && !cs.length && !refs.length){
   noData(g, W, H, 'Sem relação HR↔Watts nem campos comparáveis'); return; }
 
- // dominio
+ const valW = r => r.k==='__cp' ? PM_CP : md[r.k];
+ const valHR = r => r.k==='__cp'
+   ? (rel.suficiente ? rel.declive_bpm_por_w*PM_CP + rel.intercepto_bpm : null)
+   : mdhr[r.k];
+
  let xs=[], ys=[];
  nuvem.forEach(function(p){ xs.push(p.w); ys.push(p.hr); });
  cs.forEach(function(c){ xs.push(c.watts_equivalente); ys.push(c.hr_equivalente); });
- refs.forEach(function(r){ xs.push(md[r.k]); ys.push(mdhr[r.k]); });
+ refs.forEach(function(r){ if(valW(r)!=null){ xs.push(valW(r)); ys.push(valHR(r)); }});
  const xa=Math.min.apply(null,xs)*0.92, xb=Math.max.apply(null,xs)*1.06;
  const ya=Math.min.apply(null,ys)*0.94, yb=Math.max.apply(null,ys)*1.05;
 
- const PL=54, PR=118, PT=14, PB=40, w=W-PL-PR, h=H-PT-PB;
+ const PL=54, PR=118, PT=30, PB=40, w=W-PL-PR, h=H-PT-PB;
  const X = v => PL + (v-xa)/((xb-xa)||1)*w;
  const Y = v => PT + h - (v-ya)/((yb-ya)||1)*h;
+ PMEXT_ESCALA = {X:X, Y:Y, PL:PL, PT:PT, w:w, h:h, xa:xa, xb:xb, ya:ya, yb:yb, rel:rel};
 
- // grelha
+ // bandas dos três domínios, iguais às do gráfico de substratos
+ const limA = md.lt1_w, limB = md.mlss_at_w || md.lt2_w;
+ PMEXT_ZONAS = [];
+ if(limA && limB){
+  PMEXT_ZONAS = [
+   {de:xa, ate:limA, nome:'Moderado', cor:'rgba(63,185,80,0.07)',  rot:'#3FB950'},
+   {de:limA, ate:limB, nome:'Pesado', cor:'rgba(240,136,62,0.07)', rot:'#F0883E'},
+   {de:limB, ate:xb, nome:'Severo',   cor:'rgba(248,81,73,0.07)',  rot:'#F85149'}];
+  PMEXT_ZONAS.forEach(function(z){
+   const x0=X(Math.max(z.de,xa)), x1=X(Math.min(z.ate,xb));
+   if(x1<=x0) return;
+   g.fillStyle=z.cor; g.fillRect(x0, PT, x1-x0, h);
+   g.fillStyle=z.rot; g.font='10px sans-serif'; g.textAlign='center';
+   if(x1-x0>52) g.fillText(z.nome, (x0+x1)/2, PT-16);
+  });
+ }
+
  g.strokeStyle='#21262d'; g.lineWidth=1; g.fillStyle='#8b949e';
  g.font='11px sans-serif';
  for(let i=0;i<=4;i++){
@@ -2397,13 +2424,10 @@ function pmExtDraw(){
   g.textAlign='center'; g.fillText(Math.round(xv)+'W', x, PT+h+18);
  }
 
- // nuvem de pontos do atleta
  g.fillStyle='rgba(139,148,158,0.30)';
  nuvem.forEach(function(p){
-  g.beginPath(); g.arc(X(p.w), Y(p.hr), 2, 0, Math.PI*2); g.fill();
- });
+  g.beginPath(); g.arc(X(p.w), Y(p.hr), 2, 0, Math.PI*2); g.fill(); });
 
- // recta da regressao
  if(rel.suficiente){
   const a=rel.declive_bpm_por_w, b=rel.intercepto_bpm;
   g.strokeStyle='#8b949e'; g.setLineDash([6,4]); g.lineWidth=1.5;
@@ -2411,16 +2435,35 @@ function pmExtDraw(){
   g.stroke(); g.setLineDash([]); g.lineWidth=1;
  }
 
- // pontos do modelo — losangos
- refs.forEach(function(r){
-  const x=X(md[r.k]), y=Y(mdhr[r.k]);
-  g.fillStyle=r.cor;
-  g.beginPath(); g.moveTo(x,y-7); g.lineTo(x+7,y); g.lineTo(x,y+7);
-  g.lineTo(x-7,y); g.closePath(); g.fill();
-  g.textAlign='left'; g.fillText(r.rot, x+10, y-8);
+ // verticais e horizontais dos marcos do modelo
+ PMEXT_ITENS = [];
+ const ocupado = [];
+ refs.slice().sort((a,b)=> valW(a)-valW(b)).forEach(function(r){
+  const wv = valW(r), hv = valHR(r);
+  if(wv==null || wv<xa || wv>xb) return;
+  const x=X(wv);
+  g.strokeStyle=r.cor; g.setLineDash([5,4]); g.lineWidth=1.2;
+  g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
+  if(hv!=null){
+   const y=Y(hv);
+   g.globalAlpha=0.5;
+   g.beginPath(); g.moveTo(PL,y); g.lineTo(x,y); g.stroke();
+   g.globalAlpha=1;
+  }
+  g.setLineDash([]); g.lineWidth=1;
+  const txt = r.rot+' '+Math.round(wv)+'W';
+  g.font='10px sans-serif';
+  const larg=g.measureText(txt).width;
+  let nivel=0;
+  while(ocupado.some(o=>o.nivel===nivel && x-larg/2 < o.fim+6)) nivel++;
+  ocupado.push({nivel:nivel, fim:x+larg/2});
+  const yTxt = PT + 11 + nivel*12;
+  g.fillStyle='#0d1117'; g.fillRect(x-larg/2-2, yTxt-9, larg+4, 12);
+  g.fillStyle=r.cor; g.textAlign='center'; g.fillText(txt, x, yTxt);
+  if(hv!=null) PMEXT_ITENS.push({x:x, y:Y(hv), rot:r.rot, cor:r.cor,
+    w:wv, hr:hv, tipo:'modelo'});
  });
 
- // medianas dos campos externos — circulos
  cs.forEach(function(c){
   const x=X(c.watts_equivalente), y=Y(c.hr_equivalente);
   const medido = c.eixo==='bpm' ? ' (bpm)' : c.eixo==='wkg' ? ' (W/kg)' : ' (W)';
@@ -2428,22 +2471,76 @@ function pmExtDraw(){
   g.beginPath(); g.arc(x,y,5,0,Math.PI*2);
   if(!c.constante){ g.fillStyle='rgba(227,179,65,0.75)'; g.fill(); }
   g.stroke(); g.lineWidth=1;
-  g.fillStyle='#E3B341'; g.textAlign='left';
-  g.fillText(c.rotulo + medido + (c.constante?' *':''), x+9, y+12);
+  g.fillStyle='#E3B341'; g.textAlign='left'; g.font='10px sans-serif';
+  g.fillText(c.rotulo + (c.constante?' *':''), x+9, y+12);
+  PMEXT_ITENS.push({x:x, y:y, rot:c.rotulo, cor:'#E3B341',
+    w:c.watts_equivalente, hr:c.hr_equivalente, tipo:'campo',
+    unidade:c.unidade, medido:medido, constante:c.constante,
+    grupo:c.grupo_rotulo, q:c.quartis});
  });
 
- // legenda
  g.textAlign='left'; g.font='10px sans-serif';
+ g.fillStyle='#8b949e'; g.fillText('\u2502 modelo', PL+w+8, PT+12);
+ g.fillStyle='#E3B341'; g.fillText('\u25CF campos icu', PL+w+8, PT+26);
  g.fillStyle='#8b949e';
- g.fillText('◆ modelo', PL+w+8, PT+12);
- g.fillStyle='#E3B341';
- g.fillText('● campos icu', PL+w+8, PT+26);
- g.fillStyle='#8b949e';
- g.fillText('○ * = definição fixa', PL+w+8, PT+54);
- g.fillStyle='#8b949e';
- g.fillText(rel.suficiente ? 'r²='+rel.r2+' n='+rel.n : 'sem recta',
+ g.fillText(rel.suficiente ? 'r\u00b2='+rel.r2+' n='+rel.n : 'sem recta',
             PL+w+8, PT+40);
  g.font='11px sans-serif';
+ pmExtLigarTip();
+}
+
+let PMEXT_ZONAS = [];
+
+function pmExtLigarTip(){
+ const cv=document.getElementById('chExternos');
+ const tip=document.getElementById('pmExtTip');
+ if(!cv||!tip||cv._tipExt) return;
+ cv._tipExt=true;
+ cv.addEventListener('mousemove', function(ev){
+  const r=cv.getBoundingClientRect();
+  const esc=(cv.width/r.width)/(window.devicePixelRatio||1);
+  const mx=(ev.clientX-r.left)*esc, my=(ev.clientY-r.top)*esc;
+  if(!PMEXT_ESCALA){ tip.style.display='none'; return; }
+  const e=PMEXT_ESCALA;
+  let perto=null, dmin=16;
+  PMEXT_ITENS.forEach(function(p){
+   const d=Math.hypot(p.x-mx, p.y-my);
+   if(d<dmin){ dmin=d; perto=p; }
+  });
+  if(perto){
+   let h='<b style="color:'+perto.cor+';">'+perto.rot+'</b>';
+   h+='<br>'+Math.round(perto.w)+' W · '+Math.round(perto.hr)+' bpm';
+   if(perto.tipo==='campo'){
+    h+='<br><span style="color:#8b949e;font-size:10px;">'+(perto.grupo||'')+'</span>';
+    if(perto.q) h+='<br><span style="color:#8b949e;">p25–p75 '+perto.q.p25
+      +'–'+perto.q.p75+' '+(perto.unidade||'')+' · n='+perto.q.n+'</span>';
+    h+='<br><span style="color:#8b949e;font-size:10px;">medido em '
+      +(perto.medido||'').replace(/[()]/g,'').trim()
+      +(perto.constante?' · definição fixa':'')+'</span>';
+   } else {
+    h+='<br><span style="color:#8b949e;font-size:10px;">valor do modelo</span>';
+   }
+   tip.innerHTML=h; tip.style.display='block';
+   tip.style.left=Math.min(ev.clientX-r.left+14, r.width-200)+'px';
+   tip.style.top=Math.max(4, ev.clientY-r.top-40)+'px';
+   return;
+  }
+  // fora de um ponto: mostrar a leitura da recta naquele X
+  if(mx<e.PL||mx>e.PL+e.w||my<e.PT||my>e.PT+e.h){ tip.style.display='none'; return; }
+  const watts = e.xa + (mx-e.PL)/e.w*(e.xb-e.xa);
+  const bpm = e.ya + (e.PT+e.h-my)/e.h*(e.yb-e.ya);
+  const prev = e.rel.suficiente
+    ? e.rel.declive_bpm_por_w*watts + e.rel.intercepto_bpm : null;
+  const z=(PMEXT_ZONAS||[]).find(z=>watts>=z.de && watts<z.ate);
+  let h='<b>'+Math.round(watts)+' W · '+Math.round(bpm)+' bpm</b>';
+  if(z) h+=' <span style="color:'+z.rot+';">'+z.nome+'</span>';
+  if(prev!=null) h+='<br><span style="color:#8b949e;">a recta prevê '
+    +Math.round(prev)+' bpm aqui ('+(bpm>prev?'+':'')+Math.round(bpm-prev)+')</span>';
+  tip.innerHTML=h; tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+14, r.width-200)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
 }
 
 function pmExtGlossario(){

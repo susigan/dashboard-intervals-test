@@ -608,7 +608,7 @@ def marcar_duplicados(pontos, tolerancia=0.005):
 
 
 def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
-                     excluir_duplicados=True):
+                     excluir_duplicados=True, modo='coerente'):
     """MMP1..MMP60 a partir das power_curves, com a mesma regra da season.
 
     Reutiliza o melhores_mmp do perfil metabolico -- melhor da season activa,
@@ -642,7 +642,7 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
         pmet.DURACOES_MMP[modalidade] = duracoes
         extraido = pmet.melhores_mmp(registos, modalidade,
                                      season_activa=season_activa,
-                                     limiar_max=limiar_max)
+                                     limiar_max=limiar_max, modo=modo)
     finally:
         if guardado is not None:
             pmet.DURACOES_MMP[modalidade] = guardado
@@ -681,6 +681,10 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
         'ajustado_por_coerencia': {
             str(k): bool(v) for k, v in extraido['ajustado_por_coerencia'].items()},
         'seasons_disponiveis': extraido['seasons_disponiveis'],
+        'modo': extraido.get('modo'),
+        'season_do_conjunto': extraido.get('season_do_conjunto'),
+        'conjuntos_por_season': extraido.get('conjuntos_por_season'),
+        'dispersao_datas_dias': extraido.get('dispersao_datas_dias'),
     }
 
 
@@ -810,6 +814,21 @@ def validar(res, dados, janela=JANELA_CP):
                       f'({det}). Abaixo de 2 min domina a componente '
                       'neuromuscular e uma reserva finita unica deixa de '
                       'descrever o esforco.')})
+
+    disp = dados.get('dispersao_datas_dias')
+    if disp and disp > 540:
+        avisos.append({
+            'gravidade': 'alto', 'chave': 'conjunto_espalhado_no_tempo',
+            'texto': (f'As duracoes usadas estao separadas por {disp} dias. '
+                      'Uma curva montada com pedacos de anos diferentes '
+                      'descreve um atleta que nunca existiu, e o CP que sai '
+                      'dela nao corresponde a momento nenhum. Passar o modo '
+                      'a "coerente" ou "season" para usar um conjunto de uma '
+                      'so epoca.')})
+    elif disp is not None and disp <= 180:
+        avisos.append({
+            'gravidade': 'ok', 'chave': 'conjunto_contemporaneo',
+            'texto': f'Todas as duracoes dentro de {disp} dias.'})
 
     dups = dados.get('duplicados_excluidos') or []
     if dups:
@@ -949,6 +968,10 @@ def calcular_cp_completo(dados, modalidade, min_pts=3, usar_pmax=True):
             veloclinic_janela = _velo(na_janela)
 
     saida = {'ok': len(modelos) > 0, 'modalidade': modalidade,
+            'modo': dados.get('modo'),
+            'season_do_conjunto': dados.get('season_do_conjunto'),
+            'conjuntos_por_season': dados.get('conjuntos_por_season'),
+            'dispersao_datas_dias': dados.get('dispersao_datas_dias'),
             'n_mmp': len(pts), 'min_pts': min_pts, 'usou_pmax': usar_pmax,
             'duplicados_excluidos': dados.get('duplicados_excluidos') or [],
             'mmp_pts': [{'w': round(p, 1), 't': int(t)} for p, t in pts],

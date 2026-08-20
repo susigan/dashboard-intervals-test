@@ -77,6 +77,7 @@ def registar(app):
         ?usar_pmax=0        nao ancorar os modelos de 3 parametros no Pmax
         ?duplicados=manter  nao excluir duracoes com potencia igual
         ?janela=365         janela movel em dias, em vez da season
+        ?modo=coerente|season|recuo   como escolher o conjunto de MMP
         ?duracoes=60,180,300,720,1200
         ?mmp_180=306        substituir o valor de uma duracao
         """
@@ -104,8 +105,13 @@ def registar(app):
             dados = cpm.pontos_de_curvas(
                 registos, modalidade, season_activa=season,
                 limiar_max=request.args.get('limiar_max', type=float),
-                excluir_duplicados=sem_dup)
+                excluir_duplicados=sem_dup,
+                modo=request.args.get('modo') or 'coerente',
+                duracoes=durs_pedidas or None)
 
+            durs_pedidas = [int(x) for x in
+                            (request.args.get('classicas') or '').split(',')
+                            if x.strip().isdigit()]
             overrides, durs = {}, []
             for k, v in request.args.items():
                 if k.startswith('mmp_'):
@@ -128,6 +134,8 @@ def registar(app):
             res['ambito'] = (f'ultimos {janela} dias' if janela
                              else f'season {season}')
             res['todas_as_duracoes'] = dados.get('todas_as_duracoes')
+            res['duracoes_classicas'] = dados.get('duracoes_classicas')
+            res['duracoes_disponiveis'] = dados.get('duracoes_disponiveis')
             res['overrides_aplicados'] = dados.get('overrides_aplicados') or {}
             res['n_registos'] = len(registos)
             res['seasons_disponiveis'] = dados.get('seasons_disponiveis')
@@ -235,7 +243,8 @@ def registar(app):
             cp_w = wp_j = None
             if 'cp' in quais and registos:
                 dados = cpm.pontos_de_curvas(registos, modalidade,
-                                             season_activa=season)
+                                             season_activa=season,
+                                             modo=corpo.get('modo') or 'coerente')
                 res = cpm.calcular_cp_completo(dados, modalidade)
                 escolhido = corpo.get('modelo_cp') or (
                     (res.get('melhor') or {}).get('nome'))
@@ -375,7 +384,9 @@ def registar(app):
             if not registos:
                 return jsonify({'status': 'sem_dados',
                                 'mensagem': f'sem power_curves para {modalidade}'}), 200
-            dados = cpm.pontos_de_curvas(registos, modalidade, season_activa=season)
+            dados = cpm.pontos_de_curvas(registos, modalidade,
+                                         season_activa=season,
+                                         modo=request.args.get('modo') or 'coerente')
             res = cpm.calcular_cp_completo(dados, modalidade)
             melhor = res.get('melhor') or {}
             if not melhor.get('cp'):

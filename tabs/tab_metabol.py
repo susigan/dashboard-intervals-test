@@ -669,13 +669,6 @@ BODY = r"""
     <label class="sel">Idade <input type="number" id="pmIdade" value="40" style="width:60px"></label>
     <label class="sel">Peso (kg) <input type="number" id="pmPeso" step="0.1" placeholder="auto" style="width:75px"></label>
     <label class="sel">% gordura <input type="number" id="pmBf" step="0.1" placeholder="opcional" style="width:80px"></label>
-    <label class="sel">Conjunto
-      <select id="pmModo" onchange="pmCarregar()">
-        <option value="coerente" selected>coerente (uma só época)</option>
-        <option value="season">só a season activa</option>
-        <option value="recuo">recuo por duração</option>
-      </select>
-    </label>
     <span id="pmCorporal" style="color:#8b949e;font-size:11px;"></span>
     <button onclick="pmCarregar()">Actualizar</button>
     <span id="pmEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
@@ -2145,8 +2138,10 @@ function pmCarregar(usarManuais){
   const el = document.getElementById('pm'+k);
   if(el && el.value !== '') p.set(k.toLowerCase(), el.value);
  });
- const _mo = document.getElementById('pmModo');
- if(_mo) p.set('modo', _mo.value);
+ // O modo fica fixo em 'coerente': aqui o que interessa e' o perfil de um
+ // momento concreto, e nao ha razao para o utilizador ter de escolher. Quem
+ // precisa de comparar modos e' a tab CP-Model, que e' onde se decide o CP.
+ p.set('modo', 'coerente');
  if(usarManuais){
   const secs = Array.prototype.slice.call(document.querySelectorAll('.pmSec'))
     .map(function(e){ return parseInt(e.value); }).filter(function(x){ return x>0; });
@@ -2655,6 +2650,14 @@ function pmCartao(titulo, valor, sub, cor){
 }
 
 function pmResumo(){
+ // declarado no topo: era const a meio da funcao e o cartao do MLSS,
+ // que vem antes, caia na zona morta temporal -- o erro "Cannot access
+ // '_pc' before initialization" matava o pmResumo inteiro e por isso
+ // desapareciam todos os cartoes, nao so' o pace
+ const pc = (PM && PM.pace) || {};
+ const _pc = function(k){
+  return pc[k] && pc[k].texto ? ' \u00b7 ' + pc[k].texto : '';
+ };
  const m = PM.mader || {};
  let h = '<div style="display:flex;flex-wrap:wrap;">';
  h += pmCartao('VO\u2082max', (PM.vo2max||'—') + ' <span style="font-size:12px;">ml/min/kg</span>',
@@ -2688,8 +2691,6 @@ function pmResumo(){
  h += pmCartao('Gordura no FatMax', (m.fat_no_fatmax_g_h||'—') + ' g/h', '');
  h += pmCartao('CHO no MLSS', (m.cho_no_at_g_h||'—') + ' g/h', '');
  const lim = PM.limiares || {};
- const pc = (PM && PM.pace) || {};
- const _pc = k => pc[k] && pc[k].texto ? ' · ' + pc[k].texto : '';
  if(lim.lt1_w) h += pmCartao('LT1 (aeróbio)', lim.lt1_w + ' W' + _pc('lt1_w'),
    (lim.lt1_lactato!=null? lim.lt1_lactato + ' mmol/L' : '')
    + (lim.lt1_convencao_w!=null && lim.lt1_convencao_w!==lim.lt1_w
@@ -2988,10 +2989,10 @@ function pmDetalhe(){
    +'<td style="color:#8b949e;">'+(d.pmax_racio_na_season!=null
      ? Math.round(d.pmax_racio_na_season*100)+'%' : '—')+'</td></tr>';
  h+='</table>';
- if(d.season_do_conjunto)
-  h+='<p style="color:#58A6FF;font-size:11px;">Conjunto de <b>'
-   +d.season_do_conjunto+'</b> (modo '+(d.modo||'?')+'), '
-   +(d.dispersao_datas_dias||0)+' dias de dispersão entre as durações.</p>';
+ if(d.season_do_conjunto && d.season_do_conjunto !== d.season)
+  h+='<p style="color:#F0883E;font-size:11px;">A season activa ('+(d.season||'?')
+   +') não tinha todas as durações; conjunto completo de <b>'
+   +d.season_do_conjunto+'</b>.</p>';
  if(d.limiar_esforco_maximo!=null)
   h+='<p style="color:#8b949e;font-size:11px;">Considera-se esforço máximo a partir de '
    +Math.round(d.limiar_esforco_maximo*100)+'% do melhor histórico dessa duração. '

@@ -578,22 +578,35 @@ def _grid_search_model(fit_fn, all_mmp_pts, min_pts, pmax_ext=None, k_params=2):
 MMP_COLS = {'MMP1': 60, 'MMP3': 180, 'MMP5': 300,
             'MMP12': 720, 'MMP20': 1200, 'MMP60': 3600}
 
-# Duracoes que entram no ajuste de CP, por modalidade.
+# Duracoes que entram no ajuste de CP.
 #
-# Row e Ski usam so' 3, 5 e 12 min. O ergometro nao produz esforcos de 1 min
-# nem de 20 min comparaveis aos do ciclismo: o de 1 min e' dominado pela
-# tecnica de arranque e pela inercia da roda, e raramente ha um de 20 min
-# que seja maximo -- entra tipicamente um bocado de uma sessao longa, que
-# nao e' um teste. Incluir qualquer um deles distorce o ajuste.
+# CLASSICAS  as tres que os modelos M1, M2 e M3 usam, e as unicas que
+#            competem por "melhor". Sao as mesmas do perfil metabolico, para
+#            o CP e o MLSS assentarem no mesmo conjunto:
+#              Bike 3/5/12 min · Row e Ski 1/5/12 min · Run 5/12/20 min
+# EXTRA      duracoes adicionais que os modelos de tres parametros podem
+#            usar. Ficam marcados como informativos e nao entram no ranking:
+#            com mais pontos e mais parametros, o SEE% deixa de ser
+#            comparavel com o dos modelos classicos.
 #
 # O de 60 min (3600 s) nunca entra em ajuste nenhum -- fica sempre de fora
 # para validacao.
-DURACOES_CP = {
-    'Bike': [60, 180, 300, 720, 1200],
-    'Run':  [60, 180, 300, 720, 1200],
-    'Row':  [180, 300, 720],
-    'Ski':  [180, 300, 720],
+DURACOES_CLASSICAS = {
+    'Bike': [180, 300, 720],
+    'Row':  [60, 300, 720],
+    'Ski':  [60, 300, 720],
+    'Run':  [300, 720, 1200],
 }
+
+DURACOES_EXTRA = {
+    'Bike': [60, 180, 300, 720, 1200],
+    'Row':  [180, 300, 720, 1200],
+    'Ski':  [180, 300, 720, 1200],
+    'Run':  [60, 180, 300, 720, 1200],
+}
+
+# So' estes competem por "melhor". Os outros sao informativos.
+MODELOS_CLASSICOS = ('M1 (WLS-P)', 'M2 (WLS-1/t)', 'M3 (NL-2p)')
 
 
 def marcar_duplicados(pontos, tolerancia=0.005):
@@ -625,7 +638,7 @@ def marcar_duplicados(pontos, tolerancia=0.005):
 
 
 def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
-                     excluir_duplicados=True, modo='coerente'):
+                     excluir_duplicados=True, modo='coerente', duracoes=None):
     """MMP1..MMP60 a partir das power_curves, com a mesma regra da season.
 
     Reutiliza o melhores_mmp do perfil metabolico -- melhor da season activa,
@@ -634,10 +647,12 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
     possivel o CP dizer uma coisa e o modelo de Mader outra por causa da
     fonte dos numeros.
 
-    O tratamento e' o mesmo em todas as modalidades -- season, recuo,
-    coerencia, duplicados. O que muda e' o conjunto de duracoes, definido
-    em DURACOES_CP: Bike e Run usam 60 a 1200 s, Row e Ski so' 180, 300 e
-    720 s, pelas razoes escritas nesse dicionario.
+    Devolve dois conjuntos: o CLASSICO, com as tres duracoes que o M1, M2
+    e M3 usam e que competem por "melhor", e o EXTRA, com mais pontos para
+    os modelos de tres parametros, que ficam informativos.
+
+    'duracoes' permite escolher outro conjunto classico -- serve para
+    experimentar mais pontos sem perder de vista qual era o de partida.
 
     O MMP60 (3600 s) nunca entra no fit -- fica de fora para validacao.
     """
@@ -646,11 +661,17 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     import perfil_metabolico as pmet
 
-    duracoes = sorted(set(DURACOES_CP.get(modalidade,
-                                          [60, 180, 300, 720, 1200])) | {3600})
+    classicas = sorted(duracoes or DURACOES_CLASSICAS.get(
+        modalidade, [180, 300, 720]))
+    # os extra sao o conjunto proprio da modalidade, nao a uniao com os
+    # classicos: no Row o de 1 min entra nos classicos mas nao deve pesar
+    # nos modelos de tres parametros
+    extras = sorted(DURACOES_EXTRA.get(modalidade, [60, 180, 300, 720, 1200]))
+    # tudo o que e' preciso ir buscar: classicos + extra + o de 60 min
+    todas = sorted(set(classicas) | set(extras) | {3600})
     guardado = pmet.DURACOES_MMP.get(modalidade)
     try:
-        pmet.DURACOES_MMP[modalidade] = duracoes
+        pmet.DURACOES_MMP[modalidade] = todas
         extraido = pmet.melhores_mmp(registos, modalidade,
                                      season_activa=season_activa,
                                      limiar_max=limiar_max, modo=modo)
@@ -660,13 +681,15 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
 
     mmp = extraido['mmp']
     classicos, completos = [], []
-    for dur in duracoes:
+    for dur in todas:
         v = mmp.get(dur)
         if v is None or dur == 3600:
             continue
         d = float(dur)
-        classicos.append((float(v), d))
-        completos.append((float(v), d))
+        if dur in classicas:
+            classicos.append((float(v), d))
+        if dur in extras:
+            completos.append((float(v), d))
 
     classicos = sorted(set(classicos), key=lambda x: x[1])
     completos = sorted(set(completos), key=lambda x: x[1])
@@ -681,6 +704,11 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
         'all_mmp_pts': classicos,
         'all_mmp_pts_full': completos,
         'duplicados_excluidos': dup_cl or dup_full,
+        'duracoes_classicas': classicas,
+        'duracoes_extra': extras,
+        'duracoes_disponiveis': [int(t) for t in
+                                 sorted(d for d in todas
+                                        if d != 3600 and mmp.get(d))],
         'descartados_por_duplicacao': fora,
         'todas_as_duracoes': [{'t': int(t), 'w': round(w, 1)}
                               for w, t in todos_antes],
@@ -941,6 +969,7 @@ def calcular_cp_completo(dados, modalidade, min_pts=3, usar_pmax=True):
                 if cp is None or not (0 < cp < 2000):
                     continue
                 modelos[nome] = {
+                    'classico': nome in MODELOS_CLASSICOS,
                     'cp': round(cp, 1),
                     'wp': round(wp) if wp else None,
                     'wp_kj': round(wp / 1000.0, 2) if wp else None,
@@ -953,8 +982,16 @@ def calcular_cp_completo(dados, modalidade, min_pts=3, usar_pmax=True):
         except Exception:
             pass
 
+    # So' os classicos competem por "melhor": usam as mesmas tres duracoes
+    # e o mesmo numero de parametros, portanto o SEE% e' comparavel entre
+    # eles. Os de tres parametros, com mais pontos e mais liberdade, teriam
+    # sempre vantagem numa comparacao que nao mede a mesma coisa.
     melhor = None
-    if modelos:
+    elegiveis = {n: m for n, m in modelos.items() if m.get('classico')}
+    if elegiveis:
+        nome = min(elegiveis, key=lambda n: elegiveis[n]['see_pct'])
+        melhor = {'nome': nome, **elegiveis[nome]}
+    elif modelos:
         nome = min(modelos, key=lambda n: modelos[n]['see_pct'])
         melhor = {'nome': nome, **modelos[nome]}
 
@@ -985,6 +1022,10 @@ def calcular_cp_completo(dados, modalidade, min_pts=3, usar_pmax=True):
             'dispersao_datas_dias': dados.get('dispersao_datas_dias'),
             'n_mmp': len(pts), 'min_pts': min_pts, 'usou_pmax': usar_pmax,
             'duplicados_excluidos': dados.get('duplicados_excluidos') or [],
+            'duracoes_classicas': dados.get('duracoes_classicas'),
+            'duracoes_extra': dados.get('duracoes_extra'),
+            'duracoes_disponiveis': dados.get('duracoes_disponiveis'),
+            'modelos_classicos': list(MODELOS_CLASSICOS),
             'mmp_pts': [{'w': round(p, 1), 't': int(t)} for p, t in pts],
             'mmp_pts_full': [{'w': round(p, 1), 't': int(t)} for p, t in pts_full],
             'pmax': pmax, 'mmp60_val': dados.get('mmp60_val'),

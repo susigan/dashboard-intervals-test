@@ -617,10 +617,19 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
     possivel o CP dizer uma coisa e o modelo de Mader outra por causa da
     fonte dos numeros.
 
-    Regras de duracao por modalidade, iguais as do repo Streamlit:
-      Row / Ski   classicos  60, 300, 720      nao-classicos 180, 300, 720, 1200
-      Bike / Run  todas as duracoes em ambos
-    O MMP60 nunca entra no fit -- fica de fora para validacao.
+    Todas as modalidades usam o mesmo tratamento e o mesmo conjunto de
+    duracoes -- 60, 180, 300, 720 e 1200 s. O repo Streamlit restringia o
+    Row e o Ski a subconjuntos diferentes, herdado da forma como a folha
+    estava organizada; nao ha razao fisiologica para isso e so' introduzia
+    diferencas entre modalidades que depois apareciam nos resultados sem
+    ninguem saber porque. Quem escolhe o subconjunto e' o grid search, com
+    os mesmos criterios em todas.
+
+    A diferenca legitima entre modalidades esta noutro sitio: no
+    DURACOES_MMP do perfil metabolico, onde o modelo de Mader pede tres
+    duracoes especificas por modalidade.
+
+    O MMP60 (3600 s) nunca entra no fit -- fica de fora para validacao.
     """
     import os as _os
     import sys as _sys
@@ -645,14 +654,8 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
         if v is None or dur == 3600:
             continue
         d = float(dur)
-        if modalidade in ('Row', 'Ski'):
-            if d in (60.0, 300.0, 720.0):
-                classicos.append((float(v), d))
-            if d in (180.0, 300.0, 720.0, 1200.0):
-                completos.append((float(v), d))
-        else:
-            classicos.append((float(v), d))
-            completos.append((float(v), d))
+        classicos.append((float(v), d))
+        completos.append((float(v), d))
 
     classicos = sorted(set(classicos), key=lambda x: x[1])
     completos = sorted(set(completos), key=lambda x: x[1])
@@ -989,20 +992,31 @@ def tempo_ate_exaustao(cp, wp, potencia):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# CALCULADORA CONCEPT2 — so' Row e Ski
+# CALCULADORA CONCEPT2 — PARQUEADA, NAO USAR
+#
+# As percentagens do 2 km vem de uma tabela de equivalencias do ergometro,
+# nao dos dados deste atleta. Usa-las para julgar se um MMP e' plausivel, ou
+# para derivar alvos, e' importar um atleta medio para dentro de um sistema
+# inteiro construido sobre calibracao individual. Foi o que fiz na analise
+# do Row, e estava errado: concluir que o MMP de 60 s estava inflacionado
+# porque nao batia com 153% do 2 km nao e' evidencia nenhuma.
+#
+# O codigo fica aqui para quando esta calculadora tiver o seu proprio
+# proposito, separado do modelo de CP. Ate' la' nao e' chamada de lado
+# nenhum: o CP do Row e do Ski sai dos MMP, exactamente como o do Bike.
 # ══════════════════════════════════════════════════════════════════════════
 
-# Percentagens do 2 km usadas como referencia de perfil. Vem da tabela de
-# equivalencias do ergometro, nao dos dados deste atleta -- por isso e' um
-# alvo generico, util para ver a forma do perfil (velocista vs diesel) e
-# nao para prescrever.
 PCT_C2 = {"Power Peak": 173, "60seg": 153, "2km": 100, "6km": 85, "60min": 76}
 
-MODALIDADES_C2 = ('Row', 'Ski')
+MODALIDADES_C2 = ()      # vazio de proposito: nenhuma modalidade a usa
 
 
 def split_de_watts(w):
-    """Watts -> segundos por 500 m (formula do Concept2: P = 2.8 / pace^3)."""
+    """Watts -> segundos por 500 m (formula do Concept2: P = 2.8 / pace^3).
+
+    Conversao pura de unidades, sem pressupostos sobre o atleta. Esta pode
+    ser usada com seguranca; o que fica parqueado sao as percentagens.
+    """
     if not w or w <= 0:
         return None
     return ((2.8 / float(w)) ** (1.0 / 3.0)) * 500.0
@@ -1016,7 +1030,7 @@ def formatar_split(seg):
 
 
 def watts_de_split(texto):
-    """'MM:SS.ss' -> Watts."""
+    """'MM:SS.ss' -> Watts. Tambem so' conversao de unidades."""
     try:
         partes = str(texto).strip().replace(',', '.').split(':')
         if len(partes) != 2:
@@ -1030,23 +1044,5 @@ def watts_de_split(texto):
 
 
 def tabela_c2(watts_2k, medidos=None):
-    """Tabela de alvos a partir do 2 km, com splits e % actual."""
-    medidos = medidos or {}
-    if not watts_2k or watts_2k <= 0:
-        return []
-    linhas = []
-    for teste, pct in PCT_C2.items():
-        real = medidos.get(teste)
-        real = float(real) if real else None
-        objectivo = watts_2k * pct / 100.0
-        linhas.append({
-            'teste': teste,
-            'watts_real': round(real, 1) if real else None,
-            'split_real': formatar_split(split_de_watts(real)) if real else None,
-            'pct_actual': round(real / watts_2k * 100, 1) if real else None,
-            'pct_ideal': pct,
-            'watts_objectivo': round(objectivo, 1),
-            'split_objectivo': formatar_split(split_de_watts(objectivo)),
-            'delta_w': round(real - objectivo, 1) if real else None,
-        })
-    return linhas
+    """PARQUEADA. Ver o cabecalho desta seccao."""
+    return []

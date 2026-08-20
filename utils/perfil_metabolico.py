@@ -335,7 +335,7 @@ MODOS_CONJUNTO = ('recuo', 'season', 'coerente')
 
 
 def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
-                 limiar_max=None, modo='coerente'):
+                 limiar_max=None, modo='coerente', duracoes=None):
     """Melhor MMP de cada duracao necessaria, e o pico de 1 s.
 
     linhas: [{'date':..., 'secs':..., 'watts':..., 'season':...}] filtradas
@@ -368,7 +368,13 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
     maximo nesta season" com "o atleta esta menos forte do que ja' esteve",
     que sao coisas diferentes e pedem respostas diferentes.
     """
-    duracoes = DURACOES_MMP.get(modalidade, [])
+    # 'duracoes' permite pedir outro conjunto sem tocar no DURACOES_MMP.
+    # Antes o cp_model alterava esse dicionario global durante o pedido e
+    # repunha-o no fim; como o perfil metabolico le o mesmo dicionario e as
+    # duas rotas correm no mesmo processo, o perfil apanhava as duracoes do
+    # CP a meio -- era por isso que o Bike aparecia com o valor de 60 s em
+    # vez do de 3 min. Estado global mutavel por pedido nao e' seguro aqui.
+    duracoes = sorted(duracoes) if duracoes else DURACOES_MMP.get(modalidade, [])
     tecto = pmax_max or PMAX_PLAUSIVEL.get(modalidade, 2000)
     limiar = LIMIAR_ESFORCO_MAXIMO if limiar_max is None else float(limiar_max)
 

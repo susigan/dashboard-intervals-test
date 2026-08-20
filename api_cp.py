@@ -134,7 +134,35 @@ def registar(app):
             res['datas_dos_mmp'] = dados.get('datas')
             res['seasons_dos_mmp'] = dados.get('seasons')
             res['recuou_de_season'] = dados.get('recuou')
-            res['tem_calculadora_c2'] = modalidade in cpm.MODALIDADES_C2
+            res['tem_calculadora_c2'] = False
+
+            # pace, so' na corrida
+            if modalidade == 'Run':
+                import perfil_metabolico as pmet
+                import db as _db2
+                variantes = _variantes(modalidade)
+                _rs = _db2._exec(
+                    f"""SELECT avg_watts, distance_m, moving_time
+                          FROM activities
+                         WHERE avg_watts > 0 AND distance_m > 0
+                           AND moving_time > 0
+                           AND type IN ({','.join('?' * len(variantes))})""",
+                    tuple(variantes), fetch='all') or []
+                rel = pmet.regressao_pace_watts([(a, b, c) for a, b, c in _rs])
+                res['relacao_pace_watts'] = {k: v for k, v in rel.items()
+                                             if k != 'pontos'}
+                if rel.get('suficiente'):
+                    def _pc(w):
+                        seg = pmet.pace_de_watts(rel, w)
+                        return {'seg_km': seg, 'texto': pmet.formatar_pace(seg)}
+                    res['pace_dos_mmp'] = {
+                        str(p['t']): _pc(p['w'])
+                        for p in (res.get('mmp_pts_full') or [])}
+                    for nome, mo in (res.get('modelos') or {}).items():
+                        if mo.get('cp'):
+                            mo['pace'] = _pc(mo['cp'])['texto']
+                    if res.get('melhor', {}).get('cp'):
+                        res['melhor']['pace'] = _pc(res['melhor']['cp'])['texto']
 
             # curvas para desenhar
             res['curvas'] = {
@@ -156,32 +184,14 @@ def registar(app):
 
     @app.route('/api/cp/c2')
     def api_cp_c2():
-        """Calculadora Concept2 — so' Row e Ski.  ?w2k=250&w60seg=370&split=2:00.0"""
-        try:
-            sys.path.insert(0, _UTILS)
-            import cp_model as cpm
-            w2k = request.args.get('w2k', type=float)
-            medidos = {}
-            for teste, chave in (('Power Peak', 'wpp'), ('60seg', 'w60seg'),
-                                 ('2km', 'w2k'), ('6km', 'w6k'),
-                                 ('60min', 'w60min')):
-                v = request.args.get(chave, type=float)
-                if v:
-                    medidos[teste] = v
-            split = request.args.get('split')
-            return jsonify({
-                'status': 'ok',
-                'tabela': cpm.tabela_c2(w2k, medidos) if w2k else [],
-                'pct_referencia': cpm.PCT_C2,
-                'watts_do_split': cpm.watts_de_split(split) if split else None,
-                'nota': ('Percentagens do 2 km vindas da tabela de '
-                         'equivalencias do ergometro, nao dos teus dados: '
-                         'servem para ver a forma do perfil (velocista vs '
-                         'diesel), nao para prescrever. Split pela formula '
-                         'do Concept2, P = 2.8 / pace^3.')})
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
+        """PARQUEADA. As percentagens do 2 km sao de uma tabela de
+        equivalencias do ergometro, nao deste atleta, e nao entram em
+        calculo nenhum do CP. O Row e o Ski usam os MMP como o Bike."""
+        return jsonify({
+            'status': 'parqueada',
+            'mensagem': ('a calculadora Concept2 esta desligada: as '
+                         'percentagens do 2 km nao sao dados deste atleta e '
+                         'nao devem alimentar o modelo de CP')}), 200
 
     # ── historico ─────────────────────────────────────────────────────────
 

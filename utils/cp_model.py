@@ -581,9 +581,12 @@ MMP_COLS = {'MMP1': 60, 'MMP3': 180, 'MMP5': 300,
 # Duracoes que entram no ajuste de CP.
 #
 # CLASSICAS  as tres que os modelos M1, M2 e M3 usam, e as unicas que
-#            competem por "melhor". Sao as mesmas do perfil metabolico, para
-#            o CP e o MLSS assentarem no mesmo conjunto:
-#              Bike 3/5/12 min · Row e Ski 1/5/12 min · Run 5/12/20 min
+#            competem por "melhor". NAO tem de coincidir com as do perfil
+#            metabolico: o modelo de Mader precisa de duracoes curtas para
+#            estimar o VLamax, o ajuste de CP precisa de longas para a
+#            assimptota. Sao coisas diferentes e por isso pedem conjuntos
+#            diferentes -- no Bike, 3/5/12 min no perfil e 5/12/20 no CP:
+#              Bike 5/12/20 min · Row e Ski 1/5/12 min · Run 5/12/20 min
 # EXTRA      duracoes adicionais que os modelos de tres parametros podem
 #            usar. Ficam marcados como informativos e nao entram no ranking:
 #            com mais pontos e mais parametros, o SEE% deixa de ser
@@ -592,7 +595,7 @@ MMP_COLS = {'MMP1': 60, 'MMP3': 180, 'MMP5': 300,
 # O de 60 min (3600 s) nunca entra em ajuste nenhum -- fica sempre de fora
 # para validacao.
 DURACOES_CLASSICAS = {
-    'Bike': [180, 300, 720],
+    'Bike': [300, 720, 1200],
     'Row':  [60, 300, 720],
     'Ski':  [60, 300, 720],
     'Run':  [300, 720, 1200],

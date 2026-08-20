@@ -578,6 +578,23 @@ def _grid_search_model(fit_fn, all_mmp_pts, min_pts, pmax_ext=None, k_params=2):
 MMP_COLS = {'MMP1': 60, 'MMP3': 180, 'MMP5': 300,
             'MMP12': 720, 'MMP20': 1200, 'MMP60': 3600}
 
+# Duracoes que entram no ajuste de CP, por modalidade.
+#
+# Row e Ski usam so' 3, 5 e 12 min. O ergometro nao produz esforcos de 1 min
+# nem de 20 min comparaveis aos do ciclismo: o de 1 min e' dominado pela
+# tecnica de arranque e pela inercia da roda, e raramente ha um de 20 min
+# que seja maximo -- entra tipicamente um bocado de uma sessao longa, que
+# nao e' um teste. Incluir qualquer um deles distorce o ajuste.
+#
+# O de 60 min (3600 s) nunca entra em ajuste nenhum -- fica sempre de fora
+# para validacao.
+DURACOES_CP = {
+    'Bike': [60, 180, 300, 720, 1200],
+    'Run':  [60, 180, 300, 720, 1200],
+    'Row':  [180, 300, 720],
+    'Ski':  [180, 300, 720],
+}
+
 
 def marcar_duplicados(pontos, tolerancia=0.005):
     """Duracoes diferentes com praticamente a mesma potencia.
@@ -617,17 +634,10 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
     possivel o CP dizer uma coisa e o modelo de Mader outra por causa da
     fonte dos numeros.
 
-    Todas as modalidades usam o mesmo tratamento e o mesmo conjunto de
-    duracoes -- 60, 180, 300, 720 e 1200 s. O repo Streamlit restringia o
-    Row e o Ski a subconjuntos diferentes, herdado da forma como a folha
-    estava organizada; nao ha razao fisiologica para isso e so' introduzia
-    diferencas entre modalidades que depois apareciam nos resultados sem
-    ninguem saber porque. Quem escolhe o subconjunto e' o grid search, com
-    os mesmos criterios em todas.
-
-    A diferenca legitima entre modalidades esta noutro sitio: no
-    DURACOES_MMP do perfil metabolico, onde o modelo de Mader pede tres
-    duracoes especificas por modalidade.
+    O tratamento e' o mesmo em todas as modalidades -- season, recuo,
+    coerencia, duplicados. O que muda e' o conjunto de duracoes, definido
+    em DURACOES_CP: Bike e Run usam 60 a 1200 s, Row e Ski so' 180, 300 e
+    720 s, pelas razoes escritas nesse dicionario.
 
     O MMP60 (3600 s) nunca entra no fit -- fica de fora para validacao.
     """
@@ -636,7 +646,8 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     import perfil_metabolico as pmet
 
-    duracoes = sorted(MMP_COLS.values())
+    duracoes = sorted(set(DURACOES_CP.get(modalidade,
+                                          [60, 180, 300, 720, 1200])) | {3600})
     guardado = pmet.DURACOES_MMP.get(modalidade)
     try:
         pmet.DURACOES_MMP[modalidade] = duracoes

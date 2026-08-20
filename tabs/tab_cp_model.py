@@ -47,10 +47,12 @@ BODY = """
   </div>
   <details style="margin-bottom:10px;">
     <summary style="cursor:pointer;font-size:12px;color:#8b949e;">Opções avançadas</summary>
-    <div class="controls" style="margin-top:6px;">
-      <label class="sel"><input type="checkbox" id="cpUsarPmax" checked onchange="cpCarregar()">
+    <div class="controls" style="margin-top:6px;flex-wrap:wrap;gap:10px;">
+      <label class="sel" style="white-space:nowrap;">
+        <input type="checkbox" id="cpUsarPmax" checked onchange="cpCarregar()">
         ancorar 3 parâmetros no Pmax</label>
-      <label class="sel"><input type="checkbox" id="cpExclDup" checked onchange="cpCarregar()">
+      <label class="sel" style="white-space:nowrap;">
+        <input type="checkbox" id="cpExclDup" checked onchange="cpCarregar()">
         excluir durações com potência igual</label>
       <label class="sel">Se faltarem durações na época
         <select id="cpModo" onchange="cpCarregar()">
@@ -59,11 +61,11 @@ BODY = """
           <option value="recuo">ir buscar cada uma onde existir</option>
         </select>
       </label>
-      <label class="sel">Mín. pontos
+      <label class="sel">Mín. de durações
         <select id="cpMinPts" onchange="cpCarregar()">
+          <option value="2">2</option>
           <option value="3" selected>3</option>
           <option value="4">4</option>
-          <option value="5">5</option>
         </select>
       </label>
     </div>
@@ -161,9 +163,16 @@ function cpCarregar(){
  fetch('/api/cp/modelos/' + mod + q).then(r=>r.json()).then(function(d){
   CP = d;
   if(d.status !== 'ok' || !d.ok){
+   // mesmo sem ajuste, mostrar as durações e os MMP: é com eles que o
+   // utilizador corrige a situação, e uma página vazia não diz o que fazer
    est.textContent = d.motivo || d.mensagem || 'sem dados';
-   document.getElementById('cpModelos').innerHTML = '';
-   cpDraw(); return;
+   document.getElementById('cpModelos').innerHTML =
+     '<p style="color:#F0883E;font-size:12px;">' + (d.motivo||'Sem modelos.') + '</p>';
+   cpSeasons(d); cpDursEdit(); cpMMPEdit(); cpDraw();
+   ['cpAnaliseTexto','cpDetalhe','cpGlossario','cpLegenda'].forEach(function(id){
+    const el = document.getElementById(id); if(el) el.innerHTML = '';
+   });
+   return;
   }
   est.textContent = d.n_mmp + ' MMP · ' + (d.ambito||'')
     + ' · ' + (d.n_registos||0) + ' curvas'
@@ -313,10 +322,20 @@ function cpAplicarMMP(){
 function cpValidacao(){
  const av = (CP && CP.validacao) || [];
  const box = document.getElementById('cpValidacao');
- if(!av.length){ box.innerHTML=''; return; }
+ if(!av.length && !ret.length){ box.innerHTML=''; return; }
+ const ret = (CP && CP.duplicados_retidos) || [];
  const cores = {alto:'#F85149', medio:'#F0883E', baixo:'#8b949e', ok:'#3FB950'};
  const icones = {alto:'\u25CF', medio:'\u25CF', baixo:'\u25CB', ok:'\u2713'};
  let h = '';
+ if(ret.length) h += '<p style="font-size:11px;color:#8b949e;margin:4px 0;'
+  + 'border-left:2px solid #F0883E;padding-left:8px;">'
+  + '<b style="color:#F0883E;">\u25CF</b> '
+  + ret.map(function(r){ return Math.round(r.t/60*10)/10 + 'min e '
+      + Math.round(r.igual_a_t/60*10)/10 + 'min têm a mesma potência ('
+      + Math.round(r.w) + ' W)'; }).join('; ')
+  + '. Foram mantidos porque excluí-los deixava menos de três durações — '
+  + 'mas contam como uma observação só, e o ajuste tem menos informação do '
+  + 'que o número de pontos sugere.</p>';
  av.forEach(function(a){
   const c = cores[a.gravidade] || '#8b949e';
   h += '<p style="font-size:11px;color:#8b949e;margin:4px 0;border-left:2px solid '

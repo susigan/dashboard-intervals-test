@@ -1,1048 +1,850 @@
-# ══════════════════════════════════════════════════════════════════════════
-# utils/cp_model.py — ATHELTICA (Flask / Railway)
-#
-# Modelos de Critical Power. Os ajustes sao os mesmos do cp_model.py do repo
-# Streamlit -- M1, M2, M3, 2p e 3p hiperbolicos, Ward-Smith, OM3CP, OMExp,
-# power-law, SEE%, Veloclinic e grid search do melhor subconjunto de MMP.
-#
-# DIFERENCA IMPORTANTE face ao original: la' os MMP vinham de colunas da
-# Google Sheet no formato "Yes - 618w". Aqui vem da tabela power_curves,
-# sincronizada da API da Intervals.icu. E' a mesma fonte que ja' alimenta o
-# perfil metabolico, portanto o CP e o MLSS passam a assentar exactamente
-# nos mesmos numeros -- que era o ponto de os calcular no mesmo sitio.
-# ══════════════════════════════════════════════════════════════════════════
-
-import numpy as np
-from scipy.optimize import minimize, differential_evolution
-from scipy.stats import linregress
-from itertools import combinations
-
-# Durações canónicas dos MMP (segundos) — usado no parsing
-MMP_DURACOES = {'mmp1': 60, 'mmp3': 180, 'mmp5': 300,
-                'mmp12': 720, 'mmp20': 1200, 'mmp60': 3600}
-
-# Duração máxima considerada para o CP (segundos) — usada nos fits OM3CP/OMExp
-TCP_MAX = 1800.0
-
-
-def make_w(t_obs, mode):
-    t = np.array(t_obs, dtype=float)
-    if mode == "1/t":   return 1.0/t
-    if mode == "1/t²":  return 1.0/t**2
-    return np.ones_like(t)
-
-def fit_m1(tests, w):
-    """M1: P = W′·(1/t) + CP  — WLS no espaço P"""
-    x = np.array([1/t for _,t in tests])
-    y = np.array([p   for p,_ in tests])
-    W = np.diag(w); X = np.column_stack([x, np.ones_like(x)])
-    try:
-        b = np.linalg.lstsq(W@X, W@y, rcond=None)[0]
-        wp, cp = float(b[0]), float(b[1])
-    except Exception:
-        sl,ic,_,_,_ = linregress(x,y); wp,cp = float(sl),float(ic)
-    pp = [wp/t+cp for _,t in tests]
-    ss_res = float(np.sum(w*(y-np.array([wp/t+cp for _,t in tests]))**2))
-    ss_tot = float(np.sum(w*(y-np.average(y,weights=w))**2))
-    r2 = max(0.0,1-ss_res/ss_tot) if ss_tot>0 else 0.0
-    return float(cp), float(wp), None, pp, r2, 2
-
-def fit_m2(tests, w):
-    """M2: W = CP·t + W′  — WLS no espaço W"""
-    x = np.array([t   for _,t in tests])
-    y = np.array([p*t for p,t in tests])
-    W = np.diag(w); X = np.column_stack([x, np.ones_like(x)])
-    try:
-        b = np.linalg.lstsq(W@X, W@y, rcond=None)[0]
-        cp, wp = float(b[0]), float(b[1])
-    except Exception:
-        sl,ic,_,_,_ = linregress(x,y); cp,wp = float(sl),float(ic)
-    pp = [cp+wp/t for _,t in tests]
-    ss_res = float(np.sum(w*(y-np.array([cp*t+wp for _,t in tests]))**2))
-    ss_tot = float(np.sum(w*(y-np.average(y,weights=w))**2))
-    r2 = max(0.0,1-ss_res/ss_tot) if ss_tot>0 else 0.0
-    return float(cp), float(wp), None, pp, r2, 2
-
-def fit_m3(tests, w):
-    """M3: t = W′/(P-CP)  — minimiza erro em TEMPO"""
-    p_obs = np.array([p for p,_ in tests])
-    t_obs = np.array([t for _,t in tests])
-    cp_max = float(min(p_obs))*0.99
-    def _loss(params):
-        cp,wp = params
-        if wp<=0 or cp>=cp_max or cp<=0: return 1e12
-        t_pred = wp/(p_obs-cp)
-        return float(np.sum(w*(t_obs-t_pred)**2))
-    best = None
-    for cp0 in np.linspace(float(min(p_obs))*0.50, float(min(p_obs))*0.94, 8):
-        wp0 = float(np.mean(t_obs))*float(min(p_obs)-cp0)*0.5
-        if wp0<=0: continue
-        try:
-            r = minimize(_loss,[cp0,wp0],bounds=[(1,cp_max),(1,1e7)],method="L-BFGS-B")
-            if best is None or r.fun < best.fun: best = r
-        except Exception: pass
-    if best is None or best.fun>1e10: return None,None,None,None,None,2
-    cp,wp = float(best.x[0]),float(best.x[1])
-    pp = [wp/t+cp for _,t in tests]
-    ss_res = float(np.sum(w*(t_obs-wp/(p_obs-cp))**2))
-    ss_tot = float(np.sum(w*(t_obs-np.average(t_obs,weights=w))**2))
-    r2 = max(0.0,1-ss_res/ss_tot) if ss_tot>0 else 0.0
-    return cp,wp,None,pp,r2,2
-
-def fit_m4(tests, w):
-    """M4: t = W′/(P-CP)·(1-(P-CP)/(Pmax-CP))  — 3 parâmetros"""
-    p_obs = np.array([p for p,_ in tests])
-    t_obs = np.array([t for _,t in tests])
-    cp_max  = float(min(p_obs))*0.99
-    pmax_lb = float(max(p_obs))*1.01
-    def _t3(p,cp,wp,pmax):
-        d = p-cp
-        if np.any(d<=0) or np.any(p>=pmax): return np.full_like(p,1e9)
-        return (wp/d)*(1-d/(pmax-cp))
-    def _loss3(params):
-        cp,wp,pmax = params
-        if wp<=0 or cp<=0 or cp>=cp_max or pmax<=float(max(p_obs)): return 1e12
-        t_pred = _t3(p_obs,cp,wp,pmax)
-        if np.any(t_pred<=0): return 1e12
-        return float(np.sum(w*(t_obs-t_pred)**2))
-    best = None
-    for cp0 in np.linspace(float(min(p_obs))*0.50,float(min(p_obs))*0.92,4):
-        for pm0 in [float(max(p_obs))*f for f in [1.05,1.10,1.20]]:
-            wp0 = float(np.mean(t_obs))*float(min(p_obs)-cp0)*0.4
-            if wp0<=0: continue
-            try:
-                r = minimize(_loss3,[cp0,wp0,pm0],
-                             bounds=[(1,cp_max),(1,1e7),(pmax_lb,pmax_lb*3)],
-                             method="L-BFGS-B")
-                if best is None or r.fun<best.fun: best=r
-            except Exception: pass
-    if best is None or best.fun>1e10: return None,None,None,None,None,3
-    cp,wp,pmax = [float(x) for x in best.x]
-    pp = [wp/t+cp for _,t in tests]
-    ss_res = float(np.sum(w*(t_obs-_t3(p_obs,cp,wp,pmax))**2))
-    ss_tot = float(np.sum(w*(t_obs-np.average(t_obs,weights=w))**2))
-    r2 = max(0.0,1-ss_res/ss_tot) if ss_tot>0 else 0.0
-    return cp,wp,pmax,pp,r2,3
-
-def fit_ompd(tests, pmax_ext=None):
-    """
-    M5: OmPD — Omni-Domain Power-Duration (Puchowicz, Baker & Clarke 2020)
-
-    Para t ≤ TCPmax (1800s):
-        P(t) = W′/t × (1 - exp(-t×(Pmax-CP)/W′)) + CP
-
-    Para t > TCPmax:
-        P(t) = mesma equação - A × ln(t/TCPmax)
-
-    Parâmetros: CP, W′, Pmax (fixo de p_max da sheet), A (se t>TCPmax disponível)
-
-    Wʼeff(t) = W′ × (1 - exp(-t×(Pmax-CP)/W′))  → plateia ~110s → consistente com
-    interpretação de capacidade anaeróbica fixa (diferença vs OmExp/Om3CP).
-
-    Se pmax_ext=None → inferido como max(p_obs)*1.15 (estimativa conservadora).
-    Se não há ponto t>TCPmax → A=0 (modelo reduz a 3 parâmetros para curtas durações).
-    """
-    from scipy.optimize import minimize as _minimize
-
-    p_obs_arr = np.array([p for p, _ in tests])
-    t_obs_arr = np.array([t for _, t in tests])
-
-    # Pmax: usar valor externo (da sheet) se disponível, senão estimar
-    if pmax_ext is not None and pmax_ext > float(max(p_obs_arr)):
-        pmax = float(pmax_ext)
-    else:
-        pmax = float(max(p_obs_arr)) * 1.15
-
-    # Separar testes curtos (≤TCPmax) e longos (>TCPmax)
-    mask_long  = t_obs_arr > TCP_MAX
-    has_long   = bool(np.any(mask_long))
-
-    # Função OmPD P(t) com ou sem extensão longa
-    def _ompd_p(t_arr, cp, wp, A=0.0):
-        tau  = wp / max(pmax - cp, 1.0)
-        base = wp / t_arr * (1 - np.exp(-t_arr / tau)) + cp
-        if A > 0:
-            decay = np.where(
-                t_arr > TCP_MAX,
-                A * np.log(t_arr / TCP_MAX),
-                0.0
-            )
-            return base - decay
-        return base
-
-    # Loss: minimiza erro quadrático ponderado em potência
-    # Peso 1/t → mais peso em esforços curtos (onde o modelo é mais sensível)
-    def _loss(params):
-        if has_long:
-            cp, wp, A = params
-            if A < 0: return 1e12
-        else:
-            cp, wp = params; A = 0.0
-        if wp <= 0 or cp <= 0 or cp >= float(min(p_obs_arr)) * 0.99: return 1e12
-        if cp >= pmax: return 1e12
-        p_pred = _ompd_p(t_obs_arr, cp, wp, A)
-        w_vec  = 1.0 / t_obs_arr  # peso 1/t
-        return float(np.sum(w_vec * (p_obs_arr - p_pred) ** 2))
-
-    best = None
-    cp_max = float(min(p_obs_arr)) * 0.99
-    # Grid de arranques
-    for cp0 in np.linspace(float(min(p_obs_arr)) * 0.50,
-                           float(min(p_obs_arr)) * 0.93, 6):
-        wp0 = float(np.mean(t_obs_arr)) * (float(min(p_obs_arr)) - cp0) * 0.5
-        if wp0 <= 0: continue
-        try:
-            if has_long:
-                x0     = [cp0, wp0, 30.0]
-                bounds = [(1, cp_max), (1, 1e7), (0, 500)]
-            else:
-                x0     = [cp0, wp0]
-                bounds = [(1, cp_max), (1, 1e7)]
-            r = _minimize(_loss, x0, bounds=bounds, method='L-BFGS-B')
-            if best is None or r.fun < best.fun:
-                best = r
-        except Exception:
-            pass
-
-    if best is None or best.fun > 1e10:
-        return None, None, None, None, None, None, None
-
-    if has_long:
-        cp, wp, A = float(best.x[0]), float(best.x[1]), float(best.x[2])
-    else:
-        cp, wp = float(best.x[0]), float(best.x[1]); A = 0.0
-
-    p_pred_arr = _ompd_p(t_obs_arr, cp, wp, A)
-    pp         = list(p_pred_arr)
-
-    # R² em potência
-    ss_res = float(np.sum((p_obs_arr - p_pred_arr) ** 2))
-    ss_tot = float(np.sum((p_obs_arr - float(np.mean(p_obs_arr))) ** 2))
-    r2     = max(0.0, 1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
-
-    # Wʼeff(120s) — verificar que atinge plateia (paper: ~110s)
-    tau_fit   = wp / max(pmax - cp, 1.0)
-    weff_120  = wp * (1 - np.exp(-120.0 / tau_fit))
-    weff_pct  = weff_120 / wp * 100  # deve ser ≈ 99%
-
-    return cp, wp, pmax, A, pp, r2, weff_pct
-
-def calc_see(p_obs, pp, k=2):
-    n = len(p_obs)
-    if n<=k: return None,None
-    sse  = float(np.sum((np.array(p_obs)-np.array(pp))**2))
-    see  = float(np.sqrt(sse/max(n-k,1)))
-    seep = see/float(np.mean(p_obs))*100
-    return round(see,2),round(seep,2)
-
-def veloclinic_points(tests, cp):
-    """
-    Veloclinic: scatter P vs W′_point = t*(P-CP).
-    SEM curva teórica — seria W′_point = W′ (linha horizontal trivial).
-    O diagnóstico está na distribuição dos pontos reais.
-    """
-    p_pts  = [p for p,_ in tests]
-    wp_pts = [t*(p-cp) for p,t in tests]
-    return p_pts, wp_pts
-
-def vc_metrics(tests, cp, wp):
-    wp_pts = [t*(p-cp) for p,t in tests if p>cp]
-    if not wp_pts: return {"std":0,"cv":0,"mean":0,"slope":0}
-    std_w  = float(np.std(wp_pts))
-    mean_w = float(np.mean(wp_pts))
-    cv_w   = std_w/mean_w*100 if mean_w>0 else 0.0
-    p_pts  = [p for p,t in tests if p>cp]
-    sl = 0.0
-    # Proteger contra valores idênticos (linregress falha com std=0)
-    if len(p_pts) >= 2 and len(set(p_pts)) > 1:
-        try:
-            sl,_,_,_,_ = linregress(p_pts, wp_pts)
-        except Exception:
-            sl = 0.0
-    amp = (max(p_pts) - min(p_pts)) if len(p_pts) >= 2 else 0.0
-    efeito = (abs(sl) * amp / mean_w * 100) if mean_w else 0.0
-    return {"std":round(std_w,1),"cv":round(cv_w,1),
-            "mean":round(mean_w,0),"slope":round(float(sl),4),
-            "amplitude_p":round(amp,1),
-            "efeito_declive_pct":round(efeito,1)}
-
-def classify_fatigue(vm):
-    """Classificacao a partir da dispersao do W\' ponto a ponto.
-
-    O criterio original comparava o declive absoluto com 1, o que nao tem
-    escala: um declive de -8 J/W sobre um intervalo de 64 W desloca o W\' em
-    512 J, meio por cento de uma reserva de 13 kJ, e mesmo assim caia em
-    "dados inconsistentes". Aqui o declive e' normalizado -- quanto do W\'
-    medio e' explicado pela tendencia ao longo do intervalo de potencias
-    observado -- para que a classificacao nao dependa das unidades nem do
-    numero de pontos.
-    """
-    cv = vm.get("cv", 0)
-    media = vm.get("mean", 0) or 0
-    amplitude = vm.get("amplitude_p", 0) or 0
-    efeito = (abs(vm.get("slope", 0)) * amplitude / media * 100) if media else 0
-
-    if cv < 10 and efeito < 15:
-        return "✅ Bom fit — W′ consistente"
-    if cv > 30:
-        return "🔵 Fadiga central (variabilidade)"
-    if media and vm.get("std", 0) and media < vm["std"] * 2:
-        return "🔴 Fadiga periférica (W′ reduzido)"
-    if efeito >= 30:
-        return "🟠 W′ depende da potência — modelo hiperbólico não serve aqui"
-    if cv > 15:
-        return "🟠 Fadiga sistémica"
-    return "🟡 Fit aceitável com reservas"
-
-
-def fit_2p_hyperbolic(tests):
-    """2P Hiperbólico: P = W′/t + CP  (trabalho-tempo linear)
-    Janela recomendada: 2min – 60min. Mínimo: 2 pontos."""
-    from scipy.stats import linregress
-    if len(tests) < 2: return None, None, None, None
-    x = np.array([1.0/t for _, t in tests])
-    y = np.array([p for p, _ in tests])
-    slope, intercept, r, _, _ = linregress(x, y)
-    cp = float(intercept); wp = float(slope)
-    if cp <= 0 or wp <= 0: return None, None, None, None
-    pp = [wp/t + cp for _, t in tests]
-    return cp, wp, None, pp
-
-def fit_3p_hyperbolic(tests, pmax_ext=None):
-    """3P Hiperbólico: P(t) = (Pmax·W′) / (W′ + (Pmax-CP)·t)
-    Se pmax_ext disponível → Pmax FIXO (apenas 2 parâmetros livres: CP, W′).
-    Sem pmax_ext → Pmax como 3º parâmetro livre (precisa ponto curto <30s)."""
-    from scipy.optimize import minimize as _min
-    if len(tests) < 2: return None, None, None, None
-    p_obs = np.array([p for p, _ in tests])
-    t_obs = np.array([t for _, t in tests])
-
-    # Usar Pmax externo fixo se disponível → reduz a 2 parâmetros, muito mais estável
-    if pmax_ext and float(pmax_ext) > float(max(p_obs)):
-        pmax_fixed = float(pmax_ext)
-        def _p3f(t, cp, wp):
-            return (pmax_fixed * wp) / (wp + (pmax_fixed - cp) * t)
-        def _loss2(params):
-            cp, wp = params
-            if cp <= 0 or wp <= 0 or cp >= min(p_obs)*0.99 or cp >= pmax_fixed: return 1e12
-            pred = _p3f(t_obs, cp, wp)
-            return float(np.sum((p_obs - pred)**2))
-        best = None
-        for cp0 in np.linspace(float(min(p_obs))*0.50, float(min(p_obs))*0.93, 8):
-            wp0 = float(np.mean(t_obs))*(float(min(p_obs))-cp0)*0.5
-            if wp0 <= 0: continue
-            try:
-                r = _min(_loss2, [cp0, max(wp0,1)],
-                         bounds=[(1, float(min(p_obs))*0.98), (1, 1e7)],
-                         method='L-BFGS-B')
-                if best is None or r.fun < best.fun: best = r
-            except Exception: pass
-        if best is None or best.fun > 1e10: return None, None, None, None
-        cp, wp = float(best.x[0]), float(best.x[1])
-        pp = [float(_p3f(np.array([t]), cp, wp)[0]) for _, t in tests]
-        return cp, wp, pmax_fixed, pp
-
-    # Sem Pmax externo → optimizar os 3 parâmetros (precisa ponto curto para Pmax)
-    def _p3(t, cp, wp, pmax):
-        return (pmax * wp) / (wp + (pmax - cp) * t)
-    def _loss3(params):
-        cp, wp, pmax = params
-        if cp<=0 or wp<=0 or pmax<=max(p_obs) or cp>=min(p_obs)*0.99: return 1e12
-        pred = _p3(t_obs, cp, wp, pmax)
-        return float(np.sum((p_obs - pred)**2))
-    best = None
-    for cp0 in np.linspace(float(min(p_obs))*0.5, float(min(p_obs))*0.92, 5):
-        for pm0 in [float(max(p_obs))*f for f in [1.05,1.10,1.20,1.50,2.0]]:
-            wp0 = float(np.mean(t_obs))*(float(min(p_obs))-cp0)*0.5
-            if wp0 <= 0: continue
-            try:
-                r = _min(_loss3, [cp0, max(wp0,1), pm0],
-                         bounds=[(1, float(min(p_obs))*0.98), (1, 1e7),
-                                 (float(max(p_obs))*1.01, float(max(p_obs))*3)],
-                         method='L-BFGS-B')
-                if best is None or r.fun < best.fun: best = r
-            except Exception: pass
-    if best is None or best.fun > 1e10: return None, None, None, None
-    cp, wp, pmax = float(best.x[0]), float(best.x[1]), float(best.x[2])
-    pp = [float(_p3(np.array([t]), cp, wp, pmax)[0]) for _, t in tests]
-    return cp, wp, pmax, pp
-
-def fit_ward_smith(tests, pmax_ext=None):
-    """Ward-Smith (1999): extensão 3P com decaimento fisiológico.
-    P(t) = CP + (Pmax-CP)·exp(-t·(Pmax-CP)/W′)
-    Requer Pmax externo; sem ele usa estimativa conservadora."""
-    from scipy.optimize import minimize as _min
-    if len(tests) < 3: return None, None, None, None
-    p_obs = np.array([p for p, _ in tests])
-    t_obs = np.array([t for _, t in tests])
-    pmax  = float(pmax_ext) if pmax_ext and pmax_ext > max(p_obs) else float(max(p_obs)) * 1.2
-
-    def _pws(t, cp, wp):
-        return cp + (pmax - cp) * np.exp(-t * (pmax - cp) / max(wp, 1.0))
-
-    def _loss(params):
-        cp, wp = params
-        if cp <= 0 or wp <= 0 or cp >= min(p_obs)*0.99: return 1e12
-        return float(np.sum((p_obs - _pws(t_obs, cp, wp))**2))
-
-    best = None
-    for cp0 in np.linspace(float(min(p_obs))*0.5, float(min(p_obs))*0.92, 6):
-        wp0 = float(np.mean(t_obs)) * (float(min(p_obs)) - cp0) * 0.5
-        try:
-            r = _min(_loss, [cp0, max(wp0, 1)],
-                     bounds=[(1, float(min(p_obs))*0.98), (1, 1e7)],
-                     method='L-BFGS-B')
-            if best is None or r.fun < best.fun: best = r
-        except Exception: pass
-    if best is None or best.fun > 1e10: return None, None, None, None
-    cp, wp = float(best.x[0]), float(best.x[1])
-    pp = [float(_pws(np.array([t]), cp, wp)[0]) for _, t in tests]
-    return cp, wp, pmax, pp
-
-def fit_om3cp(tests, pmax_ext=None):
-    """Om3CP (Omni-3CP): OmPD com 3P base em vez de 2P.
-    P(t) = W′/t × f(t,Pmax,CP) + CP, âncora em τ de 3P Pmax."""
-    from scipy.optimize import minimize as _min
-    if len(tests) < 2: return None, None, None, None
-    p_obs = np.array([p for p, _ in tests])
-    t_obs = np.array([t for _, t in tests])
-    pmax  = float(pmax_ext) if pmax_ext and pmax_ext > max(p_obs) else float(max(p_obs)) * 1.15
-
-    def _pom3(t, cp, wp, A_om=0.0):
-        tau  = wp / max(pmax - cp, 1.0)
-        base = wp / t * (1 - np.exp(-t / tau)) + cp
-        if A_om > 0:
-            decay = np.where(t > TCP_MAX, A_om * np.log(t / TCP_MAX), 0.0)
-            return base - decay
-        return base
-
-    mask_long = t_obs > TCP_MAX
-    has_long  = bool(np.any(mask_long))
-
-    def _loss(params):
-        cp, wp = params[0], params[1]
-        A_om   = params[2] if has_long else 0.0
-        if cp <= 0 or wp <= 0 or cp >= min(p_obs)*0.99 or cp >= pmax: return 1e12
-        pred = _pom3(t_obs, cp, wp, A_om)
-        return float(np.sum((1.0/t_obs) * (p_obs - pred)**2))
-
-    best = None
-    for cp0 in np.linspace(float(min(p_obs))*0.50, float(min(p_obs))*0.93, 6):
-        wp0 = float(np.mean(t_obs)) * (float(min(p_obs)) - cp0) * 0.5
-        if wp0 <= 0: continue
-        try:
-            x0 = [cp0, wp0, 30.0] if has_long else [cp0, wp0]
-            bd = [(1, float(min(p_obs))*0.98), (1, 1e7)]
-            if has_long: bd.append((0, 500))
-            r = _min(_loss, x0, bounds=bd, method='L-BFGS-B')
-            if best is None or r.fun < best.fun: best = r
-        except Exception: pass
-    if best is None or best.fun > 1e10: return None, None, None, None
-    cp, wp = float(best.x[0]), float(best.x[1])
-    A_om   = float(best.x[2]) if has_long else 0.0
-    pp = [float(_pom3(np.array([t]), cp, wp, A_om)[0]) for _, t in tests]
-    return cp, wp, pmax, pp
-
-def fit_omexp(tests, pmax_ext=None):
-    """OmExp: variante OmPD com decaimento exponencial para t > TCPmax.
-    P(t) = OmPD_base(t) para t≤TCPmax
-    P(t) = OmPD_base(t) × exp(-A_e × (t-TCPmax)/TCPmax) para t>TCPmax"""
-    from scipy.optimize import minimize as _min
-    if len(tests) < 2: return None, None, None, None
-    p_obs = np.array([p for p, _ in tests])
-    t_obs = np.array([t for _, t in tests])
-    pmax  = float(pmax_ext) if pmax_ext and pmax_ext > max(p_obs) else float(max(p_obs)) * 1.15
-
-    def _pomexp(t, cp, wp, A_e=0.0):
-        tau  = wp / max(pmax - cp, 1.0)
-        base = wp / t * (1 - np.exp(-t / tau)) + cp
-        if A_e > 0:
-            decay = np.where(t > TCP_MAX,
-                             (1 - np.exp(-A_e * (t - TCP_MAX) / TCP_MAX)),
-                             0.0)
-            return base * (1 - decay * 0.15)
-        return base
-
-    mask_long = t_obs > TCP_MAX
-    has_long  = bool(np.any(mask_long))
-
-    def _loss(params):
-        cp, wp = params[0], params[1]
-        A_e = params[2] if has_long else 0.0
-        if cp <= 0 or wp <= 0 or cp >= min(p_obs)*0.99 or cp >= pmax: return 1e12
-        pred = _pomexp(t_obs, cp, wp, A_e)
-        return float(np.sum((1.0/t_obs) * (p_obs - pred)**2))
-
-    best = None
-    for cp0 in np.linspace(float(min(p_obs))*0.50, float(min(p_obs))*0.93, 6):
-        wp0 = float(np.mean(t_obs)) * (float(min(p_obs)) - cp0) * 0.5
-        if wp0 <= 0: continue
-        try:
-            x0 = [cp0, wp0, 1.0] if has_long else [cp0, wp0]
-            bd = [(1, float(min(p_obs))*0.98), (1, 1e7)]
-            if has_long: bd.append((0, 10))
-            r = _min(_loss, x0, bounds=bd, method='L-BFGS-B')
-            if best is None or r.fun < best.fun: best = r
-        except Exception: pass
-    if best is None or best.fun > 1e10: return None, None, None, None
-    cp, wp = float(best.x[0]), float(best.x[1])
-    A_e = float(best.x[2]) if has_long else 0.0
-    pp = [float(_pomexp(np.array([t]), cp, wp, A_e)[0]) for _, t in tests]
-    return cp, wp, pmax, pp
-
-def fit_power_law(tests):
-    """Power Law: P = a × t^(-b). Sem CP explícito.
-    log(P) = log(a) - b×log(t) — regressão linear no espaço log-log."""
-    from scipy.stats import linregress
-    if len(tests) < 2: return None, None, None, None
-    x = np.log([t for _, t in tests])
-    y = np.log([p for p, _ in tests])
-    slope, intercept, r, _, _ = linregress(x, y)
-    b = -float(slope); a = float(np.exp(intercept))
-    if a <= 0 or b <= 0: return None, None, None, None
-    pp = [a * t**(-b) for _, t in tests]
-    # CP implícito ~ P(3600s)
-    cp_impl = a * 3600.0**(-b)
-    return cp_impl, a, b, pp  # (cp_proxy, a, b, pp)
-
-def _extrair_pp(res, n):
-    """Potencias previstas de dentro do tuplo devolvido por um fit.
-
-    Os fits nao devolvem todos o mesmo formato: M1/M2/M3 devolvem
-    (cp, wp, None, pp, r2, k) -- seis elementos, com o pp na posicao 3 e um
-    inteiro no fim -- enquanto os de 3 parametros terminam no pp. O grid
-    search original lia sempre res[-1], o que para o M1, M2 e M3 lhe dava
-    o inteiro 2 em vez das previsoes e produzia um SEE% constante e sem
-    sentido (131.70 em todos eles, independentemente dos dados). Procura-se
-    a ultima sequencia com o comprimento certo, em vez de assumir posicao.
-    """
-    for item in reversed(res):
-        if isinstance(item, (list, tuple, np.ndarray)) and len(item) == n:
-            try:
-                return [float(v) for v in item]
-            except (TypeError, ValueError):
-                continue
-    return None
-
-
-def _grid_search_model(fit_fn, all_mmp_pts, min_pts, pmax_ext=None, k_params=2):
-    """
-    Testa todas as combinações de N pontos (N >= min_pts) dos MMPs disponíveis.
-    Retorna a combinação com menor SEE%.
-    fit_fn(tests, pmax_ext=None) → (cp, wp, pmax_or_extra, pp)
-    """
-    from itertools import combinations
-    if len(all_mmp_pts) < min_pts:
-        return None
-    best = {'see_pct': 999, 'result': None, 'combo': None}
-    for combo in combinations(range(len(all_mmp_pts)), min_pts):
-        pts = [all_mmp_pts[i] for i in combo]
-        try:
-            if pmax_ext is not None:
-                res = fit_fn(pts, pmax_ext=pmax_ext)
-            else:
-                res = fit_fn(pts)
-            if res is None or res[0] is None: continue
-            pp = _extrair_pp(res, len(pts))
-            if pp is None: continue
-            cp = res[0]
-            p_obs  = [p for p, _ in pts]
-            _, see_pct = calc_see(p_obs, pp, k=k_params)
-            if see_pct is not None and see_pct < best['see_pct']:
-                best = {'see_pct': see_pct, 'result': res, 'combo': pts,
-                        'n_pts': len(pts), 'cp': cp}
-        except Exception:
-            pass
-    # Também testar com todos os pontos
-    try:
-        if pmax_ext is not None:
-            res = fit_fn(all_mmp_pts, pmax_ext=pmax_ext)
-        else:
-            res = fit_fn(all_mmp_pts)
-        pp_all = _extrair_pp(res, len(all_mmp_pts)) if res else None
-        if res and res[0] is not None and pp_all is not None:
-            p_obs = [p for p, _ in all_mmp_pts]
-            _, see_pct = calc_see(p_obs, pp_all, k=k_params)
-            if see_pct is not None and see_pct < best['see_pct']:
-                best = {'see_pct': see_pct, 'result': res, 'combo': all_mmp_pts,
-                        'n_pts': len(all_mmp_pts), 'cp': res[0]}
-    except Exception:
-        pass
-    return best if best['result'] is not None else None
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# PONTOS MMP — a partir das power_curves da Intervals.icu
-# ══════════════════════════════════════════════════════════════════════════
-
-MMP_COLS = {'MMP1': 60, 'MMP3': 180, 'MMP5': 300,
-            'MMP12': 720, 'MMP20': 1200, 'MMP60': 3600}
-
-
-def marcar_duplicados(pontos, tolerancia=0.005):
-    """Duracoes diferentes com praticamente a mesma potencia.
-
-    Acontece quando um esforco longo e constante e' o melhor de varias
-    duracoes ao mesmo tempo: 20 minutos a 242 W fazem com que o melhor de
-    12 minutos dentro deles seja tambem 242 W. O ponto mais curto nao traz
-    informacao nova -- pior, entra no ajuste como se fosse uma observacao
-    independente e obriga a curva a ser plana onde devia decair, o que
-    empurra o CP para cima.
-
-    Devolve (pontos_limpos, descartados). Fica o mais longo de cada par,
-    que e' o que mais informa sobre o CP.
-    """
-    ordenados = sorted(pontos, key=lambda x: x[1])
-    manter, fora = [], []
-    for i, (w, t) in enumerate(ordenados):
-        dup = False
-        for w2, t2 in ordenados[i + 1:]:
-            if w2 > 0 and abs(w - w2) / max(w, w2) <= tolerancia:
-                dup = True
-                fora.append({'t': int(t), 'w': round(w, 1),
-                             'igual_a_t': int(t2)})
-                break
-        if not dup:
-            manter.append((w, t))
-    return manter, fora
-
-
-def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
-                     excluir_duplicados=True):
-    """MMP1..MMP60 a partir das power_curves, com a mesma regra da season.
-
-    Reutiliza o melhores_mmp do perfil metabolico -- melhor da season activa,
-    com recuo para a anterior quando nao houve esforco maximo, e reparacao
-    da monotonia. Assim o CP e o MLSS assentam nos mesmos MMP e deixa de ser
-    possivel o CP dizer uma coisa e o modelo de Mader outra por causa da
-    fonte dos numeros.
-
-    Todas as modalidades usam o mesmo tratamento e o mesmo conjunto de
-    duracoes -- 60, 180, 300, 720 e 1200 s. O repo Streamlit restringia o
-    Row e o Ski a subconjuntos diferentes, herdado da forma como a folha
-    estava organizada; nao ha razao fisiologica para isso e so' introduzia
-    diferencas entre modalidades que depois apareciam nos resultados sem
-    ninguem saber porque. Quem escolhe o subconjunto e' o grid search, com
-    os mesmos criterios em todas.
-
-    A diferenca legitima entre modalidades esta noutro sitio: no
-    DURACOES_MMP do perfil metabolico, onde o modelo de Mader pede tres
-    duracoes especificas por modalidade.
-
-    O MMP60 (3600 s) nunca entra no fit -- fica de fora para validacao.
-    """
-    import os as _os
-    import sys as _sys
-    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    import perfil_metabolico as pmet
-
-    duracoes = sorted(MMP_COLS.values())
-    guardado = pmet.DURACOES_MMP.get(modalidade)
-    try:
-        pmet.DURACOES_MMP[modalidade] = duracoes
-        extraido = pmet.melhores_mmp(registos, modalidade,
-                                     season_activa=season_activa,
-                                     limiar_max=limiar_max)
-    finally:
-        if guardado is not None:
-            pmet.DURACOES_MMP[modalidade] = guardado
-
-    mmp = extraido['mmp']
-    classicos, completos = [], []
-    for dur in duracoes:
-        v = mmp.get(dur)
-        if v is None or dur == 3600:
-            continue
-        d = float(dur)
-        classicos.append((float(v), d))
-        completos.append((float(v), d))
-
-    classicos = sorted(set(classicos), key=lambda x: x[1])
-    completos = sorted(set(completos), key=lambda x: x[1])
-    dup_cl, dup_full = [], []
-    todos_antes = sorted(set(classicos) | set(completos), key=lambda x: x[1])
-    if excluir_duplicados:
-        classicos, dup_cl = marcar_duplicados(classicos)
-        completos, dup_full = marcar_duplicados(completos)
-    fora = [p for p in todos_antes if p not in set(completos) | set(classicos)]
-
-    return {
-        'all_mmp_pts': classicos,
-        'all_mmp_pts_full': completos,
-        'duplicados_excluidos': dup_cl or dup_full,
-        'descartados_por_duplicacao': fora,
-        'todas_as_duracoes': [{'t': int(t), 'w': round(w, 1)}
-                              for w, t in todos_antes],
-        'mmp60_val': mmp.get(3600),
-        'pmax': extraido.get('pmax_w'),
-        'datas': {str(k): v for k, v in extraido['datas'].items()},
-        'seasons': {str(k): v for k, v in extraido['seasons'].items()},
-        'recuou': {str(k): bool(v) for k, v in extraido['recuou'].items()},
-        'ajustado_por_coerencia': {
-            str(k): bool(v) for k, v in extraido['ajustado_por_coerencia'].items()},
-        'seasons_disponiveis': extraido['seasons_disponiveis'],
-    }
-
-
-def aplicar_ajustes(dados, modalidade, overrides=None, duracoes=None,
-                    excluir_duplicados=True):
-    """Substitui watts ou muda o conjunto de duracoes, e recalcula os pares.
-
-    Serve o quadro editavel da tab: mexer num valor e ver o CP responder e'
-    a unica forma de perceber quanto do resultado depende de cada ponto --
-    com quatro pontos e um grau de liberdade, isso importa mais do que
-    qualquer estatistica de ajuste.
-    """
-    base = {int(t): float(w) for w, t in (dados.get('all_mmp_pts_full') or [])}
-    for w, t in (dados.get('all_mmp_pts') or []):
-        base.setdefault(int(t), float(w))
-    for w, t in (dados.get('descartados_por_duplicacao') or []):
-        base.setdefault(int(t), float(w))
-
-    for t, w in (overrides or {}).items():
-        base[int(t)] = float(w)
-    if duracoes:
-        base = {t: w for t, w in base.items() if t in set(duracoes)}
-        for t in duracoes:
-            base.setdefault(int(t), None)
-        base = {t: w for t, w in base.items() if w}
-
-    pts = sorted(((w, float(t)) for t, w in base.items()), key=lambda x: x[1])
-    dup = []
-    if excluir_duplicados:
-        pts, dup = marcar_duplicados(pts)
-
-    if modalidade in ('Row', 'Ski') and not (overrides or duracoes):
-        classicos = [p for p in pts if p[1] in (60.0, 300.0, 720.0)]
-        completos = [p for p in pts if p[1] in (180.0, 300.0, 720.0, 1200.0)]
-    else:
-        classicos = completos = pts
-
-    novo = dict(dados)
-    novo['all_mmp_pts'] = classicos
-    novo['all_mmp_pts_full'] = completos
-    novo['duplicados_excluidos'] = dup
-    novo['overrides_aplicados'] = {str(k): v for k, v in (overrides or {}).items()}
-    novo['duracoes_pedidas'] = duracoes or None
-    return novo
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# ORQUESTRADORA
-# ══════════════════════════════════════════════════════════════════════════
-
-# Janela de duracoes em que o modelo hiperbolico e' valido. Abaixo de ~2 min
-# domina a componente neuromuscular e a reserva finita unica deixa de
-# descrever o esforco; acima de ~20 min entram a deriva e o substrato. Nao e'
-# uma convencao de tabela sem base: neste atleta, incluir o ponto de 60 s
-# faz o W' calculado ponto a ponto variar 14.8%, e exclui-lo baixa para 3.3%.
-JANELA_CP = (120.0, 1200.0)
-
-# W' plausivel em Joules. Fora disto o ajuste convergiu para uma solucao
-# matematicamente valida e fisiologicamente impossivel -- acontece sempre
-# que ha parametros a mais para os pontos disponiveis.
-WPRIME_PLAUSIVEL = (5000.0, 30000.0)
-
-
-def validar(res, dados, janela=JANELA_CP):
-    """Verificacoes que nao dependem do ajuste, so' de fisiologia.
-
-    O SEE% diz se a curva passa perto dos pontos. Nao diz nada sobre se os
-    pontos sao esforcos maximos, nem se o CP resultante e' possivel. Estas
-    verificacoes dizem.
-    """
-    avisos = []
-    melhor = res.get('melhor') or {}
-    cp = melhor.get('cp')
-    mmp60 = dados.get('mmp60_val')
-    pts = dados.get('all_mmp_pts_full') or dados.get('all_mmp_pts') or []
-
-    if cp and mmp60 and cp > mmp60:
-        avisos.append({
-            'gravidade': 'alto', 'chave': 'cp_acima_do_mmp60',
-            'texto': (f'CP de {round(cp)} W acima do melhor de 60 min '
-                      f'({round(mmp60)} W). Por definicao o CP e sustentavel '
-                      'mais de uma hora, portanto ou o esforco de 60 min nao '
-                      'foi maximo -- o caso habitual, e uma saida longa em '
-                      'endurance nao e um teste -- ou os MMP curtos estao a '
-                      'puxar o CP para cima. Enquanto o MMP60 for so o melhor '
-                      'de uma saida qualquer, esta verificacao nao invalida o '
-                      'CP; deixa de a poder usar como validacao.')})
-    elif cp and mmp60:
-        avisos.append({
-            'gravidade': 'ok', 'chave': 'cp_abaixo_do_mmp60',
-            'texto': (f'CP de {round(cp)} W abaixo do melhor de 60 min '
-                      f'({round(mmp60)} W), como tem de ser.')})
-
-    # graus de liberdade
-    if melhor.get('n_pts') and melhor.get('k_params'):
-        df = melhor['n_pts'] - melhor['k_params']
-        if df <= 1:
-            avisos.append({
-                'gravidade': 'alto', 'chave': 'sem_graus_de_liberdade',
-                'texto': (f"O modelo escolhido usa {melhor['n_pts']} pontos "
-                          f"para {melhor['k_params']} parametros: {df} grau de "
-                          'liberdade. Com tao poucos, a curva passa quase '
-                          'exactamente pelos pontos e o SEE% baixo nao mede '
-                          'qualidade nenhuma -- mede so que ha parametros a '
-                          'mais. Nao usar o SEE% para escolher entre modelos '
-                          'nestas condicoes.')})
-
-    # W' plausivel
-    wp = melhor.get('wp')
-    if wp and not (WPRIME_PLAUSIVEL[0] <= wp <= WPRIME_PLAUSIVEL[1]):
-        avisos.append({
-            'gravidade': 'alto', 'chave': 'wprime_implausivel',
-            'texto': (f"W' de {round(wp/1000, 1)} kJ fora do intervalo "
-                      f'plausivel ({WPRIME_PLAUSIVEL[0]/1000:.0f}-'
-                      f'{WPRIME_PLAUSIVEL[1]/1000:.0f} kJ). O ajuste '
-                      'convergiu para uma solucao matematicamente valida e '
-                      'fisiologicamente impossivel. Rejeitar este modelo.')})
-
-    # pontos fora da janela de validade
-    fora = [p for p in pts if not (janela[0] <= p[1] <= janela[1])]
-    if fora:
-        det = ', '.join(f'{int(t)}s' for _w, t in sorted(fora, key=lambda x: x[1]))
-        avisos.append({
-            'gravidade': 'medio', 'chave': 'fora_da_janela',
-            'texto': (f'Pontos fora da janela de {int(janela[0])}-'
-                      f'{int(janela[1])} s onde o modelo hiperbolico e valido '
-                      f'({det}). Abaixo de 2 min domina a componente '
-                      'neuromuscular e uma reserva finita unica deixa de '
-                      'descrever o esforco.')})
-
-    dups = dados.get('duplicados_excluidos') or []
-    if dups:
-        det = ', '.join(f"{d['t']}s = {d['igual_a_t']}s ({d['w']} W)" for d in dups)
-        avisos.append({
-            'gravidade': 'medio', 'chave': 'duracoes_duplicadas',
-            'texto': (f'Duracoes com potencia praticamente igual ({det}): '
-                      'vem do mesmo esforco longo e constante, onde o melhor '
-                      'de uma duracao curta e simplesmente um pedaco da longa. '
-                      'Foram excluidas do ajuste por nao serem observacoes '
-                      'independentes.')})
-
-    # Veloclinic: comparar dentro e fora da janela diz se o desalinhamento
-    # e' do modelo ou so' dos pontos curtos
-    v = res.get('veloclinic') or {}
-    m = v.get('metricas') or {}
-    vj = res.get('veloclinic_janela') or {}
-    mj = vj.get('metricas') or {}
-    if m.get('cv') is not None and mj.get('cv') is not None and fora:
-        if mj['cv'] < m['cv'] * 0.6:
-            avisos.append({
-                'gravidade': 'ok', 'chave': 'wprime_consistente_na_janela',
-                'texto': (f"W' varia {m['cv']}% em todos os pontos mas so "
-                          f"{mj['cv']}% dentro da janela de "
-                          f'{int(janela[0])}-{int(janela[1])} s. O modelo '
-                          'descreve bem o atleta no intervalo onde e valido; '
-                          'a inconsistencia vinha dos pontos curtos, que nao '
-                          'deviam pesar no ajuste.')})
-    if (mj.get('cv') if mj else m.get('cv', 0)) > 15:
-        avisos.append({
-            'gravidade': 'medio', 'chave': 'wprime_inconsistente',
-            'texto': (f"W' calculado ponto a ponto varia {m['cv']}% "
-                      f"(declive {m.get('slope')} contra a potencia). Se o "
-                      'modelo hiperbolico descrevesse este atleta, o W\' seria '
-                      'constante em todos os pontos. Um declive marcado '
-                      'significa que uma reserva finita unica nao chega para '
-                      'descrever o intervalo de duracoes usado.')})
-
-    if dados.get('pmax') and cp and res.get('usou_pmax'):
-        avisos.append({
-            'gravidade': 'baixo', 'chave': 'pmax_ancora',
-            'texto': (f"Pmax de {round(dados['pmax'])} W (pico de 1 s) e usado "
-                      'como ancora nos modelos de tres parametros. E um valor '
-                      'neuromuscular, de um dominio diferente do que o CP '
-                      'descreve; forcar a curva a passar por la distorce o '
-                      'resto. Comparar com ?usar_pmax=0 antes de escolher um '
-                      'modelo de tres parametros.')})
-    return avisos
-
-
-def calcular_cp_completo(dados, modalidade, min_pts=3, usar_pmax=True):
-    """Corre todos os modelos e ordena-os por SEE%.
-
-    'dados' e' o dict devolvido por pontos_de_curvas.
-
-    O SEE% e' o erro padrao do ajuste em percentagem da potencia media. Nao
-    diz que o CP esta certo -- diz que a curva passa perto dos pontos. Um
-    modelo de 3 parametros ajusta quase sempre melhor do que um de 2 por
-    ter mais liberdade, e por isso o k entra no denominador do SEE. Mesmo
-    assim, comparar SEE% entre modelos com numeros de parametros diferentes
-    e' comparacao enviesada: por isso se devolve tudo e a escolha e' do
-    utilizador, em vez de se impor o menor SEE%.
-    """
-    pts = dados.get('all_mmp_pts') or []
-    pts_full = dados.get('all_mmp_pts_full') or []
-    pmax = dados.get('pmax')
-
-    if len(pts) < min_pts:
-        return {'ok': False, 'modalidade': modalidade, 'n_mmp': len(pts),
-                'motivo': f'MMP insuficiente ({len(pts)} < {min_pts})',
-                'mmp_pts': pts, 'pmax': pmax,
-                'mmp60_val': dados.get('mmp60_val'),
-                'modelos': {}, 'melhor': None}
-
-    definicoes = [
-        ('M1 (WLS-P)',     lambda t, **k: fit_m1(t, make_w([x for _, x in t], 'log')), pts,      2),
-        ('M2 (WLS-1/t)',   lambda t, **k: fit_m2(t, make_w([x for _, x in t], 'log')), pts,      2),
-        ('M3 (NL-2p)',     lambda t, **k: fit_m3(t, make_w([x for _, x in t], 'log')), pts,      2),
-        ('2p hiperbolico', lambda t, **k: fit_2p_hyperbolic(t),                        pts,      2),
-        ('3p hiperbolico', lambda t, pmax_ext=None: fit_3p_hyperbolic(t, pmax_ext),    pts_full, 3),
-        ('Ward-Smith',     lambda t, pmax_ext=None: fit_ward_smith(t, pmax_ext),       pts_full, 3),
-        ('OM3CP',          lambda t, pmax_ext=None: fit_om3cp(t, pmax_ext),            pts_full, 3),
-        ('OMExp',          lambda t, pmax_ext=None: fit_omexp(t, pmax_ext),            pts_full, 3),
-    ]
-
-    modelos = {}
-    for nome, fit_fn, base, kp in definicoes:
-        if len(base) < min_pts:
-            continue
-        try:
-            best = _grid_search_model(
-                fit_fn, base, min_pts=min(min_pts, len(base)),
-                pmax_ext=(pmax if (kp == 3 and usar_pmax) else None),
-                k_params=kp)
-            if best and best.get('result'):
-                res = best['result']
-                cp = float(res[0]) if res[0] is not None else None
-                wp = float(res[1]) if len(res) > 1 and res[1] is not None else None
-                if cp is None or not (0 < cp < 2000):
-                    continue
-                modelos[nome] = {
-                    'cp': round(cp, 1),
-                    'wp': round(wp) if wp else None,
-                    'wp_kj': round(wp / 1000.0, 2) if wp else None,
-                    'see_pct': best['see_pct'],
-                    'n_pts': best['n_pts'],
-                    'k_params': kp,
-                    'pontos_usados': [{'w': round(p, 1), 't': int(t)}
-                                      for p, t in (best.get('combo') or [])],
-                }
-        except Exception:
-            pass
-
-    melhor = None
-    if modelos:
-        nome = min(modelos, key=lambda n: modelos[n]['see_pct'])
-        melhor = {'nome': nome, **modelos[nome]}
-
-    # diagnostico Veloclinic com o melhor CP, em todos os pontos e so' na
-    # janela de validade -- a diferenca entre os dois e' o diagnostico util
-    veloclinic = veloclinic_janela = None
-    base_v = pts_full or pts
-    if melhor and melhor['cp']:
-        def _velo(conjunto):
-            if len(conjunto) < 2:
-                return None
-            vm = vc_metrics(conjunto, melhor['cp'], melhor.get('wp') or 0)
-            p_pts, wp_pts = veloclinic_points(conjunto, melhor['cp'])
-            return {'metricas': vm, 'classificacao': classify_fatigue(vm),
-                    'n': len(conjunto),
-                    'pontos': [{'p': round(a, 1), 'wp': round(b)}
-                               for a, b in zip(p_pts, wp_pts)]}
-        veloclinic = _velo(base_v)
-        na_janela = [p for p in base_v
-                     if JANELA_CP[0] <= p[1] <= JANELA_CP[1]]
-        if len(na_janela) < len(base_v):
-            veloclinic_janela = _velo(na_janela)
-
-    saida = {'ok': len(modelos) > 0, 'modalidade': modalidade,
-            'n_mmp': len(pts), 'min_pts': min_pts, 'usou_pmax': usar_pmax,
-            'duplicados_excluidos': dados.get('duplicados_excluidos') or [],
-            'mmp_pts': [{'w': round(p, 1), 't': int(t)} for p, t in pts],
-            'mmp_pts_full': [{'w': round(p, 1), 't': int(t)} for p, t in pts_full],
-            'pmax': pmax, 'mmp60_val': dados.get('mmp60_val'),
-            'modelos': modelos, 'melhor': melhor, 'veloclinic': veloclinic,
-            'veloclinic_janela': veloclinic_janela,
-            'janela_cp': list(JANELA_CP)}
-    # residuos do modelo escolhido: o que o SEE% resume num numero so'
-    if melhor and melhor.get('cp') and melhor.get('wp'):
-        cp_, wp_ = melhor['cp'], melhor['wp']
-        saida['residuos'] = [
-            {'t': int(t), 'observado': round(w, 1),
-             'previsto': round(cp_ + wp_ / t, 1),
-             'erro_w': round(w - (cp_ + wp_ / t), 1),
-             'erro_pct': round((w - (cp_ + wp_ / t)) / w * 100, 2),
-             'no_ajuste': any(abs(pu['t'] - t) < 1
-                              for pu in melhor.get('pontos_usados') or [])}
-            for w, t in (pts_full or pts)]
-    saida['validacao'] = validar(saida, dados)
-    return saida
-
-
-def curva_do_modelo(cp, wp, t_min=30, t_max=3600, n=120):
-    """P(t) = CP + W'/t, para desenhar a hiperbole."""
-    if not cp or not wp:
-        return []
-    passo = (np.log(t_max) - np.log(t_min)) / (n - 1)
-    out = []
-    for i in range(n):
-        t = float(np.exp(np.log(t_min) + passo * i))
-        out.append({'t': round(t, 1), 'p': round(cp + wp / t, 1)})
-    return out
-
-
-def tempo_ate_exaustao(cp, wp, potencia):
-    """t = W' / (P - CP). So' faz sentido acima do CP."""
-    if not cp or not wp or not potencia or potencia <= cp:
-        return None
-    return round(wp / (potencia - cp), 1)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# CALCULADORA CONCEPT2 — PARQUEADA, NAO USAR
-#
-# As percentagens do 2 km vem de uma tabela de equivalencias do ergometro,
-# nao dos dados deste atleta. Usa-las para julgar se um MMP e' plausivel, ou
-# para derivar alvos, e' importar um atleta medio para dentro de um sistema
-# inteiro construido sobre calibracao individual. Foi o que fiz na analise
-# do Row, e estava errado: concluir que o MMP de 60 s estava inflacionado
-# porque nao batia com 153% do 2 km nao e' evidencia nenhuma.
-#
-# O codigo fica aqui para quando esta calculadora tiver o seu proprio
-# proposito, separado do modelo de CP. Ate' la' nao e' chamada de lado
-# nenhum: o CP do Row e do Ski sai dos MMP, exactamente como o do Bike.
-# ══════════════════════════════════════════════════════════════════════════
-
-PCT_C2 = {"Power Peak": 173, "60seg": 153, "2km": 100, "6km": 85, "60min": 76}
-
-MODALIDADES_C2 = ()      # vazio de proposito: nenhuma modalidade a usa
-
-
-def split_de_watts(w):
-    """Watts -> segundos por 500 m (formula do Concept2: P = 2.8 / pace^3).
-
-    Conversao pura de unidades, sem pressupostos sobre o atleta. Esta pode
-    ser usada com seguranca; o que fica parqueado sao as percentagens.
-    """
-    if not w or w <= 0:
-        return None
-    return ((2.8 / float(w)) ** (1.0 / 3.0)) * 500.0
-
-
-def formatar_split(seg):
-    if seg is None:
-        return None
-    m = int(seg // 60)
-    return f"{m}:{seg - m * 60:05.2f}"
-
-
-def watts_de_split(texto):
-    """'MM:SS.ss' -> Watts. Tambem so' conversao de unidades."""
-    try:
-        partes = str(texto).strip().replace(',', '.').split(':')
-        if len(partes) != 2:
-            return None
-        seg = float(partes[0]) * 60 + float(partes[1])
-        if seg <= 0:
-            return None
-        return round(2.8 / ((seg / 500.0) ** 3), 1)
-    except Exception:
-        return None
-
-
-def tabela_c2(watts_2k, medidos=None):
-    """PARQUEADA. Ver o cabecalho desta seccao."""
-    return []
+"""tab_cp_model.py — Critical Power, W' e histórico do perfil.
+
+Os MMP vêm da tabela power_curves, sincronizada da API da Intervals.icu —
+a mesma fonte do perfil metabólico, para o CP e o MLSS não assentarem em
+números diferentes.
+
+Quatro secções:
+  1. Modelos de CP com SEE%, escolha do utilizador e curva P(t)
+  2. Calculadora Concept2 (só Row e Ski)
+  3. Gravação de instantâneos, com data de referência à escolha
+  4. Histórico: como o CP e os limiares se moveram ao longo do tempo
+"""
+
+from tabs.base import page
+
+SLUG = 'cp'
+
+BODY = """
+<div class="wrap">
+
+  <h1>CP Model</h1>
+
+  <div class="controls">
+    <label class="sel">Modalidade
+      <select id="cpModalidade" onchange="cpCarregar()">
+        <option>Bike</option><option>Row</option>
+        <option>Ski</option><option>Run</option>
+      </select>
+    </label>
+    <label class="sel">Âmbito
+      <select id="cpAmbito" onchange="cpAmbitoMudou()">
+        <option value="season">season</option>
+        <option value="365">últimos 365 dias</option>
+        <option value="180">últimos 180 dias</option>
+        <option value="730">últimos 2 anos</option>
+      </select>
+    </label>
+    <label class="sel" id="cpSeasonWrap">Season
+      <select id="cpSeason" onchange="cpCarregar()">
+        <option value="">activa</option>
+      </select>
+    </label>
+    <label class="sel">Mín. pontos
+      <select id="cpMinPts" onchange="cpCarregar()">
+        <option value="3" selected>3</option>
+        <option value="4">4</option>
+        <option value="5">5</option>
+      </select>
+    </label>
+    <button onclick="cpCarregar()">Recalcular</button>
+    <span id="cpEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
+  </div>
+
+  <div id="cpValidacao" style="margin-bottom:12px;"></div>
+
+  <div class="controls" style="margin-bottom:8px;">
+    <label class="sel"><input type="checkbox" id="cpUsarPmax" checked onchange="cpCarregar()">
+      ancorar 3 parâmetros no Pmax</label>
+    <label class="sel"><input type="checkbox" id="cpExclDup" checked onchange="cpCarregar()">
+      excluir durações com potência igual</label>
+  </div>
+
+  <h2>Modelos</h2>
+  <div id="cpModelos" style="overflow-x:auto;"></div>
+
+  <h2>MMP usados</h2>
+  <div id="cpMMP"></div>
+
+  <h2>Curva de potência</h2>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chCP" height="320"></canvas>
+    <div id="cpTip" style="display:none;position:absolute;pointer-events:none;
+      background:#161b22;border:1px solid #30363d;border-radius:6px;
+      padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;max-width:220px;"></div>
+  </div>
+  <div id="cpLegenda" style="margin-top:6px;"></div>
+
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">O que significa cada linha do gráfico</summary>
+    <div id="cpGlossario" style="margin-top:6px;"></div>
+  </details>
+
+  <h2>Análise do ajuste</h2>
+  <div style="display:flex;flex-wrap:wrap;gap:12px;">
+    <div style="flex:1;min-width:320px;">
+      <div style="color:#8b949e;font-size:12px;margin-bottom:4px;">
+        W&prime; ponto a ponto — deveria ser constante</div>
+      <div class="chartbox"><canvas id="chVelo" height="240"></canvas></div>
+    </div>
+    <div style="flex:1;min-width:320px;">
+      <div style="color:#8b949e;font-size:12px;margin-bottom:4px;">
+        Resíduos — observado menos previsto</div>
+      <div class="chartbox"><canvas id="chResid" height="240"></canvas></div>
+    </div>
+  </div>
+  <div id="cpAnaliseTexto" style="margin-top:6px;"></div>
+
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Diagnóstico Veloclinic em detalhe</summary>
+    <div id="cpDetalhe" style="margin-top:6px;overflow-x:auto;"></div>
+  </details>
+
+  <h2>Guardar instantâneo</h2>
+  <div class="controls">
+    <label class="sel">Modelo de CP
+      <select id="cpModeloEscolhido" style="min-width:160px"></select></label>
+    <label class="sel">Data de referência
+      <input type="date" id="cpDataRef" style="width:150px"></label>
+    <label class="sel"><input type="checkbox" id="cpGravaCp" checked> CP</label>
+    <label class="sel"><input type="checkbox" id="cpGravaPerfil" checked> perfil metabólico</label>
+    <label class="sel"><input type="checkbox" id="cpGravaLim" checked> intervalos dos campos</label>
+    <button onclick="cpGuardar()">Guardar</button>
+    <span id="cpGuardarEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
+  </div>
+  <p style="color:#8b949e;font-size:11px;">
+    A data de referência é a data <b>a que o instantâneo diz respeito</b>, não
+    a de hoje: podes gravar hoje um retrato de uma season passada. Gravar duas
+    vezes a mesma modalidade, season e data substitui em vez de duplicar,
+    portanto podes corrigir sem acumular lixo.</p>
+
+  <h2>Histórico</h2>
+  <div class="controls">
+    <label class="sel">De <input type="date" id="cpHistDe" style="width:150px"></label>
+    <label class="sel">Até <input type="date" id="cpHistAte" style="width:150px"></label>
+    <button onclick="cpHistorico()">Ver</button>
+    <span id="cpHistEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
+  </div>
+  <div class="chartbox"><canvas id="chHist" height="280"></canvas></div>
+  <div id="cpHistTabela" style="overflow-x:auto;margin-top:8px;"></div>
+
+</div>
+"""
+
+JS = """
+let CP = null, HIST = null, CP_AJUSTES = '';
+let CP_ESCALA = null, CP_PONTOS = [];
+
+function cpCarregar(){
+ const mod = document.getElementById('cpModalidade').value;
+ const sea = document.getElementById('cpSeason').value;
+ const mp  = document.getElementById('cpMinPts').value;
+ const est = document.getElementById('cpEstado');
+ est.textContent = 'a calcular...';
+ const amb = document.getElementById('cpAmbito').value;
+ let q = '?min_pts=' + mp;
+ if(amb === 'season'){ if(sea) q += '&season=' + encodeURIComponent(sea); }
+ else { q += '&janela=' + amb; }
+ if(!document.getElementById('cpUsarPmax').checked) q += '&usar_pmax=0';
+ if(!document.getElementById('cpExclDup').checked) q += '&duplicados=manter';
+ q += CP_AJUSTES;
+ fetch('/api/cp/modelos/' + mod + q).then(r=>r.json()).then(function(d){
+  CP = d;
+  if(d.status !== 'ok' || !d.ok){
+   est.textContent = d.motivo || d.mensagem || 'sem dados';
+   document.getElementById('cpModelos').innerHTML = '';
+   cpDraw(); return;
+  }
+  est.textContent = d.n_mmp + ' MMP · ' + (d.ambito||'')
+    + ' · ' + (d.n_registos||0) + ' curvas'
+    + (d.melhor ? ' · menor SEE%: ' + d.melhor.nome : '')
+    + (Object.keys(d.overrides_aplicados||{}).length ? ' · VALORES EDITADOS' : '');
+  cpSeasons(d); cpValidacao(); cpMMPEdit(); cpTabela(); cpDraw();
+  cpVeloDraw(); cpResidDraw(); cpAnalise(); cpGloss(); cpDetalhe();
+ }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
+}
+
+function cpSeasons(d){
+ const sel = document.getElementById('cpSeason');
+ if(sel.options.length > 1) return;
+ (d.seasons_disponiveis||[]).forEach(function(s){
+  const o = document.createElement('option'); o.value = s; o.textContent = s;
+  sel.appendChild(o);
+ });
+}
+
+function cpAmbitoMudou(){
+ const amb = document.getElementById('cpAmbito').value;
+ document.getElementById('cpSeasonWrap').style.display =
+   amb === 'season' ? '' : 'none';
+ cpCarregar();
+}
+
+// ── quadro editável dos MMP ──────────────────────────────────────────────
+function cpMMPEdit(){
+ const box = document.getElementById('cpMMP');
+ if(!box) return;
+ const todas = (CP && CP.todas_as_duracoes) || [];
+ const usados = {};
+ (CP.mmp_pts_full||[]).forEach(p=>{ usados[p.t] = true; });
+ const ov = CP.overrides_aplicados || {};
+ const pc = CP.pace_dos_mmp || {};
+ if(!todas.length){ box.innerHTML=''; return; }
+ let h = '<div style="color:#8b949e;font-size:11px;margin-bottom:6px;">'
+  + 'Watts e segundos que entram no ajuste. Podes alterar qualquer um para '
+  + 'ver quanto do CP depende dele — com um grau de liberdade, isso diz mais '
+  + 'do que o SEE%. Cinzento = excluído do ajuste.</div>'
+  + '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;">';
+ todas.forEach(function(p){
+  const dentro = !!usados[p.t];
+  const editado = ov[String(p.t)] != null;
+  const dt = (CP.datas_dos_mmp||{})[String(p.t)] || '';
+  const sea = (CP.seasons_dos_mmp||{})[String(p.t)] || '';
+  const cor = editado ? '#E3B341' : dentro ? '#8b949e' : '#484f58';
+  h += '<div style="margin-right:14px;margin-bottom:6px;opacity:'
+   + (dentro?1:0.55) + ';">'
+   + '<div style="color:' + cor + ';font-size:10px;">'
+   + (editado ? 'editado' : (dt || '—')) + (sea ? ' · ' + sea : '') + '</div>'
+   + '<input type="number" class="cpSec" value="' + p.t + '" style="width:64px" title="segundos">'
+   + ' <input type="number" class="cpW" data-sec="' + p.t + '" value="'
+   + Math.round(p.w) + '" style="width:70px" title="watts"> W'
+   + (pc[String(p.t)] && pc[String(p.t)].texto
+      ? '<div style="color:#79C0FF;font-size:10px;">' + pc[String(p.t)].texto
+        + '</div>' : '')
+   + '</div>';
+ });
+ h += '</div><div style="margin-top:6px;">'
+  + '<button onclick="cpAplicarMMP()">Aplicar</button> '
+  + '<button onclick="cpReporMMP()">Repor automáticos</button>'
+  + '</div>';
+ box.innerHTML = h;
+}
+
+function cpReporMMP(){
+ CP_AJUSTES = '';
+ cpCarregar();
+}
+
+function cpAplicarMMP(){
+ const secs = Array.from(document.querySelectorAll('.cpSec')).map(i=>parseInt(i.value));
+ const ws = Array.from(document.querySelectorAll('.cpW')).map(i=>parseFloat(i.value));
+ const originais = {};
+ (CP.todas_as_duracoes||[]).forEach(p=>{ originais[p.t] = p.w; });
+ let q = '&duracoes=' + secs.filter(s=>s>0).join(',');
+ secs.forEach(function(sec, i){
+  if(!sec || !ws[i]) return;
+  // só manda como override o que foi mesmo alterado
+  if(originais[sec] == null || Math.abs(originais[sec] - ws[i]) > 0.5)
+   q += '&mmp_' + sec + '=' + ws[i];
+ });
+ CP_AJUSTES = q;
+ cpCarregar();
+}
+
+function cpValidacao(){
+ const av = (CP && CP.validacao) || [];
+ const box = document.getElementById('cpValidacao');
+ if(!av.length){ box.innerHTML=''; return; }
+ const cores = {alto:'#F85149', medio:'#F0883E', baixo:'#8b949e', ok:'#3FB950'};
+ const icones = {alto:'\u25CF', medio:'\u25CF', baixo:'\u25CB', ok:'\u2713'};
+ let h = '';
+ av.forEach(function(a){
+  const c = cores[a.gravidade] || '#8b949e';
+  h += '<p style="font-size:11px;color:#8b949e;margin:4px 0;border-left:2px solid '
+   + c + ';padding-left:8px;"><b style="color:' + c + ';">'
+   + (icones[a.gravidade]||'') + '</b> ' + a.texto + '</p>';
+ });
+ box.innerHTML = h;
+}
+
+function cpTabela(){
+ const ms = (CP && CP.modelos) || {};
+ const nomes = Object.keys(ms).sort((a,b)=> ms[a].see_pct - ms[b].see_pct);
+ const temPace = !!(CP.pace_dos_mmp);
+ const sel = document.getElementById('cpModeloEscolhido');
+ sel.innerHTML = nomes.map(n=>'<option>'+n+'</option>').join('');
+ let h = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+  +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+  +'<th style="padding:6px;">Modelo</th><th>CP</th><th>W\\u2032</th>'
+  +'<th>SEE%</th><th>df</th><th>Pontos</th><th>Durações usadas</th></tr>';
+ nomes.forEach(function(n,i){
+  const m = ms[n];
+  const df = m.n_pts - m.k_params;
+  const wpOk = m.wp_kj==null || (m.wp_kj>=5 && m.wp_kj<=30);
+  const cor = m.see_pct<2 ? '#3FB950' : m.see_pct<5 ? '#F0883E' : '#F85149';
+  h += '<tr style="border-bottom:1px solid #161b22;'
+    + (i===0?'background:rgba(88,166,255,0.06);':'') + '">'
+    + '<td style="padding:6px;">' + n + (i===0?' <span style="color:#58A6FF;font-size:10px;">menor SEE%</span>':'') + '</td>'
+    + '<td><b>' + m.cp + ' W</b></td>'
+    + (temPace ? '<td style="color:#79C0FF;">' + (m.pace||'—') + '</td>' : '')
+    + '<td style="color:' + (wpOk?'#c9d1d9':'#F85149') + ';">'
+    + (m.wp_kj!=null ? m.wp_kj + ' kJ' : '—')
+    + (wpOk?'':' <span style="font-size:10px;">implausível</span>') + '</td>'
+    + '<td style="color:' + cor + ';">' + m.see_pct + '%</td>'
+    + '<td style="color:' + (df<=1?'#F0883E':'#8b949e') + ';">' + df + '</td>'
+    + '<td style="color:#8b949e;">' + m.n_pts + '</td>'
+    + '<td style="color:#8b949e;">'
+    + (m.pontos_usados||[]).map(p=>Math.round(p.t/60*10)/10+'min').join(', ')
+    + '</td></tr>';
+ });
+ h += '</table>';
+ const rp = CP.relacao_pace_watts;
+ if(rp) h += '<p style="color:#79C0FF;font-size:11px;margin-top:6px;">'
+   + (rp.suficiente
+      ? 'Pace convertido a partir dos teus próprios pares potência–velocidade '
+        + '(r²=' + rp.r2 + ', n=' + rp.n + ' sessões, ' + rp.watts_min + '–'
+        + rp.watts_max + ' W). Depende da tua economia de corrida, não de '
+        + 'fórmula genérica — e por isso só é fiável dentro desse intervalo '
+        + 'de potências.'
+      : 'Sem pace: ' + (rp.nota || rp.erro || 'dados insuficientes'))
+   + '</p>';
+ if(CP.mmp60_val)
+  h += '<p style="color:#8b949e;font-size:11px;margin-top:6px;">MMP60 = '
+    + Math.round(CP.mmp60_val) + ' W. Não entra em nenhum ajuste — serve de '
+    + 'validação externa: um CP acima do MMP60 é impossível, porque o CP é '
+    + 'por definição sustentável mais tempo do que 60 minutos.</p>';
+ h += '<p style="color:#8b949e;font-size:11px;">' + (CP.nota_see||'') + '</p>';
+ document.getElementById('cpModelos').innerHTML = h;
+}
+
+const CP_CORES = ['#58A6FF','#3FB950','#F0883E','#F85149','#A371F7',
+                  '#E3B341','#79C0FF','#D2A8FF'];
+
+function cpDraw(){
+ const o = ctx('chCP', 320); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ if(!CP || !CP.ok){ noData(g,W,H,'Sem modelos para desenhar'); return; }
+ const pts = CP.mmp_pts_full && CP.mmp_pts_full.length ? CP.mmp_pts_full : CP.mmp_pts;
+ const curvas = CP.curvas || {};
+ const nomes = Object.keys(CP.modelos||{}).sort((a,b)=>
+   CP.modelos[a].see_pct - CP.modelos[b].see_pct);
+
+ let tmin=1e9, tmax=0, pmin=1e9, pmax=0;
+ pts.forEach(function(p){ tmin=Math.min(tmin,p.t); tmax=Math.max(tmax,p.t);
+   pmin=Math.min(pmin,p.w); pmax=Math.max(pmax,p.w); });
+ if(CP.mmp60_val){ tmax=Math.max(tmax,3600); pmin=Math.min(pmin,CP.mmp60_val); }
+ tmin=Math.max(30,tmin*0.7); tmax=tmax*1.4;
+ pmin=pmin*0.80; pmax=pmax*1.06;
+
+ const PL=56, PR=104, PT=14, PB=42, w=W-PL-PR, h=H-PT-PB;
+ const lt=Math.log(tmin), lT=Math.log(tmax);
+ const X = t => PL + (Math.log(t)-lt)/((lT-lt)||1)*w;
+ const Y = p => PT + h - (p-pmin)/((pmax-pmin)||1)*h;
+ CP_ESCALA = {X:X, Y:Y, PL:PL, PT:PT, w:w, h:h,
+              tmin:tmin, tmax:tmax, pmin:pmin, pmax:pmax, lt:lt, lT:lT};
+
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
+ for(let i=0;i<=4;i++){
+  const pv=pmin+(pmax-pmin)*i/4, y=Y(pv);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText(Math.round(pv)+'W', PL-6, y+4);
+ }
+ [60,180,300,720,1200,3600].forEach(function(t){
+  if(t<tmin||t>tmax) return;
+  const x=X(t);
+  g.strokeStyle='#161b22'; g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
+  g.fillStyle='#8b949e'; g.textAlign='center';
+  g.fillText(t<3600? (t/60)+'min' : '60min', x, PT+h+18);
+ });
+
+ // curvas dos modelos
+ nomes.forEach(function(n,i){
+  const c = curvas[n]; if(!c || !c.length) return;
+  g.strokeStyle=CP_CORES[i%CP_CORES.length];
+  g.lineWidth = i===0 ? 2.5 : 1;
+  g.globalAlpha = i===0 ? 1 : 0.45;
+  g.beginPath();
+  let primeiro=true;
+  c.forEach(function(p){
+   if(p.t<tmin||p.t>tmax) return;
+   const x=X(p.t), y=Y(p.p);
+   if(primeiro){ g.moveTo(x,y); primeiro=false; } else g.lineTo(x,y);
+  });
+  g.stroke(); g.globalAlpha=1; g.lineWidth=1;
+ });
+
+ // linha horizontal do CP do modelo escolhido
+ const escolhido = document.getElementById('cpModeloEscolhido').value
+   || (CP.melhor||{}).nome;
+ const m = (CP.modelos||{})[escolhido];
+ if(m && m.cp){
+  const y=Y(m.cp);
+  g.strokeStyle='#58A6FF'; g.setLineDash([6,4]); g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.setLineDash([]); g.lineWidth=1;
+  g.fillStyle='#58A6FF'; g.textAlign='left';
+  g.fillText('CP ' + Math.round(m.cp) + 'W', PL+w+6, y+4);
+ }
+ // MMP60 como validação
+ if(CP.mmp60_val){
+  const y=Y(CP.mmp60_val);
+  g.strokeStyle='#8b949e'; g.setLineDash([2,4]);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke(); g.setLineDash([]);
+  g.fillStyle='#8b949e'; g.textAlign='left';
+  g.fillText('MMP60 ' + Math.round(CP.mmp60_val) + 'W', PL+w+6, y+4);
+ }
+
+ // pontos MMP reais
+ CP_PONTOS = [];
+ pts.forEach(function(p){
+  const x=X(p.t), y=Y(p.w);
+  const usado = m && (m.pontos_usados||[]).some(u=>Math.abs(u.t-p.t)<1);
+  g.fillStyle = usado ? '#c9d1d9' : '#6e7681';
+  g.beginPath(); g.arc(x,y,usado?5:4,0,Math.PI*2); g.fill();
+  g.strokeStyle='#0d1117'; g.stroke();
+  CP_PONTOS.push({x:x, y:y, t:p.t, w:p.w, usado:usado});
+ });
+
+ // legenda
+ g.textAlign='left'; g.font='10px sans-serif';
+ nomes.slice(0,6).forEach(function(n,i){
+  g.fillStyle=CP_CORES[i%CP_CORES.length];
+  g.fillText(n, PL+w+6, PT+14+i*13);
+ });
+ g.font='11px sans-serif';
+ cpLigarTip();
+}
+
+function cpLigarTip(){
+ const cv=document.getElementById('chCP');
+ const tip=document.getElementById('cpTip');
+ if(!cv||!tip||cv._tipCP) return;
+ cv._tipCP=true;
+ cv.addEventListener('mousemove', function(ev){
+  if(!CP_ESCALA || !CP){ tip.style.display='none'; return; }
+  const r=cv.getBoundingClientRect();
+  const esc=(cv.width/r.width)/(window.devicePixelRatio||1);
+  const mx=(ev.clientX-r.left)*esc, my=(ev.clientY-r.top)*esc;
+  const e=CP_ESCALA;
+
+  let perto=null, dmin=14;
+  CP_PONTOS.forEach(function(p){
+   const d=Math.hypot(p.x-mx,p.y-my);
+   if(d<dmin){ dmin=d; perto=p; }
+  });
+  if(perto){
+   const k=String(perto.t);
+   const rs=(CP.residuos||[]).find(x=>x.t===perto.t) || {};
+   const pcp=(CP.pace_dos_mmp||{})[k];
+   let h='<b>'+(Math.round(perto.t/60*10)/10)+' min · '+Math.round(perto.w)+' W'
+    +(pcp&&pcp.texto?' · '+pcp.texto:'')+'</b>'
+    +'<br><span style="color:#8b949e;">'+((CP.datas_dos_mmp||{})[k]||'—')
+    +' · '+((CP.seasons_dos_mmp||{})[k]||'—')+'</span>'
+    +'<br><span style="color:'+(perto.usado?'#3FB950':'#8b949e')+';">'
+    +(perto.usado?'usado no ajuste':'fora do ajuste')+'</span>';
+   if(rs.previsto!=null) h+='<br><span style="color:#8b949e;">previsto '
+    +rs.previsto+' W · erro '+(rs.erro_w>0?'+':'')+rs.erro_w+' W ('+rs.erro_pct+'%)</span>';
+   tip.innerHTML=h; tip.style.display='block';
+   tip.style.left=Math.min(ev.clientX-r.left+14, r.width-230)+'px';
+   tip.style.top=Math.max(4, ev.clientY-r.top-46)+'px';
+   return;
+  }
+
+  if(mx<e.PL||mx>e.PL+e.w||my<e.PT||my>e.PT+e.h){ tip.style.display='none'; return; }
+  const t = Math.exp(e.lt + (mx-e.PL)/e.w*(e.lT-e.lt));
+  const nomes = Object.keys(CP.modelos||{}).sort(function(a,b){
+    return CP.modelos[a].see_pct - CP.modelos[b].see_pct; }).slice(0,4);
+  const mm = Math.floor(t/60), ss = Math.round(t%60);
+  let h='<b>'+(mm?mm+' min ':'')+ss+' s</b>';
+  nomes.forEach(function(n,i){
+   const mo=CP.modelos[n];
+   if(!mo.cp||!mo.wp) return;
+   h+='<br><span style="color:'+CP_CORES[i%CP_CORES.length]+';">'+n+'</span> <b>'
+    +Math.round(mo.cp+mo.wp/t)+' W</b>';
+  });
+  const temPace = !!(CP.pace_dos_mmp);
+ const sel = document.getElementById('cpModeloEscolhido');
+  const mo = (CP.modelos||{})[sel ? sel.value : ''] || CP.melhor;
+  if(mo && mo.cp && mo.wp && t>0){
+   h+='<br><span style="color:#8b949e;">'+Math.round(mo.wp/t)
+    +' W acima do CP — esgota o W\u2032 exactamente neste tempo</span>';
+  }
+  tip.innerHTML=h; tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+14, r.width-230)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
+}
+
+// ── W' ponto a ponto ─────────────────────────────────────────────────────
+function cpVeloDraw(){
+ const o = ctx('chVelo', 240); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const v = CP && CP.veloclinic;
+ if(!v || !v.pontos || v.pontos.length<2){ noData(g,W,H,'Sem diagnóstico'); return; }
+ const jn = CP.janela_cp || [120,1200];
+ const pts = v.pontos.map(function(p){
+  const mp = (CP.mmp_pts_full||[]).find(x=>Math.abs(x.w-p.p)<0.5) || {};
+  return {p:p.p, wp:p.wp, t:mp.t, dentro: mp.t>=jn[0] && mp.t<=jn[1]};
+ });
+ const ps=pts.map(x=>x.p), ws=pts.map(x=>x.wp);
+ const xa=Math.min.apply(null,ps)*0.95, xb=Math.max.apply(null,ps)*1.05;
+ const ya=Math.min.apply(null,ws)*0.85, yb=Math.max.apply(null,ws)*1.12;
+ const PL=58,PR=16,PT=14,PB=34,w=W-PL-PR,h=H-PT-PB;
+ const X=v2=>PL+(v2-xa)/((xb-xa)||1)*w, Y=v2=>PT+h-(v2-ya)/((yb-ya)||1)*h;
+
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
+ for(let i=0;i<=4;i++){
+  const vv=ya+(yb-ya)*i/4, y=Y(vv);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText((vv/1000).toFixed(1)+'kJ', PL-6, y+4);
+ }
+ // média e banda de ±10%
+ const dentro = pts.filter(x=>x.dentro);
+ const base = dentro.length>=2 ? dentro : pts;
+ const media = base.reduce((a,b)=>a+b.wp,0)/base.length;
+ g.fillStyle='rgba(88,166,255,0.12)';
+ g.fillRect(PL, Y(media*1.1), w, Math.abs(Y(media*0.9)-Y(media*1.1)));
+ g.strokeStyle='#58A6FF'; g.setLineDash([5,4]);
+ g.beginPath(); g.moveTo(PL,Y(media)); g.lineTo(PL+w,Y(media)); g.stroke();
+ g.setLineDash([]);
+ g.fillStyle='#58A6FF'; g.textAlign='left'; g.font='10px sans-serif';
+ g.fillText('média ' + (media/1000).toFixed(2) + ' kJ ±10%', PL+4, Y(media)-5);
+
+ g.font='11px sans-serif';
+ pts.forEach(function(x){
+  const px=X(x.p), py=Y(x.wp);
+  g.fillStyle = x.dentro ? '#3FB950' : '#F0883E';
+  g.beginPath(); g.arc(px,py,5,0,Math.PI*2); g.fill();
+  g.strokeStyle='#0d1117'; g.stroke();
+  g.fillStyle='#8b949e'; g.textAlign='center';
+  g.fillText((x.t? Math.round(x.t/60*10)/10+'min' : Math.round(x.p)+'W'), px, py-10);
+ });
+ g.textAlign='center'; g.fillStyle='#8b949e';
+ g.fillText('Potência (W)', PL+w/2, PT+h+22);
+ g.textAlign='left'; g.font='10px sans-serif';
+ g.fillStyle='#3FB950'; g.fillText('\u25CF dentro da janela', PL+4, PT+12);
+ g.fillStyle='#F0883E'; g.fillText('\u25CF fora', PL+124, PT+12);
+}
+
+// ── resíduos ─────────────────────────────────────────────────────────────
+function cpResidDraw(){
+ const o = ctx('chResid', 240); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const rs = (CP && CP.residuos) || [];
+ if(!rs.length){ noData(g,W,H,'Sem resíduos'); return; }
+ const maxE = Math.max(2, Math.max.apply(null, rs.map(r=>Math.abs(r.erro_w)))*1.3);
+ const PL=52,PR=16,PT=14,PB=34,w=W-PL-PR,h=H-PT-PB;
+ const passo = w/rs.length;
+ const Y = e => PT + h/2 - e/maxE*(h/2);
+
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
+ [-maxE,-maxE/2,0,maxE/2,maxE].forEach(function(e){
+  const y=Y(e);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText((e>0?'+':'')+e.toFixed(1)+'W', PL-6, y+4);
+ });
+ g.strokeStyle='#8b949e'; g.beginPath();
+ g.moveTo(PL,Y(0)); g.lineTo(PL+w,Y(0)); g.stroke();
+
+ rs.forEach(function(r,i){
+  const cx=PL+passo*i+passo/2, bw=Math.min(38, passo*0.55);
+  const y=Y(r.erro_w), y0=Y(0);
+  g.fillStyle = r.no_ajuste
+    ? (r.erro_w>=0 ? 'rgba(63,185,80,0.65)' : 'rgba(248,81,73,0.65)')
+    : 'rgba(139,148,158,0.45)';
+  g.fillRect(cx-bw/2, Math.min(y,y0), bw, Math.abs(y-y0)||1);
+  g.fillStyle='#c9d1d9'; g.textAlign='center'; g.font='10px sans-serif';
+  g.fillText((r.erro_w>0?'+':'')+r.erro_w, cx, y + (r.erro_w>=0?-6:14));
+  g.fillStyle='#8b949e';
+  g.fillText(Math.round(r.t/60*10)/10+'min', cx, PT+h+16);
+  if(!r.no_ajuste) g.fillText('(fora)', cx, PT+h+28);
+ });
+ g.font='11px sans-serif';
+}
+
+function cpAnalise(){
+ const el = document.getElementById('cpAnaliseTexto');
+ if(!el) return;
+ const v = CP && CP.veloclinic, vj = CP && CP.veloclinic_janela;
+ const rs = (CP && CP.residuos) || [];
+ const jn = CP.janela_cp || [120,1200];
+ const noAjuste = rs.filter(r=>r.no_ajuste);
+ const maxErro = noAjuste.length
+   ? Math.max.apply(null, noAjuste.map(r=>Math.abs(r.erro_pct))) : null;
+ let h = '';
+ h += '<p style="font-size:11px;color:#8b949e;"><b style="color:#c9d1d9;">'
+  + 'W\u2032 ponto a ponto</b> — t × (P − CP) calculado em cada duração. Se '
+  + 'uma reserva finita única descrevesse o esforço, os pontos cairiam todos '
+  + 'sobre a média. Verde são os que estão dentro de '
+  + Math.round(jn[0]/60) + '–' + Math.round(jn[1]/60) + ' min, onde o modelo '
+  + 'hiperbólico é válido; laranja os que estão fora e não deviam pesar.';
+ if(v && vj) h += ' Aqui: ' + v.metricas.cv + '% de variação em todos os '
+  + 'pontos contra ' + vj.metricas.cv + '% só dentro da janela.';
+ h += '</p>';
+ h += '<p style="font-size:11px;color:#8b949e;"><b style="color:#c9d1d9;">'
+  + 'Resíduos</b> — quanto o modelo erra em cada duração, em watts. As '
+  + 'coloridas entraram no ajuste; as cinzentas foram excluídas pelo grid '
+  + 'search e servem de teste fora da amostra, que é a única verificação '
+  + 'honesta com tão poucos pontos.';
+ if(maxErro!=null) h += ' O maior erro dentro da amostra é ' + maxErro + '%.';
+ const fora = rs.filter(r=>!r.no_ajuste);
+ if(fora.length) h += ' Fora da amostra: '
+  + fora.map(r=>Math.round(r.t/60*10)/10+'min erra '
+      +(r.erro_w>0?'+':'')+r.erro_w+'W ('+r.erro_pct+'%)').join(', ') + '.';
+ h += '</p>';
+ el.innerHTML = h;
+}
+
+function cpGloss(){
+ const m = (CP.modelos||{})[(CP.melhor||{}).nome] || {};
+ document.getElementById('cpGlossario').innerHTML =
+  '<p style="font-size:11px;color:#8b949e;"><b style="color:#c9d1d9;">Pontos brancos</b>'
+  + ' — os MMP reais, tirados das power curves da Intervals.icu. São o que o'
+  + ' ajuste tenta reproduzir.</p>'
+  + '<p style="font-size:11px;color:#8b949e;"><b style="color:#c9d1d9;">Curvas coloridas</b>'
+  + ' — P(t) = CP + W\\u2032/t de cada modelo. A mais espessa é a de menor SEE%.'
+  + ' Divergirem muito entre si nas durações longas é normal e é o próprio'
+  + ' aviso: o CP está a ser extrapolado para fora do intervalo testado.</p>'
+  + '<p style="font-size:11px;color:#8b949e;"><b style="color:#58A6FF;">Linha CP</b>'
+  + ' — a assímptota horizontal do modelo escolhido: a potência que a curva'
+  + ' nunca cruza para baixo. É a fronteira entre o domínio pesado e o'
+  + ' severo, não a FTP.</p>'
+  + '<p style="font-size:11px;color:#8b949e;"><b style="color:#8b949e;">Linha MMP60</b>'
+  + ' — o melhor de 60 minutos, deixado deliberadamente fora de todos os'
+  + ' ajustes. Se o CP ficar acima dele, o modelo está errado.</p>'
+  + '<p style="font-size:11px;color:#8b949e;"><b style="color:#c9d1d9;">W\\u2032</b>'
+  + ' — o trabalho finito disponível acima do CP, em kJ. Tempo até à'
+  + ' exaustão a uma potência P é W\\u2032/(P − CP)'
+  + (m.cp&&m.wp ? '; a ' + Math.round(m.cp+50) + ' W dá '
+     + Math.round(m.wp/50) + ' s' : '') + '.</p>'
+  + '<p style="font-size:11px;color:#8b949e;"><b style="color:#c9d1d9;">SEE%</b>'
+  + ' — erro padrão do ajuste sobre a potência média. Mede proximidade aos'
+  + ' pontos, não veracidade do CP.</p>';
+}
+
+function cpDetalhe(){
+ let h = '';
+ const jn = CP.janela_cp || [120,1200];
+ [['Todos os pontos', CP.veloclinic],
+  ['Só ' + Math.round(jn[0]/60) + '–' + Math.round(jn[1]/60) + ' min',
+   CP.veloclinic_janela]].forEach(function(par){
+  const v = par[1]; if(!v) return;
+  h += '<p style="font-size:12px;margin:4px 0;"><b style="color:#8b949e;">'
+    + par[0] + ' (n=' + v.n + ')</b> — ' + v.classificacao
+    + '<br><span style="color:#8b949e;font-size:11px;">CV do W\u2032 = '
+    + v.metricas.cv + '% · média ' + Math.round(v.metricas.mean/1000*100)/100
+    + ' kJ · a tendência contra a potência explica '
+    + v.metricas.efeito_declive_pct + '% do W\u2032</span></p>';
+ });
+ h += '<p style="color:#8b949e;font-size:11px;">Veloclinic: se o modelo de CP'
+   + ' descrevesse bem o atleta, o W\u2032 calculado em cada ponto'
+   + ' (t × (P − CP)) seria constante. A dispersão é o diagnóstico. Comparar'
+   + ' as duas linhas diz se a inconsistência vem do modelo ou apenas dos'
+   + ' pontos fora da janela onde ele é válido.</p>';
+ h += '<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:16px;">Duração</th>'
+  +'<th style="padding-right:16px;">Watts</th><th style="padding-right:16px;">Data</th>'
+  +'<th>Season</th></tr>';
+ (CP.mmp_pts_full||[]).forEach(function(p){
+  const k=String(p.t), rc=(CP.recuou_de_season||{})[k];
+  h += '<tr><td style="padding-right:16px;">' + Math.round(p.t/60*10)/10 + ' min</td>'
+    + '<td style="padding-right:16px;">' + p.w + ' W</td>'
+    + '<td style="color:#8b949e;padding-right:16px;">'
+    + ((CP.datas_dos_mmp||{})[k] || '—') + '</td>'
+    + '<td style="color:' + (rc?'#F0883E':'#8b949e') + ';">'
+    + ((CP.seasons_dos_mmp||{})[k] || '—') + (rc?' (recuou)':'') + '</td></tr>';
+ });
+ h += '</table>';
+ document.getElementById('cpDetalhe').innerHTML = h;
+}
+
+
+function cpGuardar(){
+ const est = document.getElementById('cpGuardarEstado');
+ const quais = [];
+ if(document.getElementById('cpGravaCp').checked) quais.push('cp');
+ if(document.getElementById('cpGravaPerfil').checked) quais.push('perfil');
+ if(document.getElementById('cpGravaLim').checked) quais.push('limiares');
+ if(!quais.length){ est.textContent = 'nada seleccionado'; return; }
+ est.textContent = 'a guardar...';
+ fetch('/api/perfil/guardar', {method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body: JSON.stringify({
+     modalidade: document.getElementById('cpModalidade').value,
+     season: document.getElementById('cpSeason').value || (CP||{}).season,
+     data_referencia: document.getElementById('cpDataRef').value || null,
+     modelo_cp: document.getElementById('cpModeloEscolhido').value || null,
+     guardar: quais})})
+ .then(r=>r.json()).then(function(d){
+  if(d.status==='erro'){ est.textContent = 'erro: ' + d.mensagem; return; }
+  est.textContent = 'guardado em ' + d.data_referencia
+    + (d.status==='gravado_sem_upload' ? ' (local; Drive falhou: '+d.drive+')' : '');
+  cpHistorico();
+ }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
+}
+
+function cpHistorico(){
+ const mod = document.getElementById('cpModalidade').value;
+ const de = document.getElementById('cpHistDe').value;
+ const ate = document.getElementById('cpHistAte').value;
+ const est = document.getElementById('cpHistEstado');
+ est.textContent = 'a carregar...';
+ let q = [];
+ if(de) q.push('de=' + de);
+ if(ate) q.push('ate=' + ate);
+ fetch('/api/perfil/historico/' + mod + (q.length?'?'+q.join('&'):''))
+ .then(r=>r.json()).then(function(d){
+  HIST = d;
+  if(d.status!=='ok'){ est.textContent = d.mensagem || 'sem dados'; histDraw(); return; }
+  est.textContent = d.n_instantaneos + ' instantâneos · '
+    + (d.cp||[]).length + ' registos de CP';
+  histDraw(); histTabela();
+ }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
+}
+
+function histDraw(){
+ const o = ctx('chHist', 280); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const ps = (HIST && HIST.perfil) || [];
+ const cps = (HIST && HIST.cp) || [];
+ if(ps.length + cps.length < 2){
+  noData(g,W,H,'Guarda pelo menos dois instantâneos para ver a evolução'); return; }
+
+ const series = [
+  {k:'lt1_w',    rot:'LT1',    cor:'#3FB950', dados:ps},
+  {k:'fatmax_w', rot:'FatMax', cor:'#A371F7', dados:ps},
+  {k:'mlss_w',   rot:'MLSS',   cor:'#F0883E', dados:ps},
+  {k:'lt2_w',    rot:'LT2',    cor:'#F85149', dados:ps},
+  {k:'pvo2max_w',rot:'Pvo\\u2082max', cor:'#79C0FF', dados:ps},
+  {k:'cp_w',     rot:'CP',     cor:'#58A6FF', dados:cps},
+ ];
+ let datas = [];
+ series.forEach(s=> s.dados.forEach(r=>{ if(r[s.k]!=null) datas.push(r.data_referencia); }));
+ datas = Array.from(new Set(datas)).sort();
+ if(datas.length < 2){ noData(g,W,H,'Guarda instantâneos em datas diferentes'); return; }
+
+ let vmin=1e9, vmax=0;
+ series.forEach(s=> s.dados.forEach(r=>{
+   if(r[s.k]!=null){ vmin=Math.min(vmin,r[s.k]); vmax=Math.max(vmax,r[s.k]); }}));
+ vmin=vmin*0.9; vmax=vmax*1.06;
+
+ const PL=54, PR=86, PT=14, PB=42, w=W-PL-PR, h=H-PT-PB;
+ const X = d => PL + datas.indexOf(d)/((datas.length-1)||1)*w;
+ const Y = v => PT + h - (v-vmin)/((vmax-vmin)||1)*h;
+
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
+ for(let i=0;i<=4;i++){
+  const vv=vmin+(vmax-vmin)*i/4, y=Y(vv);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText(Math.round(vv)+'W', PL-6, y+4);
+ }
+ datas.forEach(function(d,i){
+  if(datas.length>8 && i%Math.ceil(datas.length/8)) return;
+  g.fillStyle='#8b949e'; g.textAlign='center';
+  g.fillText(d.slice(5), X(d), PT+h+18);
+ });
+
+ series.forEach(function(s,i){
+  const pts = s.dados.filter(r=>r[s.k]!=null)
+    .map(r=>({d:r.data_referencia, v:r[s.k]}))
+    .sort((a,b)=> a.d<b.d?-1:1);
+  if(!pts.length) return;
+  g.strokeStyle=s.cor; g.lineWidth=2; g.beginPath();
+  pts.forEach(function(p,j){
+   const x=X(p.d), y=Y(p.v);
+   if(j===0) g.moveTo(x,y); else g.lineTo(x,y);
+  });
+  g.stroke(); g.lineWidth=1;
+  g.fillStyle=s.cor;
+  pts.forEach(function(p){
+   g.beginPath(); g.arc(X(p.d), Y(p.v), 3, 0, Math.PI*2); g.fill(); });
+  g.textAlign='left';
+  g.fillText(s.rot, PL+w+6, PT+14+i*14);
+ });
+}
+
+function histTabela(){
+ const ps = (HIST && HIST.perfil) || [];
+ const cps = (HIST && HIST.cp) || [];
+ const porData = {};
+ ps.forEach(r=>{ porData[r.data_referencia] = Object.assign(
+   porData[r.data_referencia]||{}, r); });
+ cps.forEach(r=>{ porData[r.data_referencia] = Object.assign(
+   porData[r.data_referencia]||{}, {cp_w:r.cp_w, wp_j:r.wp_j,
+   modelo_escolhido:r.modelo_escolhido, see_pct:r.see_pct}); });
+ const datas = Object.keys(porData).sort().reverse();
+ if(!datas.length){
+  document.getElementById('cpHistTabela').innerHTML =
+   '<span style="color:#8b949e;font-size:12px;">Ainda não há instantâneos guardados.</span>';
+  return;
+ }
+ let h = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+  +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+  +'<th style="padding:6px;">Data</th><th>Season</th><th>CP</th><th>Modelo</th>'
+  +'<th>LT1</th><th>FatMax</th><th>MLSS</th><th>LT2</th><th>Pvo\\u2082max</th>'
+  +'<th>VO\\u2082max</th><th>VLamax</th><th>Peso</th><th></th></tr>';
+ datas.forEach(function(dt){
+  const r = porData[dt];
+  const c = v => v==null ? '—' : Math.round(v*10)/10;
+  h += '<tr style="border-bottom:1px solid #161b22;">'
+   + '<td style="padding:6px;">' + dt + '</td>'
+   + '<td style="color:#8b949e;">' + (r.season||'—') + '</td>'
+   + '<td><b>' + c(r.cp_w) + '</b></td>'
+   + '<td style="color:#8b949e;">' + (r.modelo_escolhido||'—') + '</td>'
+   + '<td>' + c(r.lt1_w) + '</td><td>' + c(r.fatmax_w) + '</td>'
+   + '<td>' + c(r.mlss_w) + '</td><td>' + c(r.lt2_w) + '</td>'
+   + '<td>' + c(r.pvo2max_w) + '</td>'
+   + '<td>' + c(r.vo2max) + '</td><td>' + c(r.vlamax) + '</td>'
+   + '<td style="color:#8b949e;">' + c(r.peso_kg) + '</td>'
+   + '<td><button class="cpDel" data-dt="' + dt + '" data-sea="'
+   + (r.season||'') + '" style="background:none;border:none;color:#F85149;'
+   + 'font-size:11px;cursor:pointer;padding:0;">apagar</button></td>'
+   + '</tr>';
+ });
+ h += '</table>';
+
+ // intervalos dos campos externos ao longo do tempo
+ const lc = (HIST && HIST.limiares_por_campo) || {};
+ const campos = Object.keys(lc).sort();
+ if(campos.length){
+  h += '<h3 style="font-size:13px;color:#8b949e;margin-top:16px;">Intervalos dos campos ao longo do tempo</h3>'
+   + '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+   + '<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+   + '<th style="padding:6px;">Campo</th><th>Primeiro</th><th>Último</th>'
+   + '<th>Δ mediana</th><th>Amplitude p25–p75</th></tr>';
+  campos.forEach(function(k){
+   const v = lc[k].slice().sort((a,b)=> a.data<b.data?-1:1);
+   const a = v[0], b = v[v.length-1];
+   const delta = (a.p50!=null && b.p50!=null) ? Math.round((b.p50-a.p50)*10)/10 : null;
+   const cor = delta==null ? '#8b949e' : delta>0 ? '#3FB950' : '#F0883E';
+   h += '<tr style="border-bottom:1px solid #161b22;">'
+    + '<td style="padding:6px;">' + k + '</td>'
+    + '<td style="color:#8b949e;">' + a.data + ': ' + a.p50 + '</td>'
+    + '<td>' + b.data + ': <b>' + b.p50 + '</b></td>'
+    + '<td style="color:' + cor + ';">' + (delta==null?'—':(delta>0?'+':'')+delta) + '</td>'
+    + '<td style="color:#8b949e;">' + a.p25 + '–' + a.p75 + ' → ' + b.p25 + '–' + b.p75 + '</td>'
+    + '</tr>';
+  });
+  h += '</table><p style="color:#8b949e;font-size:11px;">A amplitude p25–p75 a '
+   + 'estreitar significa estimativas mais consistentes entre sessões; a '
+   + 'alargar significa o contrário, e nesse caso a mediana move-se sem que '
+   + 'isso queira dizer que o limiar mudou.</p>';
+ }
+ document.getElementById('cpHistTabela').innerHTML = h;
+}
+
+function cpApagar(data, season){
+ if(!confirm('Apagar o instantâneo de ' + data + '?')) return;
+ fetch('/api/perfil/apagar', {method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body: JSON.stringify({
+     modalidade: document.getElementById('cpModalidade').value,
+     season: season, data_referencia: data})})
+ .then(r=>r.json()).then(function(){ cpHistorico(); });
+}
+
+document.addEventListener('DOMContentLoaded', function(){
+ const hoje = new Date().toISOString().slice(0,10);
+ document.getElementById('cpDataRef').value = hoje;
+ document.getElementById('cpHistAte').value = hoje;
+ cpCarregar(); cpHistorico();
+});
+window.addEventListener('resize', function(){
+ cpDraw(); cpVeloDraw(); cpResidDraw(); histDraw(); });
+"""
+
+
+def render():
+    from flask import render_template_string
+    return render_template_string(page('CP Model', SLUG, BODY, JS))

@@ -331,8 +331,11 @@ def _watts_em(indice, d):
     return w
 
 
+MODOS_CONJUNTO = ('recuo', 'season', 'coerente')
+
+
 def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
-                 limiar_max=None):
+                 limiar_max=None, modo='coerente'):
     """Melhor MMP de cada duracao necessaria, e o pico de 1 s.
 
     linhas: [{'date':..., 'secs':..., 'watts':..., 'season':...}] filtradas
@@ -347,9 +350,23 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
     produz um VO2max e um MLSS sem significado. Nesse caso recua para a
     season anterior mais recente que tenha um esforco a serio.
 
-    Cada duracao recua de forma independente, por isso devolve-se a season
-    e a data de cada uma: um MMP3 desta epoca com um MMP12 de ha dois anos
-    descreve um atleta que nunca existiu, e isso tem de ficar visivel.
+    Ha tres modos, porque nenhum serve sempre:
+
+      'season'    so' a season activa. Deixa duracoes por preencher quando
+                  nao houve esforco maximo, mas o que der descreve um
+                  momento real.
+      'coerente'  (por omissao) todas as duracoes da MESMA season -- a
+                  activa se tiver o conjunto completo, senao a mais
+                  recente que tenha. Descreve um atleta que existiu.
+      'recuo'     cada duracao recua por si. Preenche sempre tudo, mas
+                  pode montar uma curva com pedacos de anos diferentes.
+
+    O 'recuo' era o comportamento unico e mostrou-se perigoso: no Row deste
+    atleta produziu um conjunto com datas de Outubro de 2023 a Janeiro de
+    2026 -- 831 dias -- porque a season activa tinha esforcos mais fracos
+    do que os de 2024. O criterio dos 85% confundiu "nao houve esforco
+    maximo nesta season" com "o atleta esta menos forte do que ja' esteve",
+    que sao coisas diferentes e pedem respostas diferentes.
     """
     duracoes = DURACOES_MMP.get(modalidade, [])
     tecto = pmax_max or PMAX_PLAUSIVEL.get(modalidade, 2000)
@@ -415,10 +432,56 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
         return (mapa[sea][0], mapa[sea][1], sea,
                 sea != season_activa, racio, historico)
 
+    # conjunto completo de cada season, para se poder escolher um bloco
+    # inteiro em vez de remendar duracao a duracao
+    conjuntos = {}
+    for sea in ordem:
+        conjuntos[sea] = {
+            'valores': {str(d): (round(por_season[d][sea][0], 1)
+                                 if por_season[d].get(sea) else None)
+                        for d in duracoes},
+            'datas': {str(d): (por_season[d][sea][1]
+                               if por_season[d].get(sea) else None)
+                      for d in duracoes},
+            'n_duracoes': sum(1 for d in duracoes if por_season[d].get(sea)),
+        }
+
+    modo = modo if modo in MODOS_CONJUNTO else 'coerente'
+    season_do_conjunto = None
+    if modo == 'coerente':
+        # a activa se tiver tudo; senao a mais recente com o conjunto
+        # completo; senao a que tiver mais duracoes
+        completas = [s2 for s2 in ordem
+                     if conjuntos[s2]['n_duracoes'] == len(duracoes)]
+        if season_activa and conjuntos.get(season_activa, {}).get('n_duracoes') \
+                == len(duracoes):
+            season_do_conjunto = season_activa
+        elif completas:
+            season_do_conjunto = completas[0]
+        elif ordem:
+            season_do_conjunto = max(
+                ordem, key=lambda s2: (conjuntos[s2]['n_duracoes'],
+                                       -ordem.index(s2)))
+
     mmp, datas, seasons, recuou = {}, {}, {}, {}
     qualidade = {}
     for d in duracoes:
-        w, dt, sea, fb, rc, hist = _escolher(por_season[d])
+        if modo == 'season':
+            v = por_season[d].get(season_activa)
+            w, dt, sea, fb = (v[0], v[1], season_activa, False) if v \
+                else (None, None, None, False)
+            rc = None
+            hist = max((x[0] for x in por_season[d].values()), default=None)
+            if v and hist:
+                rc = v[0] / hist
+        elif modo == 'coerente':
+            v = por_season[d].get(season_do_conjunto)
+            w, dt, sea = (v[0], v[1], season_do_conjunto) if v else (None, None, None)
+            fb = bool(season_activa and season_do_conjunto != season_activa and v)
+            hist = max((x[0] for x in por_season[d].values()), default=None)
+            rc = (v[0] / hist) if (v and hist) else None
+        else:
+            w, dt, sea, fb, rc, hist = _escolher(por_season[d])
         mmp[d], datas[d], seasons[d], recuou[d] = w, dt, sea, fb
         qualidade[d] = {'racio_na_season': round(rc, 3) if rc is not None else None,
                         'melhor_historico_w': round(hist) if hist else None,
@@ -426,7 +489,15 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
                                                if por_season[d].get(season_activa)
                                                else None)}
 
-    pw, pdt, psea, pfb, prc, phist = _escolher(pico_por_season)
+    if modo in ('season', 'coerente'):
+        alvo = season_activa if modo == 'season' else season_do_conjunto
+        v = pico_por_season.get(alvo)
+        pw, pdt, psea = (v[0], v[1], alvo) if v else (None, None, None)
+        pfb = bool(v and season_activa and alvo != season_activa)
+        _h = max((x[0] for x in pico_por_season.values()), default=None)
+        prc = (v[0] / _h) if (v and _h) else None
+    else:
+        pw, pdt, psea, pfb, prc, phist = _escolher(pico_por_season)
 
     # ── coerencia da curva ────────────────────────────────────────────────
     # Escolher cada duracao de forma independente entre seasons pode produzir
@@ -471,6 +542,10 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
             "seasons": seasons, "recuou": recuou,
             "qualidade": qualidade,
             "ajustado_por_coerencia": ajustado,
+            "modo": modo,
+            "season_do_conjunto": season_do_conjunto,
+            "conjuntos_por_season": conjuntos,
+            "dispersao_datas_dias": _dispersao(datas),
             "limiar_esforco_maximo": limiar,
             "pmax_w": pw, "pmax_data": pdt,
             "pmax_season": psea, "pmax_recuou": pfb,
@@ -679,6 +754,69 @@ def regressao_hr_watts(pontos):
             "pontos": [{"w": round(w, 1), "hr": round(h, 1)} for w, h in pts]}
 
 
+def regressao_pace_watts(pontos):
+    """Recta velocidade = a x Watts + b, dos pares do proprio atleta.
+
+    Para a corrida, watts sozinhos nao dizem nada a quem treina: o que se
+    reconhece e' o pace. A conversao nao pode vir de formula generica --
+    depende da economia de corrida de cada um, que e' precisamente o que
+    varia entre atletas. Por isso ajusta-se aos pares (potencia media,
+    velocidade media) das proprias sessoes.
+
+    'pontos' e' [(watts, metros, segundos)]. Devolve-se sempre o r2 e o n:
+    se a recta for fraca, o pace mostrado ao lado dos watts e uma
+    ilustracao, nao uma prescricao.
+    """
+    pts = []
+    for w, m, seg in pontos:
+        if not w or not m or not seg or seg <= 0:
+            continue
+        v = float(m) / float(seg)          # m/s
+        if not (1.0 <= v <= 8.0):          # 16:40 a 2:05 por km
+            continue
+        if not (50.0 <= float(w) <= 800.0):
+            continue
+        pts.append((float(w), v))
+    n = len(pts)
+    if n < 8:
+        return {"n": n, "suficiente": False,
+                "nota": "menos de 8 sessoes com potencia e distancia"}
+    mx = sum(p[0] for p in pts) / n
+    my = sum(p[1] for p in pts) / n
+    sxx = sum((p[0] - mx) ** 2 for p in pts)
+    if sxx <= 0:
+        return {"n": n, "suficiente": False, "nota": "sem variacao em watts"}
+    sxy = sum((p[0] - mx) * (p[1] - my) for p in pts)
+    a = sxy / sxx
+    b = my - a * mx
+    syy = sum((p[1] - my) ** 2 for p in pts)
+    r2 = (sxy ** 2 / (sxx * syy)) if syy > 0 else 0.0
+    return {"n": n, "suficiente": True,
+            "declive_ms_por_w": round(a, 6),
+            "intercepto_ms": round(b, 4),
+            "r2": round(r2, 3),
+            "watts_min": round(min(p[0] for p in pts)),
+            "watts_max": round(max(p[0] for p in pts)),
+            "pontos": [{"w": round(w, 1), "v": round(v, 3)} for w, v in pts]}
+
+
+def pace_de_watts(rel, watts):
+    """-> segundos por km, ou None."""
+    if not rel or not rel.get("suficiente") or not watts:
+        return None
+    v = rel["declive_ms_por_w"] * watts + rel["intercepto_ms"]
+    if v <= 0.3:
+        return None
+    return round(1000.0 / v, 1)
+
+
+def formatar_pace(seg_km):
+    if seg_km is None:
+        return None
+    m = int(seg_km // 60)
+    return f"{m}:{int(round(seg_km - m * 60)):02d}/km"
+
+
 def hr_de_watts(rel, watts):
     if not rel or not rel.get("suficiente") or watts is None:
         return None
@@ -786,6 +924,18 @@ def valores_do_modelo(res):
 
 
 # ── limiares de lactato a partir da curva do modelo ──────────────────────
+
+def _dispersao(datas):
+    """Dias entre a data mais antiga e a mais recente do conjunto."""
+    ds = sorted(v for v in datas.values()
+                if v and len(str(v)) >= 10 and str(v)[:4].isdigit())
+    if len(ds) < 2:
+        return 0
+    from datetime import date as _d
+    a = _d(*map(int, str(ds[0])[:10].split('-')))
+    b = _d(*map(int, str(ds[-1])[:10].split('-')))
+    return (b - a).days
+
 
 def _breakpoint_2seg(xs, ys):
     """Ponto de quebra por dois segmentos de recta unidos (minimos quadrados).

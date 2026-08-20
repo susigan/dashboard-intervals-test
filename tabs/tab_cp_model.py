@@ -40,6 +40,13 @@ BODY = """
         <option value="">activa</option>
       </select>
     </label>
+    <label class="sel">Conjunto
+      <select id="cpModo" onchange="cpCarregar()">
+        <option value="coerente" selected>coerente (uma só época)</option>
+        <option value="season">só a season activa</option>
+        <option value="recuo">recuo por duração</option>
+      </select>
+    </label>
     <label class="sel">Mín. pontos
       <select id="cpMinPts" onchange="cpCarregar()">
         <option value="3" selected>3</option>
@@ -145,6 +152,7 @@ function cpCarregar(){
  let q = '?min_pts=' + mp;
  if(amb === 'season'){ if(sea) q += '&season=' + encodeURIComponent(sea); }
  else { q += '&janela=' + amb; }
+ q += '&modo=' + document.getElementById('cpModo').value;
  if(!document.getElementById('cpUsarPmax').checked) q += '&usar_pmax=0';
  if(!document.getElementById('cpExclDup').checked) q += '&duplicados=manter';
  q += CP_AJUSTES;
@@ -158,6 +166,8 @@ function cpCarregar(){
   est.textContent = d.n_mmp + ' MMP · ' + (d.ambito||'')
     + ' · ' + (d.n_registos||0) + ' curvas'
     + (d.melhor ? ' · menor SEE%: ' + d.melhor.nome : '')
+    + (d.season_do_conjunto ? ' · conjunto de ' + d.season_do_conjunto : '')
+    + (d.dispersao_datas_dias!=null ? ' · ' + d.dispersao_datas_dias + 'd de dispersão' : '')
     + (Object.keys(d.overrides_aplicados||{}).length ? ' · VALORES EDITADOS' : '');
   cpSeasons(d); cpValidacao(); cpMMPEdit(); cpTabela(); cpDraw();
   cpVeloDraw(); cpResidDraw(); cpAnalise(); cpGloss(); cpDetalhe();
@@ -217,6 +227,37 @@ function cpMMPEdit(){
   + '<button onclick="cpAplicarMMP()">Aplicar</button> '
   + '<button onclick="cpReporMMP()">Repor automáticos</button>'
   + '</div>';
+ // conjunto de cada season, para se ver o que se ganha e perde em cada modo
+ const cj = CP.conjuntos_por_season || {};
+ const seasons = Object.keys(cj);
+ if(seasons.length > 1){
+  const durs = Object.keys(cj[seasons[0]].valores)
+    .map(Number).sort(function(a,b){return a-b;});
+  h += '<details style="margin-top:8px;"><summary style="cursor:pointer;'
+   + 'font-size:12px;color:#8b949e;">Conjunto completo de cada season</summary>'
+   + '<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+   + '<tr style="color:#8b949e;text-align:left;"><th style="padding-right:14px;">Season</th>'
+   + durs.map(function(d){ return '<th style="padding-right:14px;">'
+       + (Math.round(d/60*10)/10) + 'min</th>'; }).join('')
+   + '<th>Completo</th></tr>';
+  seasons.forEach(function(sea){
+   const c = cj[sea];
+   const usada = sea === CP.season_do_conjunto;
+   h += '<tr style="' + (usada?'background:rgba(88,166,255,0.08);':'') + '">'
+    + '<td style="padding:4px 14px 4px 0;color:' + (usada?'#58A6FF':'#c9d1d9') + ';">'
+    + sea + (usada?' ←':'') + '</td>'
+    + durs.map(function(d){
+       const v = c.valores[String(d)];
+       return '<td style="padding-right:14px;color:' + (v?'#c9d1d9':'#484f58') + ';">'
+         + (v ? Math.round(v)+'W' : '—') + '</td>'; }).join('')
+    + '<td style="color:#8b949e;">' + c.n_duracoes + '/' + durs.length + '</td></tr>';
+  });
+  h += '</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+   + 'No modo <b>coerente</b> usa-se a linha marcada: todas as durações da '
+   + 'mesma época, para a curva descrever um atleta que existiu. O modo '
+   + '<b>recuo</b> escolhe o melhor de cada coluna, o que preenche tudo mas '
+   + 'pode misturar anos.</p></details>';
+ }
  box.innerHTML = h;
 }
 

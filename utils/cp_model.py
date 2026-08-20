@@ -672,15 +672,10 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
     extras = sorted(DURACOES_EXTRA.get(modalidade, [60, 180, 300, 720, 1200]))
     # tudo o que e' preciso ir buscar: classicos + extra + o de 60 min
     todas = sorted(set(classicas) | set(extras) | {3600})
-    guardado = pmet.DURACOES_MMP.get(modalidade)
-    try:
-        pmet.DURACOES_MMP[modalidade] = todas
-        extraido = pmet.melhores_mmp(registos, modalidade,
-                                     season_activa=season_activa,
-                                     limiar_max=limiar_max, modo=modo)
-    finally:
-        if guardado is not None:
-            pmet.DURACOES_MMP[modalidade] = guardado
+    extraido = pmet.melhores_mmp(registos, modalidade,
+                                 season_activa=season_activa,
+                                 limiar_max=limiar_max, modo=modo,
+                                 duracoes=todas)
 
     mmp = extraido['mmp']
     classicos, completos = [], []
@@ -698,15 +693,28 @@ def pontos_de_curvas(registos, modalidade, season_activa=None, limiar_max=None,
     completos = sorted(set(completos), key=lambda x: x[1])
     dup_cl, dup_full = [], []
     todos_antes = sorted(set(classicos) | set(completos), key=lambda x: x[1])
+    dup_cl, dup_full = [], []
     if excluir_duplicados:
-        classicos, dup_cl = marcar_duplicados(classicos)
+        # Nos elegiveis so' se exclui se ainda sobrarem tres pontos. No Bike
+        # os de 12 e 20 min sao muitas vezes o mesmo esforco longo, e excluir
+        # um deixava o conjunto com dois pontos -- que e' o "MMP insuficiente"
+        # que aparecia em vez de resultado nenhum. Mais vale um ponto
+        # redundante e um aviso do que nenhum ajuste.
+        limpos, fora_cl = marcar_duplicados(classicos)
+        if len(limpos) >= 3:
+            classicos, dup_cl = limpos, fora_cl
+        else:
+            dup_cl = []
+            dup_reter = fora_cl
         completos, dup_full = marcar_duplicados(completos)
     fora = [p for p in todos_antes if p not in set(completos) | set(classicos)]
+    dup_retidos = locals().get('dup_reter') or []
 
     return {
         'all_mmp_pts': classicos,
         'all_mmp_pts_full': completos,
         'duplicados_excluidos': dup_cl or dup_full,
+        'duplicados_retidos': dup_retidos,
         'duracoes_classicas': classicas,
         'duracoes_extra': extras,
         'duracoes_disponiveis': [int(t) for t in
@@ -939,11 +947,26 @@ def calcular_cp_completo(dados, modalidade, min_pts=3, usar_pmax=True):
     pmax = dados.get('pmax')
 
     if len(pts) < min_pts:
-        return {'ok': False, 'modalidade': modalidade, 'n_mmp': len(pts),
-                'motivo': f'MMP insuficiente ({len(pts)} < {min_pts})',
-                'mmp_pts': pts, 'pmax': pmax,
-                'mmp60_val': dados.get('mmp60_val'),
-                'modelos': {}, 'melhor': None}
+        return {
+            'ok': False, 'modalidade': modalidade, 'n_mmp': len(pts),
+            'motivo': (f'Só {len(pts)} durações utilizáveis, e o mínimo está '
+                       f'em {min_pts}. Ou baixas o mínimo nas opções '
+                       'avançadas, ou acrescentas durações nas caixas acima, '
+                       'ou alargas o período.'),
+            'mmp_pts': [{'w': round(p, 1), 't': int(t)} for p, t in pts],
+            'mmp_pts_full': [{'w': round(p, 1), 't': int(t)}
+                             for p, t in pts_full],
+            'pmax': pmax, 'mmp60_val': dados.get('mmp60_val'),
+            'duracoes_classicas': dados.get('duracoes_classicas'),
+            'duracoes_extra': dados.get('duracoes_extra'),
+            'duracoes_disponiveis': dados.get('duracoes_disponiveis'),
+            'todas_as_duracoes': dados.get('todas_as_duracoes'),
+            'duplicados_excluidos': dados.get('duplicados_excluidos') or [],
+            'duplicados_retidos': dados.get('duplicados_retidos') or [],
+            'modo': dados.get('modo'),
+            'season_do_conjunto': dados.get('season_do_conjunto'),
+            'conjuntos_por_season': dados.get('conjuntos_por_season'),
+            'modelos': {}, 'melhor': None}
 
     definicoes = [
         ('M1 (WLS-P)',     lambda t, **k: fit_m1(t, make_w([x for _, x in t], 'log')), pts,      2),

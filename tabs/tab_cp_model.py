@@ -27,31 +27,12 @@ BODY = """
         <option>Ski</option><option>Run</option>
       </select>
     </label>
-    <label class="sel">Âmbito
-      <select id="cpAmbito" onchange="cpAmbitoMudou()">
-        <option value="season">season</option>
-        <option value="365">últimos 365 dias</option>
-        <option value="180">últimos 180 dias</option>
-        <option value="730">últimos 2 anos</option>
-      </select>
-    </label>
-    <label class="sel" id="cpSeasonWrap">Season
-      <select id="cpSeason" onchange="cpCarregar()">
-        <option value="">activa</option>
-      </select>
-    </label>
-    <label class="sel">Conjunto
-      <select id="cpModo" onchange="cpCarregar()">
-        <option value="coerente" selected>coerente (uma só época)</option>
-        <option value="season">só a season activa</option>
-        <option value="recuo">recuo por duração</option>
-      </select>
-    </label>
-    <label class="sel">Mín. pontos
-      <select id="cpMinPts" onchange="cpCarregar()">
-        <option value="3" selected>3</option>
-        <option value="4">4</option>
-        <option value="5">5</option>
+    <label class="sel">Período
+      <select id="cpPeriodo" onchange="cpCarregar()">
+        <option value="season:">season actual</option>
+        <option value="janela:365">últimos 12 meses</option>
+        <option value="janela:180">últimos 6 meses</option>
+        <option value="janela:730">últimos 2 anos</option>
       </select>
     </label>
     <button onclick="cpCarregar()">Recalcular</button>
@@ -61,11 +42,32 @@ BODY = """
   <div id="cpValidacao" style="margin-bottom:12px;"></div>
 
   <div class="controls" style="margin-bottom:8px;">
-    <label class="sel"><input type="checkbox" id="cpUsarPmax" checked onchange="cpCarregar()">
-      ancorar 3 parâmetros no Pmax</label>
-    <label class="sel"><input type="checkbox" id="cpExclDup" checked onchange="cpCarregar()">
-      excluir durações com potência igual</label>
+    <span style="color:#8b949e;font-size:12px;">Durações no ajuste:</span>
+    <span id="cpDurs"></span>
   </div>
+  <details style="margin-bottom:10px;">
+    <summary style="cursor:pointer;font-size:12px;color:#8b949e;">Opções avançadas</summary>
+    <div class="controls" style="margin-top:6px;">
+      <label class="sel"><input type="checkbox" id="cpUsarPmax" checked onchange="cpCarregar()">
+        ancorar 3 parâmetros no Pmax</label>
+      <label class="sel"><input type="checkbox" id="cpExclDup" checked onchange="cpCarregar()">
+        excluir durações com potência igual</label>
+      <label class="sel">Se faltarem durações na época
+        <select id="cpModo" onchange="cpCarregar()">
+          <option value="coerente" selected>usar a época completa mais recente</option>
+          <option value="season">deixar por preencher</option>
+          <option value="recuo">ir buscar cada uma onde existir</option>
+        </select>
+      </label>
+      <label class="sel">Mín. pontos
+        <select id="cpMinPts" onchange="cpCarregar()">
+          <option value="3" selected>3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+        </select>
+      </label>
+    </div>
+  </details>
 
   <h2>Modelos</h2>
   <div id="cpModelos" style="overflow-x:auto;"></div>
@@ -140,18 +142,18 @@ BODY = """
 
 JS = """
 let CP = null, HIST = null, CP_AJUSTES = '';
-let CP_ESCALA = null, CP_PONTOS = [];
+let CP_ESCALA = null, CP_PONTOS = [], CP_DURS = [];
 
 function cpCarregar(){
  const mod = document.getElementById('cpModalidade').value;
- const sea = document.getElementById('cpSeason').value;
  const mp  = document.getElementById('cpMinPts').value;
  const est = document.getElementById('cpEstado');
  est.textContent = 'a calcular...';
- const amb = document.getElementById('cpAmbito').value;
+ const per = document.getElementById('cpPeriodo').value.split(':');
  let q = '?min_pts=' + mp;
- if(amb === 'season'){ if(sea) q += '&season=' + encodeURIComponent(sea); }
- else { q += '&janela=' + amb; }
+ if(per[0] === 'janela') q += '&janela=' + per[1];
+ else if(per[1]) q += '&season=' + encodeURIComponent(per[1]);
+ if(CP_DURS.length) q += '&classicas=' + CP_DURS.join(',');
  q += '&modo=' + document.getElementById('cpModo').value;
  if(!document.getElementById('cpUsarPmax').checked) q += '&usar_pmax=0';
  if(!document.getElementById('cpExclDup').checked) q += '&duplicados=manter';
@@ -169,26 +171,52 @@ function cpCarregar(){
     + (d.season_do_conjunto ? ' · conjunto de ' + d.season_do_conjunto : '')
     + (d.dispersao_datas_dias!=null ? ' · ' + d.dispersao_datas_dias + 'd de dispersão' : '')
     + (Object.keys(d.overrides_aplicados||{}).length ? ' · VALORES EDITADOS' : '');
-  cpSeasons(d); cpValidacao(); cpMMPEdit(); cpTabela(); cpDraw();
+  cpSeasons(d); cpDursEdit(); cpValidacao(); cpMMPEdit(); cpTabela(); cpDraw();
   cpVeloDraw(); cpResidDraw(); cpAnalise(); cpGloss(); cpDetalhe();
  }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
 }
 
 function cpSeasons(d){
- const sel = document.getElementById('cpSeason');
- if(sel.options.length > 1) return;
- (d.seasons_disponiveis||[]).forEach(function(s){
-  const o = document.createElement('option'); o.value = s; o.textContent = s;
+ // as seasons entram no mesmo selector do período: um controlo só, em vez
+ // de dois que se contradizem
+ const sel = document.getElementById('cpPeriodo');
+ if(sel._preenchido) return;
+ sel._preenchido = true;
+ (d.seasons_disponiveis||[]).forEach(function(s2, i){
+  const o = document.createElement('option');
+  o.value = 'season:' + s2;
+  o.textContent = i === 0 ? s2 + ' (actual)' : s2;
   sel.appendChild(o);
  });
 }
 
-function cpAmbitoMudou(){
- const amb = document.getElementById('cpAmbito').value;
- document.getElementById('cpSeasonWrap').style.display =
-   amb === 'season' ? '' : 'none';
+function cpDursEdit(){
+ // caixas para escolher que durações entram no ajuste principal
+ const box = document.getElementById('cpDurs');
+ if(!box || !CP) return;
+ const disp = CP.duracoes_disponiveis || [];
+ const usadas = CP_DURS.length ? CP_DURS : (CP.duracoes_classicas || []);
+ box.innerHTML = disp.map(function(t){
+  const on = usadas.indexOf(t) >= 0;
+  const rot = t >= 60 ? (Math.round(t/60*10)/10) + ' min' : t + ' s';
+  return '<label class="sel" style="margin-right:8px;">'
+   + '<input type="checkbox" class="cpDur" value="' + t + '"'
+   + (on ? ' checked' : '') + '> ' + rot + '</label>';
+ }).join('') + '<button onclick="cpDursAplicar()">Aplicar</button>'
+  + ' <button onclick="cpDursRepor()">Repor</button>';
+}
+
+function cpDursAplicar(){
+ CP_DURS = Array.prototype.slice.call(document.querySelectorAll('.cpDur'))
+   .filter(function(c){ return c.checked; })
+   .map(function(c){ return parseInt(c.value); });
+ if(CP_DURS.length < 2){ alert('Escolhe pelo menos duas durações.'); return; }
  cpCarregar();
 }
+
+function cpDursRepor(){ CP_DURS = []; cpCarregar(); }
+
+
 
 // ── quadro editável dos MMP ──────────────────────────────────────────────
 function cpMMPEdit(){
@@ -300,7 +328,10 @@ function cpValidacao(){
 
 function cpTabela(){
  const ms = (CP && CP.modelos) || {};
- const nomes = Object.keys(ms).sort((a,b)=> ms[a].see_pct - ms[b].see_pct);
+ const nomes = Object.keys(ms).sort(function(a,b){
+  if(!!ms[a].classico !== !!ms[b].classico) return ms[a].classico ? -1 : 1;
+  return ms[a].see_pct - ms[b].see_pct;
+ });
  const temPace = !!(CP.pace_dos_mmp);
  const sel = document.getElementById('cpModeloEscolhido');
  sel.innerHTML = nomes.map(n=>'<option>'+n+'</option>').join('');
@@ -311,11 +342,15 @@ function cpTabela(){
  nomes.forEach(function(n,i){
   const m = ms[n];
   const df = m.n_pts - m.k_params;
+  const inf = !m.classico;
   const wpOk = m.wp_kj==null || (m.wp_kj>=5 && m.wp_kj<=30);
   const cor = m.see_pct<2 ? '#3FB950' : m.see_pct<5 ? '#F0883E' : '#F85149';
   h += '<tr style="border-bottom:1px solid #161b22;'
-    + (i===0?'background:rgba(88,166,255,0.06);':'') + '">'
-    + '<td style="padding:6px;">' + n + (i===0?' <span style="color:#58A6FF;font-size:10px;">menor SEE%</span>':'') + '</td>'
+    + (i===0&&!inf?'background:rgba(88,166,255,0.06);':'')
+    + (inf?'opacity:0.62;':'') + '">'
+    + '<td style="padding:6px;color:' + (inf?'#8b949e':'#c9d1d9') + ';">' + n
+    + (i===0&&!inf?' <span style="color:#58A6FF;font-size:10px;">escolhido</span>':'')
+    + (inf?' <span style="color:#6e7681;font-size:10px;">informativo</span>':'') + '</td>'
     + '<td><b>' + m.cp + ' W</b></td>'
     + (temPace ? '<td style="color:#79C0FF;">' + (m.pace||'—') + '</td>' : '')
     + '<td style="color:' + (wpOk?'#c9d1d9':'#F85149') + ';">'
@@ -344,6 +379,12 @@ function cpTabela(){
     + Math.round(CP.mmp60_val) + ' W. Não entra em nenhum ajuste — serve de '
     + 'validação externa: um CP acima do MMP60 é impossível, porque o CP é '
     + 'por definição sustentável mais tempo do que 60 minutos.</p>';
+ h += '<p style="color:#8b949e;font-size:11px;">Só o M1, o M2 e o M3 competem '
+  + 'pelo lugar de escolhido: usam as mesmas ' + ((CP.duracoes_classicas||[]).length)
+  + ' durações e os mesmos 2 parâmetros, portanto o SEE% é comparável entre '
+  + 'eles. Os restantes usam mais pontos e mais parâmetros — aparecem como '
+  + 'informativos porque um SEE% mais baixo neles não significa ajuste melhor, '
+  + 'significa outra coisa a ser medida.</p>';
  h += '<p style="color:#8b949e;font-size:11px;">' + (CP.nota_see||'') + '</p>';
  document.getElementById('cpModelos').innerHTML = h;
 }
@@ -703,7 +744,7 @@ function cpGuardar(){
    headers:{'Content-Type':'application/json'},
    body: JSON.stringify({
      modalidade: document.getElementById('cpModalidade').value,
-     season: document.getElementById('cpSeason').value || (CP||{}).season,
+     season: (CP||{}).season,
      data_referencia: document.getElementById('cpDataRef').value || null,
      modelo_cp: document.getElementById('cpModeloEscolhido').value || null,
      guardar: quais})})

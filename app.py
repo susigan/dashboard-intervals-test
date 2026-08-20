@@ -2076,6 +2076,35 @@ def limiares_externos_dados(modalidade, args):
                 'trace': traceback.format_exc()}
 
 
+def _racios_mmp(por_duracao, duracoes):
+    """Racio entre duracoes consecutivas, na season e de sempre.
+
+    A forma da curva de potencia e' muito mais estavel do que os valores
+    absolutos: um atleta que faz 1.25x a potencia de 5 min aos 60 s
+    continua a fazer 1.25x quando esta em forma ou fora dela. Comparar os
+    racios da season com os de sempre denuncia um valor contaminado --
+    tipicamente um pico curto de um sensor ou um esforco que nao foi
+    maximo -- sem precisar de saber qual e' o valor certo.
+    """
+    ds = sorted(duracoes)
+    out = []
+    for i in range(len(ds) - 1):
+        curto, longo = ds[i], ds[i + 1]
+        a, b = por_duracao.get(str(curto)) or {}, por_duracao.get(str(longo)) or {}
+        linha = {'curto_s': curto, 'longo_s': longo}
+        for suf, ka, kb in (('season', 'melhor_na_season_w', 'melhor_na_season_w'),
+                            ('de_sempre', 'melhor_de_sempre_w', 'melhor_de_sempre_w')):
+            va, vb = a.get(ka), b.get(kb)
+            linha[f'racio_{suf}'] = (round(va / vb, 3) if va and vb else None)
+            linha[f'{suf}_w'] = [va, vb]
+        r1, r2 = linha.get('racio_season'), linha.get('racio_de_sempre')
+        if r1 and r2:
+            linha['desvio_pct'] = round((r1 - r2) / r2 * 100, 1)
+            linha['suspeito'] = abs(linha['desvio_pct']) > 20
+        out.append(linha)
+    return out
+
+
 @app.route('/api/metabol/mmp_diagnostico/<modalidade>')
 def api_metabol_mmp_diagnostico(modalidade):
     """Porque e' que o MMP de uma duracao aparece mais baixo do que devia.
@@ -2105,7 +2134,7 @@ def api_metabol_mmp_diagnostico(modalidade):
                             'mensagem': f'modalidade desconhecida: {modalidade}'}), 400
 
         linhas = _db._exec(
-            f"""SELECT date, secs, watts FROM power_curves
+            f"""SELECT date, secs, watts, activity_id FROM power_curves
                 WHERE type IN ({','.join('?' * len(variantes))})
                 ORDER BY date DESC""", tuple(variantes), fetch='all') or []
         if not linhas:
@@ -2121,7 +2150,7 @@ def api_metabol_mmp_diagnostico(modalidade):
         por_duracao = {d: [] for d in duracoes}
         seasons, sem_parse = {}, 0
         comprimentos = {}
-        for data, secs, watts in linhas:
+        for data, secs, watts, act_id in linhas:
             s, w = pmet._descomprimir(secs, watts)
             comprimentos[f'{len(s)}s/{len(w)}w'] = \
                 comprimentos.get(f'{len(s)}s/{len(w)}w', 0) + 1
@@ -2135,7 +2164,7 @@ def api_metabol_mmp_diagnostico(modalidade):
             for dur in duracoes:
                 v = pmet._watts_em(indice, dur)
                 if v is not None:
-                    por_duracao[dur].append((float(v), d10, sea))
+                    por_duracao[dur].append((float(v), d10, sea, act_id))
 
         out = {}
         for dur, vals in por_duracao.items():
@@ -2149,8 +2178,11 @@ def api_metabol_mmp_diagnostico(modalidade):
                 'melhor_na_season_data': na_season[0][1] if na_season else None,
                 'n_sessoes': len(vals),
                 'n_sessoes_na_season': len(na_season),
-                'top10_de_sempre': [{'w': round(v), 'data': dt, 'season': sea}
-                                    for v, dt, sea in vals[:10]],
+                'top10_de_sempre': [
+                    {'w': round(v), 'data': dt, 'season': sea,
+                     'activity_id': aid,
+                     'url': f'https://intervals.icu/activities/{aid}'}
+                    for v, dt, sea, aid in vals[:10]],
             }
 
         return jsonify({
@@ -2163,6 +2195,7 @@ def api_metabol_mmp_diagnostico(modalidade):
             'comprimentos_secs_watts': dict(sorted(
                 comprimentos.items(), key=lambda kv: -kv[1])),
             'data_mais_recente_na_base': str(linhas[0][0])[:10] if linhas else None,
+            'racios_entre_duracoes': _racios_mmp(out, duracoes),
             'curvas_por_season': dict(sorted(seasons.items(),
                                              key=lambda kv: str(kv[0]))),
             'duracoes_analisadas': duracoes,
@@ -2268,7 +2301,8 @@ def perfil_metabolico_dados(modalidade, args):
 
         extraido = pmet.melhores_mmp(
             registos, modalidade, season_activa=season_pedida,
-            limiar_max=args.get('limiar_max', type=float))
+            limiar_max=args.get('limiar_max', type=float),
+            modo=args.get('modo') or 'coerente')
 
         # o utilizador pode substituir qualquer MMP: ?mmp_180=345&mmp_300=312
         # e ate mudar as duracoes: ?duracoes=180,300,900
@@ -2280,7 +2314,8 @@ def perfil_metabolico_dados(modalidade, args):
                     pmet.DURACOES_MMP[modalidade] = novas
                     extraido = pmet.melhores_mmp(
                         registos, modalidade, season_activa=season_pedida,
-                        limiar_max=args.get('limiar_max', type=float))
+                        limiar_max=args.get('limiar_max', type=float),
+                        modo=args.get('modo') or 'coerente')
             except Exception:
                 pass
         overrides = {}
@@ -2371,6 +2406,45 @@ def perfil_metabolico_dados(modalidade, args):
 
         res = pmet.calcular(modalidade, extraido['mmp'], peso=peso,
                             altura_cm=altura, idade=idade, pmax=pmax, bf_pct=bf)
+        # Pace, so' para a corrida: watts sem pace nao dizem nada a quem
+        # treina. A recta e' do proprio atleta, ajustada as sessoes dele,
+        # porque a conversao depende da economia de corrida individual --
+        # usar formula generica seria inventar um atleta medio.
+        if modalidade == 'Run':
+            try:
+                _rs = db._exec(
+                    f"""SELECT avg_watts, distance_m, moving_time
+                          FROM activities
+                         WHERE avg_watts > 0 AND distance_m > 0
+                           AND moving_time > 0
+                           AND type IN ({','.join('?' * len(variantes))})""",
+                    tuple(variantes), fetch='all') or []
+                _rel = pmet.regressao_pace_watts([(a, b, c) for a, b, c in _rs])
+                res['relacao_pace_watts'] = {k: v for k, v in _rel.items()
+                                             if k != 'pontos'}
+                if _rel.get('suficiente'):
+                    _lim = res.get('limiares') or {}
+                    _mad = res.get('mader') or {}
+                    res['pace'] = {}
+                    for chave, valor in (('lt1_w', _lim.get('lt1_w')),
+                                         ('lt2_w', _lim.get('lt2_w')),
+                                         ('mlss_at_w', _mad.get('mlss_at_w')),
+                                         ('fatmax_w', _mad.get('fatmax_w')),
+                                         ('pvo2max_w', _mad.get('pvo2max_w'))):
+                        if valor:
+                            seg = pmet.pace_de_watts(_rel, valor)
+                            res['pace'][chave] = {
+                                'seg_km': seg,
+                                'texto': pmet.formatar_pace(seg)}
+                    for z in res.get('zonas') or []:
+                        z['pace_de'] = pmet.formatar_pace(
+                            pmet.pace_de_watts(_rel, z.get('de_w')))
+                        z['pace_ate'] = pmet.formatar_pace(
+                            pmet.pace_de_watts(_rel, z.get('ate_w')))
+            except Exception as e:
+                res['relacao_pace_watts'] = {'suficiente': False,
+                                             'erro': f'{type(e).__name__}: {e}'}
+
         res['season'] = season_pedida
         res['n_curvas_na_season'] = n_na_season
         res['n_curvas_total'] = len(registos)
@@ -2379,6 +2453,9 @@ def perfil_metabolico_dados(modalidade, args):
         res['recuou_de_season'] = {str(k): bool(v)
                                    for k, v in extraido['recuou'].items()}
         res['seasons_disponiveis'] = extraido['seasons_disponiveis']
+        res['modo'] = extraido.get('modo')
+        res['season_do_conjunto'] = extraido.get('season_do_conjunto')
+        res['conjuntos_por_season'] = extraido.get('conjuntos_por_season')
         res['qualidade_dos_mmp'] = {str(k): v
                                     for k, v in extraido['qualidade'].items()}
         res['ajustado_por_coerencia'] = {

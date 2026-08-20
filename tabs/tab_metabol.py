@@ -669,6 +669,13 @@ BODY = r"""
     <label class="sel">Idade <input type="number" id="pmIdade" value="40" style="width:60px"></label>
     <label class="sel">Peso (kg) <input type="number" id="pmPeso" step="0.1" placeholder="auto" style="width:75px"></label>
     <label class="sel">% gordura <input type="number" id="pmBf" step="0.1" placeholder="opcional" style="width:80px"></label>
+    <label class="sel">Conjunto
+      <select id="pmModo" onchange="pmCarregar()">
+        <option value="coerente" selected>coerente (uma só época)</option>
+        <option value="season">só a season activa</option>
+        <option value="recuo">recuo por duração</option>
+      </select>
+    </label>
     <span id="pmCorporal" style="color:#8b949e;font-size:11px;"></span>
     <button onclick="pmCarregar()">Actualizar</button>
     <span id="pmEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
@@ -2138,6 +2145,8 @@ function pmCarregar(usarManuais){
   const el = document.getElementById('pm'+k);
   if(el && el.value !== '') p.set(k.toLowerCase(), el.value);
  });
+ const _mo = document.getElementById('pmModo');
+ if(_mo) p.set('modo', _mo.value);
  if(usarManuais){
   const secs = Array.prototype.slice.call(document.querySelectorAll('.pmSec'))
     .map(function(e){ return parseInt(e.value); }).filter(function(x){ return x>0; });
@@ -2652,7 +2661,7 @@ function pmResumo(){
                PM.vo2max_validade, '#58A6FF');
  h += pmCartao('VLamax', (PM.vlamax||'—') + ' <span style="font-size:12px;">mmol/L/s</span>',
                PM.perfil + (PM.vlamax_saturado ? ' \u26A0 no limite do modelo' : ''), '#F0883E');
- h += pmCartao('MLSS / AT', (m.mlss_at_w||'—') + ' W',
+ h += pmCartao('MLSS / AT', (m.mlss_at_w||'—') + ' W' + _pc('mlss_at_w'),
                m.pct_vo2max_at ? m.pct_vo2max_at + '% do VO\u2082max' : '', '#3FB950');
  if(PM_CP_INFO && PM_CP_INFO.cp_w){
   const i = PM_CP_INFO;
@@ -2679,7 +2688,9 @@ function pmResumo(){
  h += pmCartao('Gordura no FatMax', (m.fat_no_fatmax_g_h||'—') + ' g/h', '');
  h += pmCartao('CHO no MLSS', (m.cho_no_at_g_h||'—') + ' g/h', '');
  const lim = PM.limiares || {};
- if(lim.lt1_w) h += pmCartao('LT1 (aeróbio)', lim.lt1_w + ' W',
+ const pc = (PM && PM.pace) || {};
+ const _pc = k => pc[k] && pc[k].texto ? ' · ' + pc[k].texto : '';
+ if(lim.lt1_w) h += pmCartao('LT1 (aeróbio)', lim.lt1_w + ' W' + _pc('lt1_w'),
    (lim.lt1_lactato!=null? lim.lt1_lactato + ' mmol/L' : '')
    + (lim.lt1_convencao_w!=null && lim.lt1_convencao_w!==lim.lt1_w
       ? ' · convenção +0,5 mmol/L daria ' + lim.lt1_convencao_w + ' W' : ''),
@@ -2920,17 +2931,31 @@ function pmMMPEdit(){
 }
 
 function pmZonas(){
+ // (o pace aparece só na corrida, quando há recta ajustada)
  const z=(PM&&PM.zonas)||[];
  if(!z.length){document.getElementById('pmZonas').innerHTML='';return;}
+ const temPace = z.some(function(x){ return x.pace_de || x.pace_ate; });
  let h='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
-  +'<th style="padding:6px;">Zona</th><th>% do MLSS</th><th>Watts</th></tr>';
+  +'<th style="padding:6px;">Zona</th><th>% do MLSS</th><th>Watts</th>'
+  +(temPace?'<th>Pace</th>':'')+'</tr>';
  z.forEach(function(x){
   h+='<tr style="border-bottom:1px solid #161b22;"><td style="padding:6px;">'+x.zona+'</td>'
-   +'<td style="color:#8b949e;">'+x.pct_at+'</td><td>'+x.de_w+' – '+x.ate_w+' W</td></tr>';
+   +'<td style="color:#8b949e;">'+x.pct_at+'</td><td>'+x.de_w+' – '+x.ate_w+' W</td>'
+   +(temPace?'<td style="color:#79C0FF;">'
+     +(x.pace_de&&x.pace_ate ? x.pace_ate+' – '+x.pace_de : '—')+'</td>':'')
+   +'</tr>';
  });
  h+='</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">'
   +'Ancoradas no MLSS do modelo, não numa FTP fixa.</p>';
+ const rp=(PM&&PM.relacao_pace_watts);
+ if(rp) h+='<p style="color:#79C0FF;font-size:11px;">'
+  +(rp.suficiente
+    ? 'Pace da recta potência–velocidade ajustada às tuas sessões (r²='
+      + rp.r2 + ', n=' + rp.n + '). O pace mais rápido corresponde ao limite '
+      + 'superior de watts da zona.'
+    : 'Sem pace: ' + (rp.nota || rp.erro || 'dados insuficientes'))
+  +'</p>';
  document.getElementById('pmZonas').innerHTML=h;
 }
 
@@ -2963,6 +2988,10 @@ function pmDetalhe(){
    +'<td style="color:#8b949e;">'+(d.pmax_racio_na_season!=null
      ? Math.round(d.pmax_racio_na_season*100)+'%' : '—')+'</td></tr>';
  h+='</table>';
+ if(d.season_do_conjunto)
+  h+='<p style="color:#58A6FF;font-size:11px;">Conjunto de <b>'
+   +d.season_do_conjunto+'</b> (modo '+(d.modo||'?')+'), '
+   +(d.dispersao_datas_dias||0)+' dias de dispersão entre as durações.</p>';
  if(d.limiar_esforco_maximo!=null)
   h+='<p style="color:#8b949e;font-size:11px;">Considera-se esforço máximo a partir de '
    +Math.round(d.limiar_esforco_maximo*100)+'% do melhor histórico dessa duração. '

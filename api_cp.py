@@ -102,6 +102,13 @@ def registar(app):
             min_pts = request.args.get('min_pts', type=int) or 3
             sem_dup = request.args.get('duplicados') != 'manter'
 
+            # ler os parametros ANTES de os usar: durs_pedidas estava a ser
+            # passado ao pontos_de_curvas duas linhas acima de ser definido,
+            # o que rebentava o endpoint inteiro com NameError
+            durs_pedidas = [int(x) for x in
+                            (request.args.get('classicas') or '').split(',')
+                            if x.strip().isdigit()]
+
             dados = cpm.pontos_de_curvas(
                 registos, modalidade, season_activa=season,
                 limiar_max=request.args.get('limiar_max', type=float),
@@ -109,9 +116,6 @@ def registar(app):
                 modo=request.args.get('modo') or 'coerente',
                 duracoes=durs_pedidas or None)
 
-            durs_pedidas = [int(x) for x in
-                            (request.args.get('classicas') or '').split(',')
-                            if x.strip().isdigit()]
             overrides, durs = {}, []
             for k, v in request.args.items():
                 if k.startswith('mmp_'):

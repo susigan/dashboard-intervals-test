@@ -31,6 +31,41 @@ def _variantes(modalidade):
     return [k for k, v in _mods().items() if v == modalidade]
 
 
+def _pmax_icu(modalidade, janela_dias=None):
+    """p_max da Intervals.icu, da actividade mais recente que o tenha.
+
+    E' a mesma fonte do repo Streamlit. O pico de 1 s da power curve, que se
+    usava aqui, e' outra coisa: mede o instante mais forte de uma sessao
+    qualquer e sobe com qualquer arranque brusco. O p_max do modelo da
+    Intervals.icu e' estimado da curva inteira e e' bastante mais estavel.
+    """
+    import json as _json
+    import db as _db
+    variantes = _variantes(modalidade)
+    if not variantes:
+        return None, None
+    cond = [f"type IN ({','.join('?' * len(variantes))})", "raw IS NOT NULL"]
+    args = list(variantes)
+    if janela_dias:
+        from datetime import timedelta
+        args.append((datetime.now() - timedelta(days=int(janela_dias)))
+                    .strftime('%Y-%m-%d'))
+        cond.append("date >= ?")
+    linhas = _db._exec(
+        f"""SELECT date, raw FROM activities WHERE {' AND '.join(cond)}
+             ORDER BY date DESC LIMIT 400""", tuple(args), fetch='all') or []
+    for data, raw in linhas:
+        try:
+            j = raw if isinstance(raw, dict) else _json.loads(raw)
+        except Exception:
+            continue
+        for chave in ('p_max', 'icu_pm_p_max', 'icu_rolling_p_max'):
+            v = (j or {}).get(chave)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+                return float(v), {'campo': chave, 'data': str(data)[:10]}
+    return None, None
+
+
 def _registos(modalidade, janela_dias=None):
     """power_curves da modalidade, com a season de cada uma.
 
@@ -69,6 +104,41 @@ def registar(app):
 
     # ── CP ────────────────────────────────────────────────────────────────
 
+    @app.route('/api/cp/periodos/<modalidade>')
+    def api_cp_periodos(modalidade):
+        """Periodos disponiveis: seasons e anos civis com dados."""
+        try:
+            from config import season_de
+            try:
+                from api_client import seasons_do_atleta
+                marcos = seasons_do_atleta() or []
+            except Exception:
+                marcos = []
+            registos, _l, _m = _registos(modalidade)
+            seasons, anos = {}, {}
+            for r in registos:
+                d = r.get('date')
+                if not d:
+                    continue
+                seasons[r.get('season')] = seasons.get(r.get('season'), 0) + 1
+                anos[d[:4]] = anos.get(d[:4], 0) + 1
+            hoje = datetime.now().strftime('%Y-%m-%d')
+            activa = season_de(hoje, marcos)
+            ordenadas = sorted(seasons, key=lambda s2: max(
+                (r['date'] for r in registos if r.get('season') == s2),
+                default=''), reverse=True)
+            return jsonify({
+                'status': 'ok', 'modalidade': modalidade,
+                'season_activa': activa,
+                'seasons': [{'valor': f'season:{s2}', 'rotulo': s2,
+                             'n': seasons[s2],
+                             'actual': s2 == activa} for s2 in ordenadas],
+                'anos': [{'valor': f'ano:{a}', 'rotulo': a, 'n': anos[a]}
+                         for a in sorted(anos, reverse=True)]})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/cp/modelos/<modalidade>')
     def api_cp_modelos(modalidade):
         """Todos os modelos de CP para a modalidade, com SEE% e W'.
@@ -90,14 +160,18 @@ def registar(app):
                 return jsonify({'status': 'erro',
                                 'mensagem': f'modalidade desconhecida: {modalidade}'}), 400
             janela = request.args.get('janela', type=int)
+            ano = request.args.get('ano')
             registos, _linhas, marcos = _registos(modalidade, janela)
+            if ano:
+                registos = [r for r in registos
+                            if (r.get('date') or '')[:4] == str(ano)]
             if not registos:
                 return jsonify({'status': 'sem_dados',
                                 'mensagem': f'sem power_curves para {modalidade}'}), 200
 
             hoje = datetime.now().strftime('%Y-%m-%d')
             # com janela movel nao se filtra por season: o filtro e a janela
-            season = (None if janela else
+            season = (None if (janela or ano) else
                       (request.args.get('season') or season_de(hoje, marcos)))
             min_pts = request.args.get('min_pts', type=int) or 3
             sem_dup = request.args.get('duplicados') != 'manter'
@@ -113,8 +187,15 @@ def registar(app):
                 registos, modalidade, season_activa=season,
                 limiar_max=request.args.get('limiar_max', type=float),
                 excluir_duplicados=sem_dup,
-                modo=request.args.get('modo') or 'coerente',
+                modo=request.args.get('modo') or 'recuo',
                 duracoes=durs_pedidas or None)
+
+            # Pmax da Intervals.icu tem prioridade sobre o pico de 1 s
+            _pm, _origem = _pmax_icu(modalidade, janela)
+            if _pm:
+                dados['pmax_1s'] = dados.get('pmax')
+                dados['pmax'] = _pm
+                dados['pmax_origem'] = _origem
 
             overrides, durs = {}, []
             for k, v in request.args.items():
@@ -135,13 +216,17 @@ def registar(app):
             res['status'] = 'ok'
             res['season'] = season
             res['janela_dias'] = janela
-            res['ambito'] = (f'ultimos {janela} dias' if janela
+            res['ambito'] = (f'ano civil {ano}' if ano else
+                             f'ultimos {janela} dias' if janela
                              else f'season {season}')
             res['todas_as_duracoes'] = dados.get('todas_as_duracoes')
             res['duracoes_classicas'] = dados.get('duracoes_classicas')
             res['duracoes_disponiveis'] = dados.get('duracoes_disponiveis')
             res['overrides_aplicados'] = dados.get('overrides_aplicados') or {}
             res['n_registos'] = len(registos)
+            res['pmax_origem'] = dados.get('pmax_origem')
+            res['pmax_1s'] = dados.get('pmax_1s')
+            res['sensibilidade'] = cpm.sensibilidade_duracoes(dados, modalidade)
             res['seasons_disponiveis'] = dados.get('seasons_disponiveis')
             res['datas_dos_mmp'] = dados.get('datas')
             res['seasons_dos_mmp'] = dados.get('seasons')
@@ -390,7 +475,10 @@ def registar(app):
                                 'mensagem': f'sem power_curves para {modalidade}'}), 200
             dados = cpm.pontos_de_curvas(registos, modalidade,
                                          season_activa=season,
-                                         modo=request.args.get('modo') or 'coerente')
+                                         modo=request.args.get('modo') or 'recuo')
+            _pm, _o = _pmax_icu(modalidade, janela)
+            if _pm:
+                dados['pmax'] = _pm
             res = cpm.calcular_cp_completo(dados, modalidade)
             melhor = res.get('melhor') or {}
             if not melhor.get('cp'):

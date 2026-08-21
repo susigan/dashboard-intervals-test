@@ -714,6 +714,19 @@ def mapear_campos_externos(nomes_presentes, definicoes=None):
 HR_PLAUSIVEL = (60.0, 220.0)     # bpm num patamar de esforco
 W_PLAUSIVEL = (20.0, 2000.0)     # W num patamar de esforco
 
+# r2 minimo para a recta HR<->Watts poder ser usada em conversoes.
+#
+# Abaixo disto a recta nao tem informacao suficiente e converter amplifica
+# ruido. No Ski deste atleta o r2 e' 0.079 -- a potencia explica 8% da
+# variacao da FC -- e a conversao transformava 11 bpm de diferenca entre o
+# HRVT1 e o HRVT1PLUS em 80 W. O intervalo do LT1 aparecia como 103-218 W
+# com 86.6% de amplitude, quando os dois campos medidos em watts concordavam
+# a 1% entre si. A dispersao era toda fabricada pela conversao.
+#
+# Sem recta fiavel, cada campo fica no eixo em que foi medido. Perde-se a
+# comparacao directa entre watts e bpm, que e' o correcto: ela nao existia.
+R2_MINIMO_CONVERSAO = 0.50
+
 
 def regressao_hr_watts(pontos):
     """Recta HR = a x Watts + b a partir dos pares do proprio atleta.
@@ -752,6 +765,8 @@ def regressao_hr_watts(pontos):
     syy = sum((p[1] - my) ** 2 for p in pts)
     r2 = (sxy ** 2 / (sxx * syy)) if syy > 0 else 0.0
     return {"n": n, "suficiente": True, "descartados": descartados,
+            "fiavel": r2 >= R2_MINIMO_CONVERSAO,
+            "r2_minimo": R2_MINIMO_CONVERSAO,
             "declive_bpm_por_w": round(a, 4),
             "intercepto_bpm": round(b, 1),
             "r2": round(r2, 3),
@@ -824,13 +839,17 @@ def formatar_pace(seg_km):
 
 
 def hr_de_watts(rel, watts):
-    if not rel or not rel.get("suficiente") or watts is None:
+    """None quando a recta nao e' fiavel: melhor nao converter do que
+    converter mal e apresentar o resultado como se fosse uma medicao."""
+    if not rel or not rel.get("suficiente") or not rel.get("fiavel") \
+            or watts is None:
         return None
     return round(rel["declive_bpm_por_w"] * watts + rel["intercepto_bpm"], 1)
 
 
 def watts_de_hr(rel, hr):
-    if not rel or not rel.get("suficiente") or hr is None:
+    if not rel or not rel.get("suficiente") or not rel.get("fiavel") \
+            or hr is None:
         return None
     a = rel["declive_bpm_por_w"]
     if not a:
@@ -876,11 +895,11 @@ def e_constante(q):
 def coerencia_por_grupo(campos, modelo):
     """Estimativas independentes do mesmo limiar concordam entre si?
 
-    Todos os campos de um grupo sao postos em watts (os que vem em bpm
-    passam pela recta HR<->Watts, os que vem em W/kg pelo peso) e ve-se a
-    dispersao. Se tres metodos diferentes dizem 111 W, 170 W e 198 W para
-    o limiar aerobio, a pergunta deixa de ser "qual e' o valor" e passa a
-    ser "estes campos nao estao a medir a mesma coisa".
+    Separado POR UNIDADE. Juntar campos medidos em watts com campos medidos
+    em bpm convertidos para watts mistura medicoes com estimativas de
+    segunda mao, e a dispersao que aparece e' a da recta de conversao, nao
+    a dos metodos. Se a recta nao for fiavel a conversao nem sequer existe,
+    e cada bloco fica com o que foi medido nas suas proprias unidades.
 
     Campos constantes ficam de fora: uma definicao do perfil nao e' uma
     estimativa independente.
@@ -888,26 +907,36 @@ def coerencia_por_grupo(campos, modelo):
     out = {}
     for grupo, ref in REFERENCIA_DO_GRUPO.items():
         membros = [c for c in campos
-                   if c.get("grupo") == grupo and c.get("watts_equivalente")
-                   and not c.get("constante")]
-        if len(membros) < 2:
+                   if c.get("grupo") == grupo and not c.get("constante")]
+        if not membros:
             continue
-        ws = sorted(c["watts_equivalente"] for c in membros)
-        mediana = quartis(ws)["p50"]
-        out[grupo] = {
-            "rotulo": ROTULO_GRUPO.get(grupo, grupo),
-            "n_estimativas": len(ws),
-            "min_w": round(min(ws)), "max_w": round(max(ws)),
-            "mediana_w": round(mediana),
-            "amplitude_w": round(max(ws) - min(ws)),
-            "amplitude_pct": round((max(ws) - min(ws)) / mediana * 100, 1),
-            "modelo_w": modelo.get(ref),
-            "referencia_do_modelo": ref,
-            "detalhe": sorted(
-                [{"campo": c["rotulo"], "w": round(c["watts_equivalente"]),
-                  "medido_em": c.get("unidade")} for c in membros],
-                key=lambda d: d["w"]),
-        }
+        bloco = {"rotulo": ROTULO_GRUPO.get(grupo, grupo),
+                 "referencia_do_modelo": ref,
+                 "modelo_w": modelo.get(ref)}
+
+        for unidade, chave, campo_valor in (
+                ("W", "em_watts", "watts_medido"),
+                ("bpm", "em_bpm", "hr_medido")):
+            vals = [(c["rotulo"], c[campo_valor]) for c in membros
+                    if c.get(campo_valor) is not None]
+            if len(vals) < 1:
+                continue
+            ws = sorted(v for _n, v in vals)
+            mediana = quartis(ws)["p50"]
+            bloco[chave] = {
+                "unidade": unidade,
+                "n_estimativas": len(ws),
+                "min": round(min(ws), 1), "max": round(max(ws), 1),
+                "mediana": round(mediana, 1),
+                "amplitude": round(max(ws) - min(ws), 1),
+                "amplitude_pct": (round((max(ws) - min(ws)) / mediana * 100, 1)
+                                  if mediana else None),
+                "detalhe": sorted(({"campo": n, "valor": round(v, 1)}
+                                   for n, v in vals),
+                                  key=lambda d: d["valor"]),
+            }
+        if bloco.get("em_watts") or bloco.get("em_bpm"):
+            out[grupo] = bloco
     return out
 
 

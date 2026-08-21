@@ -526,17 +526,38 @@ def _extrair_pp(res, n):
 
 
 def _grid_search_model(fit_fn, all_mmp_pts, min_pts, pmax_ext=None, k_params=2):
-    """
-    Testa todas as combinações de N pontos (N >= min_pts) dos MMPs disponíveis.
-    Retorna a combinação com menor SEE%.
-    fit_fn(tests, pmax_ext=None) → (cp, wp, pmax_or_extra, pp)
+    """Melhor combinacao de pontos, por SEE%, com duas restricoes.
+
+    O CP e' a assimptota da hiperbole, e quem a determina e' a duracao mais
+    longa: sem ela nao ha informacao nenhuma sobre onde a curva assenta. O
+    grid search original podia descarta-la, e como um conjunto de duracoes
+    curtas e proximas se ajusta quase perfeitamente a uma recta, era isso
+    que ganhava sempre em SEE%.
+
+    O resultado era absurdo mas com boa estatistica: no Row deste atleta,
+    1+3+5 min davam CP de 285 W com SEE% de 0.76% -- e esse ajuste prevkia
+    293 W para 12 minutos quando o melhor real e' 182 W, e 286 W para uma
+    hora quando o melhor real e' 142 W. O SEE% media o encaixe nos tres
+    pontos escolhidos, nao a capacidade de descrever o atleta.
+
+    Duas restricoes, portanto:
+      1. a duracao mais longa disponivel entra sempre
+      2. W' fora do plausivel elimina o candidato durante a procura, em vez
+         de ser assinalado depois -- um ajuste com W' de 5.6 kJ num remador
+         nao e' uma opcao a considerar
     """
     from itertools import combinations
     if len(all_mmp_pts) < min_pts:
         return None
+    ordenados = sorted(all_mmp_pts, key=lambda x: x[1])
+    i_longo = len(ordenados) - 1
     best = {'see_pct': 999, 'result': None, 'combo': None}
-    for combo in combinations(range(len(all_mmp_pts)), min_pts):
-        pts = [all_mmp_pts[i] for i in combo]
+    rejeitados_wp = 0
+
+    for combo in combinations(range(len(ordenados)), min_pts):
+        if i_longo not in combo:
+            continue
+        pts = [ordenados[i] for i in combo]
         try:
             if pmax_ext is not None:
                 res = fit_fn(pts, pmax_ext=pmax_ext)
@@ -546,6 +567,11 @@ def _grid_search_model(fit_fn, all_mmp_pts, min_pts, pmax_ext=None, k_params=2):
             pp = _extrair_pp(res, len(pts))
             if pp is None: continue
             cp = res[0]
+            wp = res[1] if len(res) > 1 else None
+            if wp is not None and not (WPRIME_PLAUSIVEL[0] <= float(wp)
+                                       <= WPRIME_PLAUSIVEL[1]):
+                rejeitados_wp += 1
+                continue
             p_obs  = [p for p, _ in pts]
             _, see_pct = calc_see(p_obs, pp, k=k_params)
             if see_pct is not None and see_pct < best['see_pct']:
@@ -553,7 +579,9 @@ def _grid_search_model(fit_fn, all_mmp_pts, min_pts, pmax_ext=None, k_params=2):
                         'n_pts': len(pts), 'cp': cp}
         except Exception:
             pass
-    # Também testar com todos os pontos
+    if best.get('result') is not None:
+        best['rejeitados_por_wprime'] = rejeitados_wp
+    # Tambem testar com todos os pontos
     try:
         if pmax_ext is not None:
             res = fit_fn(all_mmp_pts, pmax_ext=pmax_ext)
@@ -810,6 +838,38 @@ def validar(res, dados, janela=JANELA_CP):
     cp = melhor.get('cp')
     mmp60 = dados.get('mmp60_val')
     pts = dados.get('all_mmp_pts_full') or dados.get('all_mmp_pts') or []
+
+    # Teste fora da amostra com o MMP60: o modelo preve uma potencia para
+    # 3600 s e existe um valor real para comparar. E' a verificacao mais
+    # forte disponivel, porque o MMP60 nunca entra em ajuste nenhum.
+    wp_m = melhor.get('wp')
+    if cp and wp_m and mmp60:
+        prev = cp + wp_m / 3600.0
+        erro = (prev - mmp60) / mmp60 * 100
+        avisos.append({
+            'gravidade': 'alto' if abs(erro) > 40 else
+                         'medio' if abs(erro) > 20 else 'ok',
+            'chave': 'previsao_60min',
+            'texto': (f'A 60 min o modelo preve {round(prev)} W e o melhor '
+                      f'real e {round(mmp60)} W: {erro:+.0f}%. '
+                      + ('Erro desta ordem significa que a curva nao '
+                         'descreve o atleta fora das duracoes usadas -- '
+                         'ou o MMP60 nao e um esforco maximo, ou o ajuste '
+                         'esta assente em duracoes demasiado curtas.'
+                         if abs(erro) > 20 else
+                         'O modelo extrapola bem para fora das duracoes '
+                         'usadas, o que e o melhor sinal disponivel.'))})
+
+    # duracao mais longa usada: e' ela que determina a assimptota
+    usadas = [p['t'] for p in (melhor.get('pontos_usados') or [])]
+    if usadas and max(usadas) < 720:
+        avisos.append({
+            'gravidade': 'alto', 'chave': 'sem_duracao_longa',
+            'texto': (f'A duracao mais longa no ajuste e {int(max(usadas))} s. '
+                      'O CP e a assimptota da hiperbole e quem a determina e '
+                      'a duracao longa; sem ela o valor e uma extrapolacao a '
+                      'partir de esforcos curtos e sai sistematicamente alto '
+                      'demais. Incluir pelo menos o de 12 min.')})
 
     if cp and mmp60 and cp > mmp60:
         avisos.append({
@@ -1071,6 +1131,85 @@ def calcular_cp_completo(dados, modalidade, min_pts=3, usar_pmax=True):
             for w, t in (pts_full or pts)]
     saida['validacao'] = validar(saida, dados)
     return saida
+
+
+def sensibilidade_duracoes(dados, modalidade, min_pts=3):
+    """CP do M1 para TODAS as combinacoes possiveis de duracoes.
+
+    Existe por uma razao concreta: mudar o conjunto de duracoes muda o CP
+    em dezenas de watts, e a tentacao e' experimentar conjuntos ate' o
+    numero parecer certo. Isso e' escolher a resposta primeiro e a
+    evidencia depois, e nao ha estatistica que salve um resultado obtido
+    assim.
+
+    Mostrar a gama toda inverte a pergunta. Se o CP variar 10 W entre
+    combinacoes, esta bem determinado e qualquer uma serve. Se variar 80 W,
+    a resposta honesta nao e' "escolho a que me agrada" -- e' que estes
+    dados nao determinam um CP, e o que falta e' um esforco maximo, nao
+    outra combinacao.
+    """
+    from itertools import combinations
+    pts = dados.get('all_mmp_pts_full') or dados.get('all_mmp_pts') or []
+    if len(pts) < min_pts:
+        return {'suficiente': False, 'n_pontos': len(pts)}
+
+    linhas = []
+    for k in range(min_pts, len(pts) + 1):
+        for combo in combinations(sorted(pts, key=lambda x: x[1]), k):
+            try:
+                res = fit_m1(list(combo), make_w([t for _, t in combo], 'log'))
+                cp = res[0]
+                wp = res[1]
+                if cp is None or not (0 < cp < 2000):
+                    continue
+                pp = _extrair_pp(res, len(combo))
+                see = calc_see([p for p, _ in combo], pp, k=2)[1] if pp else None
+            except Exception:
+                continue
+            linhas.append({
+                'duracoes': [int(t) for _, t in combo],
+                'n': k,
+                'cp': round(float(cp), 1),
+                'wp_kj': round(float(wp) / 1000, 2) if wp else None,
+                'see_pct': see,
+            })
+    if not linhas:
+        return {'suficiente': False, 'n_pontos': len(pts)}
+
+    cps = sorted(x['cp'] for x in linhas)
+    mediana = quartis_simples(cps)
+    plausiveis = [x for x in linhas
+                  if x['wp_kj'] and WPRIME_PLAUSIVEL[0] / 1000 <= x['wp_kj']
+                  <= WPRIME_PLAUSIVEL[1] / 1000]
+    cps_pl = sorted(x['cp'] for x in plausiveis)
+
+    return {
+        'suficiente': True,
+        'n_combinacoes': len(linhas),
+        'cp_min': cps[0], 'cp_max': cps[-1], 'cp_mediana': mediana,
+        'amplitude_w': round(cps[-1] - cps[0], 1),
+        'amplitude_pct': round((cps[-1] - cps[0]) / mediana * 100, 1)
+                         if mediana else None,
+        'n_com_wprime_plausivel': len(plausiveis),
+        'cp_min_plausivel': cps_pl[0] if cps_pl else None,
+        'cp_max_plausivel': cps_pl[-1] if cps_pl else None,
+        'cp_mediana_plausivel': quartis_simples(cps_pl) if cps_pl else None,
+        'combinacoes': sorted(linhas, key=lambda x: -x['cp']),
+        'veredicto': (
+            'CP bem determinado: muda pouco com a combinacao de duracoes'
+            if mediana and (cps[-1] - cps[0]) / mediana < 0.08 else
+            'CP mal determinado: depende demasiado de que duracoes se usam. '
+            'Faltam esforcos maximos, e escolher a combinacao que da o '
+            'numero esperado nao resolve isso'),
+    }
+
+
+def quartis_simples(vs):
+    if not vs:
+        return None
+    vs = sorted(vs)
+    n = len(vs)
+    return round(vs[n // 2] if n % 2 else (vs[n // 2 - 1] + vs[n // 2]) / 2, 1)
 
 
 def curva_do_modelo(cp, wp, t_min=30, t_max=3600, n=120):

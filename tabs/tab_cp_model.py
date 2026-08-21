@@ -22,54 +22,34 @@ BODY = """
 
   <div class="controls">
     <label class="sel">Modalidade
-      <select id="cpModalidade" onchange="cpCarregar()">
+      <select id="cpModalidade" onchange="cpPeriodos().then(cpCarregar)">
         <option>Bike</option><option>Row</option>
         <option>Ski</option><option>Run</option>
       </select>
     </label>
     <label class="sel">Período
-      <select id="cpPeriodo" onchange="cpCarregar()">
-        <option value="season:">season actual</option>
-        <option value="janela:365">últimos 12 meses</option>
-        <option value="janela:180">últimos 6 meses</option>
-        <option value="janela:730">últimos 2 anos</option>
-      </select>
+      <select id="cpPeriodo" onchange="cpCarregar()"></select>
     </label>
     <button onclick="cpCarregar()">Recalcular</button>
     <span id="cpEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
 
-  <div id="cpValidacao" style="margin-bottom:12px;"></div>
-
-  <div class="controls" style="margin-bottom:8px;">
-    <span style="color:#8b949e;font-size:12px;">Durações no ajuste:</span>
+  <div class="controls" style="margin-bottom:4px;">
+    <span style="color:#8b949e;font-size:12px;">Durações:</span>
     <span id="cpDurs"></span>
   </div>
-  <details style="margin-bottom:10px;">
-    <summary style="cursor:pointer;font-size:12px;color:#8b949e;">Opções avançadas</summary>
-    <div class="controls" style="margin-top:6px;flex-wrap:wrap;gap:10px;">
-      <label class="sel" style="white-space:nowrap;">
-        <input type="checkbox" id="cpUsarPmax" checked onchange="cpCarregar()">
-        ancorar 3 parâmetros no Pmax</label>
-      <label class="sel" style="white-space:nowrap;">
-        <input type="checkbox" id="cpExclDup" checked onchange="cpCarregar()">
-        excluir durações com potência igual</label>
-      <label class="sel">Se faltarem durações na época
-        <select id="cpModo" onchange="cpCarregar()">
-          <option value="coerente" selected>usar a época completa mais recente</option>
-          <option value="season">deixar por preencher</option>
-          <option value="recuo">ir buscar cada uma onde existir</option>
-        </select>
-      </label>
-      <label class="sel">Mín. de durações
-        <select id="cpMinPts" onchange="cpCarregar()">
-          <option value="2">2</option>
-          <option value="3" selected>3</option>
-          <option value="4">4</option>
-        </select>
-      </label>
-    </div>
-  </details>
+
+  <div id="cpValidacao" style="margin-bottom:12px;"></div>
+
+  <div style="display:none;">
+    <input type="checkbox" id="cpUsarPmax" checked>
+    <input type="checkbox" id="cpExclDup" checked>
+    <select id="cpModo"><option value="recuo" selected>recuo</option></select>
+    <select id="cpMinPts"><option value="3" selected>3</option></select>
+  </div>
+
+  <h2>Quanto o CP depende das durações</h2>
+  <div id="cpSensib"></div>
 
   <h2>Modelos</h2>
   <div id="cpModelos" style="overflow-x:auto;"></div>
@@ -154,6 +134,7 @@ function cpCarregar(){
  const per = document.getElementById('cpPeriodo').value.split(':');
  let q = '?min_pts=' + mp;
  if(per[0] === 'janela') q += '&janela=' + per[1];
+ else if(per[0] === 'ano') q += '&ano=' + per[1];
  else if(per[1]) q += '&season=' + encodeURIComponent(per[1]);
  if(CP_DURS.length) q += '&classicas=' + CP_DURS.join(',');
  q += '&modo=' + document.getElementById('cpModo').value;
@@ -168,7 +149,8 @@ function cpCarregar(){
    est.textContent = d.motivo || d.mensagem || 'sem dados';
    document.getElementById('cpModelos').innerHTML =
      '<p style="color:#F0883E;font-size:12px;">' + (d.motivo||'Sem modelos.') + '</p>';
-   cpSeasons(d); cpDursEdit(); cpMMPEdit(); cpDraw();
+   cpDursEdit(); cpMMPEdit(); cpDraw();
+   const sb=document.getElementById('cpSensib'); if(sb) sb.innerHTML='';
    ['cpAnaliseTexto','cpDetalhe','cpGlossario','cpLegenda'].forEach(function(id){
     const el = document.getElementById(id); if(el) el.innerHTML = '';
    });
@@ -179,24 +161,75 @@ function cpCarregar(){
     + (d.melhor ? ' · menor SEE%: ' + d.melhor.nome : '')
     + (d.season_do_conjunto ? ' · conjunto de ' + d.season_do_conjunto : '')
     + (d.dispersao_datas_dias!=null ? ' · ' + d.dispersao_datas_dias + 'd de dispersão' : '')
+    + (d.pmax_origem ? ' · Pmax ' + Math.round(d.pmax) + 'W ('
+        + d.pmax_origem.campo + ', ' + d.pmax_origem.data + ')' : '')
     + (Object.keys(d.overrides_aplicados||{}).length ? ' · VALORES EDITADOS' : '');
-  cpSeasons(d); cpDursEdit(); cpValidacao(); cpMMPEdit(); cpTabela(); cpDraw();
+  cpDursEdit(); cpSensib(); cpValidacao(); cpMMPEdit(); cpTabela(); cpDraw();
   cpVeloDraw(); cpResidDraw(); cpAnalise(); cpGloss(); cpDetalhe();
  }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
 }
 
-function cpSeasons(d){
- // as seasons entram no mesmo selector do período: um controlo só, em vez
- // de dois que se contradizem
+function cpPeriodos(){
  const sel = document.getElementById('cpPeriodo');
- if(sel._preenchido) return;
- sel._preenchido = true;
- (d.seasons_disponiveis||[]).forEach(function(s2, i){
-  const o = document.createElement('option');
-  o.value = 'season:' + s2;
-  o.textContent = i === 0 ? s2 + ' (actual)' : s2;
-  sel.appendChild(o);
+ const mod = document.getElementById('cpModalidade').value;
+ sel.innerHTML = '<option value="season:">season actual</option>';
+ return fetch('/api/cp/periodos/' + mod).then(r=>r.json()).then(function(d){
+  if(d.status !== 'ok') return;
+  (d.seasons||[]).forEach(function(p, i){
+   if(p.actual) return;
+   const o = document.createElement('option');
+   o.value = p.valor;
+   o.textContent = (i === 1 ? 'season anterior — ' : '') + p.rotulo
+     + ' (' + p.n + ')';
+   sel.appendChild(o);
+  });
+  (d.anos||[]).forEach(function(p){
+   const o = document.createElement('option');
+   o.value = p.valor;
+   o.textContent = 'ano civil ' + p.rotulo + ' (' + p.n + ')';
+   sel.appendChild(o);
+  });
+ }).catch(function(){});
+}
+
+function cpSeasons(d){ /* periodos agora vêm de cpPeriodos() */ }
+
+function cpSensib(){
+ const box = document.getElementById('cpSensib');
+ if(!box) return;
+ const sv = CP && CP.sensibilidade;
+ if(!sv || !sv.suficiente){ box.innerHTML=''; return; }
+ const bem = sv.amplitude_pct != null && sv.amplitude_pct < 8;
+ const cor = bem ? '#3FB950' : '#F85149';
+ let h = '<p style="font-size:12px;">CP entre <b>' + sv.cp_min + '</b> e <b>'
+  + sv.cp_max + ' W</b> conforme as durações usadas — '
+  + '<span style="color:' + cor + ';">' + sv.amplitude_w + ' W ('
+  + sv.amplitude_pct + '%)</span>. Mediana ' + sv.cp_mediana + ' W.'
+  + (sv.n_com_wprime_plausivel
+     ? ' Só ' + sv.n_com_wprime_plausivel + ' de ' + sv.n_combinacoes
+       + ' combinações dão W\u2032 fisiologicamente possível ('
+       + sv.cp_min_plausivel + '–' + sv.cp_max_plausivel + ' W).'
+     : ' Nenhuma combinação dá W\u2032 fisiologicamente possível.')
+  + '</p>';
+ h += '<p style="font-size:11px;color:' + cor + ';">' + sv.veredicto + '</p>';
+ h += '<details><summary style="cursor:pointer;font-size:12px;color:#8b949e;">'
+  + 'Ver as ' + sv.n_combinacoes + ' combinações</summary>'
+  + '<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+  + '<tr style="color:#8b949e;text-align:left;"><th style="padding-right:14px;">Durações</th>'
+  + '<th style="padding-right:14px;">CP</th><th style="padding-right:14px;">W\u2032</th>'
+  + '<th>SEE%</th></tr>';
+ sv.combinacoes.forEach(function(c){
+  const wpOk = c.wp_kj != null && c.wp_kj >= 5 && c.wp_kj <= 30;
+  h += '<tr><td style="padding-right:14px;color:#8b949e;">'
+   + c.duracoes.map(function(t){ return t>=60 ? (Math.round(t/60*10)/10)+'min' : t+'s'; }).join(' + ')
+   + '</td><td style="padding-right:14px;">' + c.cp + ' W</td>'
+   + '<td style="padding-right:14px;color:' + (wpOk?'#c9d1d9':'#F85149') + ';">'
+   + (c.wp_kj!=null ? c.wp_kj + ' kJ' : '—') + '</td>'
+   + '<td style="color:#8b949e;">' + (c.see_pct!=null ? c.see_pct + '%' : '—')
+   + '</td></tr>';
  });
+ h += '</table></details>';
+ box.innerHTML = h;
 }
 
 function cpDursEdit(){
@@ -939,7 +972,7 @@ document.addEventListener('DOMContentLoaded', function(){
  const hoje = new Date().toISOString().slice(0,10);
  document.getElementById('cpDataRef').value = hoje;
  document.getElementById('cpHistAte').value = hoje;
- cpCarregar(); cpHistorico();
+ cpPeriodos().then(cpCarregar); cpHistorico();
 });
 window.addEventListener('resize', function(){
  cpDraw(); cpVeloDraw(); cpResidDraw(); histDraw(); });

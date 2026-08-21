@@ -715,13 +715,15 @@ BODY = r"""
       padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;max-width:200px;"></div>
   </div>
   <p style="color:#8b949e;font-size:11px;margin:4px 0 0 0;">
-    Losangos: pontos do modelo de Mader. Círculos: mediana dos campos da
-    Intervals.icu. Os campos em watts são convertidos para bpm (e os em bpm
-    para watts) pela recta HR↔Watts do próprio atleta — a nuvem cinzenta são
-    os pares reais que a produziram. Círculos vazios com asterisco são campos
-    iguais em todas as sessões: definições do perfil, não medições, e por isso
-    não contam como confirmação independente. Se dois pontos que deviam ser a
-    mesma coisa ficam afastados, um dos dois caminhos está errado.</p>
+    Losangos: pontos do modelo de Mader. Riscas amarelas: mediana dos campos
+    da Intervals.icu, cada um no eixo em que foi medido — verticais para os
+    que vêm em watts, horizontais para os que vêm em bpm. Os campos em watts são convertidos para bpm (e os em bpm
+    A nuvem cinzenta são os pares HR↔Watts reais das tuas sessões. A recta
+    só é desenhada, e a conversão entre eixos só acontece, se o r² for
+    suficiente — abaixo disso converter amplifica ruído e a dispersão que
+    apareceria seria a da recta, não a dos métodos. Riscas a tracejado curto
+    com asterisco são campos iguais em todas as sessões: definições do perfil,
+    não medições, e por isso não contam como confirmação independente.</p>
   <div id="pmExtTabela" style="overflow-x:auto;margin-top:8px;"></div>
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">O que é cada campo</summary>
@@ -2342,38 +2344,54 @@ function pmExtTabela(){
  const rel = PMEXT.relacao_hr_watts || {};
 
  // ── coerência entre estimativas independentes do mesmo limiar ──
+ // separada por unidade: watts com watts, bpm com bpm
  const co = PMEXT.coerencia_por_grupo || {};
  let h='';
  if(Object.keys(co).length){
-  h+='<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:14px;">'
+  h+='<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px;">'
    +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
-   +'<th style="padding:6px;">Limiar</th><th>Estimativas</th><th>Intervalo</th>'
-   +'<th>Mediana</th><th>Amplitude</th><th>Modelo</th></tr>';
+   +'<th style="padding:6px;">Limiar</th><th>Unidade</th><th>Estimativas</th>'
+   +'<th>Intervalo</th><th>Mediana</th><th>Amplitude</th><th>Modelo</th></tr>';
   Object.keys(co).forEach(function(k){
    const c=co[k];
-   const cor = c.amplitude_pct<15 ? '#3FB950' : c.amplitude_pct<35 ? '#F0883E' : '#F85149';
-   h+='<tr style="border-bottom:1px solid #161b22;">'
-    +'<td style="padding:6px;">'+c.rotulo+'</td>'
-    +'<td style="color:#8b949e;">'+c.detalhe.map(function(d){
-        return d.campo+' '+d.w+'W';}).join(' · ')+'</td>'
-    +'<td style="color:#8b949e;">'+c.min_w+'–'+c.max_w+' W</td>'
-    +'<td><b>'+c.mediana_w+' W</b></td>'
-    +'<td style="color:'+cor+';">'+c.amplitude_w+' W ('+c.amplitude_pct+'%)</td>'
-    +'<td>'+(c.modelo_w!=null?c.modelo_w+' W':'—')+'</td></tr>';
+   ['em_watts','em_bpm'].forEach(function(bk, bi){
+    const b=c[bk]; if(!b) return;
+    const ap=b.amplitude_pct;
+    const cor = ap==null ? '#8b949e' : ap<10 ? '#3FB950' : ap<25 ? '#F0883E' : '#F85149';
+    h+='<tr style="border-bottom:1px solid #161b22;">'
+     +'<td style="padding:6px;">'+(bi===0?c.rotulo:'')+'</td>'
+     +'<td style="color:'+(b.unidade==='W'?'#c9d1d9':'#79C0FF')+';">'+b.unidade+'</td>'
+     +'<td style="color:#8b949e;">'+b.detalhe.map(function(d){
+         return d.campo+' '+d.valor; }).join(' · ')+'</td>'
+     +'<td style="color:#8b949e;">'+b.min+'–'+b.max+'</td>'
+     +'<td><b>'+b.mediana+'</b></td>'
+     +'<td style="color:'+cor+';">'+b.amplitude+(ap!=null?' ('+ap+'%)':'')+'</td>'
+     +'<td>'+(bi===0 && c.modelo_w!=null ? c.modelo_w+' W' : '')+'</td></tr>';
+   });
   });
-  h+='</table><p style="color:#8b949e;font-size:11px;margin:-8px 0 14px 0;">'
-   +'Cada linha junta métodos independentes que deviam apontar ao mesmo '
-   +'limiar. Amplitude pequena significa que concordam e que a mediana é '
-   +'uma âncora sólida; amplitude grande significa que não estão a medir a '
-   +'mesma coisa, e aí a comparação com o modelo não decide nada.</p>';
+  h+='</table>';
  }
+ const relF = rel.fiavel;
+ h+='<p style="color:'+(relF?'#8b949e':'#F0883E')+';font-size:11px;margin:-4px 0 14px 0;">'
+  + (relF
+     ? 'Cada linha junta métodos independentes que apontam ao mesmo limiar, '
+       + 'separados pela unidade em que foram medidos. Campos em watts nunca '
+       + 'são comparados com campos em bpm: seria comparar uma medição com '
+       + 'uma conversão.'
+     : 'A recta HR↔Watts tem r²=' + (rel.r2!=null?rel.r2:'?') + ', abaixo do '
+       + 'mínimo de ' + (rel.r2_minimo||0.5) + ' para converter. As conversões '
+       + 'estão desligadas: cada campo aparece só na unidade em que foi '
+       + 'medido. Converter com esta recta amplificava ruído — 11 bpm de '
+       + 'diferença viravam 80 W, e o intervalo do limiar aparecia com 86% de '
+       + 'amplitude quando os campos em watts concordavam a 1%.')
+  + '</p>';
 
  // ── tabela por grupo ──
  let grupoActual = null;
  h+='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
   +'<th style="padding:6px;">Campo</th><th>n</th><th>p25</th><th>Mediana</th>'
-  +'<th>p75</th><th>W eq.</th><th>bpm eq.</th><th>Último</th>'
+  +'<th>p75</th><th>Watts</th><th>bpm</th><th>Último</th>'
   +'<th>Modelo</th><th>Δ</th></tr>';
  cs.forEach(function(c){
   if(c.grupo !== grupoActual){
@@ -2402,17 +2420,19 @@ function pmExtTabela(){
    +'<td><b>'+(q.p50!=null?q.p50:'—')+'</b> '
    +'<span style="color:#8b949e;font-size:10px;">'+(c.unidade||'')+'</span></td>'
    +'<td style="color:#8b949e;">'+(q.p75!=null?q.p75:'—')+'</td>'
-   +'<td style="color:'+(c.eixo==='W'?'#c9d1d9':'#8b949e')+';">'
-   +(c.watts_equivalente!=null?Math.round(c.watts_equivalente):'—')+'</td>'
-   +'<td style="color:'+(c.eixo==='bpm'?'#c9d1d9':'#8b949e')+';">'
-   +(c.hr_equivalente!=null?Math.round(c.hr_equivalente):'—')+'</td>'
+   +'<td style="color:'+(c.watts_medido!=null?'#c9d1d9':'#6e7681')+';">'
+   +(c.watts_medido!=null?Math.round(c.watts_medido)
+     : c.watts_convertido!=null?'('+Math.round(c.watts_convertido)+')':'—')+'</td>'
+   +'<td style="color:'+(c.hr_medido!=null?'#c9d1d9':'#6e7681')+';">'
+   +(c.hr_medido!=null?Math.round(c.hr_medido)
+     : c.hr_convertido!=null?'('+Math.round(c.hr_convertido)+')':'—')+'</td>'
    +'<td style="color:#8b949e;">'+(u.valor!=null?u.valor+' · '+(u.data||''):'—')+'</td>'
    +'<td>'+(cm?cm.modelo:'—')+'</td>'
    +'<td style="color:'+dcor+';">'+dtxt+'</td></tr>';
  });
  h+='</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">'
-  +'Colunas a cinzento claro são conversões, não medições: um campo medido '
-  +'em bpm tem os watts calculados pela recta HR↔Watts'
+  +'Valores entre parênteses são conversões, não medições. O Δ só é '
+  +'calculado quando há valor medido na unidade do modelo. Recta HR↔Watts'
   +(rel.suficiente ? ' (r²='+rel.r2+', n='+rel.n
      +(rel.descartados?', '+rel.descartados+' pares descartados por FC implausível':'')
      +')' : ' — que aqui não existe')
@@ -2428,8 +2448,9 @@ function pmExtDraw(){
  const g=o.g, W=o.W, H=o.H;
  const rel = (PMEXT && PMEXT.relacao_hr_watts) || {};
  const nuvem = (PMEXT && PMEXT.nuvem_hr_watts) || [];
+ // basta ter sido medido num dos eixos: cada um é desenhado no seu
  const cs = ((PMEXT && PMEXT.campos) || []).filter(function(c){
-   return c.watts_equivalente!=null && c.hr_equivalente!=null
+   return (c.watts_medido!=null || c.hr_medido!=null)
      && ['aerobio','limiar','vo2max'].indexOf(c.grupo)>=0; });
  const md = (PMEXT && PMEXT.modelo) || {};
  const mdhr = (PMEXT && PMEXT.modelo_em_hr) || {};
@@ -2452,7 +2473,10 @@ function pmExtDraw(){
 
  let xs=[], ys=[];
  nuvem.forEach(function(p){ xs.push(p.w); ys.push(p.hr); });
- cs.forEach(function(c){ xs.push(c.watts_equivalente); ys.push(c.hr_equivalente); });
+ cs.forEach(function(c){
+  if(c.watts_medido!=null) xs.push(c.watts_medido);
+  if(c.hr_medido!=null) ys.push(c.hr_medido);
+ });
  refs.forEach(function(r){ if(valW(r)!=null){ xs.push(valW(r)); ys.push(valHR(r)); }});
  const xa=Math.min.apply(null,xs)*0.92, xb=Math.max.apply(null,xs)*1.06;
  const ya=Math.min.apply(null,ys)*0.94, yb=Math.max.apply(null,ys)*1.05;
@@ -2495,7 +2519,7 @@ function pmExtDraw(){
  nuvem.forEach(function(p){
   g.beginPath(); g.arc(X(p.w), Y(p.hr), 2, 0, Math.PI*2); g.fill(); });
 
- if(rel.suficiente){
+ if(rel.suficiente && rel.fiavel){
   const a=rel.declive_bpm_por_w, b=rel.intercepto_bpm;
   g.strokeStyle='#8b949e'; g.setLineDash([6,4]); g.lineWidth=1.5;
   g.beginPath(); g.moveTo(X(xa), Y(a*xa+b)); g.lineTo(X(xb), Y(a*xb+b));
@@ -2511,7 +2535,7 @@ function pmExtDraw(){
   const x=X(wv);
   g.strokeStyle=r.cor; g.setLineDash([5,4]); g.lineWidth=1.2;
   g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
-  if(hv!=null){
+  if(hv!=null && rel.fiavel){
    const y=Y(hv);
    g.globalAlpha=0.5;
    g.beginPath(); g.moveTo(PL,y); g.lineTo(x,y); g.stroke();
@@ -2531,27 +2555,68 @@ function pmExtDraw(){
     w:wv, hr:hv, tipo:'modelo'});
  });
 
+ // Cada campo é desenhado no eixo em que foi MEDIDO: os que vêm em watts
+ // como risca vertical, os que vêm em bpm como risca horizontal. Sem recta
+ // fiável não há ponto (x,y) — desenhar um seria inventar a coordenada que
+ // falta e apresentá-la com a mesma autoridade da que foi medida.
+ const ocupadoW = [], ocupadoH = [];
  cs.forEach(function(c){
-  const x=X(c.watts_equivalente), y=Y(c.hr_equivalente);
-  const medido = c.eixo==='bpm' ? ' (bpm)' : c.eixo==='wkg' ? ' (W/kg)' : ' (W)';
-  g.strokeStyle='#E3B341'; g.lineWidth=2;
-  g.beginPath(); g.arc(x,y,5,0,Math.PI*2);
-  if(!c.constante){ g.fillStyle='rgba(227,179,65,0.75)'; g.fill(); }
-  g.stroke(); g.lineWidth=1;
-  g.fillStyle='#E3B341'; g.textAlign='left'; g.font='10px sans-serif';
-  g.fillText(c.rotulo + (c.constante?' *':''), x+9, y+12);
-  PMEXT_ITENS.push({x:x, y:y, rot:c.rotulo, cor:'#E3B341',
-    w:c.watts_equivalente, hr:c.hr_equivalente, tipo:'campo',
-    unidade:c.unidade, medido:medido, constante:c.constante,
-    grupo:c.grupo_rotulo, q:c.quartis});
+  const cor = c.constante ? '#8b949e' : '#E3B341';
+  const rot = c.rotulo + (c.constante ? ' *' : '');
+  g.font='10px sans-serif';
+
+  if(c.watts_medido != null && c.watts_medido >= xa && c.watts_medido <= xb){
+   const x = X(c.watts_medido);
+   g.strokeStyle=cor; g.setLineDash(c.constante?[2,4]:[4,3]); g.lineWidth=1.2;
+   g.beginPath(); g.moveTo(x, PT); g.lineTo(x, PT+h); g.stroke();
+   g.setLineDash([]); g.lineWidth=1;
+   const txt = rot+' '+Math.round(c.watts_medido)+'W';
+   const larg = g.measureText(txt).width;
+   let n=0;
+   while(ocupadoW.some(o=>o.n===n && x-larg/2 < o.fim+6)) n++;
+   ocupadoW.push({n:n, fim:x+larg/2});
+   const yT = PT+h-8-n*12;
+   g.fillStyle='#0d1117'; g.fillRect(x-larg/2-2, yT-9, larg+4, 12);
+   g.fillStyle=cor; g.textAlign='center'; g.fillText(txt, x, yT);
+   PMEXT_ITENS.push({x:x, y:PT+h-8-n*12, rot:c.rotulo, cor:cor,
+     w:c.watts_medido, hr:c.hr_convertido, tipo:'campo', eixo:'W',
+     unidade:c.unidade, constante:c.constante, grupo:c.grupo_rotulo,
+     q:c.quartis});
+  }
+
+  if(c.hr_medido != null && c.hr_medido >= ya && c.hr_medido <= yb){
+   const y = Y(c.hr_medido);
+   g.strokeStyle=cor; g.setLineDash(c.constante?[2,4]:[4,3]); g.lineWidth=1.2;
+   g.beginPath(); g.moveTo(PL, y); g.lineTo(PL+w, y); g.stroke();
+   g.setLineDash([]); g.lineWidth=1;
+   const txt = rot+' '+Math.round(c.hr_medido)+'bpm';
+   const larg = g.measureText(txt).width;
+   let n=0;
+   while(ocupadoH.some(o=>o.n===n && Math.abs(o.y-y)<11)) n++;
+   ocupadoH.push({n:n, y:y});
+   const xT = PL+6+n*(larg+10);
+   g.fillStyle='#0d1117'; g.fillRect(xT-2, y-10, larg+4, 12);
+   g.fillStyle=cor; g.textAlign='left'; g.fillText(txt, xT, y-1);
+   PMEXT_ITENS.push({x:xT+larg/2, y:y, rot:c.rotulo, cor:cor,
+     w:c.watts_convertido, hr:c.hr_medido, tipo:'campo', eixo:'bpm',
+     unidade:c.unidade, constante:c.constante, grupo:c.grupo_rotulo,
+     q:c.quartis});
+  }
  });
 
  g.textAlign='left'; g.font='10px sans-serif';
  g.fillStyle='#8b949e'; g.fillText('\u2502 modelo', PL+w+8, PT+12);
- g.fillStyle='#E3B341'; g.fillText('\u25CF campos icu', PL+w+8, PT+26);
+ g.fillStyle='#E3B341'; g.fillText('campos icu', PL+w+8, PT+26);
  g.fillStyle='#8b949e';
- g.fillText(rel.suficiente ? 'r\u00b2='+rel.r2+' n='+rel.n : 'sem recta',
+ g.fillText(!rel.suficiente ? 'sem recta'
+            : rel.fiavel ? 'r\u00b2='+rel.r2+' n='+rel.n
+            : 'r\u00b2='+rel.r2+' — conversão desligada',
             PL+w+8, PT+40);
+ if(rel.suficiente && !rel.fiavel){
+  g.fillStyle='#F0883E';
+  g.fillText('\u2502 medido em W', PL+w+8, PT+54);
+  g.fillText('\u2500 medido em bpm', PL+w+8, PT+68);
+ }
  g.font='11px sans-serif';
  pmExtLigarTip();
 }

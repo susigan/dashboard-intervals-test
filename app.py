@@ -3216,6 +3216,11 @@ def api_aquecimento_calibrar():
 import api_cp
 api_cp.registar(app)
 
+# Diagnostico de streams e campos de HRV: descobrir os nomes reais em vez
+# de os assumir. Adivinhar ja' custou duas rondas neste projecto.
+import api_streams_diag
+api_streams_diag.registar(app)
+
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))

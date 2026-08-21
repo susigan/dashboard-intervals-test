@@ -55,6 +55,7 @@ def registar(app):
             import api_client as api
 
             uma = request.args.get('id')
+            passos = []          # porque e' que sobraram N actividades
             if uma:
                 ids = [uma]
                 meta = {uma: {}}
@@ -63,10 +64,23 @@ def registar(app):
                 n = min(request.args.get('n', type=int) or 8, 25)
                 tipo = request.args.get('tipo')
                 oldest = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
-                acts = api.icu_get(
+                # icu_get devolve (data, erro) -- nao a lista directamente.
+                # Tratar o tuplo como lista fazia com que o achatamento
+                # devolvesse zero e o endpoint dissesse "0 actividades" sem
+                # explicar nada.
+                bruto, erro = api.icu_get(
                     f'/athlete/{api.ATHLETE_ID}/activities',
                     {'oldest': oldest,
-                     'newest': datetime.now().strftime('%Y-%m-%d')}) or []
+                     'newest': datetime.now().strftime('%Y-%m-%d')})
+                passos.append({'passo': 'resposta da API',
+                               'forma': type(bruto).__name__,
+                               'erro': erro,
+                               'n': len(bruto) if hasattr(bruto, '__len__') else None})
+                if erro:
+                    return jsonify({'status': 'erro',
+                                    'mensagem': f'API: {erro}',
+                                    'como_se_chegou_aqui': passos}), 200
+                acts = bruto or []
                 if isinstance(acts, dict):
                     acts = acts.get('content') or acts.get('activities') or []
                 # a API devolve por vezes uma lista de listas; achatar e
@@ -78,25 +92,47 @@ def registar(app):
                     elif isinstance(x, list):
                         planas.extend(y for y in x if isinstance(y, dict))
                 acts = planas
+                passos.append({'passo': 'apos achatar', 'n': len(acts)})
+
+                tipos_vistos = {}
+                for a in acts:
+                    t = a.get('type')
+                    tipos_vistos[t] = tipos_vistos.get(t, 0) + 1
+                passos.append({'passo': 'tipos encontrados', 'tipos': tipos_vistos})
+
                 if tipo:
-                    acts = [a for a in acts if a.get('type') == tipo]
+                    # aceitar tanto o tipo da API ('VirtualRide') como a
+                    # modalidade do dashboard ('Bike'), senao filtrar por
+                    # 'Ride' devolve zero quando tudo e' VirtualRide
+                    try:
+                        from config import TYPE_MAP
+                        variantes = {k for k, v in TYPE_MAP.items() if v == tipo}
+                    except Exception:
+                        variantes = set()
+                    variantes.add(tipo)
+                    acts = [a for a in acts if a.get('type') in variantes]
+                    passos.append({'passo': f'apos filtrar por {tipo}',
+                                   'variantes_aceites': sorted(variantes),
+                                   'n': len(acts)})
+
                 acts = acts[:n]
                 ids = [a.get('id') for a in acts if a.get('id')]
+                passos.append({'passo': 'ids com que se vai buscar streams',
+                               'n': len(ids)})
                 meta = {a.get('id'): {
                     'data': (a.get('start_date_local') or '')[:10],
                     'tipo': a.get('type'), 'nome': (a.get('name') or '')[:60],
-                    'tem_hrv_no_sumario': any(
-                        k for k in a
-                        if 'hrv' in k.lower() or 'dfa' in k.lower()
-                        or 'rr' == k.lower()),
                 } for a in acts}
 
             por_actividade, todos = {}, {}
             for aid in ids:
                 try:
-                    s = api.icu_get(f'/activity/{aid}/streams')
+                    s, err = api.icu_get(f'/activity/{aid}/streams')
                 except Exception as e:
                     por_actividade[aid] = {'erro': f'{type(e).__name__}: {e}'}
+                    continue
+                if err:
+                    por_actividade[aid] = {**(meta.get(aid) or {}), 'erro': err}
                     continue
                 if isinstance(s, dict):
                     s = s.get('streams') or s.get('content') or []
@@ -128,6 +164,7 @@ def registar(app):
 
             return jsonify({
                 'status': 'ok',
+                'como_se_chegou_aqui': passos,
                 'actividades_inspeccionadas': len(ids),
                 'streams_por_actividade': por_actividade,
                 'todos_os_streams': dict(sorted(todos.items(),

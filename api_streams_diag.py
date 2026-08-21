@@ -68,7 +68,16 @@ def registar(app):
                     {'oldest': oldest,
                      'newest': datetime.now().strftime('%Y-%m-%d')}) or []
                 if isinstance(acts, dict):
-                    acts = acts.get('content') or []
+                    acts = acts.get('content') or acts.get('activities') or []
+                # a API devolve por vezes uma lista de listas; achatar e
+                # ficar so' com dicionarios, senao o .get rebenta
+                planas = []
+                for x in acts:
+                    if isinstance(x, dict):
+                        planas.append(x)
+                    elif isinstance(x, list):
+                        planas.extend(y for y in x if isinstance(y, dict))
+                acts = planas
                 if tipo:
                     acts = [a for a in acts if a.get('type') == tipo]
                 acts = acts[:n]

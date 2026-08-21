@@ -1994,20 +1994,29 @@ def limiares_externos_dados(modalidade, args):
                          'diferenca': round(q['p50'] - valor_modelo, 2),
                          'diferenca_pct': round(
                              (q['p50'] - valor_modelo) / valor_modelo * 100, 1)}
-            # conversao para o outro eixo, para tudo caber num grafico
+            # O que foi MEDIDO fica separado do que e' CONVERTIDO. Antes
+            # havia so' 'watts_equivalente' e 'hr_equivalente', e nada
+            # distinguia um valor medido de um convertido -- foi assim que
+            # tres campos em bpm, convertidos por uma recta de r2=0.079,
+            # esticaram o intervalo do LT1 de 1% para 86%.
             eixo = definicao.get('eixo')
             p50 = q['p50'] if q else None
-            watts_eq = hr_eq = None
+            watts_medido = hr_medido = None
             if p50 is not None:
                 if eixo == 'W':
-                    watts_eq = p50
+                    watts_medido = p50
                 elif eixo == 'wkg' and peso:
-                    watts_eq = round(p50 * float(peso), 1)
+                    watts_medido = round(p50 * float(peso), 1)
                 elif eixo == 'bpm':
-                    hr_eq = p50
-                    watts_eq = pmet.watts_de_hr(relacao, p50)
-                if watts_eq is not None and hr_eq is None:
-                    hr_eq = pmet.hr_de_watts(relacao, watts_eq)
+                    hr_medido = p50
+            watts_conv = (pmet.watts_de_hr(relacao, hr_medido)
+                          if (hr_medido is not None and watts_medido is None)
+                          else None)
+            hr_conv = (pmet.hr_de_watts(relacao, watts_medido)
+                       if (watts_medido is not None and hr_medido is None)
+                       else None)
+            watts_eq = watts_medido if watts_medido is not None else watts_conv
+            hr_eq = hr_medido if hr_medido is not None else hr_conv
             constante = pmet.e_constante(q)
 
             saida.append({
@@ -2017,6 +2026,10 @@ def limiares_externos_dados(modalidade, args):
                 'eixo': eixo,
                 'grupo': definicao.get('grupo'),
                 'grupo_rotulo': pmet.ROTULO_GRUPO.get(definicao.get('grupo')),
+                'watts_medido': watts_medido,
+                'hr_medido': hr_medido,
+                'watts_convertido': watts_conv,
+                'hr_convertido': hr_conv,
                 'watts_equivalente': watts_eq,
                 'hr_equivalente': hr_eq,
                 'constante': constante,
@@ -2032,6 +2045,7 @@ def limiares_externos_dados(modalidade, args):
             })
         _ordem = {g: i for i, g in enumerate(pmet.ORDEM_GRUPOS)}
         saida.sort(key=lambda x: (_ordem.get(x.get('grupo'), 99),
+                                  x.get('hr_medido') is not None,
                                   x['watts_equivalente'] is None,
                                   x['watts_equivalente'] or 0,
                                   x['rotulo']))
@@ -2051,7 +2065,9 @@ def limiares_externos_dados(modalidade, args):
             'modelo_em_hr': {k: pmet.hr_de_watts(relacao, v)
                              for k, v in modelo.items()
                              if k in ('lt1_w', 'lt2_w', 'mlss_at_w',
-                                      'fatmax_w', 'pvo2max_w') and v},
+                                      'fatmax_w', 'pvo2max_w') and v
+                             and pmet.hr_de_watts(relacao, v) is not None},
+            'conversao_disponivel': bool(relacao.get('fiavel')),
             'relacao_hr_watts': {k: v for k, v in relacao.items()
                                  if k != 'pontos'},
             'nuvem_hr_watts': relacao.get('pontos', [])[:1500],

@@ -181,7 +181,68 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
-    @app.route('/api/hrv/limiares/<activity_id>')
+    @app.route('/api/hrv/sessoes')
+    def api_hrv_sessoes():
+        """Sessoes com dados de alphaHRV, com o id para usar nos limiares.
+
+        Existe para nao ser preciso adivinhar ids: lista as sessoes que tem
+        MeanRRa1 (ou seja, onde o alphaHRV correu), com a ligacao pronta.
+
+        ?modalidade=Bike   ?dias=365   ?n=30
+        """
+        try:
+            import db as _db
+            import json as _json
+            dias = request.args.get('dias', type=int) or 365
+            n = min(request.args.get('n', type=int) or 30, 200)
+            modalidade = request.args.get('modalidade')
+            corte = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+
+            cond, args = ["raw IS NOT NULL", "date >= ?"], [corte]
+            if modalidade:
+                from config import TYPE_MAP
+                variantes = [k for k, v in TYPE_MAP.items() if v == modalidade]
+                if variantes:
+                    cond.append(f"type IN ({','.join('?' * len(variantes))})")
+                    args += variantes
+            linhas = _db._exec(
+                f"""SELECT id, type, date, name, raw FROM activities
+                     WHERE {' AND '.join(cond)}
+                     ORDER BY date DESC""", tuple(args), fetch='all') or []
+
+            fora = []
+            for aid, tipo, data, nome, raw in linhas:
+                try:
+                    j = raw if isinstance(raw, dict) else _json.loads(raw)
+                except Exception:
+                    continue
+                mean = (j or {}).get('MeanRRa1') or (j or {}).get('MeanRRA1')
+                if mean is None:
+                    continue
+                fora.append({
+                    'id': aid, 'tipo': tipo, 'data': str(data)[:10],
+                    'nome': (nome or '')[:60],
+                    'MeanRRa1': round(float(mean), 4),
+                    'HRVT1': (j or {}).get('HRVT1'),
+                    'HRVT2': (j or {}).get('HRVT2'),
+                    'duracao_min': (round((j or {}).get('moving_time', 0) / 60)
+                                    if (j or {}).get('moving_time') else None),
+                    'limiares': f'/api/hrv/limiares/{aid}',
+                })
+                if len(fora) >= n:
+                    break
+            return jsonify({
+                'status': 'ok', 'n': len(fora), 'dias': dias,
+                'modalidade': modalidade, 'sessoes': fora,
+                'nota': ('copia um id da coluna "limiares" para o browser. '
+                         'Para o HRVT1c a sessao ideal e uma rampa ou '
+                         'progressiva: precisa de um inicio facil, onde o a1 '
+                         'esta alto, e de subir depois')})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/hrv/limiares/<path:activity_id>')
     def api_hrv_limiares(activity_id):
         """HRVT1s, HRVT2 e HRVT1c calculados dos streams desta actividade.
 
@@ -195,9 +256,23 @@ def registar(app):
             import hrv_limiares as hl
             import api_client as api
 
-            bruto, err = api.icu_get(f'/activity/{activity_id}/streams')
+            # limpar o id: e' facil colar o caminho inteiro por engano, ou
+            # deixar o <activity_id> do exemplo
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            if not aid or aid.startswith('<') or not aid[0].isalnum():
+                return jsonify({
+                    'status': 'erro',
+                    'mensagem': (f'id invalido: "{activity_id}". Usa so o id '
+                                 'da actividade, por exemplo '
+                                 '/api/hrv/limiares/i118432383'),
+                    'onde_encontrar_ids': '/api/hrv/sessoes?modalidade=Bike'}), 200
+
+            bruto, err = api.icu_get(f'/activity/{aid}/streams')
             if err:
-                return jsonify({'status': 'erro', 'mensagem': f'API: {err}'}), 200
+                return jsonify({
+                    'status': 'erro', 'mensagem': f'API: {err}',
+                    'id_usado': aid,
+                    'onde_encontrar_ids': '/api/hrv/sessoes?modalidade=Bike'}), 200
             lista = bruto
             if isinstance(lista, dict):
                 lista = lista.get('streams') or lista.get('content') or []
@@ -234,7 +309,7 @@ def registar(app):
                               early_s=request.args.get('early', type=int)
                               or hl.EARLY_RAMP_S)
             res['status'] = 'ok'
-            res['activity_id'] = activity_id
+            res['activity_id'] = aid
             res['streams_na_actividade'] = sorted(nomes)
             res['streams_usados'] = {k: v for k, v in mapa.items() if v}
             res['meanrra1_replicado'] = hl.replicar_meanrra1(usados)

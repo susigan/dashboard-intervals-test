@@ -181,6 +181,68 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/hrv/limiares/<activity_id>')
+    def api_hrv_limiares(activity_id):
+        """HRVT1s, HRVT2 e HRVT1c calculados dos streams desta actividade.
+
+        ?early=300   segundos iniciais para o maximo de a1
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import hrv_limiares as hl
+            import api_client as api
+
+            bruto, err = api.icu_get(f'/activity/{activity_id}/streams')
+            if err:
+                return jsonify({'status': 'erro', 'mensagem': f'API: {err}'}), 200
+            lista = bruto
+            if isinstance(lista, dict):
+                lista = lista.get('streams') or lista.get('content') or []
+
+            streams, nomes = {}, []
+            for st in (lista or []):
+                if not isinstance(st, dict):
+                    continue
+                nome = st.get('type') or st.get('name')
+                if not nome:
+                    continue
+                nomes.append(nome)
+                streams[nome] = st.get('data') or []
+
+            # aceitar as varias grafias sem assumir nenhuma
+            def _achar(*alvos):
+                for a in alvos:
+                    for n in streams:
+                        if ''.join(c for c in n.lower() if c.isalnum()) == \
+                                ''.join(c for c in a.lower() if c.isalnum()):
+                            return n
+                return None
+
+            mapa = {
+                'dfa_a1': _achar('dfa_a1', 'dfaa1', 'alpha1', 'a1'),
+                'respiration': _achar('respiration', 'RespirationRateAlphaHRV',
+                                      'respiration_rate'),
+                'watts': _achar('watts', 'power'),
+                'heartrate': _achar('heartrate', 'hr'),
+            }
+            usados = {k: streams.get(v) for k, v in mapa.items() if v}
+
+            res = hl.calcular(usados,
+                              early_s=request.args.get('early', type=int)
+                              or hl.EARLY_RAMP_S)
+            res['status'] = 'ok'
+            res['activity_id'] = activity_id
+            res['streams_na_actividade'] = sorted(nomes)
+            res['streams_usados'] = {k: v for k, v in mapa.items() if v}
+            res['meanrra1_replicado'] = hl.replicar_meanrra1(usados)
+            return jsonify(res)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/diag/campos_hrv')
     def api_diag_campos_hrv():
         """Campos do SUMARIO da actividade relacionados com HRV.

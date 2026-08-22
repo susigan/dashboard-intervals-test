@@ -638,6 +638,27 @@ CAMPOS_EXTERNOS = [
      "compara_com": "lt2_w", "aliases": ["lthrdetected", "lthr_detected", "lthr"],
      "descricao": "LTHR detectada pela Intervals.icu"},
 
+    # ── DFA-a1 individualizado ───────────────────────────────────────────
+    # Nao sao campos da Intervals.icu: sao calculados dos streams pelo
+    # /api/hrv/aquecimento_inflexao e injectados aqui. Aparecem na tabela
+    # ao lado dos outros para se comparar o limiar que sai das escadas de
+    # aquecimento com o que sai dos scripts.
+    {"chave": "a1_inflexao_W", "unidade": "W", "eixo": "W", "grupo": "aerobio",
+     "compara_com": "lt1_w", "aliases": ["a1inflexaow", "a1_inflexao_w"],
+     "descricao": "Potencia no primeiro ponto de inflexao do DFA-a1, "
+                  "mediana das escadas de aquecimento deste atleta"},
+    {"chave": "a1_inflexao_bpm", "unidade": "bpm", "eixo": "bpm",
+     "grupo": "aerobio", "compara_com": "lt1_w",
+     "aliases": ["a1inflexaobpm", "a1_inflexao_bpm"],
+     "descricao": "FC no primeiro ponto de inflexao do DFA-a1, mediana das "
+                  "escadas de aquecimento"},
+    {"chave": "a1_no_ponto", "unidade": "—", "eixo": None, "grupo": "aerobio",
+     "compara_com": None, "aliases": ["a1noponto", "a1_no_ponto"],
+     "descricao": "Valor de DFA-a1 na inflexao, medido neste atleta. E a "
+                  "alternativa individualizada ao 0.75 da literatura: se for "
+                  "repetivel entre aquecimentos, e o alvo dele e nao o de "
+                  "toda a gente"},
+
     # ── VO2max ───────────────────────────────────────────────────────────
     {"chave": "Pvo2max", "unidade": "W", "eixo": "W", "grupo": "vo2max",
      "compara_com": "pvo2max_w", "aliases": ["pvo2max", "pvo2max_w", "pvo2"],

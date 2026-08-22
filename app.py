@@ -1894,9 +1894,12 @@ def limiares_externos_dados(modalidade, args):
         todas = args.get('todas') in ('1', 'true', 'sim')
         season_pedida = args.get('season') or season_de(hoje, marcos)
 
-        # 1a passagem: que nomes existem mesmo no JSON deste atleta
+        # 1a passagem: que nomes existem mesmo no JSON deste atleta.
+        # Sem limite: cortar nas 400 mais recentes fazia com que um campo
+        # que so' existisse em sessoes antigas nem chegasse a ser
+        # descoberto.
         nomes = set()
-        for _d, raw in linhas[:400]:
+        for _d, raw in linhas:
             try:
                 j = raw if isinstance(raw, dict) else _json.loads(raw)
             except Exception:
@@ -2096,6 +2099,8 @@ def limiares_externos_dados(modalidade, args):
 
             saida.append({
                 'campo': nome,
+                'n_na_season': len(recolha_season[nome]),
+                'n_no_historico': len(recolha[nome]),
                 'rotulo': definicao['chave'],
                 'unidade': definicao['unidade'],
                 'eixo': eixo,
@@ -2136,6 +2141,11 @@ def limiares_externos_dados(modalidade, args):
             'season': None if todas else season_pedida,
             'ambito': 'todo o historico' if todas else 'season',
             'actividades': len(linhas),
+            'ambito_explicado': (
+                'todo o historico' if todas else
+                f'so a season {season_pedida}. Os quartis usam so essas '
+                'sessoes -- e por isso que o n aparece baixo. Cada campo '
+                'traz tambem n_no_historico, e ?todas=1 calcula sobre tudo'),
             'modelo': modelo,
             'modelo_em_hr': {k: pmet.hr_de_watts(relacao, v)
                              for k, v in modelo.items()

@@ -321,6 +321,169 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/hrv/varrer')
+    def api_hrv_varrer():
+        """Corre os limiares em TODAS as sessoes com alphaHRV.
+
+        Existe porque a pergunta -- o HRVT1 do script sobrestima o limiar? --
+        nao se responde numa sessao. Precisa de saber quantas sessoes tem
+        dados utilizaveis, e nas que tem, como e' que o valor calculado se
+        compara com o do script.
+
+        ?modalidade=Bike  ?dias=365  ?n=40  ?so_utilizaveis=1
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            import json as _json
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import hrv_limiares as hl
+            import api_client as api
+            import db as _db
+
+            dias = request.args.get('dias', type=int) or 365
+            n_max = min(request.args.get('n', type=int) or 40, 150)
+            modalidade = request.args.get('modalidade')
+            so_uteis = request.args.get('so_utilizaveis') in ('1', 'true')
+            corte = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+
+            cond, args = ["raw IS NOT NULL", "date >= ?"], [corte]
+            if modalidade:
+                from config import TYPE_MAP
+                variantes = [k for k, v in TYPE_MAP.items() if v == modalidade]
+                if variantes:
+                    cond.append(f"type IN ({','.join('?' * len(variantes))})")
+                    args += variantes
+            linhas = _db._exec(
+                f"""SELECT id, type, date, name, raw FROM activities
+                     WHERE {' AND '.join(cond)} ORDER BY date DESC""",
+                tuple(args), fetch='all') or []
+
+            alvo = []
+            for aid, tipo, data, nome, raw in linhas:
+                try:
+                    j = raw if isinstance(raw, dict) else _json.loads(raw)
+                except Exception:
+                    continue
+                if ((j or {}).get('MeanRRa1') or (j or {}).get('MeanRRA1')) is None:
+                    continue
+                alvo.append({'id': aid, 'tipo': tipo, 'data': str(data)[:10],
+                             'nome': (nome or '')[:50],
+                             'HRVT1_script': (j or {}).get('HRVT1'),
+                             'HRVT2_script': (j or {}).get('HRVT2'),
+                             'MeanRRa1': (j or {}).get('MeanRRa1')})
+                if len(alvo) >= n_max:
+                    break
+
+            # buscar os streams em paralelo
+            pedidos = {a['id']: (f"/activity/{a['id']}/streams", None)
+                       for a in alvo}
+            try:
+                respostas = api.icu_get_many(pedidos)
+            except Exception:
+                respostas = {k: api.icu_get(v[0]) for k, v in pedidos.items()}
+
+            def _achar(streams, *alvos):
+                for a in alvos:
+                    aa = ''.join(c for c in a.lower() if c.isalnum())
+                    for nome_s in streams:
+                        if ''.join(c for c in nome_s.lower() if c.isalnum()) == aa:
+                            return nome_s
+                return None
+
+            fora, resumo = [], {
+                'sem_stream_dfa': 0, 'utilizaveis': 0, 'nao_utilizaveis': 0,
+                'erro': 0}
+            for a in alvo:
+                r = respostas.get(a['id'])
+                dados, err = r if isinstance(r, tuple) else (r, None)
+                if err or not dados:
+                    resumo['erro'] += 1
+                    fora.append({**a, 'estado': 'erro', 'motivo': str(err)[:80]})
+                    continue
+                lista = dados
+                if isinstance(lista, dict):
+                    lista = lista.get('streams') or lista.get('content') or []
+                streams = {}
+                for st in (lista or []):
+                    if isinstance(st, dict) and (st.get('type') or st.get('name')):
+                        streams[st.get('type') or st.get('name')] = st.get('data') or []
+                mapa = {
+                    'dfa_a1': _achar(streams, 'dfa_a1', 'dfaa1', 'alpha1'),
+                    'respiration': _achar(streams, 'respiration',
+                                          'RespirationRateAlphaHRV'),
+                    'watts': _achar(streams, 'watts', 'power'),
+                    'heartrate': _achar(streams, 'heartrate'),
+                    'artifacts': _achar(streams, 'artifacts'),
+                }
+                if not mapa['dfa_a1']:
+                    resumo['sem_stream_dfa'] += 1
+                    fora.append({**a, 'estado': 'sem dfa_a1'})
+                    continue
+                usados = {k: streams.get(v) for k, v in mapa.items() if v}
+                res = hl.calcular(usados)
+                if not res.get('ok'):
+                    resumo['erro'] += 1
+                    fora.append({**a, 'estado': 'erro', 'motivo': res.get('motivo')})
+                    continue
+
+                lin = {**a,
+                       'estado': 'utilizavel' if res['sessao_adequada'] else 'fraca',
+                       'duracao_min': round(res['duracao_s'] / 60),
+                       'amplitude_w': res['amplitude_potencia_w'],
+                       'pct_artefacto': res['pct_descartado_por_artefacto'],
+                       'a1_max_inicial': res['a1_max_inicial'],
+                       'a1_alvo_hrvt1c': res['a1_alvo_hrvt1c'],
+                       'motivo': (None if res['sessao_adequada']
+                                  else res['nota_qualidade'])}
+                for nome_l, l in (res.get('limiares') or {}).items():
+                    for eixo in ('watts', 'heartrate'):
+                        d = l.get(eixo) or {}
+                        if d.get('ok'):
+                            lin[f'{nome_l}_{eixo}'] = d['valor']
+                            if eixo == 'watts':
+                                lin[f'{nome_l}_degrau'] = d.get('degrau')
+                resumo['utilizaveis' if res['sessao_adequada']
+                       else 'nao_utilizaveis'] += 1
+                fora.append(lin)
+
+            if so_uteis:
+                fora = [x for x in fora if x.get('estado') == 'utilizavel']
+
+            # comparar o calculado com o do script, nas que tem os dois
+            comp = []
+            for x in fora:
+                if x.get('HRVT1_script') and x.get('HRVT1c_heartrate'):
+                    comp.append({
+                        'data': x['data'], 'id': x['id'],
+                        'script_HRVT1': x['HRVT1_script'],
+                        'calculado_HRVT1s': x.get('HRVT1s_heartrate'),
+                        'calculado_HRVT1c': x['HRVT1c_heartrate'],
+                        'diff_c_menos_script': round(
+                            x['HRVT1c_heartrate'] - x['HRVT1_script'], 1)})
+            difs = [c['diff_c_menos_script'] for c in comp]
+
+            return jsonify({
+                'status': 'ok', 'modalidade': modalidade, 'dias': dias,
+                'sessoes_com_alphahrv': len(alvo),
+                'resumo': resumo,
+                'comparacao_com_script': {
+                    'n': len(comp),
+                    'diferenca_mediana_bpm': (sorted(difs)[len(difs) // 2]
+                                              if difs else None),
+                    'detalhe': comp},
+                'sessoes': fora,
+                'nota': ('estado=utilizavel exige amplitude de potencia >= 80 W, '
+                         'menos de 30% de pontos descartados por artefacto na FC, '
+                         'e pelo menos um limiar atingido. As outras nao servem '
+                         'para calcular limiar nenhum -- e isso nao e um defeito '
+                         'do metodo, e a sessao nao ter passado pelas '
+                         'intensidades certas ou a cinta ter falhado')})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/diag/campos_hrv')
     def api_diag_campos_hrv():
         """Campos do SUMARIO da actividade relacionados com HRV.

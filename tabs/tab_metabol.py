@@ -2414,6 +2414,12 @@ function pmExtTabela(){
      +'definição</span>' : '')
    +(c.usou_historico_por_falta_na_season
      ? ' <span style="color:#F0883E;font-size:10px;">histórico</span>' : '')
+   +(c.origem === 'escadas de aquecimento'
+     ? ' <span style="color:#79C0FF;font-size:10px;" title="calculado das '
+       + 'escadas de aquecimento deste atleta, não é campo da Intervals.icu">'
+       + 'aquecimento' + (c.repetivel === false ? ' · não repetível' : '')
+       + (c.iqr_relativo_pct != null ? ' IQR ' + c.iqr_relativo_pct + '%' : '')
+       + '</span>' : '')
    +'</td>'
    +'<td style="color:#8b949e;">'+(q.n!=null?q.n:'—')+'</td>'
    +'<td style="color:#8b949e;">'+(q.p25!=null?q.p25:'—')+'</td>'
@@ -2561,13 +2567,16 @@ function pmExtDraw(){
  // falta e apresentá-la com a mesma autoridade da que foi medida.
  const ocupadoW = [], ocupadoH = [];
  cs.forEach(function(c){
-  const cor = c.constante ? '#8b949e' : '#E3B341';
+  const cor = c.constante ? '#8b949e'
+            : c.origem === 'escadas de aquecimento' ? '#79C0FF' : '#E3B341';
   const rot = c.rotulo + (c.constante ? ' *' : '');
   g.font='10px sans-serif';
 
   if(c.watts_medido != null && c.watts_medido >= xa && c.watts_medido <= xb){
    const x = X(c.watts_medido);
-   g.strokeStyle=cor; g.setLineDash(c.constante?[2,4]:[4,3]); g.lineWidth=1.2;
+   g.strokeStyle=cor;
+   g.setLineDash(c.constante?[2,4]:c.origem==='escadas de aquecimento'?[]:[4,3]);
+   g.lineWidth = c.origem==='escadas de aquecimento' ? 2 : 1.2;
    g.beginPath(); g.moveTo(x, PT); g.lineTo(x, PT+h); g.stroke();
    g.setLineDash([]); g.lineWidth=1;
    const txt = rot+' '+Math.round(c.watts_medido)+'W';
@@ -2586,7 +2595,9 @@ function pmExtDraw(){
 
   if(c.hr_medido != null && c.hr_medido >= ya && c.hr_medido <= yb){
    const y = Y(c.hr_medido);
-   g.strokeStyle=cor; g.setLineDash(c.constante?[2,4]:[4,3]); g.lineWidth=1.2;
+   g.strokeStyle=cor;
+   g.setLineDash(c.constante?[2,4]:c.origem==='escadas de aquecimento'?[]:[4,3]);
+   g.lineWidth = c.origem==='escadas de aquecimento' ? 2 : 1.2;
    g.beginPath(); g.moveTo(PL, y); g.lineTo(PL+w, y); g.stroke();
    g.setLineDash([]); g.lineWidth=1;
    const txt = rot+' '+Math.round(c.hr_medido)+'bpm';
@@ -2607,6 +2618,11 @@ function pmExtDraw(){
  g.textAlign='left'; g.font='10px sans-serif';
  g.fillStyle='#8b949e'; g.fillText('\u2502 modelo', PL+w+8, PT+12);
  g.fillStyle='#E3B341'; g.fillText('campos icu', PL+w+8, PT+26);
+ if(((PMEXT&&PMEXT.campos)||[]).some(function(c){
+     return c.origem==='escadas de aquecimento'; })){
+  g.fillStyle='#79C0FF';
+  g.fillText('\u2500 DFA-a1 aquecimento', PL+w+8, PT+82);
+ }
  g.fillStyle='#8b949e';
  g.fillText(!rel.suficiente ? 'sem recta'
             : rel.fiavel ? 'r\u00b2='+rel.r2+' n='+rel.n

@@ -2331,6 +2331,8 @@ function pmExtCarregar(){
   est.textContent = d.actividades + ' actividades · ' + d.ambito
     + (d.season ? ' ' + d.season : '')
     + ' · ' + (d.campos||[]).length + ' campos'
+    + (d.ambito_explicado && d.ambito_explicado.indexOf('so a season')===0
+       ? ' · n da season (histórico após a barra)' : '')
     + (rel.suficiente ? ' · HR↔W r²=' + rel.r2 + ' (n=' + rel.n + ')'
                       : ' · sem recta HR↔W');
   pmExtTabela(); pmExtDraw(); pmExtGlossario();
@@ -2421,7 +2423,12 @@ function pmExtTabela(){
        + (c.iqr_relativo_pct != null ? ' IQR ' + c.iqr_relativo_pct + '%' : '')
        + '</span>' : '')
    +'</td>'
-   +'<td style="color:#8b949e;">'+(q.n!=null?q.n:'—')+'</td>'
+   +'<td style="color:#8b949e;" title="'
+   +(c.n_no_historico!=null? c.n_no_historico+' no histórico' : '')+'">'
+   +(q.n!=null?q.n:'—')
+   +(c.n_no_historico!=null && c.n_no_historico>q.n
+     ? ' <span style="color:#6e7681;font-size:10px;">/'+c.n_no_historico+'</span>' : '')
+   +'</td>'
    +'<td style="color:#8b949e;">'+(q.p25!=null?q.p25:'—')+'</td>'
    +'<td><b>'+(q.p50!=null?q.p50:'—')+'</b> '
    +'<span style="color:#8b949e;font-size:10px;">'+(c.unidade||'')+'</span></td>'

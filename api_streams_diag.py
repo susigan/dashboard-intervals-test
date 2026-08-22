@@ -484,7 +484,7 @@ def registar(app):
         dados utilizaveis, e nas que tem, como e' que o valor calculado se
         compara com o do script.
 
-        ?modalidade=Bike  ?dias=365  ?n=40  ?so_utilizaveis=1
+        ?modalidade=Bike  ?dias=365  ?n=500  ?so_utilizaveis=1
         """
         try:
             import os as _os
@@ -497,7 +497,9 @@ def registar(app):
             import db as _db
 
             dias = request.args.get('dias', type=int) or 365
-            n_max = min(request.args.get('n', type=int) or 40, 150)
+            # sem limite por omissao: o 40 anterior cortava as 85 sessoes
+            # de Bike a meio sem o dizer
+            n_max = min(request.args.get('n', type=int) or 500, 500)
             modalidade = request.args.get('modalidade')
             so_uteis = request.args.get('so_utilizaveis') in ('1', 'true')
             corte = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')

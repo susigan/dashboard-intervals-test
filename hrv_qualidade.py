@@ -98,8 +98,11 @@ def limiar_por_modalidade(pcts, tecto=ARTEFACTO_TECTO,
 # INFLEXAO DO DFA-a1 NA ESCADA DO AQUECIMENTO
 # ══════════════════════════════════════════════════════════════════════════
 
+QUEDA_MINIMA_PCT = 10.0   # o a1 tem de descer isto do 1o ao ultimo bloco
+
+
 def inflexao_na_escada(blocos, chave_x='watts_alvo', chave_y='dfa1_avg',
-                       min_blocos=4):
+                       min_blocos=3, queda_minima=QUEDA_MINIMA_PCT):
     """Primeiro ponto onde o a1 deixa de estar plano, numa escada de blocos.
 
     Cada bloco do aquecimento e' um patamar de watts com um a1 medio ja'
@@ -124,6 +127,28 @@ def inflexao_na_escada(blocos, chave_x='watts_alvo', chave_y='dfa1_avg',
     xs = [p[0] for p in pts]
     ys = [p[1] for p in pts]
 
+    # Sem descida nao ha limiar. No Row e no Ski a escada tem 3 blocos, e
+    # com 3 pontos um ajuste de dois segmentos passa sempre por eles --
+    # por isso a queda tem de ser verificada antes, e nao depois.
+    queda = ((ys[0] - ys[-1]) / ys[0] * 100) if ys[0] else 0
+    if queda < queda_minima:
+        return {'ok': False,
+                'motivo': (f'a1 desce so {round(queda, 1)}% do primeiro ao '
+                           f'ultimo bloco (minimo {queda_minima}%)'),
+                'queda_relativa_pct': round(queda, 1),
+                'pontos': [{'x': x, 'y': round(y, 3)} for x, y in pts]}
+
+    if len(pts) == 3:
+        # Com tres blocos nao se ajustam dois segmentos: usa-se o ponto
+        # medio como estimativa e diz-se que e' isso que se esta a fazer.
+        return {'ok': True, 'inflexao': round(xs[1], 1),
+                'a1_na_inflexao': round(ys[1], 3),
+                'metodo': 'ponto medio (so 3 blocos, sem ajuste possivel)',
+                'queda_relativa_pct': round(queda, 1),
+                'n_blocos': 3, 'intervalo': [xs[0], xs[-1]],
+                'razao_declives': None,
+                'pontos': [{'x': x, 'y': round(y, 3)} for x, y in pts]}
+
     def _fit(a, b):
         n = b - a
         if n < 2:
@@ -143,6 +168,11 @@ def inflexao_na_escada(blocos, chave_x='watts_alvo', chave_y='dfa1_avg',
         if not p1 or not p2:
             continue
         if p2[0] >= p1[0]:          # o segundo troco tem de descer mais
+            continue
+        # O segundo troco tem de DESCER. Sem isto passavam casos em que o
+        # a1 sobe no fim: a razao de declives saia negativa e o filtro
+        # ">= 2" deixava-a passar como se fosse uma quebra nitida.
+        if p2[0] >= 0:
             continue
         res = (sum((p1[0] * xs[i] + p1[1] - ys[i]) ** 2 for i in range(k))
                + sum((p2[0] * xs[i] + p2[1] - ys[i]) ** 2
@@ -168,7 +198,9 @@ def inflexao_na_escada(blocos, chave_x='watts_alvo', chave_y='dfa1_avg',
         'a1_na_inflexao': round(m1 * x_inf + b1, 3),
         'declive_antes': round(m1, 6),
         'declive_depois': round(m2, 6),
-        'razao_declives': (round(m2 / m1, 2) if m1 else None),
+        'razao_declives': (round(m2 / m1, 2) if m1 and m1 < 0 else None),
+        'queda_relativa_pct': (round((ys[0] - ys[-1]) / ys[0] * 100, 1)
+                               if ys[0] else None),
         'n_blocos': len(pts),
         'intervalo': [xs[0], xs[-1]],
         'bloco_da_quebra': k,

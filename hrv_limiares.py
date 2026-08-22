@@ -257,32 +257,83 @@ def binar(pares, largura):
     return out
 
 
-def limiar_por_regressao(pares, alvo, largura, rotulo):
-    """Intensidade a que o a1 atinge o alvo, por regressao sobre os bins.
+def _isotonica(ys):
+    """Torna a serie nao-crescente pelo pool adjacent violators.
 
-    O limiar sai da relacao a1 x intensidade, nao de um instante da sessao.
-    Devolve sempre o r2 e o intervalo coberto: se o alvo cair fora do
-    intervalo de intensidades que a sessao percorreu, o valor e'
-    extrapolacao e vem marcado como tal.
+    O a1 tem de descer com a intensidade -- e' o pressuposto do metodo. O
+    ruido faz bins individuais subirem; a isotonica impoe a monotonia sem
+    assumir forma nenhuma para a curva, ao contrario de uma recta.
+    """
+    blocos = [[y, 1] for y in ys]
+    i = 0
+    while i < len(blocos) - 1:
+        if blocos[i][0] < blocos[i + 1][0]:
+            soma = blocos[i][0] * blocos[i][1] + blocos[i + 1][0] * blocos[i + 1][1]
+            peso = blocos[i][1] + blocos[i + 1][1]
+            blocos[i] = [soma / peso, peso]
+            del blocos[i + 1]
+            if i > 0:
+                i -= 1
+        else:
+            i += 1
+    out = []
+    for v, w in blocos:
+        out.extend([v] * w)
+    return out
+
+
+def limiar_por_curva(pares, alvo, largura, rotulo):
+    """Intensidade a que o a1 atinge o alvo, lida na propria curva.
+
+    NAO por regressao linear. A relacao a1 x intensidade nao e' uma recta:
+    numa sessao deste atleta o a1 fica em ~1.2 ate' aos 205 W e cai para
+    ~0.42 aos 215 W. E' um degrau. Ajustar-lhe uma recta deu um limiar de
+    68 W com r2 de 0.099 -- o r2 baixo era a curva a dizer que a recta nao
+    servia, e eu a usar o valor na mesma.
+
+    Aqui os bins sao tornados nao-crescentes e o cruzamento e' lido por
+    interpolacao entre os dois escaloes que rodeiam o alvo. Devolve-se a
+    largura desse degrau: se o a1 cai de 1.2 para 0.4 entre dois escaloes,
+    o limiar esta algures nesses 10 W e a precisao real e' essa, nao a do
+    numero interpolado.
     """
     bins = binar(pares, largura)
-    if len(bins) < 3:
+    if len(bins) < 4:
         return {'ok': False, 'motivo': f'so {len(bins)} escaloes de {rotulo}'}
-    reg = _regressao([b['centro'] for b in bins], [b['a1'] for b in bins])
-    if not reg or reg['declive'] >= 0:
-        return {'ok': False,
-                'motivo': ('a1 nao desce com a intensidade nesta sessao'
-                           if reg else 'regressao impossivel'),
-                'r2': round(reg['r2'], 3) if reg else None}
-    valor = (alvo - reg['intercepto']) / reg['declive']
-    lo = min(b['centro'] for b in bins)
-    hi = max(b['centro'] for b in bins)
-    return {'ok': True, 'valor': round(valor, 1), 'unidade': rotulo,
-            'r2': round(reg['r2'], 3), 'n_escaloes': len(bins),
-            'intervalo_coberto': [round(lo), round(hi)],
-            'extrapolado': not (lo <= valor <= hi),
-            'declive_a1_por_unidade': round(reg['declive'], 6),
-            'bins': bins}
+
+    xs = [b['centro'] for b in bins]
+    ys_bruto = [b['a1'] for b in bins]
+    ys = _isotonica(ys_bruto)
+    lo, hi = xs[0], xs[-1]
+
+    if ys[0] < alvo:
+        return {'ok': False, 'motivo': f'a1 ja abaixo de {alvo} no escalao mais '
+                                       f'baixo ({round(lo)} {rotulo})',
+                'intervalo_coberto': [round(lo), round(hi)]}
+    if ys[-1] > alvo:
+        return {'ok': False, 'motivo': f'a1 nunca desce a {alvo} nesta sessao '
+                                       f'(minimo {round(ys[-1], 3)})',
+                'intervalo_coberto': [round(lo), round(hi)],
+                'a1_minimo': round(ys[-1], 3)}
+
+    for k in range(1, len(xs)):
+        if ys[k - 1] >= alvo > ys[k]:
+            dy = ys[k - 1] - ys[k]
+            frac = (ys[k - 1] - alvo) / dy if dy > 0 else 0.5
+            valor = xs[k - 1] + frac * (xs[k] - xs[k - 1])
+            return {
+                'ok': True, 'valor': round(valor, 1), 'unidade': rotulo,
+                'n_escaloes': len(bins),
+                'intervalo_coberto': [round(lo), round(hi)],
+                'degrau': [round(xs[k - 1]), round(xs[k])],
+                'a1_no_degrau': [round(ys[k - 1], 3), round(ys[k], 3)],
+                'queda_no_degrau': round(dy, 3),
+                'n_pontos_no_degrau': bins[k - 1]['n'] + bins[k]['n'],
+                'bins': [{'centro': xs[m], 'a1': round(ys_bruto[m], 3),
+                          'a1_iso': round(ys[m], 3), 'n': bins[m]['n']}
+                         for m in range(len(xs))],
+            }
+    return {'ok': False, 'motivo': 'sem cruzamento apos monotonizar'}
 
 
 def calcular(streams, hz=1.0, early_s=EARLY_RAMP_S, artefacto_max=5.0):
@@ -336,16 +387,17 @@ def calcular(streams, hz=1.0, early_s=EARLY_RAMP_S, artefacto_max=5.0):
             continue
         limiares[nome] = {
             'a1_alvo': alvo,
-            'watts': limiar_por_regressao(pares_w, alvo, 10.0, 'W'),
-            'heartrate': limiar_por_regressao(pares_hr, alvo, 5.0, 'bpm'),
+            'watts': limiar_por_curva(pares_w, alvo, 10.0, 'W'),
+            'heartrate': limiar_por_curva(pares_hr, alvo, 5.0, 'bpm'),
         }
 
     # a sessao serve para isto? precisa de percorrer intensidades
     ws = [w for w, _ in pares_w]
     amplitude = (max(ws) - min(ws)) if ws else 0
-    r2s = [l['watts'].get('r2') for l in limiares.values()
-           if l['watts'].get('r2') is not None]
-    adequada = amplitude >= 80 and (max(r2s) if r2s else 0) >= 0.4
+    pct_artefacto = (descartes['artefacto'] / n * 100) if n else 0
+    tem = [nome for nome, l in limiares.items()
+           if (l['watts'].get('ok') or l['heartrate'].get('ok'))]
+    adequada = (amplitude >= 80 and pct_artefacto < 30 and len(tem) >= 1)
 
     return {
         'ok': True,
@@ -361,6 +413,8 @@ def calcular(streams, hz=1.0, early_s=EARLY_RAMP_S, artefacto_max=5.0):
         'a1_mediana_sessao': round(_mediana(
             [v for v in a1 if v and 0 < v <= A1_MAX_PLAUSIVEL]) or 0, 3),
         'amplitude_potencia_w': round(amplitude),
+        'pct_descartado_por_artefacto': round(pct_artefacto, 1),
+        'limiares_obtidos': tem,
         'sessao_adequada': adequada,
         'limiares': limiares,
         'nota': ('HRVT1s (a1=0.75) e a convencao classica e sobrestima o '
@@ -368,15 +422,12 @@ def calcular(streams, hz=1.0, early_s=EARLY_RAMP_S, artefacto_max=5.0):
                  'medio entre o teu maximo de a1 no inicio e 0.50 -- '
                  'individualizado em vez de constante.'),
         'nota_qualidade': (
-            'sessao adequada: percorre intensidade suficiente e o a1 desce '
-            'de forma consistente com ela'
-            if adequada else
-            f'sessao pouco adequada: amplitude de {round(amplitude)} W e r2 '
-            f'maximo de {round(max(r2s), 2) if r2s else 0}. Um limiar so tem '
-            'significado se a sessao passar por intensidades acima e abaixo '
-            'dele; uma rampa ou progressiva da isto, um rolo a potencia '
-            'constante nao. Marcado "extrapolado" quando o alvo cai fora do '
-            'intervalo percorrido.'),
+            'sessao utilizavel' if adequada else
+            'sessao nao utilizavel: ' + '; '.join(filter(None, [
+                f'amplitude de so {round(amplitude)} W' if amplitude < 80 else None,
+                (f'{round(pct_artefacto)}% dos pontos descartados por '
+                 'artefacto na FC') if pct_artefacto >= 30 else None,
+                'nenhum limiar atingido' if not tem else None]))),
     }
 
 

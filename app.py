@@ -1939,6 +1939,46 @@ def limiares_externos_dados(modalidade, args):
                     ultimo[nome] = {'valor': round(float(v), 2), 'data': d10,
                                     'season': sea}
 
+        # ── DFA-a1 individualizado das escadas de aquecimento ─────────
+        # Entra como se fosse mais um campo, para ser comparado com os
+        # outros nas mesmas condicoes.
+        a1_indiv = {}
+        try:
+            import sys as _s2
+            _s2.path.insert(0, os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'utils'))
+            import hrv_qualidade as _hq
+            import aquecimento_db as _aqdb
+            _cn = _aqdb.get_conn()
+            _rs = _cn.execute(
+                """SELECT activity_id, data, bloco_num, watts_alvo,
+                          hr_avg, dfa1_avg
+                     FROM aquecimento_blocos
+                    WHERE modalidade = ? AND dfa1_avg IS NOT NULL
+                    ORDER BY data, bloco_num""", (modalidade,)).fetchall()
+            _por = {}
+            for _r in _rs:
+                _por.setdefault(_r['activity_id'], []).append(dict(_r))
+            _inf = []
+            for _aid, _bl in _por.items():
+                _w = _hq.inflexao_na_escada(_bl, 'watts_alvo', 'dfa1_avg')
+                _h = _hq.inflexao_na_escada(_bl, 'hr_avg', 'dfa1_avg')
+                if _w.get('ok') and (_w.get('razao_declives') or 0) >= 2:
+                    _inf.append({'w': _w['inflexao'], 'a1': _w['a1_na_inflexao'],
+                                 'bpm': _h.get('inflexao')})
+            if _inf:
+                a1_indiv = {
+                    'a1_inflexao_W': _hq.resumir_inflexoes(
+                        [{'inflexao': x['w']} for x in _inf], 'inflexao'),
+                    'a1_inflexao_bpm': _hq.resumir_inflexoes(
+                        [{'inflexao': x['bpm']} for x in _inf if x['bpm']],
+                        'inflexao'),
+                    'a1_no_ponto': _hq.resumir_inflexoes(
+                        [{'inflexao': x['a1']} for x in _inf], 'inflexao'),
+                    'n_aquecimentos': len(_inf)}
+        except Exception as e:
+            a1_indiv = {'erro': f'{type(e).__name__}: {e}'}
+
         # ── relacao HR <-> Watts do proprio atleta ────────────────────
         # Sem isto nao se pode por num mesmo grafico o EBP (W) e o HRVT2
         # (bpm). A melhor fonte sao os patamares dos intervalos ja
@@ -1981,6 +2021,41 @@ def limiares_externos_dados(modalidade, args):
             erro_modelo = f'{type(e).__name__}: {e}'
 
         saida = []
+        # os campos de DFA-a1 individualizado entram como qualquer outro
+        for chave, res_a1 in (a1_indiv or {}).items():
+            if not isinstance(res_a1, dict) or not res_a1.get('ok'):
+                continue
+            definicao = next((d for d in pmet.CAMPOS_EXTERNOS
+                              if d['chave'] == chave), None)
+            if not definicao:
+                continue
+            q = {'n': res_a1['n'], 'p25': res_a1['p25'], 'p50': res_a1['mediana'],
+                 'p75': res_a1['p75'], 'min': res_a1['min'], 'max': res_a1['max']}
+            eixo = definicao.get('eixo')
+            wm = res_a1['mediana'] if eixo == 'W' else None
+            hm = res_a1['mediana'] if eixo == 'bpm' else None
+            comp = definicao['compara_com']
+            vm = modelo.get(comp) if comp else None
+            saida.append({
+                'campo': chave, 'rotulo': definicao['chave'],
+                'unidade': definicao['unidade'], 'eixo': eixo,
+                'grupo': definicao.get('grupo'),
+                'grupo_rotulo': pmet.ROTULO_GRUPO.get(definicao.get('grupo')),
+                'descricao': definicao['descricao'],
+                'compara_com': comp, 'quartis': q,
+                'watts_medido': wm, 'hr_medido': hm,
+                'watts_convertido': None, 'hr_convertido': None,
+                'watts_equivalente': wm, 'hr_equivalente': hm,
+                'constante': False, 'origem': 'escadas de aquecimento',
+                'repetivel': res_a1.get('repetivel'),
+                'iqr_relativo_pct': res_a1.get('iqr_relativo_pct'),
+                'ultimo': None, 'p50_por_season': {},
+                'usou_historico_por_falta_na_season': False,
+                'comparacao': ({'modelo': vm, 'externo_p50': res_a1['mediana'],
+                                'diferenca': round(res_a1['mediana'] - vm, 2),
+                                'diferenca_pct': round(
+                                    (res_a1['mediana'] - vm) / vm * 100, 1)}
+                               if vm else None)})
         for nome, definicao in encontrados.items():
             base = recolha[nome] if todas else (recolha_season[nome] or recolha[nome])
             usou_historico = (not todas) and not recolha_season[nome]
@@ -2078,6 +2153,7 @@ def limiares_externos_dados(modalidade, args):
             'campos_nao_encontrados': em_falta,
             'campos_duplicados': duplicados,
             'campos_por_reconhecer': nao_reconhecidos,
+            'a1_individualizado': a1_indiv,
             'nota': ('quartis e nao media: estes campos sao estimados sessao '
                      'a sessao e tem cauda pesada. Compara o p50 externo com '
                      'o valor do modelo -- divergencia sistematica significa '

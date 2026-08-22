@@ -474,3 +474,429 @@ def replicar_meanrra1(streams, hz=1.0):
                  'soma total; quanto mais alto, mais o numero e um retrato '
                  'dos momentos duros e menos da sessao'),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# METODO RRa1 POR QUEBRA DE DECLIVE (Inigo Tolosa / alphaHRV)
+#
+# Diferente de tudo o que esta acima, e melhor: nao usa limiar de a1
+# nenhum. Nem 0.75, nem 0.50, nem o ponto medio do Rogers.
+#
+#   y = RRa1 = respiracao (Hz) / a1        x = frequencia cardiaca
+#
+# O RRa1 sobe com a intensidade e a subida acelera nos limiares. Ajustam-se
+# duas rectas a curva e o VT1 e' onde se cruzam. Depois parte-se o segmento
+# superior outra vez em dois e o VT2 e' a segunda interseccao.
+#
+# O limiar sai da FORMA da curva, nao de uma constante emprestada -- que e'
+# o principio seguido no resto deste projecto. E o ajuste de duas rectas
+# contra o de tres da duas estimativas independentes do mesmo VT1: a media
+# e' o valor e o desvio entre elas e' a incerteza, calculada e nao assumida.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _lin_fit(xs, ys, ini, fim):
+    """Minimos quadrados em [ini, fim). Devolve (declive, intercepto)."""
+    n = fim - ini
+    if n < 2:
+        return None
+    sx = sy = sxx = sxy = 0.0
+    for i in range(ini, fim):
+        sx += xs[i]
+        sy += ys[i]
+        sxx += xs[i] * xs[i]
+        sxy += xs[i] * ys[i]
+    det = sxx * n - sx * sx
+    if det == 0:
+        return None
+    return ((sxy * n - sx * sy) / det, (sxx * sy - sxy * sx) / det)
+
+
+def _fit_potencia_vs_fc(xs, ys):
+    """Recta potencia x FC, pela janela central que melhor se ajusta.
+
+    Reproduz a procura do script: alarga uma janela em torno do meio e fica
+    com a que minimiza o residuo normalizado. Os extremos da curva -- o
+    arranque e os sprints -- sao onde a relacao potencia/FC mais se afasta
+    da linearidade, e esta procura evita-os sem os cortar a mao.
+    """
+    n = len(xs)
+    if n < 22:
+        p = _lin_fit(xs, ys, 0, n)
+        return (p[0], p[1], None) if p else (None, None, None)
+    meio = n // 2
+    melhor, m_b, dmin = None, None, float('inf')
+    for i in range(10, meio):
+        p = _lin_fit(xs, ys, meio - i, meio + i)
+        if not p:
+            continue
+        di = 0.0
+        for j in range(meio - i, meio + i):
+            d = p[0] * xs[j] + p[1] - ys[j]
+            di += d * d / (i * i)
+        if di < dmin:
+            dmin, melhor, m_b = di, p[0], p[1]
+    return melhor, m_b, round(dmin, 4) if dmin < float('inf') else None
+
+
+def limiares_rra1(streams, artefacto_max=5.0, min_bins=12):
+    """VT1 e VT2 pela quebra de declive do RRa1 contra a FC."""
+    a1 = streams.get('dfa_a1') or []
+    resp = streams.get('respiration') or streams.get('RespirationRateAlphaHRV') or []
+    hr = streams.get('heartrate') or []
+    pwr = streams.get('watts') or []
+    art = streams.get('artifacts') or []
+    if not a1 or not resp or not hr:
+        return {'ok': False, 'motivo': 'faltam streams de a1, respiracao ou FC'}
+
+    n = min(len(a1), len(resp), len(hr))
+    soma_r = {}
+    cont_r = {}
+    soma_p = {}
+    cont_p = {}
+    descartados = 0
+    for i in range(n):
+        if art and i < len(art) and art[i] is not None and art[i] > artefacto_max:
+            descartados += 1
+            continue
+        v, r, h = a1[i], resp[i], hr[i]
+        if v is None or r is None or h is None or v <= 0 or not (30 < h < 221):
+            continue
+        b = int(round(h))
+        soma_r[b] = soma_r.get(b, 0.0) + r / (60.0 * v)
+        cont_r[b] = cont_r.get(b, 0) + 1
+        if i < len(pwr) and pwr[i] and pwr[i] > 0:
+            soma_p[b] = soma_p.get(b, 0.0) + pwr[i]
+            cont_p[b] = cont_p.get(b, 0) + 1
+
+    xs = sorted(soma_r)
+    ys = [soma_r[b] / cont_r[b] for b in xs]
+    if len(xs) < min_bins:
+        return {'ok': False, 'motivo': f'so {len(xs)} escaloes de FC (min {min_bins})',
+                'descartados_por_artefacto': descartados}
+
+    nP = len(xs)
+    # ── VT1: duas rectas ──────────────────────────────────────────────────
+    dmin, m1, b1, m2, b2, th1 = float('inf'), None, None, None, None, None
+    for i in range(3, nP - 3):
+        p1 = _lin_fit(xs, ys, 0, i + 1)
+        p2 = _lin_fit(xs, ys, i + 1, nP)
+        if not p1 or not p2:
+            continue
+        di = 0.0
+        for j in range(0, i + 1):
+            d = p1[0] * xs[j] + p1[1] - ys[j]
+            di += d * d
+        for j in range(i + 1, nP - 1):
+            d = p2[0] * xs[j] + p2[1] - ys[j]
+            di += d * d
+        # so' aceitar se o declive de cima for mais inclinado e a
+        # interseccao cair dentro dos dados: sem isto, duas rectas quase
+        # paralelas dao um cruzamento em qualquer sitio
+        if p1[0] >= p2[0]:
+            continue
+        cruz = (p2[1] - p1[1]) / (p1[0] - p2[0])
+        if cruz <= xs[0] or cruz >= xs[-1]:
+            continue
+        if di < dmin:
+            dmin, m1, b1, m2, b2, th1 = di, p1[0], p1[1], p2[0], p2[1], i
+
+    if m1 is None:
+        return {'ok': False, 'motivo': 'nao ha quebra de declive nesta sessao',
+                'n_escaloes_fc': nP, 'descartados_por_artefacto': descartados}
+
+    vt1 = (b2 - b1) / (m1 - m2)
+
+    # ── VT2: partir o segmento de cima outra vez ──────────────────────────
+    vt2 = vt1p = vt2p = None
+    dmin2, m2p, b2p, m3, b3 = float('inf'), None, None, None, None
+    for i in range(th1 + 15, nP - 3):
+        p1 = _lin_fit(xs, ys, th1, i + 1)
+        p2 = _lin_fit(xs, ys, i + 1, nP)
+        if not p1 or not p2:
+            continue
+        di = 0.0
+        for j in range(th1, i + 1):
+            d = p1[0] * xs[j] + p1[1] - ys[j]
+            di += d * d
+        for j in range(i + 1, nP - 1):
+            d = p2[0] * xs[j] + p2[1] - ys[j]
+            di += d * d
+        if di < dmin2:
+            dmin2, m2p, b2p, m3, b3 = di, p1[0], p1[1], p2[0], p2[1]
+
+    if m3 is not None and m2p is not None and m3 > m2p and m1 != m2p and m2 != m3:
+        vt2 = (b3 - b2) / (m2 - m3)
+        vt1p = (b2p - b1) / (m1 - m2p)
+        vt2p = (b3 - b2p) / (m2p - m3)
+
+    # ── potencia a cada limiar ────────────────────────────────────────────
+    xp = sorted(soma_p)
+    yp = [soma_p[b] / cont_p[b] for b in xp]
+    mP, bP, res_p = _fit_potencia_vs_fc(xp, yp) if len(xp) >= 6 else (None, None, None)
+
+    def _w(v):
+        if v is None or mP is None:
+            return None
+        return round(mP * v + bP, 1)
+
+    # BUG do script original corrigido aqui: la' o VT1, que esta em bpm, era
+    # validado contra a gama de POTENCIA da sessao. Num rolo com 300 W de
+    # pico um VT1 de 140 bpm passava por acaso; numa sessao mais fraca o
+    # mesmo valor era anulado. A validacao tem de ser contra a gama de FC.
+    def _valido(v):
+        return v is not None and xs[0] <= v <= xs[-1]
+
+    saida = {'ok': True,
+             'metodo': 'RRa1 x FC, quebra de declive (Tolosa/alphaHRV)',
+             'n_escaloes_fc': nP,
+             'gama_fc': [xs[0], xs[-1]],
+             'descartados_por_artefacto': descartados,
+             'residuo_2_rectas': round(dmin, 5),
+             'declives': {'m1': round(m1, 5), 'm2': round(m2, 5),
+                          'm2_linha3': round(m2p, 5) if m2p else None,
+                          'm3': round(m3, 5) if m3 else None},
+             'curva_rra1': [{'fc': xs[i], 'rra1': round(ys[i], 4),
+                             'n': cont_r[xs[i]]} for i in range(nP)],
+             'potencia_vs_fc': ({'declive_w_por_bpm': round(mP, 2),
+                                 'intercepto': round(bP, 1),
+                                 'residuo': res_p, 'n_escaloes': len(xp)}
+                                if mP is not None else None)}
+
+    estimativas = {'VT1': [], 'VT2': []}
+    if _valido(vt1):
+        estimativas['VT1'].append(round(vt1, 1))
+    if _valido(vt1p):
+        estimativas['VT1'].append(round(vt1p, 1))
+    if _valido(vt2):
+        estimativas['VT2'].append(round(vt2, 1))
+    if _valido(vt2p):
+        estimativas['VT2'].append(round(vt2p, 1))
+
+    for nome, vs in estimativas.items():
+        if not vs:
+            saida[nome] = None
+            continue
+        media = sum(vs) / len(vs)
+        dp = (sum((v - media) ** 2 for v in vs) / len(vs)) ** 0.5
+        saida[nome] = {
+            'fc_bpm': round(media, 1),
+            'fc_sd': round(dp, 1),
+            'watts': _w(media),
+            'watts_sd': round(abs(mP) * dp, 1) if mP else None,
+            'estimativas_bpm': vs,
+            'n_ajustes': len(vs),
+        }
+    saida['nota'] = (
+        'Sem limiar de a1: o VT1 e a interseccao de duas rectas ajustadas ao '
+        'RRa1 contra a FC, e o VT2 vem de partir o segmento superior outra '
+        'vez. O sd e a diferenca entre o ajuste de 2 rectas e o de 3 -- duas '
+        'estimativas independentes do mesmo ponto. Um sd grande diz que a '
+        'quebra nao esta bem definida nesta sessao.')
+    return saida
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# METODO RRa1 x FC — ponto de quebra, sem constante de a1
+#
+# Porta do activity chart do forum da Intervals.icu. E' melhor do que o
+# metodo do a1 fixo por quatro razoes, todas visiveis nos dados deste
+# atleta:
+#
+#   1. Nao usa constante nenhuma. O limiar e' o ponto onde a relacao
+#      RRa1 x FC muda de declive. O 0.75 e o 0.50 desaparecem.
+#   2. Usa RRa1 = respiracao / (60 x a1). No limiar as duas variaveis
+#      movem-se no mesmo sentido, portanto o sinal e' maior do que em
+#      qualquer uma sozinha.
+#   3. O limiar sai em bpm, onde a dispersao entre sessoes era de 17 bpm
+#      entre quartis. A potencia vem depois, por um ajuste separado
+#      potencia x FC -- e' isto que evita a dispersao de 2.5x que o meu
+#      metodo tinha ao binar a1 contra a potencia directamente.
+#   4. Devolve VT1 como media de duas estimativas independentes, com
+#      desvio-padrao. Da' a incerteza em vez de um numero seco.
+#
+# Uma correccao face ao original: la' o teste de sanidade compara VT1, que
+# esta em bpm, com o minimo e o maximo da POTENCIA. Compara batimentos com
+# watts. Aqui cada grandeza e' verificada na sua unidade.
+# ══════════════════════════════════════════════════════════════════════════
+
+FC_MAX_BIN = 221          # tamanho dos vectores de acumulacao, como no original
+SEPARACAO_MINIMA_VT = 15  # bpm entre VT1 e VT2, como no original
+
+
+def _lin_fit(xs, ys, ini, fim):
+    """Minimos quadrados em xs[ini:fim]. Igual ao linFit do original."""
+    n = fim - ini
+    if n < 2:
+        return None
+    sx = sum(xs[ini:fim])
+    sx2 = sum(v * v for v in xs[ini:fim])
+    sy = sum(ys[ini:fim])
+    sxy = sum(xs[i] * ys[i] for i in range(ini, fim))
+    det = sx2 * n - sx * sx
+    if det == 0:
+        return None
+    return ((sxy * n - sx * sy) / det, (sx2 * sy - sxy * sx) / det)
+
+
+def _residuo(xs, ys, m, b, a, z):
+    return sum((m * xs[j] + b - ys[j]) ** 2 for j in range(a, min(z + 1, len(xs))))
+
+
+def limiares_rra1(streams, suavizar_resp=1):
+    """VT1 e VT2 pelo ponto de quebra de RRa1 contra a FC."""
+    a1 = streams.get('dfa_a1') or []
+    resp = (streams.get('respiration')
+            or streams.get('RespirationRateAlphaHRV') or [])
+    hr = streams.get('heartrate') or []
+    pwr = streams.get('watts') or []
+    if not a1 or not resp or not hr:
+        return {'ok': False, 'motivo': 'faltam streams de a1, respiracao ou FC'}
+
+    if suavizar_resp > 1:
+        bp = (suavizar_resp - 1) // 2
+        suav = list(resp)
+        for i in range(bp, len(resp) - bp):
+            vs = [resp[j] for j in range(i - bp, i + bp + 1) if resp[j] is not None]
+            if vs:
+                suav[i] = sum(vs) / len(vs)
+        resp = suav
+
+    n_rra1 = [0] * FC_MAX_BIN
+    s_rra1 = [0.0] * FC_MAX_BIN
+    n_pwr = [0] * FC_MAX_BIN
+    s_pwr = [0.0] * FC_MAX_BIN
+
+    for i in range(min(len(a1), len(resp), len(hr))):
+        v, r, h = a1[i], resp[i], hr[i]
+        if v is None or r is None or h is None:
+            continue
+        b = int(h)
+        if not (0 < b < FC_MAX_BIN):
+            continue
+        if v > 0:
+            s_rra1[b] += r / (60.0 * v)
+            n_rra1[b] += 1
+        if i < len(pwr) and pwr[i] is not None and pwr[i] > 0:
+            s_pwr[b] += pwr[i]
+            n_pwr[b] += 1
+
+    xs = [i for i in range(FC_MAX_BIN) if n_rra1[i] > 0]
+    ys = [s_rra1[i] / n_rra1[i] for i in xs]
+    if len(xs) < 10:
+        return {'ok': False, 'motivo': f'so {len(xs)} batimentos com dados'}
+
+    # ── recta potencia x FC, pela janela que melhor se ajusta ──
+    xp = [i for i in range(FC_MAX_BIN) if n_pwr[i] > 0]
+    yp = [s_pwr[i] / n_pwr[i] for i in xp]
+    m_pwr = b_pwr = None
+    if len(xp) >= 20:
+        meio = len(xp) // 2
+        melhor = None
+        for i in range(10, meio):
+            p = _lin_fit(xp, yp, meio - i, meio + i)
+            if not p:
+                continue
+            d = _residuo(xp, yp, p[0], p[1], meio - i, meio + i) / (i * i)
+            if melhor is None or d < melhor[0]:
+                melhor = (d, p[0], p[1])
+        if melhor:
+            _, m_pwr, b_pwr = melhor
+
+    def _para_watts(bpm):
+        if bpm is None or m_pwr is None:
+            return None
+        return round(m_pwr * bpm + b_pwr)
+
+    nP = len(xs)
+    # ── quebra de dois segmentos ──
+    melhor, th1 = None, None
+    for i in range(3, nP - 3):
+        p1 = _lin_fit(xs, ys, 0, i)
+        p2 = _lin_fit(xs, ys, i + 1, nP - 1)
+        if not p1 or not p2 or p1[0] >= p2[0]:
+            continue
+        if p1[0] == p2[0]:
+            continue
+        inter = (p2[1] - p1[1]) / (p1[0] - p2[0])
+        if inter <= xs[0]:
+            continue
+        d = (_residuo(xs, ys, p1[0], p1[1], 0, i)
+             + _residuo(xs, ys, p2[0], p2[1], i + 1, nP - 2))
+        if melhor is None or d < melhor[0]:
+            melhor, th1 = (d, p1, p2), i
+    if melhor is None:
+        return {'ok': False, 'motivo': 'nenhuma quebra valida em RRa1 x FC',
+                'n_batimentos': nP}
+    res2, (m1, b1), (m2, b2) = melhor
+
+    # ── quebra do segmento de cima, para o VT2 ──
+    melhor3, th2 = None, None
+    for i in range(th1 + SEPARACAO_MINIMA_VT, nP - 3):
+        p1 = _lin_fit(xs, ys, th1, i)
+        p2 = _lin_fit(xs, ys, i + 1, nP - 1)
+        if not p1 or not p2:
+            continue
+        d = (_residuo(xs, ys, p1[0], p1[1], th1, i)
+             + _residuo(xs, ys, p2[0], p2[1], i + 1, nP - 2))
+        if melhor3 is None or d < melhor3[0]:
+            melhor3, th2 = (d, p1, p2), i
+
+    def _cruz(ma, ba, mb, bb):
+        return round((bb - ba) / (ma - mb)) if ma != mb else None
+
+    vt1 = _cruz(m1, b1, m2, b2)
+    vt2 = vt1p = vt2p = None
+    if melhor3:
+        _, (m2p, b2p), (m3, b3) = melhor3
+        if m3 > m2p:
+            vt2 = _cruz(m2, b2, m3, b3)
+            vt1p = _cruz(m1, b1, m2p, b2p)
+            vt2p = _cruz(m2p, b2p, m3, b3)
+
+    # sanidade NA UNIDADE CERTA -- o original comparava bpm com watts
+    fc_lo, fc_hi = xs[0], xs[-1]
+    def _valida(v):
+        return v if (v is not None and fc_lo <= v <= fc_hi) else None
+    vt1, vt2, vt1p, vt2p = map(_valida, (vt1, vt2, vt1p, vt2p))
+
+    def _media_dp(a, b):
+        vs = [v for v in (a, b) if v is not None]
+        if not vs:
+            return None, None
+        m = sum(vs) / len(vs)
+        dp = (sum((v - m) ** 2 for v in vs) / len(vs)) ** 0.5
+        return round(m, 1), round(dp, 1)
+
+    vt1_m, vt1_dp = _media_dp(vt1, vt1p)
+    vt2_m, vt2_dp = _media_dp(vt2, vt2p)
+    pt1, pt1_dp = _media_dp(_para_watts(vt1), _para_watts(vt1p))
+    pt2, pt2_dp = _media_dp(_para_watts(vt2), _para_watts(vt2p))
+
+    ws = [w for w in pwr if w and w > 0]
+    if ws and pt1 is not None and not (min(ws) <= pt1 <= max(ws)):
+        pt1 = pt1_dp = None
+    if ws and pt2 is not None and not (min(ws) <= pt2 <= max(ws)):
+        pt2 = pt2_dp = None
+
+    return {
+        'ok': vt1_m is not None,
+        'metodo': 'ponto de quebra de RRa1 x FC (sem constante de a1)',
+        'VT1_bpm': vt1_m, 'VT1_dp': vt1_dp,
+        'VT2_bpm': vt2_m, 'VT2_dp': vt2_dp,
+        'PT1_w': pt1, 'PT1_dp': pt1_dp,
+        'PT2_w': pt2, 'PT2_dp': pt2_dp,
+        'estimativas': {'VT1_2rectas': vt1, 'VT1_3rectas': vt1p,
+                        'VT2_2rectas': vt2, 'VT2_3rectas': vt2p},
+        'declives': {'m1': round(m1, 5), 'm2': round(m2, 5)},
+        'n_batimentos': nP,
+        'intervalo_fc': [fc_lo, fc_hi],
+        'recta_potencia_fc': ({'declive_w_por_bpm': round(m_pwr, 2),
+                               'intercepto': round(b_pwr, 1)}
+                              if m_pwr is not None else None),
+        'residuo_2seg': round(res2, 4),
+        'nota': ('o desvio-padrao vem de duas estimativas independentes -- '
+                 'ajuste de duas e de tres rectas. Nao e um intervalo de '
+                 'confianca; e a distancia entre dois metodos que deviam '
+                 'concordar. Grande, nao confiar no valor'),
+    }

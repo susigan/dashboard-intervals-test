@@ -316,6 +316,7 @@ def registar(app):
             res['streams_na_actividade'] = sorted(nomes)
             res['streams_usados'] = {k: v for k, v in mapa.items() if v}
             res['meanrra1_replicado'] = hl.replicar_meanrra1(usados)
+            res['rra1_quebra'] = hl.limiares_rra1(usados)
             return jsonify(res)
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
@@ -423,6 +424,7 @@ def registar(app):
                     continue
                 usados = {k: streams.get(v) for k, v in mapa.items() if v}
                 res = hl.calcular(usados)
+                rra1 = hl.limiares_rra1(usados)
                 if not res.get('ok'):
                     resumo['erro'] += 1
                     fora.append({**a, 'estado': 'erro', 'motivo': res.get('motivo')})
@@ -437,6 +439,14 @@ def registar(app):
                        'a1_alvo_hrvt1c': res['a1_alvo_hrvt1c'],
                        'motivo': (None if res['sessao_adequada']
                                   else res['nota_qualidade'])}
+                if rra1.get('ok'):
+                    lin.update({
+                        'VT1_bpm': rra1['VT1_bpm'], 'VT1_dp': rra1['VT1_dp'],
+                        'VT2_bpm': rra1['VT2_bpm'], 'VT2_dp': rra1['VT2_dp'],
+                        'PT1_w': rra1['PT1_w'], 'PT2_w': rra1['PT2_w'],
+                        'fc_coberta': rra1['intervalo_fc']})
+                else:
+                    lin['rra1_motivo'] = rra1.get('motivo')
                 for nome_l, l in (res.get('limiares') or {}).items():
                     for eixo in ('watts', 'heartrate'):
                         d = l.get(eixo) or {}
@@ -454,15 +464,25 @@ def registar(app):
             # comparar o calculado com o do script, nas que tem os dois
             comp = []
             for x in fora:
-                if x.get('HRVT1_script') and x.get('HRVT1c_heartrate'):
-                    comp.append({
-                        'data': x['data'], 'id': x['id'],
-                        'script_HRVT1': x['HRVT1_script'],
-                        'calculado_HRVT1s': x.get('HRVT1s_heartrate'),
-                        'calculado_HRVT1c': x['HRVT1c_heartrate'],
-                        'diff_c_menos_script': round(
-                            x['HRVT1c_heartrate'] - x['HRVT1_script'], 1)})
-            difs = [c['diff_c_menos_script'] for c in comp]
+                if not x.get('HRVT1_script'):
+                    continue
+                linha = {'data': x['data'], 'id': x['id'],
+                         'script_HRVT1': x['HRVT1_script'],
+                         'HRVT1c': x.get('HRVT1c_heartrate'),
+                         'VT1_quebra': x.get('VT1_bpm'),
+                         'VT1_dp': x.get('VT1_dp')}
+                if x.get('HRVT1c_heartrate'):
+                    linha['diff_c_menos_script'] = round(
+                        x['HRVT1c_heartrate'] - x['HRVT1_script'], 1)
+                if x.get('VT1_bpm'):
+                    linha['diff_quebra_menos_script'] = round(
+                        x['VT1_bpm'] - x['HRVT1_script'], 1)
+                comp.append(linha)
+            difs = [c['diff_c_menos_script'] for c in comp
+                    if c.get('diff_c_menos_script') is not None]
+            difq = [c['diff_quebra_menos_script'] for c in comp
+                    if c.get('diff_quebra_menos_script') is not None]
+            dps = [c['VT1_dp'] for c in comp if c.get('VT1_dp') is not None]
 
             return jsonify({
                 'status': 'ok', 'modalidade': modalidade, 'dias': dias,
@@ -470,8 +490,13 @@ def registar(app):
                 'resumo': resumo,
                 'comparacao_com_script': {
                     'n': len(comp),
-                    'diferenca_mediana_bpm': (sorted(difs)[len(difs) // 2]
-                                              if difs else None),
+                    'HRVT1c_vs_script_mediana': (sorted(difs)[len(difs) // 2]
+                                                 if difs else None),
+                    'quebra_vs_script_mediana': (sorted(difq)[len(difq) // 2]
+                                                 if difq else None),
+                    'n_quebra': len(difq),
+                    'dp_mediano_da_quebra': (sorted(dps)[len(dps) // 2]
+                                             if dps else None),
                     'detalhe': comp},
                 'sessoes': fora,
                 'nota': ('estado=utilizavel exige amplitude de potencia >= 80 W, '

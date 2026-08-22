@@ -76,12 +76,126 @@ def maximo_inicial(a1, early_s=EARLY_RAMP_S, hz=1.0):
                          'max_bruto': round(max(ini), 3)}
 
 
-def cruzamento(a1, alvo, canais, hz=1.0, suavizar=True):
-    """Onde o a1 desce abaixo do alvo, e o que os outros canais marcam ai.
+def perfil_a1_vs_intensidade(a1, canal, artefactos=None, n_bins=12,
+                             art_max_pct=5.0):
+    """Mediana de a1 por escalao de intensidade.
 
-    Usa-se a ULTIMA descida, nao a primeira: no inicio da sessao o a1
-    oscila e cruza o alvo varias vezes antes de assentar. A ultima e' a que
-    corresponde a passagem definitiva para acima do limiar.
+    Substitui a procura do cruzamento no TEMPO, que se mostrou errada nos
+    dados reais. Numa sessao que nao e' uma rampa, o a1 sobe e desce dezenas
+    de vezes e cruza o alvo a toda a hora -- apanhar "a ultima descida" da'
+    um ponto arbitrario, e numa sessao apanhou a volta a calma: 236 W a
+    91 bpm, que nao existe.
+
+    Contra a intensidade o problema desaparece: nao interessa QUANDO o a1
+    esteve baixo, interessa a QUE potencia. Cada escalao junta todos os
+    momentos passados nessa potencia, esteja onde estiver na sessao.
+    """
+    pares = []
+    for i in range(min(len(a1), len(canal))):
+        v, p = a1[i], canal[i]
+        if v is None or p is None or v <= 0 or v > A1_MAX_PLAUSIVEL or p <= 0:
+            continue
+        if artefactos is not None and i < len(artefactos):
+            art = artefactos[i]
+            if art is not None and art > art_max_pct:
+                continue
+        pares.append((float(p), float(v)))
+    if len(pares) < 60:
+        return None
+
+    ps = sorted(p for p, _ in pares)
+    lo, hi = ps[int(len(ps) * 0.05)], ps[int(len(ps) * 0.95)]
+    if hi <= lo:
+        return None
+    largura = (hi - lo) / n_bins
+    bins = {}
+    for p, v in pares:
+        if p < lo or p > hi:
+            continue
+        k = min(int((p - lo) / largura), n_bins - 1)
+        bins.setdefault(k, []).append(v)
+
+    escaloes = []
+    for k in sorted(bins):
+        vs = bins[k]
+        if len(vs) < 15:
+            continue
+        escaloes.append({
+            'centro': round(lo + largura * (k + 0.5), 1),
+            'n': len(vs),
+            'a1_mediana': round(_mediana(vs), 3),
+        })
+    return escaloes if len(escaloes) >= 4 else None
+
+
+def intensidade_no_alvo(escaloes, alvo):
+    """Interpola a intensidade a que o a1 mediano atinge o alvo.
+
+    Percorre os escaloes por ordem de intensidade e apanha a passagem de
+    cima para baixo. Se o a1 ja' esta abaixo do alvo no escalao mais baixo,
+    o limiar fica abaixo do que foi treinado e nao ha nada a interpolar --
+    devolve-se isso em vez de extrapolar.
+    """
+    if not escaloes or len(escaloes) < 2:
+        return None
+    if escaloes[0]['a1_mediana'] < alvo:
+        return {'fora_do_intervalo': 'abaixo',
+                'nota': (f"a1 ja' abaixo de {alvo} no escalao mais baixo "
+                         f"({escaloes[0]['centro']}); o limiar esta abaixo "
+                         'da intensidade minima desta sessao')}
+    if escaloes[-1]['a1_mediana'] > alvo:
+        return {'fora_do_intervalo': 'acima',
+                'nota': (f"a1 nunca desceu abaixo de {alvo} (minimo "
+                         f"{escaloes[-1]['a1_mediana']} a "
+                         f"{escaloes[-1]['centro']}); a sessao nao chegou "
+                         'ao limiar')}
+    for i in range(1, len(escaloes)):
+        a, b = escaloes[i - 1], escaloes[i]
+        if a['a1_mediana'] >= alvo > b['a1_mediana']:
+            f = ((a['a1_mediana'] - alvo)
+                 / (a['a1_mediana'] - b['a1_mediana'] or 1))
+            return {'intensidade': round(a['centro']
+                                         + f * (b['centro'] - a['centro']), 1),
+                    'entre': [a['centro'], b['centro']],
+                    'n_pontos': a['n'] + b['n']}
+    return None
+
+
+def e_rampa(canal, n_bins=6):
+    """A intensidade sobe ao longo da sessao?
+
+    O HRVT1c precisa de um arranque facil seguido de subida: e' do maximo
+    de a1 no inicio que sai o alvo. Numa sessao que comeca dura, esse
+    maximo fica baixo e o alvo sai errado -- e' o "Unrealistic threshold"
+    que o protocolo do forum avisa.
+    """
+    vs = [v for v in canal if v is not None and v > 0]
+    if len(vs) < 120:
+        return None
+    tam = len(vs) // n_bins
+    medias = [sum(vs[i * tam:(i + 1) * tam]) / tam for i in range(n_bins)]
+    subidas = sum(1 for i in range(1, n_bins) if medias[i] > medias[i - 1])
+    return {
+        'medias_por_sexto': [round(m) for m in medias],
+        'sextos_a_subir': subidas,
+        'de': n_bins - 1,
+        'primeiro_vs_ultimo_pct': round((medias[-1] / medias[0] - 1) * 100, 1)
+                                  if medias[0] else None,
+        'parece_rampa': subidas >= n_bins - 2 and medias[-1] > medias[0] * 1.25,
+    }
+
+
+def cruzamento(a1, alvo, canais, hz=1.0, suavizar=True):
+    """DEPRECADO. Onde o a1 desce abaixo do alvo, ao longo do TEMPO.
+
+    Nao usar. Falha em qualquer sessao que nao seja uma rampa limpa, e as
+    sessoes reais nao sao. Nos dados deste atleta produziu HRVT1c, HRVT1s e
+    HRVT2 separados por 36 segundos no fim de uma sessao de 24 minutos --
+    o mesmo instante detectado tres vezes -- e, noutra, 236 W a 86 bpm, que
+    e' a volta a calma.
+
+    A causa e' conceptual, nao um afinamento: o limiar e' uma propriedade da
+    INTENSIDADE, nao um instante. Ver limiar_por_regressao.
     """
     serie = _suavizar(a1) if suavizar else list(a1)
     idx = None
@@ -97,8 +211,6 @@ def cruzamento(a1, alvo, canais, hz=1.0, suavizar=True):
     for nome, dados in (canais or {}).items():
         if not dados or idx >= len(dados):
             continue
-        # media dos 30 s anteriores ao cruzamento: o valor instantaneo de
-        # potencia oscila de mais para servir de limiar
         a = max(0, idx - int(30 * hz))
         vs = [v for v in dados[a:idx + 1] if v is not None]
         if vs:
@@ -106,47 +218,165 @@ def cruzamento(a1, alvo, canais, hz=1.0, suavizar=True):
     return out
 
 
-def calcular(streams, hz=1.0, early_s=EARLY_RAMP_S):
-    """streams: {'dfa_a1': [...], 'respiration': [...], 'watts': [...],
-                 'heartrate': [...]}"""
+def _regressao(xs, ys):
+    n = len(xs)
+    if n < 3:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    if sxx <= 0:
+        return None
+    sxy = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
+    a = sxy / sxx
+    b = my - a * mx
+    syy = sum((y - my) ** 2 for y in ys)
+    r2 = (sxy ** 2 / (sxx * syy)) if syy > 0 else 0.0
+    return {'declive': a, 'intercepto': b, 'r2': r2, 'n': n}
+
+
+def binar(pares, largura):
+    """Mediana de a1 por escalao de intensidade.
+
+    Sem isto, uma sessao passada quase toda a 200 W tem 90% dos pontos
+    nessa potencia, e a regressao descreve o tempo passado em cada zona em
+    vez da relacao entre intensidade e a1. Binar da o mesmo peso a cada
+    nivel de intensidade, que e' o que interessa para um limiar. A mediana
+    dentro do bin absorve os artefactos.
+    """
+    baldes = {}
+    for x, y in pares:
+        k = int(x // largura)
+        baldes.setdefault(k, []).append(y)
+    out = []
+    for k in sorted(baldes):
+        vs = baldes[k]
+        if len(vs) < 5:            # bins com meia duzia de pontos sao ruido
+            continue
+        out.append({'centro': (k + 0.5) * largura, 'a1': _mediana(vs),
+                    'n': len(vs)})
+    return out
+
+
+def limiar_por_regressao(pares, alvo, largura, rotulo):
+    """Intensidade a que o a1 atinge o alvo, por regressao sobre os bins.
+
+    O limiar sai da relacao a1 x intensidade, nao de um instante da sessao.
+    Devolve sempre o r2 e o intervalo coberto: se o alvo cair fora do
+    intervalo de intensidades que a sessao percorreu, o valor e'
+    extrapolacao e vem marcado como tal.
+    """
+    bins = binar(pares, largura)
+    if len(bins) < 3:
+        return {'ok': False, 'motivo': f'so {len(bins)} escaloes de {rotulo}'}
+    reg = _regressao([b['centro'] for b in bins], [b['a1'] for b in bins])
+    if not reg or reg['declive'] >= 0:
+        return {'ok': False,
+                'motivo': ('a1 nao desce com a intensidade nesta sessao'
+                           if reg else 'regressao impossivel'),
+                'r2': round(reg['r2'], 3) if reg else None}
+    valor = (alvo - reg['intercepto']) / reg['declive']
+    lo = min(b['centro'] for b in bins)
+    hi = max(b['centro'] for b in bins)
+    return {'ok': True, 'valor': round(valor, 1), 'unidade': rotulo,
+            'r2': round(reg['r2'], 3), 'n_escaloes': len(bins),
+            'intervalo_coberto': [round(lo), round(hi)],
+            'extrapolado': not (lo <= valor <= hi),
+            'declive_a1_por_unidade': round(reg['declive'], 6),
+            'bins': bins}
+
+
+def calcular(streams, hz=1.0, early_s=EARLY_RAMP_S, artefacto_max=5.0):
+    """streams: {'dfa_a1', 'respiration', 'watts', 'heartrate', 'artifacts'}
+
+    Os limiares saem da relacao a1 x intensidade, por regressao sobre bins
+    de potencia e de frequencia cardiaca. Nao ha nenhum instante da sessao
+    envolvido: um limiar e' uma intensidade, e detecta-lo no tempo faz o
+    resultado depender de como a sessao foi estruturada.
+    """
     a1 = streams.get('dfa_a1') or []
     if not a1:
         return {'ok': False, 'motivo': 'sem stream de DFA-a1'}
 
-    canais = {k: streams.get(k) for k in ('watts', 'heartrate', 'respiration')
-              if streams.get(k)}
-    validos = [v for v in a1 if v is not None and 0 < v <= A1_MAX_PLAUSIVEL]
-    if len(validos) < 60:
-        return {'ok': False, 'motivo': f'so {len(validos)} pontos de a1 validos'}
+    watts = streams.get('watts') or []
+    hr = streams.get('heartrate') or []
+    resp = streams.get('respiration') or []
+    art = streams.get('artifacts') or []
+
+    n = len(a1)
+    pares_w, pares_hr, descartes = [], [], {
+        'a1_invalido': 0, 'artefacto': 0, 'sem_potencia': 0, 'sem_fc': 0}
+
+    for i in range(n):
+        v = a1[i]
+        if v is None or not (0 < v <= A1_MAX_PLAUSIVEL):
+            descartes['a1_invalido'] += 1
+            continue
+        if art and i < len(art) and art[i] is not None and art[i] > artefacto_max:
+            descartes['artefacto'] += 1
+            continue
+        w = watts[i] if i < len(watts) else None
+        if w is not None and w > 0:
+            pares_w.append((float(w), v))
+        else:
+            descartes['sem_potencia'] += 1
+        h = hr[i] if i < len(hr) else None
+        if h is not None and h > 0:
+            pares_hr.append((float(h), v))
+        else:
+            descartes['sem_fc'] += 1
 
     max_ini, det = maximo_inicial(a1, early_s, hz)
     hrvt1c_alvo = round((max_ini + A1_HRVT2) / 2, 3) if max_ini else None
 
     limiares = {}
-    for nome, alvo in (('HRVT1s', A1_HRVT1_CLASSICO),
-                       ('HRVT2', A1_HRVT2),
-                       ('HRVT1c', hrvt1c_alvo)):
+    for nome, alvo in (('HRVT1c', hrvt1c_alvo),
+                       ('HRVT1s', A1_HRVT1_CLASSICO),
+                       ('HRVT2', A1_HRVT2)):
         if alvo is None:
             continue
-        limiares[nome] = cruzamento(a1, alvo, canais, hz)
+        limiares[nome] = {
+            'a1_alvo': alvo,
+            'watts': limiar_por_regressao(pares_w, alvo, 10.0, 'W'),
+            'heartrate': limiar_por_regressao(pares_hr, alvo, 5.0, 'bpm'),
+        }
+
+    # a sessao serve para isto? precisa de percorrer intensidades
+    ws = [w for w, _ in pares_w]
+    amplitude = (max(ws) - min(ws)) if ws else 0
+    r2s = [l['watts'].get('r2') for l in limiares.values()
+           if l['watts'].get('r2') is not None]
+    adequada = amplitude >= 80 and (max(r2s) if r2s else 0) >= 0.4
 
     return {
         'ok': True,
-        'n_pontos': len(a1),
-        'n_validos': len(validos),
-        'duracao_s': round(len(a1) / hz),
+        'metodo': 'regressao a1 x intensidade sobre bins',
+        'n_pontos': n,
+        'n_pares_potencia': len(pares_w),
+        'n_pares_fc': len(pares_hr),
+        'descartes': descartes,
+        'duracao_s': round(n / hz),
         'a1_max_inicial': round(max_ini, 3) if max_ini else None,
         'a1_max_inicial_detalhe': det,
         'a1_alvo_hrvt1c': hrvt1c_alvo,
-        'a1_mediana_sessao': round(_mediana(validos), 3),
+        'a1_mediana_sessao': round(_mediana(
+            [v for v in a1 if v and 0 < v <= A1_MAX_PLAUSIVEL]) or 0, 3),
+        'amplitude_potencia_w': round(amplitude),
+        'sessao_adequada': adequada,
         'limiares': limiares,
-        'canais_disponiveis': sorted(canais),
         'nota': ('HRVT1s (a1=0.75) e a convencao classica e sobrestima o '
-                 'limiar aerobio, segundo Rogers et al. 2024. HRVT1c usa o '
-                 'ponto medio entre o teu maximo de a1 no inicio do esforco '
-                 'e 0.50 -- individualizado em vez de constante. HRVT2 '
-                 '(a1=0.50) corresponde ao ponto de compensacao '
-                 'respiratoria.'),
+                 'limiar aerobio (Rogers et al. 2024). HRVT1c usa o ponto '
+                 'medio entre o teu maximo de a1 no inicio e 0.50 -- '
+                 'individualizado em vez de constante.'),
+        'nota_qualidade': (
+            'sessao adequada: percorre intensidade suficiente e o a1 desce '
+            'de forma consistente com ela'
+            if adequada else
+            f'sessao pouco adequada: amplitude de {round(amplitude)} W e r2 '
+            f'maximo de {round(max(r2s), 2) if r2s else 0}. Um limiar so tem '
+            'significado se a sessao passar por intensidades acima e abaixo '
+            'dele; uma rampa ou progressiva da isto, um rolo a potencia '
+            'constante nao. Marcado "extrapolado" quando o alvo cai fora do '
+            'intervalo percorrido.'),
     }
 
 

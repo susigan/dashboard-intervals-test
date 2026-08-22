@@ -302,12 +302,15 @@ def registar(app):
                                       'respiration_rate'),
                 'watts': _achar('watts', 'power'),
                 'heartrate': _achar('heartrate', 'hr'),
+                'artifacts': _achar('artifacts', 'artifact'),
             }
             usados = {k: streams.get(v) for k, v in mapa.items() if v}
 
-            res = hl.calcular(usados,
-                              early_s=request.args.get('early', type=int)
-                              or hl.EARLY_RAMP_S)
+            res = hl.calcular(
+                usados,
+                early_s=request.args.get('early', type=int) or hl.EARLY_RAMP_S,
+                artefacto_max=request.args.get('artefacto_max', type=float)
+                or 5.0)
             res['status'] = 'ok'
             res['activity_id'] = aid
             res['streams_na_actividade'] = sorted(nomes)

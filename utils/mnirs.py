@@ -251,3 +251,110 @@ def processar(tempo, canais, hz=1.0, acima=None, corte_outlier=3.0,
             'nota': ('ordem do pipeline: resample, substituir invalidos e '
                      'outliers, filtrar, normalizar. Filtrar antes de '
                      'remover outliers espalha-os pelos vizinhos')}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# DETECCAO DO INICIO DO PROTOCOLO
+#
+# Muitas sessoes com Moxy tem aquecimento antes do protocolo. O padrao do
+# protocolo e' ON/OFF repetido; o aquecimento e' continuo ou irregular. A
+# fronteira entre os dois e' a ultima pausa longa antes da sequencia
+# comecar.
+#
+# Detecta-se pela POTENCIA, nao pelo campo 'type' dos intervalos: neste
+# projecto ja' se estabeleceu que esse campo nao e' de confianca para
+# distinguir trabalho de recuperacao.
+# ══════════════════════════════════════════════════════════════════════════
+
+def detectar_blocos(tempo, watts, hz=1.0, limiar_rel=0.35, min_dur=20):
+    """Blocos ON/OFF a partir da potencia.
+
+    limiar_rel: fraccao da potencia mediana dos blocos altos abaixo da qual
+    se considera OFF. min_dur: segundos minimos para um bloco contar --
+    abaixo disso e' oscilacao, nao um bloco.
+    """
+    vs = [(w if w is not None else 0.0) for w in watts]
+    validos = [w for w in vs if w > 0]
+    if len(validos) < 30:
+        return {'ok': False, 'motivo': 'sem potencia suficiente'}
+    validos.sort()
+    p75 = validos[int(0.75 * (len(validos) - 1))]
+    limiar = p75 * limiar_rel
+
+    estados = [w >= limiar for w in vs]
+    blocos, ini, actual = [], 0, estados[0]
+    for i in range(1, len(estados)):
+        if estados[i] != actual:
+            blocos.append({'on': actual, 'i0': ini, 'i1': i - 1})
+            ini, actual = i, estados[i]
+    blocos.append({'on': actual, 'i0': ini, 'i1': len(estados) - 1})
+
+    # fundir blocos curtos no vizinho: um segundo de queda nao e' um OFF
+    min_n = int(min_dur * hz)
+    fundidos = []
+    for b in blocos:
+        dur = b['i1'] - b['i0'] + 1
+        if fundidos and dur < min_n:
+            fundidos[-1]['i1'] = b['i1']
+        else:
+            fundidos.append(dict(b))
+
+    for b in fundidos:
+        b['t0'] = float(tempo[b['i0']]) if b['i0'] < len(tempo) else None
+        b['t1'] = float(tempo[b['i1']]) if b['i1'] < len(tempo) else None
+        b['duracao_s'] = round((b['t1'] - b['t0']) if b['t0'] is not None else 0, 1)
+        jan = [vs[k] for k in range(b['i0'], b['i1'] + 1)]
+        b['watts_medio'] = round(sum(jan) / len(jan), 1) if jan else None
+
+    return {'ok': True, 'limiar_w': round(limiar, 1),
+            'p75_watts': round(p75, 1), 'blocos': fundidos,
+            'n_on': sum(1 for b in fundidos if b['on']),
+            'n_off': sum(1 for b in fundidos if not b['on'])}
+
+
+def propor_corte(blocos_info, hz=1.0, off_minimo=90):
+    """Onde comeca o protocolo: apos a ultima pausa longa antes da serie.
+
+    O separador do aquecimento e' a pausa MAIS LONGA que ainda tenha pelo
+    menos dois blocos de trabalho a seguir. Escolher simplesmente a ultima
+    pausa longa nao serve: as recuperacoes entre repeticoes tambem sao
+    longas, e a busca caia numa delas -- num teste com aquecimento de 12
+    min, pausa de 3 min e 4x(3 ON / 2 OFF), a ultima pausa qualificada era
+    uma recuperacao de 2 min e o corte cortava metade do protocolo.
+
+    Exigir dois ON depois evita o caso simetrico: uma pausa longa seguida
+    de um unico esforco e' o fim da sessao, nao o inicio do protocolo.
+    """
+    if not blocos_info.get('ok'):
+        return {'ok': False, 'motivo': blocos_info.get('motivo')}
+    bl = blocos_info['blocos']
+    candidatos = []
+    for k, b in enumerate(bl):
+        if b['on'] or b['duracao_s'] < off_minimo:
+            continue
+        ons_depois = [x for x in bl[k + 1:] if x['on']]
+        if len(ons_depois) >= 2:
+            candidatos.append((b['duracao_s'], k, b, ons_depois))
+    if candidatos:
+        dur, k, b, ons_depois = max(candidatos, key=lambda c: c[0])
+        outras = sorted(c[0] for c in candidatos if c[1] != k)
+        return {'ok': True,
+                'inicio_s': round(ons_depois[0]['t0'], 1),
+                'fim_s': round(bl[-1]['t1'], 1),
+                'pausa_antes_s': b['duracao_s'],
+                'n_blocos_on': len(ons_depois),
+                'outras_pausas_s': outras,
+                'confianca': ('alta' if not outras or dur > max(outras) * 1.4
+                              else 'baixa'),
+                'motivo': (f'pausa mais longa ({round(dur)} s) seguida de '
+                           f'{len(ons_depois)} blocos de trabalho'
+                           + (f'; outras pausas de {outras} s'
+                              if outras else ''))}
+    ons = [x for x in bl if x['on']]
+    if ons:
+        return {'ok': True, 'inicio_s': round(ons[0]['t0'], 1),
+                'fim_s': round(bl[-1]['t1'], 1),
+                'n_blocos_on': len(ons),
+                'motivo': ('sem pausa longa a separar aquecimento de '
+                           'protocolo; proposto o primeiro bloco de trabalho')}
+    return {'ok': False, 'motivo': 'nenhum bloco de trabalho detectado'}

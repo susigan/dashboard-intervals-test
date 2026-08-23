@@ -704,7 +704,7 @@ BODY = r"""
 
   <h2>Validação externa — HR × Watts</h2>
   <div class="controls" style="margin-bottom:8px;">
-    <label class="sel"><input type="checkbox" id="pmExtTodas" onchange="pmExtCarregar()">
+    <label class="sel"><input type="checkbox" id="pmExtTodas" checked onchange="pmExtCarregar()">
       todo o histórico (em vez de só a season)</label>
     <span id="pmExtEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
@@ -1675,14 +1675,19 @@ function aqListar(){
     + '<div style="max-height:320px;overflow-y:auto;margin-top:6px;">'
     + '<table style="width:100%;border-collapse:collapse;font-size:11px;">'
     + '<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
-    + '<th style="padding:4px;">Modalidade</th><th>Data</th><th>Degraus</th>'
+    + '<th style="padding:4px;">Data</th><th>Modalidade</th><th>Degraus</th>'
     + '<th>Watts alvo</th><th>Watts real</th><th>Tempo</th><th>M\u00e9tricas</th></tr>';
-  (d.sessoes||[]).forEach(function(sx){
+  // ordenar por data no cliente tambem: o utilizador quer ver o que e'
+  // recente, nao o que e' de que modalidade
+  const _ord = (d.sessoes||[]).slice().sort(function(a,b){
+   return (b.data||'').localeCompare(a.data||''); });
+  _ord.forEach(function(sx){
    const t = sx.tempo_total_s ? Math.round(sx.tempo_total_s/60)+'min' : '\u2014';
    h += '<tr style="border-bottom:1px solid #161b22;">'
-     + '<td style="padding:4px;">'+sx.modalidade+'</td>'
-     + '<td><a href="#" onclick="aqDetalhe(\''+sx.activity_id+'\',\''+sx.modalidade
-     + '\');return false;" style="color:#58A6FF;">'+(sx.data||'\u2014')+'</a></td>'
+     + '<td style="padding:4px;"><a href="#" onclick="aqDetalhe(\''+sx.activity_id
+     + '\',\''+sx.modalidade+'\');return false;" style="color:#58A6FF;">'
+     + (sx.data||'\u2014')+'</a></td>'
+     + '<td style="color:#8b949e;">'+sx.modalidade+'</td>'
      + '<td>'+sx.n_blocos+'</td><td>'+(sx.alvos||'').split(',').join('-')+'W</td>'
      + '<td>'+(sx.watts_medio!=null?sx.watts_medio+'W':'\u2014')+'</td>'
      + '<td>'+t+'</td>'

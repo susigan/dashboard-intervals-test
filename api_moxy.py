@@ -18,7 +18,12 @@ from datetime import datetime, timedelta
 
 from flask import jsonify, request
 
-PADRAO_MOXY = re.compile(r'(^|[\s#,;/\-_])moxy', re.IGNORECASE)
+# So' a tag conta. Antes procurava-se tambem no nome e na descricao, e
+# aceitavam-se sessoes com Smo2 no sumario mesmo sem tag -- isso trazia
+# actividades que nada tinham a ver, porque qualquer sessao com o sensor
+# ligado por acaso entrava. A tag e' uma decisao explicita do atleta; o
+# nome nao e'.
+PADRAO_MOXY = re.compile(r'^\s*#?\s*moxy\s*$', re.IGNORECASE)
 
 # Nomes possiveis dos streams NIRS. A Intervals.icu expoe smo2/thb, mas
 # ficheiros com dois sensores acrescentam sufixos.
@@ -30,12 +35,16 @@ CANAIS = {
 }
 
 
-def _tem_marca(j, nome):
-    alvos = [nome or '', (j or {}).get('description') or '',
-             (j or {}).get('name') or ''] + [
-        str(v) for k, v in (j or {}).items()
-        if 'tag' in k.lower() and isinstance(v, (str, list))]
-    return any(PADRAO_MOXY.search(str(a)) for a in alvos)
+def _tags(j):
+    """Lista de tags da actividade. Vem null quando nao ha nenhuma."""
+    t = (j or {}).get('tags')
+    if isinstance(t, str):
+        return [x.strip() for x in t.split(',') if x.strip()]
+    return [str(x).strip() for x in (t or []) if x]
+
+
+def _tem_tag_moxy(j):
+    return any(PADRAO_MOXY.match(t) for t in _tags(j))
 
 
 def registar(app):
@@ -62,24 +71,23 @@ def registar(app):
                      WHERE {' AND '.join(cond)} ORDER BY date DESC""",
                 tuple(args), fetch='all') or []
 
-            fora, sem_marca = [], 0
+            fora, sem_tag = [], 0
+            tags_vistas = {}
             for aid, tipo, data, nome, raw in linhas:
                 try:
                     j = raw if isinstance(raw, dict) else json.loads(raw)
                 except Exception:
                     continue
-                # com marca no texto, OU com Smo2 no sumario (o sensor
-                # esteve ligado mesmo sem ninguem ter escrito a tag)
-                marca = _tem_marca(j, nome)
-                tem_smo2 = (j or {}).get('Smo2') is not None or \
-                           (j or {}).get('smo2') is not None
-                if not marca and not tem_smo2:
-                    sem_marca += 1
+                tt = _tags(j)
+                for x in tt:
+                    tags_vistas[x] = tags_vistas.get(x, 0) + 1
+                if not _tem_tag_moxy(j):
+                    sem_tag += 1
                     continue
                 fora.append({
                     'id': aid, 'tipo': tipo, 'modalidade': TYPE_MAP.get(tipo),
                     'data': str(data)[:10], 'nome': (nome or '')[:70],
-                    'marca_no_texto': marca,
+                    'tags': tt,
                     'smo2_no_sumario': (j or {}).get('Smo2'),
                     'duracao_min': (round((j or {}).get('moving_time', 0) / 60)
                                     if (j or {}).get('moving_time') else None),
@@ -90,12 +98,16 @@ def registar(app):
             return jsonify({
                 'status': 'ok', 'n': len(fora), 'dias': dias,
                 'modalidade': modalidade,
-                'sessoes_sem_marca': sem_marca,
+                'sessoes_sem_tag': sem_tag,
                 'sessoes': fora,
                 'ultima': fora[0] if fora else None,
-                'nota': ('a marca e procurada no nome, descricao e campos de '
-                         'tags; sessoes com Smo2 no sumario entram mesmo sem '
-                         'marca escrita, porque o sensor esteve ligado')})
+                'tags_existentes': dict(sorted(tags_vistas.items(),
+                                               key=lambda kv: -kv[1])),
+                'nota': ('so entram actividades com a tag "Moxy". O nome da '
+                         'sessao e ignorado, e ter Smo2 no sumario tambem nao '
+                         'chega -- a tag e uma decisao explicita, o resto e '
+                         'coincidencia. tags_existentes lista o que ha na '
+                         'base, para se confirmar a grafia')})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
@@ -158,17 +170,33 @@ def registar(app):
                 fc=request.args.get('fc', type=float) or 0.02,
                 normalizar=request.args.get('normalizar'))
 
-            # contexto: potencia e FC para se ver a que intensidade
-            for extra in ('watts', 'heartrate', 'cadence'):
-                k = _achar([extra])
-                if k:
-                    t2, v2 = mn.resample(tempo, streams[k], hz=1.0)
-                    res['canais'][extra] = [
-                        round(x, 1) if x is not None else None for x in v2]
+            # todos os outros canais que a sessao tenha: entram sem
+            # filtragem NIRS, so' reamostrados, para se poder ver o SmO2
+            # contra a intensidade, a respiracao ou a cadencia
+            extras = {
+                'watts': ['watts', 'power'],
+                'heartrate': ['heartrate', 'hr'],
+                'cadence': ['cadence'],
+                'respiration': ['respiration', 'RespirationRateAlphaHRV'],
+                'dfa_a1': ['dfa_a1', 'dfaa1'],
+                'velocity_smooth': ['velocity_smooth', 'Speed'],
+                'torque': ['torque'],
+            }
+            for alvo, nomes in extras.items():
+                k = _achar(nomes)
+                if not k:
+                    continue
+                t2, v2 = mn.resample(tempo, streams[k], hz=1.0)
+                res['canais'][alvo] = [
+                    round(x, 2) if x is not None else None for x in v2]
+                mapa[alvo] = k
 
             res['status'] = 'ok'
             res['activity_id'] = aid
             res['streams_usados'] = mapa
+            res['canais_nirs'] = sorted(canais)
+            res['canais_contexto'] = sorted(
+                k for k in res['canais'] if k not in canais)
             res['streams_na_actividade'] = sorted(streams)
             return jsonify(res)
         except Exception as e:

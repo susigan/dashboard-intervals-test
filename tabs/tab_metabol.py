@@ -2367,11 +2367,14 @@ function pmExtTabela(){
   h+='<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px;">'
    +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
    +'<th style="padding:6px;">Limiar</th><th>Unidade</th><th>Estimativas</th>'
-   +'<th>Intervalo</th><th>Mediana</th><th>Amplitude</th><th>Modelo</th></tr>';
+   +'<th>Intervalo</th><th>Consenso</th><th>Amplitude</th><th>Modelo</th></tr>';
   Object.keys(co).forEach(function(k){
    const c=co[k];
    ['em_watts','em_bpm'].forEach(function(bk, bi){
     const b=c[bk]; if(!b) return;
+    const disc = (b.discrepantes||[]).map(function(d){
+      return d.campo+' '+d.valor+' ('+(d.desvio_pct>0?'+':'')+d.desvio_pct
+        +'%'+(d.n!=null?', n='+d.n:'')+')'; }).join(' · ');
     const ap=b.amplitude_pct;
     const cor = ap==null ? '#8b949e' : ap<10 ? '#3FB950' : ap<25 ? '#F0883E' : '#F85149';
     h+='<tr style="border-bottom:1px solid #161b22;">'
@@ -2380,9 +2383,20 @@ function pmExtTabela(){
      +'<td style="color:#8b949e;">'+b.detalhe.map(function(d){
          return d.campo+' '+d.valor; }).join(' · ')+'</td>'
      +'<td style="color:#8b949e;">'+b.min+'–'+b.max+'</td>'
-     +'<td><b>'+b.mediana+'</b></td>'
+     +'<td><b>'+((b.consenso&&b.consenso.valor!=null)?b.consenso.valor:b.mediana)+'</b>'
+     +(b.consenso
+       ? '<br><span style="color:#8b949e;font-size:10px;">'+b.consenso.n_metodos
+         +' método'+(b.consenso.n_metodos===1?'':'s')
+         +(b.consenso.n_metodos_fracos_excluidos
+           ? ' · '+b.consenso.n_metodos_fracos_excluidos+' fraco'
+             +(b.consenso.n_metodos_fracos_excluidos===1?'':'s')+' fora' : '')
+         +'</span>' : '')
+     +'</td>'
      +'<td style="color:'+cor+';">'+b.amplitude+(ap!=null?' ('+ap+'%)':'')+'</td>'
-     +'<td>'+(bi===0 && c.modelo_w!=null ? c.modelo_w+' W' : '')+'</td></tr>';
+     +'<td>'+(bi===0 && c.modelo_w!=null ? c.modelo_w+' W' : '')+'</td></tr>'
+     +(disc ? '<tr><td></td><td></td><td colspan="5" style="color:#F0883E;'
+       +'font-size:10px;padding-bottom:4px;">fora do consenso: '+disc
+       +'</td></tr>' : '');
    });
   });
   h+='</table>';

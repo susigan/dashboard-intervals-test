@@ -51,12 +51,14 @@ def registar(app):
 
     @app.route('/api/moxy/sessoes')
     def api_moxy_sessoes():
-        """Sessoes marcadas como Moxy.  ?modalidade=Bike&dias=365&n=50"""
+        """Sessoes marcadas como Moxy.  ?modalidade=Bike&dias=3650&n=300"""
         try:
             import db as _db
             from config import TYPE_MAP
-            dias = request.args.get('dias', type=int) or 365
-            n = min(request.args.get('n', type=int) or 50, 300)
+            # todo o historico por omissao. O limite de 365 dias
+            # escondia as sessoes de 2024 e anteriores.
+            dias = request.args.get('dias', type=int) or 3650
+            n = min(request.args.get('n', type=int) or 300, 500)
             modalidade = request.args.get('modalidade')
             corte = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
 
@@ -220,6 +222,17 @@ def registar(app):
                 res['canais'][alvo] = [
                     round(x, 2) if x is not None else None for x in v2]
                 mapa[alvo] = k
+                if alvo not in res['diagnostico']:
+                    vv = [x for x in v2 if x is not None]
+                    res['diagnostico'][alvo] = {
+                        'n_pontos': len(v2),
+                        'invalidos': sum(1 for x in v2 if x is None),
+                        'outliers': 0, 'pct_substituido': None,
+                        'minimo': round(min(vv), 1) if vv else None,
+                        'maximo': round(max(vv), 1) if vv else None,
+                        'filtro': {'metodo': 'nenhum',
+                                   'motivo': 'canal de contexto, so reamostrado'},
+                        'fonte': 'stream original'}
 
             if artefactos:
                 validos = [a for a in artefactos if a is not None]
@@ -233,6 +246,33 @@ def registar(app):
                              '(FC, DFA-a1, respiracao). O SmO2 e o THb vem '
                              'do Moxy e nao sao afectados')}
 
+            # blocos ON/OFF e proposta de corte
+            wt = res['canais'].get('watts')
+            if wt:
+                bl = mn.detectar_blocos(res['tempo'], wt, hz=1.0)
+                res['blocos'] = bl
+                res['corte_proposto'] = mn.propor_corte(bl)
+            else:
+                res['blocos'] = {'ok': False, 'motivo': 'sem potencia'}
+                res['corte_proposto'] = {'ok': False, 'motivo': 'sem potencia'}
+
+            # corte gravado pelo utilizador tem prioridade
+            try:
+                import drive_db_perfil as ddp
+                cn = ddp.get_conn()
+                r = cn.execute(
+                    """SELECT inicio_s, fim_s, origem, nota, data_gravacao
+                         FROM moxy_cortes WHERE activity_id = ?""",
+                    (aid,)).fetchone()
+                cn.close()
+                if r:
+                    res['corte_guardado'] = {
+                        'inicio_s': r[0], 'fim_s': r[1], 'origem': r[2],
+                        'nota': r[3], 'data_gravacao': r[4]}
+            except Exception as e:
+                res['corte_guardado'] = None
+                res['erro_corte'] = f'{type(e).__name__}: {e}'
+
             res['status'] = 'ok'
             res['activity_id'] = aid
             res['streams_usados'] = mapa
@@ -241,6 +281,40 @@ def registar(app):
                 k for k in res['canais'] if k not in canais)
             res['streams_na_actividade'] = sorted(streams)
             return jsonify(res)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/corte', methods=['POST'])
+    def api_moxy_corte():
+        """Grava o intervalo a analisar de uma sessao.
+
+        Corpo: activity_id, inicio_s, fim_s, modalidade, data, nota.
+        Gravar de novo a mesma actividade substitui -- a chave e' o id.
+        """
+        try:
+            import drive_db_perfil as ddp
+            c = request.get_json(silent=True) or {}
+            aid = str(c.get('activity_id') or '').strip()
+            if not aid:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'activity_id em falta'}), 400
+            cn = ddp.get_conn()
+            cn.execute(
+                """INSERT OR REPLACE INTO moxy_cortes
+                   (activity_id, modalidade, data, inicio_s, fim_s, origem,
+                    proposto_s, nota, data_gravacao)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (aid, c.get('modalidade'), c.get('data'),
+                 c.get('inicio_s'), c.get('fim_s'),
+                 c.get('origem') or 'utilizador', c.get('proposto_s'),
+                 c.get('nota'),
+                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            cn.commit()
+            ok, det = ddp.upload()
+            cn.close()
+            return jsonify({'status': 'ok' if ok else 'gravado_sem_upload',
+                            'activity_id': aid, 'drive': det})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

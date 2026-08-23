@@ -1209,3 +1209,178 @@ def limiares_lactato(curva, mlss_w=None):
                  "4 mmol/L fixo. LT2 e MLSS devem ficar proximos; grande "
                  "divergencia indica que o modelo nao descreve este atleta."),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# DIAGNOSTICO PELA FORMA DA CURVA (Gordo Byrn / Hellemans)
+#
+# A ideia: antes de decidir onde treinar, ler o FORMATO da curva. Cada
+# perfil pede uma prescricao diferente, e treinar a zona errada para o
+# perfil gera fadiga sem ganho.
+#
+# A classificacao sai de duas medidas geometricas da curva de lactato que o
+# modelo ja' produz -- nenhuma constante nova:
+#
+#   base_relativa  quanto do dominio de potencia fica abaixo do LT1. Uma
+#                  base longa e' o perfil ingreme; curta e' o linear.
+#   subida_topo    quao depressa o lactato sobe depois do LT2. Topo que
+#                  dispara e' normal/ingreme; topo que nao sobe e' o
+#                  achatado, o perfil de fadiga.
+# ══════════════════════════════════════════════════════════════════════════
+
+PERFIS_CURVA = {
+    "linear": {
+        "nome": "Linear",
+        "descricao": "Sobe desde o inicio, sem zona facil",
+        "prescricao": "So verde + forca. Zero Z3+.",
+        "cor": "#F85149",
+    },
+    "normal": {
+        "nome": "Normal",
+        "descricao": "Base plana ate ao LT1, sobe, e dispara no LT2",
+        "prescricao": "Estavel. Pode usar Z3/Z4/Z5.",
+        "cor": "#3FB950",
+    },
+    "ingreme": {
+        "nome": "Ingreme (elite/aerobio)",
+        "descricao": "Base longa, topo estreito",
+        "prescricao": "Unico caso para bloco de Z5.",
+        "cor": "#58A6FF",
+    },
+    "achatada": {
+        "nome": "Achatada (fadiga)",
+        "descricao": "Parece treinada, mas sem topo -- 'apaga'",
+        "prescricao": "NAO treinar vermelho. Descansar.",
+        "cor": "#F0883E",
+    },
+}
+
+
+def diagnostico_curva(curva, lt1_w, lt2_w, pvo2max_w=None, medido=False):
+    """Classifica a forma da curva de lactato num dos quatro perfis."""
+    pts = [(p.get("watts"), p.get("lactato")) for p in (curva or [])
+           if p.get("watts") is not None and p.get("lactato") is not None]
+    pts = [(float(w), float(l)) for w, l in pts]
+    pts.sort()
+    if len(pts) < 10 or not lt1_w or not lt2_w:
+        return {"ok": False, "motivo": "curva ou limiares em falta"}
+
+    w_max = pts[-1][0]
+    def _la(w):
+        melhor, d = None, 1e18
+        for x, l in pts:
+            if abs(x - w) < d:
+                d, melhor = abs(x - w), l
+        return melhor
+
+    la_base = min(l for _w, l in pts)
+    la_lt1, la_lt2 = _la(lt1_w), _la(lt2_w)
+    la_topo = pts[-1][1]
+
+    base_relativa = lt1_w / w_max if w_max else 0
+    # subida no topo, por watt, relativa a subida entre LT1 e LT2
+    tramo_meio = ((la_lt2 - la_lt1) / (lt2_w - lt1_w)) if lt2_w > lt1_w else 0
+    tramo_topo = ((la_topo - la_lt2) / (w_max - lt2_w)) if w_max > lt2_w else 0
+    aceleracao = (tramo_topo / tramo_meio) if tramo_meio > 0 else 0
+    # Delta ABSOLUTO em mmol/L, nao percentagem. A curva modelada arranca
+    # em ~0.2 mmol/L, muito abaixo de qualquer lactato de repouso real, e
+    # uma subida de 1.1 mmol/L -- perfeitamente normal -- aparecia como
+    # +550% e classificava tudo como "linear". E o mesmo erro de escala que
+    # ja' tinha estragado a convencao do LT1.
+    subida_ate_lt1 = la_lt1 - la_base
+
+    # LIMITE CONHECIDO, verificado nos dados deste atleta:
+    #
+    # A curva do modelo de Mader nao muda de FORMA. Testada com quatro
+    # conjuntos de MMP muito diferentes -- incluindo um sem base e outro
+    # com o topo achatado -- a base relativa ficou sempre entre 78.6% e
+    # 80.5%, a razao LT1/LT2 entre 0.799 e 0.816, e o VLamax entre 0.438 e
+    # 0.465. A forma e' determinada pela estrutura da equacao, nao pelo
+    # atleta: o que muda sao as potencias em que os pontos caem, nao o
+    # desenho entre eles.
+    #
+    # Classificar nos quatro perfis do metodo exige lactato MEDIDO, com
+    # pontos reais em varias intensidades. Com a curva modelada, qualquer
+    # classificador devolveria sempre a mesma resposta -- e uma resposta
+    # constante apresentada como diagnostico e' pior do que nenhuma.
+    #
+    # As medidas ficam devolvidas na mesma: se um dia houver pontos de
+    # lactato reais, a classificacao passa a ter base e o codigo ja' esta.
+    if not medido:
+        return {
+            "ok": False,
+            "motivo": ("a forma da curva modelada e quase invariante -- "
+                       "classificar os quatro perfis exige lactato medido"),
+            "base_relativa_pct": round(base_relativa * 100, 1),
+            "aceleracao_no_topo": round(aceleracao, 2),
+            "subida_ate_lt1_mmol": round(subida_ate_lt1, 2),
+            "lactato": {"base": round(la_base, 2), "lt1": round(la_lt1, 2),
+                        "lt2": round(la_lt2, 2), "topo": round(la_topo, 2)},
+            "perfis_possiveis": {k: v["nome"] for k, v in PERFIS_CURVA.items()},
+            "o_que_falta": ("pontos de lactato medidos em pelo menos 4 "
+                            "intensidades, ou uma rampa com recolha"),
+        }
+
+    if subida_ate_lt1 > 1.5 or base_relativa < 0.30:
+        perfil = "linear"
+    elif aceleracao < 1.2:
+        perfil = "achatada"
+    elif base_relativa >= 0.55 and aceleracao >= 2.5:
+        perfil = "ingreme"
+    else:
+        perfil = "normal"
+
+    return {
+        "ok": True, "perfil": perfil, **PERFIS_CURVA[perfil],
+        "base_relativa_pct": round(base_relativa * 100, 1),
+        "aceleracao_no_topo": round(aceleracao, 2),
+        "subida_ate_lt1_mmol": round(subida_ate_lt1, 2),
+        "lactato": {"base": round(la_base, 2), "lt1": round(la_lt1, 2),
+                    "lt2": round(la_lt2, 2), "topo": round(la_topo, 2)},
+        "nota": ("base_relativa e a fraccao do dominio de potencia que fica "
+                 "abaixo do LT1; aceleracao_no_topo compara a subida do "
+                 "lactato acima do LT2 com a subida entre LT1 e LT2. Sao "
+                 "medidas da curva deste atleta, nao cortes de tabela"),
+    }
+
+
+# Zonas ao estilo do semaforo (verde / tempo / vermelho), ancoradas nos
+# limiares medidos e nao numa FTP. As sensacoes e a respiracao vem do
+# metodo; as potencias e as FC saem dos teus dados.
+ZONAS_SEMAFORO = [
+    ("Z1 Recuperacao / Easy", 0.00, 0.85, "Facil; canta musica",
+     "Igual ao repouso", "So limita a duracao", "parte do verde"),
+    ("Z2 Steady / Endurance", 0.85, 1.00, "Confortavel com trabalho",
+     "Aprofundamento subtil; frases com pausa", "Horas", "~80% (verde)"),
+    ("Z3 Tempo / T-", 1.00, 1.15, "'Happy hard', controlado",
+     "Ouve a respiracao, sem ofegar", "60-90 min", "~0-10%"),
+    ("Z4 Threshold", 1.15, 1.30, "Dificil; queimacao",
+     "Palavras isoladas; ofegante", "10-60 min", "~10-20%"),
+    ("Z5 VO2max", 1.30, 1.45, "Muito dificil",
+     "Grunhidos; sem fala", "6-10 min", "blocos curtos"),
+]
+
+
+def zonas_semaforo(lt1_w, lt2_w, hr_lt1=None, hr_lt2=None, pvo2max_w=None):
+    """Cinco zonas ancoradas no LT1 (verde) e no LT2 (vermelho).
+
+    Z1/Z2 sao fraccoes do LT1; Z3 em diante sao fraccoes do LT1 ate ao LT2
+    e acima. Sem FTP: os limites sao os limiares medidos.
+    """
+    if not lt1_w or not lt2_w:
+        return []
+    out = []
+    for nome, a, b, sens, resp, dur, pct in ZONAS_SEMAFORO:
+        de = lt1_w * a if a < 1.0 else lt1_w + (lt2_w - lt1_w) * (a - 1.0) / 0.30
+        ate = lt1_w * b if b <= 1.0 else lt1_w + (lt2_w - lt1_w) * (b - 1.0) / 0.30
+        linha = {"zona": nome, "de_w": round(de), "ate_w": round(ate),
+                 "sensacao": sens, "respiracao": resp,
+                 "duracao": dur, "pct_treino": pct,
+                 "cor": ("#3FB950" if a < 1.0 else
+                         "#F0883E" if a < 1.15 else "#F85149")}
+        if hr_lt1 and hr_lt2:
+            f = (hr_lt2 - hr_lt1) / (lt2_w - lt1_w) if lt2_w > lt1_w else 0
+            linha["de_bpm"] = round(hr_lt1 + (de - lt1_w) * f)
+            linha["ate_bpm"] = round(hr_lt1 + (ate - lt1_w) * f)
+        out.append(linha)
+    return out

@@ -913,6 +913,13 @@ def e_constante(q):
     return (q["max"] - q["min"]) / escala < 0.01
 
 
+# Abaixo deste n uma estimativa nao entra no consenso. Nao e' um numero
+# magico: e' o ponto em que uma mediana deixa de ser mediana e passa a ser
+# duas ou tres observacoes. As estimativas fracas continuam visiveis na
+# tabela, assinaladas.
+N_MINIMO_CONSENSO = 10
+
+
 def coerencia_por_grupo(campos, modelo):
     """Estimativas independentes do mesmo limiar concordam entre si?
 
@@ -956,6 +963,42 @@ def coerencia_por_grupo(campos, modelo):
                                    for n, v in vals),
                                   key=lambda d: d["valor"]),
             }
+        # ── consenso ────────────────────────────────────────────────
+        # A mediana de todos os metodos que medem o mesmo limiar na mesma
+        # unidade. Metodos com poucas sessoes entram assinalados mas nao
+        # pesam: uma estimativa de 2 aquecimentos nao pode contar o mesmo
+        # que uma de 350 sessoes. E quando um metodo se afasta mais de 20%
+        # da mediana dos outros, e' marcado como discrepante em vez de ser
+        # silenciosamente absorvido.
+        for chave, campo_valor in (("em_watts", "watts_medido"),
+                                   ("em_bpm", "hr_medido")):
+            b = bloco.get(chave)
+            if not b:
+                continue
+            membros = [c for c in campos
+                       if c.get("grupo") == grupo and not c.get("constante")
+                       and c.get(campo_valor) is not None]
+            solidos = [c for c in membros if (c.get("quartis") or {}).get("n", 0)
+                       >= N_MINIMO_CONSENSO]
+            base = solidos or membros
+            vals = [c[campo_valor] for c in base]
+            med = quartis(vals)["p50"] if vals else None
+            b["consenso"] = {
+                "valor": round(med, 1) if med is not None else None,
+                "n_metodos": len(base),
+                "n_metodos_fracos_excluidos": len(membros) - len(base),
+                "metodos": sorted(c["rotulo"] for c in base),
+                "usou_fracos": not solidos and bool(membros),
+            }
+            if med:
+                b["discrepantes"] = [
+                    {"campo": c["rotulo"],
+                     "valor": round(c[campo_valor], 1),
+                     "desvio_pct": round((c[campo_valor] - med) / med * 100, 1),
+                     "n": (c.get("quartis") or {}).get("n")}
+                    for c in membros
+                    if abs(c[campo_valor] - med) / med > 0.20]
+
         if bloco.get("em_watts") or bloco.get("em_bpm"):
             out[grupo] = bloco
     return out

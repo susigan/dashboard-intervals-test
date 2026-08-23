@@ -708,8 +708,17 @@ BODY = r"""
       todo o histórico (em vez de só a season)</label>
     <span id="pmExtEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
+  <div class="controls" style="margin-bottom:4px;">
+    <span style="color:#8b949e;font-size:11px;">Mostrar:</span>
+    <label class="sel"><input type="checkbox" class="pmExtG" value="modelo" checked onchange="pmExtDraw()"> modelo</label>
+    <label class="sel"><input type="checkbox" class="pmExtG" value="aerobio" checked onchange="pmExtDraw()"> LT1</label>
+    <label class="sel"><input type="checkbox" class="pmExtG" value="limiar" checked onchange="pmExtDraw()"> LT2</label>
+    <label class="sel"><input type="checkbox" class="pmExtG" value="vo2max" checked onchange="pmExtDraw()"> VO₂max</label>
+    <label class="sel"><input type="checkbox" class="pmExtG" value="nuvem" checked onchange="pmExtDraw()"> nuvem</label>
+    <label class="sel"><input type="checkbox" class="pmExtG" value="fixos" onchange="pmExtDraw()"> definições fixas</label>
+  </div>
   <div class="chartbox" style="position:relative;">
-    <canvas id="chExternos" height="320"></canvas>
+    <canvas id="chExternos" height="360"></canvas>
     <div id="pmExtTip" style="display:none;position:absolute;pointer-events:none;
       background:#161b22;border:1px solid #30363d;border-radius:6px;
       padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;max-width:200px;"></div>
@@ -2393,6 +2402,39 @@ function pmExtTabela(){
        + 'amplitude quando os campos em watts concordavam a 1%.')
   + '</p>';
 
+ // ── DFA-a1 desta modalidade, contra o 0.75 da literatura ──
+ const ai = PMEXT.a1_individualizado || {};
+ const ap = ai.a1_no_ponto;
+ if(ap && ap.ok){
+  const rep = ap.repetivel;
+  h += '<div style="border:1px solid '+(rep?'#3FB950':'#F0883E')+';'
+   + 'border-radius:6px;padding:8px 10px;margin-bottom:12px;'
+   + 'background:rgba(121,192,255,0.05);">'
+   + '<b style="color:#79C0FF;">DFA-a1 no ponto de inflexão — '
+   + (PMEXT.modalidade||'') + '</b><br>'
+   + '<span style="font-size:20px;color:#c9d1d9;">' + ap.mediana + '</span>'
+   + '<span style="color:#8b949e;font-size:11px;"> (p25–p75 ' + ap.p25 + '–'
+   + ap.p75 + ' · n=' + ap.n + ' aquecimentos · IQR '
+   + (ap.iqr_relativo_pct!=null?ap.iqr_relativo_pct+'%':'?') + ')</span>'
+   + '<span style="color:' + (rep?'#3FB950':'#F0883E') + ';font-size:11px;"> · '
+   + (rep?'repetível':'NÃO repetível') + '</span>'
+   + '<br><span style="color:#8b949e;font-size:11px;">'
+   + 'A literatura usa <b>0,75</b> como alvo de VT1 para toda a gente. Este é '
+   + 'o valor medido nas tuas escadas de aquecimento desta modalidade'
+   + (ai.a1_inflexao_W && ai.a1_inflexao_W.ok
+      ? ', que corresponde a <b>' + ai.a1_inflexao_W.mediana + ' W</b>' : '')
+   + (ai.a1_inflexao_bpm && ai.a1_inflexao_bpm.ok
+      ? ' e <b>' + ai.a1_inflexao_bpm.mediana + ' bpm</b>' : '')
+   + '. ' + (rep
+      ? 'É repetível entre aquecimentos, portanto serve de alvo individual.'
+      : 'O intervalo interquartil passa os 15% da mediana: com este n não '
+        + 'serve ainda como alvo, só como indicação.')
+   + '</span></div>';
+ } else if(ai && ai.erro){
+  h += '<p style="color:#8b949e;font-size:11px;">DFA-a1 do aquecimento '
+   + 'indisponível: ' + ai.erro + '</p>';
+ }
+
  // ── tabela por grupo ──
  let grupoActual = null;
  h+='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
@@ -2415,7 +2457,10 @@ function pmExtTabela(){
    dtxt = (cm.diferenca_pct>0?'+':'')+cm.diferenca_pct+'%';
   }
   h+='<tr style="border-bottom:1px solid #161b22;">'
-   +'<td style="padding:6px;">'+c.rotulo
+   +'<td style="padding:6px;border-bottom:1px dotted #30363d;cursor:help;" '
+   +'title="'+(c.descricao||'').replace(/"/g,'&quot;')
+   +(c.compara_com?'\n\ncompara com: '+c.compara_com:'')
+   +(c.origem?'\norigem: '+c.origem:'')+'">'+c.rotulo
    +(c.constante ? ' <span style="color:#F0883E;font-size:10px;" title="igual '
      +'em todas as sessões — é uma definição do perfil, não uma medição">'
      +'definição</span>' : '')
@@ -2467,9 +2512,16 @@ function pmExtDraw(){
  const rel = (PMEXT && PMEXT.relacao_hr_watts) || {};
  const nuvem = (PMEXT && PMEXT.nuvem_hr_watts) || [];
  // basta ter sido medido num dos eixos: cada um é desenhado no seu
+ // filtros: sem eles o grafico fica ilegivel com 15 campos
+ const _on = {};
+ Array.prototype.forEach.call(document.querySelectorAll('.pmExtG'), function(e){
+  _on[e.value] = e.checked; });
+ if(!Object.keys(_on).length){
+  ['modelo','aerobio','limiar','vo2max','nuvem'].forEach(k=>_on[k]=true); }
  const cs = ((PMEXT && PMEXT.campos) || []).filter(function(c){
    return (c.watts_medido!=null || c.hr_medido!=null)
-     && ['aerobio','limiar','vo2max'].indexOf(c.grupo)>=0; });
+     && _on[c.grupo]
+     && (_on.fixos || !c.constante); });
  const md = (PMEXT && PMEXT.modelo) || {};
  const mdhr = (PMEXT && PMEXT.modelo_em_hr) || {};
  const refs = [
@@ -2480,6 +2532,7 @@ function pmExtDraw(){
   {k:'pvo2max_w',rot:'Pvo\u2082max', cor:'#79C0FF'},
  ].filter(function(r){ return md[r.k]!=null && mdhr[r.k]!=null; });
  if(PM_CP) refs.push({k:'__cp', rot:'CP', cor:'#E3B341'});
+ if(!_on.modelo) refs.length = 0;
 
  if(!nuvem.length && !cs.length && !refs.length){
   noData(g, W, H, 'Sem relação HR↔Watts nem campos comparáveis'); return; }
@@ -2533,9 +2586,11 @@ function pmExtDraw(){
   g.textAlign='center'; g.fillText(Math.round(xv)+'W', x, PT+h+18);
  }
 
- g.fillStyle='rgba(139,148,158,0.30)';
- nuvem.forEach(function(p){
-  g.beginPath(); g.arc(X(p.w), Y(p.hr), 2, 0, Math.PI*2); g.fill(); });
+ if(_on.nuvem){
+  g.fillStyle='rgba(139,148,158,0.22)';
+  nuvem.forEach(function(p){
+   g.beginPath(); g.arc(X(p.w), Y(p.hr), 1.6, 0, Math.PI*2); g.fill(); });
+ }
 
  if(rel.suficiente && rel.fiavel){
   const a=rel.declive_bpm_por_w, b=rel.intercepto_bpm;
@@ -2586,11 +2641,11 @@ function pmExtDraw(){
 
   if(c.watts_medido != null && c.watts_medido >= xa && c.watts_medido <= xb){
    const x = X(c.watts_medido);
-   g.strokeStyle=cor;
+   g.strokeStyle=cor; g.globalAlpha = c.constante ? 0.35 : 0.6;
    g.setLineDash(c.constante?[2,4]:c.origem==='escadas de aquecimento'?[]:[4,3]);
-   g.lineWidth = c.origem==='escadas de aquecimento' ? 2 : 1.2;
-   g.beginPath(); g.moveTo(x, PT); g.lineTo(x, PT+h); g.stroke();
-   g.setLineDash([]); g.lineWidth=1;
+   g.lineWidth = c.origem==='escadas de aquecimento' ? 2 : 1;
+   g.beginPath(); g.moveTo(x, PT+h*0.45); g.lineTo(x, PT+h); g.stroke();
+   g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
    const txt = rot+' '+Math.round(c.watts_medido)+'W';
    const larg = g.measureText(txt).width;
    let n=0;
@@ -2607,19 +2662,22 @@ function pmExtDraw(){
 
   if(c.hr_medido != null && c.hr_medido >= ya && c.hr_medido <= yb){
    const y = Y(c.hr_medido);
-   g.strokeStyle=cor;
-   g.setLineDash(c.constante?[2,4]:c.origem==='escadas de aquecimento'?[]:[4,3]);
-   g.lineWidth = c.origem==='escadas de aquecimento' ? 2 : 1.2;
-   g.beginPath(); g.moveTo(PL, y); g.lineTo(PL+w, y); g.stroke();
-   g.setLineDash([]); g.lineWidth=1;
-   const txt = rot+' '+Math.round(c.hr_medido)+'bpm';
+   // A risca so' atravessa metade do grafico e a etiqueta vai para a
+   // direita: com 8 campos em bpm, riscas de largura total e etiquetas
+   // encostadas ao eixo sobrepunham-se todas no mesmo canto.
+   g.strokeStyle=cor; g.globalAlpha = c.constante ? 0.35 : 0.6;
+   g.setLineDash(c.constante?[2,4]:[4,3]);
+   g.lineWidth = c.origem==='escadas de aquecimento' ? 2 : 1;
+   g.beginPath(); g.moveTo(PL, y); g.lineTo(PL+w*0.55, y); g.stroke();
+   g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
+   const txt = rot+' '+Math.round(c.hr_medido);
    const larg = g.measureText(txt).width;
    let n=0;
    while(ocupadoH.some(o=>o.n===n && Math.abs(o.y-y)<11)) n++;
    ocupadoH.push({n:n, y:y});
-   const xT = PL+6+n*(larg+10);
-   g.fillStyle='#0d1117'; g.fillRect(xT-2, y-10, larg+4, 12);
-   g.fillStyle=cor; g.textAlign='left'; g.fillText(txt, xT, y-1);
+   const xT = PL + w*0.55 + 6 + n*(larg+8);
+   g.fillStyle='#0d1117'; g.fillRect(xT-2, y-9, larg+4, 12);
+   g.fillStyle=cor; g.textAlign='left'; g.fillText(txt, xT, y+2);
    PMEXT_ITENS.push({x:xT+larg/2, y:y, rot:c.rotulo, cor:cor,
      w:c.watts_convertido, hr:c.hr_medido, tipo:'campo', eixo:'bpm',
      unidade:c.unidade, constante:c.constante, grupo:c.grupo_rotulo,

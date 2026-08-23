@@ -2197,6 +2197,7 @@ def limiares_externos_dados(modalidade, args):
             'campos_duplicados': duplicados,
             'campos_por_reconhecer': nao_reconhecidos,
             'a1_individualizado': a1_indiv,
+            'a1_referencia_literatura': 0.75,
             'nota': ('quartis e nao media: estes campos sao estimados sessao '
                      'a sessao e tem cauda pesada. Compara o p50 externo com '
                      'o valor do modelo -- divergencia sistematica significa '

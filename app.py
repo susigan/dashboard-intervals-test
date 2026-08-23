@@ -46,7 +46,7 @@ from api_client import (fetch_activities, cache_info, invalidar_cache,
                         fetch_da_api)
 from tabs import (tab_volume, tab_atividades, tab_detalhe,
                   tab_recordes, tab_pmc, tab_corporal, tab_metabol,
-                  tab_cp_model)
+                  tab_cp_model, tab_moxy)
 
 if db.ENABLED:
     db.init_schema()
@@ -101,6 +101,128 @@ def page_metabol():
 @app.route('/cp-model')
 def page_cp_model():
     return tab_cp_model.render()
+
+
+@app.route('/moxy')
+def page_moxy():
+    return tab_moxy.render()
+
+
+@app.route('/relatorio/<modalidade>')
+def page_relatorio(modalidade):
+    """Relatorio imprimivel com os dados actuais desta modalidade.
+
+    Devolve HTML com folha de estilo de impressao e chama window.print(),
+    que no Chrome abre o dialogo com "Guardar como PDF". Preferi isto a
+    gerar o PDF no servidor: nao acrescenta dependencia, o resultado e'
+    seleccionavel e pesquisavel, e o utilizador ve o que vai guardar antes
+    de guardar.
+    """
+    from flask import render_template_string
+    perfil, _ = perfil_metabolico_dados(modalidade, {})
+    ext = limiares_externos_dados(modalidade, {'todas': '1'})
+    return render_template_string(
+        _RELATORIO_HTML, mod=modalidade, p=perfil or {}, e=ext or {},
+        hoje=datetime.now().strftime('%d/%m/%Y'))
+
+
+_RELATORIO_HTML = """<!DOCTYPE html><html lang="pt"><head><meta charset="utf-8">
+<title>Zonas de Treino — {{ mod }}</title><style>
+@page { size: A4; margin: 18mm 16mm; }
+body { font-family: Georgia, serif; color:#222; line-height:1.45; max-width:180mm;
+       margin:0 auto; padding:10mm; }
+h1 { font-size:22pt; margin:0 0 2mm 0; }
+h2 { font-size:13pt; margin:8mm 0 2mm 0; border-bottom:1px solid #ddd;
+     padding-bottom:1mm; }
+.sub { color:#666; font-size:9pt; margin:0 0 5mm 0; }
+.caixa { background:#f6f6f6; border-left:3px solid #999; padding:3mm 4mm;
+         margin:4mm 0; font-size:9.5pt; }
+table { width:100%; border-collapse:collapse; font-size:9pt; margin:3mm 0; }
+th { background:#333; color:#fff; text-align:left; padding:2mm; font-weight:600; }
+td { padding:2mm; border-bottom:1px solid #eee; vertical-align:top; }
+tr.verde td:first-child { border-left:4px solid #2e7d32; }
+tr.tempo td:first-child { border-left:4px solid #ef6c00; }
+tr.vermelho td:first-child { border-left:4px solid #c62828; }
+.nota { font-size:8pt; color:#666; margin-top:2mm; }
+.imprimir { position:fixed; top:10px; right:10px; padding:8px 16px;
+            background:#222; color:#fff; border:0; border-radius:4px;
+            cursor:pointer; font-family:sans-serif; }
+@media print { .imprimir { display:none; } body { padding:0; } }
+</style></head><body>
+<button class="imprimir" onclick="window.print()">Guardar como PDF</button>
+
+<h1>Zonas de Treino — {{ mod }}</h1>
+<p class="sub">Gerado em {{ hoje }} · dados do próprio atleta, sem valores de
+tabela · {{ e.actividades or 0 }} actividades analisadas</p>
+
+{% set a = p.ancoras or {} %}
+<div class="caixa">
+<b>Âncoras:</b> LT1 {{ a.lt1_w_usado|round(0)|int if a.lt1_w_usado else '?' }} W ·
+LT2 {{ a.lt2_w_usado|round(0)|int if a.lt2_w_usado else '?' }} W —
+origem: <b>{{ a.origem or 'modelo' }}</b>.
+As zonas são ancoradas nestes limiares, não numa FTP fixa.
+</div>
+
+<h2>Domínios</h2>
+<table><tr><th>Domínio</th><th>Potência</th><th>FC</th><th>O que faz</th><th>% treino</th></tr>
+{% for z in p.zonas_tres or [] %}
+<tr class="{{ 'verde' if loop.index==1 else 'tempo' if loop.index==2 else 'vermelho' }}">
+<td><b>{{ z.zona }}</b></td><td>{{ z.de_w }} – {{ z.ate_w }} W</td>
+<td>{% if z.de_bpm or z.ate_bpm %}{{ z.de_bpm or '<' }} – {{ z.ate_bpm or '>' }} bpm{% else %}—{% endif %}</td>
+<td>{{ z.o_que_faz }}</td><td>{{ z.pct_treino }}</td></tr>
+{% endfor %}</table>
+
+<h2>Tabela completa — 5 zonas</h2>
+<table><tr><th>Zona</th><th>Potência</th><th>Sensação</th><th>Respiração</th>
+<th>Duração</th><th>% treino</th></tr>
+{% for z in p.zonas_semaforo or [] %}
+<tr><td><b>{{ z.zona }}</b></td><td>{{ z.de_w }} – {{ z.ate_w }} W</td>
+<td>{{ z.sensacao }}</td><td>{{ z.respiracao }}</td>
+<td>{{ z.duracao }}</td><td>{{ z.pct_treino }}</td></tr>
+{% endfor %}</table>
+
+<h2>De onde vêm os limiares</h2>
+<table><tr><th>Limiar</th><th>Un.</th><th>Estimativas</th><th>Intervalo</th>
+<th>Consenso</th><th>Modelo</th></tr>
+{% for g, c in (e.coerencia_por_grupo or {}).items() %}
+{% for k in ['em_watts','em_bpm'] %}{% set b = c.get(k) %}{% if b %}
+<tr><td>{% if k=='em_watts' %}<b>{{ c.rotulo }}</b>{% endif %}</td>
+<td>{{ b.unidade }}</td>
+<td>{% for d in b.detalhe %}{{ d.campo }} {{ d.valor }}{% if not loop.last %} · {% endif %}{% endfor %}</td>
+<td>{{ b.min }}–{{ b.max }}</td>
+<td><b>{% if b.transicao %}{{ b.transicao.inicio.valor }} → {{ b.transicao.fim.valor }}{% else %}{{ b.consenso.valor or b.mediana }}{% endif %}</b>
+{% if b.transicao %}<br><span style="font-size:7.5pt;color:#666;">transição de {{ b.transicao.largura }} {{ b.unidade }}</span>{% endif %}</td>
+<td>{% if k=='em_watts' and c.modelo_w %}{{ c.modelo_w|round(0)|int }} W{% endif %}</td></tr>
+{% endif %}{% endfor %}{% endfor %}
+</table>
+<p class="nota">Campos em watts nunca são comparados com campos em bpm: seria
+comparar uma medição com uma conversão. Quando os métodos se separam em dois
+grupos com mais de 20% entre eles, o consenso é substituído por
+início → fim — um limiar não é um ponto, é uma transição com largura.</p>
+
+{% set d = p.diagnostico_curva or {} %}
+{% if not d.ok %}
+<h2>Diagnóstico pela forma da curva</h2>
+<p style="font-size:9pt;">{{ d.motivo }}{% if d.o_que_falta %}. Falta: {{ d.o_que_falta }}{% endif %}</p>
+{% endif %}
+
+<h2>Perfil metabólico</h2>
+<table><tr><th>Medida</th><th>Valor</th><th>Medida</th><th>Valor</th></tr>
+<tr><td>VO₂max</td><td>{{ p.vo2max or '—' }} ml/kg/min</td>
+    <td>VLamax</td><td>{{ p.vlamax or '—' }} mmol/L/s</td></tr>
+<tr><td>LT1</td><td>{{ (p.limiares or {}).lt1_w or '—' }} W</td>
+    <td>LT2</td><td>{{ (p.limiares or {}).lt2_w or '—' }} W</td></tr>
+<tr><td>MLSS</td><td>{{ (p.mader or {}).mlss_at_w or '—' }} W</td>
+    <td>FatMax</td><td>{{ (p.mader or {}).fatmax_w or '—' }} W</td></tr>
+<tr><td>Pvo₂max</td><td>{{ (p.mader or {}).pvo2max_w or '—' }} W</td>
+    <td>Utilização fraccional</td><td>{{ (p.mader or {}).fractional_utilization_pct or '—' }} %</td></tr>
+<tr><td>Peso</td><td>{{ (p.entradas or {}).peso or '—' }} kg</td>
+    <td>MMP usados</td><td>{% for k, v in (p.mmp_usados or {}).items() %}{{ (k|int/60)|round(0)|int }}min {{ v|round(0)|int }}W{% if not loop.last %} · {% endif %}{% endfor %}</td></tr>
+</table>
+<p class="nota">VLamax é estimado de potências máximas, não medido. Serve para
+acompanhar o próprio atleta ao longo do tempo, não como valor absoluto.</p>
+
+</body></html>"""
 
 
 @app.route('/atividades')
@@ -3395,6 +3517,9 @@ api_cp.registar(app)
 # de os assumir. Adivinhar ja' custou duas rondas neste projecto.
 import api_streams_diag
 api_streams_diag.registar(app)
+
+import api_moxy
+api_moxy.registar(app)
 
 
 if __name__ == '__main__':

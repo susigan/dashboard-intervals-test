@@ -2597,6 +2597,20 @@ def perfil_metabolico_dados(modalidade, args):
                 res['relacao_pace_watts'] = {'suficiente': False,
                                              'erro': f'{type(e).__name__}: {e}'}
 
+        # zonas do semaforo e diagnostico da forma, estilo Gordo Byrn
+        try:
+            _lim = res.get('limiares') or {}
+            _mad = res.get('mader') or {}
+            res['zonas_semaforo'] = pmet.zonas_semaforo(
+                _lim.get('lt1_w'), _mad.get('mlss_at_w') or _lim.get('lt2_w'))
+            res['diagnostico_curva'] = pmet.diagnostico_curva(
+                _mad.get('curva'), _lim.get('lt1_w'), _lim.get('lt2_w'),
+                _mad.get('pvo2max_w'))
+        except Exception as e:
+            res['zonas_semaforo'] = []
+            res['diagnostico_curva'] = {'ok': False,
+                                        'motivo': f'{type(e).__name__}: {e}'}
+
         res['season'] = season_pedida
         res['n_curvas_na_season'] = n_na_season
         res['n_curvas_total'] = len(registos)

@@ -2383,8 +2383,15 @@ function pmExtTabela(){
      +'<td style="color:#8b949e;">'+b.detalhe.map(function(d){
          return d.campo+' '+d.valor; }).join(' · ')+'</td>'
      +'<td style="color:#8b949e;">'+b.min+'–'+b.max+'</td>'
-     +'<td><b>'+((b.consenso&&b.consenso.valor!=null)?b.consenso.valor:b.mediana)+'</b>'
-     +(b.consenso
+     +'<td>'
+     +(b.transicao
+       ? '<b>'+b.transicao.inicio.valor+' → '+b.transicao.fim.valor+'</b>'
+         +'<br><span style="color:#8b949e;font-size:10px;">transição de '
+         +b.transicao.largura+' '+b.unidade+' ('+b.transicao.largura_pct+'%)<br>'
+         +'início: '+b.transicao.inicio.metodos.join(', ')+'<br>'
+         +'fim: '+b.transicao.fim.metodos.join(', ')+'</span>'
+       : '<b>'+((b.consenso&&b.consenso.valor!=null)?b.consenso.valor:b.mediana)+'</b>')
+     +(b.consenso && !b.transicao
        ? '<br><span style="color:#8b949e;font-size:10px;">'+b.consenso.n_metodos
          +' método'+(b.consenso.n_metodos===1?'':'s')
          +(b.consenso.n_metodos_fracos_excluidos
@@ -2400,6 +2407,12 @@ function pmExtTabela(){
    });
   });
   h+='</table>';
+  h+='<p style="color:#8b949e;font-size:11px;margin:-4px 0 10px 0;">'
+   +'Quando os métodos se separam em dois grupos com mais de 20% entre eles, '
+   +'a coluna mostra <b>início → fim</b> em vez de um consenso. Um limiar não '
+   +'é um ponto: é uma transição com largura, e métodos diferentes marcam '
+   +'extremos diferentes dela. Forçar uma média entre os dois esconde '
+   +'exactamente a informação que interessa para treinar.</p>';
  }
  const relF = rel.fiavel;
  h+='<p style="color:'+(relF?'#8b949e':'#F0883E')+';font-size:11px;margin:-4px 0 14px 0;">'
@@ -2519,6 +2532,23 @@ function pmExtTabela(){
 
 let PMEXT_ESCALA = null, PMEXT_ITENS = [];
 
+function pmMarca(g, x, y, cor, forma, oco){
+ g.strokeStyle=cor; g.fillStyle=oco ? 'transparent' : cor; g.lineWidth=1.8;
+ g.beginPath();
+ if(forma === 'estrela'){
+  for(let i=0;i<10;i++){
+   const r = i%2 ? 3 : 7, a = -Math.PI/2 + i*Math.PI/5;
+   const px = x + r*Math.cos(a), py = y + r*Math.sin(a);
+   i ? g.lineTo(px,py) : g.moveTo(px,py);
+  }
+  g.closePath();
+ } else {
+  g.arc(x, y, 5, 0, Math.PI*2);
+ }
+ if(!oco) g.fill();
+ g.stroke(); g.lineWidth=1;
+}
+
 function pmExtDraw(){
  const o = ctx('chExternos', 320);
  if(!o) return;
@@ -2590,7 +2620,20 @@ function pmExtDraw(){
  PMEXT_ESCALA = {X:X, Y:Y, PL:PL, PT:PT, w:w, h:h, xa:xa, xb:xb, ya:ya, yb:yb, rel:rel};
 
  // bandas dos três domínios, iguais às do gráfico de substratos
- const limA = md.lt1_w, limB = md.mlss_at_w || md.lt2_w;
+ // As bandas vem da TRANSICAO medida, quando existe, e nao do ponto
+ // unico do modelo: uma transicao com 55 W de largura desenhada como uma
+ // linha esconde precisamente o que interessa.
+ const co0 = PMEXT.coerencia_por_grupo || {};
+ function _faixa(grupo){
+  const b = (co0[grupo]||{}).em_watts;
+  if(!b) return null;
+  if(b.transicao) return [b.transicao.inicio.valor, b.transicao.fim.valor];
+  if(b.consenso && b.consenso.valor!=null)
+   return [b.consenso.valor, b.consenso.valor];
+  return null;
+ }
+ const fA = _faixa('aerobio'), fB = _faixa('limiar');
+ const limA = fA ? fA[0] : md.lt1_w, limB = fB ? fB[0] : (md.mlss_at_w || md.lt2_w);
  PMEXT_ZONAS = [];
  if(limA && limB){
   PMEXT_ZONAS = [
@@ -2604,6 +2647,21 @@ function pmExtDraw(){
    g.fillStyle=z.rot; g.font='10px sans-serif'; g.textAlign='center';
    if(x1-x0>52) g.fillText(z.nome, (x0+x1)/2, PT-16);
   });
+  // a largura das transicoes, sombreada por cima das zonas
+  [[fA,'#3FB950','transição aeróbia'],[fB,'#F0883E','transição do limiar']]
+   .forEach(function(t){
+    if(!t[0] || t[0][0]===t[0][1]) return;
+    const x0=X(Math.max(t[0][0],xa)), x1=X(Math.min(t[0][1],xb));
+    if(x1<=x0) return;
+    g.fillStyle=t[1]; g.globalAlpha=0.13; g.fillRect(x0, PT, x1-x0, h);
+    g.globalAlpha=1;
+    g.strokeStyle=t[1]; g.globalAlpha=0.55; g.lineWidth=1.5;
+    g.beginPath(); g.moveTo(x0,PT+h+4); g.lineTo(x1,PT+h+4); g.stroke();
+    g.globalAlpha=1; g.lineWidth=1;
+    g.fillStyle=t[1]; g.font='9px sans-serif'; g.textAlign='center';
+    if(x1-x0>70) g.fillText(Math.round(t[0][0])+'–'+Math.round(t[0][1])+'W',
+                            (x0+x1)/2, PT+h+14);
+   });
  }
 
  g.strokeStyle='#21262d'; g.lineWidth=1; g.fillStyle='#8b949e';
@@ -2672,48 +2730,31 @@ function pmExtDraw(){
   g.font='10px sans-serif';
 
   if(c.watts_medido != null && c.watts_medido >= xa && c.watts_medido <= xb){
-   const x = X(c.watts_medido);
-   g.strokeStyle=cor; g.globalAlpha = c.constante ? 0.35 : 0.6;
-   g.setLineDash(c.constante?[2,4]:c.origem==='escadas de aquecimento'?[]:[4,3]);
-   g.lineWidth = c.origem==='escadas de aquecimento' ? 2 : 1;
-   g.beginPath(); g.moveTo(x, PT+h*0.45); g.lineTo(x, PT+h); g.stroke();
-   g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
-   const txt = rot+' '+Math.round(c.watts_medido)+'W';
-   const larg = g.measureText(txt).width;
-   let n=0;
-   while(ocupadoW.some(o=>o.n===n && x-larg/2 < o.fim+6)) n++;
-   ocupadoW.push({n:n, fim:x+larg/2});
-   const yT = PT+h-8-n*12;
-   g.fillStyle='#0d1117'; g.fillRect(x-larg/2-2, yT-9, larg+4, 12);
-   g.fillStyle=cor; g.textAlign='center'; g.fillText(txt, x, yT);
-   PMEXT_ITENS.push({x:x, y:PT+h-8-n*12, rot:c.rotulo, cor:cor,
+   // Ponto no eixo, sem etiqueta: com 15 campos as etiquetas permanentes
+   // tornavam o gráfico ilegível. O nome e os números vêm no hover.
+   const x = X(c.watts_medido), y = PT+h-10;
+   pmMarca(g, x, y, cor, c.origem==='escadas de aquecimento' ? 'estrela' : 'ponto',
+           c.constante);
+   g.strokeStyle=cor; g.globalAlpha=0.22; g.setLineDash([3,4]);
+   g.beginPath(); g.moveTo(x, PT); g.lineTo(x, y-7); g.stroke();
+   g.setLineDash([]); g.globalAlpha=1;
+   PMEXT_ITENS.push({x:x, y:y, rot:c.rotulo, cor:cor,
      w:c.watts_medido, hr:c.hr_convertido, tipo:'campo', eixo:'W',
      unidade:c.unidade, constante:c.constante, grupo:c.grupo_rotulo,
-     q:c.quartis});
+     descricao:c.descricao, origem:c.origem, q:c.quartis});
   }
 
   if(c.hr_medido != null && c.hr_medido >= ya && c.hr_medido <= yb){
-   const y = Y(c.hr_medido);
-   // A risca so' atravessa metade do grafico e a etiqueta vai para a
-   // direita: com 8 campos em bpm, riscas de largura total e etiquetas
-   // encostadas ao eixo sobrepunham-se todas no mesmo canto.
-   g.strokeStyle=cor; g.globalAlpha = c.constante ? 0.35 : 0.6;
-   g.setLineDash(c.constante?[2,4]:[4,3]);
-   g.lineWidth = c.origem==='escadas de aquecimento' ? 2 : 1;
-   g.beginPath(); g.moveTo(PL, y); g.lineTo(PL+w*0.55, y); g.stroke();
-   g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
-   const txt = rot+' '+Math.round(c.hr_medido);
-   const larg = g.measureText(txt).width;
-   let n=0;
-   while(ocupadoH.some(o=>o.n===n && Math.abs(o.y-y)<11)) n++;
-   ocupadoH.push({n:n, y:y});
-   const xT = PL + w*0.55 + 6 + n*(larg+8);
-   g.fillStyle='#0d1117'; g.fillRect(xT-2, y-9, larg+4, 12);
-   g.fillStyle=cor; g.textAlign='left'; g.fillText(txt, xT, y+2);
-   PMEXT_ITENS.push({x:xT+larg/2, y:y, rot:c.rotulo, cor:cor,
+   const y = Y(c.hr_medido), x = PL+12;
+   pmMarca(g, x, y, cor, c.origem==='escadas de aquecimento' ? 'estrela' : 'ponto',
+           c.constante);
+   g.strokeStyle=cor; g.globalAlpha=0.22; g.setLineDash([3,4]);
+   g.beginPath(); g.moveTo(x+7, y); g.lineTo(PL+w, y); g.stroke();
+   g.setLineDash([]); g.globalAlpha=1;
+   PMEXT_ITENS.push({x:x, y:y, rot:c.rotulo, cor:cor,
      w:c.watts_convertido, hr:c.hr_medido, tipo:'campo', eixo:'bpm',
      unidade:c.unidade, constante:c.constante, grupo:c.grupo_rotulo,
-     q:c.quartis});
+     descricao:c.descricao, origem:c.origem, q:c.quartis});
   }
  });
 
@@ -2766,7 +2807,10 @@ function pmExtLigarTip(){
    let h='<b style="color:'+perto.cor+';">'+perto.rot+'</b>';
    h+='<br>'+Math.round(perto.w)+' W · '+Math.round(perto.hr)+' bpm';
    if(perto.tipo==='campo'){
-    h+='<br><span style="color:#8b949e;font-size:10px;">'+(perto.grupo||'')+'</span>';
+    h+='<br><span style="color:#8b949e;font-size:10px;">'+(perto.grupo||'')
+     +(perto.origem?' · '+perto.origem:'')+'</span>';
+    if(perto.descricao) h+='<br><span style="color:#8b949e;font-size:10px;">'
+     +perto.descricao.slice(0,150)+'</span>';
     if(perto.q) h+='<br><span style="color:#8b949e;">p25–p75 '+perto.q.p25
       +'–'+perto.q.p75+' '+(perto.unidade||'')+' · n='+perto.q.n+'</span>';
     h+='<br><span style="color:#8b949e;font-size:10px;">medido em '

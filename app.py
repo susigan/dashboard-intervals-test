@@ -2066,7 +2066,8 @@ def limiares_externos_dados(modalidade, args):
         modelo, erro_modelo, peso = {}, None, None
         try:
             _args = {} if todas else {'season': season_pedida}
-            _corpo, _ = perfil_metabolico_dados(modalidade, _args)
+            _corpo, _ = perfil_metabolico_dados(modalidade, _args,
+                                                com_ancoras=False)
             modelo = pmet.valores_do_modelo(_corpo or {})
             peso = ((_corpo or {}).get('entradas') or {}).get('peso')
         except Exception as e:
@@ -2396,7 +2397,7 @@ class _Args:
         return self._o.items()
 
 
-def perfil_metabolico_dados(modalidade, args):
+def perfil_metabolico_dados(modalidade, args, com_ancoras=True):
     """VO2max, VLamax, MLSS/AT, FatMax e zonas, a partir dos MMP da season.
 
     ?altura=186&idade=40&peso=86.3&bf=15[&season=2026][&pmax=1182]
@@ -2603,13 +2604,18 @@ def perfil_metabolico_dados(modalidade, args):
             _mad = res.get('mader') or {}
             # ancoras do CONSENSO da validacao externa quando existem;
             # so' na falta delas e' que se usa o modelo
+            # com_ancoras=False quebra o ciclo: o limiares_externos_dados
+            # chama esta funcao para ir buscar o modelo, e se ela voltasse a
+            # chamar aquele para as ancoras a recursao nunca terminava. Era
+            # isso que fazia o tab inteiro dizer "sem dados".
             _anc = {}
-            try:
-                _ext = limiares_externos_dados(modalidade, {'todas': '1'})
-                _anc = pmet.ancoras_do_consenso(
-                    (_ext or {}).get('coerencia_por_grupo') or {})
-            except Exception:
-                _anc = {}
+            if com_ancoras:
+                try:
+                    _ext = limiares_externos_dados(modalidade, {'todas': '1'})
+                    _anc = pmet.ancoras_do_consenso(
+                        (_ext or {}).get('coerencia_por_grupo') or {})
+                except Exception as _e:
+                    _anc = {'erro': f'{type(_e).__name__}: {_e}'}
             _l1 = _anc.get('lt1_w') or _lim.get('lt1_w')
             _l2 = _anc.get('lt2_w') or _mad.get('mlss_at_w') or _lim.get('lt2_w')
             res['ancoras'] = {

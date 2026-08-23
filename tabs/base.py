@@ -103,6 +103,7 @@ TABS = [
     ('pmc',        '/pmc',         'PMC'),
     ('corporal',   '/corporal',    'Corporal'),
     ('metabol',    '/metabol',     'Metabolismo'),
+    ('moxy',       '/moxy',        'Moxy'),
     ('cp',         '/cp-model',    'CP Model'),
     ('recordes',   '/recordes',    'Recordes'),
     ('atividades', '/atividades',  'Atividades'),

@@ -42,6 +42,11 @@ BODY = """
     <span id="mxEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
 
+  <div class="controls" style="margin-bottom:4px;">
+    <span style="color:#8b949e;font-size:12px;">Métricas:</span>
+    <span id="mxCanais"></span>
+  </div>
+
   <div class="chartbox" style="position:relative;">
     <canvas id="chMoxy" height="360"></canvas>
     <div id="mxTip" style="display:none;position:absolute;pointer-events:none;
@@ -81,7 +86,15 @@ JS = """
 let MX = null, MX_SESSOES = [], MX_ESC = null;
 
 const MX_CORES = {smo2:'#F85149', thb:'#58A6FF', o2hb:'#3FB950',
-                  hhb:'#A371F7', watts:'#8b949e', heartrate:'#E3B341'};
+                  hhb:'#A371F7', watts:'#6e7681', heartrate:'#E3B341',
+                  respiration:'#79C0FF', dfa_a1:'#D2A8FF',
+                  cadence:'#F0883E', velocity_smooth:'#3FB950',
+                  torque:'#8b949e'};
+// Escalas muito diferentes no mesmo grafico ficariam ilegiveis: o SmO2 anda
+// nos 60, a potencia nos 250 e o DFA-a1 abaixo de 2. Cada canal e' normalizado
+// ao seu proprio intervalo para o desenho, e o hover mostra sempre o valor
+// real.
+let MX_ON = {};
 
 function mxSessoes(){
  const mod = document.getElementById('mxModalidade').value;
@@ -121,8 +134,31 @@ function mxCarregar(){
   const s = MX_SESSOES.find(function(x){ return String(x.id)===String(id); }) || {};
   est.textContent = (s.data||'') + ' · ' + Object.keys(d.canais||{}).length
    + ' canais · ' + (d.tempo||[]).length + ' pontos';
-  mxDraw(); mxDiagnostico();
+  mxCanaisEdit(); mxDraw(); mxDiagnostico();
  }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
+}
+
+function mxCanaisEdit(){
+ const box=document.getElementById('mxCanais');
+ if(!box||!MX) return;
+ const nirs=MX.canais_nirs||[], ctx2=MX.canais_contexto||[];
+ const todos=nirs.concat(ctx2);
+ if(!Object.keys(MX_ON).length)
+  nirs.forEach(function(k){ MX_ON[k]=true; });
+ box.innerHTML = todos.map(function(k){
+  const on = MX_ON[k] === true;
+  const nirsQ = nirs.indexOf(k)>=0;
+  return '<label class="sel" style="margin-right:8px;color:'
+   + (MX_CORES[k]||'#c9d1d9') + ';">'
+   + '<input type="checkbox" class="mxC" value="'+k+'"'+(on?' checked':'')
+   + ' onchange="mxAlternar(this)"> ' + k + (nirsQ?'':' *') + '</label>';
+ }).join('') + '<span style="color:#8b949e;font-size:10px;">'
+  + '* não filtrado, só reamostrado</span>';
+}
+
+function mxAlternar(el){
+ MX_ON[el.value] = el.checked;
+ mxDraw();
 }
 
 function mxDraw(){
@@ -130,65 +166,74 @@ function mxDraw(){
  const g=o.g, W=o.W, H=o.H;
  if(!MX || !MX.canais){ noData(g,W,H,'Sem dados'); return; }
  const t = MX.tempo || [];
- const nirs = ['smo2','thb','o2hb','hhb'].filter(k=>MX.canais[k]);
- if(!t.length || !nirs.length){ noData(g,W,H,'Sem streams NIRS'); return; }
+ const activos = Object.keys(MX.canais).filter(k=>MX_ON[k]===true);
+ if(!t.length || !activos.length){
+  noData(g,W,H,'Escolhe pelo menos uma métrica'); return; }
 
- let vmin=1e9, vmax=-1e9;
- nirs.forEach(function(k){ MX.canais[k].forEach(function(v){
-  if(v==null) return; if(v<vmin)vmin=v; if(v>vmax)vmax=v; }); });
- if(vmin>vmax){ noData(g,W,H,'Sem valores'); return; }
- const pad=(vmax-vmin)*0.08 || 1; vmin-=pad; vmax+=pad;
-
- const PL=54,PR=54,PT=18,PB=40,w=W-PL-PR,h=H-PT-PB;
+ const PL=54,PR=118,PT=18,PB=40,w=W-PL-PR,h=H-PT-PB;
  const t0=t[0], t1=t[t.length-1];
  const X=v=>PL+(v-t0)/((t1-t0)||1)*w;
- const Y=v=>PT+h-(v-vmin)/((vmax-vmin)||1)*h;
- MX_ESC={X:X,Y:Y,PL:PL,PT:PT,w:w,h:h,t0:t0,t1:t1};
+ MX_ESC={X:X,PL:PL,PT:PT,w:w,h:h,t0:t0,t1:t1};
 
- // potência em fundo, para se ver a que intensidade
- const wt = MX.canais.watts;
- if(wt){
-  let wmax=Math.max.apply(null, wt.filter(v=>v!=null));
-  if(wmax>0){
-   g.fillStyle='rgba(139,148,158,0.10)';
-   g.beginPath(); g.moveTo(PL, PT+h);
-   wt.forEach(function(v,i){ if(v==null) return;
-    g.lineTo(X(t[i]), PT+h-(v/wmax)*h*0.5); });
-   g.lineTo(PL+w, PT+h); g.closePath(); g.fill();
-  }
- }
+ // cada canal com a sua escala, senao o DFA-a1 desaparece ao lado dos watts
+ const esc={};
+ activos.forEach(function(k){
+  const vs=MX.canais[k].filter(v=>v!=null);
+  if(!vs.length) return;
+  let lo=Math.min.apply(null,vs), hi=Math.max.apply(null,vs);
+  if(hi===lo){ hi=lo+1; }
+  const pad=(hi-lo)*0.08; esc[k]={lo:lo-pad, hi:hi+pad};
+ });
 
  g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
  for(let i=0;i<=4;i++){
-  const v=vmin+(vmax-vmin)*i/4, y=Y(v);
+  const y=PT+h*i/4;
   g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
-  g.textAlign='right'; g.fillText(Math.round(v), PL-6, y+4);
  }
  g.textAlign='center';
  for(let i=0;i<=5;i++){
   const tv=t0+(t1-t0)*i/5;
-  const m=Math.floor(tv/60);
-  g.fillText(m+' min', X(tv), PT+h+18);
+  g.fillText(Math.floor(tv/60)+' min', X(tv), PT+h+18);
  }
 
- nirs.forEach(function(k){
-  g.strokeStyle=MX_CORES[k]||'#c9d1d9'; g.lineWidth=2; g.beginPath();
+ // escala do eixo esquerdo: a do primeiro canal NIRS activo
+ const principal = activos.find(k=>(MX.canais_nirs||[]).indexOf(k)>=0)
+   || activos[0];
+ if(esc[principal]){
+  g.textAlign='right';
+  for(let i=0;i<=4;i++){
+   const v=esc[principal].hi-(esc[principal].hi-esc[principal].lo)*i/4;
+   g.fillStyle=MX_CORES[principal]||'#8b949e';
+   g.fillText(Math.round(v*10)/10, PL-6, PT+h*i/4+4);
+  }
+ }
+
+ activos.forEach(function(k){
+  const e=esc[k]; if(!e) return;
+  const Y=v=>PT+h-(v-e.lo)/((e.hi-e.lo)||1)*h;
+  const nirsQ=(MX.canais_nirs||[]).indexOf(k)>=0;
+  g.strokeStyle=MX_CORES[k]||'#c9d1d9';
+  g.lineWidth = nirsQ ? 2 : 1;
+  g.globalAlpha = nirsQ ? 1 : 0.55;
+  g.beginPath();
   let primeiro=true;
   MX.canais[k].forEach(function(v,i){
    if(v==null) return;
    const x=X(t[i]), y=Y(v);
    primeiro ? (g.moveTo(x,y), primeiro=false) : g.lineTo(x,y);
   });
-  g.stroke(); g.lineWidth=1;
+  g.stroke(); g.globalAlpha=1; g.lineWidth=1;
  });
 
  g.textAlign='left'; g.font='10px sans-serif';
- nirs.forEach(function(k,i){
+ activos.forEach(function(k,i){
+  const e=esc[k];
   g.fillStyle=MX_CORES[k]||'#c9d1d9';
-  g.fillText('\\u2500 '+k.toUpperCase(), PL+w+6, PT+12+i*14);
+  g.fillText('\u2500 '+k+(e?' ('+Math.round(e.lo)+'–'+Math.round(e.hi)+')':''),
+             PL+w+6, PT+12+i*13);
  });
- if(wt){ g.fillStyle='#6e7681'; g.fillText('\\u25AC watts', PL+w+6,
-                                           PT+12+nirs.length*14); }
+ g.fillStyle='#6e7681';
+ g.fillText('cada canal na sua escala', PL+w+6, PT+12+activos.length*13+6);
  g.font='11px sans-serif';
  mxLigarTip();
 }
@@ -259,14 +304,14 @@ function mxLista(){
  if(!box) return;
  if(!MX_SESSOES.length){
   box.innerHTML='<p style="color:#8b949e;font-size:12px;">Nenhuma sessão com '
-   +'Moxy encontrada. A marca é procurada no nome, na descrição e nos campos '
-   +'de tags; sessões com SmO2 no sumário entram mesmo sem marca escrita.</p>';
+   +'Moxy encontrada. Só entram actividades com a <b>tag</b> "Moxy" — o nome '
+   +'da sessão é ignorado. Confirma a grafia na tab Atividades.</p>';
   return;
  }
  let h='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
   +'<th style="padding:6px;">Data</th><th>Modalidade</th><th>Sessão</th>'
-  +'<th>Duração</th><th>SmO2 médio</th><th>Marca</th></tr>';
+  +'<th>Duração</th><th>SmO2 médio</th><th>Tags</th></tr>';
  MX_SESSOES.forEach(function(s){
   h+='<tr style="border-bottom:1px solid #161b22;">'
    +'<td style="padding:6px;"><a href="#" style="color:#58A6FF;" '
@@ -275,7 +320,7 @@ function mxLista(){
    +'<td style="color:#8b949e;">'+(s.nome||'—')+'</td>'
    +'<td style="color:#8b949e;">'+(s.duracao_min?s.duracao_min+' min':'—')+'</td>'
    +'<td>'+(s.smo2_no_sumario!=null?Math.round(s.smo2_no_sumario):'—')+'</td>'
-   +'<td style="color:#8b949e;">'+(s.marca_no_texto?'tag':'SmO2 no sumário')+'</td>'
+   +'<td style="color:#8b949e;">'+((s.tags||[]).join(', ')||'—')+'</td>'
    +'</tr>';
  });
  h+='</table>';

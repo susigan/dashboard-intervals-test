@@ -42,9 +42,10 @@ BODY = """
     <span id="mxEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
 
-  <div class="controls" style="margin-bottom:4px;">
+  <div class="controls" style="margin-bottom:4px;flex-wrap:wrap;gap:2px 10px;">
     <span style="color:#8b949e;font-size:12px;">Métricas:</span>
-    <span id="mxCanais"></span>
+    <span id="mxCanais" style="display:flex;flex-wrap:wrap;gap:2px 10px;
+      align-items:center;"></span>
   </div>
 
   <div class="chartbox" style="position:relative;">
@@ -148,12 +149,12 @@ function mxCanaisEdit(){
  box.innerHTML = todos.map(function(k){
   const on = MX_ON[k] === true;
   const nirsQ = nirs.indexOf(k)>=0;
-  return '<label class="sel" style="margin-right:8px;color:'
+  return '<label class="sel" style="white-space:nowrap;color:'
    + (MX_CORES[k]||'#c9d1d9') + ';">'
    + '<input type="checkbox" class="mxC" value="'+k+'"'+(on?' checked':'')
    + ' onchange="mxAlternar(this)"> ' + k + (nirsQ?'':' *') + '</label>';
- }).join('') + '<span style="color:#8b949e;font-size:10px;">'
-  + '* não filtrado, só reamostrado</span>';
+ }).join('') + '<span style="color:#8b949e;font-size:10px;white-space:nowrap;">'
+  + '* de contexto</span>';
 }
 
 function mxAlternar(el){
@@ -175,20 +176,40 @@ function mxDraw(){
  const X=v=>PL+(v-t0)/((t1-t0)||1)*w;
  MX_ESC={X:X,PL:PL,PT:PT,w:w,h:h,t0:t0,t1:t1};
 
- // cada canal com a sua escala, senao o DFA-a1 desaparece ao lado dos watts
- const esc={};
- activos.forEach(function(k){
-  const vs=MX.canais[k].filter(v=>v!=null);
-  if(!vs.length) return;
-  let lo=Math.min.apply(null,vs), hi=Math.max.apply(null,vs);
-  if(hi===lo){ hi=lo+1; }
-  const pad=(hi-lo)*0.08; esc[k]={lo:lo-pad, hi:hi+pad};
- });
+ // A potencia fica SEMPRE em fundo, mesmo sem estar seleccionada: sem ela
+ // nao se sabe a que intensidade o SmO2 desceu, e isso e' metade da
+ // leitura. Ocupa a metade de baixo e nao entra na escala dos outros.
+ const wt = MX.canais.watts;
+ if(wt){
+  const vs = wt.filter(v=>v!=null);
+  const wmax = vs.length ? Math.max.apply(null, vs) : 0;
+  if(wmax>0){
+   g.fillStyle='rgba(139,148,158,0.13)';
+   g.beginPath(); g.moveTo(PL, PT+h);
+   wt.forEach(function(v,i){ if(v==null) return;
+    g.lineTo(X(t[i]), PT+h-(v/wmax)*h*0.45); });
+   g.lineTo(PL+w, PT+h); g.closePath(); g.fill();
+   g.fillStyle='#6e7681'; g.font='10px sans-serif'; g.textAlign='left';
+   g.fillText('watts (0–'+Math.round(wmax)+')', PL+4, PT+h-4);
+  }
+ }
+
+ // escala partilhada pelos canais NIRS, para preservarem a relacao entre
+ // si; os de contexto normalizam-se individualmente
+ const nirs = activos.filter(k=>(MX.canais_nirs||[]).indexOf(k)>=0);
+ const outros = activos.filter(k=>nirs.indexOf(k)<0 && k!=='watts');
+ let lo=1e9, hi=-1e9;
+ nirs.forEach(function(k){ MX.canais[k].forEach(function(v){
+  if(v==null) return; if(v<lo)lo=v; if(v>hi)hi=v; }); });
+ if(lo>hi){ lo=0; hi=100; }
+ const pad=(hi-lo)*0.08||1; lo-=pad; hi+=pad;
+ const Y=v=>PT+h-(v-lo)/((hi-lo)||1)*h;
 
  g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
  for(let i=0;i<=4;i++){
-  const y=PT+h*i/4;
+  const v=lo+(hi-lo)*i/4, y=Y(v);
   g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText(Math.round(v), PL-6, y+4);
  }
  g.textAlign='center';
  for(let i=0;i<=5;i++){
@@ -196,44 +217,52 @@ function mxDraw(){
   g.fillText(Math.floor(tv/60)+' min', X(tv), PT+h+18);
  }
 
- // escala do eixo esquerdo: a do primeiro canal NIRS activo
- const principal = activos.find(k=>(MX.canais_nirs||[]).indexOf(k)>=0)
-   || activos[0];
- if(esc[principal]){
-  g.textAlign='right';
-  for(let i=0;i<=4;i++){
-   const v=esc[principal].hi-(esc[principal].hi-esc[principal].lo)*i/4;
-   g.fillStyle=MX_CORES[principal]||'#8b949e';
-   g.fillText(Math.round(v*10)/10, PL-6, PT+h*i/4+4);
-  }
- }
-
- activos.forEach(function(k){
-  const e=esc[k]; if(!e) return;
-  const Y=v=>PT+h-(v-e.lo)/((e.hi-e.lo)||1)*h;
-  const nirsQ=(MX.canais_nirs||[]).indexOf(k)>=0;
-  g.strokeStyle=MX_CORES[k]||'#c9d1d9';
-  g.lineWidth = nirsQ ? 2 : 1;
-  g.globalAlpha = nirsQ ? 1 : 0.55;
-  g.beginPath();
+ nirs.forEach(function(k){
+  g.strokeStyle=MX_CORES[k]||'#c9d1d9'; g.lineWidth=2; g.beginPath();
   let primeiro=true;
   MX.canais[k].forEach(function(v,i){
    if(v==null) return;
    const x=X(t[i]), y=Y(v);
    primeiro ? (g.moveTo(x,y), primeiro=false) : g.lineTo(x,y);
   });
-  g.stroke(); g.globalAlpha=1; g.lineWidth=1;
+  g.stroke(); g.lineWidth=1;
+ });
+
+ const esc={};
+ outros.forEach(function(k){
+  const vs=MX.canais[k].filter(v=>v!=null);
+  if(!vs.length) return;
+  let a=Math.min.apply(null,vs), b=Math.max.apply(null,vs);
+  if(b===a) b=a+1;
+  esc[k]={lo:a,hi:b};
+  const Y2=v=>PT+h-(v-a)/((b-a)||1)*h;
+  g.strokeStyle=MX_CORES[k]||'#c9d1d9'; g.lineWidth=1; g.globalAlpha=0.6;
+  g.beginPath();
+  let primeiro=true;
+  MX.canais[k].forEach(function(v,i){
+   if(v==null) return;
+   const x=X(t[i]), y=Y2(v);
+   primeiro ? (g.moveTo(x,y), primeiro=false) : g.lineTo(x,y);
+  });
+  g.stroke(); g.globalAlpha=1;
  });
 
  g.textAlign='left'; g.font='10px sans-serif';
- activos.forEach(function(k,i){
+ let li=0;
+ nirs.forEach(function(k){
+  g.fillStyle=MX_CORES[k]||'#c9d1d9';
+  g.fillText('\u2500 '+k, PL+w+6, PT+12+(li++)*13);
+ });
+ outros.forEach(function(k){
   const e=esc[k];
   g.fillStyle=MX_CORES[k]||'#c9d1d9';
   g.fillText('\u2500 '+k+(e?' ('+Math.round(e.lo)+'–'+Math.round(e.hi)+')':''),
-             PL+w+6, PT+12+i*13);
+             PL+w+6, PT+12+(li++)*13);
  });
- g.fillStyle='#6e7681';
- g.fillText('cada canal na sua escala', PL+w+6, PT+12+activos.length*13+6);
+ if(outros.length){
+  g.fillStyle='#6e7681';
+  g.fillText('contexto: escala própria', PL+w+6, PT+12+li*13+6);
+ }
  g.font='11px sans-serif';
  mxLigarTip();
 }
@@ -293,6 +322,17 @@ function mxDiagnostico(){
    +(f.motivo?' ('+f.motivo+')':'')+'</td></tr>';
  });
  h+='</table>';
+ const ar = MX.artefactos;
+ if(ar && ar.pct_acima_do_limiar!=null){
+  const c = ar.pct_acima_do_limiar<10 ? '#3FB950'
+          : ar.pct_acima_do_limiar<30 ? '#F0883E' : '#F85149';
+  h+='<p style="font-size:11px;color:#8b949e;border-left:2px solid '+c
+   +';padding-left:8px;margin:6px 0;"><b style="color:'+c+';">'
+   +ar.pct_acima_do_limiar+'%</b> dos pontos com artefacto na cinta acima de '
+   +ar.limiar_usado+'%. '+ar.pontos_descartados+' pontos removidos da FC, '
+   +'DFA-a1 e respiração antes de filtrar. O SmO2 e o THb vêm do Moxy e não '
+   +'são afectados.</p>';
+ }
  if(MX.streams_usados) h+='<p style="color:#8b949e;font-size:11px;">Streams: '
   +Object.keys(MX.streams_usados).map(function(k){
     return k+' \\u2190 '+MX.streams_usados[k]; }).join(' · ')+'</p>';

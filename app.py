@@ -1999,9 +1999,21 @@ def limiares_externos_dados(modalidade, args):
             for _aid, _bl in _por.items():
                 _w = _hq.inflexao_na_escada(_bl, 'watts_alvo', 'dfa1_avg')
                 _h = _hq.inflexao_na_escada(_bl, 'hr_avg', 'dfa1_avg')
-                if _w.get('ok') and (_w.get('razao_declives') or 0) >= 2:
+                # BUG que estava aqui: escadas de 3 blocos devolvem
+                # razao_declives = None (nao ha dois segmentos para
+                # comparar), e (None or 0) >= 2 e' falso -- o Row e o Ski
+                # eram TODOS excluidos, e no Bike sobravam 2 de 71. A
+                # qualidade ja' e' garantida pela queda minima de 10% dentro
+                # do inflexao_na_escada; aqui so' se exclui o que for
+                # explicitamente fraco.
+                if _w.get('ok'):
+                    _rz = _w.get('razao_declives')
+                    if _rz is not None and _rz < 1.5:
+                        continue          # duas rectas quase paralelas
                     _inf.append({'w': _w['inflexao'], 'a1': _w['a1_na_inflexao'],
-                                 'bpm': _h.get('inflexao')})
+                                 'bpm': _h.get('inflexao'),
+                                 'metodo': _w.get('metodo', 'ajuste'),
+                                 'queda': _w.get('queda_relativa_pct')})
             if _inf:
                 a1_indiv = {
                     'a1_inflexao_W': _hq.resumir_inflexoes(
@@ -2011,7 +2023,11 @@ def limiares_externos_dados(modalidade, args):
                         'inflexao'),
                     'a1_no_ponto': _hq.resumir_inflexoes(
                         [{'inflexao': x['a1']} for x in _inf], 'inflexao'),
-                    'n_aquecimentos': len(_inf)}
+                    'n_aquecimentos': len(_inf),
+                    'n_escadas_na_base': len(_por),
+                    'por_metodo': {m: sum(1 for x in _inf
+                                          if x.get('metodo') == m)
+                                   for m in {x.get('metodo') for x in _inf}}}
         except Exception as e:
             a1_indiv = {'erro': f'{type(e).__name__}: {e}'}
 

@@ -919,6 +919,42 @@ def e_constante(q):
 # tabela, assinaladas.
 N_MINIMO_CONSENSO = 10
 
+# Salto relativo acima do qual se assume que os estimadores nao medem o
+# mesmo ponto, mas os dois extremos da mesma transicao.
+#
+# A razao vem dos proprios dados. No Bike, em watts: 104.5, 105.5, 160,
+# 164.3, 176.2. O salto de 105.5 para 160 e' de 52%; os restantes sao de
+# 1% a 7%. Tratar isto como um consenso unico com um "discrepante" e'
+# forcar uma media entre duas coisas diferentes. Em bpm o proprio nome dos
+# campos diz o mesmo -- HRVT1 e HRVT1PLUS sao o inicio e o fim da mesma
+# banda, nao duas tentativas de medir o mesmo ponto.
+#
+# Um limiar nao e' um numero, e' uma transicao com largura. Os metodos
+# discordam porque uns marcam onde ela comeca e outros onde acaba.
+SALTO_TRANSICAO = 0.20
+
+
+def separar_transicao(valores, salto=SALTO_TRANSICAO):
+    """Parte a lista no maior salto relativo, se ele for grande demais.
+
+    Devolve (inicio, fim) ou (todos, None) quando nao ha salto que
+    justifique separar.
+    """
+    vs = sorted(valores, key=lambda t: t[1])
+    if len(vs) < 2:
+        return vs, None
+    maior, k = 0.0, None
+    for i in range(1, len(vs)):
+        a, b = vs[i - 1][1], vs[i][1]
+        if a <= 0:
+            continue
+        rel = (b - a) / a
+        if rel > maior:
+            maior, k = rel, i
+    if k is None or maior < salto:
+        return vs, None
+    return vs[:k], vs[k:]
+
 
 def coerencia_por_grupo(campos, modelo):
     """Estimativas independentes do mesmo limiar concordam entre si?
@@ -981,23 +1017,35 @@ def coerencia_por_grupo(campos, modelo):
             solidos = [c for c in membros if (c.get("quartis") or {}).get("n", 0)
                        >= N_MINIMO_CONSENSO]
             base = solidos or membros
-            vals = [c[campo_valor] for c in base]
-            med = quartis(vals)["p50"] if vals else None
+            pares = [(c["rotulo"], c[campo_valor]) for c in base]
+            ini, fim = separar_transicao(pares)
+
+            def _bloco(grupo_pares):
+                if not grupo_pares:
+                    return None
+                vals = [v for _n, v in grupo_pares]
+                m = quartis(vals)["p50"]
+                return {"valor": round(m, 1),
+                        "n_metodos": len(grupo_pares),
+                        "metodos": [n for n, _v in grupo_pares],
+                        "intervalo": [round(min(vals), 1), round(max(vals), 1)]}
+
             b["consenso"] = {
-                "valor": round(med, 1) if med is not None else None,
-                "n_metodos": len(base),
+                **(_bloco(ini + (fim or [])) or {}),
                 "n_metodos_fracos_excluidos": len(membros) - len(base),
-                "metodos": sorted(c["rotulo"] for c in base),
                 "usou_fracos": not solidos and bool(membros),
             }
-            if med:
-                b["discrepantes"] = [
-                    {"campo": c["rotulo"],
-                     "valor": round(c[campo_valor], 1),
-                     "desvio_pct": round((c[campo_valor] - med) / med * 100, 1),
-                     "n": (c.get("quartis") or {}).get("n")}
-                    for c in membros
-                    if abs(c[campo_valor] - med) / med > 0.20]
+            if fim:
+                # Nao ha um valor: ha uma transicao com principio e fim.
+                b["transicao"] = {
+                    "inicio": _bloco(ini),
+                    "fim": _bloco(fim),
+                    "largura": round(_bloco(fim)["valor"] - _bloco(ini)["valor"], 1),
+                    "largura_pct": round(
+                        (_bloco(fim)["valor"] - _bloco(ini)["valor"])
+                        / _bloco(ini)["valor"] * 100, 1),
+                }
+                b["consenso"]["valor"] = None   # nao colapsar numa media
 
         if bloco.get("em_watts") or bloco.get("em_bpm"):
             out[grupo] = bloco

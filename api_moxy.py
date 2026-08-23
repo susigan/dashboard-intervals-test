@@ -182,14 +182,56 @@ def registar(app):
                 'velocity_smooth': ['velocity_smooth', 'Speed'],
                 'torque': ['torque'],
             }
+            # Canais que dependem da cinta peitoral levam o mesmo
+            # tratamento que os NIRS. A serie de RR e' o que produz o
+            # DFA-a1 e a frequencia respiratoria: se a cinta falha, os tres
+            # herdam os buracos, e nas sessoes deste atleta o stream de
+            # artefactos chegou a marcar 97% dos pontos. Deixa-los brutos ao
+            # lado de um SmO2 filtrado dava a impressao errada de que o
+            # ruido era do musculo.
+            DA_CINTA = {'heartrate', 'dfa_a1', 'respiration'}
+            art_k = _achar(['artifacts', 'artifact'])
+            artefactos = streams.get(art_k) if art_k else None
+            art_max = request.args.get('artefacto_max', type=float) or 5.0
+            n_art = 0
+
             for alvo, nomes in extras.items():
                 k = _achar(nomes)
                 if not k:
                     continue
-                t2, v2 = mn.resample(tempo, streams[k], hz=1.0)
+                serie = list(streams[k])
+                if alvo in DA_CINTA and artefactos:
+                    for i in range(min(len(serie), len(artefactos))):
+                        a = artefactos[i]
+                        if a is not None and a > art_max:
+                            serie[i] = None
+                            n_art += 1
+                t2, v2 = mn.resample(tempo, serie, hz=1.0)
+                if alvo in DA_CINTA:
+                    v2, d_rep = mn.replace(
+                        v2, invalidos=(0,),
+                        corte_outlier=request.args.get('outlier', type=float) or 3.0,
+                        largura=15)
+                    v2 = mn.media_movel(v2, 15)
+                    res['diagnostico'][alvo] = {
+                        **d_rep, 'n_pontos': len(v2),
+                        'filtro': {'metodo': 'media movel', 'largura': 15},
+                        'fonte': 'cinta peitoral'}
                 res['canais'][alvo] = [
                     round(x, 2) if x is not None else None for x in v2]
                 mapa[alvo] = k
+
+            if artefactos:
+                validos = [a for a in artefactos if a is not None]
+                res['artefactos'] = {
+                    'stream': art_k, 'limiar_usado': art_max,
+                    'pontos_descartados': n_art,
+                    'pct_acima_do_limiar': (
+                        round(sum(1 for a in validos if a > art_max)
+                              / len(validos) * 100, 1) if validos else None),
+                    'nota': ('aplicado so aos canais que vem da cinta '
+                             '(FC, DFA-a1, respiracao). O SmO2 e o THb vem '
+                             'do Moxy e nao sao afectados')}
 
             res['status'] = 'ok'
             res['activity_id'] = aid

@@ -1397,7 +1397,7 @@ def api_aquecimento_listagem():
                        SUM(CASE WHEN dfa1_avg IS NOT NULL THEN 1 ELSE 0 END) AS c_dfa1
                 FROM aquecimento_blocos {where}
                 GROUP BY activity_id
-                ORDER BY modalidade, data DESC""", tuple(params)).fetchall()
+                ORDER BY data DESC, modalidade""", tuple(params)).fetchall()
 
         sessoes = []
         for l in linhas:
@@ -1627,7 +1627,13 @@ def api_aquecimento_ingerir():
         import aquecimento_analyzer as aa
 
         mod_alvo = request.args.get('modalidade')
-        limite = request.args.get('limite', default=50, type=int)
+        limite = request.args.get('limite', default=200, type=int)
+        # buscar streams a API quando nao estao guardados. Sem isto, uma
+        # sessao nova ficava eternamente em "sem_streams_guardados" e nunca
+        # aparecia nas datas analisadas, por muito que se carregasse em
+        # Actualizar -- que e' exactamente o sintoma reportado.
+        buscar_api = request.args.get('buscar_api', '1') not in ('0', 'false')
+        max_api = request.args.get('max_api', default=25, type=int)
 
         cond, params = ["type IS NOT NULL"], []
         if mod_alvo:
@@ -1643,6 +1649,7 @@ def api_aquecimento_ingerir():
                 ORDER BY date DESC LIMIT ?""", tuple(params), fetch='all') or []
 
         det, rej, salt, sem_streams, motivos = 0, 0, 0, 0, {}
+        buscados, erros_api, sem_streams_ids = 0, {}, []
         for aid, data, tipo in linhas:
             mod = CFG_MODALIDADES.get(tipo, tipo)
             if mod not in aa.PROTOCOLOS:
@@ -1653,8 +1660,28 @@ def api_aquecimento_ingerir():
                 salt += 1
                 continue
             streams, _meta = _db.get_streams(str(aid))
+            if not streams and buscar_api and buscados < max_api:
+                try:
+                    import api_client as _api
+                    _raw, _err = _api.icu_get(f'/activity/{aid}/streams')
+                    if not _err and _raw:
+                        _lista = _raw
+                        if isinstance(_lista, dict):
+                            _lista = (_lista.get('streams')
+                                      or _lista.get('content') or [])
+                        streams = {}
+                        for _st in (_lista or []):
+                            if isinstance(_st, dict) and (_st.get('type')
+                                                          or _st.get('name')):
+                                streams[_st.get('type') or _st.get('name')] = \
+                                    _st.get('data') or []
+                        if streams:
+                            buscados += 1
+                except Exception as _e:
+                    erros_api[str(_e)[:60]] = erros_api.get(str(_e)[:60], 0) + 1
             if not streams:
                 sem_streams += 1
+                sem_streams_ids.append(str(aid))
                 continue
             r = aqs.analisar_streams(streams, mod, aa.PROTOCOLOS,
                                      duracao_s=_duracao_atividade(aid))
@@ -1672,13 +1699,19 @@ def api_aquecimento_ingerir():
         if det or rej:
             aq_db.sincronizar()
 
-        return jsonify({'status': 'ok', 'modalidade': mod_alvo,
-                        'atividades_vistas': len(linhas), 'detectados': det,
-                        'rejeitados': rej, 'ja_analisadas': salt,
-                        'sem_streams_guardados': sem_streams, 'motivos': motivos,
-                        'nota': ('sessoes sem streams precisam de '
-                                 'sync_streams_bloco primeiro')
-                        if sem_streams else None})
+        return jsonify({
+            'status': 'ok', 'modalidade': mod_alvo,
+            'atividades_vistas': len(linhas), 'detectados': det,
+            'rejeitados': rej, 'ja_analisadas': salt,
+            'streams_buscados_a_api': buscados,
+            'limite_api_por_chamada': max_api,
+            'sem_streams_guardados': sem_streams,
+            'sem_streams_ids': sem_streams_ids[:20],
+            'erros_api': erros_api, 'motivos': motivos,
+            'nota': (f'{buscados} sessoes tiveram os streams buscados a API '
+                     f'nesta chamada (tecto {max_api}). Se sem_streams for > 0, '
+                     'volta a correr -- cada chamada avanca mais um bloco'
+                     if buscados or sem_streams else None)})
     except Exception as e:
         import traceback
         return jsonify({'status': 'erro', 'mensagem': str(e),

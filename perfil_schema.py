@@ -87,6 +87,18 @@ CREATE TABLE IF NOT EXISTS limiares_snapshots (
     UNIQUE (modalidade, season, data_referencia, campo)
 );
 
+CREATE TABLE IF NOT EXISTS moxy_cortes (
+    activity_id     TEXT PRIMARY KEY,
+    modalidade      TEXT,
+    data            TEXT,
+    inicio_s        REAL,
+    fim_s           REAL,
+    origem          TEXT,
+    proposto_s      REAL,
+    nota            TEXT,
+    data_gravacao   TEXT
+);
+
 CREATE INDEX IF NOT EXISTS ix_cp_mod_data
     ON cp_resultados (modalidade, data_referencia);
 CREATE INDEX IF NOT EXISTS ix_perfil_mod_data

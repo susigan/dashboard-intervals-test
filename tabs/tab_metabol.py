@@ -2563,7 +2563,25 @@ function pmExtDraw(){
   if(c.hr_medido!=null) ys.push(c.hr_medido);
  });
  refs.forEach(function(r){ if(valW(r)!=null){ xs.push(valW(r)); ys.push(valHR(r)); }});
- const xa=Math.min.apply(null,xs)*0.92, xb=Math.max.apply(null,xs)*1.06;
+ // O eixo X ia ate' ao maior watt da nuvem -- 588 W no Row, onde nao ha
+ // nada depois dos 333 W. Isso comprimia a zona moderada e pesada, que e'
+ // onde vivem todos os limiares, num terco da largura. Corta-se no p98 da
+ // nuvem ou um pouco acima do marco mais alto, o que for maior.
+ function _pct(v, q){
+  if(!v.length) return null;
+  const o = v.slice().sort(function(a,b){ return a-b; });
+  return o[Math.min(o.length-1, Math.floor(q*(o.length-1)))];
+ }
+ const wsNuvem = nuvem.map(function(p){ return p.w; });
+ const marcosW = [];
+ cs.forEach(function(c){ if(c.watts_medido!=null) marcosW.push(c.watts_medido); });
+ refs.forEach(function(r){ const v=valW(r); if(v!=null) marcosW.push(v); });
+ const p98 = _pct(wsNuvem, 0.98);
+ const tectoMarcos = marcosW.length ? Math.max.apply(null, marcosW)*1.12 : null;
+ let xb = Math.max.apply(null, xs)*1.06;
+ const corte = Math.max(p98||0, tectoMarcos||0);
+ if(corte > 0 && corte < xb) xb = corte;
+ const xa = Math.min.apply(null,xs)*0.92;
  const ya=Math.min.apply(null,ys)*0.94, yb=Math.max.apply(null,ys)*1.05;
 
  const PL=54, PR=118, PT=30, PB=40, w=W-PL-PR, h=H-PT-PB;
@@ -2699,6 +2717,7 @@ function pmExtDraw(){
   }
  });
 
+ const foraDoCorte = wsNuvem.filter(function(v){ return v > xb; }).length;
  g.textAlign='left'; g.font='10px sans-serif';
  g.fillStyle='#8b949e'; g.fillText('\u2502 modelo', PL+w+8, PT+12);
  g.fillStyle='#E3B341'; g.fillText('campos icu', PL+w+8, PT+26);
@@ -2712,6 +2731,10 @@ function pmExtDraw(){
             : rel.fiavel ? 'r\u00b2='+rel.r2+' n='+rel.n
             : 'r\u00b2='+rel.r2+' — conversão desligada',
             PL+w+8, PT+40);
+ if(foraDoCorte){
+  g.fillStyle='#6e7681';
+  g.fillText(foraDoCorte + ' pontos > ' + Math.round(xb) + 'W', PL+w+8, PT+96);
+ }
  if(rel.suficiente && !rel.fiavel){
   g.fillStyle='#F0883E';
   g.fillText('\u2502 medido em W', PL+w+8, PT+54);

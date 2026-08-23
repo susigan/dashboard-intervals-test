@@ -2601,8 +2601,27 @@ def perfil_metabolico_dados(modalidade, args):
         try:
             _lim = res.get('limiares') or {}
             _mad = res.get('mader') or {}
+            # ancoras do CONSENSO da validacao externa quando existem;
+            # so' na falta delas e' que se usa o modelo
+            _anc = {}
+            try:
+                _ext = limiares_externos_dados(modalidade, {'todas': '1'})
+                _anc = pmet.ancoras_do_consenso(
+                    (_ext or {}).get('coerencia_por_grupo') or {})
+            except Exception:
+                _anc = {}
+            _l1 = _anc.get('lt1_w') or _lim.get('lt1_w')
+            _l2 = _anc.get('lt2_w') or _mad.get('mlss_at_w') or _lim.get('lt2_w')
+            res['ancoras'] = {
+                **_anc,
+                'lt1_w_usado': _l1, 'lt2_w_usado': _l2,
+                'origem': ('consenso da validacao externa'
+                           if _anc.get('lt1_w') else 'modelo de Mader')}
             res['zonas_semaforo'] = pmet.zonas_semaforo(
-                _lim.get('lt1_w'), _mad.get('mlss_at_w') or _lim.get('lt2_w'))
+                _l1, _l2, _anc.get('lt1_bpm'), _anc.get('lt2_bpm'))
+            res['zonas_tres'] = pmet.zonas_tres(
+                _l1, _l2, _anc.get('lt1_bpm'), _anc.get('lt2_bpm'),
+                _mad.get('pvo2max_w'))
             res['diagnostico_curva'] = pmet.diagnostico_curva(
                 _mad.get('curva'), _lim.get('lt1_w'), _lim.get('lt2_w'),
                 _mad.get('pvo2max_w'))

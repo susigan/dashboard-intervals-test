@@ -708,6 +708,7 @@ BODY = r"""
     <label class="sel">Guardar como
       <input type="date" id="pmDataRef" style="width:150px"></label>
     <button onclick="pmGuardar()">Guardar instantâneo</button>
+    <button onclick="pmRelatorio()">Relatório PDF</button>
     <span id="pmGuardarEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
   <p style="color:#8b949e;font-size:11px;margin-top:-8px;">
@@ -2211,6 +2212,11 @@ function pmCarregar(usarManuais){
 // ═════ VALIDACAO EXTERNA — campos da Intervals.icu ═════
 let PMEXT = null;
 let PM_CP = null;
+
+function pmRelatorio(){
+ const mod = document.getElementById('pmModalidade').value;
+ window.open('/relatorio/' + mod, '_blank');
+}
 
 function pmGuardar(){
  const est = document.getElementById('pmGuardarEstado');

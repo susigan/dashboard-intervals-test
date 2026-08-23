@@ -689,6 +689,15 @@ BODY = r"""
     <div id="pmGlossarioMarcos" style="margin-top:6px;"></div>
   </details>
 
+  <h2>Curva de lactato e zonas</h2>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chCurva" height="380"></canvas>
+    <div id="pmCurvaTip" style="display:none;position:absolute;pointer-events:none;
+      background:#161b22;border:1px solid #30363d;border-radius:6px;
+      padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;max-width:220px;"></div>
+  </div>
+  <div id="pmZonas3" style="overflow-x:auto;margin-top:8px;"></div>
+
   <h2>Zonas de treino — semáforo</h2>
   <div id="pmSemaforo" style="overflow-x:auto;"></div>
   <div id="pmForma" style="margin-top:8px;"></div>
@@ -2192,7 +2201,8 @@ function pmCarregar(usarManuais){
     + (ct.bf ? ' · BF ' + ct.bf + '%' : '');
   av.textContent = [d.aviso_coerencia, d.aviso_recuo, d.aviso_datas]
     .filter(Boolean).join(' | ');
-  pmCorporal(); pmResumo(); pmMMPEdit(); pmDraw(); pmSemaforo(); pmZonas(); pmDetalhe();
+  pmCorporal(); pmResumo(); pmMMPEdit(); pmDraw(); pmCurva(); pmZonas3();
+  pmSemaforo(); pmZonas(); pmDetalhe();
   pmExtCarregar();
   pmCarregarCP();
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
@@ -3165,6 +3175,165 @@ function pmMMPEdit(){
  if(Object.keys(PM.mmp_manuais||{}).length)
   h += '<div style="color:#F0883E;font-size:11px;">a usar valores manuais</div>';
  box.innerHTML = h;
+}
+
+let PMC_ITENS = [], PMC_ESC = null;
+
+function pmZonas3(){
+ const box = document.getElementById('pmZonas3');
+ if(!box) return;
+ const zs = (PM && PM.zonas_tres) || [];
+ if(!zs.length){ box.innerHTML=''; return; }
+ let h = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+  + '<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+  + '<th style="padding:6px;">Domínio</th><th>Potência</th><th>FC</th>'
+  + '<th>O que faz</th><th>% treino</th></tr>';
+ zs.forEach(function(z){
+  h += '<tr style="border-bottom:1px solid #161b22;">'
+   + '<td style="padding:6px;border-left:4px solid '+z.cor+';color:'+z.cor+';">'
+   + z.zona+'</td>'
+   + '<td><b>'+z.de_w+' – '+z.ate_w+' W</b></td>'
+   + '<td style="color:#8b949e;">'
+   + ((z.de_bpm||z.ate_bpm) ? (z.de_bpm||'<')+' – '+(z.ate_bpm||'>')+' bpm' : '—')
+   + '</td>'
+   + '<td style="color:#8b949e;">'+z.o_que_faz+'</td>'
+   + '<td style="color:#8b949e;">'+z.pct_treino+'</td></tr>';
+ });
+ h += '</table>';
+ const a = (PM && PM.ancoras) || {};
+ h += '<p style="color:#8b949e;font-size:11px;margin-top:6px;">Ancoradas em '
+  + 'LT1 ' + (a.lt1_w_usado!=null?Math.round(a.lt1_w_usado)+' W':'?')
+  + ' e LT2 ' + (a.lt2_w_usado!=null?Math.round(a.lt2_w_usado)+' W':'?')
+  + ' — origem: <b>' + (a.origem||'?') + '</b>. '
+  + 'A FC só é convertida entre o LT1 e o LT2, onde a recta foi medida; '
+  + 'fora disso fica vazia em vez de extrapolada.</p>';
+ box.innerHTML = h;
+}
+
+function pmCurva(){
+ const o = ctx('chCurva', 380); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const m=(PM&&PM.mader)||{}, curva=m.curva||[];
+ if(!curva.length){ noData(g,W,H,'Sem curva'); return; }
+ const a=(PM&&PM.ancoras)||{};
+ const lt1=a.lt1_w_usado, lt2=a.lt2_w_usado;
+
+ const xa=Math.max(0, (lt1||100)*0.55), xb=Math.min(
+   Math.max.apply(null,curva.map(p=>p.watts)), (lt2||200)*1.45);
+ const vis=curva.filter(p=>p.watts>=xa&&p.watts<=xb&&p.lactato!=null);
+ if(!vis.length){ noData(g,W,H,'Sem pontos no intervalo'); return; }
+ const laMax=Math.max(2, Math.max.apply(null,vis.map(p=>p.lactato))*1.15);
+
+ const PL=54,PR=54,PT=26,PB=42,w=W-PL-PR,h=H-PT-PB;
+ const X=v=>PL+(v-xa)/((xb-xa)||1)*w;
+ const Y=v=>PT+h-v/laMax*h;
+ // eixo direito: FC, das ancoras
+ const hrA=a.lt1_bpm, hrB=a.lt2_bpm;
+ const hrLo=hrA?hrA-30:null, hrHi=hrB?hrB+25:null;
+ const Yh=v=>(hrLo!=null? PT+h-(v-hrLo)/((hrHi-hrLo)||1)*h : null);
+ PMC_ESC={X:X,Y:Y,Yh:Yh,PL:PL,PT:PT,w:w,h:h,xa:xa,xb:xb,laMax:laMax,
+          hrLo:hrLo,hrHi:hrHi};
+
+ // bandas: verde / tempo / vermelho
+ [[xa,lt1,'rgba(63,185,80,0.10)','#3FB950','ZONA VERDE'],
+  [lt1,lt2,'rgba(240,136,62,0.10)','#F0883E','TEMPO'],
+  [lt2,xb,'rgba(248,81,73,0.10)','#F85149','ZONA VERMELHA']].forEach(function(z){
+  if(z[0]==null||z[1]==null) return;
+  const x0=X(Math.max(z[0],xa)), x1=X(Math.min(z[1],xb));
+  if(x1<=x0) return;
+  g.fillStyle=z[2]; g.fillRect(x0,PT,x1-x0,h);
+  g.fillStyle=z[3]; g.font='bold 11px sans-serif'; g.textAlign='center';
+  if(x1-x0>70) g.fillText(z[4],(x0+x1)/2,PT-8);
+ });
+
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
+ for(let i=0;i<=4;i++){
+  const v=laMax*i/4, y=Y(v);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText(v.toFixed(1), PL-6, y+4);
+  if(hrLo!=null){
+   g.textAlign='left';
+   g.fillStyle='#58A6FF';
+   g.fillText(Math.round(hrLo+(hrHi-hrLo)*i/4)+'', PL+w+6, y+4);
+   g.fillStyle='#8b949e';
+  }
+ }
+ g.textAlign='center';
+ for(let i=0;i<=5;i++){
+  const v=xa+(xb-xa)*i/5;
+  g.fillText(Math.round(v)+'W', X(v), PT+h+18);
+ }
+
+ // curva de lactato
+ g.strokeStyle='#c9d1d9'; g.lineWidth=2.5; g.beginPath();
+ vis.forEach(function(p,i){ i?g.lineTo(X(p.watts),Y(p.lactato))
+                             :g.moveTo(X(p.watts),Y(p.lactato)); });
+ g.stroke(); g.lineWidth=1;
+
+ // FC como recta medida entre LT1 e LT2
+ if(hrA&&hrB&&lt1&&lt2){
+  g.strokeStyle='#58A6FF'; g.setLineDash([6,4]); g.lineWidth=2;
+  const f=(hrB-hrA)/(lt2-lt1);
+  g.beginPath();
+  g.moveTo(X(xa), Yh(hrA+(xa-lt1)*f));
+  g.lineTo(X(xb), Yh(hrA+(xb-lt1)*f));
+  g.stroke(); g.setLineDash([]); g.lineWidth=1;
+ }
+
+ // marcos: estrela = potencia/lactato, ponto = FC
+ PMC_ITENS=[];
+ [[lt1,'#3FB950','LT1 / AeT'],[lt2,'#F85149','LT2 / MLSS'],
+  [PM_CP,'#E3B341','CP'],[m.fatmax_w,'#A371F7','FatMax'],
+  [m.pvo2max_w,'#79C0FF','Pvo\u2082max']].forEach(function(mk){
+  if(mk[0]==null||mk[0]<xa||mk[0]>xb) return;
+  let la=null, dmin=1e9;
+  vis.forEach(function(p){ const d=Math.abs(p.watts-mk[0]);
+   if(d<dmin){dmin=d; la=p.lactato;} });
+  if(la==null) return;
+  const x=X(mk[0]), y=Y(la);
+  pmMarca(g,x,y,mk[1],'estrela',false);
+  g.strokeStyle=mk[1]; g.globalAlpha=0.35; g.setLineDash([3,4]);
+  g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
+  g.setLineDash([]); g.globalAlpha=1;
+  PMC_ITENS.push({x:x,y:y,rot:mk[2],cor:mk[1],w:mk[0],la:la});
+ });
+ [[lt1,hrA,'#3FB950','LT1'],[lt2,hrB,'#F85149','LT2']].forEach(function(mk){
+  if(mk[0]==null||mk[1]==null||hrLo==null) return;
+  const x=X(mk[0]), y=Yh(mk[1]);
+  pmMarca(g,x,y,mk[2],'ponto',false);
+  PMC_ITENS.push({x:x,y:y,rot:mk[3]+' FC',cor:mk[2],w:mk[0],hr:mk[1]});
+ });
+
+ g.textAlign='left'; g.font='10px sans-serif';
+ g.fillStyle='#c9d1d9'; g.fillText('\u2500 Lactato (mmol/L)', PL+4, PT+12);
+ if(hrLo!=null){ g.fillStyle='#58A6FF';
+  g.fillText('\u2504 FC (bpm)', PL+4, PT+26); }
+ g.font='11px sans-serif';
+ pmCurvaTip();
+}
+
+function pmCurvaTip(){
+ const cv=document.getElementById('chCurva');
+ const tip=document.getElementById('pmCurvaTip');
+ if(!cv||!tip||cv._tipC) return;
+ cv._tipC=true;
+ cv.addEventListener('mousemove', function(ev){
+  const r=cv.getBoundingClientRect();
+  const esc=(cv.width/r.width)/(window.devicePixelRatio||1);
+  const mx=(ev.clientX-r.left)*esc, my=(ev.clientY-r.top)*esc;
+  let perto=null, d=16;
+  PMC_ITENS.forEach(function(p){
+   const dd=Math.hypot(p.x-mx,p.y-my); if(dd<d){d=dd; perto=p;} });
+  if(!perto){ tip.style.display='none'; return; }
+  tip.innerHTML='<b style="color:'+perto.cor+';">'+perto.rot+'</b><br>'
+   +Math.round(perto.w)+' W'
+   +(perto.la!=null?' · '+perto.la.toFixed(2)+' mmol/L':'')
+   +(perto.hr!=null?' · '+Math.round(perto.hr)+' bpm':'');
+  tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+14, r.width-200)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-34)+'px';
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
 }
 
 function pmSemaforo(){

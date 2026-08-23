@@ -2628,15 +2628,16 @@ function pmExtDraw(){
  const xa = Math.min.apply(null,xs)*0.92;
  const ya=Math.min.apply(null,ys)*0.94, yb=Math.max.apply(null,ys)*1.05;
 
- const PL=54, PR=118, PT=30, PB=40, w=W-PL-PR, h=H-PT-PB;
+ const PL=54, PR=118, PT=32, PB=44, w=W-PL-PR, h=H-PT-PB;
  const X = v => PL + (v-xa)/((xb-xa)||1)*w;
  const Y = v => PT + h - (v-ya)/((yb-ya)||1)*h;
  PMEXT_ESCALA = {X:X, Y:Y, PL:PL, PT:PT, w:w, h:h, xa:xa, xb:xb, ya:ya, yb:yb, rel:rel};
 
  // bandas dos três domínios, iguais às do gráfico de substratos
- // As bandas vem da TRANSICAO medida, quando existe, e nao do ponto
- // unico do modelo: uma transicao com 55 W de largura desenhada como uma
- // linha esconde precisamente o que interessa.
+ // Mesmas bandas do grafico de lactato: verde / tempo / vermelho, com as
+ // ancoras do consenso. Antes eram cinco zonas do modelo com rotulos
+ // pequenos; assim os dois graficos leem-se da mesma maneira.
+ const anc = (PM && PM.ancoras) || {};
  const co0 = PMEXT.coerencia_por_grupo || {};
  function _faixa(grupo){
   const b = (co0[grupo]||{}).em_watts;
@@ -2647,35 +2648,36 @@ function pmExtDraw(){
   return null;
  }
  const fA = _faixa('aerobio'), fB = _faixa('limiar');
- const limA = fA ? fA[0] : md.lt1_w, limB = fB ? fB[0] : (md.mlss_at_w || md.lt2_w);
+ const limA = anc.lt1_w_usado || (fA?fA[1]:md.lt1_w);
+ const limB = anc.lt2_w_usado || (fB?fB[1]:(md.mlss_at_w||md.lt2_w));
  PMEXT_ZONAS = [];
  if(limA && limB){
   PMEXT_ZONAS = [
-   {de:xa, ate:limA, nome:'Moderado', cor:'rgba(63,185,80,0.07)',  rot:'#3FB950'},
-   {de:limA, ate:limB, nome:'Pesado', cor:'rgba(240,136,62,0.07)', rot:'#F0883E'},
-   {de:limB, ate:xb, nome:'Severo',   cor:'rgba(248,81,73,0.07)',  rot:'#F85149'}];
+   {de:xa,   ate:limA, nome:'ZONA VERDE',    cor:'rgba(63,185,80,0.10)',  rot:'#3FB950',
+    desc:'lactato estabiliza — constrói'},
+   {de:limA, ate:limB, nome:'TEMPO',         cor:'rgba(240,136,62,0.10)', rot:'#F0883E',
+    desc:'constrói se estás fresco, quebra se estás cansado'},
+   {de:limB, ate:xb,   nome:'ZONA VERMELHA', cor:'rgba(248,81,73,0.10)',  rot:'#F85149',
+    desc:'catabólico — só adapta com nutrição e recuperação'}];
   PMEXT_ZONAS.forEach(function(z){
    const x0=X(Math.max(z.de,xa)), x1=X(Math.min(z.ate,xb));
    if(x1<=x0) return;
    g.fillStyle=z.cor; g.fillRect(x0, PT, x1-x0, h);
-   g.fillStyle=z.rot; g.font='10px sans-serif'; g.textAlign='center';
-   if(x1-x0>52) g.fillText(z.nome, (x0+x1)/2, PT-16);
+   g.fillStyle=z.rot; g.font='bold 11px sans-serif'; g.textAlign='center';
+   if(x1-x0>80) g.fillText(z.nome, (x0+x1)/2, PT-8);
   });
-  // a largura das transicoes, sombreada por cima das zonas
-  [[fA,'#3FB950','transição aeróbia'],[fB,'#F0883E','transição do limiar']]
-   .forEach(function(t){
-    if(!t[0] || t[0][0]===t[0][1]) return;
-    const x0=X(Math.max(t[0][0],xa)), x1=X(Math.min(t[0][1],xb));
-    if(x1<=x0) return;
-    g.fillStyle=t[1]; g.globalAlpha=0.13; g.fillRect(x0, PT, x1-x0, h);
-    g.globalAlpha=1;
-    g.strokeStyle=t[1]; g.globalAlpha=0.55; g.lineWidth=1.5;
-    g.beginPath(); g.moveTo(x0,PT+h+4); g.lineTo(x1,PT+h+4); g.stroke();
-    g.globalAlpha=1; g.lineWidth=1;
-    g.fillStyle=t[1]; g.font='9px sans-serif'; g.textAlign='center';
-    if(x1-x0>70) g.fillText(Math.round(t[0][0])+'–'+Math.round(t[0][1])+'W',
-                            (x0+x1)/2, PT+h+14);
-   });
+  // a largura da transicao, sombreada
+  [[fA,'#3FB950'],[fB,'#F0883E']].forEach(function(t){
+   if(!t[0] || t[0][0]===t[0][1]) return;
+   const x0=X(Math.max(t[0][0],xa)), x1=X(Math.min(t[0][1],xb));
+   if(x1<=x0) return;
+   g.strokeStyle=t[1]; g.globalAlpha=0.6; g.lineWidth=2;
+   g.beginPath(); g.moveTo(x0,PT+h+4); g.lineTo(x1,PT+h+4); g.stroke();
+   g.globalAlpha=1; g.lineWidth=1;
+   g.fillStyle=t[1]; g.font='9px sans-serif'; g.textAlign='center';
+   if(x1-x0>70) g.fillText(Math.round(t[0][0])+'–'+Math.round(t[0][1])+'W',
+                           (x0+x1)/2, PT+h+14);
+  });
  }
 
  g.strokeStyle='#21262d'; g.lineWidth=1; g.fillStyle='#8b949e';
@@ -2683,11 +2685,13 @@ function pmExtDraw(){
  for(let i=0;i<=4;i++){
   const yv=ya+(yb-ya)*i/4, y=Y(yv);
   g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
-  g.textAlign='right'; g.fillText(Math.round(yv)+' bpm', PL-6, y+4);
+  g.textAlign='right'; g.fillStyle='#58A6FF';
+  g.fillText(Math.round(yv), PL-6, y+4);
+  g.fillStyle='#8b949e';
  }
- for(let i=0;i<=4;i++){
-  const xv=xa+(xb-xa)*i/4, x=X(xv);
-  g.textAlign='center'; g.fillText(Math.round(xv)+'W', x, PT+h+18);
+ for(let i=0;i<=5;i++){
+  const xv=xa+(xb-xa)*i/5, x=X(xv);
+  g.textAlign='center'; g.fillText(Math.round(xv)+'W', x, PT+h+26);
  }
 
  if(_on.nuvem){
@@ -2698,7 +2702,7 @@ function pmExtDraw(){
 
  if(rel.suficiente && rel.fiavel){
   const a=rel.declive_bpm_por_w, b=rel.intercepto_bpm;
-  g.strokeStyle='#8b949e'; g.setLineDash([6,4]); g.lineWidth=1.5;
+  g.strokeStyle='#58A6FF'; g.setLineDash([6,4]); g.lineWidth=2;
   g.beginPath(); g.moveTo(X(xa), Y(a*xa+b)); g.lineTo(X(xb), Y(a*xb+b));
   g.stroke(); g.setLineDash([]); g.lineWidth=1;
  }
@@ -2772,10 +2776,15 @@ function pmExtDraw(){
 
  const foraDoCorte = wsNuvem.filter(function(v){ return v > xb; }).length;
  g.textAlign='left'; g.font='10px sans-serif';
+ g.fillStyle='#58A6FF'; g.fillText('bpm', PL-46, PT-8);
  g.fillStyle='#8b949e'; g.fillText('\u2502 modelo', PL+w+8, PT+12);
  g.fillStyle='#E3B341';
  g.fillText('\u25CF medido em W', PL+w+8, PT+26);
  g.fillText('\u2605 medido em bpm', PL+w+8, PT+40);
+ if(rel.suficiente && rel.fiavel){
+  g.fillStyle='#58A6FF';
+  g.fillText('\u2504 recta HR\u2194W', PL+w+8, PT+54);
+ }
  if(((PMEXT&&PMEXT.campos)||[]).some(function(c){
      return c.origem==='escadas de aquecimento'; })){
   g.fillStyle='#79C0FF';
@@ -2785,16 +2794,12 @@ function pmExtDraw(){
  g.fillText(!rel.suficiente ? 'sem recta'
             : rel.fiavel ? 'r\u00b2='+rel.r2+' n='+rel.n
             : 'r\u00b2='+rel.r2+' — conversão desligada',
-            PL+w+8, PT+40);
+            PL+w+8, PT+68);
  if(foraDoCorte){
   g.fillStyle='#6e7681';
-  g.fillText(foraDoCorte + ' pontos > ' + Math.round(xb) + 'W', PL+w+8, PT+96);
+  g.fillText(foraDoCorte + ' pontos > ' + Math.round(xb) + 'W', PL+w+8, PT+108);
  }
- if(rel.suficiente && !rel.fiavel){
-  g.fillStyle='#F0883E';
-  g.fillText('\u2502 medido em W', PL+w+8, PT+54);
-  g.fillText('\u2500 medido em bpm', PL+w+8, PT+68);
- }
+
  g.font='11px sans-serif';
  pmExtLigarTip();
 }

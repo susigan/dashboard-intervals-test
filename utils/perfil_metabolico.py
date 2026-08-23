@@ -1378,9 +1378,75 @@ def zonas_semaforo(lt1_w, lt2_w, hr_lt1=None, hr_lt2=None, pvo2max_w=None):
                  "duracao": dur, "pct_treino": pct,
                  "cor": ("#3FB950" if a < 1.0 else
                          "#F0883E" if a < 1.15 else "#F85149")}
-        if hr_lt1 and hr_lt2:
-            f = (hr_lt2 - hr_lt1) / (lt2_w - lt1_w) if lt2_w > lt1_w else 0
-            linha["de_bpm"] = round(hr_lt1 + (de - lt1_w) * f)
-            linha["ate_bpm"] = round(hr_lt1 + (ate - lt1_w) * f)
+        linha["de_bpm"] = _bpm_da_zona(de, lt1_w, lt2_w, hr_lt1, hr_lt2)
+        linha["ate_bpm"] = _bpm_da_zona(ate, lt1_w, lt2_w, hr_lt1, hr_lt2)
         out.append(linha)
     return out
+
+
+
+# FC plausivel em treino. A recta LT1->LT2 so' e' valida entre esses dois
+# pontos; extrapolada para Z1 dava -252 bpm e para Z5 dava 481 bpm. Um
+# valor impossivel numa tabela de zonas e' pior do que uma celula vazia.
+FC_MIN_ZONA, FC_MAX_ZONA = 70, 205
+
+
+def _bpm_da_zona(w, lt1_w, lt2_w, hr_lt1, hr_lt2):
+    """FC correspondente a uma potencia, ou None fora do plausivel."""
+    if not (hr_lt1 and hr_lt2 and lt2_w and lt1_w and lt2_w > lt1_w):
+        return None
+    f = (hr_lt2 - hr_lt1) / (lt2_w - lt1_w)
+    v = hr_lt1 + (w - lt1_w) * f
+    return round(v) if FC_MIN_ZONA <= v <= FC_MAX_ZONA else None
+
+
+def zonas_tres(lt1_w, lt2_w, hr_lt1=None, hr_lt2=None, w_max=None):
+    """As tres zonas do semaforo: verde, tempo, vermelho.
+
+    E' a leitura que interessa para decidir o dia a dia. As cinco zonas
+    servem para prescrever a sessao; estas tres servem para decidir se hoje
+    se constroi, se se afina ou se se quebra.
+    """
+    if not lt1_w or not lt2_w:
+        return []
+    tecto = w_max or lt2_w * 1.35
+    blocos = [
+        ("Zona Verde (Z1+Z2)", 0, lt1_w, "#3FB950",
+         "Constroi. Anabolico. Base do treino o ano todo.", "~80%"),
+        ("Tempo (Z3)", lt1_w, lt2_w, "#F0883E",
+         "Constroi se estas fresco, quebra se estas cansado.", "0-10%"),
+        ("Zona Vermelha (Z4+Z5)", lt2_w, tecto, "#F85149",
+         "Catabolico. So adapta com nutricao e recuperacao.", "10-20%"),
+    ]
+    out = []
+    for nome, de, ate, cor, o_que_faz, pct in blocos:
+        linha = {"zona": nome, "de_w": round(de), "ate_w": round(ate),
+                 "cor": cor, "o_que_faz": o_que_faz, "pct_treino": pct}
+        linha["de_bpm"] = _bpm_da_zona(de, lt1_w, lt2_w, hr_lt1, hr_lt2)
+        linha["ate_bpm"] = _bpm_da_zona(ate, lt1_w, lt2_w, hr_lt1, hr_lt2)
+        out.append(linha)
+    return out
+
+
+def ancoras_do_consenso(coerencia):
+    """LT1 e LT2 em W e bpm, tirados do consenso da validacao externa.
+
+    As zonas passam a assentar no que os campos medem, nao no que o modelo
+    calcula. Quando ha transicao, usa-se o FIM dela como ancora: e' o fim
+    do dominio moderado que separa o verde do tempo, nao o inicio.
+    """
+    def _pega(grupo, unidade):
+        b = (coerencia.get(grupo) or {}).get(unidade)
+        if not b:
+            return None
+        if b.get("transicao"):
+            return b["transicao"]["fim"]["valor"]
+        c = b.get("consenso") or {}
+        return c.get("valor")
+
+    return {
+        "lt1_w": _pega("aerobio", "em_watts"),
+        "lt2_w": _pega("limiar", "em_watts"),
+        "lt1_bpm": _pega("aerobio", "em_bpm"),
+        "lt2_bpm": _pega("limiar", "em_bpm"),
+    }

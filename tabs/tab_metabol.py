@@ -689,6 +689,10 @@ BODY = r"""
     <div id="pmGlossarioMarcos" style="margin-top:6px;"></div>
   </details>
 
+  <h2>Zonas de treino — semáforo</h2>
+  <div id="pmSemaforo" style="overflow-x:auto;"></div>
+  <div id="pmForma" style="margin-top:8px;"></div>
+
   <h2>Zonas ancoradas no MLSS</h2>
   <div id="pmZonas" style="overflow-x:auto;"></div>
   <div class="controls" style="margin:6px 0 14px 0;">
@@ -2188,7 +2192,7 @@ function pmCarregar(usarManuais){
     + (ct.bf ? ' · BF ' + ct.bf + '%' : '');
   av.textContent = [d.aviso_coerencia, d.aviso_recuo, d.aviso_datas]
     .filter(Boolean).join(' | ');
-  pmCorporal(); pmResumo(); pmMMPEdit(); pmDraw(); pmZonas(); pmDetalhe();
+  pmCorporal(); pmResumo(); pmMMPEdit(); pmDraw(); pmSemaforo(); pmZonas(); pmDetalhe();
   pmExtCarregar();
   pmCarregarCP();
  }).catch(function(e){ est.textContent = 'erro: ' + e.message; });
@@ -2733,9 +2737,8 @@ function pmExtDraw(){
    // Ponto no eixo, sem etiqueta: com 15 campos as etiquetas permanentes
    // tornavam o gráfico ilegível. O nome e os números vêm no hover.
    const x = X(c.watts_medido), y = PT+h-10;
-   pmMarca(g, x, y, cor, c.origem==='escadas de aquecimento' ? 'estrela' : 'ponto',
-           c.constante);
-   g.strokeStyle=cor; g.globalAlpha=0.22; g.setLineDash([3,4]);
+   pmMarca(g, x, y, cor, 'ponto', c.constante);
+   g.strokeStyle=cor; g.globalAlpha=0.30; g.setLineDash([3,4]);
    g.beginPath(); g.moveTo(x, PT); g.lineTo(x, y-7); g.stroke();
    g.setLineDash([]); g.globalAlpha=1;
    PMEXT_ITENS.push({x:x, y:y, rot:c.rotulo, cor:cor,
@@ -2746,9 +2749,8 @@ function pmExtDraw(){
 
   if(c.hr_medido != null && c.hr_medido >= ya && c.hr_medido <= yb){
    const y = Y(c.hr_medido), x = PL+12;
-   pmMarca(g, x, y, cor, c.origem==='escadas de aquecimento' ? 'estrela' : 'ponto',
-           c.constante);
-   g.strokeStyle=cor; g.globalAlpha=0.22; g.setLineDash([3,4]);
+   pmMarca(g, x, y, cor, 'estrela', c.constante);
+   g.strokeStyle=cor; g.globalAlpha=0.30; g.setLineDash([3,4]);
    g.beginPath(); g.moveTo(x+7, y); g.lineTo(PL+w, y); g.stroke();
    g.setLineDash([]); g.globalAlpha=1;
    PMEXT_ITENS.push({x:x, y:y, rot:c.rotulo, cor:cor,
@@ -2761,7 +2763,9 @@ function pmExtDraw(){
  const foraDoCorte = wsNuvem.filter(function(v){ return v > xb; }).length;
  g.textAlign='left'; g.font='10px sans-serif';
  g.fillStyle='#8b949e'; g.fillText('\u2502 modelo', PL+w+8, PT+12);
- g.fillStyle='#E3B341'; g.fillText('campos icu', PL+w+8, PT+26);
+ g.fillStyle='#E3B341';
+ g.fillText('\u25CF medido em W', PL+w+8, PT+26);
+ g.fillText('\u2605 medido em bpm', PL+w+8, PT+40);
  if(((PMEXT&&PMEXT.campos)||[]).some(function(c){
      return c.origem==='escadas de aquecimento'; })){
   g.fillStyle='#79C0FF';
@@ -3161,6 +3165,53 @@ function pmMMPEdit(){
  if(Object.keys(PM.mmp_manuais||{}).length)
   h += '<div style="color:#F0883E;font-size:11px;">a usar valores manuais</div>';
  box.innerHTML = h;
+}
+
+function pmSemaforo(){
+ const box = document.getElementById('pmSemaforo');
+ const fb = document.getElementById('pmForma');
+ if(!box) return;
+ const zs = (PM && PM.zonas_semaforo) || [];
+ if(!zs.length){ box.innerHTML=''; if(fb) fb.innerHTML=''; return; }
+ let h = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+  + '<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+  + '<th style="padding:6px;">Zona</th><th>Potência</th><th>Sensação</th>'
+  + '<th>Respiração</th><th>Duração</th><th>% treino</th></tr>';
+ zs.forEach(function(z){
+  h += '<tr style="border-bottom:1px solid #161b22;">'
+   + '<td style="padding:6px;border-left:3px solid '+z.cor+';">'+z.zona+'</td>'
+   + '<td><b>'+z.de_w+' – '+z.ate_w+' W</b></td>'
+   + '<td style="color:#8b949e;">'+z.sensacao+'</td>'
+   + '<td style="color:#8b949e;">'+z.respiracao+'</td>'
+   + '<td style="color:#8b949e;">'+z.duracao+'</td>'
+   + '<td style="color:#8b949e;">'+z.pct_treino+'</td></tr>';
+ });
+ h += '</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+  + 'Ancoradas no LT1 (fim do verde) e no MLSS (topo do limiar), não numa '
+  + 'FTP. Z1+Z2 é a base anabólica; Z3 constrói se estiveres fresco e '
+  + 'quebra se estiveres cansado; Z4+Z5 é catabólico e só adapta com '
+  + 'nutrição e recuperação.</p>';
+ box.innerHTML = h;
+
+ const d = (PM && PM.diagnostico_curva) || {};
+ if(!fb) return;
+ if(d.ok){
+  fb.innerHTML = '<div style="border-left:3px solid '+d.cor+';padding:6px 10px;">'
+   + '<b style="color:'+d.cor+';">'+d.nome+'</b> — '+d.descricao
+   + '<br><span style="color:#c9d1d9;">'+d.prescricao+'</span>'
+   + '<br><span style="color:#8b949e;font-size:11px;">base '
+   + d.base_relativa_pct+'% · aceleração no topo '+d.aceleracao_no_topo
+   + 'x</span></div>';
+ } else {
+  fb.innerHTML = '<p style="color:#8b949e;font-size:11px;">'
+   + '<b>Diagnóstico pela forma da curva:</b> ' + (d.motivo||'indisponível')
+   + (d.o_que_falta ? '. Falta: ' + d.o_que_falta : '')
+   + (d.base_relativa_pct!=null
+      ? '<br>Medidas actuais: base ' + d.base_relativa_pct + '% · aceleração '
+        + d.aceleracao_no_topo + 'x · lactato ' + (d.lactato||{}).lt1
+        + ' no LT1 e ' + (d.lactato||{}).lt2 + ' no LT2 mmol/L.' : '')
+   + '</p>';
+ }
 }
 
 function pmZonas(){

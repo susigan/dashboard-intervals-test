@@ -55,6 +55,20 @@ BODY = """
       padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
   </div>
 
+  <div class="controls" style="margin-top:6px;flex-wrap:wrap;gap:6px 12px;">
+    <span style="color:#8b949e;font-size:12px;">Intervalo analisado:</span>
+    <input type="range" id="mxIni" min="0" max="100" value="0" step="0.2"
+           style="width:180px" oninput="mxSlider()">
+    <input type="range" id="mxFim" min="0" max="100" value="100" step="0.2"
+           style="width:180px" oninput="mxSlider()">
+    <span id="mxCorteTxt" style="color:#c9d1d9;font-size:12px;"></span>
+    <button onclick="mxAplicarProposta()">Usar proposta</button>
+    <button onclick="mxTudo()">Sessão inteira</button>
+    <button onclick="mxGuardarCorte()">Guardar corte</button>
+    <span id="mxCorteEstado" style="color:#8b949e;font-size:11px;"></span>
+  </div>
+  <p id="mxCorteNota" style="color:#8b949e;font-size:11px;margin:4px 0;"></p>
+
   <div id="mxDiag" style="margin-top:8px;"></div>
 
   <details style="margin-top:10px;">
@@ -85,6 +99,7 @@ BODY = """
 
 JS = """
 let MX = null, MX_SESSOES = [], MX_ESC = null;
+let MX_CORTE = null;   // [inicio_s, fim_s]
 
 const MX_CORES = {smo2:'#F85149', thb:'#58A6FF', o2hb:'#3FB950',
                   hhb:'#A371F7', watts:'#6e7681', heartrate:'#E3B341',
@@ -135,7 +150,7 @@ function mxCarregar(){
   const s = MX_SESSOES.find(function(x){ return String(x.id)===String(id); }) || {};
   est.textContent = (s.data||'') + ' · ' + Object.keys(d.canais||{}).length
    + ' canais · ' + (d.tempo||[]).length + ' pontos';
-  mxCanaisEdit(); mxDraw(); mxDiagnostico();
+  mxCanaisEdit(); mxCorteInicial(); mxDraw(); mxDiagnostico();
  }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
 }
 
@@ -162,14 +177,111 @@ function mxAlternar(el){
  mxDraw();
 }
 
+function mxCorteInicial(){
+ // Prioridade ao corte guardado; sem ele, a proposta automatica; sem ela,
+ // a sessao inteira. O que estiver a ser usado e' dito em texto, para nao
+ // haver duvida sobre o que se esta a ver.
+ const t=(MX&&MX.tempo)||[];
+ if(!t.length){ MX_CORTE=null; return; }
+ const t0=t[0], t1=t[t.length-1];
+ const g=MX.corte_guardado, p=MX.corte_proposto;
+ let origem;
+ if(g && g.inicio_s!=null){ MX_CORTE=[g.inicio_s, g.fim_s]; origem='guardado'; }
+ else if(p && p.ok){ MX_CORTE=[p.inicio_s, p.fim_s]; origem='proposto'; }
+ else { MX_CORTE=[t0,t1]; origem='sessão inteira'; }
+ const ini=document.getElementById('mxIni'), fim=document.getElementById('mxFim');
+ ini.value = (MX_CORTE[0]-t0)/((t1-t0)||1)*100;
+ fim.value = (MX_CORTE[1]-t0)/((t1-t0)||1)*100;
+ mxCorteTexto(origem);
+}
+
+function mxCorteTexto(origem){
+ const t=(MX&&MX.tempo)||[]; if(!t.length||!MX_CORTE) return;
+ const f=v=>Math.floor(v/60)+':'+String(Math.round(v%60)).padStart(2,'0');
+ document.getElementById('mxCorteTxt').textContent =
+  f(MX_CORTE[0])+' → '+f(MX_CORTE[1])
+  +'  ('+Math.round((MX_CORTE[1]-MX_CORTE[0])/60)+' min)';
+ const p=MX.corte_proposto||{}, g=MX.corte_guardado;
+ let n='';
+ if(origem==='guardado') n='A usar o corte que guardaste em '
+   +(g.data_gravacao||'?')+'.';
+ else if(origem==='proposto') n='Proposta automática: '+(p.motivo||'')
+   +(p.confianca?' · confiança '+p.confianca:'')+'.';
+ else n='Sem proposta automática: '+(p.motivo||'')+'. A mostrar tudo.';
+ const b=MX.blocos||{};
+ if(b.ok) n+=' Detectados '+b.n_on+' blocos de trabalho e '+b.n_off
+   +' de recuperação, com limiar em '+b.limiar_w+' W.';
+ document.getElementById('mxCorteNota').textContent=n;
+}
+
+function mxSlider(){
+ const t=(MX&&MX.tempo)||[]; if(!t.length) return;
+ const t0=t[0], t1=t[t.length-1];
+ let a=parseFloat(document.getElementById('mxIni').value);
+ let b=parseFloat(document.getElementById('mxFim').value);
+ if(a>b){ const c=a; a=b; b=c; }
+ MX_CORTE=[t0+(t1-t0)*a/100, t0+(t1-t0)*b/100];
+ mxCorteTexto('manual'); mxDraw(); mxDiagnostico();
+}
+
+function mxAplicarProposta(){
+ const p=MX&&MX.corte_proposto;
+ if(!p||!p.ok){ document.getElementById('mxCorteEstado').textContent
+   = 'sem proposta'; return; }
+ MX_CORTE=[p.inicio_s,p.fim_s];
+ const t=MX.tempo, t0=t[0], t1=t[t.length-1];
+ document.getElementById('mxIni').value=(p.inicio_s-t0)/((t1-t0)||1)*100;
+ document.getElementById('mxFim').value=(p.fim_s-t0)/((t1-t0)||1)*100;
+ mxCorteTexto('proposto'); mxDraw(); mxDiagnostico();
+}
+
+function mxTudo(){
+ const t=(MX&&MX.tempo)||[]; if(!t.length) return;
+ MX_CORTE=[t[0],t[t.length-1]];
+ document.getElementById('mxIni').value=0;
+ document.getElementById('mxFim').value=100;
+ mxCorteTexto('sessão inteira'); mxDraw(); mxDiagnostico();
+}
+
+function mxGuardarCorte(){
+ if(!MX||!MX_CORTE) return;
+ const est=document.getElementById('mxCorteEstado');
+ const s=MX_SESSOES.find(x=>String(x.id)===String(MX.activity_id))||{};
+ est.textContent='a guardar...';
+ fetch('/api/moxy/corte',{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({activity_id:MX.activity_id,
+   inicio_s:MX_CORTE[0], fim_s:MX_CORTE[1],
+   modalidade:s.modalidade, data:s.data,
+   proposto_s:(MX.corte_proposto||{}).inicio_s})})
+ .then(r=>r.json()).then(function(d){
+  est.textContent = d.status==='erro' ? 'erro: '+d.mensagem
+    : 'guardado' + (d.status==='gravado_sem_upload' ? ' (local)' : '');
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
+// indices dentro do corte
+function mxJanela(){
+ const t=(MX&&MX.tempo)||[];
+ if(!t.length) return [0,0];
+ if(!MX_CORTE) return [0,t.length-1];
+ let a=0,b=t.length-1;
+ for(let i=0;i<t.length;i++){ if(t[i]>=MX_CORTE[0]){ a=i; break; } }
+ for(let i=t.length-1;i>=0;i--){ if(t[i]<=MX_CORTE[1]){ b=i; break; } }
+ return [a,b];
+}
+
 function mxDraw(){
  const o = ctx('chMoxy', 360); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  if(!MX || !MX.canais){ noData(g,W,H,'Sem dados'); return; }
- const t = MX.tempo || [];
+ const todos = MX.tempo || [];
+ const jan = mxJanela();
+ const t = todos.slice(jan[0], jan[1]+1);
  const activos = Object.keys(MX.canais).filter(k=>MX_ON[k]===true);
  if(!t.length || !activos.length){
   noData(g,W,H,'Escolhe pelo menos uma métrica'); return; }
+ const rec = k => (MX.canais[k]||[]).slice(jan[0], jan[1]+1);
 
  const PL=54,PR=118,PT=18,PB=40,w=W-PL-PR,h=H-PT-PB;
  const t0=t[0], t1=t[t.length-1];
@@ -179,7 +291,7 @@ function mxDraw(){
  // A potencia fica SEMPRE em fundo, mesmo sem estar seleccionada: sem ela
  // nao se sabe a que intensidade o SmO2 desceu, e isso e' metade da
  // leitura. Ocupa a metade de baixo e nao entra na escala dos outros.
- const wt = MX.canais.watts;
+ const wt = rec('watts');
  if(wt){
   const vs = wt.filter(v=>v!=null);
   const wmax = vs.length ? Math.max.apply(null, vs) : 0;
@@ -199,7 +311,7 @@ function mxDraw(){
  const nirs = activos.filter(k=>(MX.canais_nirs||[]).indexOf(k)>=0);
  const outros = activos.filter(k=>nirs.indexOf(k)<0 && k!=='watts');
  let lo=1e9, hi=-1e9;
- nirs.forEach(function(k){ MX.canais[k].forEach(function(v){
+ nirs.forEach(function(k){ rec(k).forEach(function(v){
   if(v==null) return; if(v<lo)lo=v; if(v>hi)hi=v; }); });
  if(lo>hi){ lo=0; hi=100; }
  const pad=(hi-lo)*0.08||1; lo-=pad; hi+=pad;
@@ -220,7 +332,7 @@ function mxDraw(){
  nirs.forEach(function(k){
   g.strokeStyle=MX_CORES[k]||'#c9d1d9'; g.lineWidth=2; g.beginPath();
   let primeiro=true;
-  MX.canais[k].forEach(function(v,i){
+  rec(k).forEach(function(v,i){
    if(v==null) return;
    const x=X(t[i]), y=Y(v);
    primeiro ? (g.moveTo(x,y), primeiro=false) : g.lineTo(x,y);
@@ -230,7 +342,7 @@ function mxDraw(){
 
  const esc={};
  outros.forEach(function(k){
-  const vs=MX.canais[k].filter(v=>v!=null);
+  const vs=rec(k).filter(v=>v!=null);
   if(!vs.length) return;
   let a=Math.min.apply(null,vs), b=Math.max.apply(null,vs);
   if(b===a) b=a+1;
@@ -239,7 +351,7 @@ function mxDraw(){
   g.strokeStyle=MX_CORES[k]||'#c9d1d9'; g.lineWidth=1; g.globalAlpha=0.6;
   g.beginPath();
   let primeiro=true;
-  MX.canais[k].forEach(function(v,i){
+  rec(k).forEach(function(v,i){
    if(v==null) return;
    const x=X(t[i]), y=Y2(v);
    primeiro ? (g.moveTo(x,y), primeiro=false) : g.lineTo(x,y);

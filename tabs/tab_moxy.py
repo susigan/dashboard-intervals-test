@@ -122,10 +122,11 @@ let MX_ON = {};
 function mxActualizar(){
  const est=document.getElementById('mxEstado');
  est.textContent='a reconciliar com a Intervals.icu...';
- fetch('/api/moxy/actualizar?dias=180').then(r=>r.json()).then(function(d){
+ fetch('/api/moxy/actualizar?dias=1095').then(r=>r.json()).then(function(d){
   if(d.status!=='ok'){ est.textContent='erro: '+(d.mensagem||''); return; }
-  est.textContent = d.n_novas+' novas · '+d.n_removidas+' removidas '
-   +'(apagadas na Intervals.icu)';
+  est.textContent = d.n_novas+' novas ('+((d.sync||{}).inseridas||0)
+   +' gravadas) · '+d.n_removidas+' removidas · janela '
+   +(d.janela||[]).join(' a ');
   mxSessoes();
  }).catch(e=>{ est.textContent='erro: '+e.message; });
 }
@@ -170,12 +171,16 @@ function mxCarregar(){
   }
   if(d.status !== 'ok'){
    est.textContent = d.mensagem || 'sem dados';
-   document.getElementById('mxCorteNota').textContent =
-    (d.streams_na_actividade
-     ? 'Streams nesta sessão: ' + d.streams_na_actividade.join(', ')
-       + '. Se o Moxy esteve ligado mas o SmO2 não aparece, o ficheiro pode '
-       + 'ter sido carregado sem o canal — reprocessa na Intervals.icu.'
-     : '');
+   const det = d.detalhe_dos_streams;
+   document.getElementById('mxCorteNota').innerHTML =
+    (det
+     ? '<b>Streams nesta sessão:</b> '
+       + det.map(function(x){ return x.stream+' ('+x.n_pontos+')'; }).join(' · ')
+       + '<br>Se algum destes for o sensor — um dev field pode chegar sem nome '
+       + 'legível, tipo <code>dev_field_0_34</code> — diz qual e acrescento-o '
+       + 'à lista de nomes reconhecidos.'
+     : (d.streams_na_actividade
+        ? 'Streams: ' + d.streams_na_actividade.join(', ') : ''));
    MX = null; mxDraw(); mxDiagnostico(); return;
   }
   const s = MX_SESSOES.find(function(x){ return String(x.id)===String(id); }) || {};

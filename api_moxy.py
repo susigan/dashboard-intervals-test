@@ -352,80 +352,122 @@ def registar(app):
     def api_moxy_actualizar():
         """Reconcilia a base local com a Intervals.icu.
 
-        O sync incremental so' acrescenta: uma sessao apagada na
-        Intervals.icu fica para sempre na base local, e uma recarregada
-        aparece duas vezes com ids diferentes. Aqui compara-se a lista de
-        ids da API com a local, no mesmo intervalo, e removem-se as que ja'
-        nao existem.
+        Tres coisas que o sync incremental nao faz:
 
-        ?dias=1095   janela a reconciliar
+          1. Remove o que ja' nao existe la'. Uma sessao apagada fica para
+             sempre na base local.
+          2. Volta atras no tempo. O incremental arranca da ultima data
+             sincronizada e so' avanca, portanto uma sessao recarregada com
+             data de 2025 nunca entra.
+          3. Actualiza o que mudou. Uma sessao reprocessada mantem o id mas
+             muda de conteudo, e o incremental ignora-a por ja' existir.
+
+        A API e' consultada em blocos de 180 dias em vez de um pedido
+        unico, porque um intervalo de tres anos pode ser truncado sem
+        aviso. O numero devolvido por bloco vai na resposta, para se ver se
+        isso acontece.
+
+        ?dias=1095   ?bloco=180   ?so_diagnostico=1
         """
         try:
             import db as _db
             import api_client as api
             import sync as _sync
 
-            # 3 anos por omissao: uma sessao recarregada com data
-            # de 2025 fica fora de qualquer janela curta
             dias = request.args.get('dias', type=int) or 1095
-            oldest = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
-            newest = datetime.now().strftime('%Y-%m-%d')
+            bloco = request.args.get('bloco', type=int) or 180
+            so_diag = request.args.get('so_diagnostico') in ('1', 'true')
+            hoje = datetime.now()
+            oldest_geral = (hoje - timedelta(days=dias)).strftime('%Y-%m-%d')
 
-            bruto, err = api.icu_get(
-                f'/athlete/{api.ATHLETE_ID}/activities',
-                {'oldest': oldest, 'newest': newest})
-            if err:
-                return jsonify({'status': 'erro',
-                                'mensagem': f'API: {err}'}), 200
-            acts = bruto or []
-            if isinstance(acts, dict):
-                acts = acts.get('content') or []
-            planas = []
-            for x in acts:
-                if isinstance(x, dict):
-                    planas.append(x)
-                elif isinstance(x, list):
-                    planas.extend(y for y in x if isinstance(y, dict))
-            ids_api = {str(a.get('id')) for a in planas if a.get('id')}
+            todas, chunks, erros = {}, [], []
+            fim = hoje
+            while True:
+                ini = fim - timedelta(days=bloco)
+                if ini < hoje - timedelta(days=dias):
+                    ini = hoje - timedelta(days=dias)
+                bruto, err = api.icu_get(
+                    f'/athlete/{api.ATHLETE_ID}/activities',
+                    {'oldest': ini.strftime('%Y-%m-%d'),
+                     'newest': fim.strftime('%Y-%m-%d')})
+                if err:
+                    erros.append({'de': ini.strftime('%Y-%m-%d'), 'erro': err})
+                else:
+                    acts = bruto or []
+                    if isinstance(acts, dict):
+                        acts = acts.get('content') or []
+                    planas = []
+                    for x in acts:
+                        if isinstance(x, dict):
+                            planas.append(x)
+                        elif isinstance(x, list):
+                            planas.extend(y for y in x if isinstance(y, dict))
+                    for a in planas:
+                        if a.get('id'):
+                            todas[str(a['id'])] = a
+                    chunks.append({'de': ini.strftime('%Y-%m-%d'),
+                                   'ate': fim.strftime('%Y-%m-%d'),
+                                   'n': len(planas)})
+                if ini <= hoje - timedelta(days=dias):
+                    break
+                fim = ini
 
+            ids_api = set(todas)
             locais = _db._exec(
                 "SELECT id FROM activities WHERE date >= ?",
-                (oldest,), fetch='all') or []
+                (oldest_geral,), fetch='all') or []
             ids_locais = {str(r[0]) for r in locais}
-
             orfas = sorted(ids_locais - ids_api)
             novas = sorted(ids_api - ids_locais)
+
+            resumo = {
+                'status': 'ok', 'dias': dias, 'bloco_dias': bloco,
+                'janela': [oldest_geral, hoje.strftime('%Y-%m-%d')],
+                'blocos_pedidos': chunks, 'erros_api': erros,
+                'na_api': len(ids_api), 'na_base_local': len(ids_locais),
+                'n_orfas': len(orfas), 'orfas': orfas[:50],
+                'n_novas': len(novas), 'novas': novas[:50],
+            }
+            if so_diag:
+                resumo['nota'] = ('so_diagnostico=1: nada foi alterado. '
+                                  'Retira o parametro para aplicar')
+                return jsonify(resumo)
+
             for aid in orfas:
                 _remover_orfa(aid)
 
-            # Inserir as novas com o JSON que ja' temos em maos, em vez de
-            # chamar o sync incremental: esse arranca da ultima data
-            # sincronizada e nunca volta atras, portanto uma sessao
-            # recarregada com data de 2025 nao entrava por la'.
-            inseridas = 0
-            erro_insert = None
-            if novas:
-                try:
-                    rows = [r for r in (_sync.to_row(a) for a in planas
-                                        if str(a.get('id')) in set(novas))
-                            if r]
-                    if rows:
-                        ins, upd = _db.upsert_activities(rows)
-                        inseridas = ins + upd
-                except Exception as e:
-                    erro_insert = f'{type(e).__name__}: {e}'
-            res_sync = {'inseridas': inseridas, 'erro': erro_insert}
+            # Grava TODAS as que a API tem, nao so' as novas: uma sessao
+            # reprocessada mantem o id e muda de conteudo, e ficaria com o
+            # JSON antigo se so' se tratassem as novas.
+            gravadas = 0
+            try:
+                rows = [r for r in (_sync.to_row(a) for a in todas.values())
+                        if r]
+                sem_data = len(todas) - len(rows)
+                if rows:
+                    ins, upd = _db.upsert_activities(rows)
+                    gravadas = ins + upd
+                resumo['gravadas'] = gravadas
+                resumo['inseridas'] = ins if rows else 0
+                resumo['actualizadas'] = upd if rows else 0
+                resumo['descartadas_sem_data'] = sem_data
+            except Exception as e:
+                resumo['erro_gravar'] = f'{type(e).__name__}: {e}'
 
-            return jsonify({
-                'status': 'ok', 'dias': dias,
-                'na_api': len(ids_api), 'na_base_local': len(ids_locais),
-                'removidas': orfas, 'n_removidas': len(orfas),
-                'novas_detectadas': novas, 'n_novas': len(novas),
-                'sync': res_sync,
-                'janela': [oldest, newest],
-                'nota': ('removidas = existiam localmente mas ja nao estao '
-                         'na Intervals.icu. E o que acontece quando se apaga '
-                         'e recarrega uma sessao: o id muda')})
+            try:
+                # a cache vive no app.py; importado aqui para nao criar
+                # dependencia circular no topo do modulo
+                from app import invalidar_cache
+                invalidar_cache()
+            except Exception as e:
+                resumo['aviso_cache'] = f'{type(e).__name__}: {e}'
+
+            resumo['nota'] = (
+                'orfas = existiam localmente e ja nao estao na API (apagadas '
+                'la). novas = estao na API e nao estavam ca. Todas as da API '
+                'sao regravadas, para apanhar as que mudaram de conteudo sem '
+                'mudar de id')
+            return jsonify(resumo)
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

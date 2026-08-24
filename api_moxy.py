@@ -47,6 +47,21 @@ def _tem_tag_moxy(j):
     return any(PADRAO_MOXY.match(t) for t in _tags(j))
 
 
+def _remover_orfa(aid):
+    """Apaga das tabelas locais uma actividade que a API ja' nao tem."""
+    import db as _db
+    fora = {}
+    for tabela, coluna in (('activities', 'id'),
+                           ('power_curves', 'activity_id'),
+                           ('zone_times', 'activity_id')):
+        try:
+            _db._exec(f"DELETE FROM {tabela} WHERE {coluna} = ?", (str(aid),))
+            fora[tabela] = 'apagada'
+        except Exception as e:
+            fora[tabela] = f'{type(e).__name__}: {e}'
+    return fora
+
+
 def registar(app):
 
     @app.route('/api/moxy/sessoes')
@@ -132,6 +147,21 @@ def registar(app):
             aid = str(activity_id).strip().strip('/').split('/')[-1]
             bruto, err = api.icu_get(f'/activity/{aid}/streams')
             if err:
+                # 404 = a actividade ja' nao existe na Intervals.icu, mas
+                # continua na base local. Acontece sempre que se apaga e
+                # volta a carregar uma sessao: o id muda e o sync
+                # incremental so' acrescenta, nunca remove. Limpa-se aqui,
+                # para o registo morto nao voltar a aparecer na lista.
+                if '404' in str(err):
+                    removidas = _remover_orfa(aid)
+                    return jsonify({
+                        'status': 'removida',
+                        'mensagem': ('esta actividade ja nao existe na '
+                                     'Intervals.icu e foi removida da base '
+                                     'local. Provavelmente foi apagada e '
+                                     'recarregada com outro id -- carrega em '
+                                     '"Actualizar sessões" para apanhar a nova'),
+                        'id_usado': aid, 'linhas_removidas': removidas}), 200
                 return jsonify({'status': 'erro', 'mensagem': f'API: {err}',
                                 'id_usado': aid}), 200
             lista = bruto
@@ -281,6 +311,75 @@ def registar(app):
                 k for k in res['canais'] if k not in canais)
             res['streams_na_actividade'] = sorted(streams)
             return jsonify(res)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/actualizar')
+    def api_moxy_actualizar():
+        """Reconcilia a base local com a Intervals.icu.
+
+        O sync incremental so' acrescenta: uma sessao apagada na
+        Intervals.icu fica para sempre na base local, e uma recarregada
+        aparece duas vezes com ids diferentes. Aqui compara-se a lista de
+        ids da API com a local, no mesmo intervalo, e removem-se as que ja'
+        nao existem.
+
+        ?dias=120   janela a reconciliar
+        """
+        try:
+            import db as _db
+            import api_client as api
+            import sync as _sync
+
+            dias = request.args.get('dias', type=int) or 120
+            oldest = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+            newest = datetime.now().strftime('%Y-%m-%d')
+
+            bruto, err = api.icu_get(
+                f'/athlete/{api.ATHLETE_ID}/activities',
+                {'oldest': oldest, 'newest': newest})
+            if err:
+                return jsonify({'status': 'erro',
+                                'mensagem': f'API: {err}'}), 200
+            acts = bruto or []
+            if isinstance(acts, dict):
+                acts = acts.get('content') or []
+            planas = []
+            for x in acts:
+                if isinstance(x, dict):
+                    planas.append(x)
+                elif isinstance(x, list):
+                    planas.extend(y for y in x if isinstance(y, dict))
+            ids_api = {str(a.get('id')) for a in planas if a.get('id')}
+
+            locais = _db._exec(
+                "SELECT id FROM activities WHERE date >= ?",
+                (oldest,), fetch='all') or []
+            ids_locais = {str(r[0]) for r in locais}
+
+            orfas = sorted(ids_locais - ids_api)
+            novas = sorted(ids_api - ids_locais)
+            for aid in orfas:
+                _remover_orfa(aid)
+
+            # puxar as novas
+            res_sync = {}
+            if novas:
+                try:
+                    res_sync = _sync.sync_activities('incremental')
+                except Exception as e:
+                    res_sync = {'ok': False, 'erro': str(e)}
+
+            return jsonify({
+                'status': 'ok', 'dias': dias,
+                'na_api': len(ids_api), 'na_base_local': len(ids_locais),
+                'removidas': orfas, 'n_removidas': len(orfas),
+                'novas_detectadas': novas, 'n_novas': len(novas),
+                'sync': res_sync,
+                'nota': ('removidas = existiam localmente mas ja nao estao '
+                         'na Intervals.icu. E o que acontece quando se apaga '
+                         'e recarrega uma sessao: o id muda')})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

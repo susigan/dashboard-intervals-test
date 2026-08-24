@@ -173,11 +173,31 @@ def registar(app):
                 if isinstance(st, dict) and (st.get('type') or st.get('name')):
                     streams[st.get('type') or st.get('name')] = st.get('data') or []
 
+            def _norm(x):
+                return ''.join(c for c in str(x).lower() if c.isalnum())
+
             def _achar(nomes):
-                for a in nomes:
-                    for k in streams:
-                        if k.lower() == a.lower():
-                            return k
+                """Nome do stream, tolerante a variantes.
+
+                O ficheiro FIT declara o campo como "SmO2 (%)" com id
+                dev_field_0_34, e a Intervals.icu pode expo-lo com o nome
+                do dev field, com a unidade colada, ou com sufixo de
+                sensor. Comparacao exacta falhava nesses casos e a sessao
+                aparecia como "sem streams de SmO2" tendo-os.
+                """
+                alvos = [_norm(a) for a in nomes]
+                for k in streams:                      # exacto
+                    if _norm(k) in alvos:
+                        return k
+                for k in streams:                      # comeca por
+                    nk = _norm(k)
+                    if any(nk.startswith(a) or a.startswith(nk)
+                           for a in alvos if a):
+                        return k
+                for k in streams:                      # contem
+                    nk = _norm(k)
+                    if any(a and a in nk for a in alvos):
+                        return k
                 return None
 
             canais, mapa = {}, {}
@@ -187,10 +207,23 @@ def registar(app):
                     canais[alvo] = streams[k]
                     mapa[alvo] = k
             if not canais:
+                # Sem adivinhar: devolve-se tudo o que a sessao tem, com o
+                # numero de pontos, para se ver qual e' o canal do sensor.
+                # Um dev field pode chegar como 'dev_field_0_34' sem nome
+                # legivel, e nesse caso so' o utilizador sabe qual e'.
+                detalhe = sorted(
+                    ({'stream': k, 'n_pontos': len(v),
+                      'amostra': [x for x in (v or [])[:5]]}
+                     for k, v in streams.items()),
+                    key=lambda x: -x['n_pontos'])
                 return jsonify({
                     'status': 'sem_dados', 'id': aid,
-                    'mensagem': 'sem streams de SmO2 ou THb nesta sessao',
-                    'streams_na_actividade': sorted(streams)}), 200
+                    'mensagem': ('sem streams de SmO2 ou THb reconhecidos. '
+                                 'Se algum dos streams abaixo for o sensor '
+                                 '(pode chegar como dev_field_N sem nome), '
+                                 'acrescenta o nome em CANAIS no api_moxy.py'),
+                    'streams_na_actividade': sorted(streams),
+                    'detalhe_dos_streams': detalhe}), 200
 
             n = len(next(iter(canais.values())))
             tempo = streams.get('time') or list(range(n))
@@ -325,14 +358,16 @@ def registar(app):
         ids da API com a local, no mesmo intervalo, e removem-se as que ja'
         nao existem.
 
-        ?dias=120   janela a reconciliar
+        ?dias=1095   janela a reconciliar
         """
         try:
             import db as _db
             import api_client as api
             import sync as _sync
 
-            dias = request.args.get('dias', type=int) or 120
+            # 3 anos por omissao: uma sessao recarregada com data
+            # de 2025 fica fora de qualquer janela curta
+            dias = request.args.get('dias', type=int) or 1095
             oldest = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
             newest = datetime.now().strftime('%Y-%m-%d')
 
@@ -363,13 +398,23 @@ def registar(app):
             for aid in orfas:
                 _remover_orfa(aid)
 
-            # puxar as novas
-            res_sync = {}
+            # Inserir as novas com o JSON que ja' temos em maos, em vez de
+            # chamar o sync incremental: esse arranca da ultima data
+            # sincronizada e nunca volta atras, portanto uma sessao
+            # recarregada com data de 2025 nao entrava por la'.
+            inseridas = 0
+            erro_insert = None
             if novas:
                 try:
-                    res_sync = _sync.sync_activities('incremental')
+                    rows = [r for r in (_sync.to_row(a) for a in planas
+                                        if str(a.get('id')) in set(novas))
+                            if r]
+                    if rows:
+                        ins, upd = _db.upsert_activities(rows)
+                        inseridas = ins + upd
                 except Exception as e:
-                    res_sync = {'ok': False, 'erro': str(e)}
+                    erro_insert = f'{type(e).__name__}: {e}'
+            res_sync = {'inseridas': inseridas, 'erro': erro_insert}
 
             return jsonify({
                 'status': 'ok', 'dias': dias,
@@ -377,6 +422,7 @@ def registar(app):
                 'removidas': orfas, 'n_removidas': len(orfas),
                 'novas_detectadas': novas, 'n_novas': len(novas),
                 'sync': res_sync,
+                'janela': [oldest, newest],
                 'nota': ('removidas = existiam localmente mas ja nao estao '
                          'na Intervals.icu. E o que acontece quando se apaga '
                          'e recarrega uma sessao: o id muda')})

@@ -312,7 +312,7 @@ def detectar_blocos(tempo, watts, hz=1.0, limiar_rel=0.35, min_dur=20):
             'n_off': sum(1 for b in fundidos if not b['on'])}
 
 
-def propor_corte(blocos_info, hz=1.0, off_minimo=90):
+def propor_corte(blocos_info, hz=1.0, off_minimo=None):
     """Onde comeca o protocolo: apos a ultima pausa longa antes da serie.
 
     O separador do aquecimento e' a pausa MAIS LONGA que ainda tenha pelo
@@ -328,6 +328,23 @@ def propor_corte(blocos_info, hz=1.0, off_minimo=90):
     if not blocos_info.get('ok'):
         return {'ok': False, 'motivo': blocos_info.get('motivo')}
     bl = blocos_info['blocos']
+
+    # O tempo de descanso NAO e' fixo, e nao pode ser: varia de sessao para
+    # sessao e de protocolo para protocolo. Por isso o limite minimo sai da
+    # propria sessao -- 1.5x a mediana das pausas dela. Numa sessao com
+    # recuperacoes de 2 min, so' pausas acima de 3 min contam como
+    # separador; numa com recuperacoes de 30 s, bastam 45 s.
+    #
+    # O valor absoluto so' entra como piso, para nao aceitar micro-pausas
+    # numa sessao inteira sem interrupcoes.
+    offs = sorted(b['duracao_s'] for b in bl if not b['on'])
+    if off_minimo is None:
+        if offs:
+            med = offs[len(offs) // 2]
+            off_minimo = max(45.0, med * 1.5)
+        else:
+            off_minimo = 90.0
+
     candidatos = []
     for k, b in enumerate(bl):
         if b['on'] or b['duracao_s'] < off_minimo:
@@ -344,6 +361,9 @@ def propor_corte(blocos_info, hz=1.0, off_minimo=90):
                 'pausa_antes_s': b['duracao_s'],
                 'n_blocos_on': len(ons_depois),
                 'outras_pausas_s': outras,
+                'off_minimo_usado_s': round(off_minimo, 1),
+                'mediana_das_pausas_s': (round(offs[len(offs) // 2], 1)
+                                         if offs else None),
                 'confianca': ('alta' if not outras or dur > max(outras) * 1.4
                               else 'baixa'),
                 'motivo': (f'pausa mais longa ({round(dur)} s) seguida de '

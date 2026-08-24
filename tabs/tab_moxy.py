@@ -15,6 +15,7 @@ BODY = """
   <h1>Moxy</h1>
 
   <div class="controls">
+    <button onclick="mxActualizar()" title="Reconcilia com a Intervals.icu: apanha sessões novas e remove as que foram apagadas lá.">Actualizar sessões</button>
     <label class="sel">Modalidade
       <select id="mxModalidade" onchange="mxSessoes()">
         <option value="">todas</option>
@@ -62,12 +63,18 @@ BODY = """
     <input type="range" id="mxFim" min="0" max="100" value="100" step="0.2"
            style="width:180px" oninput="mxSlider()">
     <span id="mxCorteTxt" style="color:#c9d1d9;font-size:12px;"></span>
-    <button onclick="mxAplicarProposta()">Usar proposta</button>
-    <button onclick="mxTudo()">Sessão inteira</button>
-    <button onclick="mxGuardarCorte()">Guardar corte</button>
+    <button onclick="mxAplicarProposta()" title="Repõe os cursores na proposta automática. Não grava nada.">Repor proposta</button>
+    <button onclick="mxTudo()" title="Repõe os cursores na sessão inteira. Não grava nada.">Sessão inteira</button>
+    <button onclick="mxGuardarCorte()" title="Grava este intervalo para esta sessão. Ao reabrir, aparece já cortado.">💾 Gravar este intervalo</button>
     <span id="mxCorteEstado" style="color:#8b949e;font-size:11px;"></span>
   </div>
   <p id="mxCorteNota" style="color:#8b949e;font-size:11px;margin:4px 0;"></p>
+  <p style="color:#8b949e;font-size:11px;margin:0 0 8px 0;">
+    <b>Repor proposta</b> e <b>Sessão inteira</b> só movem os cursores — não
+    gravam. <b>Gravar este intervalo</b> guarda o que está nos cursores para
+    esta sessão; ao reabrires, aparece já cortada assim. O limite de pausa que
+    separa aquecimento de protocolo não é fixo: sai da mediana das pausas da
+    própria sessão, porque o descanso varia de protocolo para protocolo.</p>
 
   <div id="mxDiag" style="margin-top:8px;"></div>
 
@@ -112,6 +119,17 @@ const MX_CORES = {smo2:'#F85149', thb:'#58A6FF', o2hb:'#3FB950',
 // real.
 let MX_ON = {};
 
+function mxActualizar(){
+ const est=document.getElementById('mxEstado');
+ est.textContent='a reconciliar com a Intervals.icu...';
+ fetch('/api/moxy/actualizar?dias=180').then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ est.textContent='erro: '+(d.mensagem||''); return; }
+  est.textContent = d.n_novas+' novas · '+d.n_removidas+' removidas '
+   +'(apagadas na Intervals.icu)';
+  mxSessoes();
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
 function mxSessoes(){
  const mod = document.getElementById('mxModalidade').value;
  const est = document.getElementById('mxEstado');
@@ -143,8 +161,21 @@ function mxCarregar(){
  est.textContent = 'a carregar streams...';
  fetch('/api/moxy/dados/' + id + q).then(r=>r.json()).then(function(d){
   MX = d;
+  if(d.status === 'removida'){
+   est.textContent = 'sessão já não existe na Intervals.icu — removida da base';
+   document.getElementById('mxCorteNota').textContent = d.mensagem || '';
+   MX = null; mxDraw(); mxDiagnostico();
+   mxSessoes();
+   return;
+  }
   if(d.status !== 'ok'){
    est.textContent = d.mensagem || 'sem dados';
+   document.getElementById('mxCorteNota').textContent =
+    (d.streams_na_actividade
+     ? 'Streams nesta sessão: ' + d.streams_na_actividade.join(', ')
+       + '. Se o Moxy esteve ligado mas o SmO2 não aparece, o ficheiro pode '
+       + 'ter sido carregado sem o canal — reprocessa na Intervals.icu.'
+     : '');
    MX = null; mxDraw(); mxDiagnostico(); return;
   }
   const s = MX_SESSOES.find(function(x){ return String(x.id)===String(id); }) || {};

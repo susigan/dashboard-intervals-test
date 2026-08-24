@@ -15,7 +15,8 @@ BODY = """
   <h1>Moxy</h1>
 
   <div class="controls">
-    <button onclick="mxActualizar()" title="Reconcilia com a Intervals.icu: apanha sessões novas e remove as que foram apagadas lá.">Actualizar sessões</button>
+    <button onclick="mxActualizar(1)" title="Mostra o que seria alterado, sem alterar nada.">Verificar</button>
+    <button onclick="mxActualizar(0)" title="Reconcilia com a Intervals.icu: grava as sessões novas e alteradas, remove as apagadas lá.">Actualizar sessões</button>
     <label class="sel">Modalidade
       <select id="mxModalidade" onchange="mxSessoes()">
         <option value="">todas</option>
@@ -119,15 +120,35 @@ const MX_CORES = {smo2:'#F85149', thb:'#58A6FF', o2hb:'#3FB950',
 // real.
 let MX_ON = {};
 
-function mxActualizar(){
+function mxActualizar(soVer){
  const est=document.getElementById('mxEstado');
- est.textContent='a reconciliar com a Intervals.icu...';
- fetch('/api/moxy/actualizar?dias=1095').then(r=>r.json()).then(function(d){
+ const nota=document.getElementById('mxCorteNota');
+ est.textContent = soVer ? 'a verificar...' : 'a reconciliar...';
+ fetch('/api/moxy/actualizar?dias=1095' + (soVer?'&so_diagnostico=1':''))
+ .then(r=>r.json()).then(function(d){
   if(d.status!=='ok'){ est.textContent='erro: '+(d.mensagem||''); return; }
-  est.textContent = d.n_novas+' novas ('+((d.sync||{}).inseridas||0)
-   +' gravadas) · '+d.n_removidas+' removidas · janela '
-   +(d.janela||[]).join(' a ');
-  mxSessoes();
+  est.textContent = (soVer?'[verificação] ':'')
+   + d.na_api+' na API · '+d.na_base_local+' locais · '
+   + d.n_novas+' novas · '+d.n_orfas+' órfãs'
+   + (soVer?'' : ' · '+(d.gravadas||0)+' gravadas');
+  let h = 'Janela ' + (d.janela||[]).join(' a ')
+   + ' em ' + (d.blocos_pedidos||[]).length + ' blocos de '
+   + d.bloco_dias + ' dias: '
+   + (d.blocos_pedidos||[]).map(function(b){ return b.de+' ('+b.n+')'; })
+     .join(' · ');
+  if((d.erros_api||[]).length)
+   h += '<br><span style="color:#F85149;">Erros da API: '
+     + d.erros_api.map(function(e){ return e.de+' — '+e.erro; }).join(' · ')
+     + '</span>';
+  if(d.n_novas) h += '<br><b>Novas:</b> ' + (d.novas||[]).join(', ');
+  if(d.n_orfas) h += '<br><b>Órfãs' + (soVer?' (a remover)':' removidas')
+   + ':</b> ' + (d.orfas||[]).join(', ');
+  if(d.erro_gravar) h += '<br><span style="color:#F85149;">Erro ao gravar: '
+   + d.erro_gravar + '</span>';
+  if(d.descartadas_sem_data) h += '<br>' + d.descartadas_sem_data
+   + ' descartadas por não terem data válida.';
+  nota.innerHTML = h;
+  if(!soVer) mxSessoes();
  }).catch(e=>{ est.textContent='erro: '+e.message; });
 }
 

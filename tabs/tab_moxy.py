@@ -455,8 +455,10 @@ function mxCorteTexto(origem){
    +(p.confianca?' · confiança '+p.confianca:'')+'.';
  else n='Sem proposta automática: '+(p.motivo||'')+'. A mostrar tudo.';
  const b=MX.blocos||{};
- if(b.ok) n+=' Detectados '+b.n_on+' blocos de trabalho e '+b.n_off
-   +' de recuperação, com limiar em '+b.limiar_w+' W.';
+ if(b.ok) n+=' '+b.n_on+' blocos de trabalho e '+b.n_off+' de recuperação, '
+   +'de '+(b.fonte||'?')+(b.limiar_w?' (limiar '+b.limiar_w+' W)':'')+'.';
+ const p2=MX.corte_proposto||{};
+ if(p2.aviso) n+=' '+p2.aviso+'.';
  document.getElementById('mxCorteNota').textContent=n;
 }
 
@@ -557,27 +559,37 @@ function mxDraw(){
  const X=v=>PL+(v-ta)/((tb-ta)||1)*w;
  MX_ESC={X:X,PL:PL,PT:PT,w:w,h:h,t0:ta,t1:tb};
 
- // potencia em fundo, da primeira sessao
- const wser=series.find(s2=>s2.canal==='watts' && s2.si===0)
-   || (function(){
-    const d=MX_DADOS[ids[0]], t=d.tempo||[], v=d.canais.watts;
-    if(!v) return null;
-    const corte=mxCorteDe(ids[0]), ref=mxRefAlinhamento(ids[0])+(MX_OFF[ids[0]]||0);
-    const pts=[];
-    for(let n=0;n<t.length;n++){
-     if(t[n]<corte[0]||t[n]>corte[1]||v[n]==null) continue;
-     pts.push([t[n]-ref, v[n]]);
-    }
-    return pts.length?{pts:pts}:null;
-   })();
- if(wser){
-  const wmax=Math.max.apply(null, wser.pts.map(p=>p[1]))||1;
-  g.fillStyle='rgba(139,148,158,0.13)';
-  g.beginPath(); g.moveTo(X(ta), PT+h);
-  wser.pts.forEach(p=>g.lineTo(X(p[0]), PT+h-(p[1]/wmax)*h*0.45));
-  g.lineTo(X(tb), PT+h); g.closePath(); g.fill();
+ // Potencia de TODAS as sessoes em fundo, cada uma na sua cor. Sem isto
+ // nao se ve porque e' que os degraus nao alinham: uma sessao pode comecar
+ // a 140 W e outra a 117 W, e a diferenca so' aparece aqui.
+ const wsers=[];
+ ids.forEach(function(id, si){
+  const d=MX_DADOS[id], t=d.tempo||[], v=d.canais.watts;
+  if(!v) return;
+  const corte=mxCorteDe(id), ref=mxRefAlinhamento(id)+(MX_OFF[id]||0);
+  const pts=[];
+  for(let n=0;n<t.length;n++){
+   if(t[n]<corte[0]||t[n]>corte[1]||v[n]==null) continue;
+   pts.push([t[n]-ref, v[n]]);
+  }
+  if(pts.length) wsers.push({si:si, pts:pts});
+ });
+ let wmaxG=0;
+ wsers.forEach(function(ws){ ws.pts.forEach(function(p){
+  if(p[1]>wmaxG) wmaxG=p[1]; }); });
+ if(wmaxG>0){
+  wsers.forEach(function(ws){
+   const cor = ids.length>1 ? mxCorSessao(ws.si) : '#8b949e';
+   g.strokeStyle=cor; g.globalAlpha=0.30; g.lineWidth=1;
+   g.beginPath();
+   ws.pts.forEach(function(p,n){
+    const y=PT+h-(p[1]/wmaxG)*h*0.42;
+    n?g.lineTo(X(p[0]),y):g.moveTo(X(p[0]),y);
+   });
+   g.stroke(); g.globalAlpha=1;
+  });
   g.fillStyle='#6e7681'; g.font='10px sans-serif'; g.textAlign='left';
-  g.fillText('watts sessão 1 (0–'+Math.round(wmax)+')', PL+4, PT+h-4);
+  g.fillText('watts em fundo (0–'+Math.round(wmaxG)+')', PL+4, PT+h-4);
  }
 
  // escala partilhada pelos NIRS; contexto normaliza-se por canal
@@ -826,9 +838,11 @@ function mxBlocosTabela(){
    +vals.map(function(v,n){
      if(!v) return '<td style="padding-right:14px;color:#484f58;">—</td>';
      const rel=Math.round(v.t0-cols[n].ref);
-     return '<td style="padding-right:14px;">'+Math.round(v.watts_medio)+' W'
+     return '<td style="padding-right:14px;">'
+      +(v.watts_medio!=null?Math.round(v.watts_medio)+' W':'—')
       +' <span style="color:#8b949e;">'+Math.round(v.duracao_s)+'s'
-      +' @'+(rel>=0?'+':'')+rel+'s</span></td>';
+      +' @'+(rel>=0?'+':'')+rel+'s'
+      +(v.tipo?' · '+v.tipo.toLowerCase():'')+'</span></td>';
     }).join('')
    +'<td style="color:'+cor+';">'+(dif!=null?dif+' W':'—')+'</td></tr>';
  }

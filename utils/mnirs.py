@@ -378,3 +378,270 @@ def propor_corte(blocos_info, hz=1.0, off_minimo=None):
                 'motivo': ('sem pausa longa a separar aquecimento de '
                            'protocolo; proposto o primeiro bloco de trabalho')}
     return {'ok': False, 'motivo': 'nenhum bloco de trabalho detectado'}
+
+
+def resumir_degraus(tempo, canais, blocos_info, so_on=True, aparar=30):
+    """Media de cada canal em cada bloco de trabalho.
+
+    'aparar' descarta os primeiros N segundos de cada bloco: o SmO2 leva
+    tempo a responder a uma mudanca de carga, e incluir a transicao mistura
+    o degrau novo com o anterior. Trinta segundos e' o compromisso habitual
+    -- suficiente para a resposta assentar sem gastar metade de um bloco de
+    tres minutos.
+    """
+    if not blocos_info.get('ok'):
+        return []
+    out = []
+    n_on = 0
+    for b in blocos_info['blocos']:
+        if so_on and not b['on']:
+            continue
+        n_on += 1
+        i0 = min(b['i0'] + int(aparar), b['i1'])
+        if i0 >= b['i1']:
+            i0 = b['i0']
+        linha = {'degrau': n_on, 'i0': i0, 'i1': b['i1'],
+                 't0': b['t0'], 't1': b['t1'],
+                 'duracao_s': b['duracao_s'], 'on': b['on'],
+                 'n_pontos': b['i1'] - i0 + 1}
+        for nome, serie in (canais or {}).items():
+            jan = [serie[k] for k in range(i0, min(b['i1'] + 1, len(serie)))
+                   if serie[k] is not None]
+            linha[nome] = round(sum(jan) / len(jan), 2) if jan else None
+        out.append(linha)
+    return out
+
+
+def emparelhar_degraus(sessoes, tolerancia=15.0, campo='watts'):
+    """Junta degraus de varias sessoes que estejam a potencias parecidas.
+
+    Alinhar por TEMPO exigiria sincronizar sessoes com aquecimentos
+    diferentes e transicoes em momentos diferentes. Alinhar por POTENCIA
+    dispensa isso: o degrau de 200 W de uma sessao compara-se com o de
+    200 W da outra, seja quando for que tenha acontecido.
+
+    A tolerancia existe porque no remo e no ski nao ha ergmode: o mesmo
+    degrau alvo sai com potencias ligeiramente diferentes de dia para dia.
+    """
+    todos = []
+    for idx, degraus in enumerate(sessoes):
+        for d in degraus:
+            if d.get(campo) is not None:
+                todos.append((d[campo], idx, d))
+    if not todos:
+        return []
+    todos.sort()
+
+    grupos, actual = [], [todos[0]]
+    for item in todos[1:]:
+        if abs(item[0] - actual[0][0]) <= tolerancia:
+            actual.append(item)
+        else:
+            grupos.append(actual)
+            actual = [item]
+    grupos.append(actual)
+
+    saida = []
+    for gr in grupos:
+        vals = [x[0] for x in gr]
+        linha = {'watts_centro': round(sum(vals) / len(vals), 1),
+                 'watts_min': round(min(vals), 1),
+                 'watts_max': round(max(vals), 1),
+                 'n_sessoes': len({x[1] for x in gr}),
+                 'por_sessao': {}}
+        for w, idx, d in gr:
+            linha['por_sessao'][str(idx)] = d
+        saida.append(linha)
+    return saida
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# BLOCOS A PARTIR DOS LAPS DA INTERVALS.ICU
+#
+# Muito mais fiavel do que deduzir os blocos da potencia: os laps sao a
+# estrutura que o atleta marcou, com tipo WORK ou RECOVERY ja' atribuido.
+#
+# Com uma ressalva importante, observada nos dados deste atleta: um lap
+# marcado como RECOVERY pode trazer potencia media alta -- 22m58s de
+# aquecimento com 174 W de media aparece como Recovery. O tipo do lap e' de
+# confianca; a potencia media dele nao e'. Por isso o tipo manda, e a
+# potencia so' serve para descrever.
+# ══════════════════════════════════════════════════════════════════════════
+
+def blocos_de_laps(laps, tempo_inicial=0.0):
+    """Blocos ON/OFF a partir dos laps. laps: lista da API."""
+    fora = []
+    for lp in (laps or []):
+        if not isinstance(lp, dict):
+            continue
+        t0 = lp.get('start_time')
+        t1 = lp.get('end_time')
+        if t0 is None or t1 is None:
+            continue
+        tipo = str(lp.get('type') or '').upper()
+        fora.append({
+            'on': tipo.startswith('WORK'),
+            'tipo': tipo or None,
+            't0': float(t0) - tempo_inicial,
+            't1': float(t1) - tempo_inicial,
+            'duracao_s': round(float(t1) - float(t0), 1),
+            'watts_medio': lp.get('average_watts'),
+            'hr_medio': lp.get('average_heartrate'),
+            'label': lp.get('label') or lp.get('name'),
+        })
+    fora.sort(key=lambda b: b['t0'])
+    return {'ok': bool(fora), 'fonte': 'laps da Intervals.icu',
+            'blocos': fora,
+            'n_on': sum(1 for b in fora if b['on']),
+            'n_off': sum(1 for b in fora if not b['on']),
+            'motivo': None if fora else 'sem laps utilizaveis'}
+
+
+def propor_corte_laps(blocos_info, min_work_depois=2):
+    """Fim do aquecimento = ultima RECOVERY longa antes de uma serie.
+
+    Longa em relacao as outras: usa-se a mediana das recuperacoes da
+    propria sessao vezes 1.5, com piso de 45 s, pela mesma razao de sempre
+    -- o descanso varia de protocolo para protocolo e um numero fixo falha
+    metade das vezes.
+    """
+    if not blocos_info.get('ok'):
+        return {'ok': False, 'motivo': blocos_info.get('motivo')}
+    bl = blocos_info['blocos']
+    offs = sorted(b['duracao_s'] for b in bl if not b['on'])
+    minimo = max(45.0, (offs[len(offs) // 2] * 1.5) if offs else 90.0)
+
+    candidatos = []
+    for k, b in enumerate(bl):
+        if b['on'] or b['duracao_s'] < minimo:
+            continue
+        works = [x for x in bl[k + 1:] if x['on']]
+        if len(works) >= min_work_depois:
+            candidatos.append((b['duracao_s'], k, b, works))
+    if not candidatos:
+        works = [b for b in bl if b['on']]
+        if not works:
+            return {'ok': False, 'motivo': 'nenhum lap de trabalho'}
+        return {'ok': True, 'fonte': 'laps',
+                'inicio_s': round(works[0]['t0'], 1),
+                'fim_s': round(bl[-1]['t1'], 1),
+                'n_blocos_on': len(works), 'confianca': 'baixa',
+                'motivo': ('sem recuperacao longa a separar aquecimento; '
+                           'proposto o primeiro lap de trabalho')}
+    dur, k, b, works = max(candidatos, key=lambda c: c[0])
+    outras = sorted(c[0] for c in candidatos if c[1] != k)
+    return {
+        'ok': True, 'fonte': 'laps',
+        'inicio_s': round(works[0]['t0'], 1),
+        'fim_s': round(bl[-1]['t1'], 1),
+        'pausa_antes_s': dur,
+        'watts_da_pausa': b.get('watts_medio'),
+        'n_blocos_on': len(works),
+        'off_minimo_usado_s': round(minimo, 1),
+        'confianca': ('alta' if not outras or dur > max(outras) * 1.4
+                      else 'baixa'),
+        'motivo': (f'lap de recuperacao mais longo ({round(dur)} s'
+                   + (f', {round(b["watts_medio"])} W medios'
+                      if b.get('watts_medio') else '')
+                   + f') seguido de {len(works)} laps de trabalho'),
+        'aviso': ('a potencia media de um lap de recuperacao pode vir alta '
+                  'por erro de gravacao; o que conta e o tipo do lap'),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# BLOCOS A PARTIR DOS LAPS DA INTERVALS.ICU
+#
+# Melhor fonte do que o agrupamento por potencia: os laps ja' estao
+# marcados como WORK ou RECOVERY, e o aquecimento aparece como um RECOVERY
+# longo antes da sequencia alternada.
+#
+# NAO se usa a potencia para classificar. Nos dados deste atleta ha laps
+# marcados RECOVERY com potencia media de 174 W -- erro de gravacao do
+# Garmin. Se o tipo diz recuperacao, e' recuperacao; a potencia media
+# desse lap serve para mostrar, nao para decidir.
+# ══════════════════════════════════════════════════════════════════════════
+
+TIPOS_TRABALHO = {'WORK', 'work', 'Work'}
+
+
+def blocos_de_laps(laps, tempo=None):
+    """Blocos ON/OFF a partir dos intervalos da Intervals.icu."""
+    if not laps:
+        return {'ok': False, 'motivo': 'sem laps na actividade'}
+    blocos = []
+    for lp in laps:
+        if not isinstance(lp, dict):
+            continue
+        t0 = lp.get('start_time')
+        t1 = lp.get('end_time')
+        if t0 is None or t1 is None:
+            continue
+        tipo = str(lp.get('type') or '')
+        blocos.append({
+            'on': tipo in TIPOS_TRABALHO,
+            'tipo': tipo or '?',
+            't0': float(t0), 't1': float(t1),
+            'duracao_s': round(float(t1) - float(t0), 1),
+            'watts_medio': lp.get('average_watts'),
+            'hr_medio': lp.get('average_heartrate'),
+            'nome': lp.get('label') or lp.get('name'),
+        })
+    if not blocos:
+        return {'ok': False, 'motivo': 'laps sem indices de tempo'}
+    blocos.sort(key=lambda b: b['t0'])
+    return {'ok': True, 'fonte': 'laps da Intervals.icu',
+            'blocos': blocos,
+            'n_on': sum(1 for b in blocos if b['on']),
+            'n_off': sum(1 for b in blocos if not b['on']),
+            'nota': ('tipo do lap decide o que e trabalho, nao a potencia: '
+                     'ha laps marcados RECOVERY com 174 W de media por erro '
+                     'de gravacao')}
+
+
+def propor_corte_laps(blocos_info):
+    """Inicio do protocolo: apos o RECOVERY longo que precede a sequencia.
+
+    E' o padrao que o atleta descreve: aquecimento continuo, uma pausa
+    grande, e depois ON/OFF a alternar. O aquecimento aparece como um
+    unico RECOVERY muito mais longo do que as recuperacoes entre series.
+    """
+    if not blocos_info.get('ok'):
+        return {'ok': False, 'motivo': blocos_info.get('motivo')}
+    bl = blocos_info['blocos']
+    offs = sorted(b['duracao_s'] for b in bl if not b['on'])
+    if not offs:
+        ons = [b for b in bl if b['on']]
+        if not ons:
+            return {'ok': False, 'motivo': 'nenhum lap de trabalho'}
+        return {'ok': True, 'inicio_s': ons[0]['t0'], 'fim_s': bl[-1]['t1'],
+                'n_blocos_on': len(ons), 'fonte': 'laps',
+                'motivo': 'sem laps de recuperacao; primeiro lap de trabalho'}
+    mediana = offs[len(offs) // 2]
+    candidatos = []
+    for k, b in enumerate(bl):
+        if b['on'] or b['duracao_s'] < max(60.0, mediana * 1.5):
+            continue
+        ons_depois = [x for x in bl[k + 1:] if x['on']]
+        if len(ons_depois) >= 2:
+            candidatos.append((b['duracao_s'], k, b, ons_depois))
+    if not candidatos:
+        ons = [b for b in bl if b['on']]
+        if not ons:
+            return {'ok': False, 'motivo': 'nenhum lap de trabalho'}
+        return {'ok': True, 'inicio_s': ons[0]['t0'], 'fim_s': bl[-1]['t1'],
+                'n_blocos_on': len(ons), 'fonte': 'laps',
+                'confianca': 'baixa',
+                'motivo': ('nenhuma recuperacao se destaca das outras; '
+                           'proposto o primeiro lap de trabalho')}
+    dur, k, b, ons_depois = max(candidatos, key=lambda c: c[0])
+    outras = sorted(c[0] for c in candidatos if c[1] != k)
+    return {'ok': True, 'fonte': 'laps',
+            'inicio_s': ons_depois[0]['t0'], 'fim_s': bl[-1]['t1'],
+            'pausa_antes_s': dur, 'n_blocos_on': len(ons_depois),
+            'outras_pausas_s': outras,
+            'mediana_das_pausas_s': round(mediana, 1),
+            'confianca': ('alta' if not outras or dur > max(outras) * 1.4
+                          else 'baixa'),
+            'motivo': (f'recuperacao de {round(dur)} s marcada nos laps, '
+                       f'seguida de {len(ons_depois)} laps de trabalho')}

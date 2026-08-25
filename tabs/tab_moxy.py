@@ -15,8 +15,6 @@ BODY = """
   <h1>Moxy</h1>
 
   <div class="controls">
-    <button onclick="mxActualizar(1)" title="Mostra o que seria alterado, sem alterar nada.">Verificar</button>
-    <button onclick="mxActualizar(0)" title="Reconcilia com a Intervals.icu: grava as sessões novas e alteradas, remove as apagadas lá.">Actualizar sessões</button>
     <label class="sel">Modalidade
       <select id="mxModalidade" onchange="mxSessoes()">
         <option value="">todas</option>
@@ -24,7 +22,25 @@ BODY = """
         <option>Ski</option><option>Run</option>
       </select>
     </label>
-    <span id="mxModoTxt" style="color:#8b949e;font-size:12px;"></span>
+    <button onclick="mxActualizar(1)" title="Mostra o que seria alterado, sem alterar nada.">Verificar</button>
+    <button onclick="mxActualizar(0)" title="Reconcilia com a Intervals.icu.">Actualizar sessões</button>
+    <span id="mxEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
+  </div>
+
+  <div id="mxErro" style="display:none;color:#F85149;font-size:12px;
+    border-left:3px solid #F85149;padding:6px 10px;margin:6px 0;"></div>
+
+  <div id="mxDatas" style="margin:8px 0;"></div>
+  <div id="mxCanais" style="margin:6px 0;"></div>
+
+  <div class="controls" style="margin:4px 0;flex-wrap:wrap;gap:6px 14px;">
+    <label class="sel">Alinhar por
+      <select id="mxAlinha" onchange="mxAlinhar()">
+        <option value="bloco">1.º bloco de trabalho</option>
+        <option value="watts">degrau de watts equivalente</option>
+        <option value="inicio">início do corte</option>
+      </select>
+    </label>
     <label class="sel">Normalizar
       <select id="mxNorm" onchange="mxCarregar()">
         <option value="">valores brutos</option>
@@ -39,29 +55,10 @@ BODY = """
         <option value="0.008">forte</option>
       </select>
     </label>
-    <span id="mxEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
-  </div>
-
-
-  <div class="controls" style="margin-bottom:4px;flex-wrap:wrap;gap:2px 10px;">
-    <span style="color:#8b949e;font-size:12px;">Métricas:</span>
-    <span id="mxCanais" style="display:flex;flex-wrap:wrap;gap:2px 10px;
-      align-items:center;"></span>
-  </div>
-
-  <div class="controls" style="margin-bottom:4px;">
-    <label class="sel">Eixo X
-      <select id="mxEixo" onchange="mxDraw()">
-        <option value="degrau">watts do degrau (alinha sozinho)</option>
-        <option value="tempo">tempo</option>
-      </select>
-    </label>
-    <span style="color:#8b949e;font-size:11px;">
-      Com watts no eixo, degraus iguais alinham-se sem sincronizar nada.</span>
   </div>
 
   <div class="chartbox" style="position:relative;">
-    <canvas id="chMoxy" height="360"></canvas>
+    <canvas id="chMoxy" height="380"></canvas>
     <div id="mxTip" style="display:none;position:absolute;pointer-events:none;
       background:#161b22;border:1px solid #30363d;border-radius:6px;
       padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
@@ -80,19 +77,19 @@ BODY = """
     <input type="range" id="mxFim" min="0" max="100" value="100" step="0.2"
            style="width:180px" oninput="mxSlider()">
     <span id="mxCorteTxt" style="color:#c9d1d9;font-size:12px;"></span>
-    <button onclick="mxAplicarProposta()" title="Repõe os cursores na proposta automática. Não grava nada.">Repor proposta</button>
-    <button onclick="mxTudo()" title="Repõe os cursores na sessão inteira. Não grava nada.">Sessão inteira</button>
-    <button onclick="mxGuardarCorte()" title="Grava este intervalo para esta sessão. Ao reabrir, aparece já cortado.">💾 Gravar este intervalo</button>
+    <button onclick="mxAplicarProposta()" title="Repõe os cursores na proposta automática. Não grava.">Repor proposta</button>
+    <button onclick="mxTudo()" title="Repõe os cursores na sessão inteira. Não grava.">Sessão inteira</button>
+    <button onclick="mxGuardarCorte()" title="Grava este intervalo para esta sessão.">💾 Gravar este intervalo</button>
     <span id="mxCorteEstado" style="color:#8b949e;font-size:11px;"></span>
   </div>
   <p id="mxCorteNota" style="color:#8b949e;font-size:11px;margin:4px 0;"></p>
   <p style="color:#8b949e;font-size:11px;margin:0 0 8px 0;">
-    <b>Repor proposta</b> e <b>Sessão inteira</b> só movem os cursores — não
-    gravam. <b>Gravar este intervalo</b> guarda o que está nos cursores para
-    esta sessão; ao reabrires, aparece já cortada assim. O limite de pausa que
-    separa aquecimento de protocolo não é fixo: sai da mediana das pausas da
-    própria sessão, porque o descanso varia de protocolo para protocolo.</p>
+    <b>Repor proposta</b> e <b>Sessão inteira</b> só movem os cursores.
+    <b>Gravar este intervalo</b> guarda-o para esta sessão. O limite de pausa
+    que separa aquecimento de protocolo sai da mediana das pausas da própria
+    sessão, porque o descanso varia de protocolo para protocolo.</p>
 
+  <div id="mxBlocos" style="overflow-x:auto;margin-top:10px;"></div>
   <div id="mxDiag" style="margin-top:8px;"></div>
 
   <details style="margin-top:10px;">
@@ -101,28 +98,19 @@ BODY = """
       <p>Pipeline portado do pacote <b>mnirs</b> de Jem Arnold. A ordem não é
       arbitrária: <b>resample → substituir inválidos e outliers → filtrar →
       normalizar</b>. Filtrar antes de remover outliers espalha-os pelos
-      vizinhos; remover outliers antes de regularizar a amostragem faz a
-      janela móvel cobrir períodos de tempo diferentes.</p>
-      <p><b>Outliers</b> são detectados contra a <b>mediana</b> local, não a
-      média — com a média, um pico isolado desloca o próprio centro contra o
-      qual está a ser julgado e escapa à detecção. O corte de 3 corresponde à
-      regra de Pearson.</p>
-      <p><b>Normalizar:</b> o SmO2 não é medido numa escala absoluta.
-      "Base a zero" preserva a amplitude e mostra a variação desde o início —
-      assume que o início representa a mesma condição em todos os canais.
-      "0–100%" reescala para a amplitude observada — assume que o mínimo e o
-      máximo desta sessão representam a capacidade funcional do tecido, e
-      perde a diferença de amplitude entre sensores.</p>
+      vizinhos.</p>
+      <p><b>Outliers</b> contra a <b>mediana</b> local, não a média — com a
+      média, um pico desloca o próprio centro contra o qual está a ser julgado.</p>
+      <p>A FC, o DFA-a1 e a respiração vêm todos da série de RR: se a cinta
+      falha, os três herdam os buracos, e por isso levam o filtro de
+      artefactos. O SmO2 e o THb vêm do Moxy e não são afectados.</p>
     </div>
   </details>
 
-  <h2 style="font-size:15px;margin-top:16px;">Sessões</h2>
-  <p style="color:#8b949e;font-size:11px;margin:0 0 6px 0;">
-    Escolhe uma para analisar, ou várias para comparar. Em comparação os
-    canais ganham sufixo — <code>smo2_1</code>, <code>smo2_2</code> — e o
-    alinhamento é feito pelos blocos de trabalho detectados, não pelo relógio.</p>
-  <div id="mxLista" style="overflow-x:auto;"></div>
-  <div id="mxBlocos" style="overflow-x:auto;margin-top:10px;"></div>
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Todas as sessões</summary>
+    <div id="mxLista" style="overflow-x:auto;margin-top:6px;"></div>
+  </details>
 
 </div>
 """
@@ -185,7 +173,7 @@ function mxSessoes(){
   est.textContent = MX_SESSOES.length + ' sessões com Moxy';
   if(!MX_SEL.length && MX_SESSOES.length) MX_SEL=[String(MX_SESSOES[0].id)];
   MX_SEL = MX_SEL.filter(id=>MX_SESSOES.some(x=>String(x.id)===id));
-  mxLista();
+  mxDatasChips(); mxLista();
   if(MX_SEL.length) mxCarregar();
   else { MX=null; MX_DADOS={}; mxDraw(); mxBlocosTabela();
          document.getElementById('mxDiag').innerHTML=''; }
@@ -236,6 +224,42 @@ function mxTabelaDegraus(){
 // em segundos por id. Com uma sessao so', tudo funciona como antes.
 let MX_SEL = [], MX_DADOS = {}, MX_OFF = {};
 
+function mxErro(msg){
+ const e=document.getElementById('mxErro');
+ if(!e) return;
+ if(!msg){ e.style.display='none'; e.innerHTML=''; return; }
+ e.style.display='block'; e.innerHTML=msg;
+}
+
+// Chips de data acima do grafico. Um clique escolhe, outro tira. Varias
+// escolhidas = comparacao.
+function mxDatasChips(){
+ const box=document.getElementById('mxDatas');
+ if(!box) return;
+ if(!MX_SESSOES.length){
+  box.innerHTML='<span style="color:#8b949e;font-size:12px;">Nenhuma sessão '
+   +'com a tag "Moxy".</span>'; return; }
+ box.innerHTML='<div style="display:flex;flex-wrap:wrap;gap:6px;">'
+  + MX_SESSOES.map(function(s2){
+   const i=MX_SEL.indexOf(String(s2.id));
+   const on=i>=0;
+   const cor=on?mxCorSessao(i):'#30363d';
+   return '<button class="mxDia" data-id="'+s2.id+'" '
+    + 'style="border:1px solid '+cor+';border-radius:14px;padding:3px 11px;'
+    + 'background:'+(on?'rgba(88,166,255,0.10)':'transparent')+';'
+    + 'color:'+(on?cor:'#8b949e')+';font-size:11px;cursor:pointer;">'
+    + (on?'● ':'○ ') + s2.data
+    + '<span style="opacity:.7;"> · '+(s2.modalidade||s2.tipo||'')+'</span>'
+    + '</button>';
+  }).join('') + '</div>';
+ Array.prototype.forEach.call(box.querySelectorAll('.mxDia'), function(el){
+  el.addEventListener('click', function(){
+   const id=el.getAttribute('data-id');
+   mxAlternarSessao(id, MX_SEL.indexOf(String(id))<0);
+  });
+ });
+}
+
 function mxCanaisEdit(){
  const box=document.getElementById('mxCanais');
  const ids=Object.keys(MX_DADOS);
@@ -245,23 +269,31 @@ function mxCanaisEdit(){
  const todos=nirs.concat(ctx2);
  if(!Object.keys(MX_ON).length)
   nirs.forEach(function(k){ MX_ON[k]=true; });
- box.innerHTML = todos.map(function(k){
-  const on = MX_ON[k] === true;
-  const nirsQ = nirs.indexOf(k)>=0;
-  return '<label class="sel" style="white-space:nowrap;color:'
-   + (MX_CORES[k]||'#c9d1d9') + ';">'
-   + '<input type="checkbox" class="mxC" value="'+k+'"'+(on?' checked':'')
-   + '> ' + k + (nirsQ?'':' *') + '</label>';
- }).join('') + '<span style="color:#8b949e;font-size:10px;white-space:nowrap;">'
-  + '* de contexto, não filtrado</span>';
+ box.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:6px;'
+  + 'align-items:center;">'
+  + todos.map(function(k){
+   const on = MX_ON[k] === true;
+   const nirsQ = nirs.indexOf(k)>=0;
+   const cor = MX_CORES[k]||'#c9d1d9';
+   return '<button class="mxC" data-k="'+k+'" '
+    + 'style="border:1px solid '+(on?cor:'#30363d')+';border-radius:14px;'
+    + 'padding:3px 11px;background:'+(on?'rgba(255,255,255,0.05)':'transparent')
+    + ';color:'+(on?cor:'#6e7681')+';font-size:11px;cursor:pointer;">'
+    + (on?'● ':'○ ') + k + (nirsQ?'':' *') + '</button>';
+  }).join('')
+  + '<span style="color:#6e7681;font-size:10px;">* de contexto, não filtrado</span>'
+  + '</div>';
  Array.prototype.forEach.call(box.querySelectorAll('.mxC'), function(el){
-  el.addEventListener('change', function(){
-   MX_ON[el.value]=el.checked; mxDraw();
+  el.addEventListener('click', function(){
+   const k=el.getAttribute('data-k');
+   MX_ON[k] = !(MX_ON[k]===true);
+   mxCanaisEdit(); mxDraw();
   });
  });
 }
 
 function mxAlternarSessao(id, on){
+ mxErro(null);
  id = String(id);
  if(on){ if(MX_SEL.indexOf(id)<0) MX_SEL.push(id); }
  else { MX_SEL = MX_SEL.filter(x=>x!==id); delete MX_DADOS[id]; delete MX_OFF[id]; }
@@ -287,15 +319,23 @@ function mxCarregar(){
   MX_DADOS={}; let maus=[];
   res.forEach(function(r){
    if(r.d && r.d.status==='ok'){ MX_DADOS[r.id]=r.d; }
-   else maus.push(r.id+': '+(r.d.mensagem||'erro'));
+   else {
+    const s2=MX_SESSOES.find(x=>String(x.id)===r.id)||{};
+    let m='<b>'+(s2.data||r.id)+'</b>: '+(r.d.mensagem||'erro desconhecido');
+    if(r.d.detalhe_dos_streams)
+     m+='<br><span style="color:#8b949e;">Streams: '
+      + r.d.detalhe_dos_streams.map(function(x){
+         return x.stream+' ('+x.n_pontos+')'; }).join(' · ')+'</span>';
+    maus.push(m);
+   }
   });
+  mxErro(maus.length ? maus.join('<br>') : null);
+  mxDatasChips();
   const ids=Object.keys(MX_DADOS);
   MX = ids.length===1 ? MX_DADOS[ids[0]] : null;
   if(ids.length===1) mxCorteInicial();
   est.textContent = ids.length + (ids.length===1?' sessão':' sessões a comparar')
    + (maus.length ? ' · ' + maus.length + ' com problema' : '');
-  if(maus.length)
-   document.getElementById('mxCorteNota').textContent = maus.join(' | ');
   mxCanaisEdit(); mxAlinhar();
  });
 }

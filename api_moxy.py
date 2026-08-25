@@ -129,8 +129,7 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
-    @app.route('/api/moxy/dados/<path:activity_id>')
-    def api_moxy_dados(activity_id):
+    def _dados_sessao(activity_id, args):
         """Streams NIRS limpos de uma sessao.
 
         ?fc=0.02  frequencia de corte   ?outlier=3   ?acima=95
@@ -154,16 +153,16 @@ def registar(app):
                 # para o registo morto nao voltar a aparecer na lista.
                 if '404' in str(err):
                     removidas = _remover_orfa(aid)
-                    return jsonify({
+                    return ({
                         'status': 'removida',
                         'mensagem': ('esta actividade ja nao existe na '
                                      'Intervals.icu e foi removida da base '
                                      'local. Provavelmente foi apagada e '
                                      'recarregada com outro id -- carrega em '
                                      '"Actualizar sessões" para apanhar a nova'),
-                        'id_usado': aid, 'linhas_removidas': removidas}), 200
-                return jsonify({'status': 'erro', 'mensagem': f'API: {err}',
-                                'id_usado': aid}), 200
+                        'id_usado': aid, 'linhas_removidas': removidas})
+                return ({'status': 'erro', 'mensagem': f'API: {err}',
+                                'id_usado': aid})
             lista = bruto
             if isinstance(lista, dict):
                 lista = lista.get('streams') or lista.get('content') or []
@@ -216,24 +215,24 @@ def registar(app):
                       'amostra': [x for x in (v or [])[:5]]}
                      for k, v in streams.items()),
                     key=lambda x: -x['n_pontos'])
-                return jsonify({
+                return ({
                     'status': 'sem_dados', 'id': aid,
                     'mensagem': ('sem streams de SmO2 ou THb reconhecidos. '
                                  'Se algum dos streams abaixo for o sensor '
                                  '(pode chegar como dev_field_N sem nome), '
                                  'acrescenta o nome em CANAIS no api_moxy.py'),
                     'streams_na_actividade': sorted(streams),
-                    'detalhe_dos_streams': detalhe}), 200
+                    'detalhe_dos_streams': detalhe})
 
             n = len(next(iter(canais.values())))
             tempo = streams.get('time') or list(range(n))
 
             res = mn.processar(
                 tempo, canais, hz=1.0,
-                acima=request.args.get('acima', type=float) or 95.0,
-                corte_outlier=request.args.get('outlier', type=float) or 3.0,
-                fc=request.args.get('fc', type=float) or 0.02,
-                normalizar=request.args.get('normalizar'))
+                acima=args.get('acima', type=float) or 95.0,
+                corte_outlier=args.get('outlier', type=float) or 3.0,
+                fc=args.get('fc', type=float) or 0.02,
+                normalizar=args.get('normalizar'))
 
             # todos os outros canais que a sessao tenha: entram sem
             # filtragem NIRS, so' reamostrados, para se poder ver o SmO2
@@ -257,7 +256,7 @@ def registar(app):
             DA_CINTA = {'heartrate', 'dfa_a1', 'respiration'}
             art_k = _achar(['artifacts', 'artifact'])
             artefactos = streams.get(art_k) if art_k else None
-            art_max = request.args.get('artefacto_max', type=float) or 5.0
+            art_max = args.get('artefacto_max', type=float) or 5.0
             n_art = 0
 
             for alvo, nomes in extras.items():
@@ -275,7 +274,7 @@ def registar(app):
                 if alvo in DA_CINTA:
                     v2, d_rep = mn.replace(
                         v2, invalidos=(0,),
-                        corte_outlier=request.args.get('outlier', type=float) or 3.0,
+                        corte_outlier=args.get('outlier', type=float) or 3.0,
                         largura=15)
                     v2 = mn.media_movel(v2, 15)
                     res['diagnostico'][alvo] = {
@@ -309,15 +308,30 @@ def registar(app):
                              '(FC, DFA-a1, respiracao). O SmO2 e o THb vem '
                              'do Moxy e nao sao afectados')}
 
-            # blocos ON/OFF e proposta de corte
-            wt = res['canais'].get('watts')
-            if wt:
-                bl = mn.detectar_blocos(res['tempo'], wt, hz=1.0)
+            # Blocos: primeiro pelos LAPS, que sao a estrutura marcada pelo
+            # atleta e trazem o tipo WORK/RECOVERY. So' na falta deles se
+            # deduz da potencia -- deduzir e' sempre pior do que ler.
+            laps, err_l = api.icu_get(f'/activity/{aid}/intervals')
+            if isinstance(laps, dict):
+                laps = laps.get('icu_intervals') or laps.get('intervals') or []
+            bl = mn.blocos_de_laps(laps or [])
+            if bl.get('ok'):
                 res['blocos'] = bl
-                res['corte_proposto'] = mn.propor_corte(bl)
+                res['corte_proposto'] = mn.propor_corte_laps(bl)
             else:
-                res['blocos'] = {'ok': False, 'motivo': 'sem potencia'}
-                res['corte_proposto'] = {'ok': False, 'motivo': 'sem potencia'}
+                wt = res['canais'].get('watts')
+                if wt:
+                    bl = mn.detectar_blocos(res['tempo'], wt, hz=1.0)
+                    bl['fonte'] = 'potencia (sem laps)'
+                    res['blocos'] = bl
+                    res['corte_proposto'] = mn.propor_corte(bl)
+                else:
+                    res['blocos'] = {'ok': False,
+                                     'motivo': 'sem laps nem potencia'}
+                    res['corte_proposto'] = {'ok': False,
+                                             'motivo': 'sem laps nem potencia'}
+            if err_l:
+                res['erro_laps'] = err_l
 
             # corte gravado pelo utilizador tem prioridade
             try:
@@ -343,10 +357,19 @@ def registar(app):
             res['canais_contexto'] = sorted(
                 k for k in res['canais'] if k not in canais)
             res['streams_na_actividade'] = sorted(streams)
-            return jsonify(res)
+            return (res)
         except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
+            return ({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()})
+
+
+    @app.route('/api/moxy/dados/<path:activity_id>')
+    def api_moxy_dados(activity_id):
+        """Streams NIRS limpos de uma sessao.
+
+        ?fc=0.02  ?outlier=3  ?acima=95  ?normalizar=deslocar|reescalar
+        """
+        return jsonify(_dados_sessao(activity_id, request.args))
 
     @app.route('/api/moxy/actualizar')
     def api_moxy_actualizar():
@@ -468,6 +491,107 @@ def registar(app):
                 'sao regravadas, para apanhar as que mudaram de conteudo sem '
                 'mudar de id')
             return jsonify(resumo)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/comparar')
+    def api_moxy_comparar():
+        """Compara varias sessoes, alinhadas pela potencia de cada degrau.
+
+        ?ids=i1,i2,i3   ?tolerancia=15   ?aparar=30
+        Alem dos parametros de /api/moxy/dados.
+
+        Os canais vem sufixados com o indice da sessao -- smo2_1, smo2_2 --
+        e os degraus vem emparelhados por potencia, nao por tempo: assim
+        nao e preciso sincronizar sessoes com aquecimentos diferentes.
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import mnirs as mn
+
+            ids = [x.strip() for x in (request.args.get('ids') or '').split(',')
+                   if x.strip()]
+            if not ids:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'passa ?ids=i1,i2'}), 400
+            if len(ids) > 4:
+                ids = ids[:4]
+
+            sessoes, canais_comb, degraus_por_sessao = [], {}, []
+            for n, aid in enumerate(ids, start=1):
+                d = _dados_sessao(aid, request.args)
+                if d.get('status') != 'ok':
+                    sessoes.append({'indice': n, 'id': aid,
+                                    'status': d.get('status'),
+                                    'mensagem': d.get('mensagem')})
+                    degraus_por_sessao.append([])
+                    continue
+
+                # corte guardado ou proposto: comparar aquecimentos nao
+                # tem sentido nenhum
+                corte = d.get('corte_guardado') or (
+                    d.get('corte_proposto') if (d.get('corte_proposto') or {})
+                    .get('ok') else None)
+                t = d.get('tempo') or []
+                i0, i1 = 0, len(t) - 1
+                if corte and t:
+                    for i, x in enumerate(t):
+                        if x >= corte['inicio_s']:
+                            i0 = i
+                            break
+                    for i in range(len(t) - 1, -1, -1):
+                        if t[i] <= corte['fim_s']:
+                            i1 = i
+                            break
+
+                canais_cortados = {k: v[i0:i1 + 1]
+                                   for k, v in (d.get('canais') or {}).items()}
+                tempo_cortado = t[i0:i1 + 1]
+                for k, v in canais_cortados.items():
+                    canais_comb[f'{k}_{n}'] = v
+
+                bl = mn.detectar_blocos(tempo_cortado,
+                                        canais_cortados.get('watts') or [],
+                                        hz=1.0)
+                dg = mn.resumir_degraus(
+                    tempo_cortado, canais_cortados, bl,
+                    aparar=request.args.get('aparar', type=int) or 30)
+                degraus_por_sessao.append(dg)
+
+                sessoes.append({
+                    'indice': n, 'id': aid, 'status': 'ok',
+                    'tempo': tempo_cortado,
+                    'canais_nirs': d.get('canais_nirs'),
+                    'canais_contexto': d.get('canais_contexto'),
+                    'corte_usado': corte,
+                    'origem_do_corte': ('guardado' if d.get('corte_guardado')
+                                        else 'proposto' if corte else 'nenhum'),
+                    'n_degraus': len(dg),
+                    'degraus': dg,
+                    'diagnostico': d.get('diagnostico'),
+                    'artefactos': d.get('artefactos')})
+
+            pares = mn.emparelhar_degraus(
+                degraus_por_sessao,
+                tolerancia=request.args.get('tolerancia', type=float) or 15.0)
+
+            return jsonify({
+                'status': 'ok', 'n_sessoes': len(ids), 'ids': ids,
+                'sessoes': sessoes,
+                'canais': canais_comb,
+                'degraus_emparelhados': pares,
+                'n_degraus_comuns': sum(1 for p in pares
+                                        if p['n_sessoes'] == len(ids)),
+                'nota': ('degraus emparelhados por potencia, com tolerancia. '
+                         'Alinhar por tempo exigiria sincronizar sessoes com '
+                         'aquecimentos diferentes; por potencia, o degrau de '
+                         '200 W compara-se com o de 200 W seja quando for. '
+                         'Cada sessao entra ja cortada pelo intervalo '
+                         'guardado ou proposto')})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

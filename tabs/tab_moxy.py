@@ -24,9 +24,7 @@ BODY = """
         <option>Ski</option><option>Run</option>
       </select>
     </label>
-    <label class="sel">Sessão
-      <select id="mxSessao" onchange="mxCarregar()" style="min-width:260px"></select>
-    </label>
+    <span id="mxModoTxt" style="color:#8b949e;font-size:12px;"></span>
     <label class="sel">Normalizar
       <select id="mxNorm" onchange="mxCarregar()">
         <option value="">valores brutos</option>
@@ -44,10 +42,22 @@ BODY = """
     <span id="mxEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
 
+
   <div class="controls" style="margin-bottom:4px;flex-wrap:wrap;gap:2px 10px;">
     <span style="color:#8b949e;font-size:12px;">Métricas:</span>
     <span id="mxCanais" style="display:flex;flex-wrap:wrap;gap:2px 10px;
       align-items:center;"></span>
+  </div>
+
+  <div class="controls" style="margin-bottom:4px;">
+    <label class="sel">Eixo X
+      <select id="mxEixo" onchange="mxDraw()">
+        <option value="degrau">watts do degrau (alinha sozinho)</option>
+        <option value="tempo">tempo</option>
+      </select>
+    </label>
+    <span style="color:#8b949e;font-size:11px;">
+      Com watts no eixo, degraus iguais alinham-se sem sincronizar nada.</span>
   </div>
 
   <div class="chartbox" style="position:relative;">
@@ -55,6 +65,12 @@ BODY = """
     <div id="mxTip" style="display:none;position:absolute;pointer-events:none;
       background:#161b22;border:1px solid #30363d;border-radius:6px;
       padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+  </div>
+
+  <div class="controls" id="mxOffsetsWrap" style="margin-top:4px;flex-wrap:wrap;gap:4px 12px;">
+    <span style="color:#8b949e;font-size:12px;">Ajuste fino:</span>
+    <span id="mxOffsets" style="display:flex;flex-wrap:wrap;gap:4px 12px;
+      align-items:center;"></span>
   </div>
 
   <div class="controls" style="margin-top:6px;flex-wrap:wrap;gap:6px 12px;">
@@ -100,7 +116,13 @@ BODY = """
     </div>
   </details>
 
-  <div id="mxLista" style="overflow-x:auto;margin-top:14px;"></div>
+  <h2 style="font-size:15px;margin-top:16px;">Sessões</h2>
+  <p style="color:#8b949e;font-size:11px;margin:0 0 6px 0;">
+    Escolhe uma para analisar, ou várias para comparar. Em comparação os
+    canais ganham sufixo — <code>smo2_1</code>, <code>smo2_2</code> — e o
+    alinhamento é feito pelos blocos de trabalho detectados, não pelo relógio.</p>
+  <div id="mxLista" style="overflow-x:auto;"></div>
+  <div id="mxBlocos" style="overflow-x:auto;margin-top:10px;"></div>
 
 </div>
 """
@@ -160,61 +182,66 @@ function mxSessoes(){
  .then(r=>r.json()).then(function(d){
   if(d.status !== 'ok'){ est.textContent = d.mensagem || 'erro'; return; }
   MX_SESSOES = d.sessoes || [];
-  const sel = document.getElementById('mxSessao');
-  sel.innerHTML = MX_SESSOES.map(function(s, i){
-   return '<option value="'+s.id+'"'+(i===0?' selected':'')+'>'
-    + s.data + ' · ' + (s.modalidade||s.tipo) + ' · ' + (s.nome||'')
-    + (s.duracao_min ? ' ('+s.duracao_min+' min)' : '') + '</option>';
-  }).join('');
   est.textContent = MX_SESSOES.length + ' sessões com Moxy';
+  if(!MX_SEL.length && MX_SESSOES.length) MX_SEL=[String(MX_SESSOES[0].id)];
+  MX_SEL = MX_SEL.filter(id=>MX_SESSOES.some(x=>String(x.id)===id));
   mxLista();
-  if(MX_SESSOES.length) mxCarregar();
-  else { MX = null; mxDraw(); document.getElementById('mxDiag').innerHTML=''; }
+  if(MX_SEL.length) mxCarregar();
+  else { MX=null; MX_DADOS={}; mxDraw(); mxBlocosTabela();
+         document.getElementById('mxDiag').innerHTML=''; }
  }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
 }
 
-function mxCarregar(){
- const id = document.getElementById('mxSessao').value;
- if(!id) return;
- const est = document.getElementById('mxEstado');
- const q = '?fc=' + document.getElementById('mxFc').value
-   + (document.getElementById('mxNorm').value
-      ? '&normalizar=' + document.getElementById('mxNorm').value : '');
- est.textContent = 'a carregar streams...';
- fetch('/api/moxy/dados/' + id + q).then(r=>r.json()).then(function(d){
-  MX = d;
-  if(d.status === 'removida'){
-   est.textContent = 'sessão já não existe na Intervals.icu — removida da base';
-   document.getElementById('mxCorteNota').textContent = d.mensagem || '';
-   MX = null; mxDraw(); mxDiagnostico();
-   mxSessoes();
-   return;
-  }
-  if(d.status !== 'ok'){
-   est.textContent = d.mensagem || 'sem dados';
-   const det = d.detalhe_dos_streams;
-   document.getElementById('mxCorteNota').innerHTML =
-    (det
-     ? '<b>Streams nesta sessão:</b> '
-       + det.map(function(x){ return x.stream+' ('+x.n_pontos+')'; }).join(' · ')
-       + '<br>Se algum destes for o sensor — um dev field pode chegar sem nome '
-       + 'legível, tipo <code>dev_field_0_34</code> — diz qual e acrescento-o '
-       + 'à lista de nomes reconhecidos.'
-     : (d.streams_na_actividade
-        ? 'Streams: ' + d.streams_na_actividade.join(', ') : ''));
-   MX = null; mxDraw(); mxDiagnostico(); return;
-  }
-  const s = MX_SESSOES.find(function(x){ return String(x.id)===String(id); }) || {};
-  est.textContent = (s.data||'') + ' · ' + Object.keys(d.canais||{}).length
-   + ' canais · ' + (d.tempo||[]).length + ' pontos';
-  mxCanaisEdit(); mxCorteInicial(); mxDraw(); mxDiagnostico();
- }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
+
+
+
+function mxTabelaDegraus(){
+ const box=document.getElementById('mxDiag');
+ if(!MXC||!box) return;
+ const pares=MXC.degraus_emparelhados||[];
+ if(!pares.length) return;
+ const canal=(MX.canais_nirs||[]).find(k=>k.indexOf('smo2')===0)
+   ? 'smo2' : (MX.canais_nirs[0]||'').split('_')[0];
+ let h='<h3 style="font-size:13px;color:#8b949e;margin:12px 0 4px 0;">'
+  +'Degraus emparelhados por potência</h3>'
+  +'<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:14px;">Watts</th>'
+  + MXC.sessoes.map(function(s){
+     return '<th style="padding-right:14px;">#'+s.indice+' '+canal+'</th>'; }).join('')
+  +'<th>Δ</th></tr>';
+ pares.forEach(function(p){
+  const vs=MXC.sessoes.map(function(s){
+   const d=p.por_sessao[String(s.indice-1)];
+   return d ? d[canal] : null; });
+  const validos=vs.filter(v=>v!=null);
+  const delta=validos.length>1
+   ? Math.round((validos[validos.length-1]-validos[0])*10)/10 : null;
+  h+='<tr><td style="padding-right:14px;">'+p.watts_centro+' W'
+   +(p.watts_min!==p.watts_max
+     ? ' <span style="color:#6e7681;">('+p.watts_min+'–'+p.watts_max+')</span>'
+     : '')+'</td>'
+   + vs.map(function(v){ return '<td style="padding-right:14px;">'
+       +(v!=null?v:'—')+'</td>'; }).join('')
+   +'<td style="color:'+(delta==null?'#8b949e':delta>0?'#3FB950':'#F85149')+';">'
+   +(delta==null?'—':(delta>0?'+':'')+delta)+'</td></tr>';
+ });
+ h+='</table><p style="color:#8b949e;font-size:11px;">Média de cada degrau, '
+  +'descartando os primeiros 30 s: o SmO2 leva tempo a responder a uma '
+  +'mudança de carga, e incluir a transição mistura o degrau novo com o '
+  +'anterior. Δ = última sessão menos a primeira.</p>';
+ box.innerHTML = h + box.innerHTML;
 }
+
+// MX_SEL: ids escolhidos. MX_DADOS: {id: resposta}. MX_OFF: desvio manual
+// em segundos por id. Com uma sessao so', tudo funciona como antes.
+let MX_SEL = [], MX_DADOS = {}, MX_OFF = {};
 
 function mxCanaisEdit(){
  const box=document.getElementById('mxCanais');
- if(!box||!MX) return;
- const nirs=MX.canais_nirs||[], ctx2=MX.canais_contexto||[];
+ const ids=Object.keys(MX_DADOS);
+ if(!box||!ids.length) return;
+ const base=MX_DADOS[ids[0]];
+ const nirs=base.canais_nirs||[], ctx2=base.canais_contexto||[];
  const todos=nirs.concat(ctx2);
  if(!Object.keys(MX_ON).length)
   nirs.forEach(function(k){ MX_ON[k]=true; });
@@ -224,14 +251,136 @@ function mxCanaisEdit(){
   return '<label class="sel" style="white-space:nowrap;color:'
    + (MX_CORES[k]||'#c9d1d9') + ';">'
    + '<input type="checkbox" class="mxC" value="'+k+'"'+(on?' checked':'')
-   + ' onchange="mxAlternar(this)"> ' + k + (nirsQ?'':' *') + '</label>';
+   + '> ' + k + (nirsQ?'':' *') + '</label>';
  }).join('') + '<span style="color:#8b949e;font-size:10px;white-space:nowrap;">'
-  + '* de contexto</span>';
+  + '* de contexto, não filtrado</span>';
+ Array.prototype.forEach.call(box.querySelectorAll('.mxC'), function(el){
+  el.addEventListener('change', function(){
+   MX_ON[el.value]=el.checked; mxDraw();
+  });
+ });
 }
 
-function mxAlternar(el){
- MX_ON[el.value] = el.checked;
- mxDraw();
+function mxAlternarSessao(id, on){
+ id = String(id);
+ if(on){ if(MX_SEL.indexOf(id)<0) MX_SEL.push(id); }
+ else { MX_SEL = MX_SEL.filter(x=>x!==id); delete MX_DADOS[id]; delete MX_OFF[id]; }
+ mxCarregar();
+}
+
+function mxCarregar(){
+ if(!MX_SEL.length){
+  MX=null; MX_DADOS={}; mxDraw(); mxDiagnostico(); mxBlocosTabela();
+  document.getElementById('mxEstado').textContent='escolhe uma sessão';
+  return;
+ }
+ const est=document.getElementById('mxEstado');
+ const q = '?fc=' + document.getElementById('mxFc').value
+   + (document.getElementById('mxNorm').value
+      ? '&normalizar=' + document.getElementById('mxNorm').value : '');
+ est.textContent='a carregar ' + MX_SEL.length + ' sessão(ões)...';
+ Promise.all(MX_SEL.map(function(id){
+  return fetch('/api/moxy/dados/'+id+q).then(r=>r.json())
+   .then(function(d){ return {id:id, d:d}; })
+   .catch(function(e){ return {id:id, d:{status:'erro',mensagem:e.message}}; });
+ })).then(function(res){
+  MX_DADOS={}; let maus=[];
+  res.forEach(function(r){
+   if(r.d && r.d.status==='ok'){ MX_DADOS[r.id]=r.d; }
+   else maus.push(r.id+': '+(r.d.mensagem||'erro'));
+  });
+  const ids=Object.keys(MX_DADOS);
+  MX = ids.length===1 ? MX_DADOS[ids[0]] : null;
+  if(ids.length===1) mxCorteInicial();
+  est.textContent = ids.length + (ids.length===1?' sessão':' sessões a comparar')
+   + (maus.length ? ' · ' + maus.length + ' com problema' : '');
+  if(maus.length)
+   document.getElementById('mxCorteNota').textContent = maus.join(' | ');
+  mxCanaisEdit(); mxAlinhar();
+ });
+}
+
+// ── alinhamento ─────────────────────────────────────────────────────────
+// O relogio de cada sessao nao serve: uma tem 12 min de aquecimento e outra
+// nao. Alinha-se pelo protocolo. Por omissao, pelo inicio do primeiro bloco
+// de trabalho dentro do corte -- e' o instante que existe em todas e que
+// significa o mesmo em todas.
+function mxRefAlinhamento(id){
+ const d=MX_DADOS[id]; if(!d) return 0;
+ const modo=document.getElementById('mxAlinha').value;
+ const corte=mxCorteDe(id);
+ if(modo==='inicio') return corte[0];
+ const bl=((d.blocos||{}).blocos)||[];
+ const ons=bl.filter(b=>b.on && b.t1>=corte[0] && b.t0<=corte[1]);
+ if(!ons.length) return corte[0];
+ if(modo==='watts'){
+  // degrau equivalente: o primeiro ON cuja potencia media mais se aproxima
+  // da do primeiro ON da sessao de referencia. No Row e no Ski os watts
+  // variam de sessao para sessao, por isso isto e' opcao e nao omissao.
+  const ref=Object.keys(MX_DADOS)[0];
+  if(id===ref) return ons[0].t0;
+  const dr=MX_DADOS[ref];
+  const cr=mxCorteDe(ref);
+  const onsRef=(((dr.blocos||{}).blocos)||[])
+    .filter(b=>b.on && b.t1>=cr[0] && b.t0<=cr[1]);
+  if(!onsRef.length) return ons[0].t0;
+  const alvo=onsRef[0].watts_medio;
+  let melhor=ons[0], dmin=1e18;
+  ons.forEach(function(b){
+   const dd=Math.abs((b.watts_medio||0)-(alvo||0));
+   if(dd<dmin){ dmin=dd; melhor=b; }
+  });
+  return melhor.t0;
+ }
+ return ons[0].t0;
+}
+
+function mxCorteDe(id){
+ const d=MX_DADOS[id]; if(!d) return [0,0];
+ const t=d.tempo||[];
+ if(!t.length) return [0,0];
+ if(MX_SEL.length===1 && MX_CORTE) return MX_CORTE;
+ const g=d.corte_guardado, p=d.corte_proposto;
+ if(g && g.inicio_s!=null) return [g.inicio_s, g.fim_s];
+ if(p && p.ok) return [p.inicio_s, p.fim_s];
+ return [t[0], t[t.length-1]];
+}
+
+function mxAlinhar(){
+ mxOffsetsUI(); mxDraw(); mxDiagnostico(); mxBlocosTabela();
+}
+
+function mxOffsetsUI(){
+ const box=document.getElementById('mxOffsets');
+ if(!box) return;
+ const ids=Object.keys(MX_DADOS);
+ if(ids.length<2){ box.innerHTML=''; return; }
+ box.innerHTML = ids.map(function(id,i){
+  const s=MX_SESSOES.find(x=>String(x.id)===id)||{};
+  const off=MX_OFF[id]||0;
+  return '<label class="sel" style="white-space:nowrap;">'
+   + '<span style="color:'+mxCorSessao(i)+';">'+(i+1)+'· '+(s.data||id)+'</span> '
+   + '<input type="range" class="mxOff" data-id="'+id+'" data-i="'+i+'" '
+   + 'min="-300" max="300" step="1" value="'+off+'" style="width:130px"> '
+   + '<span id="mxOffTxt'+i+'">'+(off>0?'+':'')+off+'s</span></label>';
+ }).join('');
+ Array.prototype.forEach.call(box.querySelectorAll('.mxOff'), function(el){
+  el.addEventListener('input', function(){
+   mxOffset(el.getAttribute('data-id'), el.value);
+  });
+ });
+}
+
+function mxOffset(id, v){
+ MX_OFF[id]=parseFloat(v);
+ mxDraw(); mxBlocosTabela();
+ const i=Object.keys(MX_DADOS).indexOf(String(id));
+ const el=document.getElementById('mxOffTxt'+i);
+ if(el) el.textContent=(v>0?'+':'')+v+'s';
+}
+
+function mxCorSessao(i){
+ return ['#F85149','#58A6FF','#3FB950','#E3B341','#A371F7','#F0883E'][i%6];
 }
 
 function mxCorteInicial(){
@@ -329,111 +478,144 @@ function mxJanela(){
 }
 
 function mxDraw(){
- const o = ctx('chMoxy', 360); if(!o) return;
+ const o = ctx('chMoxy', 380); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
- if(!MX || !MX.canais){ noData(g,W,H,'Sem dados'); return; }
- const todos = MX.tempo || [];
- const jan = mxJanela();
- const t = todos.slice(jan[0], jan[1]+1);
- const activos = Object.keys(MX.canais).filter(k=>MX_ON[k]===true);
- if(!t.length || !activos.length){
-  noData(g,W,H,'Escolhe pelo menos uma métrica'); return; }
- const rec = k => (MX.canais[k]||[]).slice(jan[0], jan[1]+1);
+ const ids=Object.keys(MX_DADOS);
+ if(!ids.length){ noData(g,W,H,'Escolhe uma sessão na lista'); return; }
+ const activos=Object.keys(MX_ON).filter(k=>MX_ON[k]===true);
+ if(!activos.length){ noData(g,W,H,'Escolhe pelo menos uma métrica'); return; }
 
- const PL=54,PR=118,PT=18,PB=40,w=W-PL-PR,h=H-PT-PB;
- const t0=t[0], t1=t[t.length-1];
- const X=v=>PL+(v-t0)/((t1-t0)||1)*w;
- MX_ESC={X:X,PL:PL,PT:PT,w:w,h:h,t0:t0,t1:t1};
+ // series alinhadas: tempo relativo ao ponto de referencia de cada sessao
+ const series=[];
+ ids.forEach(function(id, si){
+  const d=MX_DADOS[id]; const t=d.tempo||[];
+  const corte=mxCorteDe(id);
+  const ref=mxRefAlinhamento(id)+(MX_OFF[id]||0);
+  activos.forEach(function(k){
+   const v=d.canais[k]; if(!v) return;
+   const pts=[];
+   for(let n=0;n<t.length;n++){
+    if(t[n]<corte[0]||t[n]>corte[1]) continue;
+    if(v[n]==null) continue;
+    pts.push([t[n]-ref, v[n]]);
+   }
+   if(pts.length) series.push({
+    id:id, canal:k, si:si, pts:pts,
+    nirs:(d.canais_nirs||[]).indexOf(k)>=0,
+    rotulo: ids.length>1 ? k+'_'+(si+1) : k});
+  });
+ });
+ if(!series.length){ noData(g,W,H,'Sem dados no intervalo'); return; }
 
- // A potencia fica SEMPRE em fundo, mesmo sem estar seleccionada: sem ela
- // nao se sabe a que intensidade o SmO2 desceu, e isso e' metade da
- // leitura. Ocupa a metade de baixo e nao entra na escala dos outros.
- const wt = rec('watts');
- if(wt){
-  const vs = wt.filter(v=>v!=null);
-  const wmax = vs.length ? Math.max.apply(null, vs) : 0;
-  if(wmax>0){
-   g.fillStyle='rgba(139,148,158,0.13)';
-   g.beginPath(); g.moveTo(PL, PT+h);
-   wt.forEach(function(v,i){ if(v==null) return;
-    g.lineTo(X(t[i]), PT+h-(v/wmax)*h*0.45); });
-   g.lineTo(PL+w, PT+h); g.closePath(); g.fill();
-   g.fillStyle='#6e7681'; g.font='10px sans-serif'; g.textAlign='left';
-   g.fillText('watts (0–'+Math.round(wmax)+')', PL+4, PT+h-4);
-  }
+ let ta=1e18, tb=-1e18;
+ series.forEach(function(s2){
+  if(s2.pts[0][0]<ta) ta=s2.pts[0][0];
+  if(s2.pts[s2.pts.length-1][0]>tb) tb=s2.pts[s2.pts.length-1][0];
+ });
+
+ const PL=54,PR=128,PT=18,PB=40,w=W-PL-PR,h=H-PT-PB;
+ const X=v=>PL+(v-ta)/((tb-ta)||1)*w;
+ MX_ESC={X:X,PL:PL,PT:PT,w:w,h:h,t0:ta,t1:tb};
+
+ // potencia em fundo, da primeira sessao
+ const wser=series.find(s2=>s2.canal==='watts' && s2.si===0)
+   || (function(){
+    const d=MX_DADOS[ids[0]], t=d.tempo||[], v=d.canais.watts;
+    if(!v) return null;
+    const corte=mxCorteDe(ids[0]), ref=mxRefAlinhamento(ids[0])+(MX_OFF[ids[0]]||0);
+    const pts=[];
+    for(let n=0;n<t.length;n++){
+     if(t[n]<corte[0]||t[n]>corte[1]||v[n]==null) continue;
+     pts.push([t[n]-ref, v[n]]);
+    }
+    return pts.length?{pts:pts}:null;
+   })();
+ if(wser){
+  const wmax=Math.max.apply(null, wser.pts.map(p=>p[1]))||1;
+  g.fillStyle='rgba(139,148,158,0.13)';
+  g.beginPath(); g.moveTo(X(ta), PT+h);
+  wser.pts.forEach(p=>g.lineTo(X(p[0]), PT+h-(p[1]/wmax)*h*0.45));
+  g.lineTo(X(tb), PT+h); g.closePath(); g.fill();
+  g.fillStyle='#6e7681'; g.font='10px sans-serif'; g.textAlign='left';
+  g.fillText('watts sessão 1 (0–'+Math.round(wmax)+')', PL+4, PT+h-4);
  }
 
- // escala partilhada pelos canais NIRS, para preservarem a relacao entre
- // si; os de contexto normalizam-se individualmente
- const nirs = activos.filter(k=>(MX.canais_nirs||[]).indexOf(k)>=0);
- const outros = activos.filter(k=>nirs.indexOf(k)<0 && k!=='watts');
- let lo=1e9, hi=-1e9;
- nirs.forEach(function(k){ rec(k).forEach(function(v){
-  if(v==null) return; if(v<lo)lo=v; if(v>hi)hi=v; }); });
+ // escala partilhada pelos NIRS; contexto normaliza-se por canal
+ const nirs=series.filter(s2=>s2.nirs);
+ let lo=1e18, hi=-1e18;
+ nirs.forEach(s2=>s2.pts.forEach(function(p){
+  if(p[1]<lo)lo=p[1]; if(p[1]>hi)hi=p[1]; }));
  if(lo>hi){ lo=0; hi=100; }
  const pad=(hi-lo)*0.08||1; lo-=pad; hi+=pad;
  const Y=v=>PT+h-(v-lo)/((hi-lo)||1)*h;
 
  g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
- for(let i=0;i<=4;i++){
-  const v=lo+(hi-lo)*i/4, y=Y(v);
+ for(let n=0;n<=4;n++){
+  const v=lo+(hi-lo)*n/4, y=Y(v);
   g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
   g.textAlign='right'; g.fillText(Math.round(v), PL-6, y+4);
  }
- g.textAlign='center';
- for(let i=0;i<=5;i++){
-  const tv=t0+(t1-t0)*i/5;
-  g.fillText(Math.floor(tv/60)+' min', X(tv), PT+h+18);
+ // marca do zero: o ponto de alinhamento
+ if(ta<0 && tb>0){
+  g.strokeStyle='#8b949e'; g.setLineDash([4,4]);
+  g.beginPath(); g.moveTo(X(0),PT); g.lineTo(X(0),PT+h); g.stroke();
+  g.setLineDash([]);
+  g.fillStyle='#8b949e'; g.textAlign='center'; g.font='9px sans-serif';
+  g.fillText('alinhamento', X(0), PT+10);
+  g.font='11px sans-serif';
+ }
+ g.textAlign='center'; g.fillStyle='#8b949e';
+ for(let n=0;n<=5;n++){
+  const tv=ta+(tb-ta)*n/5;
+  const m=Math.floor(Math.abs(tv)/60);
+  g.fillText((tv<0?'-':'')+m+' min', X(tv), PT+h+18);
  }
 
- nirs.forEach(function(k){
-  g.strokeStyle=MX_CORES[k]||'#c9d1d9'; g.lineWidth=2; g.beginPath();
-  let primeiro=true;
-  rec(k).forEach(function(v,i){
-   if(v==null) return;
-   const x=X(t[i]), y=Y(v);
-   primeiro ? (g.moveTo(x,y), primeiro=false) : g.lineTo(x,y);
-  });
-  g.stroke(); g.lineWidth=1;
+ // NIRS na escala comum; contexto na sua
+ nirs.forEach(function(s2){
+  g.strokeStyle=ids.length>1 ? mxCorSessao(s2.si) : (MX_CORES[s2.canal]||'#c9d1d9');
+  g.lineWidth = ids.length>1 ? (s2.canal==='smo2'?2.2:1.4) : 2;
+  g.setLineDash(mxTraco(s2.canal, ids.length));
+  g.beginPath();
+  s2.pts.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y(p[1]))
+                                 :g.moveTo(X(p[0]),Y(p[1])); });
+  g.stroke(); g.setLineDash([]); g.lineWidth=1;
  });
-
- const esc={};
- outros.forEach(function(k){
-  const vs=rec(k).filter(v=>v!=null);
-  if(!vs.length) return;
+ const outros=series.filter(s2=>!s2.nirs && s2.canal!=='watts');
+ outros.forEach(function(s2){
+  const vs=s2.pts.map(p=>p[1]);
   let a=Math.min.apply(null,vs), b=Math.max.apply(null,vs);
   if(b===a) b=a+1;
-  esc[k]={lo:a,hi:b};
   const Y2=v=>PT+h-(v-a)/((b-a)||1)*h;
-  g.strokeStyle=MX_CORES[k]||'#c9d1d9'; g.lineWidth=1; g.globalAlpha=0.6;
+  g.strokeStyle=ids.length>1 ? mxCorSessao(s2.si) : (MX_CORES[s2.canal]||'#c9d1d9');
+  g.globalAlpha=0.55; g.lineWidth=1;
+  g.setLineDash(mxTraco(s2.canal, ids.length));
   g.beginPath();
-  let primeiro=true;
-  rec(k).forEach(function(v,i){
-   if(v==null) return;
-   const x=X(t[i]), y=Y2(v);
-   primeiro ? (g.moveTo(x,y), primeiro=false) : g.lineTo(x,y);
-  });
-  g.stroke(); g.globalAlpha=1;
+  s2.pts.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y2(p[1]))
+                                 :g.moveTo(X(p[0]),Y2(p[1])); });
+  g.stroke(); g.setLineDash([]); g.globalAlpha=1;
  });
 
  g.textAlign='left'; g.font='10px sans-serif';
- let li=0;
- nirs.forEach(function(k){
-  g.fillStyle=MX_CORES[k]||'#c9d1d9';
-  g.fillText('\u2500 '+k, PL+w+6, PT+12+(li++)*13);
+ series.forEach(function(s2,n){
+  g.fillStyle=ids.length>1 ? mxCorSessao(s2.si) : (MX_CORES[s2.canal]||'#c9d1d9');
+  g.fillText('\u2500 '+s2.rotulo, PL+w+6, PT+12+n*12);
  });
- outros.forEach(function(k){
-  const e=esc[k];
-  g.fillStyle=MX_CORES[k]||'#c9d1d9';
-  g.fillText('\u2500 '+k+(e?' ('+Math.round(e.lo)+'–'+Math.round(e.hi)+')':''),
-             PL+w+6, PT+12+(li++)*13);
- });
- if(outros.length){
+ if(ids.length>1){
   g.fillStyle='#6e7681';
-  g.fillText('contexto: escala própria', PL+w+6, PT+12+li*13+6);
+  g.fillText('cor = sessão · traço = canal', PL+w+6, PT+12+series.length*12+8);
  }
  g.font='11px sans-serif';
  mxLigarTip();
+}
+
+// Traco por canal quando ha varias sessoes: a cor passa a identificar a
+// sessao, portanto o canal precisa de outra dimensao visual.
+function mxTraco(canal, nSessoes){
+ if(nSessoes<2) return [];
+ return {smo2:[], thb:[6,3], o2hb:[2,2], hhb:[8,3,2,3],
+         heartrate:[4,2], respiration:[1,3], dfa_a1:[10,4],
+         cadence:[3,3], torque:[5,5], velocity_smooth:[7,2]}[canal] || [];
 }
 
 function mxLigarTip(){
@@ -469,6 +651,27 @@ function mxLigarTip(){
 function mxDiagnostico(){
  const box=document.getElementById('mxDiag');
  if(!box) return;
+ const ids=Object.keys(MX_DADOS);
+ if(ids.length>1){
+  // com varias sessoes, mostrar so' o essencial de cada uma
+  let hh='<table style="border-collapse:collapse;font-size:11px;">'
+   +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:14px;">Sessão</th>'
+   +'<th style="padding-right:14px;">Canais</th><th style="padding-right:14px;">Artefacto</th>'
+   +'<th>Corte</th></tr>';
+  ids.forEach(function(id,si){
+   const dd=MX_DADOS[id], s2=MX_SESSOES.find(x=>String(x.id)===id)||{};
+   const ar=dd.artefactos||{}, c=mxCorteDe(id);
+   hh+='<tr><td style="padding-right:14px;color:'+mxCorSessao(si)+';">'
+    +(si+1)+'· '+(s2.data||id)+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'
+    +(dd.canais_nirs||[]).join(', ')+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'
+    +(ar.pct_acima_do_limiar!=null?ar.pct_acima_do_limiar+'%':'—')+'</td>'
+    +'<td style="color:#8b949e;">'+Math.round((c[1]-c[0])/60)+' min</td></tr>';
+  });
+  box.innerHTML=hh+'</table>';
+  return;
+ }
  const d=(MX&&MX.diagnostico)||{};
  const ks=Object.keys(d);
  if(!ks.length){ box.innerHTML=''; return; }
@@ -519,26 +722,87 @@ function mxLista(){
  }
  let h='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
-  +'<th style="padding:6px;">Data</th><th>Modalidade</th><th>Sessão</th>'
-  +'<th>Duração</th><th>SmO2 médio</th><th>Tags</th></tr>';
- MX_SESSOES.forEach(function(s){
-  h+='<tr style="border-bottom:1px solid #161b22;">'
-   +'<td style="padding:6px;"><a href="#" style="color:#58A6FF;" '
-   +'onclick="mxEscolher(\\''+s.id+'\\');return false;">'+s.data+'</a></td>'
-   +'<td style="color:#8b949e;">'+(s.modalidade||s.tipo||'—')+'</td>'
-   +'<td style="color:#8b949e;">'+(s.nome||'—')+'</td>'
-   +'<td style="color:#8b949e;">'+(s.duracao_min?s.duracao_min+' min':'—')+'</td>'
-   +'<td>'+(s.smo2_no_sumario!=null?Math.round(s.smo2_no_sumario):'—')+'</td>'
-   +'<td style="color:#8b949e;">'+((s.tags||[]).join(', ')||'—')+'</td>'
-   +'</tr>';
+  +'<th style="padding:6px;width:30px;"></th><th>Data</th><th>Modalidade</th>'
+  +'<th>Sessão</th><th>Duração</th><th>SmO2 médio</th><th>Tags</th></tr>';
+ MX_SESSOES.forEach(function(s2){
+  const on=MX_SEL.indexOf(String(s2.id))>=0;
+  const i2=MX_SEL.indexOf(String(s2.id));
+  h+='<tr style="border-bottom:1px solid #161b22;'
+   +(on?'background:rgba(88,166,255,0.06);':'')+'">'
+   +'<td style="padding:6px;"><input type="checkbox" class="mxSel" '
+   +'data-id="'+s2.id+'"'+(on?' checked':'')+'></td>'
+   +'<td'+(on?' style="color:'+mxCorSessao(i2)+';font-weight:600;"':'')+'>'
+   +s2.data+(on?' <span style="font-size:10px;">('+(i2+1)+')</span>':'')+'</td>'
+   +'<td style="color:#8b949e;">'+(s2.modalidade||s2.tipo||'—')+'</td>'
+   +'<td style="color:#8b949e;">'+(s2.nome||'—')+'</td>'
+   +'<td style="color:#8b949e;">'+(s2.duracao_min?s2.duracao_min+' min':'—')+'</td>'
+   +'<td>'+(s2.smo2_no_sumario!=null?Math.round(s2.smo2_no_sumario):'—')+'</td>'
+   +'<td style="color:#8b949e;">'+((s2.tags||[]).join(', ')||'—')+'</td></tr>';
  });
  h+='</table>';
+ box.innerHTML=h;
+ // handlers ligados em JS: aspas dentro de atributos HTML ja' partiram
+ // este ficheiro uma vez, e voltam a partir a proxima alteracao
+ Array.prototype.forEach.call(box.querySelectorAll('.mxSel'), function(el){
+  el.addEventListener('change', function(){
+   mxAlternarSessao(el.getAttribute('data-id'), el.checked);
+  });
+ });
+}
+
+// Tabela dos blocos de trabalho de cada sessao seleccionada. Existe para o
+// alinhamento ser verificavel: se duas sessoes foram emparelhadas pelo
+// primeiro bloco mas os degraus nao correspondem, ve-se aqui e corrige-se
+// no ajuste fino, em vez de se descobrir a olho no grafico.
+function mxBlocosTabela(){
+ const box=document.getElementById('mxBlocos');
+ if(!box) return;
+ const ids=Object.keys(MX_DADOS);
+ if(!ids.length){ box.innerHTML=''; return; }
+ const cols=[];
+ ids.forEach(function(id,si){
+  const d=MX_DADOS[id];
+  const corte=mxCorteDe(id);
+  const ons=(((d.blocos||{}).blocos)||[])
+    .filter(b=>b.on && b.t1>=corte[0] && b.t0<=corte[1]);
+  const s2=MX_SESSOES.find(x=>String(x.id)===id)||{};
+  cols.push({id:id, si:si, data:s2.data||id, ons:ons,
+             ref:mxRefAlinhamento(id)+(MX_OFF[id]||0)});
+ });
+ const maxN=Math.max.apply(null, cols.map(c=>c.ons.length));
+ if(!maxN){ box.innerHTML='<p style="color:#8b949e;font-size:11px;">Sem blocos '
+   +'de trabalho detectados no intervalo.</p>'; return; }
+ let h='<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:14px;">Degrau</th>'
+  +cols.map(function(c){ return '<th style="padding-right:14px;color:'
+    +mxCorSessao(c.si)+';">'+(c.si+1)+'· '+c.data+'</th>'; }).join('')
+  +'<th>Δ watts</th></tr>';
+ for(let k=0;k<maxN;k++){
+  const vals=cols.map(function(c){ return c.ons[k]; });
+  const ws=vals.filter(v=>v&&v.watts_medio!=null).map(v=>v.watts_medio);
+  const dif=ws.length>1 ? Math.round(Math.max.apply(null,ws)-Math.min.apply(null,ws)) : null;
+  const cor = dif==null ? '#8b949e' : dif<15 ? '#3FB950' : dif<40 ? '#F0883E' : '#F85149';
+  h+='<tr><td style="padding-right:14px;color:#8b949e;">'+(k+1)+'</td>'
+   +vals.map(function(v,n){
+     if(!v) return '<td style="padding-right:14px;color:#484f58;">—</td>';
+     const rel=Math.round(v.t0-cols[n].ref);
+     return '<td style="padding-right:14px;">'+Math.round(v.watts_medio)+' W'
+      +' <span style="color:#8b949e;">'+Math.round(v.duracao_s)+'s'
+      +' @'+(rel>=0?'+':'')+rel+'s</span></td>';
+    }).join('')
+   +'<td style="color:'+cor+';">'+(dif!=null?dif+' W':'—')+'</td></tr>';
+ }
+ h+='</table>';
+ if(ids.length>1) h+='<p style="color:#8b949e;font-size:11px;margin-top:4px;">'
+  +'@ é o instante do degrau relativo ao ponto de alinhamento. Se os degraus '
+  +'da mesma linha tiverem watts muito diferentes (Δ a vermelho), o '
+  +'emparelhamento está errado — corrige no ajuste fino ou muda o critério '
+  +'de alinhamento.</p>';
  box.innerHTML=h;
 }
 
 function mxEscolher(id){
- document.getElementById('mxSessao').value=id;
- mxCarregar();
+ mxAlternarSessao(id, MX_SEL.indexOf(String(id))<0);
 }
 
 mxSessoes();

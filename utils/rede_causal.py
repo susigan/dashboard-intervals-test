@@ -29,6 +29,46 @@ precedencia preditiva: se A ajuda a prever B, A precede B. Num sistema
 fisiologico com um controlador comum, isso e' uma pista, nao uma prova.
 """
 
+# Canais MECANICOS: sao a entrada do sistema, escolhida pelo atleta. Que os
+# watts causem alteracoes fisiologicas nao e' descoberta -- e' o protocolo.
+# Ficam de fora da rede como nos e entram so' como variavel de controlo.
+#
+# O que interessa e' o que se passa ENTRE as fisiologicas depois de a
+# entrada estar descontada.
+MECANICOS = ('watts', 'velocity_smooth', 'torque', 'cadence', 'distance',
+             'Speed', 'power')
+
+# A que sistema pertence cada canal. Serve para somar o F que sai de cada
+# sistema e ver qual esta a comandar a resposta.
+SISTEMAS = {
+    'smo2': 'periferico', 'thb': 'periferico',
+    'o2hb': 'periferico', 'hhb': 'periferico',
+    'heartrate': 'cardiaco',
+    'respiration': 'respiratorio',
+    'dfa_a1': 'autonomico',
+}
+
+# Canais MECANICOS: sao decisao do atleta ou consequencia directa dela, nao
+# resposta fisiologica. Entram como CONTROLO -- todos, nao so' os watts --
+# e nunca como origem nem destino de uma aresta.
+#
+# A razao e' simples: "a potencia precede a subida da FC" nao e' um achado,
+# e' a definicao de treinar. O que interessa e o que acontece ENTRE as
+# respostas fisiologicas, depois de descontado o que a mecanica ja' explica.
+MECANICOS = ('watts', 'velocity_smooth', 'cadence', 'torque', 'speed',
+             'distance', 'altitude')
+
+# Canais FISIOLOGICOS, por sistema. Serve para classificar o limitador:
+# se as arestas partem sobretudo do sistema periferico, a limitacao esta na
+# extraccao muscular; se partem do central, no transporte.
+SISTEMAS = {
+    'smo2': 'periferico', 'thb': 'periferico',
+    'o2hb': 'periferico', 'hhb': 'periferico',
+    'heartrate': 'cardiaco',
+    'respiration': 'respiratorio',
+    'dfa_a1': 'autonomico',
+}
+
 MAX_LAG = 5
 
 # Quantas vezes o F de um sentido tem de superar o do inverso para se
@@ -211,11 +251,16 @@ def granger(x, y, max_lag=MAX_LAG, controlo=None):
     except ImportError:
         return {'ok': False, 'motivo': 'numpy indisponivel'}
 
-    n = min(len(x), len(y), len(controlo) if controlo else 10 ** 9)
+    # controlo pode ser uma serie ou varias
+    ctrls = []
+    if controlo is not None:
+        ctrls = controlo if isinstance(controlo, (list, tuple)) and \
+            controlo and isinstance(controlo[0], (list, tuple)) else [controlo]
+    n = min([len(x), len(y)] + [len(c) for c in ctrls])
     if n < 40:
         return {'ok': False, 'motivo': f'so {n} pontos'}
     x, y = np.asarray(x[:n], float), np.asarray(y[:n], float)
-    c = np.asarray(controlo[:n], float) if controlo is not None else None
+    cs = [np.asarray(c[:n], float) for c in ctrls]
 
     melhor = None
     for lag in range(1, max_lag + 1):
@@ -224,7 +269,7 @@ def granger(x, y, max_lag=MAX_LAG, controlo=None):
             break
         alvo = y[lag:]
         cols_r = [y[lag - k:n - k] for k in range(1, lag + 1)]
-        if c is not None:
+        for c in cs:
             cols_r += [c[lag - k:n - k] for k in range(1, lag + 1)]
         cols_c = cols_r + [x[lag - k:n - k] for k in range(1, lag + 1)]
 
@@ -257,8 +302,7 @@ def granger(x, y, max_lag=MAX_LAG, controlo=None):
             melhor = {'f': round(float(f), 2), 'p': round(p, 5), 'lag': lag}
     if melhor is None:
         return {'ok': False, 'motivo': 'nenhum lag ajustavel'}
-    return {'ok': True, **melhor,
-            'condicionado': controlo is not None}
+    return {'ok': True, **melhor, 'n_controlos': len(cs)}
 
 
 def benjamini_hochberg(ps, alfa=P_MAXIMO):
@@ -290,8 +334,22 @@ def rede(canais, controlo='watts', max_lag=MAX_LAG, corr_minima=CORR_MINIMA,
         return {'ok': False, 'motivo': 'menos de dois canais utilizaveis',
                 'diagnostico': diag}
 
-    ctrl = dados.get(controlo) if (condicionar and controlo in dados) else None
-    nomes = [k for k in dados if not (ctrl is not None and k == controlo)]
+    # Todos os mecanicos entram como controlo, nao so' os watts. Controlar
+    # so' a potencia deixava a cadencia e o torque a explicar sozinhos
+    # relacoes que sao da mecanica -- sobretudo no remo, onde a potencia
+    # por si nao descreve o gesto.
+    mecanicos = [k for k in dados if k in MECANICOS]
+    if controlo and controlo in dados and controlo not in mecanicos:
+        mecanicos.append(controlo)
+    ctrl = [dados[k] for k in mecanicos] if (condicionar and mecanicos) else None
+    nomes = [k for k in dados if k not in mecanicos]
+    excluidos_mecanicos = mecanicos
+    if len(nomes) < 2:
+        return {'ok': False,
+                'motivo': (f'so {len(nomes)} canais fisiologicos utilizaveis '
+                           f'({", ".join(nomes) or "nenhum"}); a rede precisa '
+                           'de pelo menos dois'),
+                'mecanicos_excluidos': mecanicos, 'diagnostico': diag}
 
     pares, ps = [], []
     for a in nomes:
@@ -307,6 +365,9 @@ def rede(canais, controlo='watts', max_lag=MAX_LAG, corr_minima=CORR_MINIMA,
             if not g.get('ok'):
                 continue
             pares.append({'de': a, 'para': b, 'correlacao': round(r, 3),
+                          'sinal': '+' if r > 0 else '-',
+                          'sistema_de': SISTEMAS.get(a, 'outro'),
+                          'sistema_para': SISTEMAS.get(b, 'outro'),
                           'f': g['f'], 'p': g['p'], 'lag': g['lag']})
             ps.append(g['p'])
 
@@ -363,10 +424,120 @@ def rede(canais, controlo='watts', max_lag=MAX_LAG, corr_minima=CORR_MINIMA,
                       key=lambda kv: kv[1]['saidas'] - kv[1]['entradas'],
                       reverse=True)
 
+    # ── razao de controlo fisiologico ────────────────────────────────
+    # Que fraccao do F total sai de cada sistema. Um sistema que so' recebe
+    # esta a compensar; o que emite esta a comandar. Nao e' uma medida
+    # validada -- e' uma leitura da rede, e depende de que canais existem
+    # na sessao. Sem DFA-a1 gravado, o autonomico da 0% por ausencia, nao
+    # por inactividade.
+    por_sistema = {}
+    for e in dirigidas:
+        sis = SISTEMAS.get(e['de'])
+        if not sis:
+            continue
+        d2 = por_sistema.setdefault(sis, {'f_saida': 0.0, 'f_entrada': 0.0,
+                                          'arestas': 0})
+        d2['f_saida'] += e['f']
+        d2['arestas'] += 1
+    for e in dirigidas:
+        sis = SISTEMAS.get(e['para'])
+        if sis:
+            por_sistema.setdefault(sis, {'f_saida': 0.0, 'f_entrada': 0.0,
+                                         'arestas': 0})['f_entrada'] += e['f']
+    total = sum(v['f_saida'] for v in por_sistema.values())
+    pcr = {}
+    for sis in ('cardiaco', 'periferico', 'respiratorio', 'autonomico'):
+        v = por_sistema.get(sis)
+        presente = any(SISTEMAS.get(k) == sis for k in nomes)
+        pcr[sis] = {
+            'pct': (round(v['f_saida'] / total * 100, 1)
+                    if v and total else 0.0),
+            'f_saida': round(v['f_saida'], 1) if v else 0.0,
+            'f_entrada': round(v['f_entrada'], 1) if v else 0.0,
+            'canais_presentes': presente,
+            'nota': (None if presente
+                     else 'nenhum canal deste sistema na sessao'),
+        }
+
+    dominante = max(pcr, key=lambda k: pcr[k]['pct']) if total else None
+    limitador = None
+    if dominante and pcr[dominante]['pct'] > 0:
+        top = max(dirigidas, key=lambda e: e['f']) if dirigidas else None
+        rotulos = {
+            'periferico': ('Periférico / fornecimento',
+                           'a extracção muscular precede a resposta '
+                           'cardíaca: o músculo comanda, o coração compensa'),
+            'cardiaco': ('Central / débito',
+                         'a resposta cardíaca precede a muscular: o '
+                         'fornecimento comanda'),
+            'respiratorio': ('Ventilatório',
+                             'a ventilação precede as outras respostas'),
+            'autonomico': ('Autonómico',
+                           'a modulação autonómica precede as outras'),
+        }
+        nome, expl = rotulos.get(dominante, (dominante, ''))
+        limitador = {
+            'sistema': dominante, 'rotulo': nome, 'leitura': expl,
+            'pct': pcr[dominante]['pct'],
+            'aresta_dominante': (f"{top['de']} → {top['para']} "
+                                 f"(F={top['f']}, lag {top['lag']}s)"
+                                 if top else None),
+            'confianca': ('alta' if pcr[dominante]['pct'] >= 60 else
+                          'media' if pcr[dominante]['pct'] >= 40 else 'baixa'),
+        }
+
+    # ── quem controla quem ────────────────────────────────────────────
+    # Peso de cada sistema pelo F das arestas que dele PARTEM, descontando
+    # as que nele CHEGAM. Um sistema que so' recebe esta a responder; um que
+    # so' emite esta a impor o ritmo.
+    #
+    # Usa-se o F e nao a contagem: uma aresta com F=169 e outra com F=17
+    # nao valem o mesmo, e contar arestas trataria as duas por igual.
+    peso = {}
+    for e in dirigidas:
+        sa = SISTEMAS.get(e['de'], 'outro')
+        sb = SISTEMAS.get(e['para'], 'outro')
+        peso.setdefault(sa, {'emite': 0.0, 'recebe': 0.0})['emite'] += e['f']
+        peso.setdefault(sb, {'emite': 0.0, 'recebe': 0.0})['recebe'] += e['f']
+    total = sum(v['emite'] for v in peso.values()) or 1.0
+    controlo_pct = {k: round(v['emite'] / total * 100, 1)
+                    for k, v in peso.items()}
+    liquido = {k: round(v['emite'] - v['recebe'], 1) for k, v in peso.items()}
+
+    dominante = max(liquido, key=liquido.get) if liquido else None
+    if dominante and liquido[dominante] <= 0:
+        dominante = None
+    leitura = {
+        'periferico': ('a extraccao muscular precede o resto: e o musculo '
+                       'que impoe o ritmo e o cardiovascular que compensa'),
+        'cardiaco': ('o transporte precede o resto: a limitacao esta na '
+                     'entrega de oxigenio, nao na extraccao'),
+        'respiratorio': ('a ventilacao precede o resto, o que e invulgar e '
+                         'merece confirmacao antes de se acreditar'),
+        'autonomico': ('o sinal autonomico precede o resto -- provavel '
+                       'artefacto da cinta, ver a percentagem de artefacto'),
+    }
+    limitador = {
+        'sistema': dominante,
+        'leitura': leitura.get(dominante) if dominante else
+                   ('nenhum sistema domina: as arestas equilibram-se, ou nao '
+                    'ha arestas dirigidas suficientes'),
+        'controlo_pct': controlo_pct,
+        'liquido_f': liquido,
+        'aviso': ('isto e uma leitura de UMA sessao, com Granger, que mede '
+                  'precedencia e nao causalidade. Repetir em varias sessoes '
+                  'antes de mudar treino por causa disto'),
+    }
+
     return {
         'ok': True,
+        'limitador': limitador,
         'canais_usados': nomes,
-        'controlo': controlo if ctrl is not None else None,
+        'excluidos_por_serem_entrada': excluidos_mecanicos,
+        'pcr': pcr,
+        'limitador': limitador,
+        'controlo': mecanicos if ctrl is not None else None,
+        'mecanicos_excluidos': excluidos_mecanicos,
         'diferenciacao': diferenciar,
         'max_lag': max_lag,
         'corr_minima': corr_minima,

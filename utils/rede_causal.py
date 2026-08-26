@@ -43,34 +43,77 @@ def _diferencas(v):
     return [v[i] - v[i - 1] for i in range(1, len(v))]
 
 
-def adf_estacionaria(v, p_max=0.05):
-    """Teste ADF. Sem statsmodels, cai num teste de tendencia por regressao."""
-    vs = [x for x in v if x is not None]
-    if len(vs) < 20:
-        return {'ok': False, 'motivo': 'serie curta'}
+# Valores criticos do teste de Dickey-Fuller aumentado, especificacao com
+# constante ("c"). Sao constantes da distribuicao do proprio teste, nao
+# normas de populacao: a estatistica nao segue uma t normal porque sob a
+# hipotese nula a serie tem raiz unitaria.
+#
+# Aproximacao de MacKinnon (1994) para amostra grande, que e' o caso aqui --
+# uma sessao a 1 Hz tem milhares de pontos.
+ADF_CRITICOS = {0.01: -3.43, 0.05: -2.86, 0.10: -2.57}
+
+
+def adf_estacionaria(v, alfa=0.05, lags=None):
+    """Teste ADF com constante, implementado directamente.
+
+    Regride Dy_t sobre y_{t-1}, uma constante e p desfasamentos de Dy. Se o
+    coeficiente de y_{t-1} for suficientemente negativo, rejeita-se a raiz
+    unitaria e a serie e' considerada estacionaria.
+
+    Escrito aqui em vez de importado: a statsmodels rebentava com
+    "deprecate_kwarg() missing 1 required positional argument" por conflito
+    de versoes, e era a unica coisa que se lhe pedia. O Granger deste
+    modulo ja' era proprio.
+    """
+    vs = [float(x) for x in v if x is not None]
+    n = len(vs)
+    if n < 30:
+        return {'ok': False, 'motivo': f'serie com {n} pontos'}
     try:
-        from statsmodels.tsa.stattools import adfuller
-        r = adfuller(vs, autolag='AIC')
-        return {'ok': True, 'estatistica': round(r[0], 3),
-                'p': round(r[1], 4), 'estacionaria': r[1] < p_max,
-                'metodo': 'ADF'}
+        import numpy as np
     except ImportError:
-        # Sem ADF, testa-se so' se ha tendencia linear significativa. E'
-        # mais fraco, e vai dito.
-        n = len(vs)
-        mx = (n - 1) / 2
-        my = sum(vs) / n
-        sxx = sum((i - mx) ** 2 for i in range(n))
-        sxy = sum((i - mx) * (vs[i] - my) for i in range(n))
-        if sxx <= 0:
-            return {'ok': True, 'estacionaria': True, 'metodo': 'tendencia'}
-        m = sxy / sxx
-        resid = [vs[i] - (m * (i - mx) + my) for i in range(n)]
-        var = sum(r * r for r in resid) / max(1, n - 2)
-        se = (var / sxx) ** 0.5 if sxx > 0 else 0
-        t = abs(m / se) if se > 0 else 0
-        return {'ok': True, 'declive': round(m, 6), 't': round(t, 2),
-                'estacionaria': t < 2.0, 'metodo': 'tendencia (sem statsmodels)'}
+        return {'ok': False, 'motivo': 'numpy indisponivel'}
+
+    y = np.asarray(vs)
+    dy = np.diff(y)
+    if lags is None:
+        # regra de Schwert, o valor por omissao da maioria das
+        # implementacoes
+        lags = int(min(12 * (n / 100.0) ** 0.25, n // 4, 24))
+    lags = max(0, int(lags))
+
+    m = len(dy) - lags
+    if m < 20:
+        return {'ok': False, 'motivo': 'pontos insuficientes apos desfasar'}
+
+    cols = [y[lags:lags + m], np.ones(m)]
+    for k in range(1, lags + 1):
+        cols.append(dy[lags - k:lags - k + m])
+    A = np.column_stack(cols)
+    alvo = dy[lags:lags + m]
+    try:
+        beta, *_ = np.linalg.lstsq(A, alvo, rcond=None)
+    except Exception as e:
+        return {'ok': False, 'motivo': f'{type(e).__name__}: {e}'}
+
+    resid = alvo - A @ beta
+    gl = m - A.shape[1]
+    if gl <= 0:
+        return {'ok': False, 'motivo': 'graus de liberdade insuficientes'}
+    s2 = float(resid @ resid) / gl
+    try:
+        cov = s2 * np.linalg.pinv(A.T @ A)
+        se = float(np.sqrt(max(cov[0, 0], 1e-30)))
+    except Exception:
+        return {'ok': False, 'motivo': 'matriz singular'}
+    if se <= 0:
+        return {'ok': False, 'motivo': 'erro padrao nulo'}
+
+    t = float(beta[0]) / se
+    critico = ADF_CRITICOS.get(alfa, ADF_CRITICOS[0.05])
+    return {'ok': True, 'estatistica': round(t, 3), 'critico': critico,
+            'lags': lags, 'n': n,
+            'estacionaria': t < critico, 'metodo': 'ADF (proprio)'}
 
 
 def preparar(canais, diferenciar=True):

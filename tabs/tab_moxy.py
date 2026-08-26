@@ -141,6 +141,13 @@ BODY = """
       variações.</p>
       <p>Os p são corrigidos por Benjamini-Hochberg. Pares onde ambos os
       sentidos passam e nenhum domina ficam marcados <b>ambíguos</b>.</p>
+      <p><b>Canais mecânicos</b> — watts, cadência, torque, velocidade — entram
+      só como controlo e nunca como nós da rede. São decisão tua, não resposta
+      fisiológica, e testá-los como causas seria redescobrir o protocolo.</p>
+      <p>O <b>limitador</b> sai do peso de cada sistema pelo F das arestas que
+      dele partem menos as que nele chegam. Um sistema que só recebe está a
+      responder; um que só emite está a impor o ritmo. Usa-se o F e não a
+      contagem: uma aresta com F=169 e outra com F=17 não valem o mesmo.</p>
     </div>
   </details>
 
@@ -282,10 +289,33 @@ function mxRede(){
    +' com direcção · '+d.n_indecisas+' ambíguos'
    +(d.controlo?' · condicionado a '+d.controlo:' · SEM condicionar');
   let h='';
+  const L=d.limitador||{};
+  if(L.sistema||L.leitura){
+   const cores={periferico:'#F85149',cardiaco:'#58A6FF',
+                respiratorio:'#3FB950',autonomico:'#A371F7'};
+   const cor=cores[L.sistema]||'#8b949e';
+   h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
+    +'margin-bottom:10px;">'
+    +'<b style="color:'+cor+';">LIMITADOR: '
+    +(L.sistema?L.sistema.toUpperCase():'indeterminado')+'</b><br>'
+    +'<span style="font-size:12px;">'+(L.leitura||'')+'</span>';
+   const cp=L.controlo_pct||{};
+   const ks=Object.keys(cp).sort(function(a,b){ return cp[b]-cp[a]; });
+   if(ks.length) h+='<br><span style="font-size:11px;color:#8b949e;">'
+    +ks.map(function(k){ return k+' '+cp[k]+'%'; }).join(' · ')
+    +' &nbsp;(peso pelo F das arestas que partem de cada sistema)</span>';
+   h+='<br><span style="font-size:10px;color:#8b949e;">'+(L.aviso||'')
+    +'</span></div>';
+  }
   if(d.fontes && d.fontes.length)
    h+='<p style="font-size:12px;"><b style="color:#3FB950;">Fontes:</b> '
     +d.fontes.join(', ')+' &nbsp; <b style="color:#F0883E;">Sumidouros:</b> '
     +(d.sumidouros||[]).join(', ')+'</p>';
+  if(d.mecanicos_excluidos && d.mecanicos_excluidos.length)
+   h+='<p style="font-size:11px;color:#8b949e;">Mecânicos usados só como '
+    +'controlo, nunca testados como causa: <b>'
+    +d.mecanicos_excluidos.join(', ')+'</b>. "A potência precede a subida da '
+    +'FC" não é um achado — é a definição de treinar.</p>';
   h+='<table style="border-collapse:collapse;font-size:11px;">'
    +'<tr style="color:#8b949e;text-align:left;">'
    +'<th style="padding-right:14px;">De</th><th style="padding-right:14px;">Para</th>'
@@ -298,7 +328,8 @@ function mxRede(){
     +'<td style="padding-right:14px;">'+e.f+'</td>'
     +'<td style="padding-right:14px;color:#8b949e;">'+e.p+'</td>'
     +'<td style="padding-right:14px;color:#8b949e;">'+e.lag+'s</td>'
-    +'<td style="padding-right:14px;color:#8b949e;">'+e.correlacao+'</td>'
+    +'<td style="padding-right:14px;color:'
+    +(e.sinal==='-'?'#F0883E':'#3FB950')+';">'+e.correlacao+'</td>'
     +'<td style="color:#8b949e;">'+(e.direccao||'')
     +(e.racio_f?' ('+e.racio_f+'×)':'')+'</td></tr>';
   });

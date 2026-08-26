@@ -107,6 +107,43 @@ BODY = """
     </div>
   </details>
 
+  <h2 style="font-size:15px;margin-top:18px;">Rede causal entre canais</h2>
+  <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
+    <button onclick="mxRede()">Calcular</button>
+    <label class="sel"><input type="checkbox" id="mxRdDif" checked> diferenciar séries</label>
+    <label class="sel"><input type="checkbox" id="mxRdCond" checked> condicionar aos watts</label>
+    <label class="sel">Lag máx.
+      <select id="mxRdLag"><option>3</option><option selected>5</option>
+        <option>10</option></select></label>
+    <label class="sel">Correlação mín.
+      <select id="mxRdCorr"><option>0.2</option><option selected>0.3</option>
+        <option>0.5</option></select></label>
+    <span id="mxRdEstado" style="color:#8b949e;font-size:12px;"></span>
+  </div>
+  <div id="mxRede" style="overflow-x:auto;margin-top:6px;"></div>
+
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">O que a rede diz e o que não diz</summary>
+    <div style="font-size:11px;color:#8b949e;margin-top:6px;">
+      <p>Adaptado do <b>PhysioNexus</b> (Evan Peikon). Correlação selecciona
+      os pares, Granger dá-lhes direcção.</p>
+      <p><b>Granger não é causalidade.</b> Mede precedência preditiva: se o
+      passado de A ajuda a prever B além do que o passado de B já explica,
+      A precede B. Num sistema com um controlador comum isso é uma pista,
+      não uma prova.</p>
+      <p><b>Condicionar aos watts</b> existe porque o protocolo é causa comum
+      de tudo — os watts sobem por decisão tua e o resto responde. Sem
+      condicionar, a rede redescobre o protocolo. A pergunta passa a ser: o
+      canal A acrescenta poder preditivo sobre B <i>além do que a potência
+      já explica</i>?</p>
+      <p><b>Diferenciar</b> porque o Granger pressupõe séries estacionárias.
+      Ou se diferenciam todas ou nenhuma — misturar compara níveis com
+      variações.</p>
+      <p>Os p são corrigidos por Benjamini-Hochberg. Pares onde ambos os
+      sentidos passam e nenhum domina ficam marcados <b>ambíguos</b>.</p>
+    </div>
+  </details>
+
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Todas as sessões</summary>
     <div id="mxLista" style="overflow-x:auto;margin-top:6px;"></div>
@@ -223,6 +260,70 @@ function mxTabelaDegraus(){
 // MX_SEL: ids escolhidos. MX_DADOS: {id: resposta}. MX_OFF: desvio manual
 // em segundos por id. Com uma sessao so', tudo funciona como antes.
 let MX_SEL = [], MX_DADOS = {}, MX_OFF = {};
+
+function mxRede(){
+ const ids=Object.keys(MX_DADOS);
+ const est=document.getElementById('mxRdEstado');
+ const box=document.getElementById('mxRede');
+ if(!ids.length){ est.textContent='escolhe uma sessão'; return; }
+ if(ids.length>1) est.textContent='usa a 1.ª sessão seleccionada';
+ const id=ids[0];
+ const c=mxCorteDe(id);
+ const q='?lag='+document.getElementById('mxRdLag').value
+  +'&corr='+document.getElementById('mxRdCorr').value
+  +'&inicio='+Math.round(c[0])+'&fim='+Math.round(c[1])
+  +(document.getElementById('mxRdDif').checked?'':'&diferenciar=0')
+  +(document.getElementById('mxRdCond').checked?'':'&condicionar=0');
+ est.textContent='a calcular...';
+ fetch('/api/moxy/rede/'+id+q).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ est.textContent=d.mensagem||d.motivo||'sem dados';
+   box.innerHTML=''; return; }
+  est.textContent=d.n_pares_testados+' pares testados · '+d.n_dirigidas
+   +' com direcção · '+d.n_indecisas+' ambíguos'
+   +(d.controlo?' · condicionado a '+d.controlo:' · SEM condicionar');
+  let h='';
+  if(d.fontes && d.fontes.length)
+   h+='<p style="font-size:12px;"><b style="color:#3FB950;">Fontes:</b> '
+    +d.fontes.join(', ')+' &nbsp; <b style="color:#F0883E;">Sumidouros:</b> '
+    +(d.sumidouros||[]).join(', ')+'</p>';
+  h+='<table style="border-collapse:collapse;font-size:11px;">'
+   +'<tr style="color:#8b949e;text-align:left;">'
+   +'<th style="padding-right:14px;">De</th><th style="padding-right:14px;">Para</th>'
+   +'<th style="padding-right:14px;">F</th><th style="padding-right:14px;">p</th>'
+   +'<th style="padding-right:14px;">Lag</th><th style="padding-right:14px;">r</th>'
+   +'<th>Direcção</th></tr>';
+  (d.arestas||[]).forEach(function(e){
+   h+='<tr><td style="padding-right:14px;color:#3FB950;">'+e.de+'</td>'
+    +'<td style="padding-right:14px;">'+e.para+'</td>'
+    +'<td style="padding-right:14px;">'+e.f+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'+e.p+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'+e.lag+'s</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'+e.correlacao+'</td>'
+    +'<td style="color:#8b949e;">'+(e.direccao||'')
+    +(e.racio_f?' ('+e.racio_f+'×)':'')+'</td></tr>';
+  });
+  (d.indecisas||[]).filter(e=>e.direccao==='ambigua').forEach(function(e){
+   h+='<tr style="opacity:.6;"><td style="padding-right:14px;">'+e.de+'</td>'
+    +'<td style="padding-right:14px;">'+e.para+'</td>'
+    +'<td style="padding-right:14px;">'+e.f+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'+e.p+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'+e.lag+'s</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'+e.correlacao+'</td>'
+    +'<td style="color:#F0883E;">ambíguo</td></tr>';
+  });
+  h+='</table>';
+  const dg=d.diagnostico||{};
+  const dif=Object.keys(dg).filter(k=>dg[k] && dg[k].diferenciada);
+  const exc=Object.keys(dg).filter(k=>dg[k] && dg[k].excluido);
+  h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+   +'Corte de p corrigido: '+(d.p_corte_bh!=null?d.p_corte_bh:'nenhum par passou')
+   +' · lag até '+d.max_lag+'s'
+   +(dif.length?' · diferenciadas: '+dif.join(', '):' · nenhuma diferenciada')
+   +(exc.length?' · excluídas: '+exc.map(k=>k+' ('+dg[k].excluido+')').join(', '):'')
+   +'</p>';
+  box.innerHTML=h;
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
 
 function mxErro(msg){
  const e=document.getElementById('mxErro');
@@ -676,25 +777,52 @@ function mxLigarTip(){
  if(!cv||!tip||cv._tipMx) return;
  cv._tipMx=true;
  cv.addEventListener('mousemove', function(ev){
-  if(!MX_ESC || !MX){ tip.style.display='none'; return; }
+  // Le de MX_DADOS e nao de MX: em comparacao MX e' null, e o tooltip
+  // deixava de funcionar exactamente quando era mais util.
+  const ids=Object.keys(MX_DADOS);
+  if(!MX_ESC || !ids.length){ tip.style.display='none'; return; }
   const r=cv.getBoundingClientRect();
   const esc=(cv.width/r.width)/(window.devicePixelRatio||1);
   const mx=(ev.clientX-r.left)*esc;
   const e=MX_ESC;
   if(mx<e.PL||mx>e.PL+e.w){ tip.style.display='none'; return; }
-  const tv=e.t0+(mx-e.PL)/e.w*(e.t1-e.t0);
-  const t=MX.tempo||[];
-  let idx=0, d=1e18;
-  t.forEach(function(x,i){ const dd=Math.abs(x-tv); if(dd<d){d=dd; idx=i;} });
-  const m=Math.floor(t[idx]/60), s=Math.round(t[idx]%60);
-  let h='<b>'+m+':'+String(s).padStart(2,'0')+'</b>';
-  Object.keys(MX.canais).forEach(function(k){
-   const v=MX.canais[k][idx];
-   if(v==null) return;
-   h+='<br><span style="color:'+(MX_CORES[k]||'#c9d1d9')+';">'+k+'</span> '+v;
+  const trel=e.t0+(mx-e.PL)/e.w*(e.t1-e.t0);   // tempo relativo ao alinhamento
+  const m=Math.floor(Math.abs(trel)/60), sg=Math.round(Math.abs(trel)%60);
+  let h='<b>'+(trel<0?'-':'')+m+':'+String(sg).padStart(2,'0')+'</b>'
+   +(ids.length>1?' <span style="color:#8b949e;">do alinhamento</span>':'');
+  const activos=Object.keys(MX_ON).filter(k=>MX_ON[k]===true);
+  ids.forEach(function(id, si){
+   const d=MX_DADOS[id];
+   const t=d.tempo||[];
+   const ref=mxRefAlinhamento(id)+(MX_OFF[id]||0);
+   const alvo=trel+ref;                        // tempo absoluto nesta sessao
+   let idx=-1, dmin=1e18;
+   for(let n=0;n<t.length;n++){
+    const dd=Math.abs(t[n]-alvo);
+    if(dd<dmin){ dmin=dd; idx=n; }
+   }
+   if(idx<0 || dmin>5) return;                 // fora desta sessao
+   const s2=MX_SESSOES.find(x=>String(x.id)===id)||{};
+   if(ids.length>1)
+    h+='<br><span style="color:'+mxCorSessao(si)+';font-weight:600;">'
+     +(si+1)+'· '+(s2.data||id)+'</span>';
+   // degrau em que estamos, com os watts medios do lap
+   const bl=((d.blocos||{}).blocos)||[];
+   const b=bl.find(x=>t[idx]>=x.t0 && t[idx]<=x.t1);
+   if(b) h+='<br><span style="color:#8b949e;font-size:10px;">'
+    +(b.on?'trabalho':'recuperação')
+    +(b.watts_medio!=null?' · média '+Math.round(b.watts_medio)+' W':'')
+    +(b.tipo?' ['+b.tipo+']':'')+'</span>';
+   activos.forEach(function(k){
+    const v=(d.canais[k]||[])[idx];
+    if(v==null) return;
+    h+='<br><span style="color:'
+     +(ids.length>1?mxCorSessao(si):(MX_CORES[k]||'#c9d1d9'))+';">'
+     +k+(ids.length>1?'_'+(si+1):'')+'</span> '+v;
+   });
   });
   tip.innerHTML=h; tip.style.display='block';
-  tip.style.left=Math.min(ev.clientX-r.left+14, r.width-160)+'px';
+  tip.style.left=Math.min(ev.clientX-r.left+14, r.width-200)+'px';
   tip.style.top=Math.max(4, ev.clientY-r.top-40)+'px';
  });
  cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });

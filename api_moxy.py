@@ -596,6 +596,58 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/rede/<path:activity_id>')
+    def api_moxy_rede(activity_id):
+        """Rede causal entre os canais desta sessao.
+
+        ?lag=5  ?corr=0.30  ?alfa=0.05  ?controlo=watts
+        ?diferenciar=0  ?condicionar=0   (para comparar com o metodo cru)
+        ?inicio=900&fim=2100   restringir ao intervalo analisado
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import rede_causal as rc
+
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            with app.test_request_context(f'/api/moxy/dados/{aid}'):
+                pass
+            corpo = api_moxy_dados(aid)
+            dados = corpo[0].get_json() if isinstance(corpo, tuple) \
+                else corpo.get_json()
+            if not dados or dados.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': (dados or {}).get('mensagem')}), 200
+
+            t = dados.get('tempo') or []
+            canais = dict(dados.get('canais') or {})
+            ini = request.args.get('inicio', type=float)
+            fim = request.args.get('fim', type=float)
+            if ini is not None or fim is not None:
+                a = 0 if ini is None else next(
+                    (i for i, x in enumerate(t) if x >= ini), 0)
+                b = len(t) - 1 if fim is None else next(
+                    (i for i in range(len(t) - 1, -1, -1) if t[i] <= fim),
+                    len(t) - 1)
+                canais = {k: v[a:b + 1] for k, v in canais.items()}
+
+            res = rc.rede(
+                canais,
+                controlo=request.args.get('controlo') or 'watts',
+                max_lag=request.args.get('lag', type=int) or rc.MAX_LAG,
+                corr_minima=request.args.get('corr', type=float) or rc.CORR_MINIMA,
+                alfa=request.args.get('alfa', type=float) or rc.P_MAXIMO,
+                diferenciar=request.args.get('diferenciar') != '0',
+                condicionar=request.args.get('condicionar') != '0')
+            res['status'] = 'ok' if res.get('ok') else 'sem_dados'
+            res['activity_id'] = aid
+            return jsonify(res)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/corte', methods=['POST'])
     def api_moxy_corte():
         """Grava o intervalo a analisar de uma sessao.

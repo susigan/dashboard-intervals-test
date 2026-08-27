@@ -120,6 +120,30 @@ BODY = """
         <option>0.5</option></select></label>
     <span id="mxRdEstado" style="color:#8b949e;font-size:12px;"></span>
   </div>
+  <details style="margin:2px 0 8px 0;">
+    <summary style="cursor:pointer;font-size:11px;color:#8b949e;">Como escolher o lag e a correlação mínima</summary>
+    <div style="font-size:11px;color:#8b949e;margin-top:6px;">
+      <p><b>Os valores por omissão — lag 5 s, correlação 0,30 — são os mais
+      defensáveis</b>, e é por isso que estão escolhidos. As outras opções
+      servem para ver se o resultado aguenta, não para o melhorar.</p>
+      <p><b>Lag máximo.</b> É o atraso máximo testado entre causa e efeito. A
+      resposta do SmO2 à potência ronda 3–8 s e a da FC 10–30 s, por isso 5 s
+      apanha a primeira e parte da segunda. <b>Lag 3</b> pode perder relações
+      reais mais lentas. <b>Lag 10</b> apanha-as, mas cada lag acrescenta
+      parâmetros ao modelo: com 10 lags e 5 canais são 50 coeficientes por
+      teste, e o F sobe por sobre-ajuste em vez de por relação. Se aumentares
+      o lag e aparecerem muitas arestas novas com F baixo, é ruído.</p>
+      <p><b>Correlação mínima.</b> Filtra que pares chegam a ser testados.
+      <b>0,20</b> testa quase tudo — mais pares, mais correcção de
+      Benjamini-Hochberg a aplicar, e o corte de p fica mais exigente para
+      todos. <b>0,50</b> testa só o óbvio e pode esconder relações fracas mas
+      reais, sobretudo depois de condicionar aos watts, que já retira boa
+      parte da variação partilhada.</p>
+      <p><b>Teste de robustez:</b> se uma aresta desaparece ao mudares de 5
+      para 3 ou de 0,30 para 0,50, não confies nela. As que sobrevivem às três
+      combinações são as que valem.</p>
+    </div>
+  </details>
   <div id="mxRede" style="overflow-x:auto;margin-top:6px;"></div>
 
   <details style="margin-top:10px;">
@@ -148,6 +172,42 @@ BODY = """
       dele partem menos as que nele chegam. Um sistema que só recebe está a
       responder; um que só emite está a impor o ritmo. Usa-se o F e não a
       contagem: uma aresta com F=169 e outra com F=17 não valem o mesmo.</p>
+    </div>
+  </details>
+
+  <h2 style="font-size:15px;margin-top:18px;">Interpretação 5-1-5 — limitador</h2>
+  <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
+    <button onclick="mx515()">Avaliar</button>
+    <label class="sel">"Clear" acima de
+      <select id="mx515Claro"><option>5</option><option selected>10</option>
+        <option>15</option></select>% da amplitude</label>
+    <label class="sel">Parte final
+      <select id="mx515Frac"><option value="0.33">último terço</option>
+        <option value="0.5" selected>última metade</option>
+        <option value="1">tudo</option></select></label>
+    <span id="mx515Estado" style="color:#8b949e;font-size:12px;"></span>
+  </div>
+  <div id="mx515" style="overflow-x:auto;margin-top:6px;"></div>
+
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Como funciona a 5-1-5</summary>
+    <div style="font-size:11px;color:#8b949e;margin-top:6px;">
+      <p>Portado do <b>515 Interpretation Tool v2.2</b>. O original faz 13
+      perguntas sobre o que vês nos gráficos; aqui são medidas dos blocos, e
+      podes corrigir cada uma.</p>
+      <p><b>U/S — Utilização vs Fornecimento.</b> SmO2 de trabalho alto
+      significa que o músculo não extrai o que lhe chega: limitação de
+      utilização. SmO2 abaixo de 20% e a continuar a descer: extracção no
+      limite, falta entrega.</p>
+      <p><b>P/C — Pulmonar vs Cardíaco.</b> THb e SmO2 de repouso a subir, com
+      atraso na resposta, apontam ao lado ventilatório. THb a descer ao longo
+      da sessão aponta ao volume de sangue local.</p>
+      <p><b>Duas correcções face ao ficheiro original:</b> as linhas 29–32 do
+      motor de cálculo referenciavam as linhas erradas, deslocando o eixo P/C
+      em toda a secção de FC; e o máximo de U/S estava fixo em 11, que só é
+      atingível com dois sensores — com um, o denominador é 9.</p>
+      <p>Os cortes entre "clear" e "slight" não existem no original: pedia ao
+      utilizador que olhasse e decidisse. Aqui são explícitos e ajustáveis.</p>
     </div>
   </details>
 
@@ -267,6 +327,95 @@ function mxTabelaDegraus(){
 // MX_SEL: ids escolhidos. MX_DADOS: {id: resposta}. MX_OFF: desvio manual
 // em segundos por id. Com uma sessao so', tudo funciona como antes.
 let MX_SEL = [], MX_DADOS = {}, MX_OFF = {};
+
+let MX515_EDIT = {};
+
+function mx515(){
+ const ids=Object.keys(MX_DADOS);
+ const est=document.getElementById('mx515Estado');
+ const box=document.getElementById('mx515');
+ if(!ids.length){ est.textContent='escolhe uma sessão'; return; }
+ const id=ids[0];
+ const c=mxCorteDe(id);
+ let q='?claro='+document.getElementById('mx515Claro').value
+  +'&fraccao='+document.getElementById('mx515Frac').value
+  +'&inicio='+Math.round(c[0])+'&fim='+Math.round(c[1]);
+ Object.keys(MX515_EDIT).forEach(function(k){
+  q+='&resp_'+k+'='+encodeURIComponent(MX515_EDIT[k]); });
+ est.textContent='a avaliar...';
+ fetch('/api/moxy/interpretacao/'+id+q).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ est.textContent=d.motivo||d.mensagem||'sem dados';
+   box.innerHTML=''; return; }
+  const p=d.pontuacao, i=d.interpretacao, m=d.medicoes;
+  est.textContent=m.n_blocos_usados+' de '+m.n_blocos_trabalho
+   +' blocos usados'+(d.respostas_editadas?' · com respostas editadas':'');
+
+  const cor=v=>v==='Utilização'||v==='Pulmonar'?'#58A6FF'
+    :v==='Fornecimento'||v==='Cardíaco'?'#F85149':'#8b949e';
+  let h='<div style="display:flex;flex-wrap:wrap;gap:12px;">';
+  [['Utilização vs Fornecimento',p.us,i.us],
+   ['Pulmonar vs Cardíaco',p.pc,i.pc]].forEach(function(bl){
+   if(!bl[2]) return;
+   h+='<div style="flex:1;min-width:280px;border-left:3px solid '
+    +cor(bl[2].limitador)+';padding:6px 10px;">'
+    +'<span style="color:#8b949e;font-size:11px;">'+bl[0]+'</span><br>'
+    +'<b style="color:'+cor(bl[2].limitador)+';font-size:15px;">'
+    +bl[2].limitador+'</b> '
+    +'<span style="color:#8b949e;font-size:11px;">'+bl[1].pontos+'/'
+    +bl[1].max+' = '+(bl[1].score!=null?bl[1].score:'—')+'</span>'
+    +'<br><span style="font-size:11px;">'+bl[2].texto+'</span></div>';
+  });
+  h+='</div>';
+  (i.reservas||[]).forEach(function(r2){
+   h+='<p style="color:#F0883E;font-size:11px;margin:4px 0;">⚠ '+r2+'</p>'; });
+  (d.avisos||[]).forEach(function(a){
+   h+='<p style="color:#F85149;font-size:11px;margin:4px 0;">⚠ '+a+'</p>'; });
+
+  h+='<table style="width:100%;border-collapse:collapse;font-size:11px;'
+   +'margin-top:8px;"><tr style="color:#8b949e;text-align:left;'
+   +'border-bottom:1px solid #21262d;"><th style="padding:5px;">#</th>'
+   +'<th>Pergunta</th><th>Medido</th><th>Resposta</th><th>Pontos</th>'
+   +'<th>Eixo</th></tr>';
+  [['us',p.us.detalhe],['pc',p.pc.detalhe]].forEach(function(par){
+   par[1].forEach(function(dd){
+    const md=(m.respostas||{})[dd.pergunta]||{};
+    const opcoes = dd.pergunta==='2A' ? d.faixas_2A
+                 : dd.pergunta==='9' ? d.faixas_9 : d.niveis;
+    const val = md.valor!=null ? md.valor
+      : md.declive_pct_da_amplitude!=null
+        ? (md.declive_pct_da_amplitude>0?'+':'')+md.declive_pct_da_amplitude+'%'
+      : md.atraso_mediano_s!=null ? md.atraso_mediano_s+'s' : '—';
+    h+='<tr style="border-bottom:1px solid #161b22;'
+     +(md.editada?'background:rgba(227,179,65,0.07);':'')+'">'
+     +'<td style="padding:5px;color:#8b949e;">'+dd.pergunta+'</td>'
+     +'<td style="color:#8b949e;">'+dd.texto+'</td>'
+     +'<td style="color:#8b949e;">'+val+'</td>'
+     +'<td><select class="mx515R" data-q="'+dd.pergunta+'" '
+     +'style="font-size:11px;max-width:150px;">'
+     + (opcoes||[]).map(function(o){
+        return '<option'+(o===dd.resposta?' selected':'')+'>'+o+'</option>';
+       }).join('')
+     + (dd.resposta==null?'<option selected>—</option>':'')
+     +'</select></td>'
+     +'<td style="color:'+(dd.pontos==null?'#F0883E'
+        :dd.pontos<0?'#F85149':'#c9d1d9')+';">'
+     +(dd.pontos!=null?dd.pontos:'sem resposta')+' / '+dd.max+'</td>'
+     +'<td style="color:#8b949e;">'+par[0].toUpperCase()+'</td></tr>';
+   });
+  });
+  h+='</table>';
+  h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+   +'Alterar uma resposta recalcula tudo. "Medido" mostra o valor ou o '
+   +'declive em % da amplitude do canal na sessão — é isso que decide entre '
+   +'"clear" e "slight". Cortes actuais: claro acima de '
+   +d.cortes.claro_pct+'%, ligeiro acima de '+d.cortes.ligeiro_pct+'%.</p>';
+  box.innerHTML=h;
+  Array.prototype.forEach.call(box.querySelectorAll('.mx515R'), function(el){
+   el.addEventListener('change', function(){
+    MX515_EDIT[el.getAttribute('data-q')]=el.value; mx515(); });
+  });
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
 
 function mxRede(){
  const ids=Object.keys(MX_DADOS);

@@ -648,6 +648,80 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/interpretacao/<path:activity_id>')
+    def api_moxy_interpretacao(activity_id):
+        """5-1-5 Interpretation Tool automatizado.
+
+        ?inicio=&fim=  intervalo   ?claro=10&ligeiro=3  cortes em % da amplitude
+        ?fraccao=0.5   fraccao final da sessao usada
+        ?resp_2A=...   sobrepor a resposta medida de qualquer pergunta
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import interpretacao_515 as it
+
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            corpo = api_moxy_dados(aid)
+            dados = corpo[0].get_json() if isinstance(corpo, tuple) \
+                else corpo.get_json()
+            if not dados or dados.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': (dados or {}).get('mensagem')}), 200
+
+            t = dados.get('tempo') or []
+            canais = dados.get('canais') or {}
+            blocos = ((dados.get('blocos') or {}).get('blocos')) or []
+            ini = request.args.get('inicio', type=float)
+            fim = request.args.get('fim', type=float)
+            if ini is not None or fim is not None:
+                a = ini if ini is not None else (t[0] if t else 0)
+                b = fim if fim is not None else (t[-1] if t else 0)
+                blocos = [x for x in blocos if x['t1'] >= a and x['t0'] <= b]
+
+            art = (dados.get('artefactos') or {}).get('pct_acima_do_limiar')
+            res = it.avaliar(
+                t, canais, blocos, pct_artefacto=art,
+                fraccao_final=request.args.get('fraccao', type=float)
+                or it.FRACCAO_FINAL,
+                corte_claro=(request.args.get('claro', type=float) or
+                             it.CORTE_CLARO * 100) / 100.0,
+                corte_ligeiro=(request.args.get('ligeiro', type=float) or
+                               it.CORTE_LIGEIRO * 100) / 100.0)
+            if not res.get('ok'):
+                return jsonify({'status': 'sem_dados', **res}), 200
+
+            # respostas sobrepostas pelo utilizador
+            sobrepostas = {}
+            for k, v in request.args.items():
+                if k.startswith('resp_') and v:
+                    q = k[5:]
+                    if q in res['medicoes']['respostas']:
+                        res['medicoes']['respostas'][q]['resposta'] = v
+                        res['medicoes']['respostas'][q]['editada'] = True
+                        sobrepostas[q] = v
+            if sobrepostas:
+                m = res['medicoes']
+                pt = it.pontuar(m['respostas'], tem_thb=m['tem_thb'],
+                                tem_hr=m['tem_hr'])
+                res['pontuacao'] = pt
+                res['interpretacao'] = it.interpretar(
+                    pt['us']['score'], pt['pc']['score'],
+                    pt['sem_resposta'], res.get('avisos'))
+                res['respostas_editadas'] = sobrepostas
+
+            res['status'] = 'ok'
+            res['activity_id'] = aid
+            res['niveis'] = it.NIVEIS
+            res['faixas_2A'] = list(it.ESCALA_US['2A'])
+            res['faixas_9'] = list(it.ESCALA_PC['9'])
+            return jsonify(res)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/corte', methods=['POST'])
     def api_moxy_corte():
         """Grava o intervalo a analisar de uma sessao.

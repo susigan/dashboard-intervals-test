@@ -181,6 +181,7 @@ BODY = """
     <label class="sel">"Clear" acima de
       <select id="mx515Claro"><option>5</option><option selected>10</option>
         <option>15</option></select>% da amplitude</label>
+    <label class="sel"><input type="checkbox" id="mx515Rep" title="O protocolo repete o mesmo escalão de carga? Se não, as perguntas 8A e 13 não se aplicam."> tem carga repetida</label>
     <label class="sel">Parte final
       <select id="mx515Frac"><option value="0.33">último terço</option>
         <option value="0.5" selected>última metade</option>
@@ -339,6 +340,7 @@ function mx515(){
  const c=mxCorteDe(id);
  let q='?claro='+document.getElementById('mx515Claro').value
   +'&fraccao='+document.getElementById('mx515Frac').value
+  +'&repetida='+(document.getElementById('mx515Rep').checked?'1':'0')
   +'&inicio='+Math.round(c[0])+'&fim='+Math.round(c[1]);
  Object.keys(MX515_EDIT).forEach(function(k){
   q+='&resp_'+k+'='+encodeURIComponent(MX515_EDIT[k]); });
@@ -374,7 +376,7 @@ function mx515(){
   h+='<table style="width:100%;border-collapse:collapse;font-size:11px;'
    +'margin-top:8px;"><tr style="color:#8b949e;text-align:left;'
    +'border-bottom:1px solid #21262d;"><th style="padding:5px;">#</th>'
-   +'<th>Pergunta</th><th>Medido</th><th>Resposta</th><th>Pontos</th>'
+   +'<th>Pergunta</th><th>Padrão</th><th>Medido</th><th>Resposta</th><th>Pontos</th>'
    +'<th>Eixo</th></tr>';
   [['us',p.us.detalhe],['pc',p.pc.detalhe]].forEach(function(par){
    par[1].forEach(function(dd){
@@ -389,6 +391,8 @@ function mx515(){
      +(md.editada?'background:rgba(227,179,65,0.07);':'')+'">'
      +'<td style="padding:5px;color:#8b949e;">'+dd.pergunta+'</td>'
      +'<td style="color:#8b949e;">'+dd.texto+'</td>'
+     +'<td>'+(((d.figuras||{})[dd.pergunta]||{})[dd.resposta]
+              || '<span style="color:#484f58;font-size:10px;">—</span>')+'</td>'
      +'<td style="color:#8b949e;">'+val+'</td>'
      +'<td><select class="mx515R" data-q="'+dd.pergunta+'" '
      +'style="font-size:11px;max-width:150px;">'
@@ -397,9 +401,11 @@ function mx515(){
        }).join('')
      + (dd.resposta==null?'<option selected>—</option>':'')
      +'</select></td>'
-     +'<td style="color:'+(dd.pontos==null?'#F0883E'
+     +'<td style="color:'+(dd.nao_aplicavel?'#6e7681'
+        :dd.pontos==null?'#F0883E'
         :dd.pontos<0?'#F85149':'#c9d1d9')+';">'
-     +(dd.pontos!=null?dd.pontos:'sem resposta')+' / '+dd.max+'</td>'
+     +(dd.nao_aplicavel?'não se aplica'
+       :dd.pontos!=null?dd.pontos+' / '+dd.max:'sem resposta / '+dd.max)+'</td>'
      +'<td style="color:#8b949e;">'+par[0].toUpperCase()+'</td></tr>';
    });
   });
@@ -408,7 +414,10 @@ function mx515(){
    +'Alterar uma resposta recalcula tudo. "Medido" mostra o valor ou o '
    +'declive em % da amplitude do canal na sessão — é isso que decide entre '
    +'"clear" e "slight". Cortes actuais: claro acima de '
-   +d.cortes.claro_pct+'%, ligeiro acima de '+d.cortes.ligeiro_pct+'%.</p>';
+   +d.cortes.claro_pct+'%, ligeiro acima de '+d.cortes.ligeiro_pct+'%. '
+   +'Valores de repouso medidos nos últimos '+(m.repouso_seg||30)+' s de cada '
+   +'recuperação — o início ainda está a recuperar, e o patamar é o que a '
+   +'pergunta procura. A figura mostra o padrão da resposta escolhida.</p>';
   box.innerHTML=h;
   Array.prototype.forEach.call(box.querySelectorAll('.mx515R'), function(el){
    el.addEventListener('change', function(){

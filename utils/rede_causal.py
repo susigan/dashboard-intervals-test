@@ -69,6 +69,22 @@ SISTEMAS = {
     'dfa_a1': 'autonomico',
 }
 
+# Canais DERIVADOS de outros. O SmO2 e' calculado como
+# O2Hb / (O2Hb + HHb) x 100 -- os tres nao sao independentes. Testar
+# causalidade entre eles e' perguntar se uma variavel causa os seus proprios
+# componentes: o F sai enorme por identidade algebrica, nao por fisiologia.
+#
+# E ha um efeito lateral pior: com o2hb, hhb e smo2 na rede, o sistema
+# periferico tem tres nos em vez de um, e o seu peso no limitador fica
+# inflacionado cerca de tres vezes. Era isso que fazia os sumidouros mudar
+# ao mexer na correlacao minima.
+#
+# Ficam de fora por omissao, com opcao de os incluir.
+DERIVADOS = {'o2hb': 'smo2', 'hhb': 'smo2', 'diffhb': 'smo2'}
+#
+# So' se excluem quando a base existe: se uma sessao tiver O2Hb mas nao
+# SmO2, o O2Hb entra, porque ai nao esta a duplicar nada.
+
 MAX_LAG = 5
 
 # Quantas vezes o F de um sentido tem de superar o do inverso para se
@@ -324,11 +340,19 @@ def benjamini_hochberg(ps, alfa=P_MAXIMO):
 
 
 def rede(canais, controlo='watts', max_lag=MAX_LAG, corr_minima=CORR_MINIMA,
-         alfa=P_MAXIMO, diferenciar=True, condicionar=True):
+         alfa=P_MAXIMO, diferenciar=True, condicionar=True,
+         incluir_derivados=False):
     """Rede causal entre os canais.
 
     Devolve as arestas com F, p, p corrigido e lag, e o grau de cada no.
     """
+    derivados_fora = []
+    if not incluir_derivados:
+        for k, base in DERIVADOS.items():
+            if k in canais and base in canais and canais[base]:
+                derivados_fora.append(k)
+        canais = {k: v for k, v in canais.items() if k not in derivados_fora}
+
     dados, originais, diag = preparar(canais, diferenciar=diferenciar)
     if len(dados) < 2:
         return {'ok': False, 'motivo': 'menos de dois canais utilizaveis',
@@ -538,6 +562,8 @@ def rede(canais, controlo='watts', max_lag=MAX_LAG, corr_minima=CORR_MINIMA,
         'limitador': limitador,
         'controlo': mecanicos if ctrl is not None else None,
         'mecanicos_excluidos': excluidos_mecanicos,
+        'derivados_excluidos': derivados_fora,
+        'derivados_excluidos': derivados_fora,
         'diferenciacao': diferenciar,
         'max_lag': max_lag,
         'corr_minima': corr_minima,

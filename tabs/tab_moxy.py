@@ -107,16 +107,29 @@ BODY = """
     </div>
   </details>
 
+  <div id="mxResumo" style="margin-top:14px;"></div>
+
+  <div id="mxAnaliseUnica">
+  <div id="mxResumoBloco" style="display:none;">
+    <h2 style="font-size:15px;margin-top:18px;">Comparação — limitador por sessão</h2>
+    <div class="controls">
+      <button onclick="mxResumo()">Recalcular</button>
+      <span id="mxResumoEstado" style="color:#8b949e;font-size:12px;"></span>
+    </div>
+    <div id="mxResumo" style="margin-top:6px;"></div>
+  </div>
+
   <h2 style="font-size:15px;margin-top:18px;">Rede causal entre canais</h2>
   <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
     <button onclick="mxRede()">Calcular</button>
-    <label class="sel"><input type="checkbox" id="mxRdDif" checked> diferenciar séries</label>
-    <label class="sel"><input type="checkbox" id="mxRdCond" checked> condicionar aos watts</label>
+    <label class="sel"><input type="checkbox" id="mxRdDif" onchange="mxAnalises()" checked> diferenciar séries</label>
+    <label class="sel"><input type="checkbox" id="mxRdCond" onchange="mxAnalises()" checked> condicionar aos watts</label>
+    <label class="sel"><input type="checkbox" id="mxRdDer" onchange="mxAnalises()" title="O SmO2 é calculado de O2Hb e HHb: incluí-los testa se uma variável causa os seus próprios componentes."> incluir O2Hb/HHb</label>
     <label class="sel">Lag máx.
-      <select id="mxRdLag"><option>3</option><option selected>5</option>
+      <select id="mxRdLag" onchange="mxAnalises()"><option>3</option><option selected>5</option>
         <option>10</option></select></label>
     <label class="sel">Correlação mín.
-      <select id="mxRdCorr"><option>0.2</option><option selected>0.3</option>
+      <select id="mxRdCorr" onchange="mxAnalises()"><option>0.2</option><option selected>0.3</option>
         <option>0.5</option></select></label>
     <span id="mxRdEstado" style="color:#8b949e;font-size:12px;"></span>
   </div>
@@ -144,7 +157,7 @@ BODY = """
       combinações são as que valem.</p>
     </div>
   </details>
-  <div id="mxRede" style="overflow-x:auto;margin-top:6px;"></div>
+  <div id="mxRedeDetalhe"><div id="mxRede" style="overflow-x:auto;margin-top:6px;"></div></div>
 
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">O que a rede diz e o que não diz</summary>
@@ -179,16 +192,16 @@ BODY = """
   <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
     <button onclick="mx515()">Avaliar</button>
     <label class="sel">"Clear" acima de
-      <select id="mx515Claro"><option>5</option><option selected>10</option>
+      <select id="mx515Claro" onchange="mxAnalises()"><option>5</option><option selected>10</option>
         <option>15</option></select>% da amplitude</label>
-    <label class="sel"><input type="checkbox" id="mx515Rep" title="O protocolo repete o mesmo escalão de carga? Se não, as perguntas 8A e 13 não se aplicam."> tem carga repetida</label>
+    <label class="sel"><input type="checkbox" id="mx515Rep" onchange="mxAnalises()" title="O protocolo repete o mesmo escalão de carga? Se não, as perguntas 8A e 13 não se aplicam."> tem carga repetida</label>
     <label class="sel">Parte final
-      <select id="mx515Frac"><option value="0.33">último terço</option>
+      <select id="mx515Frac" onchange="mxAnalises()"><option value="0.33">último terço</option>
         <option value="0.5" selected>última metade</option>
         <option value="1">tudo</option></select></label>
     <span id="mx515Estado" style="color:#8b949e;font-size:12px;"></span>
   </div>
-  <div id="mx515" style="overflow-x:auto;margin-top:6px;"></div>
+  <div id="mx515Detalhe"><div id="mx515" style="overflow-x:auto;margin-top:6px;"></div></div>
 
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Como funciona a 5-1-5</summary>
@@ -211,6 +224,8 @@ BODY = """
       utilizador que olhasse e decidisse. Aqui são explícitos e ajustáveis.</p>
     </div>
   </details>
+
+  </div>
 
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Todas as sessões</summary>
@@ -331,6 +346,161 @@ let MX_SEL = [], MX_DADOS = {}, MX_OFF = {};
 
 let MX515_EDIT = {};
 
+// Com uma sessao, mostra tudo. Com varias, corre as duas analises em cada
+// uma e mostra so' os cartoes, mais o consenso entre elas.
+function mxAnalises(){
+ const ids=Object.keys(MX_DADOS);
+ const uni=document.getElementById('mxAnaliseUnica');
+ const res=document.getElementById('mxResumo');
+ if(!ids.length){ if(res) res.innerHTML=''; return; }
+ if(ids.length===1){
+  if(uni) uni.style.display='';
+  if(res) res.innerHTML='';
+  mxRede(); mx515();
+  return;
+ }
+ if(uni) uni.style.display='none';
+ mxComparativo(ids);
+}
+
+function mxParams(){
+ const rd='?lag='+document.getElementById('mxRdLag').value
+  +'&corr='+document.getElementById('mxRdCorr').value
+  +(document.getElementById('mxRdDif').checked?'':'&diferenciar=0')
+  +(document.getElementById('mxRdCond').checked?'':'&condicionar=0')
+  +(document.getElementById('mxRdDer').checked?'&derivados=1':'');
+ const it='?claro='+document.getElementById('mx515Claro').value
+  +'&fraccao='+document.getElementById('mx515Frac').value
+  +'&repetida='+(document.getElementById('mx515Rep').checked?'1':'0');
+ return {rd:rd, it:it};
+}
+
+function mxComparativo(ids){
+ const res=document.getElementById('mxResumo');
+ const est=document.getElementById('mxEstado');
+ const P=mxParams();
+ res.innerHTML='<p style="color:#8b949e;font-size:12px;">a analisar '
+  +ids.length+' sessões...</p>';
+ Promise.all(ids.map(function(id){
+  const c=mxCorteDe(id);
+  const jan='&inicio='+Math.round(c[0])+'&fim='+Math.round(c[1]);
+  return Promise.all([
+   fetch('/api/moxy/rede/'+id+P.rd+jan).then(r=>r.json()).catch(e=>({status:'erro',mensagem:e.message})),
+   fetch('/api/moxy/interpretacao/'+id+P.it+jan).then(r=>r.json()).catch(e=>({status:'erro',mensagem:e.message}))
+  ]).then(function(par){ return {id:id, rede:par[0], it:par[1]}; });
+ })).then(function(rs){
+  let h='<h2 style="font-size:15px;">Comparação — '+rs.length+' sessões</h2>';
+  h+='<div style="display:flex;flex-wrap:wrap;gap:12px;">';
+  rs.forEach(function(x, si){
+   const s2=MX_SESSOES.find(y=>String(y.id)===x.id)||{};
+   h+='<div style="flex:1;min-width:300px;border:1px solid #21262d;'
+    +'border-radius:6px;padding:8px 10px;">'
+    +'<b style="color:'+mxCorSessao(si)+';">'+(si+1)+'· '+(s2.data||x.id)
+    +'</b> <span style="color:#8b949e;font-size:11px;">'
+    +(s2.modalidade||'')+'</span>';
+   h+=mxCardRede(x.rede)+mxCard515(x.it)+'</div>';
+  });
+  h+='</div>';
+  h+=mxConsenso(rs);
+  res.innerHTML=h;
+  est.textContent=rs.length+' sessões analisadas';
+ });
+}
+
+function mxCardRede(d){
+ if(!d || d.status!=='ok'){
+  return '<p style="color:#F0883E;font-size:11px;">rede: '
+   +((d&&(d.motivo||d.mensagem))||'sem dados')+'</p>'; }
+ const L=d.limitador||{};
+ const cores={periferico:'#F85149',cardiaco:'#58A6FF',
+              respiratorio:'#3FB950',autonomico:'#A371F7'};
+ const cor=cores[L.sistema]||'#8b949e';
+ const cp=L.controlo_pct||{};
+ const ks=Object.keys(cp).sort(function(a,b){ return cp[b]-cp[a]; });
+ return '<div style="border-left:3px solid '+cor+';padding:5px 9px;'
+  +'margin-top:8px;"><b style="color:'+cor+';font-size:12px;">REDE CAUSAL: '
+  +(L.sistema?L.sistema.toUpperCase():'indeterminado')+'</b>'
+  +'<br><span style="font-size:11px;">'+(L.leitura||'')+'</span>'
+  +(ks.length?'<br><span style="font-size:10px;color:#8b949e;">'
+    +ks.map(function(k){ return k+' '+cp[k]+'%'; }).join(' · ')
+    +' · '+d.n_dirigidas+' arestas</span>':'')
+  +'</div>';
+}
+
+function mxCard515(d){
+ if(!d || d.status!=='ok'){
+  return '<p style="color:#F0883E;font-size:11px;">5-1-5: '
+   +((d&&(d.motivo||d.mensagem))||'sem dados')+'</p>'; }
+ const p=d.pontuacao, i=d.interpretacao;
+ const cor=v=>v==='Utilização'||v==='Pulmonar'?'#58A6FF'
+   :v==='Fornecimento'||v==='Cardíaco'?'#F85149':'#8b949e';
+ let h='';
+ [['Utilização vs Fornecimento',p.us,i.us],
+  ['Pulmonar vs Cardíaco',p.pc,i.pc]].forEach(function(b){
+  if(!b[2]) return;
+  h+='<div style="border-left:3px solid '+cor(b[2].limitador)+';'
+   +'padding:5px 9px;margin-top:8px;">'
+   +'<span style="color:#8b949e;font-size:10px;">'+b[0]+'</span><br>'
+   +'<b style="color:'+cor(b[2].limitador)+';font-size:12px;">'
+   +b[2].limitador+'</b> <span style="color:#8b949e;font-size:11px;">'
+   +b[1].pontos+'/'+b[1].max+' = '+(b[1].score!=null?b[1].score:'—')
+   +'</span><br><span style="font-size:11px;">'+b[2].texto+'</span>'
+   +(b[2].o_que_treinar?'<br><span style="font-size:10px;color:#8b949e;">'
+     +'→ '+b[2].o_que_treinar+'</span>':'')
+   +'</div>';
+ });
+ return h;
+}
+
+// Consenso: qual limitador aparece mais vezes, e com que concordancia.
+// Se as sessoes discordarem, diz-se isso em vez de forcar um vencedor --
+// discordancia entre sessoes e' informacao sobre a variabilidade do
+// atleta, ou sobre a qualidade dos dados, e nao ruido a esconder.
+function mxConsenso(rs){
+ const eixos={rede:{}, us:{}, pc:{}};
+ let nR=0, nI=0;
+ rs.forEach(function(x){
+  if(x.rede && x.rede.status==='ok'){
+   const s2=(x.rede.limitador||{}).sistema;
+   if(s2){ eixos.rede[s2]=(eixos.rede[s2]||0)+1; nR++; }
+  }
+  if(x.it && x.it.status==='ok'){
+   const i=x.it.interpretacao||{};
+   if(i.us){ eixos.us[i.us.limitador]=(eixos.us[i.us.limitador]||0)+1; }
+   if(i.pc){ eixos.pc[i.pc.limitador]=(eixos.pc[i.pc.limitador]||0)+1; }
+   nI++;
+  }
+ });
+ function linha(nome, mapa, n){
+  const ks=Object.keys(mapa).sort(function(a,b){ return mapa[b]-mapa[a]; });
+  if(!ks.length) return '<li>'+nome+': sem resultados</li>';
+  const top=ks[0], c=mapa[top];
+  const pct=n?Math.round(c/n*100):0;
+  const cor=pct>=70?'#3FB950':pct>=50?'#F0883E':'#F85149';
+  return '<li>'+nome+': <b style="color:'+cor+';">'+top+'</b> em '
+   +c+' de '+n+' sessões ('+pct+'%)'
+   +(ks.length>1?' <span style="color:#8b949e;">— também '
+     +ks.slice(1).map(function(k){ return k+' ('+mapa[k]+')'; }).join(', ')
+     +'</span>':'')
+   +'</li>';
+ }
+ let h='<div style="border:1px solid #30363d;border-radius:6px;'
+  +'padding:8px 12px;margin-top:12px;">'
+  +'<b>Consenso entre as '+rs.length+' sessões</b>'
+  +'<ul style="font-size:12px;margin:6px 0;padding-left:18px;">'
+  +linha('Rede causal', eixos.rede, nR)
+  +linha('Utilização vs Fornecimento', eixos.us, nI)
+  +linha('Pulmonar vs Cardíaco', eixos.pc, nI)
+  +'</ul>'
+  +'<p style="color:#8b949e;font-size:11px;margin:0;">Verde acima de 70% de '
+  +'concordância, laranja acima de 50%, vermelho abaixo. <b>Concordância '
+  +'baixa não é falha do método</b> — ou o limitador mudou entre sessões, ou '
+  +'os protocolos não são comparáveis, ou a qualidade dos dados varia. Vale '
+  +'mais saber isso do que ver uma média que esconde a discordância.</p>'
+  +'</div>';
+ return h;
+}
+
 function mx515(){
  const ids=Object.keys(MX_DADOS);
  const est=document.getElementById('mx515Estado');
@@ -338,10 +508,7 @@ function mx515(){
  if(!ids.length){ est.textContent='escolhe uma sessão'; return; }
  const id=ids[0];
  const c=mxCorteDe(id);
- let q='?claro='+document.getElementById('mx515Claro').value
-  +'&fraccao='+document.getElementById('mx515Frac').value
-  +'&repetida='+(document.getElementById('mx515Rep').checked?'1':'0')
-  +'&inicio='+Math.round(c[0])+'&fim='+Math.round(c[1]);
+ let q=mxParams().it+'&inicio='+Math.round(c[0])+'&fim='+Math.round(c[1]);
  Object.keys(MX515_EDIT).forEach(function(k){
   q+='&resp_'+k+'='+encodeURIComponent(MX515_EDIT[k]); });
  est.textContent='a avaliar...';
@@ -426,6 +593,103 @@ function mx515(){
  }).catch(e=>{ est.textContent='erro: '+e.message; });
 }
 
+// Em comparacao esconde-se o detalhe: com 4 sessoes seriam 4 tabelas de
+// arestas e 4 de 13 perguntas. Ficam os cartoes e o consenso.
+function mxModoUnico(unico){
+ ['mxRedeDetalhe','mx515Detalhe'].forEach(function(id){
+  const e=document.getElementById(id);
+  if(e) e.style.display = unico ? '' : 'none';
+ });
+ const r=document.getElementById('mxResumoBloco');
+ if(r) r.style.display = unico ? 'none' : '';
+}
+
+function mxResumo(){
+ const ids=Object.keys(MX_DADOS);
+ const box=document.getElementById('mxResumo');
+ const est=document.getElementById('mxResumoEstado');
+ if(!box) return;
+ if(ids.length<2){ box.innerHTML=''; return; }
+ const q='?ids='+ids.join(',')
+  +'&lag='+document.getElementById('mxRdLag').value
+  +'&corr='+document.getElementById('mxRdCorr').value
+  +'&claro='+document.getElementById('mx515Claro').value
+  +'&fraccao='+document.getElementById('mx515Frac').value;
+ est.textContent='a analisar '+ids.length+' sessões...';
+ fetch('/api/moxy/resumo'+q).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ est.textContent=d.mensagem||'erro'; return; }
+  est.textContent=d.n_sessoes+' sessões analisadas';
+  const cons=d.consenso||{};
+  const rot={rede:'Rede causal',us:'Utilização vs Fornecimento',
+             pc:'Pulmonar vs Cardíaco'};
+  let h='<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:10px;">';
+  ['rede','us','pc'].forEach(function(k){
+   const c=cons[k]||{};
+   if(!c.mais_comum){ return; }
+   const forte=c.concordancia_pct>=70;
+   const cor=forte?'#3FB950':'#F0883E';
+   h+='<div style="flex:1;min-width:230px;border:1px solid '+cor+';'
+    +'border-radius:6px;padding:8px 10px;">'
+    +'<span style="color:#8b949e;font-size:11px;">'+rot[k]+'</span><br>'
+    +'<b style="font-size:16px;color:'+cor+';">'+c.mais_comum+'</b><br>'
+    +'<span style="font-size:11px;color:#8b949e;">'+c.n+' de '+c.de
+    +' sessões ('+c.concordancia_pct+'%)'
+    +(c.unanime?' · unânime':'')+'</span><br>'
+    +'<span style="font-size:10px;color:#8b949e;">'
+    +Object.keys(c.contagem).map(function(x){
+      return x+': '+c.contagem[x]; }).join(' · ')+'</span></div>';
+  });
+  h+='</div>';
+  h+='<p style="color:#8b949e;font-size:11px;">'+(d.nota||'')+'</p>';
+
+  // cartoes por sessao
+  h+='<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;">';
+  (d.sessoes||[]).forEach(function(x, si){
+   const s2=MX_SESSOES.find(y=>String(y.id)===String(x.activity_id))||{};
+   h+='<div style="flex:1;min-width:300px;border:1px solid #30363d;'
+    +'border-radius:6px;padding:8px 10px;">'
+    +'<b style="color:'+mxCorSessao(si)+';">'+(si+1)+'· '+(s2.data||x.activity_id)
+    +'</b> <span style="color:#8b949e;font-size:11px;">'
+    +(s2.modalidade||'')+(x.pct_artefacto!=null
+      ? ' · artefacto '+x.pct_artefacto+'%' : '')+'</span>';
+   if(x.erro){ h+='<br><span style="color:#F85149;font-size:11px;">'+x.erro
+     +'</span></div>'; return; }
+   const L=(x.rede||{}).limitador;
+   if(L && L.sistema){
+    const cp=L.controlo_pct||{};
+    h+='<div style="margin-top:6px;font-size:11px;">'
+     +'<b style="color:#F85149;">LIMITADOR: '+L.sistema.toUpperCase()+'</b><br>'
+     +'<span style="color:#8b949e;">'+L.leitura+'</span><br>'
+     +'<span style="color:#8b949e;">'
+     +Object.keys(cp).sort(function(a,b){return cp[b]-cp[a];})
+       .map(function(k){ return k+' '+cp[k]+'%'; }).join(' · ')+'</span></div>';
+   } else if(x.rede){
+    h+='<div style="margin-top:6px;font-size:11px;color:#8b949e;">rede: '
+     +(x.rede.motivo||x.rede.erro||'sem arestas')+'</div>';
+   }
+   const I=(x.i515||{}).interpretacao, P=(x.i515||{}).pontuacao;
+   if(I && P){
+    [['us','Utilização vs Fornecimento'],['pc','Pulmonar vs Cardíaco']]
+     .forEach(function(par){
+      const b=I[par[0]], pp=P[par[0]];
+      if(!b) return;
+      h+='<div style="margin-top:6px;font-size:11px;">'
+       +'<span style="color:#8b949e;">'+par[1]+'</span><br>'
+       +'<b>'+b.limitador+'</b> <span style="color:#8b949e;">'+pp.pontos
+       +'/'+pp.max+' = '+pp.score+'</span><br>'
+       +'<span style="color:#8b949e;">'+b.texto+'</span></div>';
+     });
+   } else if(x.i515 && x.i515.motivo){
+    h+='<div style="margin-top:6px;font-size:11px;color:#8b949e;">5-1-5: '
+     +x.i515.motivo+'</div>';
+   }
+   h+='</div>';
+  });
+  h+='</div>';
+  box.innerHTML=h;
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
 function mxRede(){
  const ids=Object.keys(MX_DADOS);
  const est=document.getElementById('mxRdEstado');
@@ -438,7 +702,8 @@ function mxRede(){
   +'&corr='+document.getElementById('mxRdCorr').value
   +'&inicio='+Math.round(c[0])+'&fim='+Math.round(c[1])
   +(document.getElementById('mxRdDif').checked?'':'&diferenciar=0')
-  +(document.getElementById('mxRdCond').checked?'':'&condicionar=0');
+  +(document.getElementById('mxRdCond').checked?'':'&condicionar=0')
+  +(document.getElementById('mxRdDer').checked?'&derivados=1':'');
  est.textContent='a calcular...';
  fetch('/api/moxy/rede/'+id+q).then(r=>r.json()).then(function(d){
   if(d.status!=='ok'){ est.textContent=d.mensagem||d.motivo||'sem dados';
@@ -627,6 +892,12 @@ function mxCarregar(){
   est.textContent = ids.length + (ids.length===1?' sessão':' sessões a comparar')
    + (maus.length ? ' · ' + maus.length + ' com problema' : '');
   mxCanaisEdit(); mxAlinhar();
+  // correr as duas analises sozinhas, com os valores por omissao: ter de
+  // carregar em dois botoes de cada vez que se muda de sessao e' trabalho
+  // que a maquina pode fazer
+  if(ids.length === 1){ mxModoUnico(true); mxRede(); mx515(); }
+  else if(ids.length > 1){ mxModoUnico(false); mxResumo(); }
+  mxAnalises();
  });
 }
 

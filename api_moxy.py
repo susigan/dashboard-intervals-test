@@ -602,6 +602,7 @@ def registar(app):
 
         ?lag=5  ?corr=0.30  ?alfa=0.05  ?controlo=watts
         ?diferenciar=0  ?condicionar=0   (para comparar com o metodo cru)
+        ?derivados=1    incluir O2Hb e HHb (componentes do SmO2)
         ?inicio=900&fim=2100   restringir ao intervalo analisado
         """
         try:
@@ -640,7 +641,8 @@ def registar(app):
                 corr_minima=request.args.get('corr', type=float) or rc.CORR_MINIMA,
                 alfa=request.args.get('alfa', type=float) or rc.P_MAXIMO,
                 diferenciar=request.args.get('diferenciar') != '0',
-                condicionar=request.args.get('condicionar') != '0')
+                condicionar=request.args.get('condicionar') != '0',
+                incluir_derivados=request.args.get('derivados') == '1')
             res['status'] = 'ok' if res.get('ok') else 'sem_dados'
             res['activity_id'] = aid
             return jsonify(res)
@@ -723,6 +725,138 @@ def registar(app):
             res['faixas_2A'] = list(it.ESCALA_US['2A'])
             res['faixas_9'] = list(it.ESCALA_PC['9'])
             return jsonify(res)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/resumo')
+    def api_moxy_resumo():
+        """Rede causal + 5-1-5 para varias sessoes, com o consenso.
+
+        ?ids=a,b,c   ?lag=5  ?corr=0.30  ?claro=10  ?fraccao=0.5
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import rede_causal as rc
+            import interpretacao_515 as it
+
+            ids = [x.strip() for x in (request.args.get('ids') or '').split(',')
+                   if x.strip()]
+            if not ids:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'sem ids'}), 400
+
+            fora = []
+            for aid in ids[:12]:
+                linha = {'activity_id': aid}
+                corpo = api_moxy_dados(aid)
+                d = corpo[0].get_json() if isinstance(corpo, tuple) \
+                    else corpo.get_json()
+                if not d or d.get('status') != 'ok':
+                    linha['erro'] = (d or {}).get('mensagem') or 'sem dados'
+                    fora.append(linha)
+                    continue
+
+                t = d.get('tempo') or []
+                canais = d.get('canais') or {}
+                blocos = ((d.get('blocos') or {}).get('blocos')) or []
+                g = d.get('corte_guardado') or {}
+                pr = d.get('corte_proposto') or {}
+                a = g.get('inicio_s') if g.get('inicio_s') is not None else (
+                    pr.get('inicio_s') if pr.get('ok') else (t[0] if t else 0))
+                b = g.get('fim_s') if g.get('fim_s') is not None else (
+                    pr.get('fim_s') if pr.get('ok') else (t[-1] if t else 0))
+                linha['corte'] = [a, b]
+                bl = [x for x in blocos if x['t1'] >= a and x['t0'] <= b]
+                idx = [i for i in range(len(t)) if a <= t[i] <= b]
+                cj = {k: [v[i] for i in idx if i < len(v)]
+                      for k, v in canais.items()}
+                art = (d.get('artefactos') or {}).get('pct_acima_do_limiar')
+                linha['pct_artefacto'] = art
+
+                try:
+                    r = rc.rede(
+                        cj,
+                        max_lag=request.args.get('lag', type=int) or rc.MAX_LAG,
+                        corr_minima=request.args.get('corr', type=float)
+                        or rc.CORR_MINIMA)
+                    linha['rede'] = ({'limitador': r.get('limitador'),
+                                      'n_dirigidas': r.get('n_dirigidas'),
+                                      'canais': r.get('canais_usados')}
+                                     if r.get('ok')
+                                     else {'motivo': r.get('motivo')})
+                except Exception as e:
+                    linha['rede'] = {'erro': str(e)[:90]}
+
+                try:
+                    v = it.avaliar(
+                        t, canais, bl, pct_artefacto=art,
+                        fraccao_final=request.args.get('fraccao', type=float)
+                        or it.FRACCAO_FINAL,
+                        corte_claro=(request.args.get('claro', type=float)
+                                     or it.CORTE_CLARO * 100) / 100.0)
+                    linha['i515'] = ({'pontuacao': {
+                        'us': {k: v['pontuacao']['us'][k]
+                               for k in ('pontos', 'max', 'score')},
+                        'pc': {k: v['pontuacao']['pc'][k]
+                               for k in ('pontos', 'max', 'score')}},
+                        'interpretacao': v['interpretacao'],
+                        'avisos': v.get('avisos')}
+                        if v.get('ok') else {'motivo': v.get('motivo')})
+                except Exception as e:
+                    linha['i515'] = {'erro': str(e)[:90]}
+                fora.append(linha)
+
+            # ── consenso ────────────────────────────────────────────────
+            # Contagem simples do limitador por eixo. Ponderar por qualidade
+            # seria mais fino, mas escondia quantas sessoes ha' de cada
+            # lado, que e' o que interessa saber primeiro.
+            def _contar(chave, caminho):
+                c = {}
+                for x in fora:
+                    v = x.get(caminho[0]) or {}
+                    for k in caminho[1:]:
+                        v = (v or {}).get(k) or {}
+                    n = v.get('limitador') or v.get('sistema')
+                    if n:
+                        c[n] = c.get(n, 0) + 1
+                return c
+
+            cons = {
+                'rede': _contar('rede', ['rede', 'limitador']),
+                'us': _contar('us', ['i515', 'interpretacao', 'us']),
+                'pc': _contar('pc', ['i515', 'interpretacao', 'pc']),
+            }
+            resumo = {}
+            for eixo, c in cons.items():
+                if not c:
+                    resumo[eixo] = {'mais_comum': None, 'contagem': {}}
+                    continue
+                top = max(c, key=c.get)
+                n_tot = sum(c.values())
+                resumo[eixo] = {
+                    'mais_comum': top, 'n': c[top], 'de': n_tot,
+                    'concordancia_pct': round(c[top] / n_tot * 100),
+                    'contagem': c,
+                    'unanime': len(c) == 1 and n_tot > 1}
+
+            n_maus = sum(1 for x in fora
+                         if (x.get('pct_artefacto') or 0) > 30)
+            return jsonify({
+                'status': 'ok', 'n_sessoes': len(fora),
+                'sessoes': fora, 'consenso': resumo,
+                'n_com_artefacto_alto': n_maus,
+                'nota': ('o consenso e uma contagem, nao uma media: com 3 '
+                         'sessoes a dizer periferico e 2 cardiaco, o que '
+                         'interessa e que ha 2 a discordar, nao que 60% '
+                         'ganha. Concordancia abaixo de 70% significa que '
+                         'nao ha padrao estavel'
+                         + (f'. {n_maus} sessao(oes) com mais de 30% de '
+                            'artefacto na cinta -- as leituras de FC dessas '
+                            'nao sao de confianca' if n_maus else ''))})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

@@ -655,6 +655,7 @@ def registar(app):
         ?inicio=&fim=  intervalo   ?claro=10&ligeiro=3  cortes em % da amplitude
         ?fraccao=0.5   fraccao final da sessao usada
         ?resp_2A=...   sobrepor a resposta medida de qualquer pergunta
+        ?repetida=0    excluir as perguntas de carga repetida (8A, 13)
         """
         try:
             import os as _os
@@ -689,7 +690,10 @@ def registar(app):
                 corte_claro=(request.args.get('claro', type=float) or
                              it.CORTE_CLARO * 100) / 100.0,
                 corte_ligeiro=(request.args.get('ligeiro', type=float) or
-                               it.CORTE_LIGEIRO * 100) / 100.0)
+                               it.CORTE_LIGEIRO * 100) / 100.0,
+                excluir_carga_repetida=(
+                    None if request.args.get('repetida') is None
+                    else request.args.get('repetida') == '0'))
             if not res.get('ok'):
                 return jsonify({'status': 'sem_dados', **res}), 200
 
@@ -715,6 +719,7 @@ def registar(app):
             res['status'] = 'ok'
             res['activity_id'] = aid
             res['niveis'] = it.NIVEIS
+            res['figuras'] = it.figuras_das_perguntas()
             res['faixas_2A'] = list(it.ESCALA_US['2A'])
             res['faixas_9'] = list(it.ESCALA_PC['9'])
             return jsonify(res)

@@ -46,6 +46,25 @@ CORTE_LIGEIRO = 0.03
 # se tira o aquecimento e as primeiras cargas.
 FRACCAO_FINAL = 0.5
 
+# Segundos finais de cada recuperacao que contam como "repouso". O inicio da
+# recuperacao ainda esta a subir; o patamar e' o que interessa.
+REPOUSO_SEG = 30
+
+# Minimo de blocos para uma tendencia. Com dois pontos qualquer recta passa
+# por eles e o declive nao significa nada. Era isto que fazia 3A, 4A, 6A,
+# 7A, 10 e 11 sairem sem resposta em sessoes de 4 ou 5 blocos: a fraccao
+# final dava k=2 e o ajuste recusava.
+MIN_BLOCOS_TENDENCIA = 3
+
+# Segundos finais de cada bloco usados como valor representativo.
+#
+# A media do bloco inteiro mistura a transicao com o patamar: num bloco de
+# recuperacao inclui a subida do SmO2 desde o fundo, e o "valor de repouso"
+# sai mais baixo do que o repouso realmente atingido. Os ultimos segundos
+# sao o estado a que o bloco chegou, que e' o que as perguntas do 5-1-5
+# pedem.
+CAUDA_S = 30
+
 NIVEIS = ['Clear increase', 'Slight increase', 'Steady',
           'Slight decrease', 'Clear decrease']
 
@@ -160,13 +179,17 @@ def _faixa_smo2(v):
     return '<20%'
 
 
-def _recortar(serie, tempo, t0, t1):
+def _recortar(serie, tempo, t0, t1, cauda=None):
+    """Valores no intervalo. Com 'cauda', so' os ultimos N segundos."""
+    if cauda:
+        t0 = max(t0, t1 - cauda)
     return [serie[i] for i in range(min(len(serie), len(tempo)))
             if t0 <= tempo[i] <= t1 and serie[i] is not None]
 
 
 def medir(tempo, canais, blocos, fraccao_final=FRACCAO_FINAL,
-          corte_claro=CORTE_CLARO, corte_ligeiro=CORTE_LIGEIRO):
+          corte_claro=CORTE_CLARO, corte_ligeiro=CORTE_LIGEIRO,
+          cauda=CAUDA_S):
     """Mede as 13 perguntas a partir dos blocos ON/OFF."""
     smo2 = canais.get('smo2') or []
     thb = canais.get('thb') or []
@@ -180,9 +203,10 @@ def medir(tempo, canais, blocos, fraccao_final=FRACCAO_FINAL,
         return {'ok': False,
                 'motivo': f'so {len(ons)} blocos de trabalho; sao precisos 3'}
 
-    k = max(2, int(len(ons) * fraccao_final))
+    k = max(MIN_BLOCOS_TENDENCIA, int(round(len(ons) * fraccao_final)))
+    k = min(k, len(ons))
     ons_fim = ons[-k:]
-    offs_fim = offs[-k:] if len(offs) >= k else offs
+    offs_fim = offs[-min(k, len(offs)):] if offs else []
 
     def amp(serie):
         vs = [v for v in serie if v is not None]
@@ -193,13 +217,15 @@ def medir(tempo, canais, blocos, fraccao_final=FRACCAO_FINAL,
     # por bloco
     smo2_min_on = [min(_recortar(smo2, tempo, b['t0'], b['t1']), default=None)
                    for b in ons_fim]
-    smo2_rep = [_media(_recortar(smo2, tempo, b['t0'], b['t1']))
+    # Repouso e trabalho medidos nos ultimos CAUDA_S de cada bloco: e o
+    # estado a que o bloco chegou, nao a media da transicao com o patamar.
+    smo2_rep = [_media(_recortar(smo2, tempo, b['t0'], b['t1'], cauda))
                 for b in offs_fim]
-    thb_rep = [_media(_recortar(thb, tempo, b['t0'], b['t1']))
+    thb_rep = [_media(_recortar(thb, tempo, b['t0'], b['t1'], cauda))
                for b in offs_fim] if thb else []
-    thb_on = [_media(_recortar(thb, tempo, b['t0'], b['t1']))
+    thb_on = [_media(_recortar(thb, tempo, b['t0'], b['t1'], cauda))
               for b in ons_fim] if thb else []
-    hr_rep = [_media(_recortar(hr, tempo, b['t0'], b['t1']))
+    hr_rep = [_media(_recortar(hr, tempo, b['t0'], b['t1'], cauda))
               for b in offs_fim] if hr else []
     hr_max_on = [max(_recortar(hr, tempo, b['t0'], b['t1']), default=None)
                  for b in ons_fim] if hr else []
@@ -280,14 +306,22 @@ def medir(tempo, canais, blocos, fraccao_final=FRACCAO_FINAL,
             n2 = 'Clear decrease'
         return n2, round(rr * 100, 1), len(rep)
 
-    n, rel, ng = repetida(thb_on, a_thb)
-    r['8A'] = {'resposta': n, 'declive_pct_da_amplitude': rel,
-               'n_escaloes_repetidos': ng}
-    hr_on = [_media(_recortar(hr, tempo, b['t0'], b['t1'])) for b in ons_fim] \
-        if hr else []
-    n, rel, ng = repetida(hr_on, a_hr)
-    r['13'] = {'resposta': n, 'declive_pct_da_amplitude': rel,
-               'n_escaloes_repetidos': ng}
+    # Carga repetida: so' faz sentido em protocolos que repetem o mesmo
+    # escalao. Num teste em escada crescente nao ha repeticoes, e a
+    # pergunta fica sem base -- por isso pode ser desligada em vez de
+    # contar zero e puxar o score para baixo.
+    if True:
+        n, rel, ng = repetida(thb_on, a_thb)
+        r['8A'] = {'resposta': n, 'declive_pct_da_amplitude': rel,
+                   'n_escaloes_repetidos': ng}
+        hr_on = [_media(_recortar(hr, tempo, b['t0'], b['t1'], cauda))
+                 for b in ons_fim] if hr else []
+        n, rel, ng = repetida(hr_on, a_hr)
+        r['13'] = {'resposta': n, 'declive_pct_da_amplitude': rel,
+                   'n_escaloes_repetidos': ng}
+        if not r['8A']['n_escaloes_repetidos'] and \
+                not r['13']['n_escaloes_repetidos']:
+            r['_sem_repeticoes'] = True
 
     # atraso THb -> SmO2 no inicio da recuperacao
     atrasos = []
@@ -315,8 +349,12 @@ def medir(tempo, canais, blocos, fraccao_final=FRACCAO_FINAL,
         r['9'] = {'resposta': None, 'motivo': 'sem THb ou recuperações curtas'}
 
     return {'ok': True, 'respostas': r,
+            'repouso_seg': REPOUSO_SEG,
             'n_blocos_trabalho': len(ons),
             'n_blocos_usados': len(ons_fim),
+            'n_blocos_repouso_usados': len(offs_fim),
+            'cauda_s': cauda,
+            'sem_repeticoes_de_carga': r.pop('_sem_repeticoes', False),
             'fraccao_final': fraccao_final,
             'amplitudes': {'smo2': round(a_smo2, 1) if a_smo2 else None,
                            'thb': round(a_thb, 2) if a_thb else None,
@@ -324,7 +362,8 @@ def medir(tempo, canais, blocos, fraccao_final=FRACCAO_FINAL,
             'tem_thb': bool(thb), 'tem_hr': bool(hr)}
 
 
-def pontuar(respostas, tem_thb=True, tem_hr=True, tem_segundo_musculo=False):
+def pontuar(respostas, tem_thb=True, tem_hr=True, tem_segundo_musculo=False,
+            excluir_carga_repetida=None):
     """Pontos e score nos dois eixos, com o denominador ajustado."""
     det_us, det_pc = [], []
     pontos_us = pontos_pc = 0.0
@@ -348,6 +387,20 @@ def pontuar(respostas, tem_thb=True, tem_hr=True, tem_segundo_musculo=False):
             continue
         if q in ('10', '11', '12', '13') and not tem_hr:
             continue
+        # As perguntas de carga repetida so' fazem sentido em protocolos
+        # que repetem o mesmo escalao. Neste atleta a escada e' sempre
+        # crescente, e conta-las como zero baixava o score sem razao. Fora
+        # do numerador E do denominador -- que e a diferenca entre "nao se
+        # aplica" e "resposta zero".
+        nao_ap = (respostas.get(q) or {}).get('nao_aplicavel')
+        if q in ('8A', '13') and (
+                nao_ap if excluir_carga_repetida is None
+                else excluir_carga_repetida):
+            det_pc.append({'pergunta': q, 'texto': PERGUNTAS.get(q, q),
+                           'resposta': None, 'pontos': None,
+                           'max': max(escala.values()),
+                           'nao_aplicavel': True})
+            continue
         resp = (respostas.get(q) or {}).get('resposta')
         disponivel = max(escala.values())
         max_pc += disponivel
@@ -362,7 +415,9 @@ def pontuar(respostas, tem_thb=True, tem_hr=True, tem_segundo_musculo=False):
     score_pc = (pontos_pc / max_pc) if max_pc else None
 
     sem_resposta = [d['pergunta'] for d in det_us + det_pc
-                    if d['resposta'] is None]
+                    if d['resposta'] is None and not d.get('nao_aplicavel')]
+    nao_aplicaveis = [d['pergunta'] for d in det_us + det_pc
+                      if d.get('nao_aplicavel')]
 
     return {
         'us': {'pontos': round(pontos_us, 2), 'max': round(max_us, 2),
@@ -372,6 +427,7 @@ def pontuar(respostas, tem_thb=True, tem_hr=True, tem_segundo_musculo=False):
                'score': round(score_pc, 3) if score_pc is not None else None,
                'detalhe': det_pc},
         'sem_resposta': sem_resposta,
+        'nao_aplicaveis': nao_aplicaveis,
     }
 
 
@@ -431,10 +487,20 @@ def avaliar(tempo, canais, blocos, pct_artefacto=None, **kw):
     if pct_artefacto is not None and pct_artefacto > 30:
         avisos.append(f'{round(pct_artefacto)}% dos pontos com artefacto na '
                       'cinta: as respostas sobre FC não são de confiança')
-    m = medir(tempo, canais, blocos, **kw)
+    kw_medir = {k: v for k, v in kw.items()
+                if k != 'excluir_carga_repetida'}
+    m = medir(tempo, canais, blocos, **kw_medir)
     if not m.get('ok'):
         return {'ok': False, 'motivo': m.get('motivo'), 'avisos': avisos}
-    p = pontuar(m['respostas'], tem_thb=m['tem_thb'], tem_hr=m['tem_hr'])
+    # None = decidir pelos dados (n/a quando nao ha escaloes repetidos);
+    # True/False = forcado pelo utilizador
+    p = pontuar(m['respostas'], tem_thb=m['tem_thb'], tem_hr=m['tem_hr'],
+                excluir_carga_repetida=kw.get('excluir_carga_repetida'))
+    if p.get('nao_aplicaveis'):
+        avisos.append(
+            f"perguntas {', '.join(p['nao_aplicaveis'])} não se aplicam: a "
+            'sessão não repete o mesmo escalão de carga. Ficaram fora do '
+            'numerador e do denominador, não contadas como zero')
     i = interpretar(p['us']['score'], p['pc']['score'],
                     p['sem_resposta'], avisos)
     return {'ok': True, 'medicoes': m, 'pontuacao': p, 'interpretacao': i,
@@ -442,3 +508,107 @@ def avaliar(tempo, canais, blocos, pct_artefacto=None, **kw):
             'cortes': {'claro_pct': CORTE_CLARO * 100,
                        'ligeiro_pct': CORTE_LIGEIRO * 100,
                        'fraccao_final': kw.get('fraccao_final', FRACCAO_FINAL)}}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# MINI-FIGURAS
+#
+# O ficheiro original tem, ao lado de cada pergunta, um desenho a mao do
+# padrao que se procura. Sao 35 formas do Excel, nao imagens, por isso nao
+# se extraem -- desenham-se aqui em SVG, o que sai mais nitido e acompanha
+# o tema da pagina.
+#
+# Cada figura mostra o sinal ao longo de varios intervalos, com a linha de
+# tendencia por cima, exactamente como no ficheiro.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _dentes(n_int, base, delta_por_int, profundidade, largura=120,
+            altura=34, invertido=False):
+    """Serie em dentes: cada intervalo desce (ou sobe) e recupera."""
+    pts = []
+    passos = 14
+    for k in range(n_int):
+        b = base + delta_por_int * k
+        for j in range(passos):
+            f = j / (passos - 1)
+            if f < 0.6:
+                v = b - profundidade * (f / 0.6)
+            else:
+                v = b - profundidade * (1 - (f - 0.6) / 0.4)
+            pts.append(v)
+    n = len(pts)
+    lo, hi = min(pts), max(pts)
+    amp = (hi - lo) or 1
+    xs = [4 + i * (largura - 8) / max(1, n - 1) for i in range(n)]
+    ys = [altura - 4 - (v - lo) / amp * (altura - 10) for v in pts]
+    if invertido:
+        ys = [altura - y for y in ys]
+    return xs, ys, pts, lo, amp
+
+
+def figura(tipo, nivel, largura=120, altura=34):
+    """SVG de uma das cinco tendencias, para o canal indicado.
+
+    tipo: 'smo2_repouso' | 'smo2_min' | 'smo2_dentro' | 'thb' | 'hr'
+    """
+    cores = {'smo2_repouso': '#3FB950', 'smo2_min': '#3FB950',
+             'smo2_dentro': '#3FB950', 'thb': '#F0883E', 'hr': '#E3B341'}
+    cor = cores.get(tipo, '#8b949e')
+    delta = {'Clear increase': 3.0, 'Slight increase': 1.2, 'Steady': 0.0,
+             'Slight decrease': -1.2, 'Clear decrease': -3.0}.get(nivel, 0.0)
+
+    if tipo == 'smo2_dentro':
+        # a tendencia e' DENTRO de cada dente, nao entre eles
+        pts = []
+        for k in range(5):
+            passos = 14
+            for j in range(passos):
+                f = j / (passos - 1)
+                fundo = 10 + delta * 1.6
+                v = 30 - (30 - (30 - fundo)) * 0 - fundo * min(1.0, f / 0.6) \
+                    if f < 0.6 else 30 - fundo * (1 - (f - 0.6) / 0.4)
+                pts.append(v)
+        n = len(pts)
+        lo, hi = min(pts), max(pts)
+        amp = (hi - lo) or 1
+        xs = [4 + i * (largura - 8) / max(1, n - 1) for i in range(n)]
+        ys = [altura - 4 - (v - lo) / amp * (altura - 10) for v in pts]
+    else:
+        prof = 14 if tipo.startswith('smo2') else 6
+        xs, ys, pts, lo, amp = _dentes(5, 30, delta, prof, largura, altura)
+
+    d = 'M ' + ' L '.join(f'{x:.1f} {y:.1f}' for x, y in zip(xs, ys))
+
+    # linha de tendencia: sobre os picos (repouso) ou os vales (minimo)
+    n_int = 5
+    passos = len(xs) // n_int
+    if tipo in ('smo2_min',):
+        idx = [k * passos + int(passos * 0.6) for k in range(n_int)]
+    else:
+        idx = [k * passos for k in range(n_int)]
+    idx = [min(i, len(xs) - 1) for i in idx]
+    x0, y0 = xs[idx[0]], ys[idx[0]]
+    x1, y1 = xs[idx[-1]], ys[idx[-1]]
+
+    return (
+        f'<svg width="{largura}" height="{altura}" viewBox="0 0 {largura} '
+        f'{altura}" xmlns="http://www.w3.org/2000/svg">'
+        f'<path d="{d}" fill="none" stroke="{cor}" stroke-width="1.4"/>'
+        f'<line x1="{x0:.1f}" y1="{y0:.1f}" x2="{x1:.1f}" y2="{y1:.1f}" '
+        f'stroke="#8b949e" stroke-width="1.2" stroke-dasharray="3,2"/>'
+        f'</svg>')
+
+
+TIPO_DA_PERGUNTA = {
+    '3A': 'smo2_repouso', '4A': 'smo2_min', '5A': 'smo2_dentro',
+    '6A': 'thb', '7A': 'thb', '8A': 'thb',
+    '10': 'hr', '11': 'hr', '12': 'hr', '13': 'hr',
+}
+
+
+def figuras_das_perguntas(largura=120, altura=34):
+    """{pergunta: {nivel: svg}} para as perguntas de tendencia."""
+    out = {}
+    for q, tipo in TIPO_DA_PERGUNTA.items():
+        out[q] = {n: figura(tipo, n, largura, altura) for n in NIVEIS}
+    return out

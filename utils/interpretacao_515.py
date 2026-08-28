@@ -438,30 +438,63 @@ def interpretar(score_us, score_pc, sem_resposta=None, avisos=None):
         if score_us >= 0.55:
             out['us'] = {
                 'limitador': 'Utilização',
-                'texto': ('o SmO2 de trabalho fica alto: o músculo não está '
-                          'a extrair o oxigénio que lhe chega. O fornecimento '
-                          'não é o travão')}
+                'texto': ('o SmO2 de trabalho fica alto: chega oxigénio ao '
+                          'músculo, mas ele não o consome. O travão está '
+                          'dentro da fibra — mitocôndrias, enzimas, '
+                          'capilarização local'),
+                'o_que_treinar': ('volume aeróbio e trabalho local: séries '
+                                  'longas em zona verde, força-resistência, '
+                                  'tudo o que aumenta densidade mitocondrial '
+                                  'e capilares. Mais intensidade não resolve '
+                                  '— o oxigénio já lá está')}
         elif score_us <= 0.30:
             out['us'] = {
                 'limitador': 'Fornecimento',
-                'texto': ('o SmO2 desce muito e continua a descer: a '
-                          'extracção está no limite e falta entrega')}
+                'texto': ('o SmO2 desce até muito baixo e não recupera entre '
+                          'blocos: o músculo extrai tudo o que lhe chega e '
+                          'continua com fome. O travão está a montante — '
+                          'quanto sangue oxigenado consegue ser entregue ao '
+                          'músculo por minuto'),
+                'o_que_treinar': ('o lado da entrega: débito cardíaco e '
+                                  'volume sistólico (blocos de VO2max), ou o '
+                                  'lado ventilatório se o eixo P/C apontar '
+                                  'para pulmonar. Mais trabalho local não '
+                                  'resolve — a fábrica já consome tudo o que '
+                                  'recebe')}
         else:
-            out['us'] = {'limitador': 'Misto',
-                         'texto': 'sem predomínio claro entre os dois'}
+            out['us'] = {
+                'limitador': 'Misto',
+                'texto': ('nem o SmO2 fica alto nem desce ao fundo: os dois '
+                          'lados estão emparelhados. É o estado normal de um '
+                          'atleta treinado sem um travão evidente'),
+                'o_que_treinar': ('nada de específico por esta via. Repetir '
+                                  'em mais sessões antes de concluir')}
     if score_pc is not None:
         if score_pc >= 0.35:
             out['pc'] = {
                 'limitador': 'Pulmonar',
-                'texto': ('THb e SmO2 de repouso a subir, com atraso na '
-                          'resposta: o padrão aponta para o lado ventilatório')}
+                'texto': ('THb e SmO2 de repouso a subir ao longo da sessão, '
+                          'com atraso entre o THb e o SmO2 na recuperação: o '
+                          'sangue chega, mas chega menos saturado. Aponta '
+                          'para o lado ventilatório'),
+                'o_que_treinar': ('mecânica respiratória e trabalho dos '
+                                  'músculos ventilatórios; verificar padrão '
+                                  'de respiração em carga')}
         elif score_pc <= -0.15:
             out['pc'] = {
                 'limitador': 'Cardíaco',
                 'texto': ('THb a descer ao longo da sessão: o volume de '
-                          'sangue local não acompanha')}
+                          'sangue no músculo diminui à medida que a carga '
+                          'sobe. A bomba não acompanha a procura'),
+                'o_que_treinar': ('débito cardíaco: blocos longos em zona '
+                                  'pesada e séries de VO2max, que é onde o '
+                                  'volume sistólico se treina')}
         else:
-            out['pc'] = {'limitador': 'Misto', 'texto': 'sem predomínio claro'}
+            out['pc'] = {
+                'limitador': 'Misto',
+                'texto': ('THb e FC sem tendência marcada: entrega e '
+                          'ventilação acompanham a carga sem nenhum ceder '
+                          'primeiro')}
 
     partes = [f"{v['limitador']} ({k.upper()})"
               for k, v in (('us', out['us']), ('pc', out['pc'])) if v]

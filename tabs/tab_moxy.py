@@ -146,6 +146,21 @@ BODY = """
         <b>Ski:</b> sem literatura; tratado como o remo.</p>
         <p><b>Número de degraus:</b> testado com escadas de breakpoint
         conhecido — 12 degraus acertam o BP1 no valor exacto, 9 erram 30 W.</p>
+        <p><b>Que limiar é qual.</b> O SmO2max — o topo da parábola, quando
+        existe — aproxima o <b>FatMax / LT1 / VT1</b>, o primeiro limiar. A
+        quebra na queda (deoxy-BP) e o padrão de dessaturação apontam ao
+        <b>RCP / VT2 / MLSS</b>, o segundo. São coisas diferentes e não se
+        substituem.</p>
+        <p><b>Dois perfis de resposta</b> (Jem Arnold, no mesmo protocolo 5-1).
+        <i>Parabólico:</i> o SmO2 sobe nas cargas baixas até um máximo e só
+        depois desce — o topo aproxima o FatMax. <i>Monotónico:</i> desce
+        desde o primeiro degrau. Neste segundo perfil o primeiro limiar
+        <b>não é observável no SmO2</b>: nas palavras dele, o sinal associado
+        ao LT1 <i>"may not exist at all"</i>. Procurá-lo aí é procurar o que
+        não está.</p>
+        <p><b>Aviso do próprio autor sobre a concordância:</b> a associação
+        entre deoxy-BP e RCP existe ao nível do grupo, mas ao nível individual
+        <i>"this association broke down"</i>, com variabilidade de ±100 W.</p>
         <p><b>Três métodos, por ordem de aplicabilidade aqui.</b>
         <b>1) Taxa de dessaturação:</b> mede a velocidade de queda do SmO2
         dentro de cada degrau, depois do transiente, e procura a quebra.
@@ -767,12 +782,42 @@ function mxLimiares(){
   MX_BP = bp.ok ? {bp1:bp.bp1.tau, bp2:(bp.bp2||{}).tau} : null;
 
   let h='';
+  const pf=d.perfil_resposta||{};
+  if(pf.ok){
+   const par = pf.perfil==='parabólico';
+   h+='<div style="border-left:3px solid '+(par?'#A371F7':'#79C0FF')
+    +';padding:6px 10px;margin-bottom:10px;">'
+    +'<b style="font-size:15px;color:'+(par?'#A371F7':'#79C0FF')+';">'
+    +'Perfil '+pf.perfil+'</b> '
+    +'<span style="color:#8b949e;font-size:11px;">SmO2 de '+pf.smo2min
+    +'% a '+pf.smo2max+'% · amplitude '+pf.amplitude+'</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+pf.metodo+'</span>';
+   if(pf.bp1_watts!=null)
+    h+='<br><b style="color:#A371F7;">BP1 '+pf.bp1_watts+' W</b> '
+     +'<span style="color:#8b949e;font-size:11px;">≈ FatMax / LT1 · o '
+     +'PRIMEIRO limiar</span>';
+   h+='<br><span style="font-size:11px;">'+pf.bp1_leitura+'</span>'
+    +'<br><span style="font-size:10px;color:#8b949e;">'+pf.fenotipo+'</span>'
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +'<tr style="color:#8b949e;text-align:left;">'
+    +'<th style="padding-right:12px;">Carga</th>'
+    +'<th>SmO2 no último minuto</th></tr>'
+    +(pf.degraus||[]).map(function(x){
+      const top = x.watts===pf.smo2max_watts;
+      return '<tr><td style="padding-right:12px;">'+x.watts+' W</td>'
+       +'<td style="color:'+(top?'#A371F7':'#c9d1d9')+';">'+x.smo2_fim+'%'
+       +(top?' ← máximo':'')+'</td></tr>'; }).join('')
+    +'</table></div>';
+  } else if(pf.motivo){
+   h+='<p style="color:#8b949e;font-size:11px;">Perfil: '+pf.motivo+'</p>';
+  }
   const ml=d.mlss_dessaturacao||{};
   if(ml.ok){
    h+='<div style="border-left:3px solid #3FB950;padding:6px 10px;'
     +'margin-bottom:10px;">'
     +'<b style="font-size:16px;color:#3FB950;">MLSS '+ml.mlss_estimado
-    +' W</b> <span style="color:#8b949e;font-size:11px;">entre '
+    +' W</b> <span style="color:#8b949e;font-size:11px;">≈ VT2 / RCP / LT2 · '
+    +'o SEGUNDO limiar</span> <span style="color:#8b949e;font-size:11px;">entre '
     +ml.mlss_entre.join(' e ')+' W · ±'+ml.incerteza+'</span>'
     +'<br><span style="font-size:11px;color:#8b949e;">'+ml.metodo+'</span>'
     +'<br><span style="font-size:11px;color:#8b949e;">'+ml.nota+'</span>'
@@ -810,8 +855,8 @@ function mxLimiares(){
     +'margin-bottom:10px;">'
     +'<b style="font-size:16px;color:#58A6FF;">Breakpoint na taxa '
     +bt.bp_watts+' W</b>'
-    +' <span style="color:#8b949e;font-size:11px;">F='+bt.f_vs_recta
-    +' · '+bt.n_degraus+' degraus · '+(bt.padrao||'')+'</span>'
+    +' <span style="color:#8b949e;font-size:11px;">≈ VT2 / RCP · F='
+    +bt.f_vs_recta+' · '+bt.n_degraus+' degraus · '+(bt.padrao||'')+'</span>'
     +'<br><span style="font-size:11px;color:#8b949e;">'
     +(bt.plateia
       ? 'a queda deixa de se agravar aqui: a extracção chegou ao limite'

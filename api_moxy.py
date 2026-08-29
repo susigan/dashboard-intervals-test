@@ -722,6 +722,7 @@ def registar(app):
             res['activity_id'] = aid
             res['niveis'] = it.NIVEIS
             res['figuras'] = it.figuras_das_perguntas()
+            res['onde_mede'] = it.onde_mede_texto()
             res['faixas_2A'] = list(it.ESCALA_US['2A'])
             res['faixas_9'] = list(it.ESCALA_PC['9'])
             return jsonify(res)

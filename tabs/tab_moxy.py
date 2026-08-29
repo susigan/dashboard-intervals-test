@@ -786,6 +786,9 @@ function mxLimiares(){
   } else if(ml.motivo){
    h+='<p style="color:#F0883E;font-size:12px;">MLSS: '+ml.motivo+'</p>';
   }
+  if(ml.aviso_duracao)
+   h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '
+    +ml.aviso_duracao+'</p>';
   if(bp.ok){
    const conf = f.usar_para_prescrever===false ? '#F0883E' : '#3FB950';
    h+='<div style="border-left:3px solid '+conf+';padding:6px 10px;">'
@@ -806,8 +809,10 @@ function mxLimiares(){
     +(f.aviso_n?'<br><span style="font-size:11px;color:#8b949e;">'+f.aviso_n
       +'</span>':'')
     +(f.usar_para_prescrever===false
-      ? '<br><span style="font-size:11px;color:#F0883E;">⚠ não usar para '
-        +'prescrever zonas nesta modalidade</span>':'')
+      ? '<br><span style="font-size:11px;color:#F0883E;">⚠ o cálculo é o '
+        +'mesmo de todas as modalidades; o que muda é a confiança. Nesta, '
+        +'a literatura desaconselha usar o valor para prescrever zonas '
+        +'sem o confirmar contra CP ou MLSS</span>':'')
     +'</div>';
   } else {
    h+='<p style="color:#8b949e;font-size:11px;">Breakpoints por regressão: '

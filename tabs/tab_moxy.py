@@ -146,6 +146,15 @@ BODY = """
         <b>Ski:</b> sem literatura; tratado como o remo.</p>
         <p><b>Número de degraus:</b> testado com escadas de breakpoint
         conhecido — 12 degraus acertam o BP1 no valor exacto, 9 erram 30 W.</p>
+        <p><b>Três métodos, por ordem de aplicabilidade aqui.</b>
+        <b>1) Taxa de dessaturação:</b> mede a velocidade de queda do SmO2
+        dentro de cada degrau, depois do transiente, e procura onde acelera.
+        É o que o Rogers usa nas escadas — <i>"the rate of change between
+        stages showing a shift at high power outputs corresponding to the
+        RCP"</i>. Funciona com blocos curtos e bastam 4 degraus, porque a taxa
+        não depende de onde o degrau começou.
+        <b>2) Padrão de dessaturação (MLSS):</b> precisa de 5 min por degrau.
+        <b>3) Regressão sobre os mínimos:</b> desenhada para rampa contínua.</p>
         <p><b>Para protocolos de blocos, o método principal é outro.</b> O
         MLSS sai do padrão dentro de cada bloco: abaixo dele o SmO2 desce e
         <i>estabiliza</i>; acima, desce <i>continuamente até ao fim</i>. Não
@@ -789,6 +798,36 @@ function mxLimiares(){
   if(ml.aviso_duracao)
    h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '
     +ml.aviso_duracao+'</p>';
+
+  const bt=d.bp_taxa||{};
+  if(bt.ok){
+   h+='<div style="border-left:3px solid #58A6FF;padding:6px 10px;'
+    +'margin-bottom:10px;">'
+    +'<b style="font-size:16px;color:#58A6FF;">Breakpoint na taxa '
+    +bt.bp_watts+' W</b>'
+    +' <span style="color:#8b949e;font-size:11px;">F='+bt.f_vs_recta
+    +' · '+bt.n_degraus+' degraus</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">a taxa de '
+    +'dessaturação acelera aqui: '+bt.taxa_antes+' → '+bt.taxa_depois
+    +' %/min por watt</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+bt.nota+'</span>'
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +'<tr style="color:#8b949e;text-align:left;">'
+    +'<th style="padding-right:12px;">Carga</th><th>Taxa (%/min)</th></tr>'
+    +(bt.degraus||[]).map(function(x){
+      const acima = bt.bp_watts!=null && x.watts>=bt.bp_watts;
+      return '<tr><td style="padding-right:12px;">'+x.watts+' W</td>'
+       +'<td style="color:'+(acima?'#F85149':'#3FB950')+';">'+x.taxa
+       +'</td></tr>'; }).join('')
+    +'</table></div>';
+  } else if(bt.motivo){
+   h+='<p style="color:#8b949e;font-size:11px;">Breakpoint na taxa: '
+    +bt.motivo
+    +((bt.degraus||[]).length
+      ? '<br>taxas por degrau: '+bt.degraus.map(function(x){
+          return x.watts+'W '+x.taxa; }).join(' · ') : '')
+    +'</p>';
+  }
   if(bp.ok){
    const conf = f.usar_para_prescrever===false ? '#F0883E' : '#3FB950';
    h+='<div style="border-left:3px solid '+conf+';padding:6px 10px;">'

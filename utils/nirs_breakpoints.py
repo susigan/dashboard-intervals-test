@@ -216,11 +216,20 @@ def breakpoints(blocos, modalidade=None, canal='smo2_min'):
          if b.get('watts_medio') is not None and b.get(canal) is not None),
         key=lambda p: p[0])
     if len(pts) < 6:
+        # A fiabilidade era preenchida so' no fim, e esta saida antecipada
+        # devolvia "0 degraus" quando havia 5. Preenche-se aqui tambem.
+        f0 = dict(FIABILIDADE.get(modalidade or '', {}) or
+                  {'nivel': 'desconhecida'})
+        f0['n_degraus'] = len(pts)
+        f0['aviso_n'] = (f'{len(pts)} degraus: são precisos 6 para dois '
+                         'breakpoints e 9 para o ajuste de três troços')
         return {'ok': False,
                 'motivo': (f'só {len(pts)} blocos com potência e SmO2; '
                            'são precisos 6 para dois breakpoints e 9 para '
                            'o ajuste de três troços'),
-                'n_blocos': len(pts)}
+                'n_blocos': len(pts), 'fiabilidade': f0,
+                'pontos': [{'watts': round(x, 1), 'smo2': round(y, 1)}
+                           for x, y in pts]}
     xs = [p[0] for p in pts]
     ys = [p[1] for p in pts]
 
@@ -511,9 +520,22 @@ def _declive_por_min(tempo, serie, t0, t1):
     return p[0] * 60.0 if p else None
 
 
+# Duracao a partir da qual o criterio do Rogers e' valido. Ele exige 5
+# minutos: abaixo disso o SmO2 ainda esta no transiente de arranque e nao
+# houve tempo de mostrar se assenta.
+DUR_IDEAL = 300
+# Piso absoluto: abaixo disto nao ha sinal nenhum para medir declive.
+DUR_MINIMA = 90
+
+
 def mlss_por_dessaturacao(tempo, smo2, blocos, transiente=TRANSIENTE,
-                          estavel=ESTAVEL_POR_MIN, dur_minima=240):
-    """MLSS entre o último bloco estável e o primeiro que desce até ao fim."""
+                          estavel=ESTAVEL_POR_MIN, dur_minima=DUR_MINIMA):
+    """MLSS entre o último bloco estável e o primeiro que desce até ao fim.
+
+    A duracao minima era 240 s, o que rejeitava TODOS os blocos numa
+    sessao de 2 min por degrau -- e' isso que produzia "0 blocos". Passou
+    a 90 s, com aviso quando ficam abaixo dos 5 minutos que o metodo pede.
+    """
     ons = sorted((b for b in blocos if b.get('on')),
                  key=lambda b: b.get('watts_medio') or 0)
     linhas = []
@@ -547,12 +569,25 @@ def mlss_por_dessaturacao(tempo, smo2, blocos, transiente=TRANSIENTE,
             'acima_do_mlss': continua,
         })
 
+    curtos = [x for x in linhas
+              if x.get('duracao_s') and x['duracao_s'] < DUR_IDEAL]
+    aviso_dur = None
+    if curtos:
+        med = sorted(x['duracao_s'] for x in curtos)[len(curtos) // 2]
+        aviso_dur = (
+            f'{len(curtos)} de {len(linhas)} blocos têm menos de '
+            f'{DUR_IDEAL} s (mediana {med} s). O critério pede 5 minutos por '
+            'carga: com blocos curtos o SmO2 ainda está no transiente de '
+            'arranque e não houve tempo de mostrar se assenta. O resultado '
+            'sai, mas tende a marcar como "desce até ao fim" cargas que na '
+            'verdade estabilizariam se o bloco durasse mais')
+
     validos = [x for x in linhas if 'padrao' in x and x['watts'] is not None]
     if len(validos) < 2:
         return {'ok': False,
                 'motivo': (f'só {len(validos)} blocos com duração e SmO2 '
-                           'suficientes'),
-                'blocos': linhas}
+                           f'suficientes (mínimo {dur_minima} s por bloco)'),
+                'blocos': linhas, 'aviso_duracao': aviso_dur}
 
     ultimo_estavel = None
     primeiro_acima = None
@@ -583,7 +618,10 @@ def mlss_por_dessaturacao(tempo, smo2, blocos, transiente=TRANSIENTE,
         'ultimo_estavel': ultimo_estavel,
         'primeiro_acima': primeiro_acima,
         'blocos': linhas,
+        'aviso_duracao': aviso_dur,
         'criterio': {'transiente_ignorado_pct': round(transiente * 100),
+                     'duracao_ideal_s': DUR_IDEAL,
+                     'duracao_minima_s': dur_minima,
                      'estavel_abaixo_de': estavel,
                      'unidade': '% de SmO2 por minuto'},
         'nota': ('o MLSS fica entre o último bloco que estabiliza e o '

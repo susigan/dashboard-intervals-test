@@ -461,3 +461,135 @@ def hipocapnia(blocos, tempo, canais, limiar_desvio=1.5):
                    '"rápida e superficial" de "rápida e profunda". Isto é '
                    'um sinal de alerta, não um diagnóstico'),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# MLSS POR PADRAO DE DESSATURACAO — o metodo para blocos, nao para rampa
+#
+# Bruce Rogers (muscleoxygentraining.com) descreve exactamente o protocolo
+# de blocos de 5 min, e o criterio NAO e' um breakpoint numa curva:
+#
+#   "What we are going to look for is an O2 desaturation pattern that
+#    continuously downslopes over a 5 minute constant power interval."
+#
+#   Abaixo do MLSS: o SmO2 desce e ESTABILIZA dentro do bloco.
+#   Acima do MLSS:  o SmO2 desce CONTINUAMENTE ate' ao fim.
+#
+# O contra-exemplo dele e' o que importa: um bloco a 268 W descia, mas
+# estabilizava aos 4 minutos -- "This would NOT be considered a valid
+# marker of exceeding MLSS". Nao basta o declive medio ser negativo; tem
+# de continuar negativo ate' ao fim.
+#
+# E' por isto que os breakpoints por regressao davam F=0.1 nas sessoes
+# deste atleta: o metodo da regressao segmentada e' para RAMPA continua,
+# onde a queda acelera. Num protocolo de blocos com descanso, cada bloco
+# parte de um SmO2 diferente e a informacao esta na FORMA de cada bloco,
+# nao na envolvente dos minimos.
+#
+# Funciona em qualquer modalidade. Rogers mostra ciclismo, corrida e
+# esqui, usando FC quando nao ha potencia.
+# ══════════════════════════════════════════════════════════════════════════
+
+# Fraccao inicial do bloco ignorada: o SmO2 cai sempre no arranque por
+# transiente, e isso nao diz nada sobre sustentabilidade.
+TRANSIENTE = 0.35
+
+# Declive, em % de SmO2 por minuto, abaixo do qual se considera estavel.
+# Nao vem de nenhum artigo -- e' um criterio de decisao, e por isso e'
+# parametro. Rogers decide a olho; aqui tem de haver um numero.
+ESTAVEL_POR_MIN = 0.5
+
+
+def _declive_por_min(tempo, serie, t0, t1):
+    pts = [(tempo[i], serie[i]) for i in range(min(len(tempo), len(serie)))
+           if t0 <= tempo[i] <= t1 and serie[i] is not None]
+    if len(pts) < 10:
+        return None
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    p = _fit(xs, ys, 0, len(xs))
+    return p[0] * 60.0 if p else None
+
+
+def mlss_por_dessaturacao(tempo, smo2, blocos, transiente=TRANSIENTE,
+                          estavel=ESTAVEL_POR_MIN, dur_minima=240):
+    """MLSS entre o último bloco estável e o primeiro que desce até ao fim."""
+    ons = sorted((b for b in blocos if b.get('on')),
+                 key=lambda b: b.get('watts_medio') or 0)
+    linhas = []
+    for b in ons:
+        dur = b['t1'] - b['t0']
+        if dur < dur_minima:
+            linhas.append({'watts': b.get('watts_medio'),
+                           'duracao_s': round(dur),
+                           'motivo': f'bloco de {round(dur)} s; são precisos '
+                                     f'{dur_minima}'})
+            continue
+        ini = b['t0'] + dur * transiente
+        meio = ini + (b['t1'] - ini) / 2
+        d_total = _declive_por_min(tempo, smo2, ini, b['t1'])
+        d_fim = _declive_por_min(tempo, smo2, meio, b['t1'])
+        if d_total is None or d_fim is None:
+            linhas.append({'watts': b.get('watts_medio'),
+                           'duracao_s': round(dur),
+                           'motivo': 'poucos pontos de SmO2'})
+            continue
+        # continua a descer no fim = acima do MLSS
+        continua = d_fim <= -estavel
+        estabiliza = abs(d_fim) < estavel
+        linhas.append({
+            'watts': b.get('watts_medio'),
+            'duracao_s': round(dur),
+            'declive_total': round(d_total, 2),
+            'declive_2a_metade': round(d_fim, 2),
+            'padrao': ('desce até ao fim' if continua else
+                       'estabiliza' if estabiliza else 'sobe'),
+            'acima_do_mlss': continua,
+        })
+
+    validos = [x for x in linhas if 'padrao' in x and x['watts'] is not None]
+    if len(validos) < 2:
+        return {'ok': False,
+                'motivo': (f'só {len(validos)} blocos com duração e SmO2 '
+                           'suficientes'),
+                'blocos': linhas}
+
+    ultimo_estavel = None
+    primeiro_acima = None
+    for x in validos:
+        if x['acima_do_mlss']:
+            if primeiro_acima is None:
+                primeiro_acima = x
+        elif primeiro_acima is None:
+            ultimo_estavel = x
+
+    if primeiro_acima is None:
+        return {'ok': False,
+                'motivo': ('nenhum bloco desce continuamente até ao fim: o '
+                           'MLSS está ACIMA da carga mais alta testada'),
+                'blocos': linhas, 'limite_inferior': validos[-1]['watts']}
+    if ultimo_estavel is None:
+        return {'ok': False,
+                'motivo': ('todos os blocos descem até ao fim: o MLSS está '
+                           'ABAIXO da carga mais baixa testada'),
+                'blocos': linhas, 'limite_superior': validos[0]['watts']}
+
+    a, b2 = ultimo_estavel['watts'], primeiro_acima['watts']
+    return {
+        'ok': True,
+        'mlss_entre': [round(a, 1), round(b2, 1)],
+        'mlss_estimado': round((a + b2) / 2, 1),
+        'incerteza': round((b2 - a) / 2, 1),
+        'ultimo_estavel': ultimo_estavel,
+        'primeiro_acima': primeiro_acima,
+        'blocos': linhas,
+        'criterio': {'transiente_ignorado_pct': round(transiente * 100),
+                     'estavel_abaixo_de': estavel,
+                     'unidade': '% de SmO2 por minuto'},
+        'nota': ('o MLSS fica entre o último bloco que estabiliza e o '
+                 'primeiro que desce até ao fim. A incerteza é metade do '
+                 'intervalo entre eles: degraus mais próximos dão uma '
+                 'estimativa mais fina, e é a única forma de a melhorar'),
+        'metodo': ('padrão de dessaturação em blocos de carga constante '
+                   '(Rogers, muscleoxygentraining.com)'),
+    }

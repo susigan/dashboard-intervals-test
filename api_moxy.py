@@ -867,6 +867,8 @@ def registar(app):
         """Breakpoints de SmO2, CER e detector de hipocapnia.
 
         ?inicio=&fim=   ?corte_plato=5   ?janela_plato=30
+        ?estavel=0.5    declive de SmO2 abaixo do qual e' estavel
+        ?exaustao=1     os blocos terminaram por exaustao
         """
         try:
             import os as _os
@@ -921,6 +923,13 @@ def registar(app):
             except Exception:
                 pass
 
+            # Metodo principal: padrao de dessaturacao por bloco. E' o que
+            # corresponde a este protocolo. A regressao segmentada fica como
+            # secundaria, porque foi desenhada para rampa continua.
+            mlss = nbk.mlss_por_dessaturacao(
+                t, smo2, blocos,
+                estavel=request.args.get('estavel', type=float)
+                or nbk.ESTAVEL_POR_MIN)
             bp = nbk.breakpoints(ons, mod)
             pl = nbk.plato(t, smo2,
                            janela=request.args.get('janela_plato', type=int)
@@ -929,11 +938,14 @@ def registar(app):
                            or nbk.PLATO_CORTE) if smo2 else None
             ensaios = [(b['delta_smo2'], b['t1'] - b['t0']) for b in ons
                        if b.get('delta_smo2') is not None]
-            ce = nbk.cer(ensaios, ate_exaustao=False)
+            ce = nbk.cer(
+                ensaios,
+                ate_exaustao=request.args.get('exaustao') == '1')
             hp = nbk.hipocapnia(blocos, t, canais)
 
             return jsonify({
                 'status': 'ok', 'activity_id': aid, 'modalidade': mod,
+                'mlss_dessaturacao': mlss,
                 'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
                 'blocos_usados': [
                     {'watts': b.get('watts_medio'),

@@ -862,6 +862,88 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/limiares/<path:activity_id>')
+    def api_moxy_limiares(activity_id):
+        """Breakpoints de SmO2, CER e detector de hipocapnia.
+
+        ?inicio=&fim=   ?corte_plato=5   ?janela_plato=30
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import nirs_breakpoints as nbk
+
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            corpo = api_moxy_dados(aid)
+            d = corpo[0].get_json() if isinstance(corpo, tuple) \
+                else corpo.get_json()
+            if not d or d.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': (d or {}).get('mensagem')}), 200
+
+            t = d.get('tempo') or []
+            canais = d.get('canais') or {}
+            blocos = ((d.get('blocos') or {}).get('blocos')) or []
+            ini = request.args.get('inicio', type=float)
+            fim = request.args.get('fim', type=float)
+            if ini is not None or fim is not None:
+                a = ini if ini is not None else (t[0] if t else 0)
+                b = fim if fim is not None else (t[-1] if t else 0)
+                blocos = [x for x in blocos if x['t1'] >= a and x['t0'] <= b]
+
+            smo2 = canais.get('smo2') or []
+            # min e delta de SmO2 por bloco de trabalho
+            ons = []
+            for b in blocos:
+                if not b.get('on'):
+                    continue
+                vs = [smo2[i] for i in range(min(len(t), len(smo2)))
+                      if b['t0'] <= t[i] <= b['t1'] and smo2[i] is not None]
+                if not vs:
+                    continue
+                bb = dict(b)
+                bb['smo2_min'] = min(vs)
+                bb['smo2_medio'] = sum(vs) / len(vs)
+                bb['delta_smo2'] = nbk.delta_smo2_do_bloco(
+                    t, smo2, b['t0'], b['t1'])
+                ons.append(bb)
+
+            mod = None
+            try:
+                import db as _db
+                r = _db._exec("SELECT type FROM activities WHERE id = ?",
+                              (aid,), fetch='one')
+                if r:
+                    from config import TYPE_MAP
+                    mod = TYPE_MAP.get(r[0])
+            except Exception:
+                pass
+
+            bp = nbk.breakpoints(ons, mod)
+            pl = nbk.plato(t, smo2,
+                           janela=request.args.get('janela_plato', type=int)
+                           or nbk.PLATO_JANELA_S,
+                           corte=request.args.get('corte_plato', type=float)
+                           or nbk.PLATO_CORTE) if smo2 else None
+            ensaios = [(b['delta_smo2'], b['t1'] - b['t0']) for b in ons
+                       if b.get('delta_smo2') is not None]
+            ce = nbk.cer(ensaios, ate_exaustao=False)
+            hp = nbk.hipocapnia(blocos, t, canais)
+
+            return jsonify({
+                'status': 'ok', 'activity_id': aid, 'modalidade': mod,
+                'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
+                'blocos_usados': [
+                    {'watts': b.get('watts_medio'),
+                     'smo2_min': round(b['smo2_min'], 1),
+                     'delta_smo2': b.get('delta_smo2'),
+                     'duracao_s': round(b['t1'] - b['t0'])} for b in ons]})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/corte', methods=['POST'])
     def api_moxy_corte():
         """Grava o intervalo a analisar de uma sessao.

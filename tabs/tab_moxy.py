@@ -119,6 +119,35 @@ BODY = """
     <div id="mxResumo" style="margin-top:6px;"></div>
   </div>
 
+  <div id="mxLimiaresBloco">
+    <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
+    <div class="controls"><button onclick="mxLimiares()">Calcular</button>
+      <span id="mxLimEstado" style="color:#8b949e;font-size:12px;"></span></div>
+    <div id="mxLimiares" style="margin-top:6px;"></div>
+    <details style="margin-top:6px;">
+      <summary style="cursor:pointer;font-size:12px;color:#8b949e;">Método e fiabilidade por modalidade</summary>
+      <div style="font-size:11px;color:#8b949e;margin-top:6px;">
+        <p><b>Método:</b> regressão segmentada de três troços contínuos sobre
+        SmO2 mínimo × potência de cada degrau — as três fases descritas por
+        Bhambhani. O segundo troço parte de onde o primeiro acaba: o sinal não
+        salta no limiar, muda de inclinação.</p>
+        <p><b>Rejeição:</b> teste F contra uma recta única. Numa descida
+        linear com ruído, dois breakpoints reduzem o erro em 27% de graça —
+        quatro parâmetros extra ajustam ruído. O teste F desconta isso, e
+        rejeita a curva sem quebra.</p>
+        <p><b>Bike e Run:</b> concordância moderada com VT1/VT2, com
+        subestimação sistemática (Feldmann 2022). Na corrida, o SmO2 mínimo
+        não reflecte o VO₂pico.</p>
+        <p><b>Row:</b> Possamai 2024, específico de remo, conclui que estes
+        limiares <i>"should not be considered interchangeable"</i> com MLSS e
+        CP. Calculam-se, mas não servem para prescrever.
+        <b>Ski:</b> sem literatura; tratado como o remo.</p>
+        <p><b>Número de degraus:</b> testado com escadas de breakpoint
+        conhecido — 12 degraus acertam o BP1 no valor exacto, 9 erram 30 W.</p>
+      </div>
+    </details>
+  </div>
+
   <h2 style="font-size:15px;margin-top:18px;">Rede causal entre canais</h2>
   <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
     <button onclick="mxRede()">Calcular</button>
@@ -601,7 +630,7 @@ function mx515(){
 // Em comparacao esconde-se o detalhe: com 4 sessoes seriam 4 tabelas de
 // arestas e 4 de 13 perguntas. Ficam os cartoes e o consenso.
 function mxModoUnico(unico){
- ['mxRedeDetalhe','mx515Detalhe'].forEach(function(id){
+ ['mxRedeDetalhe','mx515Detalhe','mxLimiaresBloco'].forEach(function(id){
   const e=document.getElementById(id);
   if(e) e.style.display = unico ? '' : 'none';
  });
@@ -692,6 +721,87 @@ function mxResumo(){
   });
   h+='</div>';
   box.innerHTML=h;
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
+let MX_BP = null;   // breakpoints para desenhar no gráfico
+
+function mxLimiares(){
+ const ids=Object.keys(MX_DADOS);
+ const est=document.getElementById('mxLimEstado');
+ const box=document.getElementById('mxLimiares');
+ if(!ids.length){ est.textContent='escolhe uma sessão'; return; }
+ const id=ids[0], c=mxCorteDe(id);
+ est.textContent='a calcular...';
+ fetch('/api/moxy/limiares/'+id+'?inicio='+Math.round(c[0])
+       +'&fim='+Math.round(c[1]))
+ .then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ est.textContent=d.mensagem||'sem dados';
+   box.innerHTML=''; MX_BP=null; mxDraw(); return; }
+  const bp=d.breakpoints||{}, f=bp.fiabilidade||{};
+  est.textContent=(d.modalidade||'')+' · '+(f.n_degraus||0)+' degraus';
+  MX_BP = bp.ok ? {bp1:bp.bp1.tau, bp2:(bp.bp2||{}).tau} : null;
+
+  let h='';
+  if(bp.ok){
+   const conf = f.usar_para_prescrever===false ? '#F0883E' : '#3FB950';
+   h+='<div style="border-left:3px solid '+conf+';padding:6px 10px;">'
+    +'<b style="font-size:15px;">BP1 '+bp.bp1.tau+' W'
+    +(bp.bp1.smo2!=null?' <span style="color:#8b949e;font-size:11px;">SmO2 '
+      +bp.bp1.smo2+'%</span>':'')
+    +(bp.bp2&&bp.bp2.ok?' · BP2 '+bp.bp2.tau+' W'
+      +(bp.bp2.smo2!=null?' <span style="color:#8b949e;font-size:11px;">SmO2 '
+        +bp.bp2.smo2+'%</span>':''):'')+'</b>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+bp.metodo
+    +' · declives '+(bp.declives||[]).join(' → ')
+    +' · F vs recta '+(bp.f_vs_recta||'—')
+    +(bp.p_vs_recta!=null?' (p='+bp.p_vs_recta+')':'')+'</span>'
+    +'<br><span style="font-size:11px;color:'+conf+';">Fiabilidade '
+    +(f.nivel||'?')+(f.fonte?' · '+f.fonte:'')+'</span>'
+    +(f.vies?'<br><span style="font-size:11px;color:#8b949e;">'+f.vies
+      +'</span>':'')
+    +(f.aviso_n?'<br><span style="font-size:11px;color:#8b949e;">'+f.aviso_n
+      +'</span>':'')
+    +(f.usar_para_prescrever===false
+      ? '<br><span style="font-size:11px;color:#F0883E;">⚠ não usar para '
+        +'prescrever zonas nesta modalidade</span>':'')
+    +'</div>';
+  } else {
+   h+='<p style="color:#F0883E;font-size:12px;">'+(bp.motivo||'sem breakpoints')
+    +'</p>';
+  }
+  const pl=d.plato;
+  if(pl&&pl.ok) h+='<p style="font-size:11px;color:#8b949e;">Platô de SmO2 a '
+   +pl.x+' s ('+pl.janelas_planas+' janelas de '+pl.janela_s+' s abaixo de '
+   +pl.corte+' unidades).</p>';
+
+  const hp=d.hipocapnia||{};
+  if(hp.ok){
+   const cor=hp.suspeita?'#F85149':'#3FB950';
+   h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
+    +'margin-top:8px;"><b style="color:'+cor+';">Hipocapnia: '
+    +(hp.suspeita?'SUSPEITA':'sem sinal')+'</b> '
+    +'<span style="color:#8b949e;font-size:11px;">z='+hp.z_maximo
+    +' (limiar '+hp.limiar_z+')</span>'
+    +'<br><span style="font-size:11px;">'+hp.leitura+'</span>'
+    +'<br><span style="font-size:10px;color:#8b949e;">'+hp.limite
+    +'</span></div>';
+  }
+  const ce=d.cer||{};
+  if(ce.ok){
+   h+='<div style="border-left:3px solid '+(ce.valido?'#3FB950':'#F0883E')
+    +';padding:6px 10px;margin-top:8px;">'
+    +'<b>CER '+ce.cer_pct_por_s+' %/s</b> '
+    +'<span style="color:#8b949e;font-size:11px;">M′='+ce.m_linha
+    +' · r²='+ce.r2+' · '+ce.n_ensaios+' ensaios</span>'
+    +(ce.aviso?'<br><span style="font-size:11px;color:#F0883E;">⚠ '+ce.aviso
+      +'</span>':'')
+    +'<br><span style="font-size:10px;color:#8b949e;">'+ce.nota+'</span></div>';
+  } else if(ce.motivo){
+   h+='<p style="font-size:11px;color:#8b949e;">CER: '+ce.motivo+'</p>';
+  }
+  box.innerHTML=h;
+  mxDraw();
  }).catch(e=>{ est.textContent='erro: '+e.message; });
 }
 
@@ -900,7 +1010,7 @@ function mxCarregar(){
   // correr as duas analises sozinhas, com os valores por omissao: ter de
   // carregar em dois botoes de cada vez que se muda de sessao e' trabalho
   // que a maquina pode fazer
-  if(ids.length === 1){ mxModoUnico(true); mxRede(); mx515(); }
+  if(ids.length === 1){ mxModoUnico(true); mxRede(); mx515(); mxLimiares(); }
   else if(ids.length > 1){ mxModoUnico(false); mxResumo(); }
   mxAnalises();
  });
@@ -1213,6 +1323,27 @@ function mxDraw(){
                                  :g.moveTo(X(p[0]),Y2(p[1])); });
   g.stroke(); g.setLineDash([]); g.globalAlpha=1;
  });
+
+ // breakpoints como riscas verticais, quando calculados
+ if(MX_BP && wser){
+  const wmax=Math.max.apply(null, wser.pts.map(p=>p[1]))||1;
+  [[MX_BP.bp1,'#3FB950','BP1'],[MX_BP.bp2,'#F85149','BP2']].forEach(function(b){
+   if(b[0]==null) return;
+   // o BP esta em watts: encontrar quando a potencia o atravessa
+   let melhor=null, dmin=1e18;
+   wser.pts.forEach(function(p){
+    const dd=Math.abs(p[1]-b[0]);
+    if(dd<dmin){ dmin=dd; melhor=p[0]; }
+   });
+   if(melhor==null || dmin>25) return;
+   const x=X(melhor);
+   g.strokeStyle=b[1]; g.setLineDash([5,4]); g.lineWidth=1.5;
+   g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
+   g.setLineDash([]); g.lineWidth=1;
+   g.fillStyle=b[1]; g.font='10px sans-serif'; g.textAlign='center';
+   g.fillText(b[2]+' '+Math.round(b[0])+'W', x, PT+10);
+  });
+ }
 
  g.textAlign='left'; g.font='10px sans-serif';
  series.forEach(function(s2,n){

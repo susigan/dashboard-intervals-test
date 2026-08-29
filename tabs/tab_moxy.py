@@ -148,7 +148,12 @@ BODY = """
         conhecido — 12 degraus acertam o BP1 no valor exacto, 9 erram 30 W.</p>
         <p><b>Três métodos, por ordem de aplicabilidade aqui.</b>
         <b>1) Taxa de dessaturação:</b> mede a velocidade de queda do SmO2
-        dentro de cada degrau, depois do transiente, e procura onde acelera.
+        dentro de cada degrau, depois do transiente, e procura a quebra.
+        <b>Dois padrões são válidos</b>, e o Rogers descreve os dois no mesmo
+        artigo: <i>aceleração</i>, típica do recto femoral, em que a queda se
+        agrava acima do ponto; e <i>patamar</i>, típico do vasto lateral, em
+        que a queda deixa de se agravar porque a extracção chegou ao limite.
+        O músculo onde tens o sensor determina qual esperas ver.
         É o que o Rogers usa nas escadas — <i>"the rate of change between
         stages showing a shift at high power outputs corresponding to the
         RCP"</i>. Funciona com blocos curtos e bastam 4 degraus, porque a taxa
@@ -806,18 +811,28 @@ function mxLimiares(){
     +'<b style="font-size:16px;color:#58A6FF;">Breakpoint na taxa '
     +bt.bp_watts+' W</b>'
     +' <span style="color:#8b949e;font-size:11px;">F='+bt.f_vs_recta
-    +' · '+bt.n_degraus+' degraus</span>'
-    +'<br><span style="font-size:11px;color:#8b949e;">a taxa de '
-    +'dessaturação acelera aqui: '+bt.taxa_antes+' → '+bt.taxa_depois
+    +' · '+bt.n_degraus+' degraus · '+(bt.padrao||'')+'</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'
+    +(bt.plateia
+      ? 'a queda deixa de se agravar aqui: a extracção chegou ao limite'
+      : 'a queda agrava-se aqui')
+    +' — declive da taxa '+bt.taxa_antes+' → '+bt.taxa_depois
     +' %/min por watt</span>'
     +'<br><span style="font-size:11px;color:#8b949e;">'+bt.nota+'</span>'
+    +(bt.nota_padrao
+      ? '<br><span style="font-size:10px;color:#8b949e;">'+bt.nota_padrao
+        +'</span>' : '')
     +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
     +'<tr style="color:#8b949e;text-align:left;">'
-    +'<th style="padding-right:12px;">Carga</th><th>Taxa (%/min)</th></tr>'
-    +(bt.degraus||[]).map(function(x){
+    +'<th style="padding-right:12px;">Carga</th><th>Taxa (%/min)</th>'
+    +'<th style="padding-left:12px;">Δ</th></tr>'
+    +(bt.degraus||[]).map(function(x, i){
       const acima = bt.bp_watts!=null && x.watts>=bt.bp_watts;
       return '<tr><td style="padding-right:12px;">'+x.watts+' W</td>'
        +'<td style="color:'+(acima?'#F85149':'#3FB950')+';">'+x.taxa
+       +'</td><td style="padding-left:12px;color:#6e7681;">'
+       +(i>0 ? ((x.taxa-bt.degraus[i-1].taxa)>0?'+':'')
+               +(x.taxa-bt.degraus[i-1].taxa).toFixed(2) : '')
        +'</td></tr>'; }).join('')
     +'</table></div>';
   } else if(bt.motivo){

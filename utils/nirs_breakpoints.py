@@ -752,3 +752,118 @@ def bp_por_taxa(tempo, smo2, blocos, transiente=TRANSIENTE, min_pontos=2):
             'extracção chegou ao limite. O músculo onde tens o sensor '
             'determina qual esperas ver'),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# METODO DE ARNOLD — o canonico para o protocolo 5-1
+#
+# Jem Arnold, sparecycles.blog, no MESMO protocolo de degraus com pausa:
+#
+#   "The mean of the LAST MINUTE of each workload is taken as a single
+#    data point for each stage."
+#
+# Nao o minimo do bloco nem a taxa de queda: a media do ULTIMO MINUTO. E'
+# o SmO2 de estado estavel naquela carga, quando a entrega e o consumo ja'
+# se equilibraram. Foi o metodo que ele usou no estudo publicado.
+#
+# E ha DOIS PERFIS de resposta, que mudam a interpretacao toda:
+#
+#   PARABOLICO  o SmO2 SOBE nas cargas baixas ate' um maximo e so' depois
+#               desce. O topo da parabola aproxima o FatMax / LT1.
+#               Tipico de: menos treinado, prega cutanea mais espessa,
+#               musculo menor, fenotipo mais oxidativo.
+#
+#   MONOTONICO  o SmO2 desce sempre. Nao ha topo, e o SmO2max e' o
+#               primeiro degrau. Tipico de: mais treinado, mais magro,
+#               musculo maior, fenotipo mais glicolitico.
+#
+# Isto e' decisivo, e nas palavras dele:
+#
+#   "an SmO2 signal that may be interpreted as associated with, say LT1
+#    in one response profile, may not correspond to the same intensity --
+#    OR MAY NOT EXIST AT ALL -- in the other response profile."
+#
+# Ou seja: num atleta monotonico, procurar o primeiro limiar no SmO2 e'
+# procurar uma coisa que nao esta la'.
+#
+# QUAL LIMIAR E' QUAL
+#   SmO2max (topo da parabola)  ~  FatMax / LT1 / VT1   -> PRIMEIRO
+#   deoxy-BP (quebra na queda)  ~  RCP / VT2 / MLSS     -> SEGUNDO
+#
+# E o aviso dele sobre a concordancia individual:
+#   "at an individual level this association broke down (...) the
+#    variability was anywhere within +/- ~100 W"
+# ══════════════════════════════════════════════════════════════════════════
+
+CAUDA_S = 60          # ultimo minuto de cada degrau
+SUBIDA_MINIMA = 1.5   # % de SmO2 para contar como subida real
+
+
+def perfil_de_resposta(tempo, smo2, blocos, cauda=CAUDA_S,
+                       subida_minima=SUBIDA_MINIMA):
+    """Perfil parabólico ou monotónico, pelo método de Arnold."""
+    ons = sorted((b for b in blocos if b.get('on')),
+                 key=lambda b: b.get('watts_medio') or 0)
+    degraus = []
+    for b in ons:
+        w = b.get('watts_medio')
+        if w is None:
+            continue
+        t0 = max(b['t0'], b['t1'] - cauda)
+        vs = [smo2[i] for i in range(min(len(tempo), len(smo2)))
+              if t0 <= tempo[i] <= b['t1'] and smo2[i] is not None]
+        if not vs:
+            continue
+        degraus.append({'watts': round(w, 1),
+                        'smo2_fim': round(sum(vs) / len(vs), 1),
+                        'n_amostras': len(vs),
+                        'duracao_s': round(b['t1'] - b['t0'])})
+    if len(degraus) < 3:
+        return {'ok': False,
+                'motivo': f'só {len(degraus)} degraus com SmO2 no último minuto'}
+
+    ys = [d['smo2_fim'] for d in degraus]
+    i_max = ys.index(max(ys))
+    subida = ys[i_max] - ys[0]
+
+    # parabolico: o maximo NAO esta no primeiro degrau e a subida ate' la'
+    # e' real, nao ruido
+    parabolico = i_max > 0 and subida >= subida_minima
+    perfil = 'parabólico' if parabolico else 'monotónico'
+
+    out = {
+        'ok': True,
+        'perfil': perfil,
+        'degraus': degraus,
+        'smo2max': ys[i_max],
+        'smo2max_watts': degraus[i_max]['watts'],
+        'smo2min': min(ys),
+        'smo2min_watts': degraus[ys.index(min(ys))]['watts'],
+        'amplitude': round(max(ys) - min(ys), 1),
+        'subida_ate_ao_max': round(subida, 1),
+        'cauda_s': cauda,
+        'metodo': ('média do último minuto de cada degrau '
+                   '(Arnold, sparecycles.blog)'),
+    }
+    if parabolico:
+        out['bp1_watts'] = degraus[i_max]['watts']
+        out['bp1_leitura'] = (
+            f"o SmO2 sobe até {degraus[i_max]['watts']} W e só depois desce. "
+            'O topo da parábola aproxima o FatMax e o LT1 — o PRIMEIRO '
+            'limiar. Arnold avisa que a associação existe mas não está '
+            'robustamente validada')
+        out['fenotipo'] = (
+            'perfil parabólico associa-se a menos treino, prega cutânea mais '
+            'espessa sobre o músculo, massa muscular menor e fenótipo mais '
+            'oxidativo. Não é um julgamento: é o que muda o sinal ótico')
+    else:
+        out['bp1_watts'] = None
+        out['bp1_leitura'] = (
+            'perfil monotónico: o SmO2 desce desde o primeiro degrau, sem '
+            'topo. Neste perfil o primeiro limiar NÃO É OBSERVÁVEL no SmO2 — '
+            'Arnold é explícito que o sinal associado ao LT1 "may not exist '
+            'at all" neste perfil. Procurá-lo aqui é procurar o que não está')
+        out['fenotipo'] = (
+            'perfil monotónico associa-se a mais treino, menor prega cutânea, '
+            'massa muscular maior e fenótipo mais glicolítico')
+    return out

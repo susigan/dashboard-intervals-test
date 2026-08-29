@@ -930,6 +930,10 @@ def registar(app):
                 t, smo2, blocos,
                 estavel=request.args.get('estavel', type=float)
                 or nbk.ESTAVEL_POR_MIN)
+            # Breakpoint pela TAXA de dessaturacao: e' o metodo que serve a
+            # blocos curtos e a poucos degraus, e o que o Rogers usa nas
+            # escadas. A regressao sobre os minimos fica como terceira via.
+            bp_taxa = nbk.bp_por_taxa(t, smo2, blocos)
             bp = nbk.breakpoints(ons, mod)
             pl = nbk.plato(t, smo2,
                            janela=request.args.get('janela_plato', type=int)
@@ -946,6 +950,7 @@ def registar(app):
             return jsonify({
                 'status': 'ok', 'activity_id': aid, 'modalidade': mod,
                 'mlss_dessaturacao': mlss,
+                'bp_taxa': bp_taxa,
                 'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
                 'blocos_usados': [
                     {'watts': b.get('watts_medio'),

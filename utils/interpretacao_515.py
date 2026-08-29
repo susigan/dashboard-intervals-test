@@ -579,7 +579,7 @@ def _dentes(n_int, base, delta_por_int, profundidade, largura=120,
     return xs, ys, pts, lo, amp
 
 
-def figura(tipo, nivel, largura=120, altura=34):
+def figura(tipo, nivel, largura=120, altura=34, onde='picos'):
     """SVG de uma das cinco tendencias, para o canal indicado.
 
     tipo: 'smo2_repouso' | 'smo2_min' | 'smo2_dentro' | 'thb' | 'hr'
@@ -612,25 +612,53 @@ def figura(tipo, nivel, largura=120, altura=34):
 
     d = 'M ' + ' L '.join(f'{x:.1f} {y:.1f}' for x, y in zip(xs, ys))
 
-    # linha de tendencia: sobre os picos (repouso) ou os vales (minimo)
+    # A linha de tendencia vai onde a medicao e' TIRADA, nao sempre no
+    # mesmo sitio. Era este o erro: uma pergunta sobre o minimo de trabalho
+    # mostrava a linha sobre os picos.
     n_int = 5
     passos = len(xs) // n_int
-    if tipo in ('smo2_min',):
-        idx = [k * passos + int(passos * 0.6) for k in range(n_int)]
+    if onde == 'vales':
+        idx = [k * passos + int(passos * 0.55) for k in range(n_int)]
     else:
-        idx = [k * passos for k in range(n_int)]
+        idx = [k * passos + 1 for k in range(n_int)]
     idx = [min(i, len(xs) - 1) for i in idx]
     x0, y0 = xs[idx[0]], ys[idx[0]]
     x1, y1 = xs[idx[-1]], ys[idx[-1]]
 
+    # pontos medidos assinalados, para nao restar duvida sobre onde a
+    # tendencia foi tirada
+    marcas = ''.join(
+        f'<circle cx="{xs[i]:.1f}" cy="{ys[i]:.1f}" r="1.8" fill="#8b949e"/>'
+        for i in idx)
     return (
         f'<svg width="{largura}" height="{altura}" viewBox="0 0 {largura} '
         f'{altura}" xmlns="http://www.w3.org/2000/svg">'
         f'<path d="{d}" fill="none" stroke="{cor}" stroke-width="1.4"/>'
         f'<line x1="{x0:.1f}" y1="{y0:.1f}" x2="{x1:.1f}" y2="{y1:.1f}" '
         f'stroke="#8b949e" stroke-width="1.2" stroke-dasharray="3,2"/>'
-        f'</svg>')
+        f'{marcas}</svg>')
 
+
+# ONDE cada pergunta e' medida no sinal. Serve para dois fins: desenhar a
+# linha de tendencia da figura no sitio certo, e dizer ao utilizador o que
+# esta a ser medido.
+#
+# Isto estava errado nas figuras: a linha era desenhada sempre no inicio do
+# dente, independentemente de a medicao ser no topo (repouso) ou no vale
+# (minimo de trabalho). As medicoes estavam certas -- so' a ilustracao
+# e' que nao correspondia.
+ONDE_MEDE = {
+    '3A': ('picos', 'último terço de cada recuperação'),
+    '4A': ('vales', 'mínimo de cada bloco de trabalho'),
+    '5A': ('dentro', 'declive dentro de cada bloco'),
+    '6A': ('picos', 'último terço de cada recuperação'),
+    '7A': ('vales', 'patamar do fim de cada bloco de trabalho'),
+    '8A': ('vales', 'mesmo escalão de carga, blocos diferentes'),
+    '10': ('vales', 'último terço de cada recuperação'),
+    '11': ('picos', 'máximo de cada bloco de trabalho'),
+    '12': ('dentro', 'declive dentro de cada bloco'),
+    '13': ('picos', 'mesmo escalão de carga, blocos diferentes'),
+}
 
 TIPO_DA_PERGUNTA = {
     '3A': 'smo2_repouso', '4A': 'smo2_min', '5A': 'smo2_dentro',
@@ -643,5 +671,10 @@ def figuras_das_perguntas(largura=120, altura=34):
     """{pergunta: {nivel: svg}} para as perguntas de tendencia."""
     out = {}
     for q, tipo in TIPO_DA_PERGUNTA.items():
-        out[q] = {n: figura(tipo, n, largura, altura) for n in NIVEIS}
+        onde = (ONDE_MEDE.get(q) or ('picos', ''))[0]
+        out[q] = {n: figura(tipo, n, largura, altura, onde) for n in NIVEIS}
     return out
+
+
+def onde_mede_texto():
+    return {q: v[1] for q, v in ONDE_MEDE.items()}

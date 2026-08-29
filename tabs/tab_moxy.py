@@ -557,7 +557,10 @@ function mx515(){
     h+='<tr style="border-bottom:1px solid #161b22;'
      +(md.editada?'background:rgba(227,179,65,0.07);':'')+'">'
      +'<td style="padding:5px;color:#8b949e;">'+dd.pergunta+'</td>'
-     +'<td style="color:#8b949e;">'+dd.texto+'</td>'
+     +'<td style="color:#8b949e;">'+dd.texto
+     +((d.onde_mede||{})[dd.pergunta]
+       ? '<br><span style="color:#6e7681;font-size:10px;">medido no '
+         +d.onde_mede[dd.pergunta]+'</span>' : '')+'</td>'
      +'<td>'+(((d.figuras||{})[dd.pergunta]||{})[dd.resposta]
               || '<span style="color:#484f58;font-size:10px;">—</span>')+'</td>'
      +'<td style="color:#8b949e;">'+val+'</td>'
@@ -582,9 +585,11 @@ function mx515(){
    +'declive em % da amplitude do canal na sessão — é isso que decide entre '
    +'"clear" e "slight". Cortes actuais: claro acima de '
    +d.cortes.claro_pct+'%, ligeiro acima de '+d.cortes.ligeiro_pct+'%. '
-   +'Valores de repouso medidos nos últimos '+(m.repouso_seg||30)+' s de cada '
-   +'recuperação — o início ainda está a recuperar, e o patamar é o que a '
-   +'pergunta procura. A figura mostra o padrão da resposta escolhida.</p>';
+   +'Valores de repouso e de trabalho medidos nos últimos '
+   +(m.repouso_seg||30)+' s de cada bloco — o início ainda está em '
+   +'transição, e o patamar é o que a pergunta procura. Na figura, os '
+   +'pontos cinzentos marcam exactamente onde a tendência foi tirada: em '
+   +'cima nas perguntas de repouso, em baixo nas de trabalho.</p>';
   box.innerHTML=h;
   Array.prototype.forEach.call(box.querySelectorAll('.mx515R'), function(el){
    el.addEventListener('change', function(){

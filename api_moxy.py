@@ -933,6 +933,9 @@ def registar(app):
             # Breakpoint pela TAXA de dessaturacao: e' o metodo que serve a
             # blocos curtos e a poucos degraus, e o que o Rogers usa nas
             # escadas. A regressao sobre os minimos fica como terceira via.
+            # Metodo canonico do Arnold para este protocolo: media do
+            # ultimo minuto de cada degrau, e classificacao do perfil.
+            perfil = nbk.perfil_de_resposta(t, smo2, blocos)
             bp_taxa = nbk.bp_por_taxa(t, smo2, blocos)
             bp = nbk.breakpoints(ons, mod)
             pl = nbk.plato(t, smo2,
@@ -949,6 +952,7 @@ def registar(app):
 
             return jsonify({
                 'status': 'ok', 'activity_id': aid, 'modalidade': mod,
+                'perfil_resposta': perfil,
                 'mlss_dessaturacao': mlss,
                 'bp_taxa': bp_taxa,
                 'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,

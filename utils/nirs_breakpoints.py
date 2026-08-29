@@ -72,7 +72,7 @@ def _rss(xs, ys, m, b, a, z):
     return sum((m * xs[i] + b - ys[i]) ** 2 for i in range(a, z))
 
 
-def dois_segmentos(xs, ys, min_pontos=3):
+def dois_segmentos(xs, ys, min_pontos=2):
     """Ajuste continuo de dois trocos; devolve o tau e os dois declives.
 
     Continuo: o segundo troco arranca onde o primeiro acaba, em vez de
@@ -82,7 +82,8 @@ def dois_segmentos(xs, ys, min_pontos=3):
     """
     n = len(xs)
     if n < 2 * min_pontos:
-        return {'ok': False, 'motivo': f'só {n} pontos'}
+        return {'ok': False,
+                'motivo': f'só {n} pontos; são precisos {2 * min_pontos}'}
     melhor = None
     for k in range(min_pontos, n - min_pontos + 1):
         p1 = _fit(xs, ys, 0, k)
@@ -215,18 +216,18 @@ def breakpoints(blocos, modalidade=None, canal='smo2_min'):
         ((b.get('watts_medio'), b.get(canal)) for b in blocos
          if b.get('watts_medio') is not None and b.get(canal) is not None),
         key=lambda p: p[0])
-    if len(pts) < 6:
+    if len(pts) < 4:
         # A fiabilidade era preenchida so' no fim, e esta saida antecipada
         # devolvia "0 degraus" quando havia 5. Preenche-se aqui tambem.
         f0 = dict(FIABILIDADE.get(modalidade or '', {}) or
                   {'nivel': 'desconhecida'})
         f0['n_degraus'] = len(pts)
-        f0['aviso_n'] = (f'{len(pts)} degraus: são precisos 6 para dois '
-                         'breakpoints e 9 para o ajuste de três troços')
+        f0['aviso_n'] = (f'{len(pts)} degraus: são precisos 4 para um '
+                         'breakpoint e 9 para dois')
         return {'ok': False,
-                'motivo': (f'só {len(pts)} blocos com potência e SmO2; '
-                           'são precisos 6 para dois breakpoints e 9 para '
-                           'o ajuste de três troços'),
+                'motivo': (f'só {len(pts)} degraus com potência e SmO2; '
+                           'são precisos 4 para um breakpoint e 9 para os '
+                           'dois'),
                 'n_blocos': len(pts), 'fiabilidade': f0,
                 'pontos': [{'watts': round(x, 1), 'smo2': round(y, 1)}
                            for x, y in pts]}
@@ -336,7 +337,17 @@ def cer(ensaios, ate_exaustao=False):
     ys = [d for d, _t in pts]
     p = _fit(xs, ys, 0, len(xs))
     if not p:
-        return {'ok': False, 'motivo': 'ajuste impossível'}
+        durs = sorted({round(t) for _d, t in pts})
+        return {'ok': False,
+                'motivo': (
+                    'ajuste impossível: o CER regride ΔSmO2 contra 1/duração, '
+                    'e todos os ensaios têm a mesma duração ('
+                    + ', '.join(f'{d} s' for d in durs[:4])
+                    + '), portanto não há variação em x. Não é uma falha do '
+                      'cálculo — é impossível por construção. O CER precisa '
+                      'de ensaios de DURAÇÕES DIFERENTES até à exaustão, '
+                      'como o CP precisa de esforços de durações diferentes'),
+                'duracoes_encontradas': durs}
     m_linha, cer_v = p
     my = sum(ys) / len(ys)
     sst = sum((y - my) ** 2 for y in ys)
@@ -630,4 +641,90 @@ def mlss_por_dessaturacao(tempo, smo2, blocos, transiente=TRANSIENTE,
                  'estimativa mais fina, e é a única forma de a melhorar'),
         'metodo': ('padrão de dessaturação em blocos de carga constante '
                    '(Rogers, muscleoxygentraining.com)'),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# BREAKPOINT PELA TAXA DE DESSATURACAO
+#
+# Rogers, sobre o recto femoral numa escada de degraus:
+#
+#   "The rectus femoris has a gradual desaturation with increasing effort
+#    then has an acceleration at the RCP. With the RATE OF CHANGE BETWEEN
+#    STAGES showing a shift at high power outputs corresponding to the RCP"
+#
+# E' o metodo que faltava, e o que serve a este protocolo. Em vez de olhar
+# para o SmO2 minimo de cada degrau -- que depende de onde o degrau
+# comecou -- olha-se para a VELOCIDADE a que o SmO2 cai dentro de cada
+# degrau, e procura-se onde essa velocidade acelera.
+#
+# Duas vantagens sobre os outros metodos aqui:
+#   - funciona com blocos curtos: a taxa mede-se em 2 minutos, o patamar
+#     precisa de 5
+#   - funciona com poucos degraus: bastam 4 para um breakpoint
+# ══════════════════════════════════════════════════════════════════════════
+
+def bp_por_taxa(tempo, smo2, blocos, transiente=TRANSIENTE, min_pontos=2):
+    """Breakpoint na taxa de dessaturação (%/min) contra a intensidade."""
+    ons = sorted((b for b in blocos if b.get('on')),
+                 key=lambda b: b.get('watts_medio') or 0)
+    pts = []
+    for b in ons:
+        w = b.get('watts_medio')
+        if w is None:
+            continue
+        dur = b['t1'] - b['t0']
+        ini = b['t0'] + dur * transiente
+        d = _declive_por_min(tempo, smo2, ini, b['t1'])
+        if d is None:
+            continue
+        pts.append({'watts': round(w, 1), 'taxa': round(d, 2),
+                    'duracao_s': round(dur)})
+    if len(pts) < 2 * min_pontos:
+        return {'ok': False,
+                'motivo': (f'só {len(pts)} degraus com taxa medível; são '
+                           f'precisos {2 * min_pontos}'),
+                'degraus': pts}
+
+    xs = [p['watts'] for p in pts]
+    ys = [p['taxa'] for p in pts]
+    d2 = dois_segmentos(xs, ys, min_pontos=min_pontos)
+    out = {'degraus': pts, 'n_degraus': len(pts)}
+    if not d2.get('ok'):
+        return {'ok': False, 'motivo': d2.get('motivo'), **out}
+
+    # a aceleracao tem de ser NEGATIVA: a taxa fica mais negativa acima do
+    # breakpoint. Se o segundo troco for menos inclinado, nao ha aceleracao
+    # e o "breakpoint" e' ruido.
+    acelera = d2['declive_2'] < d2['declive_1']
+    p0 = _fit(xs, ys, 0, len(xs))
+    f_stat = None
+    if p0:
+        rss0 = _rss(xs, ys, p0[0], p0[1], 0, len(xs))
+        gl = len(xs) - 4
+        if gl > 0 and d2['rss'] > 0:
+            f_stat = round(((rss0 - d2['rss']) / 2) / (d2['rss'] / gl), 2)
+
+    critico = 4.0 if len(xs) < 10 else 3.0
+    ok = acelera and (f_stat is None or f_stat >= critico)
+    return {
+        'ok': ok,
+        'bp_watts': d2['tau'],
+        'taxa_no_bp': d2['y_no_tau'],
+        'taxa_antes': d2['declive_1'],
+        'taxa_depois': d2['declive_2'],
+        'acelera': acelera,
+        'f_vs_recta': f_stat,
+        'ganho_sobre_recta': d2['ganho_sobre_recta'],
+        'motivo': (None if ok else
+                   ('a taxa não acelera acima do ponto: o segundo troço é '
+                    'menos inclinado que o primeiro' if not acelera else
+                    f'a quebra não se distingue de uma recta (F={f_stat}, '
+                    f'abaixo de {critico})')),
+        **out,
+        'metodo': 'quebra na taxa de dessaturação por degrau (Rogers)',
+        'nota': ('a taxa mede-se depois do transiente de arranque, em % de '
+                 'SmO2 por minuto. Ao contrário do mínimo de cada degrau, '
+                 'não depende do ponto de partida — e por isso funciona com '
+                 'blocos curtos e com poucos degraus'),
     }

@@ -122,6 +122,8 @@ BODY = """
   <div id="mxLimiaresBloco">
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
     <div class="controls"><button onclick="mxLimiares()">Calcular</button>
+      <label class="sel"><input type="checkbox" id="mxExaustao"
+        title="Os blocos terminaram porque não aguentavas mais, e não porque o tempo acabou."> blocos até à exaustão</label>
       <span id="mxLimEstado" style="color:#8b949e;font-size:12px;"></span></div>
     <div id="mxLimiares" style="margin-top:6px;"></div>
     <details style="margin-top:6px;">
@@ -144,6 +146,13 @@ BODY = """
         <b>Ski:</b> sem literatura; tratado como o remo.</p>
         <p><b>Número de degraus:</b> testado com escadas de breakpoint
         conhecido — 12 degraus acertam o BP1 no valor exacto, 9 erram 30 W.</p>
+        <p><b>Para protocolos de blocos, o método principal é outro.</b> O
+        MLSS sai do padrão dentro de cada bloco: abaixo dele o SmO2 desce e
+        <i>estabiliza</i>; acima, desce <i>continuamente até ao fim</i>. Não
+        basta o declive médio ser negativo — Rogers dá o contra-exemplo de um
+        bloco a 268 W que descia mas estabilizava aos 4 minutos, e que por
+        isso não marcava o MLSS. Por isso medimos a segunda metade do bloco,
+        depois de ignorar o transiente de arranque.</p>
       </div>
     </details>
   </div>
@@ -734,7 +743,8 @@ function mxLimiares(){
  const id=ids[0], c=mxCorteDe(id);
  est.textContent='a calcular...';
  fetch('/api/moxy/limiares/'+id+'?inicio='+Math.round(c[0])
-       +'&fim='+Math.round(c[1]))
+       +'&fim='+Math.round(c[1])
+       +(document.getElementById('mxExaustao').checked?'&exaustao=1':''))
  .then(r=>r.json()).then(function(d){
   if(d.status!=='ok'){ est.textContent=d.mensagem||'sem dados';
    box.innerHTML=''; MX_BP=null; mxDraw(); return; }
@@ -743,6 +753,39 @@ function mxLimiares(){
   MX_BP = bp.ok ? {bp1:bp.bp1.tau, bp2:(bp.bp2||{}).tau} : null;
 
   let h='';
+  const ml=d.mlss_dessaturacao||{};
+  if(ml.ok){
+   h+='<div style="border-left:3px solid #3FB950;padding:6px 10px;'
+    +'margin-bottom:10px;">'
+    +'<b style="font-size:16px;color:#3FB950;">MLSS '+ml.mlss_estimado
+    +' W</b> <span style="color:#8b949e;font-size:11px;">entre '
+    +ml.mlss_entre.join(' e ')+' W · ±'+ml.incerteza+'</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+ml.metodo+'</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+ml.nota+'</span>'
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +'<tr style="color:#8b949e;text-align:left;">'
+    +'<th style="padding-right:12px;">Carga</th>'
+    +'<th style="padding-right:12px;">Declive total</th>'
+    +'<th style="padding-right:12px;">2.ª metade</th><th>Padrão</th></tr>'
+    +(ml.blocos||[]).map(function(x){
+      if(!x.padrao) return '<tr><td style="padding-right:12px;">'
+       +(x.watts!=null?Math.round(x.watts)+' W':'—')+'</td>'
+       +'<td colspan="3" style="color:#6e7681;">'+(x.motivo||'')+'</td></tr>';
+      const c2=x.acima_do_mlss?'#F85149':'#3FB950';
+      return '<tr><td style="padding-right:12px;">'+Math.round(x.watts)
+       +' W</td><td style="padding-right:12px;color:#8b949e;">'
+       +x.declive_total+'</td><td style="padding-right:12px;color:#8b949e;">'
+       +x.declive_2a_metade+'</td><td style="color:'+c2+';">'+x.padrao
+       +'</td></tr>';
+     }).join('')
+    +'</table><span style="font-size:10px;color:#8b949e;">declives em % de '
+    +'SmO2 por minuto, ignorando os primeiros '
+    +(ml.criterio||{}).transiente_ignorado_pct+'% do bloco (transiente de '
+    +'arranque). Estável = |declive| abaixo de '
+    +(ml.criterio||{}).estavel_abaixo_de+'</span></div>';
+  } else if(ml.motivo){
+   h+='<p style="color:#F0883E;font-size:12px;">MLSS: '+ml.motivo+'</p>';
+  }
   if(bp.ok){
    const conf = f.usar_para_prescrever===false ? '#F0883E' : '#3FB950';
    h+='<div style="border-left:3px solid '+conf+';padding:6px 10px;">'
@@ -767,8 +810,12 @@ function mxLimiares(){
         +'prescrever zonas nesta modalidade</span>':'')
     +'</div>';
   } else {
-   h+='<p style="color:#F0883E;font-size:12px;">'+(bp.motivo||'sem breakpoints')
-    +'</p>';
+   h+='<p style="color:#8b949e;font-size:11px;">Breakpoints por regressão: '
+    +(bp.motivo||'sem quebra')
+    +' — este método foi desenhado para <b>rampa contínua</b>, onde a queda '
+    +'do SmO2 acelera. Num protocolo de blocos com descanso, a informação '
+    +'está na forma de cada bloco, não na envolvente dos mínimos. É esperado '
+    +'que falhe aqui.</p>';
   }
   const pl=d.plato;
   if(pl&&pl.ok) h+='<p style="font-size:11px;color:#8b949e;">Platô de SmO2 a '

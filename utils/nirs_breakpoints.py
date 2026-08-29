@@ -693,10 +693,26 @@ def bp_por_taxa(tempo, smo2, blocos, transiente=TRANSIENTE, min_pontos=2):
     if not d2.get('ok'):
         return {'ok': False, 'motivo': d2.get('motivo'), **out}
 
-    # a aceleracao tem de ser NEGATIVA: a taxa fica mais negativa acima do
-    # breakpoint. Se o segundo troco for menos inclinado, nao ha aceleracao
-    # e o "breakpoint" e' ruido.
-    acelera = d2['declive_2'] < d2['declive_1']
+    # DOIS padroes, nao um. Rogers descreve-os no mesmo artigo:
+    #
+    #   "The RECTUS FEMORIS has a gradual desaturation with increasing
+    #    effort then has an ACCELERATION at the RCP."
+    #
+    #   "The VASTUS LATERALIS progressively de-saturates (almost in a
+    #    linear fashion), until there is a point where it PLATEAUS with
+    #    no further change."
+    #
+    # Eu so' aceitava o primeiro. O segundo -- a taxa aumenta e depois
+    # estabiliza -- e' igualmente um breakpoint, e e' o padrao que aparece
+    # nas sessoes deste atleta. Rejeita-lo era descartar o resultado certo
+    # por ter a forma do outro musculo.
+    m1, m2 = d2['declive_1'], d2['declive_2']
+    acelera = m2 < m1
+    # patamar: o segundo troco fica quase plano depois de o primeiro
+    # descer. "Quase plano" e' relativo ao primeiro declive, nao absoluto.
+    plateia = (m1 < 0 and abs(m2) < abs(m1) * 0.35)
+    padrao = ('aceleração (tipo recto femoral)' if acelera else
+              'patamar (tipo vasto lateral)' if plateia else None)
     p0 = _fit(xs, ys, 0, len(xs))
     f_stat = None
     if p0:
@@ -706,7 +722,7 @@ def bp_por_taxa(tempo, smo2, blocos, transiente=TRANSIENTE, min_pontos=2):
             f_stat = round(((rss0 - d2['rss']) / 2) / (d2['rss'] / gl), 2)
 
     critico = 4.0 if len(xs) < 10 else 3.0
-    ok = acelera and (f_stat is None or f_stat >= critico)
+    ok = padrao is not None and (f_stat is None or f_stat >= critico)
     return {
         'ok': ok,
         'bp_watts': d2['tau'],
@@ -714,11 +730,13 @@ def bp_por_taxa(tempo, smo2, blocos, transiente=TRANSIENTE, min_pontos=2):
         'taxa_antes': d2['declive_1'],
         'taxa_depois': d2['declive_2'],
         'acelera': acelera,
+        'plateia': plateia,
+        'padrao': padrao,
         'f_vs_recta': f_stat,
         'ganho_sobre_recta': d2['ganho_sobre_recta'],
         'motivo': (None if ok else
-                   ('a taxa não acelera acima do ponto: o segundo troço é '
-                    'menos inclinado que o primeiro' if not acelera else
+                   ('a taxa nem acelera nem estabiliza: continua a mudar ao '
+                    'mesmo ritmo, sem quebra' if padrao is None else
                     f'a quebra não se distingue de uma recta (F={f_stat}, '
                     f'abaixo de {critico})')),
         **out,
@@ -727,4 +745,10 @@ def bp_por_taxa(tempo, smo2, blocos, transiente=TRANSIENTE, min_pontos=2):
                  'SmO2 por minuto. Ao contrário do mínimo de cada degrau, '
                  'não depende do ponto de partida — e por isso funciona com '
                  'blocos curtos e com poucos degraus'),
+        'nota_padrao': (
+            'dois padrões são válidos: ACELERAÇÃO, típica do recto femoral, '
+            'em que a queda se agrava acima do ponto; e PATAMAR, típico do '
+            'vasto lateral, em que a queda deixa de se agravar porque a '
+            'extracção chegou ao limite. O músculo onde tens o sensor '
+            'determina qual esperas ver'),
     }

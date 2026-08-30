@@ -714,6 +714,87 @@ function mxResumo(){
   h+='</div>';
   h+='<p style="color:#8b949e;font-size:11px;">'+(d.nota||'')+'</p>';
 
+  // ── tabela longitudinal de limiares ───────────────────────────────
+  // A literatura e' consistente: o breakpoint de SmO2 nao substitui o VT2
+  // (Osmani 2023, Possamai 2024, Arnold, Springer 2026). O que parece ser
+  // e' reprodutivel no MESMO atleta com o MESMO protocolo. Por isso o que
+  // interessa nao e' o valor de uma sessao, e' a evolucao entre sessoes.
+  const comLim=(d.sessoes||[]).filter(x=>x.limiares && !x.limiares.erro);
+  if(comLim.length){
+   h+='<h3 style="font-size:14px;margin:14px 0 4px 0;">Limiares por SmO2 '
+    +'ao longo do tempo</h3>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+    +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+    +'<th style="padding:5px;">Data</th><th>Perfil</th>'
+    +'<th>BP1 (LT1/FatMax)</th><th>BP2 (VT2/MLSS)</th>'
+    +'<th>SmO2 máx→mín</th><th>Degraus</th></tr>';
+   comLim.forEach(function(x, si){
+    const L=x.limiares;
+    const s2=MX_SESSOES.find(y=>String(y.id)===String(x.activity_id))||{};
+    const par=L.perfil==='parabólico';
+    h+='<tr style="border-bottom:1px solid #161b22;">'
+     +'<td style="padding:5px;color:'+mxCorSessao(si)+';">'+(s2.data||'—')+'</td>'
+     +'<td style="color:'+(par?'#A371F7':'#79C0FF')+';">'+(L.perfil||'—')+'</td>'
+     +'<td>'+(L.bp1_w!=null
+        ? '<b>'+Math.round(L.bp1_w)+' W</b>'
+          +(L.bp1_bpm?' <span style="color:#8b949e;">'+L.bp1_bpm+' bpm</span>':'')
+        : '<span style="color:#6e7681;">não observável</span>')+'</td>'
+     +'<td>'+(L.bp2_w!=null
+        ? '<b>'+Math.round(L.bp2_w)+' W</b>'
+          +(L.bp2_bpm?' <span style="color:#8b949e;">'+L.bp2_bpm+' bpm</span>':'')
+          +'<br><span style="color:#6e7681;font-size:10px;">'+(L.bp2_origem||'')
+          +'</span>'
+        : '<span style="color:#6e7681;">—</span>')+'</td>'
+     +'<td style="color:#8b949e;">'+(L.smo2max!=null
+        ? L.smo2max+'% → '+L.smo2min+'%' : '—')+'</td>'
+     +'<td style="color:#8b949e;">'+(L.n_degraus||'—')+'</td></tr>';
+   });
+   h+='</table>';
+
+   // variacao entre sessoes: e' isto que a comparacao serve para ver
+   ['bp1_w','bp2_w'].forEach(function(k){
+    const vs=comLim.map(x=>x.limiares[k]).filter(v=>v!=null);
+    if(vs.length<2) return;
+    const lo=Math.min.apply(null,vs), hi=Math.max.apply(null,vs);
+    const med=vs.reduce((a,b)=>a+b,0)/vs.length;
+    const amp=hi-lo, pct=med?Math.round(amp/med*100):0;
+    h+='<p style="font-size:11px;color:'+(pct>15?'#F0883E':'#3FB950')+';">'
+     +(k==='bp1_w'?'BP1':'BP2')+': '+Math.round(lo)+'–'+Math.round(hi)
+     +' W em '+vs.length+' sessões · variação '+Math.round(amp)+' W ('+pct+'%)'
+     +(pct>15 ? ' — variação grande demais para ser mudança de forma; '
+        +'verifica se o protocolo foi o mesmo'
+        : ' — estável entre sessões')+'</p>';
+   });
+
+   // leitura da forma da curva, do perfil mais frequente
+   const cont={};
+   comLim.forEach(x=>{ const p2=x.limiares.perfil;
+    if(p2) cont[p2]=(cont[p2]||0)+1; });
+   const dom=Object.keys(cont).sort((a,b)=>cont[b]-cont[a])[0];
+   const lei=(comLim.find(x=>x.limiares.perfil===dom)||{}).limiares;
+   if(dom && lei && lei.leitura && lei.leitura.o_que_mostra){
+    const L2=lei.leitura;
+    h+='<div style="border-left:3px solid '
+     +(dom==='parabólico'?'#A371F7':'#79C0FF')+';padding:6px 10px;'
+     +'margin-top:8px;font-size:11px;">'
+     +'<b>Forma da curva: '+dom+'</b> <span style="color:#8b949e;">('
+     +cont[dom]+' de '+comLim.length+' sessões)</span>'
+     +'<br><b>O que mostra:</b> '+L2.o_que_mostra
+     +'<br><b>O que permite concluir:</b> '+L2.o_que_permite
+     +'<br><b>O que NÃO permite:</b> <span style="color:#F0883E;">'
+     +L2.o_que_nao_permite+'</span>'
+     +'<br><b>Prescrição:</b> '+L2.prescricao+'</div>';
+   }
+   h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+    +'Quatro estudos independentes — Osmani 2023, Possamai 2024 (remo), '
+    +'Arnold, e Springer 2026 (triatletas) — concluem que o breakpoint de '
+    +'SmO2 <b>não substitui</b> os limiares ventilatórios: a associação '
+    +'existe em grupo e quebra no indivíduo, com variabilidade de ±100 W. '
+    +'O que parece ser fiável é a <b>repetição no mesmo atleta com o mesmo '
+    +'protocolo</b> — por isso esta tabela compara sessões em vez de dar um '
+    +'número absoluto.</p>';
+  }
+
   // cartoes por sessao
   h+='<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;">';
   (d.sessoes||[]).forEach(function(x, si){

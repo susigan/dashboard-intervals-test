@@ -23,6 +23,8 @@ from flask import jsonify, request
 # actividades que nada tinham a ver, porque qualquer sessao com o sensor
 # ligado por acaso entrava. A tag e' uma decisao explicita do atleta; o
 # nome nao e'.
+MX_SESSOES_CACHE = {}
+
 PADRAO_MOXY = re.compile(r'^\s*#?\s*moxy\s*$', re.IGNORECASE)
 
 # Nomes possiveis dos streams NIRS. A Intervals.icu expoe smo2/thb, mas
@@ -110,6 +112,7 @@ def registar(app):
                                     if (j or {}).get('moving_time') else None),
                     'streams': f'/api/moxy/dados/{aid}',
                 })
+                MX_SESSOES_CACHE[str(aid)] = fora[-1]
                 if len(fora) >= n:
                     break
             return jsonify({
@@ -998,6 +1001,145 @@ def registar(app):
                      'smo2_min': round(b['smo2_min'], 1),
                      'delta_smo2': b.get('delta_smo2'),
                      'duracao_s': round(b['t1'] - b['t0'])} for b in ons]})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    VERSAO_ANALISE = '2026-08-30'
+
+    @app.route('/api/moxy/analise/<path:activity_id>', methods=['POST'])
+    def api_moxy_guardar_analise(activity_id):
+        """Corre tudo e grava o resultado.
+
+        Gravar de novo a mesma actividade SUBSTITUI: quando o método
+        melhora, basta voltar a correr e o registo fica com a versão nova.
+        A versao_analise diz com que código o valor foi calculado, para
+        nao se comparar um BP de hoje com um de um método antigo.
+        """
+        try:
+            import drive_db_perfil as ddp
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+
+            lim = api_moxy_limiares(aid)
+            lim = lim[0].get_json() if isinstance(lim, tuple) else lim.get_json()
+            itp = api_moxy_interpretacao(aid)
+            itp = itp[0].get_json() if isinstance(itp, tuple) else itp.get_json()
+            rd = api_moxy_rede(aid)
+            rd = rd[0].get_json() if isinstance(rd, tuple) else rd.get_json()
+
+            if (lim or {}).get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': (lim or {}).get('mensagem')}), 200
+
+            pf = lim.get('perfil_resposta') or {}
+            ml = lim.get('mlss_dessaturacao') or {}
+            bt = lim.get('bp_taxa') or {}
+            ip = (itp or {}).get('interpretacao') or {}
+            pt = (itp or {}).get('pontuacao') or {}
+            rl = (rd or {}).get('limitador') or {}
+
+            bp2 = (ml.get('mlss_estimado') if ml.get('ok')
+                   else bt.get('bp_watts') if bt.get('ok') else None)
+            s2 = MX_SESSOES_CACHE.get(aid, {})
+            linha = (
+                aid, lim.get('modalidade'), s2.get('data'),
+                pf.get('perfil'), pf.get('bp1_watts'), None,
+                bp2, None,
+                ('padrão de dessaturação' if ml.get('ok')
+                 else 'quebra na taxa' if bt.get('ok') else None),
+                pf.get('smo2max'), pf.get('smo2min'),
+                len([x for x in ((lim.get('blocos_usados')) or [])]),
+                (pt.get('us') or {}).get('score'),
+                (ip.get('us') or {}).get('limitador'),
+                (pt.get('pc') or {}).get('score'),
+                (ip.get('pc') or {}).get('limitador'),
+                rl.get('sistema'),
+                json.dumps(rl.get('controlo_pct') or {}, ensure_ascii=False),
+                ((lim.get('hipocapnia') or {}).get('z_maximo')),
+                None, None, VERSAO_ANALISE,
+                json.dumps({'limiares': lim, 'i515': itp, 'rede': rd},
+                           ensure_ascii=False)[:400000],
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+
+            cn = ddp.get_conn()
+            cn.execute(
+                """INSERT OR REPLACE INTO moxy_analises
+                   (activity_id, modalidade, data, perfil, bp1_w, bp1_bpm,
+                    bp2_w, bp2_bpm, bp2_origem, smo2max, smo2min, n_degraus,
+                    us_score, us_limitador, pc_score, pc_limitador,
+                    rede_limitador, rede_pct, pct_artefacto, corte_inicio_s,
+                    corte_fim_s, versao_analise, json_completo, data_gravacao)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                linha)
+            cn.commit()
+            ok, det = ddp.upload()
+            cn.close()
+            return jsonify({'status': 'ok' if ok else 'gravado_sem_upload',
+                            'activity_id': aid, 'versao': VERSAO_ANALISE,
+                            'drive': det})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/analises')
+    def api_moxy_analises():
+        """Análises gravadas.  ?modalidade=Row"""
+        try:
+            import drive_db_perfil as ddp
+            cond, args = [], []
+            if request.args.get('modalidade'):
+                cond.append('modalidade = ?')
+                args.append(request.args['modalidade'])
+            w = ('WHERE ' + ' AND '.join(cond)) if cond else ''
+            cn = ddp.get_conn()
+            cols = ('activity_id, modalidade, data, perfil, bp1_w, bp2_w, '
+                    'bp2_origem, smo2max, smo2min, n_degraus, us_limitador, '
+                    'pc_limitador, rede_limitador, versao_analise, '
+                    'data_gravacao')
+            rows = cn.execute(
+                f'SELECT {cols} FROM moxy_analises {w} ORDER BY data DESC',
+                tuple(args)).fetchall()
+            cn.close()
+            nomes = [c.strip() for c in cols.split(',')]
+            return jsonify({'status': 'ok', 'n': len(rows),
+                            'analises': [dict(zip(nomes, r)) for r in rows]})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+    @app.route('/api/moxy/debug/<path:activity_id>')
+    def api_moxy_debug(activity_id):
+        """Tudo em bruto de uma sessão, para diagnóstico.
+
+        Existe para poder pedir-se o output e ver o que se passou, em vez
+        de adivinhar a partir do que aparece no ecrã.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            fora = {'activity_id': aid, 'versao': VERSAO_ANALISE}
+            for nome, fn in (('dados', api_moxy_dados),
+                             ('limiares', api_moxy_limiares),
+                             ('interpretacao', api_moxy_interpretacao),
+                             ('rede', api_moxy_rede)):
+                try:
+                    r = fn(aid)
+                    j = r[0].get_json() if isinstance(r, tuple) else r.get_json()
+                    if nome == 'dados' and isinstance(j, dict):
+                        # streams inteiros nao servem para nada aqui
+                        j = {k: v for k, v in j.items() if k != 'canais'}
+                        j['canais_resumo'] = {
+                            k: {'n': len(v),
+                                'min': min([x for x in v if x is not None],
+                                           default=None),
+                                'max': max([x for x in v if x is not None],
+                                           default=None)}
+                            for k, v in ((r[0].get_json() if isinstance(r, tuple)
+                                          else r.get_json()).get('canais')
+                                         or {}).items()}
+                    fora[nome] = j
+                except Exception as e:
+                    fora[nome] = {'erro': f'{type(e).__name__}: {e}',
+                                  'trace': traceback.format_exc()[-1200:]}
+            return jsonify(fora)
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

@@ -669,14 +669,38 @@ def mlss_por_dessaturacao(tempo, smo2, blocos, transiente=TRANSIENTE,
                            f'suficientes (mínimo {dur_minima} s por bloco)'),
                 'blocos': linhas, 'aviso_duracao': aviso_dur}
 
+    # A travessia e' a ULTIMA, nao a primeira.
+    #
+    # Procurava-se o primeiro bloco que descia ate' ao fim e o ultimo
+    # estavel antes dele. Numa sequencia real isso falha: numa sessao com
+    # 155(sobe) 173(desce) 193(desce) 213(ESTABILIZA) 229(desce) 251(desce)
+    # o metodo antigo dava MLSS=164 W -- mas 213 W estabiliza, e se essa
+    # carga e' sustentavel o MLSS nao pode estar 50 W abaixo.
+    #
+    # O criterio certo e': o ultimo bloco que estabiliza tal que TUDO acima
+    # dele desce. Le'-se de cima para baixo, como se le' a olho.
     ultimo_estavel = None
     primeiro_acima = None
-    for x in validos:
-        if x['acima_do_mlss']:
-            if primeiro_acima is None:
-                primeiro_acima = x
-        elif primeiro_acima is None:
-            ultimo_estavel = x
+    for i in range(len(validos) - 1, -1, -1):
+        if validos[i]['acima_do_mlss']:
+            continue
+        # este estabiliza: tudo acima dele desce?
+        if all(x['acima_do_mlss'] for x in validos[i + 1:]) and \
+                i + 1 < len(validos):
+            ultimo_estavel = validos[i]
+            primeiro_acima = validos[i + 1]
+            break
+    # nenhum estavel com tudo acima a descer: cai no criterio antigo, e
+    # avisa que a sequencia nao e' limpa
+    sequencia_irregular = False
+    if ultimo_estavel is None:
+        for x in validos:
+            if x['acima_do_mlss']:
+                if primeiro_acima is None:
+                    primeiro_acima = x
+            elif primeiro_acima is None:
+                ultimo_estavel = x
+        sequencia_irregular = ultimo_estavel is not None
 
     if primeiro_acima is None:
         return {'ok': False,
@@ -690,6 +714,12 @@ def mlss_por_dessaturacao(tempo, smo2, blocos, transiente=TRANSIENTE,
                 'blocos': linhas, 'limite_superior': validos[0]['watts']}
 
     a, b2 = ultimo_estavel['watts'], primeiro_acima['watts']
+    for x in validos:
+        if x['watts'] < a and x['acima_do_mlss']:
+            x['contradiz'] = ('desce até ao fim mas está abaixo do MLSS '
+                              'estimado')
+        elif x['watts'] > b2 and not x['acima_do_mlss']:
+            x['contradiz'] = ('estabiliza mas está acima do MLSS estimado')
     return {
         'ok': True,
         'mlss_entre': [round(a, 1), round(b2, 1)],
@@ -697,6 +727,12 @@ def mlss_por_dessaturacao(tempo, smo2, blocos, transiente=TRANSIENTE,
         'incerteza': round((b2 - a) / 2, 1),
         'ultimo_estavel': ultimo_estavel,
         'primeiro_acima': primeiro_acima,
+        'sequencia_irregular': sequencia_irregular,
+        'aviso_sequencia': (
+            'nenhum bloco estabiliza com todos os acima a descer: a '
+            'sequência alterna. O valor sai da primeira travessia, que é '
+            'menos fiável — olha para a coluna do padrão e confirma a olho'
+            if sequencia_irregular else None),
         'blocos': linhas,
         'aviso_duracao': aviso_dur,
         'criterio': {'transiente_ignorado_pct': round(transiente * 100),

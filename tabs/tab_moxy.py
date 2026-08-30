@@ -122,6 +122,7 @@ BODY = """
   <div id="mxLimiaresBloco">
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
     <div class="controls"><button onclick="mxLimiares()">Calcular</button>
+      <button onclick="mxGuardarAnalise()" title="Grava perfil, breakpoints, 5-1-5 e rede causal. Voltar a gravar substitui, com a versão do método usada.">💾 Gravar análise</button>
       <label class="sel"><input type="checkbox" id="mxExaustao"
         title="Os blocos terminaram porque não aguentavas mais, e não porque o tempo acabou."> blocos até à exaustão</label>
       <span id="mxLimEstado" style="color:#8b949e;font-size:12px;"></span></div>
@@ -416,7 +417,7 @@ function mxTabelaDegraus(){
 
 // MX_SEL: ids escolhidos. MX_DADOS: {id: resposta}. MX_OFF: desvio manual
 // em segundos por id. Com uma sessao so', tudo funciona como antes.
-let MX_SEL = [], MX_DADOS = {}, MX_OFF = {};
+let MX_SEL = [], MX_DADOS = {}, MX_OFF = {}, MX_ALINHA_AVISO = {};
 
 let MX515_EDIT = {};
 
@@ -852,6 +853,24 @@ function mxResumo(){
 
 let MX_BP = null;   // breakpoints para desenhar no gráfico
 
+function mxGuardarAnalise(){
+ const ids=Object.keys(MX_DADOS);
+ const est=document.getElementById('mxLimEstado');
+ if(!ids.length){ est.textContent='escolhe uma sessão'; return; }
+ est.textContent='a gravar '+ids.length+' análise(s)...';
+ Promise.all(ids.map(function(id){
+  return fetch('/api/moxy/analise/'+id, {method:'POST'})
+   .then(r=>r.json()).catch(e=>({status:'erro',mensagem:e.message}));
+ })).then(function(res){
+  const ok=res.filter(r=>r.status && r.status.indexOf('ok')>=0
+                       || r.status==='gravado_sem_upload').length;
+  const maus=res.filter(r=>r.status==='erro');
+  est.textContent = ok+' gravada(s)'
+   + (res[0] && res[0].versao ? ' · versão '+res[0].versao : '')
+   + (maus.length ? ' · '+maus.length+' com erro: '+maus[0].mensagem : '');
+ });
+}
+
 function mxLimiares(){
  const ids=Object.keys(MX_DADOS);
  const est=document.getElementById('mxLimEstado');
@@ -1275,9 +1294,10 @@ function mxRefAlinhamento(id){
  const ons=bl.filter(b=>b.on && b.t1>=corte[0] && b.t0<=corte[1]);
  if(!ons.length) return corte[0];
  if(modo==='watts'){
-  // degrau equivalente: o primeiro ON cuja potencia media mais se aproxima
-  // da do primeiro ON da sessao de referencia. No Row e no Ski os watts
-  // variam de sessao para sessao, por isso isto e' opcao e nao omissao.
+  // Alinha o degrau cuja potencia mais se aproxima da do primeiro degrau
+  // da referencia. Resolve o caso em que uma sessao comeca mais suave que
+  // as outras: a de 2024 arranca em degraus leves que as de 2026 nao tem,
+  // e alinhar pelo primeiro bloco poe cargas diferentes lado a lado.
   const ref=Object.keys(MX_DADOS)[0];
   if(id===ref) return ons[0].t0;
   const dr=MX_DADOS[ref];
@@ -1286,11 +1306,22 @@ function mxRefAlinhamento(id){
     .filter(b=>b.on && b.t1>=cr[0] && b.t0<=cr[1]);
   if(!onsRef.length) return ons[0].t0;
   const alvo=onsRef[0].watts_medio;
-  let melhor=ons[0], dmin=1e18;
+  if(alvo==null) return ons[0].t0;
+  let melhor=null, dmin=1e18;
   ons.forEach(function(b){
-   const dd=Math.abs((b.watts_medio||0)-(alvo||0));
+   if(b.watts_medio==null) return;
+   const dd=Math.abs(b.watts_medio-alvo);
    if(dd<dmin){ dmin=dd; melhor=b; }
   });
+  // se nenhum degrau chega perto, nao ha escalao equivalente: dizer isso
+  // em vez de alinhar por um que esta 60 W ao lado
+  if(!melhor || dmin>30){
+   MX_ALINHA_AVISO[id]=('nenhum degrau desta sessão fica a menos de 30 W do '
+    +'primeiro da referência ('+Math.round(alvo)+' W). Alinhado pelo '
+    +'primeiro bloco — usa o ajuste fino');
+   return ons[0].t0;
+  }
+  delete MX_ALINHA_AVISO[id];
   return melhor.t0;
  }
  return ons[0].t0;
@@ -1316,7 +1347,15 @@ function mxOffsetsUI(){
  if(!box) return;
  const ids=Object.keys(MX_DADOS);
  if(ids.length<2){ box.innerHTML=''; return; }
- box.innerHTML = ids.map(function(id,i){
+ const avisos=Object.keys(MX_ALINHA_AVISO)
+  .filter(k=>ids.indexOf(k)>=0)
+  .map(function(k){
+   const s2=MX_SESSOES.find(x=>String(x.id)===k)||{};
+   return (s2.data||k)+': '+MX_ALINHA_AVISO[k]; });
+ box.innerHTML = (avisos.length
+  ? '<span style="color:#F0883E;font-size:11px;width:100%;">⚠ '
+    +avisos.join(' | ')+'</span>' : '')
+  + ids.map(function(id,i){
   const s=MX_SESSOES.find(x=>String(x.id)===id)||{};
   const off=MX_OFF[id]||0;
   return '<label class="sel" style="white-space:nowrap;">'
@@ -1570,13 +1609,17 @@ function mxDraw(){
  });
 
  // breakpoints como riscas verticais, quando calculados
- if(MX_BP && wser){
-  const wmax=Math.max.apply(null, wser.pts.map(p=>p[1]))||1;
+ // Usava-se 'wser', que uma edicao anterior renomeou para a lista
+ // 'wsers'. Ficou a referencia antiga e qualquer sessao com breakpoints
+ // calculados rebentava com "wser is not defined".
+ const wserBP = wsers.find(function(w){ return w.si===0; }) || wsers[0];
+ if(MX_BP && wserBP){
+  const wmax=Math.max.apply(null, wserBP.pts.map(p=>p[1]))||1;
   [[MX_BP.bp1,'#3FB950','BP1'],[MX_BP.bp2,'#F85149','BP2']].forEach(function(b){
    if(b[0]==null) return;
    // o BP esta em watts: encontrar quando a potencia o atravessa
    let melhor=null, dmin=1e18;
-   wser.pts.forEach(function(p){
+   wserBP.pts.forEach(function(p){
     const dd=Math.abs(p[1]-b[0]);
     if(dd<dmin){ dmin=dd; melhor=p[0]; }
    });

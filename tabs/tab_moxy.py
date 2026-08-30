@@ -175,6 +175,13 @@ BODY = """
         não depende de onde o degrau começou.
         <b>2) Padrão de dessaturação (MLSS):</b> precisa de 5 min por degrau.
         <b>3) Regressão sobre os mínimos:</b> desenhada para rampa contínua.</p>
+        <p><b>Qual travessia conta.</b> O MLSS sai do <b>último</b> bloco que
+        estabiliza tendo tudo acima dele a descer — não do primeiro que desce.
+        Numa sequência como 155(sobe) 173(desce) 193(desce) 213(estabiliza)
+        229(desce) 251(desce), tomar a primeira travessia daria 164 W; mas
+        213 W estabiliza, e se essa carga é sustentável o MLSS não pode estar
+        50 W abaixo. Lê-se de cima para baixo, como se lê a olho. Blocos que
+        contradizem a leitura ficam assinalados a laranja.</p>
         <p><b>Para protocolos de blocos, o método principal é outro.</b> O
         MLSS sai do padrão dentro de cada bloco: abaixo dele o SmO2 desce e
         <i>estabiliza</i>; acima, desce <i>continuamente até ao fim</i>. Não
@@ -902,6 +909,9 @@ function mxLimiares(){
     +ml.mlss_entre.join(' e ')+' W · ±'+ml.incerteza+'</span>'
     +'<br><span style="font-size:11px;color:#8b949e;">'+ml.metodo+'</span>'
     +'<br><span style="font-size:11px;color:#8b949e;">'+ml.nota+'</span>'
+    +(ml.aviso_sequencia
+      ? '<br><span style="font-size:11px;color:#F0883E;">⚠ '
+        +ml.aviso_sequencia+'</span>' : '')
     +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
     +'<tr style="color:#8b949e;text-align:left;">'
     +'<th style="padding-right:12px;">Carga</th>'
@@ -912,10 +922,13 @@ function mxLimiares(){
        +(x.watts!=null?Math.round(x.watts)+' W':'—')+'</td>'
        +'<td colspan="3" style="color:#6e7681;">'+(x.motivo||'')+'</td></tr>';
       const c2=x.acima_do_mlss?'#F85149':'#3FB950';
-      return '<tr><td style="padding-right:12px;">'+Math.round(x.watts)
+      return '<tr'+(x.contradiz?' style="background:rgba(240,136,62,0.08);"':'')
+       +'><td style="padding-right:12px;">'+Math.round(x.watts)
        +' W</td><td style="padding-right:12px;color:#8b949e;">'
        +x.declive_total+'</td><td style="padding-right:12px;color:#8b949e;">'
        +x.declive_2a_metade+'</td><td style="color:'+c2+';">'+x.padrao
+       +(x.contradiz?' <span style="color:#F0883E;font-size:10px;">⚠ '
+         +x.contradiz+'</span>':'')
        +'</td></tr>';
      }).join('')
     +'</table><span style="font-size:10px;color:#8b949e;">declives em % de '

@@ -149,7 +149,7 @@ def plato(xs, ys, janela=PLATO_JANELA_S, corte=PLATO_CORTE, hz=1.0):
                                    f'janelas de {janela} s'}
 
 
-def tres_segmentos(xs, ys, min_pontos=3):
+def tres_segmentos(xs, ys, min_pontos=3, restringir=True):
     """Dois breakpoints de uma vez, por procura nos dois em simultaneo.
 
     Bhambhani descreve TRES fases no SmO2 durante exercicio incremental:
@@ -162,6 +162,23 @@ def tres_segmentos(xs, ys, min_pontos=3):
     if n < 3 * min_pontos:
         return {'ok': False,
                 'motivo': f'só {n} pontos; são precisos {3 * min_pontos}'}
+    # RESTRICAO FISIOLOGICA, nao estatistica.
+    #
+    # Fernandez-Jarillo 2026 aponta directamente o erro deste metodo:
+    #   "This misplacement is often driven by breakpoint-detection
+    #    approaches based on curve fitting (e.g., maximal distance,
+    #    segmented linear regression) which OPTIMISE STATISTICAL FIT and
+    #    can therefore select a slope change WITHIN Phase B rather than
+    #    the physiological Phase B-Phase C transition."
+    #
+    # As tres fases de Bhambhani sao: A estavel, B queda linear, C
+    # estabiliza. Portanto os declives tem de obedecer a
+    #
+    #     |m1| pequeno  ->  m2 claramente negativo  ->  |m3| < |m2|
+    #
+    # O ajuste livre escolhia frequentemente o contrario: partia a fase B
+    # em duas, com a segunda mais inclinada, porque isso reduz mais o
+    # erro. Estatisticamente melhor, fisiologicamente errado.
     melhor = None
     for k1 in range(min_pontos, n - 2 * min_pontos + 1):
         p1 = _fit(xs, ys, 0, k1)
@@ -185,13 +202,25 @@ def tres_segmentos(xs, ys, min_pontos=3):
                 continue
             m3 = num3 / den3
             b3 = y2 - m3 * tau2
+            if restringir:
+                # fase B desce, fase C abranda face a B
+                if not (m2 < 0 and abs(m3) < abs(m2)):
+                    continue
+                # fase A e' mais plana do que a fase B
+                if abs(m1) >= abs(m2):
+                    continue
             r = (_rss(xs, ys, m1, b1, 0, k1)
                  + _rss(xs, ys, m2, b2, k1, k2)
                  + _rss(xs, ys, m3, b3, k2, n))
             if melhor is None or r < melhor[0]:
                 melhor = (r, tau1, tau2, m1, m2, m3, k1, k2, y1, y2)
     if melhor is None:
-        return {'ok': False, 'motivo': 'nenhuma divisão ajustável'}
+        return {'ok': False,
+                'motivo': ('nenhuma divisão respeita as três fases: fase A '
+                           'mais plana, fase B a descer, fase C a abrandar. '
+                           'Um ajuste que minimize só o erro partiria a fase '
+                           'B em duas, e isso não é um breakpoint '
+                           'fisiológico')}
     r, tau1, tau2, m1, m2, m3, k1, k2, y1, y2 = melhor
     p0 = _fit(xs, ys, 0, n)
     rss0 = _rss(xs, ys, p0[0], p0[1], 0, n) if p0 else None
@@ -199,6 +228,12 @@ def tres_segmentos(xs, ys, min_pontos=3):
             'bp1': round(tau1, 1), 'bp2': round(tau2, 1),
             'smo2_bp1': round(y1, 1), 'smo2_bp2': round(y2, 1),
             'declives': [round(m1, 5), round(m2, 5), round(m3, 5)],
+            'fases': {'A': 'estável', 'B': 'queda linear', 'C': 'estabiliza'},
+            'restringido': restringir,
+            'restricao': (('|m1| < |m2|, m2 < 0, |m3| < |m2| — as três fases '
+                           'de Bhambhani, impostas antes de minimizar o erro')
+                          if restringir else
+                          'nenhuma: só minimiza o erro'),
             'indices': [k1, k2], 'rss': round(r, 3),
             'ganho_sobre_recta': (round(1 - r / rss0, 3)
                                   if rss0 and rss0 > 0 else None),
@@ -236,12 +271,46 @@ def breakpoints(blocos, modalidade=None, canal='smo2_min'):
 
     # tres trocos primeiro: e' o que corresponde as tres fases descritas
     # na literatura. Se nao houver pontos para tres, cai em dois.
+    # Dois ajustes: com e sem a restricao fisiologica. Quando divergem, e'
+    # sinal de que a fase B nao e' linear -- tem uma parte final mais
+    # inclinada -- e nesse caso nem tres segmentos a representam. O artigo
+    # que aponta este problema recomenda inspeccao visual informada pelas
+    # fases; mostrar os dois e deixar decidir e' o mais honesto que se pode
+    # fazer sem ser o utilizador a olhar.
     tres = tres_segmentos(xs, ys)
+    tres_livre = tres_segmentos(xs, ys, restringir=False)
     out = {'pontos': [{'watts': round(x, 1), 'smo2': round(y, 1)}
                       for x, y in pts]}
+    if tres_livre.get('ok'):
+        out['ajuste_livre'] = {
+            'bp1': tres_livre['bp1'], 'bp2': tres_livre['bp2'],
+            'declives': tres_livre['declives'],
+            'nota': ('ajuste que só minimiza o erro, sem a restrição das '
+                     'três fases. Mostrado para comparação')}
+        if tres.get('ok'):
+            d1 = abs(tres_livre['bp1'] - tres['bp1'])
+            d2 = abs(tres_livre['bp2'] - tres['bp2'])
+            m = tres_livre['declives']
+            partiu_b = abs(m[2]) > abs(m[1])
+            if partiu_b or d1 > 15 or d2 > 15:
+                out['divergencia'] = {
+                    'bp1_difere': round(d1, 1), 'bp2_difere': round(d2, 1),
+                    'livre_partiu_fase_b': partiu_b,
+                    'leitura': (
+                        'os dois ajustes discordam. O livre '
+                        + ('parte a fase B em duas, com a segunda mais '
+                           'inclinada — é o erro que Fernández-Jarillo 2026 '
+                           'descreve, e estatisticamente ele ganha sempre'
+                           if partiu_b else
+                           'coloca os pontos noutro sítio')
+                        + '. Quando isto acontece, a fase B não é linear e '
+                          'nem três segmentos a representam: o artigo '
+                          'recomenda inspecção visual guiada pelas fases. '
+                          'Olha o gráfico antes de aceitar qualquer um')}
+
     if tres.get('ok'):
         out['ok'] = True
-        out['metodo'] = 'três segmentos contínuos'
+        out['metodo'] = 'três segmentos contínuos, com restrição das fases'
         out['bp1'] = {'ok': True, 'tau': tres['bp1'], 'smo2': tres['smo2_bp1']}
         out['bp2'] = {'ok': True, 'tau': tres['bp2'], 'smo2': tres['smo2_bp2']}
         out['declives'] = tres['declives']
@@ -867,3 +936,69 @@ def perfil_de_resposta(tempo, smo2, blocos, cauda=CAUDA_S,
             'perfil monotónico associa-se a mais treino, menor prega cutânea, '
             'massa muscular maior e fenótipo mais glicolítico')
     return out
+
+
+def fc_na_carga(blocos, tempo, hr, watts_alvo, tolerancia=25):
+    """FC média do bloco de trabalho mais próximo de uma dada carga.
+
+    Interpola entre os dois blocos vizinhos quando o alvo cai entre eles;
+    sem isso, um BP a meio caminho entre dois degraus herdava a FC de um
+    deles e a comparacao entre sessoes ficava com degraus a mais.
+    """
+    if watts_alvo is None or not hr:
+        return None
+    pts = []
+    for b in blocos:
+        if not b.get('on') or b.get('watts_medio') is None:
+            continue
+        vs = [hr[i] for i in range(min(len(tempo), len(hr)))
+              if b['t0'] <= tempo[i] <= b['t1'] and hr[i] is not None]
+        if vs:
+            pts.append((b['watts_medio'], sum(vs) / len(vs)))
+    if not pts:
+        return None
+    pts.sort()
+    abaixo = [p for p in pts if p[0] <= watts_alvo]
+    acima = [p for p in pts if p[0] > watts_alvo]
+    if abaixo and acima:
+        (w1, h1), (w2, h2) = abaixo[-1], acima[0]
+        f = (watts_alvo - w1) / (w2 - w1) if w2 > w1 else 0
+        return round(h1 + (h2 - h1) * f)
+    perto = min(pts, key=lambda p: abs(p[0] - watts_alvo))
+    if abs(perto[0] - watts_alvo) > tolerancia:
+        return None
+    return round(perto[1])
+
+
+# Como se le' cada forma de curva. E' o que o Arnold descreve, posto em
+# linguagem de prescricao -- e com o que cada forma NAO permite concluir,
+# que e' a parte que costuma faltar.
+LEITURA_DO_PERFIL = {
+    'parabólico': {
+        'o_que_mostra': ('a entrega de oxigénio sobe mais depressa que o '
+                         'consumo nas cargas baixas, e só acima do topo da '
+                         'parábola é que o consumo passa à frente'),
+        'o_que_permite': ('o topo da parábola dá um candidato a FatMax / LT1 '
+                          '— o primeiro limiar é observável neste perfil'),
+        'o_que_nao_permite': ('o SmO2 mínimo só é atingido à exaustão, por '
+                              'isso não serve para marcar o topo do domínio '
+                              'severo'),
+        'prescricao': ('treino de base na zona onde o SmO2 se mantém perto '
+                       'do máximo: é onde o fluxo e a entrega de substrato '
+                       'estão altos'),
+    },
+    'monotónico': {
+        'o_que_mostra': ('o consumo excede a entrega desde a primeira carga: '
+                         'não há zona em que a oxigenação melhore com o '
+                         'esforço'),
+        'o_que_permite': ('o SmO2 aproxima-se do mínimo fisiológico pouco '
+                          'acima do CP, o que dá um alvo para intervalos '
+                          'longos no domínio severo'),
+        'o_que_nao_permite': ('o primeiro limiar NÃO é observável: procurar '
+                              'um LT1 no SmO2 deste perfil é procurar o que '
+                              'não existe. Usar potência, FC e sensação'),
+        'prescricao': ('intervalos que cheguem ao SmO2 quase mínimo, com '
+                       'duração longa em vez de intensidade alta — a '
+                       'intensidade que lá chega não é muito acima do CP'),
+    },
+}

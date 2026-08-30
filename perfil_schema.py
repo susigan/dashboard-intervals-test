@@ -99,6 +99,40 @@ CREATE TABLE IF NOT EXISTS moxy_cortes (
     data_gravacao   TEXT
 );
 
+CREATE TABLE IF NOT EXISTS moxy_analises (
+    activity_id     TEXT PRIMARY KEY,
+    modalidade      TEXT,
+    data            TEXT,
+    -- limiares
+    perfil          TEXT,
+    bp1_w           REAL,
+    bp1_bpm         REAL,
+    bp2_w           REAL,
+    bp2_bpm         REAL,
+    bp2_origem      TEXT,
+    smo2max         REAL,
+    smo2min         REAL,
+    n_degraus       INTEGER,
+    -- 5-1-5
+    us_score        REAL,
+    us_limitador    TEXT,
+    pc_score        REAL,
+    pc_limitador    TEXT,
+    -- rede causal
+    rede_limitador  TEXT,
+    rede_pct        TEXT,
+    -- qualidade e proveniencia
+    pct_artefacto   REAL,
+    corte_inicio_s  REAL,
+    corte_fim_s     REAL,
+    versao_analise  TEXT,
+    json_completo   TEXT,
+    data_gravacao   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_moxy_mod_data
+    ON moxy_analises (modalidade, data);
+
 CREATE INDEX IF NOT EXISTS ix_cp_mod_data
     ON cp_resultados (modalidade, data_referencia);
 CREATE INDEX IF NOT EXISTS ix_perfil_mod_data

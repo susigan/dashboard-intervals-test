@@ -792,6 +792,43 @@ def registar(app):
                 except Exception as e:
                     linha['rede'] = {'erro': str(e)[:90]}
 
+                # limiares por SmO2, para a comparacao longitudinal
+                try:
+                    import nirs_breakpoints as nbk
+                    sm = canais.get('smo2') or []
+                    hr_s = canais.get('heartrate') or []
+                    pf = nbk.perfil_de_resposta(t, sm, bl) if sm else {}
+                    mls = nbk.mlss_por_dessaturacao(t, sm, bl) if sm else {}
+                    btx = nbk.bp_por_taxa(t, sm, bl) if sm else {}
+                    bp1_w = pf.get('bp1_watts') if pf.get('ok') else None
+                    bp2_w = (mls.get('mlss_estimado') if mls.get('ok')
+                             else (btx.get('bp_watts') if btx.get('ok')
+                                   else None))
+                    linha['limiares'] = {
+                        'perfil': pf.get('perfil'),
+                        'perfil_ok': pf.get('ok'),
+                        'perfil_motivo': pf.get('motivo'),
+                        'smo2max': pf.get('smo2max'),
+                        'smo2min': pf.get('smo2min'),
+                        'amplitude': pf.get('amplitude'),
+                        'bp1_w': bp1_w,
+                        'bp1_bpm': nbk.fc_na_carga(bl, t, hr_s, bp1_w),
+                        'bp2_w': bp2_w,
+                        'bp2_bpm': nbk.fc_na_carga(bl, t, hr_s, bp2_w),
+                        'bp2_origem': ('padrão de dessaturação'
+                                       if mls.get('ok') else
+                                       'quebra na taxa' if btx.get('ok')
+                                       else None),
+                        'bp2_motivo': (None if bp2_w is not None else
+                                       (mls.get('motivo')
+                                        or btx.get('motivo'))),
+                        'n_degraus': len([x for x in bl if x.get('on')]),
+                        'leitura': (nbk.LEITURA_DO_PERFIL.get(
+                            pf.get('perfil') or '') or {}),
+                    }
+                except Exception as e:
+                    linha['limiares'] = {'erro': f'{type(e).__name__}: {e}'}
+
                 try:
                     v = it.avaliar(
                         t, canais, bl, pct_artefacto=art,

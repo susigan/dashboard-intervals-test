@@ -979,7 +979,12 @@ def registar(app):
             bp_taxa = nbk.bp_por_taxa(t, smo2, blocos)
             # Metodo do script oficial da Moxy, com o teste F acrescentado
             bp_mx = nbk.bp_moxy(ons, t, smo2, canais.get('heartrate'),
-                                modalidade=mod)
+                                modalidade=mod, degraus_por_troco=2)
+            # o mesmo sem restricao de degraus por troco: reproduz o
+            # script da Intervals.icu, para se poder comparar
+            bp_mx_livre = nbk.bp_moxy(
+                ons, t, smo2, canais.get('heartrate'), modalidade=mod,
+                degraus_por_troco=1)
             bp = nbk.breakpoints(ons, mod)
             pl = nbk.plato(t, smo2,
                            janela=request.args.get('janela_plato', type=int)
@@ -999,6 +1004,36 @@ def registar(app):
                 'mlss_dessaturacao': mlss,
                 'bp_taxa': bp_taxa,
                 'bp_moxy': bp_mx,
+                'bp_moxy_sem_restricao': bp_mx_livre,
+                'segundo_limiar': {
+                    'estimativas': [
+                        x for x in (
+                            {'metodo': 'MLSS por padrão de dessaturação',
+                             'watts': (mlss.get('mlss_estimado')
+                                       if mlss.get('ok') else None),
+                             'rota': 'forma dentro de cada bloco, no tempo'},
+                            {'metodo': 'BP2 (regressão, meu critério)',
+                             'watts': (bp_mx.get('bp2_w')
+                                       if bp_mx.get('bp1_w') is not None
+                                       else None),
+                             'rota': 'curva SmO2 × potência entre blocos'},
+                            {'metodo': 'BP2 (regressão, critério do script)',
+                             'watts': bp_mx_livre.get('bp2_w'),
+                             'rota': 'curva SmO2 × potência, sem mínimo '
+                                     'por troço'},
+                            {'metodo': 'Quebra na taxa',
+                             'watts': (bp_taxa.get('bp_watts')
+                                       if bp_taxa.get('ok') else None),
+                             'rota': 'velocidade de queda por degrau'},
+                        ) if x['watts'] is not None],
+                    'nota': (
+                        'MLSS e BP2 NÃO são o mesmo cálculo: um lê a forma '
+                        'DENTRO de cada bloco ao longo do tempo, o outro a '
+                        'curva SmO2 × potência ENTRE blocos. Apontam à mesma '
+                        'fronteira (VT2/RCP) por rotas diferentes, e a '
+                        'distância entre eles é a incerteza real da '
+                        'estimativa — não um erro de cálculo'),
+                },
                 'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
                 'blocos_usados': [
                     {'watts': b.get('watts_medio'),

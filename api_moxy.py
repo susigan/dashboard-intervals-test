@@ -64,6 +64,86 @@ def _remover_orfa(aid):
     return fora
 
 
+def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil):
+    """Junta as estimativas nos dois limiares e assinala incoerencias.
+
+    Antes havia um painel por metodo -- quatro numeros soltos, sem dizer
+    qual respondia a que pergunta. E o BP1 do metodo Moxy nao entrava em
+    grupo nenhum, o que deixava passar um candidato a PRIMEIRO limiar
+    acima de um candidato a SEGUNDO sem ninguem dar por isso.
+    """
+    p1, p2 = [], []
+
+    def _add(lista, metodo, w, rota, bpm=None):
+        if w is not None:
+            lista.append({'metodo': metodo, 'watts': round(float(w), 1),
+                          'bpm': bpm, 'rota': rota})
+
+    # ── primeiro limiar: LT1 / VT1 / FatMax ──────────────────────────
+    if perfil.get('ok') and perfil.get('bp1_watts') is not None:
+        _add(p1, 'Topo da parábola (SmO2max)', perfil['bp1_watts'],
+             'média do último minuto por degrau')
+    if bp_mx.get('bp1_w') is not None:
+        _add(p1, 'BP1 da curva SmO2 × potência', bp_mx['bp1_w'],
+             'regressão por troços, 2 degraus por troço', bp_mx.get('bp1_bpm'))
+    if bp_livre.get('bp1_w') is not None:
+        _add(p1, 'BP1, critério do script Intervals.icu', bp_livre['bp1_w'],
+             'regressão por troços, sem mínimo', bp_livre.get('bp1_bpm'))
+
+    # ── segundo limiar: LT2 / VT2 / RCP / MLSS ───────────────────────
+    if mlss.get('ok'):
+        _add(p2, 'MLSS por padrão de dessaturação', mlss['mlss_estimado'],
+             'forma dentro de cada bloco, no tempo')
+    if bp_mx.get('bp2_w') is not None:
+        _add(p2, 'BP2 da curva SmO2 × potência', bp_mx['bp2_w'],
+             'regressão por troços, 2 degraus por troço', bp_mx.get('bp2_bpm'))
+    if bp_livre.get('bp2_w') is not None:
+        _add(p2, 'BP2, critério do script Intervals.icu', bp_livre['bp2_w'],
+             'regressão por troços, sem mínimo', bp_livre.get('bp2_bpm'))
+    if bp_taxa.get('ok'):
+        _add(p2, 'Quebra na taxa de dessaturação', bp_taxa['bp_watts'],
+             'velocidade de queda por degrau')
+
+    def _resumo(lista, nome):
+        if not lista:
+            return {'ok': False, 'n': 0}
+        vs = [x['watts'] for x in lista]
+        lo, hi = min(vs), max(vs)
+        med = sorted(vs)[len(vs) // 2]
+        amp = hi - lo
+        return {'ok': True, 'nome': nome, 'n': len(lista),
+                'de': lo, 'ate': hi, 'mediana': med,
+                'dispersao_w': round(amp, 1),
+                'dispersao_pct': round(amp / med * 100) if med else None,
+                'estimativas': sorted(lista, key=lambda x: x['watts'])}
+
+    r1 = _resumo(p1, 'Primeiro limiar (LT1 / VT1 / FatMax)')
+    r2 = _resumo(p2, 'Segundo limiar (LT2 / VT2 / RCP / MLSS)')
+
+    avisos = []
+    if r1.get('ok') and r2.get('ok') and r1['de'] > r2['de']:
+        avisos.append(
+            f"a estimativa mais baixa do primeiro limiar ({r1['de']} W) fica "
+            f"ACIMA da mais baixa do segundo ({r2['de']} W). Os métodos "
+            'estão a discordar sobre qual limiar encontraram — com poucos '
+            'degraus isso acontece, e significa que nenhum dos dois está '
+            'bem determinado')
+    for r in (r1, r2):
+        if r.get('ok') and (r.get('dispersao_pct') or 0) > 20:
+            avisos.append(
+                f"{r['nome']}: {r['dispersao_pct']}% de dispersão entre "
+                f"métodos ({r['de']}–{r['ate']} W). Acima de 20% não há "
+                'estimativa utilizável — são precisos mais degraus')
+    return {
+        'primeiro': r1, 'segundo': r2, 'avisos': avisos,
+        'nota': ('cada limiar tem várias estimativas porque há várias rotas '
+                 'para lá chegar: umas leem a forma dentro de cada bloco ao '
+                 'longo do tempo, outras a curva SmO2 × potência entre '
+                 'blocos. A distância entre elas é a incerteza real, não um '
+                 'erro de cálculo'),
+    }
+
+
 def registar(app):
 
     @app.route('/api/moxy/sessoes')
@@ -1005,35 +1085,8 @@ def registar(app):
                 'bp_taxa': bp_taxa,
                 'bp_moxy': bp_mx,
                 'bp_moxy_sem_restricao': bp_mx_livre,
-                'segundo_limiar': {
-                    'estimativas': [
-                        x for x in (
-                            {'metodo': 'MLSS por padrão de dessaturação',
-                             'watts': (mlss.get('mlss_estimado')
-                                       if mlss.get('ok') else None),
-                             'rota': 'forma dentro de cada bloco, no tempo'},
-                            {'metodo': 'BP2 (regressão, meu critério)',
-                             'watts': (bp_mx.get('bp2_w')
-                                       if bp_mx.get('bp1_w') is not None
-                                       else None),
-                             'rota': 'curva SmO2 × potência entre blocos'},
-                            {'metodo': 'BP2 (regressão, critério do script)',
-                             'watts': bp_mx_livre.get('bp2_w'),
-                             'rota': 'curva SmO2 × potência, sem mínimo '
-                                     'por troço'},
-                            {'metodo': 'Quebra na taxa',
-                             'watts': (bp_taxa.get('bp_watts')
-                                       if bp_taxa.get('ok') else None),
-                             'rota': 'velocidade de queda por degrau'},
-                        ) if x['watts'] is not None],
-                    'nota': (
-                        'MLSS e BP2 NÃO são o mesmo cálculo: um lê a forma '
-                        'DENTRO de cada bloco ao longo do tempo, o outro a '
-                        'curva SmO2 × potência ENTRE blocos. Apontam à mesma '
-                        'fronteira (VT2/RCP) por rotas diferentes, e a '
-                        'distância entre eles é a incerteza real da '
-                        'estimativa — não um erro de cálculo'),
-                },
+                'limiares_consenso': _consenso_limiares(
+                    mlss, bp_mx, bp_mx_livre, bp_taxa, perfil),
                 'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
                 'blocos_usados': [
                     {'watts': b.get('watts_medio'),

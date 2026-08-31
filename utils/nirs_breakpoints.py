@@ -1084,7 +1084,7 @@ def _interpolar(xs, ys, n_fino=N_FINO):
 
 
 def bp_moxy(blocos, tempo=None, smo2=None, hr=None, n_fino=N_FINO,
-            modalidade=None):
+            modalidade=None, degraus_por_troco=2):
     """BP1 e BP2 pelo método do script oficial da Moxy, com teste F honesto.
 
     blocos: lista com watts_medio e, ou smo2_medio já calculado, ou t0/t1
@@ -1130,7 +1130,11 @@ def bp_moxy(blocos, tempo=None, smo2=None, hr=None, n_fino=N_FINO,
     # o primeiro troco ficava com pontos a menos e o ajuste compensava
     # deslocando a quebra. O minimo tem de contar degraus reais, nao
     # pontos interpolados.
-    min_f = max(2, 2 * n_fino)
+    # degraus_por_troco=2 e' o meu criterio; =1 reproduz o script deles,
+    # que nao impoe minimo e por isso deixa o breakpoint cair entre dois
+    # degraus quaisquer. Com 5 degraus a diferenca e' grande: 209 W com o
+    # meu criterio, 197 W com o deles.
+    min_f = max(2, int(degraus_por_troco * n_fino))
     tres = tres_segmentos(fx, fy, min_pontos=min_f)
     if not tres.get('ok'):
         d2 = dois_segmentos(fx, fy, min_pontos=min_f)
@@ -1198,6 +1202,7 @@ def bp_moxy(blocos, tempo=None, smo2=None, hr=None, n_fino=N_FINO,
         'p_vs_recta': p_val,
         'metodo': ('MoxyBreakPoint v0.8 adaptado: média de SmO2 por '
                    'intervalo, interpolação 10x, regressão por troços'),
+        'degraus_por_troco': degraus_por_troco,
         'nota_interpolacao': (
             f'{len(fx)} pontos ajustados vêm de {len(pts)} medições. A '
             'interpolação serve para o breakpoint cair numa grelha fina, '

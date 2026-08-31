@@ -2482,6 +2482,16 @@ function pmExtTabela(){
    + 'indisponível: ' + ai.erro + '</p>';
  }
 
+ // ── BP1, BP2 e MLSS da ultima sessao com Moxy ─────────────────────
+ // Entram como linhas proprias, com a data da sessao: nao sao medianas de
+ // um historico, sao de UMA sessao, a mais recente.
+ const mxr=(PM && PM.moxy) || {};
+ const linhasMoxy = [];
+ if(mxr.bp1_w!=null) linhasMoxy.push({grupo:'aerobio', rot:'BP1 (SmO2)',
+   w:mxr.bp1_w, bpm:mxr.bp1_bpm});
+ if(mxr.bp2_w!=null) linhasMoxy.push({grupo:'limiar', rot:'BP2 (SmO2)',
+   w:mxr.bp2_w, bpm:mxr.bp2_bpm, origem:mxr.bp2_origem});
+
  // ── tabela por grupo ──
  let grupoActual = null;
  h+='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
@@ -2496,6 +2506,20 @@ function pmExtTabela(){
     +'font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">'
     +(c.grupo_rotulo||c.grupo||'outros')+'</td></tr>';
   }
+  linhasMoxy.filter(x=>x.grupo===c.grupo && !x.escrita).forEach(function(x){
+   x.escrita = true;
+   h+='<tr style="border-bottom:1px solid #161b22;'
+    +'background:rgba(163,113,247,0.06);">'
+    +'<td style="padding:6px;color:#A371F7;">'+x.rot
+    +' <span style="color:#8b949e;font-size:10px;">moxy · '
+    +(mxr.data||'?')+(x.origem?' · '+x.origem:'')+'</span></td>'
+    +'<td style="color:#8b949e;">1</td><td></td>'
+    +'<td><b>'+Math.round(x.w)+'</b> <span style="color:#8b949e;">W</span></td>'
+    +'<td></td><td>'+Math.round(x.w)+'</td>'
+    +'<td>'+(x.bpm?x.bpm:'—')+'</td>'
+    +'<td style="color:#8b949e;">'+(mxr.data||'—')+'</td>'
+    +'<td></td><td></td></tr>';
+  });
   const q=c.quartis||{}, u=c.ultimo||{}, cm=c.comparacao;
   let dcor='#8b949e', dtxt='—';
   if(cm){
@@ -2540,7 +2564,9 @@ function pmExtTabela(){
    +'<td>'+(cm?cm.modelo:'—')+'</td>'
    +'<td style="color:'+dcor+';">'+dtxt+'</td></tr>';
  });
- h+='</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+ h+='</table>';
+ h+=pmCorrelacoes();
+ h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
   +'Valores entre parênteses são conversões, não medições. O Δ só é '
   +'calculado quando há valor medido na unidade do modelo. Recta HR↔Watts'
   +(rel.suficiente ? ' (r²='+rel.r2+', n='+rel.n
@@ -2596,12 +2622,20 @@ function pmExtDraw(){
   {k:'pvo2max_w',rot:'Pvo\u2082max', cor:'#79C0FF'},
  ].filter(function(r){ return md[r.k]!=null && mdhr[r.k]!=null; });
  if(PM_CP) refs.push({k:'__cp', rot:'CP', cor:'#E3B341'});
+ // BP1 e BP2 da ULTIMA sessao com Moxy desta modalidade. Nao e' media de
+ // varias: e' a mais recente, porque o breakpoint muda com a forma.
+ const mx=(PM && PM.moxy) || {};
+ if(mx.bp1_w!=null) refs.push({k:'__bp1', rot:'BP1 SmO2', cor:'#A371F7',
+   valor:mx.bp1_w, moxy:true});
+ if(mx.bp2_w!=null) refs.push({k:'__bp2', rot:'BP2 SmO2', cor:'#79C0FF',
+   valor:mx.bp2_w, moxy:true});
  if(!_on.modelo) refs.length = 0;
 
  if(!nuvem.length && !cs.length && !refs.length){
   noData(g, W, H, 'Sem relação HR↔Watts nem campos comparáveis'); return; }
 
- const valW = r => r.k==='__cp' ? PM_CP : md[r.k];
+ const valW = r => r.valor!=null ? r.valor
+   : (r.k==='__cp' ? PM_CP : md[r.k]);
  const valHR = r => r.k==='__cp'
    ? (rel.suficiente ? rel.declive_bpm_por_w*PM_CP + rel.intercepto_bpm : null)
    : mdhr[r.k];
@@ -2865,6 +2899,55 @@ function pmExtLigarTip(){
   tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
  });
  cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
+}
+
+// Correlacoes entre campos, no fim da tabela. Responde a "estes campos
+// medem a mesma coisa ou coisas diferentes?", que a tabela sozinha nao
+// responde.
+function pmCorrelacoes(){
+ const c=(PMEXT && PMEXT.correlacao_campos) || {};
+ if(!c.ok) return c.motivo
+   ? '<p style="color:#8b949e;font-size:11px;">Correlacoes: '+c.motivo+'</p>'
+   : '';
+ let h='<details style="margin-top:10px;"><summary style="cursor:pointer;'
+  +'font-size:12px;color:#8b949e;padding:4px 0;">Correlações entre campos ('
+  +c.n_significativos+' de '+c.n_pares_testados+' pares)</summary>'
+  +'<div style="margin-top:6px;">';
+ (c.notas||[]).forEach(function(n){
+  h+='<p style="font-size:12px;color:#c9d1d9;border-left:3px solid #3FB950;'
+   +'padding-left:8px;margin:6px 0;">'+n+'</p>'; });
+ if(!(c.pares||[]).length){
+  h+='<p style="color:#8b949e;font-size:11px;">Nenhum par sobrevive à '
+   +'correcção para comparações múltiplas. Não é falta de relação — é falta '
+   +'de sessões para a demonstrar.</p>';
+ } else {
+  h+='<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+   +'<th style="padding:5px;">Campo A</th><th>Campo B</th><th>rho</th>'
+   +'<th>n</th><th>p</th><th>Período</th></tr>'
+   +c.pares.map(function(e){
+     const cor = Math.abs(e.rho)>=0.7 ? '#3FB950'
+               : Math.abs(e.rho)>=0.4 ? '#E3B341' : '#8b949e';
+     return '<tr style="border-bottom:1px solid #161b22;">'
+      +'<td style="padding:5px;">'+e.a+'</td><td>'+e.b+'</td>'
+      +'<td style="color:'+cor+';"><b>'+e.rho+'</b></td>'
+      +'<td style="color:#8b949e;">'+e.n+'</td>'
+      +'<td style="color:#8b949e;">'+e.p+'</td>'
+      +'<td style="color:#8b949e;">'+e.primeira+' a '+e.ultima+'</td></tr>';
+    }).join('')+'</table>';
+ }
+ if((c.triviais||[]).length)
+  h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+   +'<b>Fora da tabela por serem aritmética, não achado:</b> '
+   +c.triviais.map(function(e){
+     return e.a+'~'+e.b+' (rho='+e.rho+', '+e.trivial+')'; }).join(' · ')
+   +'</p>';
+ h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'+c.metodo
+  +'. Corte de p corrigido: '+(c.p_corte_bh!=null?c.p_corte_bh:'nenhum')
+  +' · mínimo de '+c.n_minimo+' sessões em comum por par.</p>'
+  +'<p style="color:#8b949e;font-size:11px;">'+c.aviso+'</p>'
+  +'</div></details>';
+ return h;
 }
 
 function pmExtGlossario(){

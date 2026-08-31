@@ -2894,14 +2894,23 @@ function pmExtLigarTip(){
   // fora de um ponto: mostrar a leitura da recta naquele X
   if(mx<e.PL||mx>e.PL+e.w||my<e.PT||my>e.PT+e.h){ tip.style.display='none'; return; }
   const watts = e.xa + (mx-e.PL)/e.w*(e.xb-e.xa);
-  const bpm = e.ya + (e.PT+e.h-my)/e.h*(e.yb-e.ya);
+  // ya/yb podem nao existir quando o eixo vertical nao foi escalado --
+  // acontece com a nuvem desligada. Sem esta guarda saia "NaN bpm".
+  const temY = isFinite(e.ya) && isFinite(e.yb);
+  const bpm = temY ? e.ya + (e.PT+e.h-my)/e.h*(e.yb-e.ya) : null;
   const prev = e.rel.suficiente
     ? e.rel.declive_bpm_por_w*watts + e.rel.intercepto_bpm : null;
   const z=(PMEXT_ZONAS||[]).find(z=>watts>=z.de && watts<z.ate);
-  let h='<b>'+Math.round(watts)+' W · '+Math.round(bpm)+' bpm</b>';
+  let h='<b>'+Math.round(watts)+' W'
+   +(bpm!=null && isFinite(bpm) ? ' · '+Math.round(bpm)+' bpm' : '')+'</b>';
   if(z) h+=' <span style="color:'+z.rot+';">'+z.nome+'</span>';
-  if(prev!=null) h+='<br><span style="color:#8b949e;">a recta prevê '
-    +Math.round(prev)+' bpm aqui ('+(bpm>prev?'+':'')+Math.round(bpm-prev)+')</span>';
+  if(prev!=null && isFinite(prev)){
+   h+='<br><span style="color:#8b949e;">a recta prevê '+Math.round(prev)
+    +' bpm aqui';
+   if(bpm!=null && isFinite(bpm))
+    h+=' ('+(bpm>prev?'+':'')+Math.round(bpm-prev)+')';
+   h+='</span>';
+  }
   tip.innerHTML=h; tip.style.display='block';
   tip.style.left=Math.min(ev.clientX-r.left+14, r.width-200)+'px';
   tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';

@@ -2001,6 +2001,38 @@ def api_metabol_limiares_externos(modalidade):
     return jsonify(corpo), (200 if corpo.get('status') != 'erro' else 500)
 
 
+def _ultima_analise_moxy(modalidade):
+    """Ultima analise gravada na tab Moxy para esta modalidade.
+
+    Vive aqui e no perfil_metabolico porque o grafico de validacao externa
+    e' desenhado a partir do PMEXT, e a tabela a partir do PM. Ter so' num
+    deles fazia as riscas aparecerem ou nao conforme a ordem de
+    carregamento -- que era o que estava a acontecer.
+    """
+    try:
+        import drive_db_perfil as ddp
+        cn = ddp.get_conn()
+        r = cn.execute(
+            """SELECT data, perfil, bp1_w, bp1_bpm, bp2_w, bp2_bpm,
+                      bp2_origem, versao_analise, activity_id
+                 FROM moxy_analises WHERE modalidade = ?
+                ORDER BY data DESC LIMIT 1""", (modalidade,)).fetchone()
+        cn.close()
+        if not r:
+            return {'sem_dados': True,
+                    'motivo': ('nenhuma análise gravada para esta '
+                               'modalidade. Vai à tab Moxy, escolhe uma '
+                               'sessão e carrega em "Gravar análise"')}
+        return {'data': r[0], 'perfil': r[1], 'bp1_w': r[2], 'bp1_bpm': r[3],
+                'bp2_w': r[4], 'bp2_bpm': r[5], 'bp2_origem': r[6],
+                'versao': r[7], 'activity_id': r[8],
+                'nota': ('última sessão com Moxy desta modalidade. Não é '
+                         'média de várias: é a mais recente, porque o '
+                         'breakpoint muda com a forma')}
+    except Exception as e:
+        return {'erro': f'{type(e).__name__}: {e}'}
+
+
 def _correlacao_campos(por_data):
     """Spearman entre campos, sobre as sessoes em comum a cada par."""
     try:
@@ -2355,6 +2387,7 @@ def limiares_externos_dados(modalidade, args):
             'campos_nao_encontrados': em_falta,
             'campos_duplicados': duplicados,
             'campos_por_reconhecer': nao_reconhecidos,
+            'moxy': _ultima_analise_moxy(modalidade),
             'correlacao_campos': _correlacao_campos(por_data),
             'a1_individualizado': a1_indiv,
             'a1_referencia_literatura': 0.75,
@@ -2745,34 +2778,7 @@ def perfil_metabolico_dados(modalidade, args, com_ancoras=True):
         try:
             _lim = res.get('limiares') or {}
             _mad = res.get('mader') or {}
-            # ultima analise Moxy desta modalidade: BP1, BP2 e MLSS
-            try:
-                import drive_db_perfil as ddp
-                cn = ddp.get_conn()
-                _mx = cn.execute(
-                    """SELECT data, perfil, bp1_w, bp1_bpm, bp2_w, bp2_bpm,
-                              bp2_origem, versao_analise, activity_id
-                         FROM moxy_analises WHERE modalidade = ?
-                        ORDER BY data DESC LIMIT 1""",
-                    (modalidade,)).fetchone()
-                cn.close()
-                if _mx:
-                    res['moxy'] = {
-                        'data': _mx[0], 'perfil': _mx[1],
-                        'bp1_w': _mx[2], 'bp1_bpm': _mx[3],
-                        'bp2_w': _mx[4], 'bp2_bpm': _mx[5],
-                        'bp2_origem': _mx[6], 'versao': _mx[7],
-                        'activity_id': _mx[8],
-                        'nota': ('última sessão com Moxy desta modalidade. '
-                                 'Não é média de várias: é a mais recente, '
-                                 'porque o breakpoint muda com a forma')}
-                else:
-                    res['moxy'] = {'sem_dados': True,
-                                   'motivo': ('nenhuma análise gravada para '
-                                              'esta modalidade — corre e '
-                                              'grava na tab Moxy')}
-            except Exception as e:
-                res['moxy'] = {'erro': f'{type(e).__name__}: {e}'}
+            res['moxy'] = _ultima_analise_moxy(modalidade)
 
             # ancoras do CONSENSO da validacao externa quando existem;
             # so' na falta delas e' que se usa o modelo

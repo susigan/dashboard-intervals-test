@@ -917,9 +917,12 @@ function mxLimiares(){
   let h='';
   // ── consenso do segundo limiar ────────────────────────────────────
   const sl=d.segundo_limiar||{};
-  const est=(sl.estimativas||[]).filter(x=>x.watts!=null);
-  if(est.length>1){
-   const vs=est.map(x=>x.watts);
+  // 'estims', nao 'est': 'est' ja' e' o elemento de estado desta funcao,
+  // e redeclarar com const dava "Cannot access 'est' before initialization"
+  // -- o hoisting da zona morta temporal apanha a declaracao de cima.
+  const estims=(sl.estimativas||[]).filter(x=>x.watts!=null);
+  if(estims.length>1){
+   const vs=estims.map(x=>x.watts);
    const lo=Math.min.apply(null,vs), hi=Math.max.apply(null,vs);
    const med=vs.reduce((a,b)=>a+b,0)/vs.length;
    const amp=hi-lo, pct=med?Math.round(amp/med*100):0;
@@ -928,10 +931,10 @@ function mxLimiares(){
     +'padding:8px 10px;margin-bottom:12px;">'
     +'<b style="font-size:16px;color:'+cor+';">Segundo limiar (VT2 / RCP): '
     +Math.round(lo)+'–'+Math.round(hi)+' W</b>'
-    +' <span style="color:#8b949e;font-size:11px;">'+est.length
+    +' <span style="color:#8b949e;font-size:11px;">'+estims.length
     +' métodos · dispersão '+Math.round(amp)+' W ('+pct+'%)</span>'
     +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
-    +est.sort((a,b)=>a.watts-b.watts).map(function(x){
+    +estims.sort((a,b)=>a.watts-b.watts).map(function(x){
       return '<tr><td style="padding-right:14px;"><b>'+Math.round(x.watts)
        +' W</b></td><td style="padding-right:14px;">'+x.metodo+'</td>'
        +'<td style="color:#8b949e;">'+x.rota+'</td></tr>'; }).join('')

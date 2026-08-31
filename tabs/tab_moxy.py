@@ -911,18 +911,25 @@ function mxLimiares(){
   // o BP2 nao aparecia no grafico
   const lc=d.limiares_consenso||{};
   est.textContent=(d.modalidade||'')+' · '+(f.n_degraus||0)+' degraus';
-  // Marcar no grafico a MEDIANA de cada limiar, nao um metodo so'.
-  // Antes usava-se o bp_moxy restrito, que nesta sessao tem bp2=null -- e'
-  // por isso que o BP2 nao aparecia, apesar de outros metodos o terem.
+  // No grafico vai o resultado do SCRIPT do Intervals.icu, para bater
+  // certo com o que ves la'. As tabelas continuam a mostrar todos os
+  // metodos, e os cartoes o consenso -- o grafico e' so' a referencia
+  // comum entre as duas ferramentas.
+  const bl0=d.bp_moxy_sem_restricao||{};
   const c1=(lc.primeiro||{}), c2=(lc.segundo||{});
-  MX_BP = (c1.ok || c2.ok) ? {
+  MX_BP = (bl0.bp1_w!=null || bl0.bp2_w!=null) ? {
+    bp1: bl0.bp1_w, bp2: bl0.bp2_w,
+    bp1_bpm: bl0.bp1_bpm, bp2_bpm: bl0.bp2_bpm,
+    bp1_disp: null, bp2_disp: null,
+    fonte: 'script Intervals.icu', fiavel: true
+  } : ((c1.ok || c2.ok) ? {
     bp1: c1.ok ? c1.mediana : null,
     bp2: c2.ok ? c2.mediana : null,
     bp1_bpm: c1.ok ? (c1.estimativas.find(x=>x.bpm)||{}).bpm : null,
     bp2_bpm: c2.ok ? (c2.estimativas.find(x=>x.bpm)||{}).bpm : null,
     bp1_disp: c1.dispersao_pct, bp2_disp: c2.dispersao_pct,
-    fiavel: !(lc.avisos||[]).length
-  } : null;
+    fonte: 'mediana dos métodos', fiavel: !(lc.avisos||[]).length
+  } : null);
 
   let h='';
   // ── dois cartoes: um por limiar ───────────────────────────────────

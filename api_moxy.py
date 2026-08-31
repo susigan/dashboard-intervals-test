@@ -977,6 +977,9 @@ def registar(app):
             # ultimo minuto de cada degrau, e classificacao do perfil.
             perfil = nbk.perfil_de_resposta(t, smo2, blocos)
             bp_taxa = nbk.bp_por_taxa(t, smo2, blocos)
+            # Metodo do script oficial da Moxy, com o teste F acrescentado
+            bp_mx = nbk.bp_moxy(ons, t, smo2, canais.get('heartrate'),
+                                modalidade=mod)
             bp = nbk.breakpoints(ons, mod)
             pl = nbk.plato(t, smo2,
                            janela=request.args.get('janela_plato', type=int)
@@ -995,6 +998,7 @@ def registar(app):
                 'perfil_resposta': perfil,
                 'mlss_dessaturacao': mlss,
                 'bp_taxa': bp_taxa,
+                'bp_moxy': bp_mx,
                 'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
                 'blocos_usados': [
                     {'watts': b.get('watts_medio'),

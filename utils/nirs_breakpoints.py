@@ -1038,3 +1038,208 @@ LEITURA_DO_PERFIL = {
                        'intensidade que lá chega não é muito acima do CP'),
     },
 }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# METODO DO SCRIPT OFICIAL DA MOXY (MoxyBreakPoint v0.8)
+#
+# Adaptado do script que a Moxy disponibiliza para a Intervals.icu. O que
+# ele faz e que os outros metodos aqui nao faziam:
+#
+#   1. SmO2 = MEDIA de cada intervalo WORK (average_smo2), nao o minimo
+#      nem a media do ultimo minuto.
+#   2. Ordena por potencia.
+#   3. INTERPOLA 10 pontos entre cada par consecutivo.
+#   4. Regressao por trocos com DOIS breakpoints.
+#
+# O passo 3 e' o que faltava. Com 6 degraus eu ajustava tres trocos em 6
+# pontos e nao dava; interpolados, sao 51 pontos e o ajuste corre, com o
+# breakpoint a cair numa grelha fina em vez de so' nos degraus medidos.
+#
+# UMA CORRECCAO AO SCRIPT DELES
+#
+# Interpolar nao cria informacao. Os 51 pontos sao 6 medicoes e 45 valores
+# calculados por recta entre elas. O script deles nao faz teste de
+# significancia, o que evita o problema; mas se se fizer sobre os pontos
+# interpolados, o n esta inflacionado 10x e o F da' significativo quase
+# sempre -- seria matematica, nao fisiologia.
+#
+# Aqui: a interpolacao LOCALIZA o breakpoint na grelha fina, e o teste de
+# significancia corre sobre os pontos ORIGINAIS.
+# ══════════════════════════════════════════════════════════════════════════
+
+N_FINO = 10
+
+
+def _interpolar(xs, ys, n_fino=N_FINO):
+    fx, fy = [], []
+    for i in range(len(xs) - 1):
+        for j in range(n_fino):
+            f = j / n_fino
+            fx.append(xs[i] + (xs[i + 1] - xs[i]) * f)
+            fy.append(ys[i] + (ys[i + 1] - ys[i]) * f)
+    fx.append(xs[-1])
+    fy.append(ys[-1])
+    return fx, fy
+
+
+def bp_moxy(blocos, tempo=None, smo2=None, hr=None, n_fino=N_FINO,
+            modalidade=None):
+    """BP1 e BP2 pelo método do script oficial da Moxy, com teste F honesto.
+
+    blocos: lista com watts_medio e, ou smo2_medio já calculado, ou t0/t1
+    para o extrair dos streams.
+    """
+    pts = []
+    for b in blocos:
+        if not b.get('on'):
+            continue
+        w = b.get('watts_medio')
+        if w is None:
+            continue
+        s = b.get('smo2_medio')
+        if s is None and tempo and smo2:
+            vs = [smo2[i] for i in range(min(len(tempo), len(smo2)))
+                  if b['t0'] <= tempo[i] <= b['t1'] and smo2[i] is not None]
+            s = sum(vs) / len(vs) if vs else None
+        if s is None:
+            continue
+        h = b.get('hr_medio')
+        if h is None and tempo and hr:
+            vs = [hr[i] for i in range(min(len(tempo), len(hr)))
+                  if b['t0'] <= tempo[i] <= b['t1'] and hr[i] is not None]
+            h = sum(vs) / len(vs) if vs else None
+        pts.append({'watts': float(w), 'smo2': float(s),
+                    'hr': round(h) if h is not None else None})
+
+    if len(pts) < 3:
+        return {'ok': False,
+                'motivo': (f'só {len(pts)} intervalos de trabalho com SmO2; '
+                           'o método precisa de 3'),
+                'n_intervalos': len(pts)}
+
+    pts.sort(key=lambda p: p['watts'])
+    xs = [p['watts'] for p in pts]
+    ys = [p['smo2'] for p in pts]
+
+    fx, fy = _interpolar(xs, ys, n_fino)
+    # min_pontos na grelha fina = 2 degraus MEDIDOS de cada lado.
+    #
+    # Usar 5 (meio degrau) parecia razoavel mas empurrava os breakpoints:
+    # numa curva com quebras verdadeiras em 195 e 240 W, davam 227 e 241 --
+    # o primeiro troco ficava com pontos a menos e o ajuste compensava
+    # deslocando a quebra. O minimo tem de contar degraus reais, nao
+    # pontos interpolados.
+    min_f = max(2, 2 * n_fino)
+    tres = tres_segmentos(fx, fy, min_pontos=min_f)
+    if not tres.get('ok'):
+        d2 = dois_segmentos(fx, fy, min_pontos=min_f)
+        if not d2.get('ok'):
+            return {'ok': False, 'motivo': d2.get('motivo'),
+                    'pontos': pts, 'n_intervalos': len(pts)}
+        tres = {'ok': True, 'bp1': d2['tau'], 'bp2': None,
+                'smo2_bp1': d2['y_no_tau'], 'smo2_bp2': None,
+                'declives': [d2['declive_1'], d2['declive_2']],
+                'so_um': True}
+
+    # ── significancia nos pontos ORIGINAIS ────────────────────────────
+    # E' aqui que este difere do script da Moxy: eles nao testam, e testar
+    # nos interpolados daria significativo sempre.
+    # RSS do modelo segmentado nos pontos ORIGINAIS. Reconstroi-se a
+    # funcao continua a partir dos breakpoints e reavalia-se nos x medidos.
+    # A versao anterior tentava fazer isto a mao e enganava-se no ponto de
+    # ancoragem de cada troco, o que dava RSS errado e F impossivel.
+    bps = sorted(b for b in (tres.get('bp1'), tres.get('bp2'))
+                 if b is not None)
+    d = tres.get('declives') or []
+
+    def _modelo(x):
+        # reconstroi por integracao dos declives, partindo do primeiro
+        # ponto ajustado
+        y = fy[0]
+        ant = fx[0]
+        for k, m in enumerate(d):
+            fim = bps[k] if k < len(bps) else x
+            if x <= fim:
+                return y + m * (x - ant)
+            y += m * (fim - ant)
+            ant = fim
+        return y + d[-1] * (x - ant)
+
+    p0 = _fit(xs, ys, 0, len(xs))
+    f_stat = p_val = None
+    if p0:
+        rss0 = _rss(xs, ys, p0[0], p0[1], 0, len(xs))
+        rss1 = sum((_modelo(x) - y) ** 2 for x, y in zip(xs, ys))
+        k_extra = len(bps) * 2
+        gl = len(xs) - (2 + k_extra)
+        if gl > 0 and rss1 > 0:
+            f_stat = round(((rss0 - rss1) / k_extra) / (rss1 / gl), 2)
+            try:
+                from scipy.stats import f as _fd
+                p_val = round(float(1 - _fd.cdf(f_stat, k_extra, gl)), 4)
+            except ImportError:
+                p_val = None
+        elif gl <= 0:
+            f_stat = None
+            p_val = None
+
+    out = {
+        'ok': True,
+        'bp1_w': round(tres['bp1'], 1) if tres.get('bp1') is not None else None,
+        'bp2_w': round(tres['bp2'], 1) if tres.get('bp2') is not None else None,
+        'smo2_bp1': tres.get('smo2_bp1'),
+        'smo2_bp2': tres.get('smo2_bp2'),
+        'declives': tres.get('declives'),
+        'n_intervalos': len(pts),
+        'n_pontos_interpolados': len(fx),
+        'pontos': pts,
+        'f_vs_recta': f_stat,
+        'p_vs_recta': p_val,
+        'metodo': ('MoxyBreakPoint v0.8 adaptado: média de SmO2 por '
+                   'intervalo, interpolação 10x, regressão por troços'),
+        'nota_interpolacao': (
+            f'{len(fx)} pontos ajustados vêm de {len(pts)} medições. A '
+            'interpolação serve para o breakpoint cair numa grelha fina, '
+            'não para acrescentar informação — por isso o teste F corre '
+            f'sobre os {len(pts)} pontos originais, não sobre os '
+            f'{len(fx)} interpolados'),
+    }
+    out['bp1_bpm'] = _hr_interp(pts, out['bp1_w'])
+    out['bp2_bpm'] = _hr_interp(pts, out['bp2_w'])
+
+    critico = 4.0 if len(xs) < 10 else 3.0
+    if f_stat is None:
+        # graus de liberdade a menos: com 2 breakpoints sao 6 parametros,
+        # e com 6 degraus sobram zero. Cai-se para um breakpoint so'.
+        out['aviso_gl'] = (
+            f'{len(xs)} degraus não chegam para testar dois breakpoints '
+            '(6 parâmetros, 0 graus de liberdade). O BP2 sai do ajuste mas '
+            'não é testável — são precisos 8 degraus para o testar')
+    elif f_stat < critico:
+        out['ok'] = False
+        out['motivo'] = (f'a quebra não se distingue de uma recta nos pontos '
+                         f'medidos (F={f_stat}, abaixo de {critico}). O '
+                         'script original não faz este teste, por isso '
+                         'devolveria estes breakpoints à mesma')
+    f = dict(FIABILIDADE.get(modalidade or '', {}) or {'nivel': 'desconhecida'})
+    f['n_degraus'] = len(pts)
+    out['fiabilidade'] = f
+    return out
+
+
+def _hr_interp(pts, alvo):
+    """FC interpolada na carga alvo, a partir dos pontos por degrau."""
+    if alvo is None:
+        return None
+    com = [(p['watts'], p['hr']) for p in pts if p.get('hr') is not None]
+    if not com:
+        return None
+    com.sort()
+    ab = [p for p in com if p[0] <= alvo]
+    ac = [p for p in com if p[0] > alvo]
+    if ab and ac:
+        (w1, h1), (w2, h2) = ab[-1], ac[0]
+        f = (alvo - w1) / (w2 - w1) if w2 > w1 else 0
+        return round(h1 + (h2 - h1) * f)
+    return round(min(com, key=lambda p: abs(p[0] - alvo))[1])

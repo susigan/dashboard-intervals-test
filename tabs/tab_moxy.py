@@ -906,42 +906,61 @@ function mxLimiares(){
   if(d.status!=='ok'){ est.textContent=d.mensagem||'sem dados';
    box.innerHTML=''; MX_BP=null; mxDraw(); return; }
   const bp=d.breakpoints||{}, f=bp.fiabilidade||{};
+  // declarado AQUI, antes do primeiro uso: estava mais abaixo e o MX_BP
+  // lia-o na zona morta temporal, ficando sempre nulo -- era por isso que
+  // o BP2 nao aparecia no grafico
+  const lc=d.limiares_consenso||{};
   est.textContent=(d.modalidade||'')+' · '+(f.n_degraus||0)+' degraus';
-  // marcar no grafico: prioridade ao metodo da Moxy, que da' os dois
-  const bmx=d.bp_moxy||{};
-  MX_BP = (bmx.bp1_w!=null)
-    ? {bp1:bmx.bp1_w, bp2:bmx.bp2_w,
-       bp1_bpm:bmx.bp1_bpm, bp2_bpm:bmx.bp2_bpm, fiavel:bmx.ok}
-    : (bp.ok ? {bp1:bp.bp1.tau, bp2:(bp.bp2||{}).tau, fiavel:true} : null);
+  // Marcar no grafico a MEDIANA de cada limiar, nao um metodo so'.
+  // Antes usava-se o bp_moxy restrito, que nesta sessao tem bp2=null -- e'
+  // por isso que o BP2 nao aparecia, apesar de outros metodos o terem.
+  const c1=(lc.primeiro||{}), c2=(lc.segundo||{});
+  MX_BP = (c1.ok || c2.ok) ? {
+    bp1: c1.ok ? c1.mediana : null,
+    bp2: c2.ok ? c2.mediana : null,
+    bp1_bpm: c1.ok ? (c1.estimativas.find(x=>x.bpm)||{}).bpm : null,
+    bp2_bpm: c2.ok ? (c2.estimativas.find(x=>x.bpm)||{}).bpm : null,
+    bp1_disp: c1.dispersao_pct, bp2_disp: c2.dispersao_pct,
+    fiavel: !(lc.avisos||[]).length
+  } : null;
 
   let h='';
-  // ── consenso do segundo limiar ────────────────────────────────────
-  const sl=d.segundo_limiar||{};
-  // 'estims', nao 'est': 'est' ja' e' o elemento de estado desta funcao,
-  // e redeclarar com const dava "Cannot access 'est' before initialization"
-  // -- o hoisting da zona morta temporal apanha a declaracao de cima.
-  const estims=(sl.estimativas||[]).filter(x=>x.watts!=null);
-  if(estims.length>1){
-   const vs=estims.map(x=>x.watts);
-   const lo=Math.min.apply(null,vs), hi=Math.max.apply(null,vs);
-   const med=vs.reduce((a,b)=>a+b,0)/vs.length;
-   const amp=hi-lo, pct=med?Math.round(amp/med*100):0;
-   const cor=pct<10?'#3FB950':pct<20?'#F0883E':'#F85149';
+  // ── dois cartoes: um por limiar ───────────────────────────────────
+  // Antes era um painel por metodo -- quatro numeros soltos sem dizer qual
+  // respondia a que pergunta. Agora cada limiar tem um cartao com todas as
+  // suas estimativas, e o detalhe de cada metodo fica recolhido.
+  [['primeiro','#A371F7'],['segundo','#3FB950']].forEach(function(par){
+   const r=lc[par[0]];
+   if(!r || !r.ok) return;
+   const disp=r.dispersao_pct||0;
+   const cor = disp<10 ? par[1] : disp<20 ? '#F0883E' : '#F85149';
    h+='<div style="border:1px solid '+cor+';border-radius:6px;'
-    +'padding:8px 10px;margin-bottom:12px;">'
-    +'<b style="font-size:16px;color:'+cor+';">Segundo limiar (VT2 / RCP): '
-    +Math.round(lo)+'–'+Math.round(hi)+' W</b>'
-    +' <span style="color:#8b949e;font-size:11px;">'+estims.length
-    +' métodos · dispersão '+Math.round(amp)+' W ('+pct+'%)</span>'
+    +'padding:8px 10px;margin-bottom:10px;">'
+    +'<span style="color:#8b949e;font-size:11px;">'+r.nome+'</span><br>'
+    +'<b style="font-size:18px;color:'+cor+';">'+Math.round(r.mediana)
+    +' W</b> <span style="color:#8b949e;font-size:12px;">'
+    +(r.n>1 ? '('+Math.round(r.de)+'–'+Math.round(r.ate)+' W · '
+      +r.n+' métodos · dispersão '+disp+'%)' : '(1 método)')+'</span>'
     +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
-    +estims.sort((a,b)=>a.watts-b.watts).map(function(x){
+    +r.estimativas.map(function(x){
       return '<tr><td style="padding-right:14px;"><b>'+Math.round(x.watts)
-       +' W</b></td><td style="padding-right:14px;">'+x.metodo+'</td>'
-       +'<td style="color:#8b949e;">'+x.rota+'</td></tr>'; }).join('')
-    +'</table>'
-    +'<span style="font-size:11px;color:#8b949e;">'+(sl.nota||'')+'</span>'
-    +'</div>';
-  }
+       +' W</b></td><td style="padding-right:14px;color:#8b949e;">'
+       +(x.bpm?x.bpm+' bpm':'—')+'</td>'
+       +'<td style="padding-right:14px;">'+x.metodo+'</td>'
+       +'<td style="color:#6e7681;">'+x.rota+'</td></tr>'; }).join('')
+    +'</table></div>';
+  });
+  (lc.avisos||[]).forEach(function(a){
+   h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '+a
+    +'</p>'; });
+  if(lc.nota) h+='<p style="color:#8b949e;font-size:11px;">'+lc.nota+'</p>';
+
+  // tudo o resto vai para dentro de um dropdown
+  h+='<details style="margin-top:10px;"><summary style="cursor:pointer;'
+   +'font-size:12px;color:#8b949e;padding:4px 0;">Detalhe de cada método'
+   +'</summary><div style="margin-top:6px;">';
+  const fecharDetalhe=true;
+
   const pf=d.perfil_resposta||{};
   if(pf.ok){
    const par = pf.perfil==='parabólico';
@@ -1163,6 +1182,7 @@ function mxLimiares(){
   } else if(ce.motivo){
    h+='<p style="font-size:11px;color:#8b949e;">CER: '+ce.motivo+'</p>';
   }
+  if(fecharDetalhe) h+='</div></details>';
   box.innerHTML=h;
   mxDraw();
  }).catch(e=>{ est.textContent='erro: '+e.message; });
@@ -1729,7 +1749,9 @@ function mxDraw(){
    g.setLineDash([]); g.lineWidth=1;
    g.fillStyle=b[1]; g.font='10px sans-serif'; g.textAlign='center';
    const bpm = b[2]==='BP1' ? MX_BP.bp1_bpm : MX_BP.bp2_bpm;
+   const disp = b[2]==='BP1' ? MX_BP.bp1_disp : MX_BP.bp2_disp;
    g.fillText(b[2]+' '+Math.round(b[0])+'W'+(bpm?' · '+bpm+'bpm':'')
+              +(disp?' ±'+disp+'%':'')
               +(MX_BP.fiavel===false?' (?)':''), x, PT+10);
   });
  }

@@ -34,7 +34,13 @@ e isso nao e' um achado, e' aritmetica. Esses ficam assinalados.
 
 import math
 
-N_MINIMO = 8          # sessoes em comum para um par valer a pena
+# Sessoes em comum para um par valer a pena. Baixado de 8 para 5: com 8,
+# campos como o HRVT2 (n=7) ou o DFA-a1 do aquecimento (n=3) nunca
+# entravam, e de 8 campos so' 10 dos 28 pares eram testados. Cinco pontos
+# ja' permitem um rho com sentido, e o p e a correccao de Benjamini-
+# Hochberg tratam do resto -- e' melhor testar e o teste dizer que nao ha
+# evidencia do que nao testar e o utilizador ficar sem saber porque.
+N_MINIMO = 5
 ALFA = 0.05
 R_FORTE = 0.70
 
@@ -123,26 +129,48 @@ def correlacionar(por_campo, n_minimo=N_MINIMO, alfa=ALFA):
     mesma sessao. Comparar medianas de janelas diferentes dava correlacoes
     entre coisas que nunca coexistiram.
     """
-    campos = [k for k, v in (por_campo or {}).items() if len(v) >= n_minimo]
+    todos = {k: len(v) for k, v in (por_campo or {}).items()}
+    campos = [k for k, n in todos.items() if n >= n_minimo]
+    fora = {k: n for k, n in todos.items() if n < n_minimo}
     if len(campos) < 2:
         return {'ok': False,
                 'motivo': (f'só {len(campos)} campos com {n_minimo}+ sessões; '
-                           'são precisos 2')}
+                           'são precisos 2'),
+                'campos_fora': fora}
 
-    pares, ps = [], []
+    pares, ps, sem_comuns, sem_variancia = [], [], [], []
     for i, a in enumerate(campos):
         for b in campos[i + 1:]:
             comuns = sorted(set(por_campo[a]) & set(por_campo[b]))
             if len(comuns) < n_minimo:
+                sem_comuns.append({'a': a, 'b': b, 'n_comum': len(comuns)})
                 continue
             va = [por_campo[a][d] for d in comuns]
             vb = [por_campo[b][d] for d in comuns]
             r = spearman(va, vb)
             if not r:
+                # Spearman devolve None quando uma das series nao varia:
+                # sem variancia nao ha ordens para correlacionar. E' o caso
+                # de campos que sao definicao do perfil e nao medicao --
+                # tem o mesmo valor em todas as sessoes. Isto estava a ser
+                # descartado em silencio e explicava 18 dos 28 pares em
+                # falta sem aparecer em lado nenhum.
+                _const = []
+                if len(set(va)) <= 1:
+                    _const.append(a)
+                if len(set(vb)) <= 1:
+                    _const.append(b)
+                sem_variancia.append({'a': a, 'b': b,
+                                      'constantes': _const or ['?'],
+                                      'n_comum': len(comuns)})
                 continue
             pares.append({
                 'a': a, 'b': b, **r,
-                'trivial': _trivial(a, b),
+                'trivial': (_trivial(a, b) or
+                            ('rho exactamente 1: quase de certeza são o '
+                             'mesmo valor por vias diferentes, não dois '
+                             'métodos independentes'
+                             if abs(r['rho']) >= 0.999 else None)),
                 'primeira': comuns[0], 'ultima': comuns[-1],
             })
             ps.append(r['p'])
@@ -177,6 +205,13 @@ def correlacionar(por_campo, n_minimo=N_MINIMO, alfa=ALFA):
         'ok': True,
         'n_campos': len(campos), 'campos': campos,
         'n_pares_testados': len(pares),
+        'n_pares_possiveis': len(campos) * (len(campos) - 1) // 2,
+        'pares_sem_sessoes_comuns': sorted(
+            sem_comuns, key=lambda x: -x['n_comum'])[:20],
+        'campos_fora': fora,
+        'pares_sem_variancia': sem_variancia[:20],
+        'campos_constantes': sorted({c for x in sem_variancia
+                                     for c in x['constantes'] if c != '?'}),
         'p_corte_bh': corte,
         'n_significativos': len(sig),
         'pares': sig,
@@ -184,6 +219,18 @@ def correlacionar(por_campo, n_minimo=N_MINIMO, alfa=ALFA):
         'todos': sorted(pares, key=lambda e: -abs(e['rho'])),
         'notas': notas,
         'n_minimo': n_minimo,
+        'porque_faltam': (
+            f'{len(sem_comuns)} pares não foram testados por terem menos de '
+            f'{n_minimo} sessões em comum. Dois campos podem ter muitas '
+            'medições cada um e mesmo assim quase nunca coincidir na mesma '
+            'sessão — é o que acontece com campos que só aparecem em tipos '
+            'de treino diferentes'
+            if sem_comuns else None),
+        'porque_faltam_2': (
+            f'{len(sem_variancia)} pares não foram testados por um dos '
+            'campos não variar entre sessões. Sem variação não há ordens '
+            'para correlacionar — são definições do perfil, não medições'
+            if sem_variancia else None),
         'metodo': ('Spearman sobre as sessões em comum a cada par, com '
                    'correcção de Benjamini-Hochberg'),
         'aviso': (

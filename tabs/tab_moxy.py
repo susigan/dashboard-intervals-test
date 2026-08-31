@@ -162,6 +162,13 @@ BODY = """
         <p><b>Aviso do próprio autor sobre a concordância:</b> a associação
         entre deoxy-BP e RCP existe ao nível do grupo, mas ao nível individual
         <i>"this association broke down"</i>, com variabilidade de ±100 W.</p>
+        <p><b>MLSS e BP2 não são o mesmo cálculo.</b> O MLSS lê a forma
+        <i>dentro</i> de cada bloco ao longo do tempo — estabiliza ou continua
+        a descer. O BP2 lê a curva SmO2 × potência <i>entre</i> blocos. Apontam
+        à mesma fronteira fisiológica (VT2 / RCP) por rotas diferentes, e a
+        distância entre eles é a incerteza real da estimativa, não um erro.
+        Quando discordam muito, é sinal de que o protocolo não tem degraus
+        suficientes ou não são longos que cheguem.</p>
         <p><b>Método da Moxy (MoxyBreakPoint v0.8), adaptado.</b> Usa a
         <i>média</i> de SmO2 de cada intervalo WORK, ordena por potência e
         interpola 10 pontos entre cada par antes de ajustar dois breakpoints.
@@ -908,6 +915,30 @@ function mxLimiares(){
     : (bp.ok ? {bp1:bp.bp1.tau, bp2:(bp.bp2||{}).tau, fiavel:true} : null);
 
   let h='';
+  // ── consenso do segundo limiar ────────────────────────────────────
+  const sl=d.segundo_limiar||{};
+  const est=(sl.estimativas||[]).filter(x=>x.watts!=null);
+  if(est.length>1){
+   const vs=est.map(x=>x.watts);
+   const lo=Math.min.apply(null,vs), hi=Math.max.apply(null,vs);
+   const med=vs.reduce((a,b)=>a+b,0)/vs.length;
+   const amp=hi-lo, pct=med?Math.round(amp/med*100):0;
+   const cor=pct<10?'#3FB950':pct<20?'#F0883E':'#F85149';
+   h+='<div style="border:1px solid '+cor+';border-radius:6px;'
+    +'padding:8px 10px;margin-bottom:12px;">'
+    +'<b style="font-size:16px;color:'+cor+';">Segundo limiar (VT2 / RCP): '
+    +Math.round(lo)+'–'+Math.round(hi)+' W</b>'
+    +' <span style="color:#8b949e;font-size:11px;">'+est.length
+    +' métodos · dispersão '+Math.round(amp)+' W ('+pct+'%)</span>'
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +est.sort((a,b)=>a.watts-b.watts).map(function(x){
+      return '<tr><td style="padding-right:14px;"><b>'+Math.round(x.watts)
+       +' W</b></td><td style="padding-right:14px;">'+x.metodo+'</td>'
+       +'<td style="color:#8b949e;">'+x.rota+'</td></tr>'; }).join('')
+    +'</table>'
+    +'<span style="font-size:11px;color:#8b949e;">'+(sl.nota||'')+'</span>'
+    +'</div>';
+  }
   const pf=d.perfil_resposta||{};
   if(pf.ok){
    const par = pf.perfil==='parabólico';
@@ -1013,6 +1044,18 @@ function mxLimiares(){
   } else if(bm.motivo){
    h+='<p style="color:#8b949e;font-size:11px;">Método Moxy: '+bm.motivo
     +'</p>';
+  }
+  const bl2=d.bp_moxy_sem_restricao||{};
+  if(bl2.bp1_w!=null){
+   h+='<p style="font-size:11px;color:#8b949e;margin:-6px 0 10px 0;">'
+    +'<b>Sem mínimo por troço</b> (reproduz o script do Intervals.icu): '
+    +'BP1 <b>'+bl2.bp1_w+' W</b>'+(bl2.bp1_bpm?' · '+bl2.bp1_bpm+' bpm':'')
+    +(bl2.bp2_w!=null?' · BP2 <b>'+bl2.bp2_w+' W</b>'
+      +(bl2.bp2_bpm?' · '+bl2.bp2_bpm+' bpm':''):'')
+    +'. A diferença para o valor acima é só o critério: eu exijo 2 degraus '
+    +'medidos por troço, o script não exige nenhum, e por isso o breakpoint '
+    +'dele pode cair entre dois degraus quaisquer. Com poucos degraus a '
+    +'diferença chega a 10 W.</p>';
   }
 
   const bt=d.bp_taxa||{};

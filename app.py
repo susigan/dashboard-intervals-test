@@ -2001,6 +2001,19 @@ def api_metabol_limiares_externos(modalidade):
     return jsonify(corpo), (200 if corpo.get('status') != 'erro' else 500)
 
 
+def _correlacao_campos(por_data):
+    """Spearman entre campos, sobre as sessoes em comum a cada par."""
+    try:
+        import os as _o
+        import sys as _s
+        _s.path.insert(0, _o.path.join(
+            _o.path.dirname(_o.path.abspath(__file__)), 'utils'))
+        import correlacao_campos as _cc
+        return _cc.correlacionar(por_data)
+    except Exception as e:
+        return {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+
+
 def limiares_externos_dados(modalidade, args):
     """Campos da Intervals.icu que estimam o mesmo que o modelo, com quartis.
 
@@ -2076,6 +2089,11 @@ def limiares_externos_dados(modalidade, args):
         # 2a passagem: recolher valores
         recolha = {n: [] for n in encontrados}
         recolha_season = {n: [] for n in encontrados}
+        # valor por DATA, para correlacionar campos entre si. So' se
+        # comparam campos medidos na MESMA sessao -- correlacionar medianas
+        # de janelas diferentes daria relacoes entre coisas que nunca
+        # coexistiram.
+        por_data = {n: {} for n in encontrados}
         ultimo = {}
         por_season = {n: {} for n in encontrados}
         for data, raw in linhas:
@@ -2090,6 +2108,8 @@ def limiares_externos_dados(modalidade, args):
                 if v is None or isinstance(v, bool) or not isinstance(v, (int, float)):
                     continue
                 recolha[nome].append(float(v))
+                if d10:
+                    por_data[nome][d10] = float(v)
                 por_season[nome].setdefault(sea, []).append(float(v))
                 if sea == season_pedida:
                     recolha_season[nome].append(float(v))
@@ -2335,6 +2355,7 @@ def limiares_externos_dados(modalidade, args):
             'campos_nao_encontrados': em_falta,
             'campos_duplicados': duplicados,
             'campos_por_reconhecer': nao_reconhecidos,
+            'correlacao_campos': _correlacao_campos(por_data),
             'a1_individualizado': a1_indiv,
             'a1_referencia_literatura': 0.75,
             'nota': ('quartis e nao media: estes campos sao estimados sessao '
@@ -2724,6 +2745,35 @@ def perfil_metabolico_dados(modalidade, args, com_ancoras=True):
         try:
             _lim = res.get('limiares') or {}
             _mad = res.get('mader') or {}
+            # ultima analise Moxy desta modalidade: BP1, BP2 e MLSS
+            try:
+                import drive_db_perfil as ddp
+                cn = ddp.get_conn()
+                _mx = cn.execute(
+                    """SELECT data, perfil, bp1_w, bp1_bpm, bp2_w, bp2_bpm,
+                              bp2_origem, versao_analise, activity_id
+                         FROM moxy_analises WHERE modalidade = ?
+                        ORDER BY data DESC LIMIT 1""",
+                    (modalidade,)).fetchone()
+                cn.close()
+                if _mx:
+                    res['moxy'] = {
+                        'data': _mx[0], 'perfil': _mx[1],
+                        'bp1_w': _mx[2], 'bp1_bpm': _mx[3],
+                        'bp2_w': _mx[4], 'bp2_bpm': _mx[5],
+                        'bp2_origem': _mx[6], 'versao': _mx[7],
+                        'activity_id': _mx[8],
+                        'nota': ('última sessão com Moxy desta modalidade. '
+                                 'Não é média de várias: é a mais recente, '
+                                 'porque o breakpoint muda com a forma')}
+                else:
+                    res['moxy'] = {'sem_dados': True,
+                                   'motivo': ('nenhuma análise gravada para '
+                                              'esta modalidade — corre e '
+                                              'grava na tab Moxy')}
+            except Exception as e:
+                res['moxy'] = {'erro': f'{type(e).__name__}: {e}'}
+
             # ancoras do CONSENSO da validacao externa quando existem;
             # so' na falta delas e' que se usa o modelo
             # com_ancoras=False quebra o ciclo: o limiares_externos_dados

@@ -883,10 +883,16 @@ def registar(app):
                     pf = nbk.perfil_de_resposta(t, sm, bl) if sm else {}
                     mls = nbk.mlss_por_dessaturacao(t, sm, bl) if sm else {}
                     btx = nbk.bp_por_taxa(t, sm, bl) if sm else {}
-                    bp1_w = pf.get('bp1_watts') if pf.get('ok') else None
-                    bp2_w = (mls.get('mlss_estimado') if mls.get('ok')
-                             else (btx.get('bp_watts') if btx.get('ok')
-                                   else None))
+                    # mesma prioridade da gravacao: o script primeiro
+                    bmoxy = nbk.bp_moxy(
+                        [x for x in bl if x.get('on')], t, sm, hr_s,
+                        degraus_por_troco=1)
+                    bp1_w = (bmoxy.get('bp1_w')
+                             or (pf.get('bp1_watts') if pf.get('ok') else None))
+                    bp2_w = (bmoxy.get('bp2_w')
+                             or (mls.get('mlss_estimado') if mls.get('ok')
+                                 else (btx.get('bp_watts') if btx.get('ok')
+                                       else None)))
                     linha['limiares'] = {
                         'perfil': pf.get('perfil'),
                         'perfil_ok': pf.get('ok'),
@@ -895,10 +901,14 @@ def registar(app):
                         'smo2min': pf.get('smo2min'),
                         'amplitude': pf.get('amplitude'),
                         'bp1_w': bp1_w,
-                        'bp1_bpm': nbk.fc_na_carga(bl, t, hr_s, bp1_w),
+                        'bp1_bpm': (bmoxy.get('bp1_bpm')
+                                    or nbk.fc_na_carga(bl, t, hr_s, bp1_w)),
                         'bp2_w': bp2_w,
-                        'bp2_bpm': nbk.fc_na_carga(bl, t, hr_s, bp2_w),
-                        'bp2_origem': ('padrão de dessaturação'
+                        'bp2_bpm': (bmoxy.get('bp2_bpm')
+                                    or nbk.fc_na_carga(bl, t, hr_s, bp2_w)),
+                        'bp2_origem': ('script Intervals.icu'
+                                       if bmoxy.get('bp2_w') else
+                                       'padrão de dessaturação'
                                        if mls.get('ok') else
                                        'quebra na taxa' if btx.get('ok')
                                        else None),
@@ -1130,15 +1140,40 @@ def registar(app):
             pt = (itp or {}).get('pontuacao') or {}
             rl = (rd or {}).get('limitador') or {}
 
-            bp2 = (ml.get('mlss_estimado') if ml.get('ok')
-                   else bt.get('bp_watts') if bt.get('ok') else None)
+            # BP1 e BP2 do SCRIPT do Intervals.icu, que e' o que se mostra
+            # no grafico da tab Moxy e o que da' os dois de uma vez.
+            #
+            # Antes o BP1 vinha do perfil_resposta, que so' o tem quando a
+            # curva e' parabolica -- num perfil monotonico ficava None e
+            # gravava-se BP2 sem BP1, que era o que estavas a ver.
+            bls = lim.get('bp_moxy_sem_restricao') or {}
+            bmx = lim.get('bp_moxy') or {}
+            bp1 = bp1_bpm = bp2_bpm = None
+            origem1 = origem2 = None
+            for fonte, nome in ((bls, 'script Intervals.icu'),
+                                (bmx, 'regressão, 2 degraus por troço')):
+                if bp1 is None and fonte.get('bp1_w') is not None:
+                    bp1, bp1_bpm, origem1 = (fonte['bp1_w'],
+                                             fonte.get('bp1_bpm'), nome)
+            if bp1 is None and pf.get('ok') and pf.get('bp1_watts') is not None:
+                bp1, origem1 = pf['bp1_watts'], 'topo da parábola (SmO2max)'
+
+            bp2 = bls.get('bp2_w') or bmx.get('bp2_w')
+            bp2_bpm = bls.get('bp2_bpm') or bmx.get('bp2_bpm')
+            origem2 = 'script Intervals.icu' if bls.get('bp2_w') else (
+                'regressão, 2 degraus por troço' if bmx.get('bp2_w') else None)
+            if bp2 is None:
+                bp2 = (ml.get('mlss_estimado') if ml.get('ok')
+                       else bt.get('bp_watts') if bt.get('ok') else None)
+                origem2 = ('padrão de dessaturação' if ml.get('ok')
+                           else 'quebra na taxa' if bt.get('ok') else None)
+
             s2 = MX_SESSOES_CACHE.get(aid, {})
             linha = (
                 aid, lim.get('modalidade'), s2.get('data'),
-                pf.get('perfil'), pf.get('bp1_watts'), None,
-                bp2, None,
-                ('padrão de dessaturação' if ml.get('ok')
-                 else 'quebra na taxa' if bt.get('ok') else None),
+                pf.get('perfil'), bp1, bp1_bpm,
+                bp2, bp2_bpm,
+                origem2,
                 pf.get('smo2max'), pf.get('smo2min'),
                 len([x for x in ((lim.get('blocos_usados')) or [])]),
                 (pt.get('us') or {}).get('score'),

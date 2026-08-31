@@ -2485,12 +2485,20 @@ function pmExtTabela(){
  // ── BP1, BP2 e MLSS da ultima sessao com Moxy ─────────────────────
  // Entram como linhas proprias, com a data da sessao: nao sao medianas de
  // um historico, sao de UMA sessao, a mais recente.
- const mxr=(PM && PM.moxy) || {};
+ // le' do PMEXT primeiro: e' o que esta' garantidamente carregado quando
+ // esta tabela e' desenhada. O PM pode ainda nao ter chegado.
+ const mxr=(PMEXT && PMEXT.moxy) || (PM && PM.moxy) || {};
  const linhasMoxy = [];
  if(mxr.bp1_w!=null) linhasMoxy.push({grupo:'aerobio', rot:'BP1 (SmO2)',
    w:mxr.bp1_w, bpm:mxr.bp1_bpm});
  if(mxr.bp2_w!=null) linhasMoxy.push({grupo:'limiar', rot:'BP2 (SmO2)',
    w:mxr.bp2_w, bpm:mxr.bp2_bpm, origem:mxr.bp2_origem});
+
+ if(mxr.sem_dados)
+  h+='<p style="color:#8b949e;font-size:11px;border-left:3px solid #F0883E;'
+   +'padding-left:8px;">BP1 e BP2 do SmO2 não aparecem: '+mxr.motivo+'</p>';
+ else if(mxr.erro)
+  h+='<p style="color:#F85149;font-size:11px;">Moxy: '+mxr.erro+'</p>';
 
  // ── tabela por grupo ──
  let grupoActual = null;
@@ -2624,7 +2632,7 @@ function pmExtDraw(){
  if(PM_CP) refs.push({k:'__cp', rot:'CP', cor:'#E3B341'});
  // BP1 e BP2 da ULTIMA sessao com Moxy desta modalidade. Nao e' media de
  // varias: e' a mais recente, porque o breakpoint muda com a forma.
- const mx=(PM && PM.moxy) || {};
+ const mx=(PMEXT && PMEXT.moxy) || (PM && PM.moxy) || {};
  if(mx.bp1_w!=null) refs.push({k:'__bp1', rot:'BP1 SmO2', cor:'#A371F7',
    valor:mx.bp1_w, moxy:true});
  if(mx.bp2_w!=null) refs.push({k:'__bp2', rot:'BP2 SmO2', cor:'#79C0FF',
@@ -2911,7 +2919,8 @@ function pmCorrelacoes(){
    : '';
  let h='<details style="margin-top:10px;"><summary style="cursor:pointer;'
   +'font-size:12px;color:#8b949e;padding:4px 0;">Correlações entre campos ('
-  +c.n_significativos+' de '+c.n_pares_testados+' pares)</summary>'
+  +c.n_significativos+' de '+c.n_pares_testados+' testados, '
+  +(c.n_pares_possiveis||c.n_pares_testados)+' possíveis)</summary>'
   +'<div style="margin-top:6px;">';
  (c.notas||[]).forEach(function(n){
   h+='<p style="font-size:12px;color:#c9d1d9;border-left:3px solid #3FB950;'
@@ -2945,8 +2954,21 @@ function pmCorrelacoes(){
  h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'+c.metodo
   +'. Corte de p corrigido: '+(c.p_corte_bh!=null?c.p_corte_bh:'nenhum')
   +' · mínimo de '+c.n_minimo+' sessões em comum por par.</p>'
-  +'<p style="color:#8b949e;font-size:11px;">'+c.aviso+'</p>'
-  +'</div></details>';
+  +'<p style="color:#8b949e;font-size:11px;">'+c.aviso+'</p>';
+ // porque e' que faltam pares -- estava a ser descartado em silencio
+ if(c.porque_faltam)
+  h+='<p style="color:#8b949e;font-size:11px;">'+c.porque_faltam+'</p>';
+ if(c.porque_faltam_2)
+  h+='<p style="color:#F0883E;font-size:11px;">'+c.porque_faltam_2
+   +((c.campos_constantes||[]).length
+     ? '<br>Constantes nesta modalidade: <b>'
+       +c.campos_constantes.join(', ')+'</b>' : '')+'</p>';
+ if(Object.keys(c.campos_fora||{}).length)
+  h+='<p style="color:#8b949e;font-size:11px;">Campos com menos de '
+   +c.n_minimo+' sessões, fora da análise: '
+   +Object.keys(c.campos_fora).map(function(k){
+     return k+' ('+c.campos_fora[k]+')'; }).join(' · ')+'</p>';
+ h+='</div></details>';
  return h;
 }
 

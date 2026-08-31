@@ -162,6 +162,20 @@ BODY = """
         <p><b>Aviso do próprio autor sobre a concordância:</b> a associação
         entre deoxy-BP e RCP existe ao nível do grupo, mas ao nível individual
         <i>"this association broke down"</i>, com variabilidade de ±100 W.</p>
+        <p><b>Método da Moxy (MoxyBreakPoint v0.8), adaptado.</b> Usa a
+        <i>média</i> de SmO2 de cada intervalo WORK, ordena por potência e
+        interpola 10 pontos entre cada par antes de ajustar dois breakpoints.
+        A interpolação faz o breakpoint cair numa grelha fina em vez de só
+        nos degraus medidos.
+        <b>Uma correcção ao original:</b> interpolar não cria informação — os
+        51 pontos ajustados vêm de 6 medições. O script deles não faz teste de
+        significância; se se fizesse sobre os interpolados, o n estaria
+        inflacionado 10× e daria significativo quase sempre. Aqui a
+        interpolação localiza o breakpoint e o <b>teste F corre sobre os
+        pontos originais</b>.
+        <b>Limite:</b> dois breakpoints são seis parâmetros. Com 6 degraus
+        sobram zero graus de liberdade e o BP2 sai do ajuste mas não é
+        testável — são precisos 8 degraus.</p>
         <p><b>Três métodos, por ordem de aplicabilidade aqui.</b>
         <b>1) Taxa de dessaturação:</b> mede a velocidade de queda do SmO2
         dentro de cada degrau, depois do transiente, e procura a quebra.
@@ -886,7 +900,12 @@ function mxLimiares(){
    box.innerHTML=''; MX_BP=null; mxDraw(); return; }
   const bp=d.breakpoints||{}, f=bp.fiabilidade||{};
   est.textContent=(d.modalidade||'')+' · '+(f.n_degraus||0)+' degraus';
-  MX_BP = bp.ok ? {bp1:bp.bp1.tau, bp2:(bp.bp2||{}).tau} : null;
+  // marcar no grafico: prioridade ao metodo da Moxy, que da' os dois
+  const bmx=d.bp_moxy||{};
+  MX_BP = (bmx.bp1_w!=null)
+    ? {bp1:bmx.bp1_w, bp2:bmx.bp2_w,
+       bp1_bpm:bmx.bp1_bpm, bp2_bpm:bmx.bp2_bpm, fiavel:bmx.ok}
+    : (bp.ok ? {bp1:bp.bp1.tau, bp2:(bp.bp2||{}).tau, fiavel:true} : null);
 
   let h='';
   const pf=d.perfil_resposta||{};
@@ -961,6 +980,40 @@ function mxLimiares(){
   if(ml.aviso_duracao)
    h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '
     +ml.aviso_duracao+'</p>';
+
+  const bm=d.bp_moxy||{};
+  if(bm.ok || bm.bp1_w!=null){
+   const val=bm.ok;
+   h+='<div style="border-left:3px solid '+(val?'#3FB950':'#F0883E')
+    +';padding:6px 10px;margin-bottom:10px;">'
+    +'<b style="font-size:16px;color:'+(val?'#3FB950':'#F0883E')+';">'
+    +'BP1 '+bm.bp1_w+' W'+(bm.bp1_bpm?' · '+bm.bp1_bpm+' bpm':'')
+    +(bm.bp2_w!=null?'  ·  BP2 '+bm.bp2_w+' W'
+      +(bm.bp2_bpm?' · '+bm.bp2_bpm+' bpm':''):'')+'</b>'
+    +' <span style="color:#8b949e;font-size:11px;">F='+(bm.f_vs_recta||'—')
+    +(bm.p_vs_recta!=null?' p='+bm.p_vs_recta:'')
+    +' · '+bm.n_intervalos+' intervalos</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+bm.metodo+'</span>'
+    +'<br><span style="font-size:10px;color:#8b949e;">'
+    +bm.nota_interpolacao+'</span>'
+    +(bm.aviso_gl?'<br><span style="font-size:11px;color:#F0883E;">⚠ '
+      +bm.aviso_gl+'</span>':'')
+    +(!val&&bm.motivo?'<br><span style="font-size:11px;color:#F0883E;">⚠ '
+      +bm.motivo+'</span>':'')
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +'<tr style="color:#8b949e;text-align:left;">'
+    +'<th style="padding-right:12px;">Carga</th>'
+    +'<th style="padding-right:12px;">SmO2 médio</th><th>FC</th></tr>'
+    +(bm.pontos||[]).map(function(x){
+      return '<tr><td style="padding-right:12px;">'+Math.round(x.watts)
+       +' W</td><td style="padding-right:12px;">'+x.smo2.toFixed(1)+'%</td>'
+       +'<td style="color:#8b949e;">'+(x.hr!=null?x.hr+' bpm':'—')
+       +'</td></tr>'; }).join('')
+    +'</table></div>';
+  } else if(bm.motivo){
+   h+='<p style="color:#8b949e;font-size:11px;">Método Moxy: '+bm.motivo
+    +'</p>';
+  }
 
   const bt=d.bp_taxa||{};
   if(bt.ok){
@@ -1629,7 +1682,9 @@ function mxDraw(){
    g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
    g.setLineDash([]); g.lineWidth=1;
    g.fillStyle=b[1]; g.font='10px sans-serif'; g.textAlign='center';
-   g.fillText(b[2]+' '+Math.round(b[0])+'W', x, PT+10);
+   const bpm = b[2]==='BP1' ? MX_BP.bp1_bpm : MX_BP.bp2_bpm;
+   g.fillText(b[2]+' '+Math.round(b[0])+'W'+(bpm?' · '+bpm+'bpm':'')
+              +(MX_BP.fiavel===false?' (?)':''), x, PT+10);
   });
  }
 

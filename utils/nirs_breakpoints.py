@@ -1248,3 +1248,138 @@ def _hr_interp(pts, alvo):
         f = (alvo - w1) / (w2 - w1) if w2 > w1 else 0
         return round(h1 + (h2 - h1) * f)
     return round(min(com, key=lambda p: abs(p[0] - alvo))[1])
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# COERENCIA DO BP1 E BP2 COM AS OUTRAS METRICAS
+#
+# Um breakpoint sozinho nao diz se e' de confianca. Confronta-se com o que
+# ja' sabemos do atleta por outras vias -- CP, MLSS, campos da
+# Intervals.icu -- e com o que a fisiologia obriga: BP1 abaixo de BP2,
+# ambos abaixo do Pvo2max, e cada um dentro da gama que a literatura
+# reporta para a sua fraccao do CP.
+#
+# As fraccoes vem dos estudos que confrontaram breakpoints de SmO2 com
+# limiares medidos. Nao sao normas de populacao para prescrever: sao
+# limites de plausibilidade para levantar a bandeira quando um numero cai
+# fora do que qualquer atleta apresentaria.
+FRACCOES_DO_CP = {
+    'bp1': (0.55, 0.85),   # LT1/VT1 ronda 60-80% do CP
+    'bp2': (0.85, 1.10),   # LT2/VT2/RCP ronda perto do CP
+}
+
+
+def coerencia(bp1_w=None, bp2_w=None, cp=None, mlss=None, pvo2max=None,
+              lt1_campos=None, lt2_campos=None, zonas=None):
+    """Verifica se os breakpoints batem certo com o resto do perfil."""
+    testes, avisos = [], []
+
+    def _t(nome, ok, detalhe):
+        testes.append({'teste': nome, 'ok': ok, 'detalhe': detalhe})
+        if not ok:
+            avisos.append(detalhe)
+
+    # ── ordem fisiologica ────────────────────────────────────────────
+    if bp1_w is not None and bp2_w is not None:
+        _t('BP1 abaixo do BP2', bp1_w < bp2_w,
+           (f'BP1 {round(bp1_w)} W e BP2 {round(bp2_w)} W: '
+            + ('ordem correcta' if bp1_w < bp2_w else
+               'INVERTIDOS. O primeiro limiar não pode estar acima do '
+               'segundo — os métodos encontraram a mesma quebra duas vezes, '
+               'ou uma delas é ruído')))
+        sep = (bp2_w - bp1_w) / bp1_w * 100 if bp1_w else None
+        if sep is not None:
+            _t('separação entre limiares', 5 <= sep <= 60,
+               (f'{round(sep)}% entre BP1 e BP2. '
+                + ('plausível' if 5 <= sep <= 60 else
+                   'menos de 5%: os dois breakpoints estão praticamente no '
+                   'mesmo sítio, provavelmente é a mesma quebra'
+                   if sep < 5 else
+                   'mais de 60%: separação grande demais, um dos dois pode '
+                   'não ser um limiar')))
+
+    if pvo2max is not None:
+        for nome, v in (('BP1', bp1_w), ('BP2', bp2_w)):
+            if v is None:
+                continue
+            _t(f'{nome} abaixo do Pvo2max', v < pvo2max,
+               (f'{nome} {round(v)} W vs Pvo2max {round(pvo2max)} W: '
+                + ('abaixo, como tem de ser' if v < pvo2max else
+                   'ACIMA do Pvo2max, o que é impossível — um limiar '
+                   'sustentável não pode exceder a potência máxima aeróbia')))
+
+    # ── fraccao do CP ────────────────────────────────────────────────
+    if cp:
+        for chave, v in (('bp1', bp1_w), ('bp2', bp2_w)):
+            if v is None:
+                continue
+            lo, hi = FRACCOES_DO_CP[chave]
+            f = v / cp
+            _t(f'{chave.upper()} como fracção do CP', lo <= f <= hi,
+               (f'{chave.upper()} está a {round(f * 100)}% do CP '
+                f'({round(cp)} W). Esperado {round(lo * 100)}–'
+                f'{round(hi * 100)}%'
+                + ('' if lo <= f <= hi else
+                   '. Fora da gama que a literatura reporta — não invalida '
+                   'o valor, mas obriga a confirmar antes de o usar')))
+
+    # ── concordancia com os campos medidos ───────────────────────────
+    for nome, v, campos in (('BP1', bp1_w, lt1_campos),
+                            ('BP2', bp2_w, lt2_campos)):
+        if v is None or not campos:
+            continue
+        vs = [x for x in campos if x is not None]
+        if not vs:
+            continue
+        lo, hi = min(vs), max(vs)
+        med = sorted(vs)[len(vs) // 2]
+        dif = (v - med) / med * 100 if med else None
+        dentro = lo * 0.85 <= v <= hi * 1.15
+        _t(f'{nome} concorda com os campos',
+           dentro,
+           (f'{nome} {round(v)} W vs campos {round(lo)}–{round(hi)} W '
+            f'(mediana {round(med)})'
+            + (f', {"+" if dif > 0 else ""}{round(dif)}%' if dif else '')
+            + ('. Dentro do intervalo dos campos' if dentro else
+               '. FORA do intervalo dos campos por mais de 15% — duas vias '
+               'independentes a discordar assim é sinal de que uma delas '
+               'está a medir outra coisa')))
+
+    if mlss and bp2_w:
+        d = abs(bp2_w - mlss) / mlss * 100
+        _t('BP2 concorda com o MLSS', d <= 15,
+           (f'BP2 {round(bp2_w)} W vs MLSS {round(mlss)} W: {round(d)}% de '
+            'diferença'
+            + ('. Concordam' if d <= 15 else
+               '. Discordam. São dois caminhos para o mesmo limiar, e uma '
+               'diferença desta ordem significa que pelo menos um deles '
+               'não está bem determinado')))
+
+    # ── zona em que cada breakpoint cai ──────────────────────────────
+    zona_de = {}
+    if zonas:
+        for nome, v in (('BP1', bp1_w), ('BP2', bp2_w)):
+            if v is None:
+                continue
+            z = next((z for z in zonas
+                      if z.get('de_w') is not None
+                      and z['de_w'] <= v < (z.get('ate_w') or 1e9)), None)
+            if z:
+                zona_de[nome] = {'zona': z.get('zona'),
+                                 'de_w': z.get('de_w'), 'ate_w': z.get('ate_w')}
+
+    n_ok = sum(1 for t in testes if t['ok'])
+    return {
+        'ok': True,
+        'n_testes': len(testes), 'n_passou': n_ok,
+        'testes': testes, 'avisos': avisos,
+        'zona_de': zona_de,
+        'veredicto': (
+            'coerente com o resto do perfil' if not avisos else
+            f'{len(avisos)} incoerência(s): usar com reserva'),
+        'nota': ('as fracções do CP são limites de plausibilidade tirados da '
+                 'literatura, não normas para prescrever. Servem para '
+                 'levantar a bandeira quando um número cai fora do que '
+                 'qualquer atleta apresentaria — não para dizer que o '
+                 'atleta devia estar noutro sítio'),
+    }

@@ -1,1329 +1,2039 @@
-"""api_moxy.py — sessoes com sensor NIRS (Moxy).
+"""tab_moxy.py — sessões com sensor NIRS.
 
-Encontra as sessoes marcadas como Moxy e devolve os streams de SmO2 e THb
-ja' limpos pelo pipeline do utils/mnirs.py.
-
-A marca e' procurada no nome, na descricao e nos campos de texto do JSON da
-actividade, aceitando 'moxy', '#moxy', 'Moxy' e variantes. Nao se assume
-um campo de tags: a Intervals.icu nao expoe um consistentemente, e ja'
-custou caro neste projecto assumir nomes de campos.
-
-Registado com:  import api_moxy; api_moxy.registar(app)
+Mostra a última sessão com Moxy da modalidade escolhida, com os streams de
+SmO2 e THb limpos pelo pipeline do mnirs (Jem Arnold): resample, substituir
+inválidos e outliers, filtrar, e opcionalmente normalizar.
 """
 
-import json
-import re
-import traceback
-from datetime import datetime, timedelta
+from tabs.base import page
 
-from flask import jsonify, request
+SLUG = 'moxy'
 
-# So' a tag conta. Antes procurava-se tambem no nome e na descricao, e
-# aceitavam-se sessoes com Smo2 no sumario mesmo sem tag -- isso trazia
-# actividades que nada tinham a ver, porque qualquer sessao com o sensor
-# ligado por acaso entrava. A tag e' uma decisao explicita do atleta; o
-# nome nao e'.
-MX_SESSOES_CACHE = {}
+BODY = """
+<div class="wrap">
 
-PADRAO_MOXY = re.compile(r'^\s*#?\s*moxy\s*$', re.IGNORECASE)
+  <h1>Moxy</h1>
 
-# Nomes possiveis dos streams NIRS. A Intervals.icu expoe smo2/thb, mas
-# ficheiros com dois sensores acrescentam sufixos.
-CANAIS = {
-    'smo2': ['smo2', 'SmO2', 'smo2_1', 'Smo2'],
-    'thb': ['thb', 'THb', 'thb_1'],
-    'o2hb': ['O2Hb', 'o2hb'],
-    'hhb': ['HHb', 'hhb', 'DiffHb'],
+  <div class="controls">
+    <label class="sel">Modalidade
+      <select id="mxModalidade" onchange="mxSessoes()">
+        <option value="">todas</option>
+        <option>Bike</option><option>Row</option>
+        <option>Ski</option><option>Run</option>
+      </select>
+    </label>
+    <button onclick="mxActualizar(1)" title="Mostra o que seria alterado, sem alterar nada.">Verificar</button>
+    <button onclick="mxActualizar(0)" title="Reconcilia com a Intervals.icu.">Actualizar sessões</button>
+    <span id="mxEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
+  </div>
+
+  <div id="mxErro" style="display:none;color:#F85149;font-size:12px;
+    border-left:3px solid #F85149;padding:6px 10px;margin:6px 0;"></div>
+
+  <div id="mxDatas" style="margin:8px 0;"></div>
+  <div id="mxCanais" style="margin:6px 0;"></div>
+
+  <div class="controls" style="margin:4px 0;flex-wrap:wrap;gap:6px 14px;">
+    <label class="sel">Alinhar por
+      <select id="mxAlinha" onchange="mxAlinhar()">
+        <option value="bloco">1.º bloco de trabalho</option>
+        <option value="watts">degrau de watts equivalente</option>
+        <option value="inicio">início do corte</option>
+      </select>
+    </label>
+    <label class="sel">Normalizar
+      <select id="mxNorm" onchange="mxCarregar()">
+        <option value="">valores brutos</option>
+        <option value="deslocar">base a zero (Δ)</option>
+        <option value="reescalar">0–100% da amplitude</option>
+      </select>
+    </label>
+    <label class="sel">Suavização
+      <select id="mxFc" onchange="mxCarregar()">
+        <option value="0.05">leve</option>
+        <option value="0.02" selected>média</option>
+        <option value="0.008">forte</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chMoxy" height="380"></canvas>
+    <div id="mxTip" style="display:none;position:absolute;pointer-events:none;
+      background:#161b22;border:1px solid #30363d;border-radius:6px;
+      padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+  </div>
+
+  <div class="controls" id="mxOffsetsWrap" style="margin-top:4px;flex-wrap:wrap;gap:4px 12px;">
+    <span style="color:#8b949e;font-size:12px;">Ajuste fino:</span>
+    <span id="mxOffsets" style="display:flex;flex-wrap:wrap;gap:4px 12px;
+      align-items:center;"></span>
+  </div>
+
+  <div class="controls" style="margin-top:6px;flex-wrap:wrap;gap:6px 12px;">
+    <span style="color:#8b949e;font-size:12px;">Intervalo analisado:</span>
+    <input type="range" id="mxIni" min="0" max="100" value="0" step="0.2"
+           style="width:180px" oninput="mxSlider()">
+    <input type="range" id="mxFim" min="0" max="100" value="100" step="0.2"
+           style="width:180px" oninput="mxSlider()">
+    <span id="mxCorteTxt" style="color:#c9d1d9;font-size:12px;"></span>
+    <button onclick="mxAplicarProposta()" title="Repõe os cursores na proposta automática. Não grava.">Repor proposta</button>
+    <button onclick="mxTudo()" title="Repõe os cursores na sessão inteira. Não grava.">Sessão inteira</button>
+    <button onclick="mxGuardarCorte()" title="Grava este intervalo para esta sessão.">💾 Gravar este intervalo</button>
+    <span id="mxCorteEstado" style="color:#8b949e;font-size:11px;"></span>
+  </div>
+  <p id="mxCorteNota" style="color:#8b949e;font-size:11px;margin:4px 0;"></p>
+  <p style="color:#8b949e;font-size:11px;margin:0 0 8px 0;">
+    <b>Repor proposta</b> e <b>Sessão inteira</b> só movem os cursores.
+    <b>Gravar este intervalo</b> guarda-o para esta sessão. O limite de pausa
+    que separa aquecimento de protocolo sai da mediana das pausas da própria
+    sessão, porque o descanso varia de protocolo para protocolo.</p>
+
+  <div id="mxBlocos" style="overflow-x:auto;margin-top:10px;"></div>
+  <div id="mxDiag" style="margin-top:8px;"></div>
+
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Como os dados são tratados</summary>
+    <div style="font-size:11px;color:#8b949e;margin-top:6px;">
+      <p>Pipeline portado do pacote <b>mnirs</b> de Jem Arnold. A ordem não é
+      arbitrária: <b>resample → substituir inválidos e outliers → filtrar →
+      normalizar</b>. Filtrar antes de remover outliers espalha-os pelos
+      vizinhos.</p>
+      <p><b>Outliers</b> contra a <b>mediana</b> local, não a média — com a
+      média, um pico desloca o próprio centro contra o qual está a ser julgado.</p>
+      <p>A FC, o DFA-a1 e a respiração vêm todos da série de RR: se a cinta
+      falha, os três herdam os buracos, e por isso levam o filtro de
+      artefactos. O SmO2 e o THb vêm do Moxy e não são afectados.</p>
+    </div>
+  </details>
+
+  <div id="mxResumo" style="margin-top:14px;"></div>
+
+  <div id="mxAnaliseUnica">
+  <div id="mxResumoBloco" style="display:none;">
+    <h2 style="font-size:15px;margin-top:18px;">Comparação — limitador por sessão</h2>
+    <div class="controls">
+      <button onclick="mxResumo()">Recalcular</button>
+      <span id="mxResumoEstado" style="color:#8b949e;font-size:12px;"></span>
+    </div>
+    <div id="mxResumo" style="margin-top:6px;"></div>
+  </div>
+
+  <div id="mxLimiaresBloco">
+    <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
+    <div class="controls"><button onclick="mxLimiares()">Calcular</button>
+      <button onclick="mxGuardarAnalise()" title="Grava perfil, breakpoints, 5-1-5 e rede causal. Voltar a gravar substitui, com a versão do método usada.">💾 Gravar análise</button>
+      <label class="sel"><input type="checkbox" id="mxExaustao"
+        title="Os blocos terminaram porque não aguentavas mais, e não porque o tempo acabou."> blocos até à exaustão</label>
+      <span id="mxLimEstado" style="color:#8b949e;font-size:12px;"></span></div>
+    <div id="mxLimiares" style="margin-top:6px;"></div>
+    <details style="margin-top:6px;">
+      <summary style="cursor:pointer;font-size:12px;color:#8b949e;">Método e fiabilidade por modalidade</summary>
+      <div style="font-size:11px;color:#8b949e;margin-top:6px;">
+        <p><b>Método:</b> regressão segmentada de três troços contínuos sobre
+        SmO2 mínimo × potência de cada degrau — as três fases descritas por
+        Bhambhani. O segundo troço parte de onde o primeiro acaba: o sinal não
+        salta no limiar, muda de inclinação.</p>
+        <p><b>Rejeição:</b> teste F contra uma recta única. Numa descida
+        linear com ruído, dois breakpoints reduzem o erro em 27% de graça —
+        quatro parâmetros extra ajustam ruído. O teste F desconta isso, e
+        rejeita a curva sem quebra.</p>
+        <p><b>Bike e Run:</b> concordância moderada com VT1/VT2, com
+        subestimação sistemática (Feldmann 2022). Na corrida, o SmO2 mínimo
+        não reflecte o VO₂pico.</p>
+        <p><b>Row:</b> Possamai 2024, específico de remo, conclui que estes
+        limiares <i>"should not be considered interchangeable"</i> com MLSS e
+        CP. Calculam-se, mas não servem para prescrever.
+        <b>Ski:</b> sem literatura; tratado como o remo.</p>
+        <p><b>Número de degraus:</b> testado com escadas de breakpoint
+        conhecido — 12 degraus acertam o BP1 no valor exacto, 9 erram 30 W.</p>
+        <p><b>Que limiar é qual.</b> O SmO2max — o topo da parábola, quando
+        existe — aproxima o <b>FatMax / LT1 / VT1</b>, o primeiro limiar. A
+        quebra na queda (deoxy-BP) e o padrão de dessaturação apontam ao
+        <b>RCP / VT2 / MLSS</b>, o segundo. São coisas diferentes e não se
+        substituem.</p>
+        <p><b>Dois perfis de resposta</b> (Jem Arnold, no mesmo protocolo 5-1).
+        <i>Parabólico:</i> o SmO2 sobe nas cargas baixas até um máximo e só
+        depois desce — o topo aproxima o FatMax. <i>Monotónico:</i> desce
+        desde o primeiro degrau. Neste segundo perfil o primeiro limiar
+        <b>não é observável no SmO2</b>: nas palavras dele, o sinal associado
+        ao LT1 <i>"may not exist at all"</i>. Procurá-lo aí é procurar o que
+        não está.</p>
+        <p><b>Aviso do próprio autor sobre a concordância:</b> a associação
+        entre deoxy-BP e RCP existe ao nível do grupo, mas ao nível individual
+        <i>"this association broke down"</i>, com variabilidade de ±100 W.</p>
+        <p><b>MLSS e BP2 não são o mesmo cálculo.</b> O MLSS lê a forma
+        <i>dentro</i> de cada bloco ao longo do tempo — estabiliza ou continua
+        a descer. O BP2 lê a curva SmO2 × potência <i>entre</i> blocos. Apontam
+        à mesma fronteira fisiológica (VT2 / RCP) por rotas diferentes, e a
+        distância entre eles é a incerteza real da estimativa, não um erro.
+        Quando discordam muito, é sinal de que o protocolo não tem degraus
+        suficientes ou não são longos que cheguem.</p>
+        <p><b>Método da Moxy (MoxyBreakPoint v0.8), adaptado.</b> Usa a
+        <i>média</i> de SmO2 de cada intervalo WORK, ordena por potência e
+        interpola 10 pontos entre cada par antes de ajustar dois breakpoints.
+        A interpolação faz o breakpoint cair numa grelha fina em vez de só
+        nos degraus medidos.
+        <b>Uma correcção ao original:</b> interpolar não cria informação — os
+        51 pontos ajustados vêm de 6 medições. O script deles não faz teste de
+        significância; se se fizesse sobre os interpolados, o n estaria
+        inflacionado 10× e daria significativo quase sempre. Aqui a
+        interpolação localiza o breakpoint e o <b>teste F corre sobre os
+        pontos originais</b>.
+        <b>Limite:</b> dois breakpoints são seis parâmetros. Com 6 degraus
+        sobram zero graus de liberdade e o BP2 sai do ajuste mas não é
+        testável — são precisos 8 degraus.</p>
+        <p><b>Três métodos, por ordem de aplicabilidade aqui.</b>
+        <b>1) Taxa de dessaturação:</b> mede a velocidade de queda do SmO2
+        dentro de cada degrau, depois do transiente, e procura a quebra.
+        <b>Dois padrões são válidos</b>, e o Rogers descreve os dois no mesmo
+        artigo: <i>aceleração</i>, típica do recto femoral, em que a queda se
+        agrava acima do ponto; e <i>patamar</i>, típico do vasto lateral, em
+        que a queda deixa de se agravar porque a extracção chegou ao limite.
+        O músculo onde tens o sensor determina qual esperas ver.
+        É o que o Rogers usa nas escadas — <i>"the rate of change between
+        stages showing a shift at high power outputs corresponding to the
+        RCP"</i>. Funciona com blocos curtos e bastam 4 degraus, porque a taxa
+        não depende de onde o degrau começou.
+        <b>2) Padrão de dessaturação (MLSS):</b> precisa de 5 min por degrau.
+        <b>3) Regressão sobre os mínimos:</b> desenhada para rampa contínua.</p>
+        <p><b>Qual travessia conta.</b> O MLSS sai do <b>último</b> bloco que
+        estabiliza tendo tudo acima dele a descer — não do primeiro que desce.
+        Numa sequência como 155(sobe) 173(desce) 193(desce) 213(estabiliza)
+        229(desce) 251(desce), tomar a primeira travessia daria 164 W; mas
+        213 W estabiliza, e se essa carga é sustentável o MLSS não pode estar
+        50 W abaixo. Lê-se de cima para baixo, como se lê a olho. Blocos que
+        contradizem a leitura ficam assinalados a laranja.</p>
+        <p><b>Para protocolos de blocos, o método principal é outro.</b> O
+        MLSS sai do padrão dentro de cada bloco: abaixo dele o SmO2 desce e
+        <i>estabiliza</i>; acima, desce <i>continuamente até ao fim</i>. Não
+        basta o declive médio ser negativo — Rogers dá o contra-exemplo de um
+        bloco a 268 W que descia mas estabilizava aos 4 minutos, e que por
+        isso não marcava o MLSS. Por isso medimos a segunda metade do bloco,
+        depois de ignorar o transiente de arranque.</p>
+      </div>
+    </details>
+  </div>
+
+  <h2 style="font-size:15px;margin-top:18px;">Rede causal entre canais</h2>
+  <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
+    <button onclick="mxRede()">Calcular</button>
+    <label class="sel"><input type="checkbox" id="mxRdDif" onchange="mxAnalises()" checked> diferenciar séries</label>
+    <label class="sel"><input type="checkbox" id="mxRdCond" onchange="mxAnalises()" checked> condicionar aos watts</label>
+    <label class="sel"><input type="checkbox" id="mxRdDer" onchange="mxAnalises()" title="O SmO2 é calculado de O2Hb e HHb: incluí-los testa se uma variável causa os seus próprios componentes."> incluir O2Hb/HHb</label>
+    <label class="sel">Lag máx.
+      <select id="mxRdLag" onchange="mxAnalises()"><option>3</option><option selected>5</option>
+        <option>10</option></select></label>
+    <label class="sel">Correlação mín.
+      <select id="mxRdCorr" onchange="mxAnalises()"><option>0.2</option><option selected>0.3</option>
+        <option>0.5</option></select></label>
+    <span id="mxRdEstado" style="color:#8b949e;font-size:12px;"></span>
+  </div>
+  <details style="margin:2px 0 8px 0;">
+    <summary style="cursor:pointer;font-size:11px;color:#8b949e;">Como escolher o lag e a correlação mínima</summary>
+    <div style="font-size:11px;color:#8b949e;margin-top:6px;">
+      <p><b>Os valores por omissão — lag 5 s, correlação 0,30 — são os mais
+      defensáveis</b>, e é por isso que estão escolhidos. As outras opções
+      servem para ver se o resultado aguenta, não para o melhorar.</p>
+      <p><b>Lag máximo.</b> É o atraso máximo testado entre causa e efeito. A
+      resposta do SmO2 à potência ronda 3–8 s e a da FC 10–30 s, por isso 5 s
+      apanha a primeira e parte da segunda. <b>Lag 3</b> pode perder relações
+      reais mais lentas. <b>Lag 10</b> apanha-as, mas cada lag acrescenta
+      parâmetros ao modelo: com 10 lags e 5 canais são 50 coeficientes por
+      teste, e o F sobe por sobre-ajuste em vez de por relação. Se aumentares
+      o lag e aparecerem muitas arestas novas com F baixo, é ruído.</p>
+      <p><b>Correlação mínima.</b> Filtra que pares chegam a ser testados.
+      <b>0,20</b> testa quase tudo — mais pares, mais correcção de
+      Benjamini-Hochberg a aplicar, e o corte de p fica mais exigente para
+      todos. <b>0,50</b> testa só o óbvio e pode esconder relações fracas mas
+      reais, sobretudo depois de condicionar aos watts, que já retira boa
+      parte da variação partilhada.</p>
+      <p><b>Teste de robustez:</b> se uma aresta desaparece ao mudares de 5
+      para 3 ou de 0,30 para 0,50, não confies nela. As que sobrevivem às três
+      combinações são as que valem.</p>
+    </div>
+  </details>
+  <div id="mxRedeDetalhe"><div id="mxRede" style="overflow-x:auto;margin-top:6px;"></div></div>
+
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">O que a rede diz e o que não diz</summary>
+    <div style="font-size:11px;color:#8b949e;margin-top:6px;">
+      <p>Adaptado do <b>PhysioNexus</b> (Evan Peikon). Correlação selecciona
+      os pares, Granger dá-lhes direcção.</p>
+      <p><b>Granger não é causalidade.</b> Mede precedência preditiva: se o
+      passado de A ajuda a prever B além do que o passado de B já explica,
+      A precede B. Num sistema com um controlador comum isso é uma pista,
+      não uma prova.</p>
+      <p><b>Condicionar aos watts</b> existe porque o protocolo é causa comum
+      de tudo — os watts sobem por decisão tua e o resto responde. Sem
+      condicionar, a rede redescobre o protocolo. A pergunta passa a ser: o
+      canal A acrescenta poder preditivo sobre B <i>além do que a potência
+      já explica</i>?</p>
+      <p><b>Diferenciar</b> porque o Granger pressupõe séries estacionárias.
+      Ou se diferenciam todas ou nenhuma — misturar compara níveis com
+      variações.</p>
+      <p>Os p são corrigidos por Benjamini-Hochberg. Pares onde ambos os
+      sentidos passam e nenhum domina ficam marcados <b>ambíguos</b>.</p>
+      <p><b>Canais mecânicos</b> — watts, cadência, torque, velocidade — entram
+      só como controlo e nunca como nós da rede. São decisão tua, não resposta
+      fisiológica, e testá-los como causas seria redescobrir o protocolo.</p>
+      <p>O <b>limitador</b> sai do peso de cada sistema pelo F das arestas que
+      dele partem menos as que nele chegam. Um sistema que só recebe está a
+      responder; um que só emite está a impor o ritmo. Usa-se o F e não a
+      contagem: uma aresta com F=169 e outra com F=17 não valem o mesmo.</p>
+    </div>
+  </details>
+
+  <h2 style="font-size:15px;margin-top:18px;">Interpretação 5-1-5 — limitador</h2>
+  <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
+    <button onclick="mx515()">Avaliar</button>
+    <label class="sel">"Clear" acima de
+      <select id="mx515Claro" onchange="mxAnalises()"><option>5</option><option selected>10</option>
+        <option>15</option></select>% da amplitude</label>
+    <label class="sel"><input type="checkbox" id="mx515Rep" onchange="mxAnalises()" title="O protocolo repete o mesmo escalão de carga? Se não, as perguntas 8A e 13 não se aplicam."> tem carga repetida</label>
+    <label class="sel">Parte final
+      <select id="mx515Frac" onchange="mxAnalises()"><option value="0.33">último terço</option>
+        <option value="0.5" selected>última metade</option>
+        <option value="1">tudo</option></select></label>
+    <span id="mx515Estado" style="color:#8b949e;font-size:12px;"></span>
+  </div>
+  <div id="mx515Detalhe"><div id="mx515" style="overflow-x:auto;margin-top:6px;"></div></div>
+
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Como funciona a 5-1-5</summary>
+    <div style="font-size:11px;color:#8b949e;margin-top:6px;">
+      <p>Portado do <b>515 Interpretation Tool v2.2</b>. O original faz 13
+      perguntas sobre o que vês nos gráficos; aqui são medidas dos blocos, e
+      podes corrigir cada uma.</p>
+      <p><b>U/S — Utilização vs Fornecimento.</b> SmO2 de trabalho alto
+      significa que o músculo não extrai o que lhe chega: limitação de
+      utilização. SmO2 abaixo de 20% e a continuar a descer: extracção no
+      limite, falta entrega.</p>
+      <p><b>P/C — Pulmonar vs Cardíaco.</b> THb e SmO2 de repouso a subir, com
+      atraso na resposta, apontam ao lado ventilatório. THb a descer ao longo
+      da sessão aponta ao volume de sangue local.</p>
+      <p><b>Duas correcções face ao ficheiro original:</b> as linhas 29–32 do
+      motor de cálculo referenciavam as linhas erradas, deslocando o eixo P/C
+      em toda a secção de FC; e o máximo de U/S estava fixo em 11, que só é
+      atingível com dois sensores — com um, o denominador é 9.</p>
+      <p>Os cortes entre "clear" e "slight" não existem no original: pedia ao
+      utilizador que olhasse e decidisse. Aqui são explícitos e ajustáveis.</p>
+    </div>
+  </details>
+
+  </div>
+
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Todas as sessões</summary>
+    <div id="mxLista" style="overflow-x:auto;margin-top:6px;"></div>
+  </details>
+
+</div>
+"""
+
+JS = """
+let MX = null, MX_SESSOES = [], MX_ESC = null;
+let MX_CORTE = null;   // [inicio_s, fim_s]
+
+const MX_CORES = {smo2:'#F85149', thb:'#58A6FF', o2hb:'#3FB950',
+                  hhb:'#A371F7', watts:'#6e7681', heartrate:'#E3B341',
+                  respiration:'#79C0FF', dfa_a1:'#D2A8FF',
+                  cadence:'#F0883E', velocity_smooth:'#3FB950',
+                  torque:'#8b949e'};
+// Escalas muito diferentes no mesmo grafico ficariam ilegiveis: o SmO2 anda
+// nos 60, a potencia nos 250 e o DFA-a1 abaixo de 2. Cada canal e' normalizado
+// ao seu proprio intervalo para o desenho, e o hover mostra sempre o valor
+// real.
+let MX_ON = {};
+
+function mxActualizar(soVer){
+ const est=document.getElementById('mxEstado');
+ const nota=document.getElementById('mxCorteNota');
+ est.textContent = soVer ? 'a verificar...' : 'a reconciliar...';
+ fetch('/api/moxy/actualizar?dias=1095' + (soVer?'&so_diagnostico=1':''))
+ .then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ est.textContent='erro: '+(d.mensagem||''); return; }
+  est.textContent = (soVer?'[verificação] ':'')
+   + d.na_api+' na API · '+d.na_base_local+' locais · '
+   + d.n_novas+' novas · '+d.n_orfas+' órfãs'
+   + (soVer?'' : ' · '+(d.gravadas||0)+' gravadas');
+  let h = 'Janela ' + (d.janela||[]).join(' a ')
+   + ' em ' + (d.blocos_pedidos||[]).length + ' blocos de '
+   + d.bloco_dias + ' dias: '
+   + (d.blocos_pedidos||[]).map(function(b){ return b.de+' ('+b.n+')'; })
+     .join(' · ');
+  if((d.erros_api||[]).length)
+   h += '<br><span style="color:#F85149;">Erros da API: '
+     + d.erros_api.map(function(e){ return e.de+' — '+e.erro; }).join(' · ')
+     + '</span>';
+  if(d.n_novas) h += '<br><b>Novas:</b> ' + (d.novas||[]).join(', ');
+  if(d.n_orfas) h += '<br><b>Órfãs' + (soVer?' (a remover)':' removidas')
+   + ':</b> ' + (d.orfas||[]).join(', ');
+  if(d.erro_gravar) h += '<br><span style="color:#F85149;">Erro ao gravar: '
+   + d.erro_gravar + '</span>';
+  if(d.descartadas_sem_data) h += '<br>' + d.descartadas_sem_data
+   + ' descartadas por não terem data válida.';
+  nota.innerHTML = h;
+  if(!soVer) mxSessoes();
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
+function mxSessoes(){
+ const mod = document.getElementById('mxModalidade').value;
+ const est = document.getElementById('mxEstado');
+ est.textContent = 'a procurar sessões...';
+ fetch('/api/moxy/sessoes' + (mod ? '?modalidade=' + mod : ''))
+ .then(r=>r.json()).then(function(d){
+  if(d.status !== 'ok'){ est.textContent = d.mensagem || 'erro'; return; }
+  MX_SESSOES = d.sessoes || [];
+  est.textContent = MX_SESSOES.length + ' sessões com Moxy';
+  if(!MX_SEL.length && MX_SESSOES.length) MX_SEL=[String(MX_SESSOES[0].id)];
+  MX_SEL = MX_SEL.filter(id=>MX_SESSOES.some(x=>String(x.id)===id));
+  mxDatasChips(); mxLista();
+  if(MX_SEL.length) mxCarregar();
+  else { MX=null; MX_DADOS={}; mxDraw(); mxBlocosTabela();
+         document.getElementById('mxDiag').innerHTML=''; }
+ }).catch(e=>{ est.textContent = 'erro: ' + e.message; });
 }
 
 
-def _tags(j):
-    """Lista de tags da actividade. Vem null quando nao ha nenhuma."""
-    t = (j or {}).get('tags')
-    if isinstance(t, str):
-        return [x.strip() for x in t.split(',') if x.strip()]
-    return [str(x).strip() for x in (t or []) if x]
-
-
-def _tem_tag_moxy(j):
-    return any(PADRAO_MOXY.match(t) for t in _tags(j))
-
-
-def _remover_orfa(aid):
-    """Apaga das tabelas locais uma actividade que a API ja' nao tem."""
-    import db as _db
-    fora = {}
-    for tabela, coluna in (('activities', 'id'),
-                           ('power_curves', 'activity_id'),
-                           ('zone_times', 'activity_id')):
-        try:
-            _db._exec(f"DELETE FROM {tabela} WHERE {coluna} = ?", (str(aid),))
-            fora[tabela] = 'apagada'
-        except Exception as e:
-            fora[tabela] = f'{type(e).__name__}: {e}'
-    return fora
-
-
-def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil):
-    """Junta as estimativas nos dois limiares e assinala incoerencias.
-
-    Antes havia um painel por metodo -- quatro numeros soltos, sem dizer
-    qual respondia a que pergunta. E o BP1 do metodo Moxy nao entrava em
-    grupo nenhum, o que deixava passar um candidato a PRIMEIRO limiar
-    acima de um candidato a SEGUNDO sem ninguem dar por isso.
-    """
-    p1, p2 = [], []
-
-    def _add(lista, metodo, w, rota, bpm=None):
-        if w is not None:
-            lista.append({'metodo': metodo, 'watts': round(float(w), 1),
-                          'bpm': bpm, 'rota': rota})
-
-    # ── primeiro limiar: LT1 / VT1 / FatMax ──────────────────────────
-    if perfil.get('ok') and perfil.get('bp1_watts') is not None:
-        _add(p1, 'Topo da parábola (SmO2max)', perfil['bp1_watts'],
-             'média do último minuto por degrau')
-    if bp_mx.get('bp1_w') is not None:
-        _add(p1, 'BP1 da curva SmO2 × potência', bp_mx['bp1_w'],
-             'regressão por troços, 2 degraus por troço', bp_mx.get('bp1_bpm'))
-    if bp_livre.get('bp1_w') is not None:
-        _add(p1, 'BP1, critério do script Intervals.icu', bp_livre['bp1_w'],
-             'regressão por troços, sem mínimo', bp_livre.get('bp1_bpm'))
-
-    # ── segundo limiar: LT2 / VT2 / RCP / MLSS ───────────────────────
-    if mlss.get('ok'):
-        _add(p2, 'MLSS por padrão de dessaturação', mlss['mlss_estimado'],
-             'forma dentro de cada bloco, no tempo')
-    if bp_mx.get('bp2_w') is not None:
-        _add(p2, 'BP2 da curva SmO2 × potência', bp_mx['bp2_w'],
-             'regressão por troços, 2 degraus por troço', bp_mx.get('bp2_bpm'))
-    if bp_livre.get('bp2_w') is not None:
-        _add(p2, 'BP2, critério do script Intervals.icu', bp_livre['bp2_w'],
-             'regressão por troços, sem mínimo', bp_livre.get('bp2_bpm'))
-    if bp_taxa.get('ok'):
-        _add(p2, 'Quebra na taxa de dessaturação', bp_taxa['bp_watts'],
-             'velocidade de queda por degrau')
-
-    def _resumo(lista, nome):
-        if not lista:
-            return {'ok': False, 'n': 0}
-        vs = [x['watts'] for x in lista]
-        lo, hi = min(vs), max(vs)
-        med = sorted(vs)[len(vs) // 2]
-        amp = hi - lo
-        return {'ok': True, 'nome': nome, 'n': len(lista),
-                'de': lo, 'ate': hi, 'mediana': med,
-                'dispersao_w': round(amp, 1),
-                'dispersao_pct': round(amp / med * 100) if med else None,
-                'estimativas': sorted(lista, key=lambda x: x['watts'])}
-
-    r1 = _resumo(p1, 'Primeiro limiar (LT1 / VT1 / FatMax)')
-    r2 = _resumo(p2, 'Segundo limiar (LT2 / VT2 / RCP / MLSS)')
-
-    avisos = []
-    if r1.get('ok') and r2.get('ok') and r1['de'] > r2['de']:
-        avisos.append(
-            f"a estimativa mais baixa do primeiro limiar ({r1['de']} W) fica "
-            f"ACIMA da mais baixa do segundo ({r2['de']} W). Os métodos "
-            'estão a discordar sobre qual limiar encontraram — com poucos '
-            'degraus isso acontece, e significa que nenhum dos dois está '
-            'bem determinado')
-    for r in (r1, r2):
-        if r.get('ok') and (r.get('dispersao_pct') or 0) > 20:
-            avisos.append(
-                f"{r['nome']}: {r['dispersao_pct']}% de dispersão entre "
-                f"métodos ({r['de']}–{r['ate']} W). Acima de 20% não há "
-                'estimativa utilizável — são precisos mais degraus')
-    return {
-        'primeiro': r1, 'segundo': r2, 'avisos': avisos,
-        'nota': ('cada limiar tem várias estimativas porque há várias rotas '
-                 'para lá chegar: umas leem a forma dentro de cada bloco ao '
-                 'longo do tempo, outras a curva SmO2 × potência entre '
-                 'blocos. A distância entre elas é a incerteza real, não um '
-                 'erro de cálculo'),
-    }
-
-
-def registar(app):
-
-    @app.route('/api/moxy/sessoes')
-    def api_moxy_sessoes():
-        """Sessoes marcadas como Moxy.  ?modalidade=Bike&dias=3650&n=300"""
-        try:
-            import db as _db
-            from config import TYPE_MAP
-            # todo o historico por omissao. O limite de 365 dias
-            # escondia as sessoes de 2024 e anteriores.
-            dias = request.args.get('dias', type=int) or 3650
-            n = min(request.args.get('n', type=int) or 300, 500)
-            modalidade = request.args.get('modalidade')
-            corte = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
-
-            cond, args = ["raw IS NOT NULL", "date >= ?"], [corte]
-            if modalidade:
-                variantes = [k for k, v in TYPE_MAP.items() if v == modalidade]
-                if variantes:
-                    cond.append(f"type IN ({','.join('?' * len(variantes))})")
-                    args += variantes
-            linhas = _db._exec(
-                f"""SELECT id, type, date, name, raw FROM activities
-                     WHERE {' AND '.join(cond)} ORDER BY date DESC""",
-                tuple(args), fetch='all') or []
-
-            fora, sem_tag = [], 0
-            tags_vistas = {}
-            for aid, tipo, data, nome, raw in linhas:
-                try:
-                    j = raw if isinstance(raw, dict) else json.loads(raw)
-                except Exception:
-                    continue
-                tt = _tags(j)
-                for x in tt:
-                    tags_vistas[x] = tags_vistas.get(x, 0) + 1
-                if not _tem_tag_moxy(j):
-                    sem_tag += 1
-                    continue
-                fora.append({
-                    'id': aid, 'tipo': tipo, 'modalidade': TYPE_MAP.get(tipo),
-                    'data': str(data)[:10], 'nome': (nome or '')[:70],
-                    'tags': tt,
-                    'smo2_no_sumario': (j or {}).get('Smo2'),
-                    'duracao_min': (round((j or {}).get('moving_time', 0) / 60)
-                                    if (j or {}).get('moving_time') else None),
-                    'streams': f'/api/moxy/dados/{aid}',
-                })
-                MX_SESSOES_CACHE[str(aid)] = fora[-1]
-                if len(fora) >= n:
-                    break
-            return jsonify({
-                'status': 'ok', 'n': len(fora), 'dias': dias,
-                'modalidade': modalidade,
-                'sessoes_sem_tag': sem_tag,
-                'sessoes': fora,
-                'ultima': fora[0] if fora else None,
-                'tags_existentes': dict(sorted(tags_vistas.items(),
-                                               key=lambda kv: -kv[1])),
-                'nota': ('so entram actividades com a tag "Moxy". O nome da '
-                         'sessao e ignorado, e ter Smo2 no sumario tambem nao '
-                         'chega -- a tag e uma decisao explicita, o resto e '
-                         'coincidencia. tags_existentes lista o que ha na '
-                         'base, para se confirmar a grafia')})
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
-    def _dados_sessao(activity_id, args):
-        """Streams NIRS limpos de uma sessao.
-
-        ?fc=0.02  frequencia de corte   ?outlier=3   ?acima=95
-        ?normalizar=deslocar|reescalar
-        """
-        try:
-            import os as _os
-            import sys as _sys
-            _sys.path.insert(0, _os.path.join(
-                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
-            import mnirs as mn
-            import api_client as api
-
-            aid = str(activity_id).strip().strip('/').split('/')[-1]
-            bruto, err = api.icu_get(f'/activity/{aid}/streams')
-            if err:
-                # 404 = a actividade ja' nao existe na Intervals.icu, mas
-                # continua na base local. Acontece sempre que se apaga e
-                # volta a carregar uma sessao: o id muda e o sync
-                # incremental so' acrescenta, nunca remove. Limpa-se aqui,
-                # para o registo morto nao voltar a aparecer na lista.
-                if '404' in str(err):
-                    removidas = _remover_orfa(aid)
-                    return ({
-                        'status': 'removida',
-                        'mensagem': ('esta actividade ja nao existe na '
-                                     'Intervals.icu e foi removida da base '
-                                     'local. Provavelmente foi apagada e '
-                                     'recarregada com outro id -- carrega em '
-                                     '"Actualizar sessões" para apanhar a nova'),
-                        'id_usado': aid, 'linhas_removidas': removidas})
-                return ({'status': 'erro', 'mensagem': f'API: {err}',
-                                'id_usado': aid})
-            lista = bruto
-            if isinstance(lista, dict):
-                lista = lista.get('streams') or lista.get('content') or []
-
-            streams = {}
-            for st in (lista or []):
-                if isinstance(st, dict) and (st.get('type') or st.get('name')):
-                    streams[st.get('type') or st.get('name')] = st.get('data') or []
-
-            def _norm(x):
-                return ''.join(c for c in str(x).lower() if c.isalnum())
-
-            def _achar(nomes):
-                """Nome do stream, tolerante a variantes.
-
-                O ficheiro FIT declara o campo como "SmO2 (%)" com id
-                dev_field_0_34, e a Intervals.icu pode expo-lo com o nome
-                do dev field, com a unidade colada, ou com sufixo de
-                sensor. Comparacao exacta falhava nesses casos e a sessao
-                aparecia como "sem streams de SmO2" tendo-os.
-                """
-                alvos = [_norm(a) for a in nomes]
-                for k in streams:                      # exacto
-                    if _norm(k) in alvos:
-                        return k
-                for k in streams:                      # comeca por
-                    nk = _norm(k)
-                    if any(nk.startswith(a) or a.startswith(nk)
-                           for a in alvos if a):
-                        return k
-                for k in streams:                      # contem
-                    nk = _norm(k)
-                    if any(a and a in nk for a in alvos):
-                        return k
-                return None
-
-            canais, mapa = {}, {}
-            for alvo, nomes in CANAIS.items():
-                k = _achar(nomes)
-                if k and streams[k]:
-                    canais[alvo] = streams[k]
-                    mapa[alvo] = k
-            if not canais:
-                # Sem adivinhar: devolve-se tudo o que a sessao tem, com o
-                # numero de pontos, para se ver qual e' o canal do sensor.
-                # Um dev field pode chegar como 'dev_field_0_34' sem nome
-                # legivel, e nesse caso so' o utilizador sabe qual e'.
-                detalhe = sorted(
-                    ({'stream': k, 'n_pontos': len(v),
-                      'amostra': [x for x in (v or [])[:5]]}
-                     for k, v in streams.items()),
-                    key=lambda x: -x['n_pontos'])
-                return ({
-                    'status': 'sem_dados', 'id': aid,
-                    'mensagem': ('sem streams de SmO2 ou THb reconhecidos. '
-                                 'Se algum dos streams abaixo for o sensor '
-                                 '(pode chegar como dev_field_N sem nome), '
-                                 'acrescenta o nome em CANAIS no api_moxy.py'),
-                    'streams_na_actividade': sorted(streams),
-                    'detalhe_dos_streams': detalhe})
-
-            n = len(next(iter(canais.values())))
-            tempo = streams.get('time') or list(range(n))
-
-            res = mn.processar(
-                tempo, canais, hz=1.0,
-                acima=args.get('acima', type=float) or 95.0,
-                corte_outlier=args.get('outlier', type=float) or 3.0,
-                fc=args.get('fc', type=float) or 0.02,
-                normalizar=args.get('normalizar'))
-
-            # todos os outros canais que a sessao tenha: entram sem
-            # filtragem NIRS, so' reamostrados, para se poder ver o SmO2
-            # contra a intensidade, a respiracao ou a cadencia
-            extras = {
-                'watts': ['watts', 'power'],
-                'heartrate': ['heartrate', 'hr'],
-                'cadence': ['cadence'],
-                'respiration': ['respiration', 'RespirationRateAlphaHRV'],
-                'dfa_a1': ['dfa_a1', 'dfaa1'],
-                'velocity_smooth': ['velocity_smooth', 'Speed'],
-                'torque': ['torque'],
-            }
-            # Canais que dependem da cinta peitoral levam o mesmo
-            # tratamento que os NIRS. A serie de RR e' o que produz o
-            # DFA-a1 e a frequencia respiratoria: se a cinta falha, os tres
-            # herdam os buracos, e nas sessoes deste atleta o stream de
-            # artefactos chegou a marcar 97% dos pontos. Deixa-los brutos ao
-            # lado de um SmO2 filtrado dava a impressao errada de que o
-            # ruido era do musculo.
-            DA_CINTA = {'heartrate', 'dfa_a1', 'respiration'}
-            art_k = _achar(['artifacts', 'artifact'])
-            artefactos = streams.get(art_k) if art_k else None
-            art_max = args.get('artefacto_max', type=float) or 5.0
-            n_art = 0
-
-            for alvo, nomes in extras.items():
-                k = _achar(nomes)
-                if not k:
-                    continue
-                serie = list(streams[k])
-                if alvo in DA_CINTA and artefactos:
-                    for i in range(min(len(serie), len(artefactos))):
-                        a = artefactos[i]
-                        if a is not None and a > art_max:
-                            serie[i] = None
-                            n_art += 1
-                t2, v2 = mn.resample(tempo, serie, hz=1.0)
-                if alvo in DA_CINTA:
-                    v2, d_rep = mn.replace(
-                        v2, invalidos=(0,),
-                        corte_outlier=args.get('outlier', type=float) or 3.0,
-                        largura=15)
-                    v2 = mn.media_movel(v2, 15)
-                    res['diagnostico'][alvo] = {
-                        **d_rep, 'n_pontos': len(v2),
-                        'filtro': {'metodo': 'media movel', 'largura': 15},
-                        'fonte': 'cinta peitoral'}
-                res['canais'][alvo] = [
-                    round(x, 2) if x is not None else None for x in v2]
-                mapa[alvo] = k
-                if alvo not in res['diagnostico']:
-                    vv = [x for x in v2 if x is not None]
-                    res['diagnostico'][alvo] = {
-                        'n_pontos': len(v2),
-                        'invalidos': sum(1 for x in v2 if x is None),
-                        'outliers': 0, 'pct_substituido': None,
-                        'minimo': round(min(vv), 1) if vv else None,
-                        'maximo': round(max(vv), 1) if vv else None,
-                        'filtro': {'metodo': 'nenhum',
-                                   'motivo': 'canal de contexto, so reamostrado'},
-                        'fonte': 'stream original'}
-
-            if artefactos:
-                validos = [a for a in artefactos if a is not None]
-                res['artefactos'] = {
-                    'stream': art_k, 'limiar_usado': art_max,
-                    'pontos_descartados': n_art,
-                    'pct_acima_do_limiar': (
-                        round(sum(1 for a in validos if a > art_max)
-                              / len(validos) * 100, 1) if validos else None),
-                    'nota': ('aplicado so aos canais que vem da cinta '
-                             '(FC, DFA-a1, respiracao). O SmO2 e o THb vem '
-                             'do Moxy e nao sao afectados')}
-
-            # Blocos: primeiro pelos LAPS, que sao a estrutura marcada pelo
-            # atleta e trazem o tipo WORK/RECOVERY. So' na falta deles se
-            # deduz da potencia -- deduzir e' sempre pior do que ler.
-            laps, err_l = api.icu_get(f'/activity/{aid}/intervals')
-            if isinstance(laps, dict):
-                laps = laps.get('icu_intervals') or laps.get('intervals') or []
-            bl = mn.blocos_de_laps(laps or [])
-            if bl.get('ok'):
-                res['blocos'] = bl
-                res['corte_proposto'] = mn.propor_corte_laps(bl)
-            else:
-                wt = res['canais'].get('watts')
-                if wt:
-                    bl = mn.detectar_blocos(res['tempo'], wt, hz=1.0)
-                    bl['fonte'] = 'potencia (sem laps)'
-                    res['blocos'] = bl
-                    res['corte_proposto'] = mn.propor_corte(bl)
-                else:
-                    res['blocos'] = {'ok': False,
-                                     'motivo': 'sem laps nem potencia'}
-                    res['corte_proposto'] = {'ok': False,
-                                             'motivo': 'sem laps nem potencia'}
-            if err_l:
-                res['erro_laps'] = err_l
-
-            # corte gravado pelo utilizador tem prioridade
-            try:
-                import drive_db_perfil as ddp
-                cn = ddp.get_conn()
-                r = cn.execute(
-                    """SELECT inicio_s, fim_s, origem, nota, data_gravacao
-                         FROM moxy_cortes WHERE activity_id = ?""",
-                    (aid,)).fetchone()
-                cn.close()
-                if r:
-                    res['corte_guardado'] = {
-                        'inicio_s': r[0], 'fim_s': r[1], 'origem': r[2],
-                        'nota': r[3], 'data_gravacao': r[4]}
-            except Exception as e:
-                res['corte_guardado'] = None
-                res['erro_corte'] = f'{type(e).__name__}: {e}'
-
-            res['status'] = 'ok'
-            res['activity_id'] = aid
-            res['streams_usados'] = mapa
-            res['canais_nirs'] = sorted(canais)
-            res['canais_contexto'] = sorted(
-                k for k in res['canais'] if k not in canais)
-            res['streams_na_actividade'] = sorted(streams)
-            return (res)
-        except Exception as e:
-            return ({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()})
-
-
-    @app.route('/api/moxy/dados/<path:activity_id>')
-    def api_moxy_dados(activity_id):
-        """Streams NIRS limpos de uma sessao.
-
-        ?fc=0.02  ?outlier=3  ?acima=95  ?normalizar=deslocar|reescalar
-        """
-        return jsonify(_dados_sessao(activity_id, request.args))
-
-    @app.route('/api/moxy/actualizar')
-    def api_moxy_actualizar():
-        """Reconcilia a base local com a Intervals.icu.
-
-        Tres coisas que o sync incremental nao faz:
-
-          1. Remove o que ja' nao existe la'. Uma sessao apagada fica para
-             sempre na base local.
-          2. Volta atras no tempo. O incremental arranca da ultima data
-             sincronizada e so' avanca, portanto uma sessao recarregada com
-             data de 2025 nunca entra.
-          3. Actualiza o que mudou. Uma sessao reprocessada mantem o id mas
-             muda de conteudo, e o incremental ignora-a por ja' existir.
-
-        A API e' consultada em blocos de 180 dias em vez de um pedido
-        unico, porque um intervalo de tres anos pode ser truncado sem
-        aviso. O numero devolvido por bloco vai na resposta, para se ver se
-        isso acontece.
-
-        ?dias=1095   ?bloco=180   ?so_diagnostico=1
-        """
-        try:
-            import db as _db
-            import api_client as api
-            import sync as _sync
-
-            dias = request.args.get('dias', type=int) or 1095
-            bloco = request.args.get('bloco', type=int) or 180
-            so_diag = request.args.get('so_diagnostico') in ('1', 'true')
-            hoje = datetime.now()
-            oldest_geral = (hoje - timedelta(days=dias)).strftime('%Y-%m-%d')
-
-            todas, chunks, erros = {}, [], []
-            fim = hoje
-            while True:
-                ini = fim - timedelta(days=bloco)
-                if ini < hoje - timedelta(days=dias):
-                    ini = hoje - timedelta(days=dias)
-                bruto, err = api.icu_get(
-                    f'/athlete/{api.ATHLETE_ID}/activities',
-                    {'oldest': ini.strftime('%Y-%m-%d'),
-                     'newest': fim.strftime('%Y-%m-%d')})
-                if err:
-                    erros.append({'de': ini.strftime('%Y-%m-%d'), 'erro': err})
-                else:
-                    acts = bruto or []
-                    if isinstance(acts, dict):
-                        acts = acts.get('content') or []
-                    planas = []
-                    for x in acts:
-                        if isinstance(x, dict):
-                            planas.append(x)
-                        elif isinstance(x, list):
-                            planas.extend(y for y in x if isinstance(y, dict))
-                    for a in planas:
-                        if a.get('id'):
-                            todas[str(a['id'])] = a
-                    chunks.append({'de': ini.strftime('%Y-%m-%d'),
-                                   'ate': fim.strftime('%Y-%m-%d'),
-                                   'n': len(planas)})
-                if ini <= hoje - timedelta(days=dias):
-                    break
-                fim = ini
-
-            ids_api = set(todas)
-            locais = _db._exec(
-                "SELECT id FROM activities WHERE date >= ?",
-                (oldest_geral,), fetch='all') or []
-            ids_locais = {str(r[0]) for r in locais}
-            orfas = sorted(ids_locais - ids_api)
-            novas = sorted(ids_api - ids_locais)
-
-            resumo = {
-                'status': 'ok', 'dias': dias, 'bloco_dias': bloco,
-                'janela': [oldest_geral, hoje.strftime('%Y-%m-%d')],
-                'blocos_pedidos': chunks, 'erros_api': erros,
-                'na_api': len(ids_api), 'na_base_local': len(ids_locais),
-                'n_orfas': len(orfas), 'orfas': orfas[:50],
-                'n_novas': len(novas), 'novas': novas[:50],
-            }
-            if so_diag:
-                resumo['nota'] = ('so_diagnostico=1: nada foi alterado. '
-                                  'Retira o parametro para aplicar')
-                return jsonify(resumo)
-
-            for aid in orfas:
-                _remover_orfa(aid)
-
-            # Grava TODAS as que a API tem, nao so' as novas: uma sessao
-            # reprocessada mantem o id e muda de conteudo, e ficaria com o
-            # JSON antigo se so' se tratassem as novas.
-            gravadas = 0
-            try:
-                rows = [r for r in (_sync.to_row(a) for a in todas.values())
-                        if r]
-                sem_data = len(todas) - len(rows)
-                if rows:
-                    ins, upd = _db.upsert_activities(rows)
-                    gravadas = ins + upd
-                resumo['gravadas'] = gravadas
-                resumo['inseridas'] = ins if rows else 0
-                resumo['actualizadas'] = upd if rows else 0
-                resumo['descartadas_sem_data'] = sem_data
-            except Exception as e:
-                resumo['erro_gravar'] = f'{type(e).__name__}: {e}'
-
-            try:
-                # a cache vive no app.py; importado aqui para nao criar
-                # dependencia circular no topo do modulo
-                from app import invalidar_cache
-                invalidar_cache()
-            except Exception as e:
-                resumo['aviso_cache'] = f'{type(e).__name__}: {e}'
-
-            resumo['nota'] = (
-                'orfas = existiam localmente e ja nao estao na API (apagadas '
-                'la). novas = estao na API e nao estavam ca. Todas as da API '
-                'sao regravadas, para apanhar as que mudaram de conteudo sem '
-                'mudar de id')
-            return jsonify(resumo)
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
-    @app.route('/api/moxy/comparar')
-    def api_moxy_comparar():
-        """Compara varias sessoes, alinhadas pela potencia de cada degrau.
-
-        ?ids=i1,i2,i3   ?tolerancia=15   ?aparar=30
-        Alem dos parametros de /api/moxy/dados.
-
-        Os canais vem sufixados com o indice da sessao -- smo2_1, smo2_2 --
-        e os degraus vem emparelhados por potencia, nao por tempo: assim
-        nao e preciso sincronizar sessoes com aquecimentos diferentes.
-        """
-        try:
-            import os as _os
-            import sys as _sys
-            _sys.path.insert(0, _os.path.join(
-                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
-            import mnirs as mn
-
-            ids = [x.strip() for x in (request.args.get('ids') or '').split(',')
-                   if x.strip()]
-            if not ids:
-                return jsonify({'status': 'erro',
-                                'mensagem': 'passa ?ids=i1,i2'}), 400
-            if len(ids) > 4:
-                ids = ids[:4]
-
-            sessoes, canais_comb, degraus_por_sessao = [], {}, []
-            for n, aid in enumerate(ids, start=1):
-                d = _dados_sessao(aid, request.args)
-                if d.get('status') != 'ok':
-                    sessoes.append({'indice': n, 'id': aid,
-                                    'status': d.get('status'),
-                                    'mensagem': d.get('mensagem')})
-                    degraus_por_sessao.append([])
-                    continue
-
-                # corte guardado ou proposto: comparar aquecimentos nao
-                # tem sentido nenhum
-                corte = d.get('corte_guardado') or (
-                    d.get('corte_proposto') if (d.get('corte_proposto') or {})
-                    .get('ok') else None)
-                t = d.get('tempo') or []
-                i0, i1 = 0, len(t) - 1
-                if corte and t:
-                    for i, x in enumerate(t):
-                        if x >= corte['inicio_s']:
-                            i0 = i
-                            break
-                    for i in range(len(t) - 1, -1, -1):
-                        if t[i] <= corte['fim_s']:
-                            i1 = i
-                            break
-
-                canais_cortados = {k: v[i0:i1 + 1]
-                                   for k, v in (d.get('canais') or {}).items()}
-                tempo_cortado = t[i0:i1 + 1]
-                for k, v in canais_cortados.items():
-                    canais_comb[f'{k}_{n}'] = v
-
-                bl = mn.detectar_blocos(tempo_cortado,
-                                        canais_cortados.get('watts') or [],
-                                        hz=1.0)
-                dg = mn.resumir_degraus(
-                    tempo_cortado, canais_cortados, bl,
-                    aparar=request.args.get('aparar', type=int) or 30)
-                degraus_por_sessao.append(dg)
-
-                sessoes.append({
-                    'indice': n, 'id': aid, 'status': 'ok',
-                    'tempo': tempo_cortado,
-                    'canais_nirs': d.get('canais_nirs'),
-                    'canais_contexto': d.get('canais_contexto'),
-                    'corte_usado': corte,
-                    'origem_do_corte': ('guardado' if d.get('corte_guardado')
-                                        else 'proposto' if corte else 'nenhum'),
-                    'n_degraus': len(dg),
-                    'degraus': dg,
-                    'diagnostico': d.get('diagnostico'),
-                    'artefactos': d.get('artefactos')})
-
-            pares = mn.emparelhar_degraus(
-                degraus_por_sessao,
-                tolerancia=request.args.get('tolerancia', type=float) or 15.0)
-
-            return jsonify({
-                'status': 'ok', 'n_sessoes': len(ids), 'ids': ids,
-                'sessoes': sessoes,
-                'canais': canais_comb,
-                'degraus_emparelhados': pares,
-                'n_degraus_comuns': sum(1 for p in pares
-                                        if p['n_sessoes'] == len(ids)),
-                'nota': ('degraus emparelhados por potencia, com tolerancia. '
-                         'Alinhar por tempo exigiria sincronizar sessoes com '
-                         'aquecimentos diferentes; por potencia, o degrau de '
-                         '200 W compara-se com o de 200 W seja quando for. '
-                         'Cada sessao entra ja cortada pelo intervalo '
-                         'guardado ou proposto')})
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
-    @app.route('/api/moxy/rede/<path:activity_id>')
-    def api_moxy_rede(activity_id):
-        """Rede causal entre os canais desta sessao.
-
-        ?lag=5  ?corr=0.30  ?alfa=0.05  ?controlo=watts
-        ?diferenciar=0  ?condicionar=0   (para comparar com o metodo cru)
-        ?derivados=1    incluir O2Hb e HHb (componentes do SmO2)
-        ?inicio=900&fim=2100   restringir ao intervalo analisado
-        """
-        try:
-            import os as _os
-            import sys as _sys
-            _sys.path.insert(0, _os.path.join(
-                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
-            import rede_causal as rc
-
-            aid = str(activity_id).strip().strip('/').split('/')[-1]
-            with app.test_request_context(f'/api/moxy/dados/{aid}'):
-                pass
-            corpo = api_moxy_dados(aid)
-            dados = corpo[0].get_json() if isinstance(corpo, tuple) \
-                else corpo.get_json()
-            if not dados or dados.get('status') != 'ok':
-                return jsonify({'status': 'sem_dados',
-                                'mensagem': (dados or {}).get('mensagem')}), 200
-
-            t = dados.get('tempo') or []
-            canais = dict(dados.get('canais') or {})
-            ini = request.args.get('inicio', type=float)
-            fim = request.args.get('fim', type=float)
-            if ini is not None or fim is not None:
-                a = 0 if ini is None else next(
-                    (i for i, x in enumerate(t) if x >= ini), 0)
-                b = len(t) - 1 if fim is None else next(
-                    (i for i in range(len(t) - 1, -1, -1) if t[i] <= fim),
-                    len(t) - 1)
-                canais = {k: v[a:b + 1] for k, v in canais.items()}
-
-            res = rc.rede(
-                canais,
-                controlo=request.args.get('controlo') or 'watts',
-                max_lag=request.args.get('lag', type=int) or rc.MAX_LAG,
-                corr_minima=request.args.get('corr', type=float) or rc.CORR_MINIMA,
-                alfa=request.args.get('alfa', type=float) or rc.P_MAXIMO,
-                diferenciar=request.args.get('diferenciar') != '0',
-                condicionar=request.args.get('condicionar') != '0',
-                incluir_derivados=request.args.get('derivados') == '1')
-            res['status'] = 'ok' if res.get('ok') else 'sem_dados'
-            res['activity_id'] = aid
-            return jsonify(res)
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
-    @app.route('/api/moxy/interpretacao/<path:activity_id>')
-    def api_moxy_interpretacao(activity_id):
-        """5-1-5 Interpretation Tool automatizado.
-
-        ?inicio=&fim=  intervalo   ?claro=10&ligeiro=3  cortes em % da amplitude
-        ?fraccao=0.5   fraccao final da sessao usada
-        ?resp_2A=...   sobrepor a resposta medida de qualquer pergunta
-        ?repetida=0    excluir as perguntas de carga repetida (8A, 13)
-        """
-        try:
-            import os as _os
-            import sys as _sys
-            _sys.path.insert(0, _os.path.join(
-                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
-            import interpretacao_515 as it
-
-            aid = str(activity_id).strip().strip('/').split('/')[-1]
-            corpo = api_moxy_dados(aid)
-            dados = corpo[0].get_json() if isinstance(corpo, tuple) \
-                else corpo.get_json()
-            if not dados or dados.get('status') != 'ok':
-                return jsonify({'status': 'sem_dados',
-                                'mensagem': (dados or {}).get('mensagem')}), 200
-
-            t = dados.get('tempo') or []
-            canais = dados.get('canais') or {}
-            blocos = ((dados.get('blocos') or {}).get('blocos')) or []
-            ini = request.args.get('inicio', type=float)
-            fim = request.args.get('fim', type=float)
-            if ini is not None or fim is not None:
-                a = ini if ini is not None else (t[0] if t else 0)
-                b = fim if fim is not None else (t[-1] if t else 0)
-                blocos = [x for x in blocos if x['t1'] >= a and x['t0'] <= b]
-
-            art = (dados.get('artefactos') or {}).get('pct_acima_do_limiar')
-            res = it.avaliar(
-                t, canais, blocos, pct_artefacto=art,
-                fraccao_final=request.args.get('fraccao', type=float)
-                or it.FRACCAO_FINAL,
-                corte_claro=(request.args.get('claro', type=float) or
-                             it.CORTE_CLARO * 100) / 100.0,
-                corte_ligeiro=(request.args.get('ligeiro', type=float) or
-                               it.CORTE_LIGEIRO * 100) / 100.0,
-                excluir_carga_repetida=(
-                    None if request.args.get('repetida') is None
-                    else request.args.get('repetida') == '0'))
-            if not res.get('ok'):
-                return jsonify({'status': 'sem_dados', **res}), 200
-
-            # respostas sobrepostas pelo utilizador
-            sobrepostas = {}
-            for k, v in request.args.items():
-                if k.startswith('resp_') and v:
-                    q = k[5:]
-                    if q in res['medicoes']['respostas']:
-                        res['medicoes']['respostas'][q]['resposta'] = v
-                        res['medicoes']['respostas'][q]['editada'] = True
-                        sobrepostas[q] = v
-            if sobrepostas:
-                m = res['medicoes']
-                pt = it.pontuar(m['respostas'], tem_thb=m['tem_thb'],
-                                tem_hr=m['tem_hr'])
-                res['pontuacao'] = pt
-                res['interpretacao'] = it.interpretar(
-                    pt['us']['score'], pt['pc']['score'],
-                    pt['sem_resposta'], res.get('avisos'))
-                res['respostas_editadas'] = sobrepostas
-
-            res['status'] = 'ok'
-            res['activity_id'] = aid
-            res['niveis'] = it.NIVEIS
-            res['figuras'] = it.figuras_das_perguntas()
-            res['onde_mede'] = it.onde_mede_texto()
-            res['faixas_2A'] = list(it.ESCALA_US['2A'])
-            res['faixas_9'] = list(it.ESCALA_PC['9'])
-            return jsonify(res)
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
-    @app.route('/api/moxy/resumo')
-    def api_moxy_resumo():
-        """Rede causal + 5-1-5 para varias sessoes, com o consenso.
-
-        ?ids=a,b,c   ?lag=5  ?corr=0.30  ?claro=10  ?fraccao=0.5
-        """
-        try:
-            import os as _os
-            import sys as _sys
-            _sys.path.insert(0, _os.path.join(
-                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
-            import rede_causal as rc
-            import interpretacao_515 as it
-
-            ids = [x.strip() for x in (request.args.get('ids') or '').split(',')
-                   if x.strip()]
-            if not ids:
-                return jsonify({'status': 'erro',
-                                'mensagem': 'sem ids'}), 400
-
-            fora = []
-            for aid in ids[:12]:
-                linha = {'activity_id': aid}
-                corpo = api_moxy_dados(aid)
-                d = corpo[0].get_json() if isinstance(corpo, tuple) \
-                    else corpo.get_json()
-                if not d or d.get('status') != 'ok':
-                    linha['erro'] = (d or {}).get('mensagem') or 'sem dados'
-                    fora.append(linha)
-                    continue
-
-                t = d.get('tempo') or []
-                canais = d.get('canais') or {}
-                blocos = ((d.get('blocos') or {}).get('blocos')) or []
-                g = d.get('corte_guardado') or {}
-                pr = d.get('corte_proposto') or {}
-                a = g.get('inicio_s') if g.get('inicio_s') is not None else (
-                    pr.get('inicio_s') if pr.get('ok') else (t[0] if t else 0))
-                b = g.get('fim_s') if g.get('fim_s') is not None else (
-                    pr.get('fim_s') if pr.get('ok') else (t[-1] if t else 0))
-                linha['corte'] = [a, b]
-                bl = [x for x in blocos if x['t1'] >= a and x['t0'] <= b]
-                idx = [i for i in range(len(t)) if a <= t[i] <= b]
-                cj = {k: [v[i] for i in idx if i < len(v)]
-                      for k, v in canais.items()}
-                art = (d.get('artefactos') or {}).get('pct_acima_do_limiar')
-                linha['pct_artefacto'] = art
-
-                try:
-                    r = rc.rede(
-                        cj,
-                        max_lag=request.args.get('lag', type=int) or rc.MAX_LAG,
-                        corr_minima=request.args.get('corr', type=float)
-                        or rc.CORR_MINIMA)
-                    linha['rede'] = ({'limitador': r.get('limitador'),
-                                      'n_dirigidas': r.get('n_dirigidas'),
-                                      'canais': r.get('canais_usados')}
-                                     if r.get('ok')
-                                     else {'motivo': r.get('motivo')})
-                except Exception as e:
-                    linha['rede'] = {'erro': str(e)[:90]}
-
-                # limiares por SmO2, para a comparacao longitudinal
-                try:
-                    import nirs_breakpoints as nbk
-                    sm = canais.get('smo2') or []
-                    hr_s = canais.get('heartrate') or []
-                    pf = nbk.perfil_de_resposta(t, sm, bl) if sm else {}
-                    mls = nbk.mlss_por_dessaturacao(t, sm, bl) if sm else {}
-                    btx = nbk.bp_por_taxa(t, sm, bl) if sm else {}
-                    # mesma prioridade da gravacao: o script primeiro
-                    bmoxy = nbk.bp_moxy(
-                        [x for x in bl if x.get('on')], t, sm, hr_s,
-                        degraus_por_troco=1)
-                    bp1_w = (bmoxy.get('bp1_w')
-                             or (pf.get('bp1_watts') if pf.get('ok') else None))
-                    bp2_w = (bmoxy.get('bp2_w')
-                             or (mls.get('mlss_estimado') if mls.get('ok')
-                                 else (btx.get('bp_watts') if btx.get('ok')
-                                       else None)))
-                    linha['limiares'] = {
-                        'perfil': pf.get('perfil'),
-                        'perfil_ok': pf.get('ok'),
-                        'perfil_motivo': pf.get('motivo'),
-                        'smo2max': pf.get('smo2max'),
-                        'smo2min': pf.get('smo2min'),
-                        'amplitude': pf.get('amplitude'),
-                        'bp1_w': bp1_w,
-                        'bp1_bpm': (bmoxy.get('bp1_bpm')
-                                    or nbk.fc_na_carga(bl, t, hr_s, bp1_w)),
-                        'bp2_w': bp2_w,
-                        'bp2_bpm': (bmoxy.get('bp2_bpm')
-                                    or nbk.fc_na_carga(bl, t, hr_s, bp2_w)),
-                        'bp2_origem': ('script Intervals.icu'
-                                       if bmoxy.get('bp2_w') else
-                                       'padrão de dessaturação'
-                                       if mls.get('ok') else
-                                       'quebra na taxa' if btx.get('ok')
-                                       else None),
-                        'bp2_motivo': (None if bp2_w is not None else
-                                       (mls.get('motivo')
-                                        or btx.get('motivo'))),
-                        'n_degraus': len([x for x in bl if x.get('on')]),
-                        'leitura': (nbk.LEITURA_DO_PERFIL.get(
-                            pf.get('perfil') or '') or {}),
-                    }
-                except Exception as e:
-                    linha['limiares'] = {'erro': f'{type(e).__name__}: {e}'}
-
-                try:
-                    v = it.avaliar(
-                        t, canais, bl, pct_artefacto=art,
-                        fraccao_final=request.args.get('fraccao', type=float)
-                        or it.FRACCAO_FINAL,
-                        corte_claro=(request.args.get('claro', type=float)
-                                     or it.CORTE_CLARO * 100) / 100.0)
-                    linha['i515'] = ({'pontuacao': {
-                        'us': {k: v['pontuacao']['us'][k]
-                               for k in ('pontos', 'max', 'score')},
-                        'pc': {k: v['pontuacao']['pc'][k]
-                               for k in ('pontos', 'max', 'score')}},
-                        'interpretacao': v['interpretacao'],
-                        'avisos': v.get('avisos')}
-                        if v.get('ok') else {'motivo': v.get('motivo')})
-                except Exception as e:
-                    linha['i515'] = {'erro': str(e)[:90]}
-                fora.append(linha)
-
-            # ── consenso ────────────────────────────────────────────────
-            # Contagem simples do limitador por eixo. Ponderar por qualidade
-            # seria mais fino, mas escondia quantas sessoes ha' de cada
-            # lado, que e' o que interessa saber primeiro.
-            def _contar(chave, caminho):
-                c = {}
-                for x in fora:
-                    v = x.get(caminho[0]) or {}
-                    for k in caminho[1:]:
-                        v = (v or {}).get(k) or {}
-                    n = v.get('limitador') or v.get('sistema')
-                    if n:
-                        c[n] = c.get(n, 0) + 1
-                return c
-
-            cons = {
-                'rede': _contar('rede', ['rede', 'limitador']),
-                'us': _contar('us', ['i515', 'interpretacao', 'us']),
-                'pc': _contar('pc', ['i515', 'interpretacao', 'pc']),
-            }
-            resumo = {}
-            for eixo, c in cons.items():
-                if not c:
-                    resumo[eixo] = {'mais_comum': None, 'contagem': {}}
-                    continue
-                top = max(c, key=c.get)
-                n_tot = sum(c.values())
-                resumo[eixo] = {
-                    'mais_comum': top, 'n': c[top], 'de': n_tot,
-                    'concordancia_pct': round(c[top] / n_tot * 100),
-                    'contagem': c,
-                    'unanime': len(c) == 1 and n_tot > 1}
-
-            n_maus = sum(1 for x in fora
-                         if (x.get('pct_artefacto') or 0) > 30)
-            return jsonify({
-                'status': 'ok', 'n_sessoes': len(fora),
-                'sessoes': fora, 'consenso': resumo,
-                'n_com_artefacto_alto': n_maus,
-                'nota': ('o consenso e uma contagem, nao uma media: com 3 '
-                         'sessoes a dizer periferico e 2 cardiaco, o que '
-                         'interessa e que ha 2 a discordar, nao que 60% '
-                         'ganha. Concordancia abaixo de 70% significa que '
-                         'nao ha padrao estavel'
-                         + (f'. {n_maus} sessao(oes) com mais de 30% de '
-                            'artefacto na cinta -- as leituras de FC dessas '
-                            'nao sao de confianca' if n_maus else ''))})
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
-    @app.route('/api/moxy/limiares/<path:activity_id>')
-    def api_moxy_limiares(activity_id):
-        """Breakpoints de SmO2, CER e detector de hipocapnia.
-
-        ?inicio=&fim=   ?corte_plato=5   ?janela_plato=30
-        ?estavel=0.5    declive de SmO2 abaixo do qual e' estavel
-        ?exaustao=1     os blocos terminaram por exaustao
-        """
-        try:
-            import os as _os
-            import sys as _sys
-            _sys.path.insert(0, _os.path.join(
-                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
-            import nirs_breakpoints as nbk
-
-            aid = str(activity_id).strip().strip('/').split('/')[-1]
-            corpo = api_moxy_dados(aid)
-            d = corpo[0].get_json() if isinstance(corpo, tuple) \
-                else corpo.get_json()
-            if not d or d.get('status') != 'ok':
-                return jsonify({'status': 'sem_dados',
-                                'mensagem': (d or {}).get('mensagem')}), 200
-
-            t = d.get('tempo') or []
-            canais = d.get('canais') or {}
-            blocos = ((d.get('blocos') or {}).get('blocos')) or []
-            ini = request.args.get('inicio', type=float)
-            fim = request.args.get('fim', type=float)
-            if ini is not None or fim is not None:
-                a = ini if ini is not None else (t[0] if t else 0)
-                b = fim if fim is not None else (t[-1] if t else 0)
-                blocos = [x for x in blocos if x['t1'] >= a and x['t0'] <= b]
-
-            smo2 = canais.get('smo2') or []
-            # min e delta de SmO2 por bloco de trabalho
-            ons = []
-            for b in blocos:
-                if not b.get('on'):
-                    continue
-                vs = [smo2[i] for i in range(min(len(t), len(smo2)))
-                      if b['t0'] <= t[i] <= b['t1'] and smo2[i] is not None]
-                if not vs:
-                    continue
-                bb = dict(b)
-                bb['smo2_min'] = min(vs)
-                bb['smo2_medio'] = sum(vs) / len(vs)
-                bb['delta_smo2'] = nbk.delta_smo2_do_bloco(
-                    t, smo2, b['t0'], b['t1'])
-                ons.append(bb)
-
-            mod = None
-            try:
-                import db as _db
-                r = _db._exec("SELECT type FROM activities WHERE id = ?",
-                              (aid,), fetch='one')
-                if r:
-                    from config import TYPE_MAP
-                    mod = TYPE_MAP.get(r[0])
-            except Exception:
-                pass
-
-            # Metodo principal: padrao de dessaturacao por bloco. E' o que
-            # corresponde a este protocolo. A regressao segmentada fica como
-            # secundaria, porque foi desenhada para rampa continua.
-            mlss = nbk.mlss_por_dessaturacao(
-                t, smo2, blocos,
-                estavel=request.args.get('estavel', type=float)
-                or nbk.ESTAVEL_POR_MIN)
-            # Breakpoint pela TAXA de dessaturacao: e' o metodo que serve a
-            # blocos curtos e a poucos degraus, e o que o Rogers usa nas
-            # escadas. A regressao sobre os minimos fica como terceira via.
-            # Metodo canonico do Arnold para este protocolo: media do
-            # ultimo minuto de cada degrau, e classificacao do perfil.
-            perfil = nbk.perfil_de_resposta(t, smo2, blocos)
-            bp_taxa = nbk.bp_por_taxa(t, smo2, blocos)
-            # Metodo do script oficial da Moxy, com o teste F acrescentado
-            bp_mx = nbk.bp_moxy(ons, t, smo2, canais.get('heartrate'),
-                                modalidade=mod, degraus_por_troco=2)
-            # o mesmo sem restricao de degraus por troco: reproduz o
-            # script da Intervals.icu, para se poder comparar
-            bp_mx_livre = nbk.bp_moxy(
-                ons, t, smo2, canais.get('heartrate'), modalidade=mod,
-                degraus_por_troco=1)
-            bp = nbk.breakpoints(ons, mod)
-            pl = nbk.plato(t, smo2,
-                           janela=request.args.get('janela_plato', type=int)
-                           or nbk.PLATO_JANELA_S,
-                           corte=request.args.get('corte_plato', type=float)
-                           or nbk.PLATO_CORTE) if smo2 else None
-            ensaios = [(b['delta_smo2'], b['t1'] - b['t0']) for b in ons
-                       if b.get('delta_smo2') is not None]
-            ce = nbk.cer(
-                ensaios,
-                ate_exaustao=request.args.get('exaustao') == '1')
-            hp = nbk.hipocapnia(blocos, t, canais)
-
-            # coerencia com o resto do perfil metabolico
-            coer = None
-            try:
-                from app import perfil_metabolico_dados as _pmd
-                pm, _ = _pmd(mod, {}, com_ancoras=False)
-                pm = pm or {}
-                lim = pm.get('limiares') or {}
-                mad = pm.get('mader') or {}
-                bls = bp_mx_livre
-                coer = nbk.coerencia(
-                    bp1_w=bls.get('bp1_w') or bp_mx.get('bp1_w'),
-                    bp2_w=bls.get('bp2_w') or bp_mx.get('bp2_w'),
-                    cp=pm.get('cp_w') or lim.get('cp_w'),
-                    mlss=mad.get('mlss_at_w'),
-                    pvo2max=mad.get('pvo2max_w'),
-                    lt1_campos=None, lt2_campos=None,
-                    zonas=pm.get('zonas_semaforo'))
-            except Exception as e:
-                coer = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
-
-            return jsonify({
-                'status': 'ok', 'activity_id': aid, 'modalidade': mod,
-                'coerencia': coer,
-                'perfil_resposta': perfil,
-                'mlss_dessaturacao': mlss,
-                'bp_taxa': bp_taxa,
-                'bp_moxy': bp_mx,
-                'bp_moxy_sem_restricao': bp_mx_livre,
-                'limiares_consenso': _consenso_limiares(
-                    mlss, bp_mx, bp_mx_livre, bp_taxa, perfil),
-                'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
-                'blocos_usados': [
-                    {'watts': b.get('watts_medio'),
-                     'smo2_min': round(b['smo2_min'], 1),
-                     'delta_smo2': b.get('delta_smo2'),
-                     'duracao_s': round(b['t1'] - b['t0'])} for b in ons]})
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
-    VERSAO_ANALISE = '2026-08-30'
-
-    @app.route('/api/moxy/analise/<path:activity_id>', methods=['POST'])
-    def api_moxy_guardar_analise(activity_id):
-        """Corre tudo e grava o resultado.
-
-        Gravar de novo a mesma actividade SUBSTITUI: quando o método
-        melhora, basta voltar a correr e o registo fica com a versão nova.
-        A versao_analise diz com que código o valor foi calculado, para
-        nao se comparar um BP de hoje com um de um método antigo.
-        """
-        try:
-            import drive_db_perfil as ddp
-            aid = str(activity_id).strip().strip('/').split('/')[-1]
-
-            lim = api_moxy_limiares(aid)
-            lim = lim[0].get_json() if isinstance(lim, tuple) else lim.get_json()
-            itp = api_moxy_interpretacao(aid)
-            itp = itp[0].get_json() if isinstance(itp, tuple) else itp.get_json()
-            rd = api_moxy_rede(aid)
-            rd = rd[0].get_json() if isinstance(rd, tuple) else rd.get_json()
-
-            if (lim or {}).get('status') != 'ok':
-                return jsonify({'status': 'sem_dados',
-                                'mensagem': (lim or {}).get('mensagem')}), 200
-
-            pf = lim.get('perfil_resposta') or {}
-            ml = lim.get('mlss_dessaturacao') or {}
-            bt = lim.get('bp_taxa') or {}
-            ip = (itp or {}).get('interpretacao') or {}
-            pt = (itp or {}).get('pontuacao') or {}
-            rl = (rd or {}).get('limitador') or {}
-
-            # BP1 e BP2 do SCRIPT do Intervals.icu, que e' o que se mostra
-            # no grafico da tab Moxy e o que da' os dois de uma vez.
-            #
-            # Antes o BP1 vinha do perfil_resposta, que so' o tem quando a
-            # curva e' parabolica -- num perfil monotonico ficava None e
-            # gravava-se BP2 sem BP1, que era o que estavas a ver.
-            bls = lim.get('bp_moxy_sem_restricao') or {}
-            bmx = lim.get('bp_moxy') or {}
-            bp1 = bp1_bpm = bp2_bpm = None
-            origem1 = origem2 = None
-            for fonte, nome in ((bls, 'script Intervals.icu'),
-                                (bmx, 'regressão, 2 degraus por troço')):
-                if bp1 is None and fonte.get('bp1_w') is not None:
-                    bp1, bp1_bpm, origem1 = (fonte['bp1_w'],
-                                             fonte.get('bp1_bpm'), nome)
-            if bp1 is None and pf.get('ok') and pf.get('bp1_watts') is not None:
-                bp1, origem1 = pf['bp1_watts'], 'topo da parábola (SmO2max)'
-
-            bp2 = bls.get('bp2_w') or bmx.get('bp2_w')
-            bp2_bpm = bls.get('bp2_bpm') or bmx.get('bp2_bpm')
-            origem2 = 'script Intervals.icu' if bls.get('bp2_w') else (
-                'regressão, 2 degraus por troço' if bmx.get('bp2_w') else None)
-            if bp2 is None:
-                bp2 = (ml.get('mlss_estimado') if ml.get('ok')
-                       else bt.get('bp_watts') if bt.get('ok') else None)
-                origem2 = ('padrão de dessaturação' if ml.get('ok')
-                           else 'quebra na taxa' if bt.get('ok') else None)
-
-            s2 = MX_SESSOES_CACHE.get(aid, {})
-            linha = (
-                aid, lim.get('modalidade'), s2.get('data'),
-                pf.get('perfil'), bp1, bp1_bpm,
-                bp2, bp2_bpm,
-                origem2,
-                pf.get('smo2max'), pf.get('smo2min'),
-                len([x for x in ((lim.get('blocos_usados')) or [])]),
-                (pt.get('us') or {}).get('score'),
-                (ip.get('us') or {}).get('limitador'),
-                (pt.get('pc') or {}).get('score'),
-                (ip.get('pc') or {}).get('limitador'),
-                rl.get('sistema'),
-                json.dumps(rl.get('controlo_pct') or {}, ensure_ascii=False),
-                ((lim.get('hipocapnia') or {}).get('z_maximo')),
-                None, None, VERSAO_ANALISE,
-                json.dumps({'limiares': lim, 'i515': itp, 'rede': rd},
-                           ensure_ascii=False)[:400000],
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-
-            cn = ddp.get_conn()
-            cn.execute(
-                """INSERT OR REPLACE INTO moxy_analises
-                   (activity_id, modalidade, data, perfil, bp1_w, bp1_bpm,
-                    bp2_w, bp2_bpm, bp2_origem, smo2max, smo2min, n_degraus,
-                    us_score, us_limitador, pc_score, pc_limitador,
-                    rede_limitador, rede_pct, pct_artefacto, corte_inicio_s,
-                    corte_fim_s, versao_analise, json_completo, data_gravacao)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                linha)
-            cn.commit()
-            ok, det = ddp.upload()
-            cn.close()
-            return jsonify({'status': 'ok' if ok else 'gravado_sem_upload',
-                            'activity_id': aid, 'versao': VERSAO_ANALISE,
-                            'drive': det})
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
-    @app.route('/api/moxy/analises')
-    def api_moxy_analises():
-        """Análises gravadas.  ?modalidade=Row"""
-        try:
-            import drive_db_perfil as ddp
-            cond, args = [], []
-            if request.args.get('modalidade'):
-                cond.append('modalidade = ?')
-                args.append(request.args['modalidade'])
-            w = ('WHERE ' + ' AND '.join(cond)) if cond else ''
-            cn = ddp.get_conn()
-            cols = ('activity_id, modalidade, data, perfil, bp1_w, bp2_w, '
-                    'bp2_origem, smo2max, smo2min, n_degraus, us_limitador, '
-                    'pc_limitador, rede_limitador, versao_analise, '
-                    'data_gravacao')
-            rows = cn.execute(
-                f'SELECT {cols} FROM moxy_analises {w} ORDER BY data DESC',
-                tuple(args)).fetchall()
-            cn.close()
-            nomes = [c.strip() for c in cols.split(',')]
-            return jsonify({'status': 'ok', 'n': len(rows),
-                            'analises': [dict(zip(nomes, r)) for r in rows]})
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
-    @app.route('/api/moxy/debug/<path:activity_id>')
-    def api_moxy_debug(activity_id):
-        """Tudo em bruto de uma sessão, para diagnóstico.
-
-        Existe para poder pedir-se o output e ver o que se passou, em vez
-        de adivinhar a partir do que aparece no ecrã.
-        """
-        try:
-            aid = str(activity_id).strip().strip('/').split('/')[-1]
-            fora = {'activity_id': aid, 'versao': VERSAO_ANALISE}
-            for nome, fn in (('dados', api_moxy_dados),
-                             ('limiares', api_moxy_limiares),
-                             ('interpretacao', api_moxy_interpretacao),
-                             ('rede', api_moxy_rede)):
-                try:
-                    r = fn(aid)
-                    j = r[0].get_json() if isinstance(r, tuple) else r.get_json()
-                    if nome == 'dados' and isinstance(j, dict):
-                        # streams inteiros nao servem para nada aqui
-                        j = {k: v for k, v in j.items() if k != 'canais'}
-                        j['canais_resumo'] = {
-                            k: {'n': len(v),
-                                'min': min([x for x in v if x is not None],
-                                           default=None),
-                                'max': max([x for x in v if x is not None],
-                                           default=None)}
-                            for k, v in ((r[0].get_json() if isinstance(r, tuple)
-                                          else r.get_json()).get('canais')
-                                         or {}).items()}
-                    fora[nome] = j
-                except Exception as e:
-                    fora[nome] = {'erro': f'{type(e).__name__}: {e}',
-                                  'trace': traceback.format_exc()[-1200:]}
-            return jsonify(fora)
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
-    @app.route('/api/moxy/corte', methods=['POST'])
-    def api_moxy_corte():
-        """Grava o intervalo a analisar de uma sessao.
-
-        Corpo: activity_id, inicio_s, fim_s, modalidade, data, nota.
-        Gravar de novo a mesma actividade substitui -- a chave e' o id.
-        """
-        try:
-            import drive_db_perfil as ddp
-            c = request.get_json(silent=True) or {}
-            aid = str(c.get('activity_id') or '').strip()
-            if not aid:
-                return jsonify({'status': 'erro',
-                                'mensagem': 'activity_id em falta'}), 400
-            cn = ddp.get_conn()
-            cn.execute(
-                """INSERT OR REPLACE INTO moxy_cortes
-                   (activity_id, modalidade, data, inicio_s, fim_s, origem,
-                    proposto_s, nota, data_gravacao)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (aid, c.get('modalidade'), c.get('data'),
-                 c.get('inicio_s'), c.get('fim_s'),
-                 c.get('origem') or 'utilizador', c.get('proposto_s'),
-                 c.get('nota'),
-                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-            cn.commit()
-            ok, det = ddp.upload()
-            cn.close()
-            return jsonify({'status': 'ok' if ok else 'gravado_sem_upload',
-                            'activity_id': aid, 'drive': det})
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
-    return app
+
+
+function mxTabelaDegraus(){
+ const box=document.getElementById('mxDiag');
+ if(!MXC||!box) return;
+ const pares=MXC.degraus_emparelhados||[];
+ if(!pares.length) return;
+ const canal=(MX.canais_nirs||[]).find(k=>k.indexOf('smo2')===0)
+   ? 'smo2' : (MX.canais_nirs[0]||'').split('_')[0];
+ let h='<h3 style="font-size:13px;color:#8b949e;margin:12px 0 4px 0;">'
+  +'Degraus emparelhados por potência</h3>'
+  +'<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:14px;">Watts</th>'
+  + MXC.sessoes.map(function(s){
+     return '<th style="padding-right:14px;">#'+s.indice+' '+canal+'</th>'; }).join('')
+  +'<th>Δ</th></tr>';
+ pares.forEach(function(p){
+  const vs=MXC.sessoes.map(function(s){
+   const d=p.por_sessao[String(s.indice-1)];
+   return d ? d[canal] : null; });
+  const validos=vs.filter(v=>v!=null);
+  const delta=validos.length>1
+   ? Math.round((validos[validos.length-1]-validos[0])*10)/10 : null;
+  h+='<tr><td style="padding-right:14px;">'+p.watts_centro+' W'
+   +(p.watts_min!==p.watts_max
+     ? ' <span style="color:#6e7681;">('+p.watts_min+'–'+p.watts_max+')</span>'
+     : '')+'</td>'
+   + vs.map(function(v){ return '<td style="padding-right:14px;">'
+       +(v!=null?v:'—')+'</td>'; }).join('')
+   +'<td style="color:'+(delta==null?'#8b949e':delta>0?'#3FB950':'#F85149')+';">'
+   +(delta==null?'—':(delta>0?'+':'')+delta)+'</td></tr>';
+ });
+ h+='</table><p style="color:#8b949e;font-size:11px;">Média de cada degrau, '
+  +'descartando os primeiros 30 s: o SmO2 leva tempo a responder a uma '
+  +'mudança de carga, e incluir a transição mistura o degrau novo com o '
+  +'anterior. Δ = última sessão menos a primeira.</p>';
+ box.innerHTML = h + box.innerHTML;
+}
+
+// MX_SEL: ids escolhidos. MX_DADOS: {id: resposta}. MX_OFF: desvio manual
+// em segundos por id. Com uma sessao so', tudo funciona como antes.
+let MX_SEL = [], MX_DADOS = {}, MX_OFF = {}, MX_ALINHA_AVISO = {};
+
+let MX515_EDIT = {};
+
+// Com uma sessao, mostra tudo. Com varias, corre as duas analises em cada
+// uma e mostra so' os cartoes, mais o consenso entre elas.
+function mxAnalises(){
+ const ids=Object.keys(MX_DADOS);
+ const uni=document.getElementById('mxAnaliseUnica');
+ const res=document.getElementById('mxResumo');
+ if(!ids.length){ if(res) res.innerHTML=''; return; }
+ if(ids.length===1){
+  if(uni) uni.style.display='';
+  if(res) res.innerHTML='';
+  mxRede(); mx515();
+  return;
+ }
+ if(uni) uni.style.display='none';
+ mxComparativo(ids);
+}
+
+function mxParams(){
+ const rd='?lag='+document.getElementById('mxRdLag').value
+  +'&corr='+document.getElementById('mxRdCorr').value
+  +(document.getElementById('mxRdDif').checked?'':'&diferenciar=0')
+  +(document.getElementById('mxRdCond').checked?'':'&condicionar=0')
+  +(document.getElementById('mxRdDer').checked?'&derivados=1':'');
+ const it='?claro='+document.getElementById('mx515Claro').value
+  +'&fraccao='+document.getElementById('mx515Frac').value
+  +'&repetida='+(document.getElementById('mx515Rep').checked?'1':'0');
+ return {rd:rd, it:it};
+}
+
+function mxComparativo(ids){
+ const res=document.getElementById('mxResumo');
+ const est=document.getElementById('mxEstado');
+ const P=mxParams();
+ res.innerHTML='<p style="color:#8b949e;font-size:12px;">a analisar '
+  +ids.length+' sessões...</p>';
+ Promise.all(ids.map(function(id){
+  const c=mxCorteDe(id);
+  const jan='&inicio='+Math.round(c[0])+'&fim='+Math.round(c[1]);
+  return Promise.all([
+   fetch('/api/moxy/rede/'+id+P.rd+jan).then(r=>r.json()).catch(e=>({status:'erro',mensagem:e.message})),
+   fetch('/api/moxy/interpretacao/'+id+P.it+jan).then(r=>r.json()).catch(e=>({status:'erro',mensagem:e.message}))
+  ]).then(function(par){ return {id:id, rede:par[0], it:par[1]}; });
+ })).then(function(rs){
+  let h='<h2 style="font-size:15px;">Comparação — '+rs.length+' sessões</h2>';
+  h+='<div style="display:flex;flex-wrap:wrap;gap:12px;">';
+  rs.forEach(function(x, si){
+   const s2=MX_SESSOES.find(y=>String(y.id)===x.id)||{};
+   h+='<div style="flex:1;min-width:300px;border:1px solid #21262d;'
+    +'border-radius:6px;padding:8px 10px;">'
+    +'<b style="color:'+mxCorSessao(si)+';">'+(si+1)+'· '+(s2.data||x.id)
+    +'</b> <span style="color:#8b949e;font-size:11px;">'
+    +(s2.modalidade||'')+'</span>';
+   h+=mxCardRede(x.rede)+mxCard515(x.it)+'</div>';
+  });
+  h+='</div>';
+  h+=mxConsenso(rs);
+  res.innerHTML=h;
+  est.textContent=rs.length+' sessões analisadas';
+ });
+}
+
+function mxCardRede(d){
+ if(!d || d.status!=='ok'){
+  return '<p style="color:#F0883E;font-size:11px;">rede: '
+   +((d&&(d.motivo||d.mensagem))||'sem dados')+'</p>'; }
+ const L=d.limitador||{};
+ const cores={periferico:'#F85149',cardiaco:'#58A6FF',
+              respiratorio:'#3FB950',autonomico:'#A371F7'};
+ const cor=cores[L.sistema]||'#8b949e';
+ const cp=L.controlo_pct||{};
+ const ks=Object.keys(cp).sort(function(a,b){ return cp[b]-cp[a]; });
+ return '<div style="border-left:3px solid '+cor+';padding:5px 9px;'
+  +'margin-top:8px;"><b style="color:'+cor+';font-size:12px;">REDE CAUSAL: '
+  +(L.sistema?L.sistema.toUpperCase():'indeterminado')+'</b>'
+  +'<br><span style="font-size:11px;">'+(L.leitura||'')+'</span>'
+  +(ks.length?'<br><span style="font-size:10px;color:#8b949e;">'
+    +ks.map(function(k){ return k+' '+cp[k]+'%'; }).join(' · ')
+    +' · '+d.n_dirigidas+' arestas</span>':'')
+  +'</div>';
+}
+
+function mxCard515(d){
+ if(!d || d.status!=='ok'){
+  return '<p style="color:#F0883E;font-size:11px;">5-1-5: '
+   +((d&&(d.motivo||d.mensagem))||'sem dados')+'</p>'; }
+ const p=d.pontuacao, i=d.interpretacao;
+ const cor=v=>v==='Utilização'||v==='Pulmonar'?'#58A6FF'
+   :v==='Fornecimento'||v==='Cardíaco'?'#F85149':'#8b949e';
+ let h='';
+ [['Utilização vs Fornecimento',p.us,i.us],
+  ['Pulmonar vs Cardíaco',p.pc,i.pc]].forEach(function(b){
+  if(!b[2]) return;
+  h+='<div style="border-left:3px solid '+cor(b[2].limitador)+';'
+   +'padding:5px 9px;margin-top:8px;">'
+   +'<span style="color:#8b949e;font-size:10px;">'+b[0]+'</span><br>'
+   +'<b style="color:'+cor(b[2].limitador)+';font-size:12px;">'
+   +b[2].limitador+'</b> <span style="color:#8b949e;font-size:11px;">'
+   +b[1].pontos+'/'+b[1].max+' = '+(b[1].score!=null?b[1].score:'—')
+   +'</span><br><span style="font-size:11px;">'+b[2].texto+'</span>'
+   +(b[2].o_que_treinar?'<br><span style="font-size:10px;color:#8b949e;">'
+     +'→ '+b[2].o_que_treinar+'</span>':'')
+   +'</div>';
+ });
+ return h;
+}
+
+// Consenso: qual limitador aparece mais vezes, e com que concordancia.
+// Se as sessoes discordarem, diz-se isso em vez de forcar um vencedor --
+// discordancia entre sessoes e' informacao sobre a variabilidade do
+// atleta, ou sobre a qualidade dos dados, e nao ruido a esconder.
+function mxConsenso(rs){
+ const eixos={rede:{}, us:{}, pc:{}};
+ let nR=0, nI=0;
+ rs.forEach(function(x){
+  if(x.rede && x.rede.status==='ok'){
+   const s2=(x.rede.limitador||{}).sistema;
+   if(s2){ eixos.rede[s2]=(eixos.rede[s2]||0)+1; nR++; }
+  }
+  if(x.it && x.it.status==='ok'){
+   const i=x.it.interpretacao||{};
+   if(i.us){ eixos.us[i.us.limitador]=(eixos.us[i.us.limitador]||0)+1; }
+   if(i.pc){ eixos.pc[i.pc.limitador]=(eixos.pc[i.pc.limitador]||0)+1; }
+   nI++;
+  }
+ });
+ function linha(nome, mapa, n){
+  const ks=Object.keys(mapa).sort(function(a,b){ return mapa[b]-mapa[a]; });
+  if(!ks.length) return '<li>'+nome+': sem resultados</li>';
+  const top=ks[0], c=mapa[top];
+  const pct=n?Math.round(c/n*100):0;
+  const cor=pct>=70?'#3FB950':pct>=50?'#F0883E':'#F85149';
+  return '<li>'+nome+': <b style="color:'+cor+';">'+top+'</b> em '
+   +c+' de '+n+' sessões ('+pct+'%)'
+   +(ks.length>1?' <span style="color:#8b949e;">— também '
+     +ks.slice(1).map(function(k){ return k+' ('+mapa[k]+')'; }).join(', ')
+     +'</span>':'')
+   +'</li>';
+ }
+ let h='<div style="border:1px solid #30363d;border-radius:6px;'
+  +'padding:8px 12px;margin-top:12px;">'
+  +'<b>Consenso entre as '+rs.length+' sessões</b>'
+  +'<ul style="font-size:12px;margin:6px 0;padding-left:18px;">'
+  +linha('Rede causal', eixos.rede, nR)
+  +linha('Utilização vs Fornecimento', eixos.us, nI)
+  +linha('Pulmonar vs Cardíaco', eixos.pc, nI)
+  +'</ul>'
+  +'<p style="color:#8b949e;font-size:11px;margin:0;">Verde acima de 70% de '
+  +'concordância, laranja acima de 50%, vermelho abaixo. <b>Concordância '
+  +'baixa não é falha do método</b> — ou o limitador mudou entre sessões, ou '
+  +'os protocolos não são comparáveis, ou a qualidade dos dados varia. Vale '
+  +'mais saber isso do que ver uma média que esconde a discordância.</p>'
+  +'</div>';
+ return h;
+}
+
+function mx515(){
+ const ids=Object.keys(MX_DADOS);
+ const est=document.getElementById('mx515Estado');
+ const box=document.getElementById('mx515');
+ if(!ids.length){ est.textContent='escolhe uma sessão'; return; }
+ const id=ids[0];
+ const c=mxCorteDe(id);
+ let q=mxParams().it+'&inicio='+Math.round(c[0])+'&fim='+Math.round(c[1]);
+ Object.keys(MX515_EDIT).forEach(function(k){
+  q+='&resp_'+k+'='+encodeURIComponent(MX515_EDIT[k]); });
+ est.textContent='a avaliar...';
+ fetch('/api/moxy/interpretacao/'+id+q).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ est.textContent=d.motivo||d.mensagem||'sem dados';
+   box.innerHTML=''; return; }
+  const p=d.pontuacao, i=d.interpretacao, m=d.medicoes;
+  est.textContent=m.n_blocos_usados+' de '+m.n_blocos_trabalho
+   +' blocos usados'+(d.respostas_editadas?' · com respostas editadas':'');
+
+  const cor=v=>v==='Utilização'||v==='Pulmonar'?'#58A6FF'
+    :v==='Fornecimento'||v==='Cardíaco'?'#F85149':'#8b949e';
+  let h='<div style="display:flex;flex-wrap:wrap;gap:12px;">';
+  [['Utilização vs Fornecimento',p.us,i.us],
+   ['Pulmonar vs Cardíaco',p.pc,i.pc]].forEach(function(bl){
+   if(!bl[2]) return;
+   h+='<div style="flex:1;min-width:280px;border-left:3px solid '
+    +cor(bl[2].limitador)+';padding:6px 10px;">'
+    +'<span style="color:#8b949e;font-size:11px;">'+bl[0]+'</span><br>'
+    +'<b style="color:'+cor(bl[2].limitador)+';font-size:15px;">'
+    +bl[2].limitador+'</b> '
+    +'<span style="color:#8b949e;font-size:11px;">'+bl[1].pontos+'/'
+    +bl[1].max+' = '+(bl[1].score!=null?bl[1].score:'—')+'</span>'
+    +'<br><span style="font-size:11px;">'+bl[2].texto+'</span></div>';
+  });
+  h+='</div>';
+  (i.reservas||[]).forEach(function(r2){
+   h+='<p style="color:#F0883E;font-size:11px;margin:4px 0;">⚠ '+r2+'</p>'; });
+  (d.avisos||[]).forEach(function(a){
+   h+='<p style="color:#F85149;font-size:11px;margin:4px 0;">⚠ '+a+'</p>'; });
+
+  h+='<table style="width:100%;border-collapse:collapse;font-size:11px;'
+   +'margin-top:8px;"><tr style="color:#8b949e;text-align:left;'
+   +'border-bottom:1px solid #21262d;"><th style="padding:5px;">#</th>'
+   +'<th>Pergunta</th><th>Padrão</th><th>Medido</th><th>Resposta</th><th>Pontos</th>'
+   +'<th>Eixo</th></tr>';
+  [['us',p.us.detalhe],['pc',p.pc.detalhe]].forEach(function(par){
+   par[1].forEach(function(dd){
+    const md=(m.respostas||{})[dd.pergunta]||{};
+    const opcoes = dd.pergunta==='2A' ? d.faixas_2A
+                 : dd.pergunta==='9' ? d.faixas_9 : d.niveis;
+    const val = md.valor!=null ? md.valor
+      : md.declive_pct_da_amplitude!=null
+        ? (md.declive_pct_da_amplitude>0?'+':'')+md.declive_pct_da_amplitude+'%'
+      : md.atraso_mediano_s!=null ? md.atraso_mediano_s+'s' : '—';
+    h+='<tr style="border-bottom:1px solid #161b22;'
+     +(md.editada?'background:rgba(227,179,65,0.07);':'')+'">'
+     +'<td style="padding:5px;color:#8b949e;">'+dd.pergunta+'</td>'
+     +'<td style="color:#8b949e;">'+dd.texto
+     +((d.onde_mede||{})[dd.pergunta]
+       ? '<br><span style="color:#6e7681;font-size:10px;">medido no '
+         +d.onde_mede[dd.pergunta]+'</span>' : '')+'</td>'
+     +'<td>'+(((d.figuras||{})[dd.pergunta]||{})[dd.resposta]
+              || '<span style="color:#484f58;font-size:10px;">—</span>')+'</td>'
+     +'<td style="color:#8b949e;">'+val+'</td>'
+     +'<td><select class="mx515R" data-q="'+dd.pergunta+'" '
+     +'style="font-size:11px;max-width:150px;">'
+     + (opcoes||[]).map(function(o){
+        return '<option'+(o===dd.resposta?' selected':'')+'>'+o+'</option>';
+       }).join('')
+     + (dd.resposta==null?'<option selected>—</option>':'')
+     +'</select></td>'
+     +'<td style="color:'+(dd.nao_aplicavel?'#6e7681'
+        :dd.pontos==null?'#F0883E'
+        :dd.pontos<0?'#F85149':'#c9d1d9')+';">'
+     +(dd.nao_aplicavel?'não se aplica'
+       :dd.pontos!=null?dd.pontos+' / '+dd.max:'sem resposta / '+dd.max)+'</td>'
+     +'<td style="color:#8b949e;">'+par[0].toUpperCase()+'</td></tr>';
+   });
+  });
+  h+='</table>';
+  h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+   +'Alterar uma resposta recalcula tudo. "Medido" mostra o valor ou o '
+   +'declive em % da amplitude do canal na sessão — é isso que decide entre '
+   +'"clear" e "slight". Cortes actuais: claro acima de '
+   +d.cortes.claro_pct+'%, ligeiro acima de '+d.cortes.ligeiro_pct+'%. '
+   +'Valores de repouso e de trabalho medidos nos últimos '
+   +(m.repouso_seg||30)+' s de cada bloco — o início ainda está em '
+   +'transição, e o patamar é o que a pergunta procura. Na figura, os '
+   +'pontos cinzentos marcam exactamente onde a tendência foi tirada: em '
+   +'cima nas perguntas de repouso, em baixo nas de trabalho.</p>';
+  box.innerHTML=h;
+  Array.prototype.forEach.call(box.querySelectorAll('.mx515R'), function(el){
+   el.addEventListener('change', function(){
+    MX515_EDIT[el.getAttribute('data-q')]=el.value; mx515(); });
+  });
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
+// Em comparacao esconde-se o detalhe: com 4 sessoes seriam 4 tabelas de
+// arestas e 4 de 13 perguntas. Ficam os cartoes e o consenso.
+function mxModoUnico(unico){
+ ['mxRedeDetalhe','mx515Detalhe','mxLimiaresBloco'].forEach(function(id){
+  const e=document.getElementById(id);
+  if(e) e.style.display = unico ? '' : 'none';
+ });
+ const r=document.getElementById('mxResumoBloco');
+ if(r) r.style.display = unico ? 'none' : '';
+}
+
+function mxResumo(){
+ const ids=Object.keys(MX_DADOS);
+ const box=document.getElementById('mxResumo');
+ const est=document.getElementById('mxResumoEstado');
+ if(!box) return;
+ if(ids.length<2){ box.innerHTML=''; return; }
+ const q='?ids='+ids.join(',')
+  +'&lag='+document.getElementById('mxRdLag').value
+  +'&corr='+document.getElementById('mxRdCorr').value
+  +'&claro='+document.getElementById('mx515Claro').value
+  +'&fraccao='+document.getElementById('mx515Frac').value;
+ est.textContent='a analisar '+ids.length+' sessões...';
+ fetch('/api/moxy/resumo'+q).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ est.textContent=d.mensagem||'erro'; return; }
+  est.textContent=d.n_sessoes+' sessões analisadas';
+  const cons=d.consenso||{};
+  const rot={rede:'Rede causal',us:'Utilização vs Fornecimento',
+             pc:'Pulmonar vs Cardíaco'};
+  let h='<div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:10px;">';
+  ['rede','us','pc'].forEach(function(k){
+   const c=cons[k]||{};
+   if(!c.mais_comum){ return; }
+   const forte=c.concordancia_pct>=70;
+   const cor=forte?'#3FB950':'#F0883E';
+   h+='<div style="flex:1;min-width:230px;border:1px solid '+cor+';'
+    +'border-radius:6px;padding:8px 10px;">'
+    +'<span style="color:#8b949e;font-size:11px;">'+rot[k]+'</span><br>'
+    +'<b style="font-size:16px;color:'+cor+';">'+c.mais_comum+'</b><br>'
+    +'<span style="font-size:11px;color:#8b949e;">'+c.n+' de '+c.de
+    +' sessões ('+c.concordancia_pct+'%)'
+    +(c.unanime?' · unânime':'')+'</span><br>'
+    +'<span style="font-size:10px;color:#8b949e;">'
+    +Object.keys(c.contagem).map(function(x){
+      return x+': '+c.contagem[x]; }).join(' · ')+'</span></div>';
+  });
+  h+='</div>';
+  h+='<p style="color:#8b949e;font-size:11px;">'+(d.nota||'')+'</p>';
+
+  // ── tabela longitudinal de limiares ───────────────────────────────
+  // A literatura e' consistente: o breakpoint de SmO2 nao substitui o VT2
+  // (Osmani 2023, Possamai 2024, Arnold, Springer 2026). O que parece ser
+  // e' reprodutivel no MESMO atleta com o MESMO protocolo. Por isso o que
+  // interessa nao e' o valor de uma sessao, e' a evolucao entre sessoes.
+  const comLim=(d.sessoes||[]).filter(x=>x.limiares && !x.limiares.erro);
+  if(comLim.length){
+   h+='<h3 style="font-size:14px;margin:14px 0 4px 0;">Limiares por SmO2 '
+    +'ao longo do tempo</h3>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+    +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+    +'<th style="padding:5px;">Data</th><th>Perfil</th>'
+    +'<th>BP1 (LT1/FatMax)</th><th>BP2 (VT2/MLSS)</th>'
+    +'<th>SmO2 máx→mín</th><th>Degraus</th></tr>';
+   comLim.forEach(function(x, si){
+    const L=x.limiares;
+    const s2=MX_SESSOES.find(y=>String(y.id)===String(x.activity_id))||{};
+    const par=L.perfil==='parabólico';
+    h+='<tr style="border-bottom:1px solid #161b22;">'
+     +'<td style="padding:5px;color:'+mxCorSessao(si)+';">'+(s2.data||'—')+'</td>'
+     +'<td style="color:'+(par?'#A371F7':'#79C0FF')+';">'+(L.perfil||'—')+'</td>'
+     +'<td>'+(L.bp1_w!=null
+        ? '<b>'+Math.round(L.bp1_w)+' W</b>'
+          +(L.bp1_bpm?' <span style="color:#8b949e;">'+L.bp1_bpm+' bpm</span>':'')
+        : '<span style="color:#6e7681;">não observável</span>')+'</td>'
+     +'<td>'+(L.bp2_w!=null
+        ? '<b>'+Math.round(L.bp2_w)+' W</b>'
+          +(L.bp2_bpm?' <span style="color:#8b949e;">'+L.bp2_bpm+' bpm</span>':'')
+          +'<br><span style="color:#6e7681;font-size:10px;">'+(L.bp2_origem||'')
+          +'</span>'
+        : '<span style="color:#6e7681;">—</span>')+'</td>'
+     +'<td style="color:#8b949e;">'+(L.smo2max!=null
+        ? L.smo2max+'% → '+L.smo2min+'%' : '—')+'</td>'
+     +'<td style="color:#8b949e;">'+(L.n_degraus||'—')+'</td></tr>';
+   });
+   h+='</table>';
+
+   // variacao entre sessoes: e' isto que a comparacao serve para ver
+   ['bp1_w','bp2_w'].forEach(function(k){
+    const vs=comLim.map(x=>x.limiares[k]).filter(v=>v!=null);
+    if(vs.length<2) return;
+    const lo=Math.min.apply(null,vs), hi=Math.max.apply(null,vs);
+    const med=vs.reduce((a,b)=>a+b,0)/vs.length;
+    const amp=hi-lo, pct=med?Math.round(amp/med*100):0;
+    h+='<p style="font-size:11px;color:'+(pct>15?'#F0883E':'#3FB950')+';">'
+     +(k==='bp1_w'?'BP1':'BP2')+': '+Math.round(lo)+'–'+Math.round(hi)
+     +' W em '+vs.length+' sessões · variação '+Math.round(amp)+' W ('+pct+'%)'
+     +(pct>15 ? ' — variação grande demais para ser mudança de forma; '
+        +'verifica se o protocolo foi o mesmo'
+        : ' — estável entre sessões')+'</p>';
+   });
+
+   // leitura da forma da curva, do perfil mais frequente
+   const cont={};
+   comLim.forEach(x=>{ const p2=x.limiares.perfil;
+    if(p2) cont[p2]=(cont[p2]||0)+1; });
+   const dom=Object.keys(cont).sort((a,b)=>cont[b]-cont[a])[0];
+   const lei=(comLim.find(x=>x.limiares.perfil===dom)||{}).limiares;
+   if(dom && lei && lei.leitura && lei.leitura.o_que_mostra){
+    const L2=lei.leitura;
+    h+='<div style="border-left:3px solid '
+     +(dom==='parabólico'?'#A371F7':'#79C0FF')+';padding:6px 10px;'
+     +'margin-top:8px;font-size:11px;">'
+     +'<b>Forma da curva: '+dom+'</b> <span style="color:#8b949e;">('
+     +cont[dom]+' de '+comLim.length+' sessões)</span>'
+     +'<br><b>O que mostra:</b> '+L2.o_que_mostra
+     +'<br><b>O que permite concluir:</b> '+L2.o_que_permite
+     +'<br><b>O que NÃO permite:</b> <span style="color:#F0883E;">'
+     +L2.o_que_nao_permite+'</span>'
+     +'<br><b>Prescrição:</b> '+L2.prescricao+'</div>';
+   }
+   h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+    +'Quatro estudos independentes — Osmani 2023, Possamai 2024 (remo), '
+    +'Arnold, e Springer 2026 (triatletas) — concluem que o breakpoint de '
+    +'SmO2 <b>não substitui</b> os limiares ventilatórios: a associação '
+    +'existe em grupo e quebra no indivíduo, com variabilidade de ±100 W. '
+    +'O que parece ser fiável é a <b>repetição no mesmo atleta com o mesmo '
+    +'protocolo</b> — por isso esta tabela compara sessões em vez de dar um '
+    +'número absoluto.</p>';
+  }
+
+  // cartoes por sessao
+  h+='<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;">';
+  (d.sessoes||[]).forEach(function(x, si){
+   const s2=MX_SESSOES.find(y=>String(y.id)===String(x.activity_id))||{};
+   h+='<div style="flex:1;min-width:300px;border:1px solid #30363d;'
+    +'border-radius:6px;padding:8px 10px;">'
+    +'<b style="color:'+mxCorSessao(si)+';">'+(si+1)+'· '+(s2.data||x.activity_id)
+    +'</b> <span style="color:#8b949e;font-size:11px;">'
+    +(s2.modalidade||'')+(x.pct_artefacto!=null
+      ? ' · artefacto '+x.pct_artefacto+'%' : '')+'</span>';
+   if(x.erro){ h+='<br><span style="color:#F85149;font-size:11px;">'+x.erro
+     +'</span></div>'; return; }
+   const L=(x.rede||{}).limitador;
+   if(L && L.sistema){
+    const cp=L.controlo_pct||{};
+    h+='<div style="margin-top:6px;font-size:11px;">'
+     +'<b style="color:#F85149;">LIMITADOR: '+L.sistema.toUpperCase()+'</b><br>'
+     +'<span style="color:#8b949e;">'+L.leitura+'</span><br>'
+     +'<span style="color:#8b949e;">'
+     +Object.keys(cp).sort(function(a,b){return cp[b]-cp[a];})
+       .map(function(k){ return k+' '+cp[k]+'%'; }).join(' · ')+'</span></div>';
+   } else if(x.rede){
+    h+='<div style="margin-top:6px;font-size:11px;color:#8b949e;">rede: '
+     +(x.rede.motivo||x.rede.erro||'sem arestas')+'</div>';
+   }
+   const I=(x.i515||{}).interpretacao, P=(x.i515||{}).pontuacao;
+   if(I && P){
+    [['us','Utilização vs Fornecimento'],['pc','Pulmonar vs Cardíaco']]
+     .forEach(function(par){
+      const b=I[par[0]], pp=P[par[0]];
+      if(!b) return;
+      h+='<div style="margin-top:6px;font-size:11px;">'
+       +'<span style="color:#8b949e;">'+par[1]+'</span><br>'
+       +'<b>'+b.limitador+'</b> <span style="color:#8b949e;">'+pp.pontos
+       +'/'+pp.max+' = '+pp.score+'</span><br>'
+       +'<span style="color:#8b949e;">'+b.texto+'</span></div>';
+     });
+   } else if(x.i515 && x.i515.motivo){
+    h+='<div style="margin-top:6px;font-size:11px;color:#8b949e;">5-1-5: '
+     +x.i515.motivo+'</div>';
+   }
+   h+='</div>';
+  });
+  h+='</div>';
+  box.innerHTML=h;
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
+let MX_BP = null;   // breakpoints para desenhar no gráfico
+
+function mxGuardarAnalise(){
+ const ids=Object.keys(MX_DADOS);
+ const est=document.getElementById('mxLimEstado');
+ if(!ids.length){ est.textContent='escolhe uma sessão'; return; }
+ est.textContent='a gravar '+ids.length+' análise(s)...';
+ Promise.all(ids.map(function(id){
+  return fetch('/api/moxy/analise/'+id, {method:'POST'})
+   .then(r=>r.json()).catch(e=>({status:'erro',mensagem:e.message}));
+ })).then(function(res){
+  const ok=res.filter(r=>r.status && r.status.indexOf('ok')>=0
+                       || r.status==='gravado_sem_upload').length;
+  const maus=res.filter(r=>r.status==='erro');
+  est.textContent = ok+' gravada(s)'
+   + (res[0] && res[0].versao ? ' · versão '+res[0].versao : '')
+   + (maus.length ? ' · '+maus.length+' com erro: '+maus[0].mensagem : '');
+ });
+}
+
+function mxLimiares(){
+ const ids=Object.keys(MX_DADOS);
+ const est=document.getElementById('mxLimEstado');
+ const box=document.getElementById('mxLimiares');
+ if(!ids.length){ est.textContent='escolhe uma sessão'; return; }
+ const id=ids[0], c=mxCorteDe(id);
+ est.textContent='a calcular...';
+ fetch('/api/moxy/limiares/'+id+'?inicio='+Math.round(c[0])
+       +'&fim='+Math.round(c[1])
+       +(document.getElementById('mxExaustao').checked?'&exaustao=1':''))
+ .then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ est.textContent=d.mensagem||'sem dados';
+   box.innerHTML=''; MX_BP=null; mxDraw(); return; }
+  const bp=d.breakpoints||{}, f=bp.fiabilidade||{};
+  // declarado AQUI, antes do primeiro uso: estava mais abaixo e o MX_BP
+  // lia-o na zona morta temporal, ficando sempre nulo -- era por isso que
+  // o BP2 nao aparecia no grafico
+  const lc=d.limiares_consenso||{};
+  est.textContent=(d.modalidade||'')+' · '+(f.n_degraus||0)+' degraus';
+  // No grafico vai o resultado do SCRIPT do Intervals.icu, para bater
+  // certo com o que ves la'. As tabelas continuam a mostrar todos os
+  // metodos, e os cartoes o consenso -- o grafico e' so' a referencia
+  // comum entre as duas ferramentas.
+  const bl0=d.bp_moxy_sem_restricao||{};
+  const c1=(lc.primeiro||{}), c2=(lc.segundo||{});
+  MX_BP = (bl0.bp1_w!=null || bl0.bp2_w!=null) ? {
+    bp1: bl0.bp1_w, bp2: bl0.bp2_w,
+    bp1_bpm: bl0.bp1_bpm, bp2_bpm: bl0.bp2_bpm,
+    bp1_disp: null, bp2_disp: null,
+    fonte: 'script Intervals.icu', fiavel: true
+  } : ((c1.ok || c2.ok) ? {
+    bp1: c1.ok ? c1.mediana : null,
+    bp2: c2.ok ? c2.mediana : null,
+    bp1_bpm: c1.ok ? (c1.estimativas.find(x=>x.bpm)||{}).bpm : null,
+    bp2_bpm: c2.ok ? (c2.estimativas.find(x=>x.bpm)||{}).bpm : null,
+    bp1_disp: c1.dispersao_pct, bp2_disp: c2.dispersao_pct,
+    fonte: 'mediana dos métodos', fiavel: !(lc.avisos||[]).length
+  } : null);
+
+  let h='';
+  // ── coerencia com o resto do perfil ───────────────────────────────
+  const co=d.coerencia||{};
+  if(co.motivo && !co.ok){
+   h+='<p style="color:#8b949e;font-size:11px;">'+co.motivo+'</p>';
+  } else if(co.ok){
+   const bom=!(co.avisos||[]).length;
+   h+='<div style="border:1px solid '+(bom?'#3FB950':'#F0883E')
+    +';border-radius:6px;padding:8px 10px;margin-bottom:10px;">'
+    +'<b style="color:'+(bom?'#3FB950':'#F0883E')+';">Coerência: '
+    +co.veredicto+'</b> <span style="color:#8b949e;font-size:11px;">'
+    +co.n_passou+' de '+co.n_testes+' testes</span>';
+   if(Object.keys(co.zona_de||{}).length)
+    h+='<br><span style="font-size:11px;">'
+     +Object.keys(co.zona_de).map(function(k){
+       const z=co.zona_de[k];
+       return '<b>'+k+'</b> cai em <b>'+z.zona+'</b> ('+z.de_w+'–'+z.ate_w
+        +' W)'; }).join(' · ')+'</span>';
+   h+='<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +(co.testes||[]).map(function(t){
+      return '<tr><td style="padding-right:8px;color:'
+       +(t.ok?'#3FB950':'#F0883E')+';">'+(t.ok?'✓':'⚠')+'</td>'
+       +'<td style="color:'+(t.ok?'#8b949e':'#c9d1d9')+';">'+t.detalhe
+       +'</td></tr>'; }).join('')
+    +'</table>'
+    +'<span style="font-size:10px;color:#8b949e;">'+(co.nota||'')+'</span>'
+    +'</div>';
+  }
+
+  // ── dois cartoes: um por limiar ───────────────────────────────────
+  // Antes era um painel por metodo -- quatro numeros soltos sem dizer qual
+  // respondia a que pergunta. Agora cada limiar tem um cartao com todas as
+  // suas estimativas, e o detalhe de cada metodo fica recolhido.
+  [['primeiro','#A371F7'],['segundo','#3FB950']].forEach(function(par){
+   const r=lc[par[0]];
+   if(!r || !r.ok) return;
+   const disp=r.dispersao_pct||0;
+   const cor = disp<10 ? par[1] : disp<20 ? '#F0883E' : '#F85149';
+   h+='<div style="border:1px solid '+cor+';border-radius:6px;'
+    +'padding:8px 10px;margin-bottom:10px;">'
+    +'<span style="color:#8b949e;font-size:11px;">'+r.nome+'</span><br>'
+    +'<b style="font-size:18px;color:'+cor+';">'+Math.round(r.mediana)
+    +' W</b> <span style="color:#8b949e;font-size:12px;">'
+    +(r.n>1 ? '('+Math.round(r.de)+'–'+Math.round(r.ate)+' W · '
+      +r.n+' métodos · dispersão '+disp+'%)' : '(1 método)')+'</span>'
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +r.estimativas.map(function(x){
+      return '<tr><td style="padding-right:14px;"><b>'+Math.round(x.watts)
+       +' W</b></td><td style="padding-right:14px;color:#8b949e;">'
+       +(x.bpm?x.bpm+' bpm':'—')+'</td>'
+       +'<td style="padding-right:14px;">'+x.metodo+'</td>'
+       +'<td style="color:#6e7681;">'+x.rota+'</td></tr>'; }).join('')
+    +'</table></div>';
+  });
+  (lc.avisos||[]).forEach(function(a){
+   h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '+a
+    +'</p>'; });
+  if(lc.nota) h+='<p style="color:#8b949e;font-size:11px;">'+lc.nota+'</p>';
+
+  // tudo o resto vai para dentro de um dropdown
+  h+='<details style="margin-top:10px;"><summary style="cursor:pointer;'
+   +'font-size:12px;color:#8b949e;padding:4px 0;">Detalhe de cada método'
+   +'</summary><div style="margin-top:6px;">';
+  const fecharDetalhe=true;
+
+  const pf=d.perfil_resposta||{};
+  if(pf.ok){
+   const par = pf.perfil==='parabólico';
+   h+='<div style="border-left:3px solid '+(par?'#A371F7':'#79C0FF')
+    +';padding:6px 10px;margin-bottom:10px;">'
+    +'<b style="font-size:15px;color:'+(par?'#A371F7':'#79C0FF')+';">'
+    +'Perfil '+pf.perfil+'</b> '
+    +'<span style="color:#8b949e;font-size:11px;">SmO2 de '+pf.smo2min
+    +'% a '+pf.smo2max+'% · amplitude '+pf.amplitude+'</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+pf.metodo+'</span>';
+   if(pf.bp1_watts!=null)
+    h+='<br><b style="color:#A371F7;">BP1 '+pf.bp1_watts+' W</b> '
+     +'<span style="color:#8b949e;font-size:11px;">≈ FatMax / LT1 · o '
+     +'PRIMEIRO limiar</span>';
+   h+='<br><span style="font-size:11px;">'+pf.bp1_leitura+'</span>'
+    +'<br><span style="font-size:10px;color:#8b949e;">'+pf.fenotipo+'</span>'
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +'<tr style="color:#8b949e;text-align:left;">'
+    +'<th style="padding-right:12px;">Carga</th>'
+    +'<th>SmO2 no último minuto</th></tr>'
+    +(pf.degraus||[]).map(function(x){
+      const top = x.watts===pf.smo2max_watts;
+      return '<tr><td style="padding-right:12px;">'+x.watts+' W</td>'
+       +'<td style="color:'+(top?'#A371F7':'#c9d1d9')+';">'+x.smo2_fim+'%'
+       +(top?' ← máximo':'')+'</td></tr>'; }).join('')
+    +'</table></div>';
+  } else if(pf.motivo){
+   h+='<p style="color:#8b949e;font-size:11px;">Perfil: '+pf.motivo+'</p>';
+  }
+  const ml=d.mlss_dessaturacao||{};
+  if(ml.ok){
+   h+='<div style="border-left:3px solid #3FB950;padding:6px 10px;'
+    +'margin-bottom:10px;">'
+    +'<b style="font-size:16px;color:#3FB950;">MLSS '+ml.mlss_estimado
+    +' W</b> <span style="color:#8b949e;font-size:11px;">≈ VT2 / RCP / LT2 · '
+    +'o SEGUNDO limiar</span> <span style="color:#8b949e;font-size:11px;">entre '
+    +ml.mlss_entre.join(' e ')+' W · ±'+ml.incerteza+'</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+ml.metodo+'</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+ml.nota+'</span>'
+    +(ml.aviso_sequencia
+      ? '<br><span style="font-size:11px;color:#F0883E;">⚠ '
+        +ml.aviso_sequencia+'</span>' : '')
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +'<tr style="color:#8b949e;text-align:left;">'
+    +'<th style="padding-right:12px;">Carga</th>'
+    +'<th style="padding-right:12px;">Declive total</th>'
+    +'<th style="padding-right:12px;">2.ª metade</th><th>Padrão</th></tr>'
+    +(ml.blocos||[]).map(function(x){
+      if(!x.padrao) return '<tr><td style="padding-right:12px;">'
+       +(x.watts!=null?Math.round(x.watts)+' W':'—')+'</td>'
+       +'<td colspan="3" style="color:#6e7681;">'+(x.motivo||'')+'</td></tr>';
+      const c2=x.acima_do_mlss?'#F85149':'#3FB950';
+      return '<tr'+(x.contradiz?' style="background:rgba(240,136,62,0.08);"':'')
+       +'><td style="padding-right:12px;">'+Math.round(x.watts)
+       +' W</td><td style="padding-right:12px;color:#8b949e;">'
+       +x.declive_total+'</td><td style="padding-right:12px;color:#8b949e;">'
+       +x.declive_2a_metade+'</td><td style="color:'+c2+';">'+x.padrao
+       +(x.contradiz?' <span style="color:#F0883E;font-size:10px;">⚠ '
+         +x.contradiz+'</span>':'')
+       +'</td></tr>';
+     }).join('')
+    +'</table><span style="font-size:10px;color:#8b949e;">declives em % de '
+    +'SmO2 por minuto, ignorando os primeiros '
+    +(ml.criterio||{}).transiente_ignorado_pct+'% do bloco (transiente de '
+    +'arranque). Estável = |declive| abaixo de '
+    +(ml.criterio||{}).estavel_abaixo_de+'</span></div>';
+  } else if(ml.motivo){
+   h+='<p style="color:#F0883E;font-size:12px;">MLSS: '+ml.motivo+'</p>';
+  }
+  if(ml.aviso_duracao)
+   h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '
+    +ml.aviso_duracao+'</p>';
+
+  const bm=d.bp_moxy||{};
+  if(bm.ok || bm.bp1_w!=null){
+   const val=bm.ok;
+   h+='<div style="border-left:3px solid '+(val?'#3FB950':'#F0883E')
+    +';padding:6px 10px;margin-bottom:10px;">'
+    +'<b style="font-size:16px;color:'+(val?'#3FB950':'#F0883E')+';">'
+    +'BP1 '+bm.bp1_w+' W'+(bm.bp1_bpm?' · '+bm.bp1_bpm+' bpm':'')
+    +(bm.bp2_w!=null?'  ·  BP2 '+bm.bp2_w+' W'
+      +(bm.bp2_bpm?' · '+bm.bp2_bpm+' bpm':''):'')+'</b>'
+    +' <span style="color:#8b949e;font-size:11px;">F='+(bm.f_vs_recta||'—')
+    +(bm.p_vs_recta!=null?' p='+bm.p_vs_recta:'')
+    +' · '+bm.n_intervalos+' intervalos</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+bm.metodo+'</span>'
+    +'<br><span style="font-size:10px;color:#8b949e;">'
+    +bm.nota_interpolacao+'</span>'
+    +(bm.aviso_gl?'<br><span style="font-size:11px;color:#F0883E;">⚠ '
+      +bm.aviso_gl+'</span>':'')
+    +(!val&&bm.motivo?'<br><span style="font-size:11px;color:#F0883E;">⚠ '
+      +bm.motivo+'</span>':'')
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +'<tr style="color:#8b949e;text-align:left;">'
+    +'<th style="padding-right:12px;">Carga</th>'
+    +'<th style="padding-right:12px;">SmO2 médio</th><th>FC</th></tr>'
+    +(bm.pontos||[]).map(function(x){
+      return '<tr><td style="padding-right:12px;">'+Math.round(x.watts)
+       +' W</td><td style="padding-right:12px;">'+x.smo2.toFixed(1)+'%</td>'
+       +'<td style="color:#8b949e;">'+(x.hr!=null?x.hr+' bpm':'—')
+       +'</td></tr>'; }).join('')
+    +'</table></div>';
+  } else if(bm.motivo){
+   h+='<p style="color:#8b949e;font-size:11px;">Método Moxy: '+bm.motivo
+    +'</p>';
+  }
+  const bl2=d.bp_moxy_sem_restricao||{};
+  if(bl2.bp1_w!=null){
+   h+='<p style="font-size:11px;color:#8b949e;margin:-6px 0 10px 0;">'
+    +'<b>Sem mínimo por troço</b> (reproduz o script do Intervals.icu): '
+    +'BP1 <b>'+bl2.bp1_w+' W</b>'+(bl2.bp1_bpm?' · '+bl2.bp1_bpm+' bpm':'')
+    +(bl2.bp2_w!=null?' · BP2 <b>'+bl2.bp2_w+' W</b>'
+      +(bl2.bp2_bpm?' · '+bl2.bp2_bpm+' bpm':''):'')
+    +'. A diferença para o valor acima é só o critério: eu exijo 2 degraus '
+    +'medidos por troço, o script não exige nenhum, e por isso o breakpoint '
+    +'dele pode cair entre dois degraus quaisquer. Com poucos degraus a '
+    +'diferença chega a 10 W.</p>';
+  }
+
+  const bt=d.bp_taxa||{};
+  if(bt.ok){
+   h+='<div style="border-left:3px solid #58A6FF;padding:6px 10px;'
+    +'margin-bottom:10px;">'
+    +'<b style="font-size:16px;color:#58A6FF;">Breakpoint na taxa '
+    +bt.bp_watts+' W</b>'
+    +' <span style="color:#8b949e;font-size:11px;">≈ VT2 / RCP · F='
+    +bt.f_vs_recta+' · '+bt.n_degraus+' degraus · '+(bt.padrao||'')+'</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'
+    +(bt.plateia
+      ? 'a queda deixa de se agravar aqui: a extracção chegou ao limite'
+      : 'a queda agrava-se aqui')
+    +' — declive da taxa '+bt.taxa_antes+' → '+bt.taxa_depois
+    +' %/min por watt</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+bt.nota+'</span>'
+    +(bt.nota_padrao
+      ? '<br><span style="font-size:10px;color:#8b949e;">'+bt.nota_padrao
+        +'</span>' : '')
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +'<tr style="color:#8b949e;text-align:left;">'
+    +'<th style="padding-right:12px;">Carga</th><th>Taxa (%/min)</th>'
+    +'<th style="padding-left:12px;">Δ</th></tr>'
+    +(bt.degraus||[]).map(function(x, i){
+      const acima = bt.bp_watts!=null && x.watts>=bt.bp_watts;
+      return '<tr><td style="padding-right:12px;">'+x.watts+' W</td>'
+       +'<td style="color:'+(acima?'#F85149':'#3FB950')+';">'+x.taxa
+       +'</td><td style="padding-left:12px;color:#6e7681;">'
+       +(i>0 ? ((x.taxa-bt.degraus[i-1].taxa)>0?'+':'')
+               +(x.taxa-bt.degraus[i-1].taxa).toFixed(2) : '')
+       +'</td></tr>'; }).join('')
+    +'</table></div>';
+  } else if(bt.motivo){
+   h+='<p style="color:#8b949e;font-size:11px;">Breakpoint na taxa: '
+    +bt.motivo
+    +((bt.degraus||[]).length
+      ? '<br>taxas por degrau: '+bt.degraus.map(function(x){
+          return x.watts+'W '+x.taxa; }).join(' · ') : '')
+    +'</p>';
+  }
+  if(bp.ok){
+   const conf = f.usar_para_prescrever===false ? '#F0883E' : '#3FB950';
+   h+='<div style="border-left:3px solid '+conf+';padding:6px 10px;">'
+    +'<b style="font-size:15px;">BP1 '+bp.bp1.tau+' W'
+    +(bp.bp1.smo2!=null?' <span style="color:#8b949e;font-size:11px;">SmO2 '
+      +bp.bp1.smo2+'%</span>':'')
+    +(bp.bp2&&bp.bp2.ok?' · BP2 '+bp.bp2.tau+' W'
+      +(bp.bp2.smo2!=null?' <span style="color:#8b949e;font-size:11px;">SmO2 '
+        +bp.bp2.smo2+'%</span>':''):'')+'</b>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'+bp.metodo
+    +' · declives '+(bp.declives||[]).join(' → ')
+    +' · F vs recta '+(bp.f_vs_recta||'—')
+    +(bp.p_vs_recta!=null?' (p='+bp.p_vs_recta+')':'')+'</span>'
+    +'<br><span style="font-size:11px;color:'+conf+';">Fiabilidade '
+    +(f.nivel||'?')+(f.fonte?' · '+f.fonte:'')+'</span>'
+    +(f.vies?'<br><span style="font-size:11px;color:#8b949e;">'+f.vies
+      +'</span>':'')
+    +(f.aviso_n?'<br><span style="font-size:11px;color:#8b949e;">'+f.aviso_n
+      +'</span>':'')
+    +(f.usar_para_prescrever===false
+      ? '<br><span style="font-size:11px;color:#F0883E;">⚠ o cálculo é o '
+        +'mesmo de todas as modalidades; o que muda é a confiança. Nesta, '
+        +'a literatura desaconselha usar o valor para prescrever zonas '
+        +'sem o confirmar contra CP ou MLSS</span>':'')
+    +'</div>';
+  } else {
+   h+='<p style="color:#8b949e;font-size:11px;">Breakpoints por regressão: '
+    +(bp.motivo||'sem quebra')
+    +' — este método foi desenhado para <b>rampa contínua</b>, onde a queda '
+    +'do SmO2 acelera. Num protocolo de blocos com descanso, a informação '
+    +'está na forma de cada bloco, não na envolvente dos mínimos. É esperado '
+    +'que falhe aqui.</p>';
+  }
+  const pl=d.plato;
+  if(pl&&pl.ok) h+='<p style="font-size:11px;color:#8b949e;">Platô de SmO2 a '
+   +pl.x+' s ('+pl.janelas_planas+' janelas de '+pl.janela_s+' s abaixo de '
+   +pl.corte+' unidades).</p>';
+
+  const hp=d.hipocapnia||{};
+  if(hp.ok){
+   const cor=hp.suspeita?'#F85149':'#3FB950';
+   h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
+    +'margin-top:8px;"><b style="color:'+cor+';">Hipocapnia: '
+    +(hp.suspeita?'SUSPEITA':'sem sinal')+'</b> '
+    +'<span style="color:#8b949e;font-size:11px;">z='+hp.z_maximo
+    +' (limiar '+hp.limiar_z+')</span>'
+    +'<br><span style="font-size:11px;">'+hp.leitura+'</span>'
+    +'<br><span style="font-size:10px;color:#8b949e;">'+hp.limite
+    +'</span></div>';
+  }
+  const ce=d.cer||{};
+  if(ce.ok){
+   h+='<div style="border-left:3px solid '+(ce.valido?'#3FB950':'#F0883E')
+    +';padding:6px 10px;margin-top:8px;">'
+    +'<b>CER '+ce.cer_pct_por_s+' %/s</b> '
+    +'<span style="color:#8b949e;font-size:11px;">M′='+ce.m_linha
+    +' · r²='+ce.r2+' · '+ce.n_ensaios+' ensaios</span>'
+    +(ce.aviso?'<br><span style="font-size:11px;color:#F0883E;">⚠ '+ce.aviso
+      +'</span>':'')
+    +'<br><span style="font-size:10px;color:#8b949e;">'+ce.nota+'</span></div>';
+  } else if(ce.motivo){
+   h+='<p style="font-size:11px;color:#8b949e;">CER: '+ce.motivo+'</p>';
+  }
+  if(fecharDetalhe) h+='</div></details>';
+  box.innerHTML=h;
+  mxDraw();
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
+function mxRede(){
+ const ids=Object.keys(MX_DADOS);
+ const est=document.getElementById('mxRdEstado');
+ const box=document.getElementById('mxRede');
+ if(!ids.length){ est.textContent='escolhe uma sessão'; return; }
+ if(ids.length>1) est.textContent='usa a 1.ª sessão seleccionada';
+ const id=ids[0];
+ const c=mxCorteDe(id);
+ const q='?lag='+document.getElementById('mxRdLag').value
+  +'&corr='+document.getElementById('mxRdCorr').value
+  +'&inicio='+Math.round(c[0])+'&fim='+Math.round(c[1])
+  +(document.getElementById('mxRdDif').checked?'':'&diferenciar=0')
+  +(document.getElementById('mxRdCond').checked?'':'&condicionar=0')
+  +(document.getElementById('mxRdDer').checked?'&derivados=1':'');
+ est.textContent='a calcular...';
+ fetch('/api/moxy/rede/'+id+q).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ est.textContent=d.mensagem||d.motivo||'sem dados';
+   box.innerHTML=''; return; }
+  est.textContent=d.n_pares_testados+' pares testados · '+d.n_dirigidas
+   +' com direcção · '+d.n_indecisas+' ambíguos'
+   +(d.controlo?' · condicionado a '+d.controlo:' · SEM condicionar');
+  let h='';
+  const L=d.limitador||{};
+  if(L.sistema||L.leitura){
+   const cores={periferico:'#F85149',cardiaco:'#58A6FF',
+                respiratorio:'#3FB950',autonomico:'#A371F7'};
+   const cor=cores[L.sistema]||'#8b949e';
+   h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
+    +'margin-bottom:10px;">'
+    +'<b style="color:'+cor+';">LIMITADOR: '
+    +(L.sistema?L.sistema.toUpperCase():'indeterminado')+'</b><br>'
+    +'<span style="font-size:12px;">'+(L.leitura||'')+'</span>';
+   const cp=L.controlo_pct||{};
+   const ks=Object.keys(cp).sort(function(a,b){ return cp[b]-cp[a]; });
+   if(ks.length) h+='<br><span style="font-size:11px;color:#8b949e;">'
+    +ks.map(function(k){ return k+' '+cp[k]+'%'; }).join(' · ')
+    +' &nbsp;(peso pelo F das arestas que partem de cada sistema)</span>';
+   h+='<br><span style="font-size:10px;color:#8b949e;">'+(L.aviso||'')
+    +'</span></div>';
+  }
+  if(d.fontes && d.fontes.length)
+   h+='<p style="font-size:12px;"><b style="color:#3FB950;">Fontes:</b> '
+    +d.fontes.join(', ')+' &nbsp; <b style="color:#F0883E;">Sumidouros:</b> '
+    +(d.sumidouros||[]).join(', ')+'</p>';
+  if(d.mecanicos_excluidos && d.mecanicos_excluidos.length)
+   h+='<p style="font-size:11px;color:#8b949e;">Mecânicos usados só como '
+    +'controlo, nunca testados como causa: <b>'
+    +d.mecanicos_excluidos.join(', ')+'</b>. "A potência precede a subida da '
+    +'FC" não é um achado — é a definição de treinar.</p>';
+  h+='<table style="border-collapse:collapse;font-size:11px;">'
+   +'<tr style="color:#8b949e;text-align:left;">'
+   +'<th style="padding-right:14px;">De</th><th style="padding-right:14px;">Para</th>'
+   +'<th style="padding-right:14px;">F</th><th style="padding-right:14px;">p</th>'
+   +'<th style="padding-right:14px;">Lag</th><th style="padding-right:14px;">r</th>'
+   +'<th>Direcção</th></tr>';
+  (d.arestas||[]).forEach(function(e){
+   h+='<tr><td style="padding-right:14px;color:#3FB950;">'+e.de+'</td>'
+    +'<td style="padding-right:14px;">'+e.para+'</td>'
+    +'<td style="padding-right:14px;">'+e.f+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'+e.p+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'+e.lag+'s</td>'
+    +'<td style="padding-right:14px;color:'
+    +(e.sinal==='-'?'#F0883E':'#3FB950')+';">'+e.correlacao+'</td>'
+    +'<td style="color:#8b949e;">'+(e.direccao||'')
+    +(e.racio_f?' ('+e.racio_f+'×)':'')+'</td></tr>';
+  });
+  (d.indecisas||[]).filter(e=>e.direccao==='ambigua').forEach(function(e){
+   h+='<tr style="opacity:.6;"><td style="padding-right:14px;">'+e.de+'</td>'
+    +'<td style="padding-right:14px;">'+e.para+'</td>'
+    +'<td style="padding-right:14px;">'+e.f+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'+e.p+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'+e.lag+'s</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'+e.correlacao+'</td>'
+    +'<td style="color:#F0883E;">ambíguo</td></tr>';
+  });
+  h+='</table>';
+  const dg=d.diagnostico||{};
+  const dif=Object.keys(dg).filter(k=>dg[k] && dg[k].diferenciada);
+  const exc=Object.keys(dg).filter(k=>dg[k] && dg[k].excluido);
+  h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+   +'Corte de p corrigido: '+(d.p_corte_bh!=null?d.p_corte_bh:'nenhum par passou')
+   +' · lag até '+d.max_lag+'s'
+   +(dif.length?' · diferenciadas: '+dif.join(', '):' · nenhuma diferenciada')
+   +(exc.length?' · excluídas: '+exc.map(k=>k+' ('+dg[k].excluido+')').join(', '):'')
+   +'</p>';
+  box.innerHTML=h;
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
+function mxErro(msg){
+ const e=document.getElementById('mxErro');
+ if(!e) return;
+ if(!msg){ e.style.display='none'; e.innerHTML=''; return; }
+ e.style.display='block'; e.innerHTML=msg;
+}
+
+// Chips de data acima do grafico. Um clique escolhe, outro tira. Varias
+// escolhidas = comparacao.
+function mxDatasChips(){
+ const box=document.getElementById('mxDatas');
+ if(!box) return;
+ if(!MX_SESSOES.length){
+  box.innerHTML='<span style="color:#8b949e;font-size:12px;">Nenhuma sessão '
+   +'com a tag "Moxy".</span>'; return; }
+ box.innerHTML='<div style="display:flex;flex-wrap:wrap;gap:6px;">'
+  + MX_SESSOES.map(function(s2){
+   const i=MX_SEL.indexOf(String(s2.id));
+   const on=i>=0;
+   const cor=on?mxCorSessao(i):'#30363d';
+   return '<button class="mxDia" data-id="'+s2.id+'" '
+    + 'style="border:1px solid '+cor+';border-radius:14px;padding:3px 11px;'
+    + 'background:'+(on?'rgba(88,166,255,0.10)':'transparent')+';'
+    + 'color:'+(on?cor:'#8b949e')+';font-size:11px;cursor:pointer;">'
+    + (on?'● ':'○ ') + s2.data
+    + '<span style="opacity:.7;"> · '+(s2.modalidade||s2.tipo||'')+'</span>'
+    + '</button>';
+  }).join('') + '</div>';
+ Array.prototype.forEach.call(box.querySelectorAll('.mxDia'), function(el){
+  el.addEventListener('click', function(){
+   const id=el.getAttribute('data-id');
+   mxAlternarSessao(id, MX_SEL.indexOf(String(id))<0);
+  });
+ });
+}
+
+function mxCanaisEdit(){
+ const box=document.getElementById('mxCanais');
+ const ids=Object.keys(MX_DADOS);
+ if(!box||!ids.length) return;
+ const base=MX_DADOS[ids[0]];
+ const nirs=base.canais_nirs||[], ctx2=base.canais_contexto||[];
+ const todos=nirs.concat(ctx2);
+ if(!Object.keys(MX_ON).length)
+  nirs.forEach(function(k){ MX_ON[k]=true; });
+ box.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:6px;'
+  + 'align-items:center;">'
+  + todos.map(function(k){
+   const on = MX_ON[k] === true;
+   const nirsQ = nirs.indexOf(k)>=0;
+   const cor = MX_CORES[k]||'#c9d1d9';
+   return '<button class="mxC" data-k="'+k+'" '
+    + 'style="border:1px solid '+(on?cor:'#30363d')+';border-radius:14px;'
+    + 'padding:3px 11px;background:'+(on?'rgba(255,255,255,0.05)':'transparent')
+    + ';color:'+(on?cor:'#6e7681')+';font-size:11px;cursor:pointer;">'
+    + (on?'● ':'○ ') + k + (nirsQ?'':' *') + '</button>';
+  }).join('')
+  + '<span style="color:#6e7681;font-size:10px;">* de contexto, não filtrado</span>'
+  + '</div>';
+ Array.prototype.forEach.call(box.querySelectorAll('.mxC'), function(el){
+  el.addEventListener('click', function(){
+   const k=el.getAttribute('data-k');
+   MX_ON[k] = !(MX_ON[k]===true);
+   mxCanaisEdit(); mxDraw();
+  });
+ });
+}
+
+function mxAlternarSessao(id, on){
+ mxErro(null);
+ id = String(id);
+ if(on){ if(MX_SEL.indexOf(id)<0) MX_SEL.push(id); }
+ else { MX_SEL = MX_SEL.filter(x=>x!==id); delete MX_DADOS[id]; delete MX_OFF[id]; }
+ mxCarregar();
+}
+
+function mxCarregar(){
+ if(!MX_SEL.length){
+  MX=null; MX_DADOS={}; mxDraw(); mxDiagnostico(); mxBlocosTabela();
+  document.getElementById('mxEstado').textContent='escolhe uma sessão';
+  return;
+ }
+ const est=document.getElementById('mxEstado');
+ const q = '?fc=' + document.getElementById('mxFc').value
+   + (document.getElementById('mxNorm').value
+      ? '&normalizar=' + document.getElementById('mxNorm').value : '');
+ est.textContent='a carregar ' + MX_SEL.length + ' sessão(ões)...';
+ Promise.all(MX_SEL.map(function(id){
+  return fetch('/api/moxy/dados/'+id+q).then(r=>r.json())
+   .then(function(d){ return {id:id, d:d}; })
+   .catch(function(e){ return {id:id, d:{status:'erro',mensagem:e.message}}; });
+ })).then(function(res){
+  MX_DADOS={}; let maus=[];
+  res.forEach(function(r){
+   if(r.d && r.d.status==='ok'){ MX_DADOS[r.id]=r.d; }
+   else {
+    const s2=MX_SESSOES.find(x=>String(x.id)===r.id)||{};
+    let m='<b>'+(s2.data||r.id)+'</b>: '+(r.d.mensagem||'erro desconhecido');
+    if(r.d.detalhe_dos_streams)
+     m+='<br><span style="color:#8b949e;">Streams: '
+      + r.d.detalhe_dos_streams.map(function(x){
+         return x.stream+' ('+x.n_pontos+')'; }).join(' · ')+'</span>';
+    maus.push(m);
+   }
+  });
+  mxErro(maus.length ? maus.join('<br>') : null);
+  mxDatasChips();
+  const ids=Object.keys(MX_DADOS);
+  MX = ids.length===1 ? MX_DADOS[ids[0]] : null;
+  if(ids.length===1) mxCorteInicial();
+  est.textContent = ids.length + (ids.length===1?' sessão':' sessões a comparar')
+   + (maus.length ? ' · ' + maus.length + ' com problema' : '');
+  mxCanaisEdit(); mxAlinhar();
+  // correr as duas analises sozinhas, com os valores por omissao: ter de
+  // carregar em dois botoes de cada vez que se muda de sessao e' trabalho
+  // que a maquina pode fazer
+  if(ids.length === 1){ mxModoUnico(true); mxRede(); mx515(); mxLimiares(); }
+  else if(ids.length > 1){ mxModoUnico(false); mxResumo(); }
+  mxAnalises();
+ });
+}
+
+// ── alinhamento ─────────────────────────────────────────────────────────
+// O relogio de cada sessao nao serve: uma tem 12 min de aquecimento e outra
+// nao. Alinha-se pelo protocolo. Por omissao, pelo inicio do primeiro bloco
+// de trabalho dentro do corte -- e' o instante que existe em todas e que
+// significa o mesmo em todas.
+function mxRefAlinhamento(id){
+ const d=MX_DADOS[id]; if(!d) return 0;
+ const modo=document.getElementById('mxAlinha').value;
+ const corte=mxCorteDe(id);
+ if(modo==='inicio') return corte[0];
+ const bl=((d.blocos||{}).blocos)||[];
+ const ons=bl.filter(b=>b.on && b.t1>=corte[0] && b.t0<=corte[1]);
+ if(!ons.length) return corte[0];
+ if(modo==='watts'){
+  // Alinha o degrau cuja potencia mais se aproxima da do primeiro degrau
+  // da referencia. Resolve o caso em que uma sessao comeca mais suave que
+  // as outras: a de 2024 arranca em degraus leves que as de 2026 nao tem,
+  // e alinhar pelo primeiro bloco poe cargas diferentes lado a lado.
+  const ref=Object.keys(MX_DADOS)[0];
+  if(id===ref) return ons[0].t0;
+  const dr=MX_DADOS[ref];
+  const cr=mxCorteDe(ref);
+  const onsRef=(((dr.blocos||{}).blocos)||[])
+    .filter(b=>b.on && b.t1>=cr[0] && b.t0<=cr[1]);
+  if(!onsRef.length) return ons[0].t0;
+  const alvo=onsRef[0].watts_medio;
+  if(alvo==null) return ons[0].t0;
+  let melhor=null, dmin=1e18;
+  ons.forEach(function(b){
+   if(b.watts_medio==null) return;
+   const dd=Math.abs(b.watts_medio-alvo);
+   if(dd<dmin){ dmin=dd; melhor=b; }
+  });
+  // se nenhum degrau chega perto, nao ha escalao equivalente: dizer isso
+  // em vez de alinhar por um que esta 60 W ao lado
+  if(!melhor || dmin>30){
+   MX_ALINHA_AVISO[id]=('nenhum degrau desta sessão fica a menos de 30 W do '
+    +'primeiro da referência ('+Math.round(alvo)+' W). Alinhado pelo '
+    +'primeiro bloco — usa o ajuste fino');
+   return ons[0].t0;
+  }
+  delete MX_ALINHA_AVISO[id];
+  return melhor.t0;
+ }
+ return ons[0].t0;
+}
+
+function mxCorteDe(id){
+ const d=MX_DADOS[id]; if(!d) return [0,0];
+ const t=d.tempo||[];
+ if(!t.length) return [0,0];
+ if(MX_SEL.length===1 && MX_CORTE) return MX_CORTE;
+ const g=d.corte_guardado, p=d.corte_proposto;
+ if(g && g.inicio_s!=null) return [g.inicio_s, g.fim_s];
+ if(p && p.ok) return [p.inicio_s, p.fim_s];
+ return [t[0], t[t.length-1]];
+}
+
+function mxAlinhar(){
+ mxOffsetsUI(); mxDraw(); mxDiagnostico(); mxBlocosTabela();
+}
+
+function mxOffsetsUI(){
+ const box=document.getElementById('mxOffsets');
+ if(!box) return;
+ const ids=Object.keys(MX_DADOS);
+ if(ids.length<2){ box.innerHTML=''; return; }
+ const avisos=Object.keys(MX_ALINHA_AVISO)
+  .filter(k=>ids.indexOf(k)>=0)
+  .map(function(k){
+   const s2=MX_SESSOES.find(x=>String(x.id)===k)||{};
+   return (s2.data||k)+': '+MX_ALINHA_AVISO[k]; });
+ box.innerHTML = (avisos.length
+  ? '<span style="color:#F0883E;font-size:11px;width:100%;">⚠ '
+    +avisos.join(' | ')+'</span>' : '')
+  + ids.map(function(id,i){
+  const s=MX_SESSOES.find(x=>String(x.id)===id)||{};
+  const off=MX_OFF[id]||0;
+  return '<label class="sel" style="white-space:nowrap;">'
+   + '<span style="color:'+mxCorSessao(i)+';">'+(i+1)+'· '+(s.data||id)+'</span> '
+   + '<input type="range" class="mxOff" data-id="'+id+'" data-i="'+i+'" '
+   + 'min="-300" max="300" step="1" value="'+off+'" style="width:130px"> '
+   + '<span id="mxOffTxt'+i+'">'+(off>0?'+':'')+off+'s</span></label>';
+ }).join('');
+ Array.prototype.forEach.call(box.querySelectorAll('.mxOff'), function(el){
+  el.addEventListener('input', function(){
+   mxOffset(el.getAttribute('data-id'), el.value);
+  });
+ });
+}
+
+function mxOffset(id, v){
+ MX_OFF[id]=parseFloat(v);
+ mxDraw(); mxBlocosTabela();
+ const i=Object.keys(MX_DADOS).indexOf(String(id));
+ const el=document.getElementById('mxOffTxt'+i);
+ if(el) el.textContent=(v>0?'+':'')+v+'s';
+}
+
+function mxCorSessao(i){
+ return ['#F85149','#58A6FF','#3FB950','#E3B341','#A371F7','#F0883E'][i%6];
+}
+
+function mxCorteInicial(){
+ // Prioridade ao corte guardado; sem ele, a proposta automatica; sem ela,
+ // a sessao inteira. O que estiver a ser usado e' dito em texto, para nao
+ // haver duvida sobre o que se esta a ver.
+ const t=(MX&&MX.tempo)||[];
+ if(!t.length){ MX_CORTE=null; return; }
+ const t0=t[0], t1=t[t.length-1];
+ const g=MX.corte_guardado, p=MX.corte_proposto;
+ let origem;
+ if(g && g.inicio_s!=null){ MX_CORTE=[g.inicio_s, g.fim_s]; origem='guardado'; }
+ else if(p && p.ok){ MX_CORTE=[p.inicio_s, p.fim_s]; origem='proposto'; }
+ else { MX_CORTE=[t0,t1]; origem='sessão inteira'; }
+ const ini=document.getElementById('mxIni'), fim=document.getElementById('mxFim');
+ ini.value = (MX_CORTE[0]-t0)/((t1-t0)||1)*100;
+ fim.value = (MX_CORTE[1]-t0)/((t1-t0)||1)*100;
+ mxCorteTexto(origem);
+}
+
+function mxCorteTexto(origem){
+ const t=(MX&&MX.tempo)||[]; if(!t.length||!MX_CORTE) return;
+ const f=v=>Math.floor(v/60)+':'+String(Math.round(v%60)).padStart(2,'0');
+ document.getElementById('mxCorteTxt').textContent =
+  f(MX_CORTE[0])+' → '+f(MX_CORTE[1])
+  +'  ('+Math.round((MX_CORTE[1]-MX_CORTE[0])/60)+' min)';
+ const p=MX.corte_proposto||{}, g=MX.corte_guardado;
+ let n='';
+ if(origem==='guardado') n='A usar o corte que guardaste em '
+   +(g.data_gravacao||'?')+'.';
+ else if(origem==='proposto') n='Proposta automática: '+(p.motivo||'')
+   +(p.confianca?' · confiança '+p.confianca:'')+'.';
+ else n='Sem proposta automática: '+(p.motivo||'')+'. A mostrar tudo.';
+ const b=MX.blocos||{};
+ if(b.ok) n+=' '+b.n_on+' blocos de trabalho e '+b.n_off+' de recuperação, '
+   +'de '+(b.fonte||'?')+(b.limiar_w?' (limiar '+b.limiar_w+' W)':'')+'.';
+ const p2=MX.corte_proposto||{};
+ if(p2.aviso) n+=' '+p2.aviso+'.';
+ document.getElementById('mxCorteNota').textContent=n;
+}
+
+function mxSlider(){
+ const t=(MX&&MX.tempo)||[]; if(!t.length) return;
+ const t0=t[0], t1=t[t.length-1];
+ let a=parseFloat(document.getElementById('mxIni').value);
+ let b=parseFloat(document.getElementById('mxFim').value);
+ if(a>b){ const c=a; a=b; b=c; }
+ MX_CORTE=[t0+(t1-t0)*a/100, t0+(t1-t0)*b/100];
+ mxCorteTexto('manual'); mxDraw(); mxDiagnostico();
+}
+
+function mxAplicarProposta(){
+ const p=MX&&MX.corte_proposto;
+ if(!p||!p.ok){ document.getElementById('mxCorteEstado').textContent
+   = 'sem proposta'; return; }
+ MX_CORTE=[p.inicio_s,p.fim_s];
+ const t=MX.tempo, t0=t[0], t1=t[t.length-1];
+ document.getElementById('mxIni').value=(p.inicio_s-t0)/((t1-t0)||1)*100;
+ document.getElementById('mxFim').value=(p.fim_s-t0)/((t1-t0)||1)*100;
+ mxCorteTexto('proposto'); mxDraw(); mxDiagnostico();
+}
+
+function mxTudo(){
+ const t=(MX&&MX.tempo)||[]; if(!t.length) return;
+ MX_CORTE=[t[0],t[t.length-1]];
+ document.getElementById('mxIni').value=0;
+ document.getElementById('mxFim').value=100;
+ mxCorteTexto('sessão inteira'); mxDraw(); mxDiagnostico();
+}
+
+function mxGuardarCorte(){
+ if(!MX||!MX_CORTE) return;
+ const est=document.getElementById('mxCorteEstado');
+ const s=MX_SESSOES.find(x=>String(x.id)===String(MX.activity_id))||{};
+ est.textContent='a guardar...';
+ fetch('/api/moxy/corte',{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({activity_id:MX.activity_id,
+   inicio_s:MX_CORTE[0], fim_s:MX_CORTE[1],
+   modalidade:s.modalidade, data:s.data,
+   proposto_s:(MX.corte_proposto||{}).inicio_s})})
+ .then(r=>r.json()).then(function(d){
+  est.textContent = d.status==='erro' ? 'erro: '+d.mensagem
+    : 'guardado' + (d.status==='gravado_sem_upload' ? ' (local)' : '');
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
+// indices dentro do corte
+function mxJanela(){
+ const t=(MX&&MX.tempo)||[];
+ if(!t.length) return [0,0];
+ if(!MX_CORTE) return [0,t.length-1];
+ let a=0,b=t.length-1;
+ for(let i=0;i<t.length;i++){ if(t[i]>=MX_CORTE[0]){ a=i; break; } }
+ for(let i=t.length-1;i>=0;i--){ if(t[i]<=MX_CORTE[1]){ b=i; break; } }
+ return [a,b];
+}
+
+function mxDraw(){
+ const o = ctx('chMoxy', 380); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const ids=Object.keys(MX_DADOS);
+ if(!ids.length){ noData(g,W,H,'Escolhe uma sessão na lista'); return; }
+ const activos=Object.keys(MX_ON).filter(k=>MX_ON[k]===true);
+ if(!activos.length){ noData(g,W,H,'Escolhe pelo menos uma métrica'); return; }
+
+ // series alinhadas: tempo relativo ao ponto de referencia de cada sessao
+ const series=[];
+ ids.forEach(function(id, si){
+  const d=MX_DADOS[id]; const t=d.tempo||[];
+  const corte=mxCorteDe(id);
+  const ref=mxRefAlinhamento(id)+(MX_OFF[id]||0);
+  activos.forEach(function(k){
+   const v=d.canais[k]; if(!v) return;
+   const pts=[];
+   for(let n=0;n<t.length;n++){
+    if(t[n]<corte[0]||t[n]>corte[1]) continue;
+    if(v[n]==null) continue;
+    pts.push([t[n]-ref, v[n]]);
+   }
+   if(pts.length) series.push({
+    id:id, canal:k, si:si, pts:pts,
+    nirs:(d.canais_nirs||[]).indexOf(k)>=0,
+    rotulo: ids.length>1 ? k+'_'+(si+1) : k});
+  });
+ });
+ if(!series.length){ noData(g,W,H,'Sem dados no intervalo'); return; }
+
+ let ta=1e18, tb=-1e18;
+ series.forEach(function(s2){
+  if(s2.pts[0][0]<ta) ta=s2.pts[0][0];
+  if(s2.pts[s2.pts.length-1][0]>tb) tb=s2.pts[s2.pts.length-1][0];
+ });
+
+ const PL=54,PR=128,PT=18,PB=40,w=W-PL-PR,h=H-PT-PB;
+ const X=v=>PL+(v-ta)/((tb-ta)||1)*w;
+ MX_ESC={X:X,PL:PL,PT:PT,w:w,h:h,t0:ta,t1:tb};
+
+ // Potencia de TODAS as sessoes em fundo, cada uma na sua cor. Sem isto
+ // nao se ve porque e' que os degraus nao alinham: uma sessao pode comecar
+ // a 140 W e outra a 117 W, e a diferenca so' aparece aqui.
+ const wsers=[];
+ ids.forEach(function(id, si){
+  const d=MX_DADOS[id], t=d.tempo||[], v=d.canais.watts;
+  if(!v) return;
+  const corte=mxCorteDe(id), ref=mxRefAlinhamento(id)+(MX_OFF[id]||0);
+  const pts=[];
+  for(let n=0;n<t.length;n++){
+   if(t[n]<corte[0]||t[n]>corte[1]||v[n]==null) continue;
+   pts.push([t[n]-ref, v[n]]);
+  }
+  if(pts.length) wsers.push({si:si, pts:pts});
+ });
+ let wmaxG=0;
+ wsers.forEach(function(ws){ ws.pts.forEach(function(p){
+  if(p[1]>wmaxG) wmaxG=p[1]; }); });
+ if(wmaxG>0){
+  wsers.forEach(function(ws){
+   const cor = ids.length>1 ? mxCorSessao(ws.si) : '#8b949e';
+   g.strokeStyle=cor; g.globalAlpha=0.30; g.lineWidth=1;
+   g.beginPath();
+   ws.pts.forEach(function(p,n){
+    const y=PT+h-(p[1]/wmaxG)*h*0.42;
+    n?g.lineTo(X(p[0]),y):g.moveTo(X(p[0]),y);
+   });
+   g.stroke(); g.globalAlpha=1;
+  });
+  g.fillStyle='#6e7681'; g.font='10px sans-serif'; g.textAlign='left';
+  g.fillText('watts em fundo (0–'+Math.round(wmaxG)+')', PL+4, PT+h-4);
+ }
+
+ // escala partilhada pelos NIRS; contexto normaliza-se por canal
+ const nirs=series.filter(s2=>s2.nirs);
+ let lo=1e18, hi=-1e18;
+ nirs.forEach(s2=>s2.pts.forEach(function(p){
+  if(p[1]<lo)lo=p[1]; if(p[1]>hi)hi=p[1]; }));
+ if(lo>hi){ lo=0; hi=100; }
+ const pad=(hi-lo)*0.08||1; lo-=pad; hi+=pad;
+ const Y=v=>PT+h-(v-lo)/((hi-lo)||1)*h;
+
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
+ for(let n=0;n<=4;n++){
+  const v=lo+(hi-lo)*n/4, y=Y(v);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText(Math.round(v), PL-6, y+4);
+ }
+ // marca do zero: o ponto de alinhamento
+ if(ta<0 && tb>0){
+  g.strokeStyle='#8b949e'; g.setLineDash([4,4]);
+  g.beginPath(); g.moveTo(X(0),PT); g.lineTo(X(0),PT+h); g.stroke();
+  g.setLineDash([]);
+  g.fillStyle='#8b949e'; g.textAlign='center'; g.font='9px sans-serif';
+  g.fillText('alinhamento', X(0), PT+10);
+  g.font='11px sans-serif';
+ }
+ g.textAlign='center'; g.fillStyle='#8b949e';
+ for(let n=0;n<=5;n++){
+  const tv=ta+(tb-ta)*n/5;
+  const m=Math.floor(Math.abs(tv)/60);
+  g.fillText((tv<0?'-':'')+m+' min', X(tv), PT+h+18);
+ }
+
+ // NIRS na escala comum; contexto na sua
+ nirs.forEach(function(s2){
+  g.strokeStyle=ids.length>1 ? mxCorSessao(s2.si) : (MX_CORES[s2.canal]||'#c9d1d9');
+  g.lineWidth = ids.length>1 ? (s2.canal==='smo2'?2.2:1.4) : 2;
+  g.setLineDash(mxTraco(s2.canal, ids.length));
+  g.beginPath();
+  s2.pts.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y(p[1]))
+                                 :g.moveTo(X(p[0]),Y(p[1])); });
+  g.stroke(); g.setLineDash([]); g.lineWidth=1;
+ });
+ const outros=series.filter(s2=>!s2.nirs && s2.canal!=='watts');
+ outros.forEach(function(s2){
+  const vs=s2.pts.map(p=>p[1]);
+  let a=Math.min.apply(null,vs), b=Math.max.apply(null,vs);
+  if(b===a) b=a+1;
+  const Y2=v=>PT+h-(v-a)/((b-a)||1)*h;
+  g.strokeStyle=ids.length>1 ? mxCorSessao(s2.si) : (MX_CORES[s2.canal]||'#c9d1d9');
+  g.globalAlpha=0.55; g.lineWidth=1;
+  g.setLineDash(mxTraco(s2.canal, ids.length));
+  g.beginPath();
+  s2.pts.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y2(p[1]))
+                                 :g.moveTo(X(p[0]),Y2(p[1])); });
+  g.stroke(); g.setLineDash([]); g.globalAlpha=1;
+ });
+
+ // breakpoints como riscas verticais, quando calculados
+ // Usava-se 'wser', que uma edicao anterior renomeou para a lista
+ // 'wsers'. Ficou a referencia antiga e qualquer sessao com breakpoints
+ // calculados rebentava com "wser is not defined".
+ const wserBP = wsers.find(function(w){ return w.si===0; }) || wsers[0];
+ if(MX_BP && wserBP){
+  const wmax=Math.max.apply(null, wserBP.pts.map(p=>p[1]))||1;
+  [[MX_BP.bp1,'#3FB950','BP1'],[MX_BP.bp2,'#F85149','BP2']].forEach(function(b){
+   if(b[0]==null) return;
+   // o BP esta em watts: encontrar quando a potencia o atravessa
+   let melhor=null, dmin=1e18;
+   wserBP.pts.forEach(function(p){
+    const dd=Math.abs(p[1]-b[0]);
+    if(dd<dmin){ dmin=dd; melhor=p[0]; }
+   });
+   if(melhor==null || dmin>25) return;
+   const x=X(melhor);
+   g.strokeStyle=b[1]; g.setLineDash([5,4]); g.lineWidth=1.5;
+   g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
+   g.setLineDash([]); g.lineWidth=1;
+   g.fillStyle=b[1]; g.font='10px sans-serif'; g.textAlign='center';
+   const bpm = b[2]==='BP1' ? MX_BP.bp1_bpm : MX_BP.bp2_bpm;
+   const disp = b[2]==='BP1' ? MX_BP.bp1_disp : MX_BP.bp2_disp;
+   g.fillText(b[2]+' '+Math.round(b[0])+'W'+(bpm?' · '+bpm+'bpm':'')
+              +(disp?' ±'+disp+'%':'')
+              +(MX_BP.fiavel===false?' (?)':''), x, PT+10);
+  });
+ }
+
+ g.textAlign='left'; g.font='10px sans-serif';
+ series.forEach(function(s2,n){
+  g.fillStyle=ids.length>1 ? mxCorSessao(s2.si) : (MX_CORES[s2.canal]||'#c9d1d9');
+  g.fillText('\u2500 '+s2.rotulo, PL+w+6, PT+12+n*12);
+ });
+ if(ids.length>1){
+  g.fillStyle='#6e7681';
+  g.fillText('cor = sessão · traço = canal', PL+w+6, PT+12+series.length*12+8);
+ }
+ g.font='11px sans-serif';
+ mxLigarTip();
+}
+
+// Traco por canal quando ha varias sessoes: a cor passa a identificar a
+// sessao, portanto o canal precisa de outra dimensao visual.
+function mxTraco(canal, nSessoes){
+ if(nSessoes<2) return [];
+ return {smo2:[], thb:[6,3], o2hb:[2,2], hhb:[8,3,2,3],
+         heartrate:[4,2], respiration:[1,3], dfa_a1:[10,4],
+         cadence:[3,3], torque:[5,5], velocity_smooth:[7,2]}[canal] || [];
+}
+
+function mxLigarTip(){
+ const cv=document.getElementById('chMoxy');
+ const tip=document.getElementById('mxTip');
+ if(!cv||!tip||cv._tipMx) return;
+ cv._tipMx=true;
+ cv.addEventListener('mousemove', function(ev){
+  // Le de MX_DADOS e nao de MX: em comparacao MX e' null, e o tooltip
+  // deixava de funcionar exactamente quando era mais util.
+  const ids=Object.keys(MX_DADOS);
+  if(!MX_ESC || !ids.length){ tip.style.display='none'; return; }
+  const r=cv.getBoundingClientRect();
+  const esc=(cv.width/r.width)/(window.devicePixelRatio||1);
+  const mx=(ev.clientX-r.left)*esc;
+  const e=MX_ESC;
+  if(mx<e.PL||mx>e.PL+e.w){ tip.style.display='none'; return; }
+  const trel=e.t0+(mx-e.PL)/e.w*(e.t1-e.t0);   // tempo relativo ao alinhamento
+  const m=Math.floor(Math.abs(trel)/60), sg=Math.round(Math.abs(trel)%60);
+  let h='<b>'+(trel<0?'-':'')+m+':'+String(sg).padStart(2,'0')+'</b>'
+   +(ids.length>1?' <span style="color:#8b949e;">do alinhamento</span>':'');
+  const activos=Object.keys(MX_ON).filter(k=>MX_ON[k]===true);
+  ids.forEach(function(id, si){
+   const d=MX_DADOS[id];
+   const t=d.tempo||[];
+   const ref=mxRefAlinhamento(id)+(MX_OFF[id]||0);
+   const alvo=trel+ref;                        // tempo absoluto nesta sessao
+   let idx=-1, dmin=1e18;
+   for(let n=0;n<t.length;n++){
+    const dd=Math.abs(t[n]-alvo);
+    if(dd<dmin){ dmin=dd; idx=n; }
+   }
+   if(idx<0 || dmin>5) return;                 // fora desta sessao
+   const s2=MX_SESSOES.find(x=>String(x.id)===id)||{};
+   if(ids.length>1)
+    h+='<br><span style="color:'+mxCorSessao(si)+';font-weight:600;">'
+     +(si+1)+'· '+(s2.data||id)+'</span>';
+   // degrau em que estamos, com os watts medios do lap
+   const bl=((d.blocos||{}).blocos)||[];
+   const b=bl.find(x=>t[idx]>=x.t0 && t[idx]<=x.t1);
+   if(b) h+='<br><span style="color:#8b949e;font-size:10px;">'
+    +(b.on?'trabalho':'recuperação')
+    +(b.watts_medio!=null?' · média '+Math.round(b.watts_medio)+' W':'')
+    +(b.tipo?' ['+b.tipo+']':'')+'</span>';
+   activos.forEach(function(k){
+    const v=(d.canais[k]||[])[idx];
+    if(v==null) return;
+    h+='<br><span style="color:'
+     +(ids.length>1?mxCorSessao(si):(MX_CORES[k]||'#c9d1d9'))+';">'
+     +k+(ids.length>1?'_'+(si+1):'')+'</span> '+v;
+   });
+  });
+  tip.innerHTML=h; tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+14, r.width-200)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-40)+'px';
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
+}
+
+function mxDiagnostico(){
+ const box=document.getElementById('mxDiag');
+ if(!box) return;
+ const ids=Object.keys(MX_DADOS);
+ if(ids.length>1){
+  // com varias sessoes, mostrar so' o essencial de cada uma
+  let hh='<table style="border-collapse:collapse;font-size:11px;">'
+   +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:14px;">Sessão</th>'
+   +'<th style="padding-right:14px;">Canais</th><th style="padding-right:14px;">Artefacto</th>'
+   +'<th>Corte</th></tr>';
+  ids.forEach(function(id,si){
+   const dd=MX_DADOS[id], s2=MX_SESSOES.find(x=>String(x.id)===id)||{};
+   const ar=dd.artefactos||{}, c=mxCorteDe(id);
+   hh+='<tr><td style="padding-right:14px;color:'+mxCorSessao(si)+';">'
+    +(si+1)+'· '+(s2.data||id)+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'
+    +(dd.canais_nirs||[]).join(', ')+'</td>'
+    +'<td style="padding-right:14px;color:#8b949e;">'
+    +(ar.pct_acima_do_limiar!=null?ar.pct_acima_do_limiar+'%':'—')+'</td>'
+    +'<td style="color:#8b949e;">'+Math.round((c[1]-c[0])/60)+' min</td></tr>';
+  });
+  box.innerHTML=hh+'</table>';
+  return;
+ }
+ const d=(MX&&MX.diagnostico)||{};
+ const ks=Object.keys(d);
+ if(!ks.length){ box.innerHTML=''; return; }
+ let h='<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:14px;">Canal</th>'
+  +'<th style="padding-right:14px;">Pontos</th><th style="padding-right:14px;">Inválidos</th>'
+  +'<th style="padding-right:14px;">Outliers</th><th style="padding-right:14px;">Substituído</th>'
+  +'<th>Filtro</th></tr>';
+ ks.forEach(function(k){
+  const x=d[k], f=x.filtro||{};
+  const pct=x.pct_substituido;
+  const cor = pct==null ? '#8b949e' : pct<5 ? '#3FB950' : pct<15 ? '#F0883E' : '#F85149';
+  h+='<tr><td style="padding-right:14px;color:'+(MX_CORES[k]||'#c9d1d9')+';">'
+   +k+'</td>'
+   +'<td style="color:#8b949e;padding-right:14px;">'+(x.n_pontos||'—')+'</td>'
+   +'<td style="color:#8b949e;padding-right:14px;">'+(x.invalidos||0)+'</td>'
+   +'<td style="color:#8b949e;padding-right:14px;">'+(x.outliers||0)+'</td>'
+   +'<td style="color:'+cor+';padding-right:14px;">'+(pct!=null?pct+'%':'—')+'</td>'
+   +'<td style="color:#8b949e;">'+(f.metodo||'—')
+   +(f.motivo?' ('+f.motivo+')':'')+'</td></tr>';
+ });
+ h+='</table>';
+ const ar = MX.artefactos;
+ if(ar && ar.pct_acima_do_limiar!=null){
+  const c = ar.pct_acima_do_limiar<10 ? '#3FB950'
+          : ar.pct_acima_do_limiar<30 ? '#F0883E' : '#F85149';
+  h+='<p style="font-size:11px;color:#8b949e;border-left:2px solid '+c
+   +';padding-left:8px;margin:6px 0;"><b style="color:'+c+';">'
+   +ar.pct_acima_do_limiar+'%</b> dos pontos com artefacto na cinta acima de '
+   +ar.limiar_usado+'%. '+ar.pontos_descartados+' pontos removidos da FC, '
+   +'DFA-a1 e respiração antes de filtrar. O SmO2 e o THb vêm do Moxy e não '
+   +'são afectados.</p>';
+ }
+ if(MX.streams_usados) h+='<p style="color:#8b949e;font-size:11px;">Streams: '
+  +Object.keys(MX.streams_usados).map(function(k){
+    return k+' \\u2190 '+MX.streams_usados[k]; }).join(' · ')+'</p>';
+ box.innerHTML=h;
+}
+
+function mxLista(){
+ const box=document.getElementById('mxLista');
+ if(!box) return;
+ if(!MX_SESSOES.length){
+  box.innerHTML='<p style="color:#8b949e;font-size:12px;">Nenhuma sessão com '
+   +'Moxy encontrada. Só entram actividades com a <b>tag</b> "Moxy" — o nome '
+   +'da sessão é ignorado. Confirma a grafia na tab Atividades.</p>';
+  return;
+ }
+ let h='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+  +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+  +'<th style="padding:6px;width:30px;"></th><th>Data</th><th>Modalidade</th>'
+  +'<th>Sessão</th><th>Duração</th><th>SmO2 médio</th><th>Tags</th></tr>';
+ MX_SESSOES.forEach(function(s2){
+  const on=MX_SEL.indexOf(String(s2.id))>=0;
+  const i2=MX_SEL.indexOf(String(s2.id));
+  h+='<tr style="border-bottom:1px solid #161b22;'
+   +(on?'background:rgba(88,166,255,0.06);':'')+'">'
+   +'<td style="padding:6px;"><input type="checkbox" class="mxSel" '
+   +'data-id="'+s2.id+'"'+(on?' checked':'')+'></td>'
+   +'<td'+(on?' style="color:'+mxCorSessao(i2)+';font-weight:600;"':'')+'>'
+   +s2.data+(on?' <span style="font-size:10px;">('+(i2+1)+')</span>':'')+'</td>'
+   +'<td style="color:#8b949e;">'+(s2.modalidade||s2.tipo||'—')+'</td>'
+   +'<td style="color:#8b949e;">'+(s2.nome||'—')+'</td>'
+   +'<td style="color:#8b949e;">'+(s2.duracao_min?s2.duracao_min+' min':'—')+'</td>'
+   +'<td>'+(s2.smo2_no_sumario!=null?Math.round(s2.smo2_no_sumario):'—')+'</td>'
+   +'<td style="color:#8b949e;">'+((s2.tags||[]).join(', ')||'—')+'</td></tr>';
+ });
+ h+='</table>';
+ box.innerHTML=h;
+ // handlers ligados em JS: aspas dentro de atributos HTML ja' partiram
+ // este ficheiro uma vez, e voltam a partir a proxima alteracao
+ Array.prototype.forEach.call(box.querySelectorAll('.mxSel'), function(el){
+  el.addEventListener('change', function(){
+   mxAlternarSessao(el.getAttribute('data-id'), el.checked);
+  });
+ });
+}
+
+// Tabela dos blocos de trabalho de cada sessao seleccionada. Existe para o
+// alinhamento ser verificavel: se duas sessoes foram emparelhadas pelo
+// primeiro bloco mas os degraus nao correspondem, ve-se aqui e corrige-se
+// no ajuste fino, em vez de se descobrir a olho no grafico.
+function mxBlocosTabela(){
+ const box=document.getElementById('mxBlocos');
+ if(!box) return;
+ const ids=Object.keys(MX_DADOS);
+ if(!ids.length){ box.innerHTML=''; return; }
+ const cols=[];
+ ids.forEach(function(id,si){
+  const d=MX_DADOS[id];
+  const corte=mxCorteDe(id);
+  const ons=(((d.blocos||{}).blocos)||[])
+    .filter(b=>b.on && b.t1>=corte[0] && b.t0<=corte[1]);
+  const s2=MX_SESSOES.find(x=>String(x.id)===id)||{};
+  cols.push({id:id, si:si, data:s2.data||id, ons:ons,
+             ref:mxRefAlinhamento(id)+(MX_OFF[id]||0)});
+ });
+ const maxN=Math.max.apply(null, cols.map(c=>c.ons.length));
+ if(!maxN){ box.innerHTML='<p style="color:#8b949e;font-size:11px;">Sem blocos '
+   +'de trabalho detectados no intervalo.</p>'; return; }
+ let h='<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:14px;">Degrau</th>'
+  +cols.map(function(c){ return '<th style="padding-right:14px;color:'
+    +mxCorSessao(c.si)+';">'+(c.si+1)+'· '+c.data+'</th>'; }).join('')
+  +'<th>Δ watts</th></tr>';
+ for(let k=0;k<maxN;k++){
+  const vals=cols.map(function(c){ return c.ons[k]; });
+  const ws=vals.filter(v=>v&&v.watts_medio!=null).map(v=>v.watts_medio);
+  const dif=ws.length>1 ? Math.round(Math.max.apply(null,ws)-Math.min.apply(null,ws)) : null;
+  const cor = dif==null ? '#8b949e' : dif<15 ? '#3FB950' : dif<40 ? '#F0883E' : '#F85149';
+  h+='<tr><td style="padding-right:14px;color:#8b949e;">'+(k+1)+'</td>'
+   +vals.map(function(v,n){
+     if(!v) return '<td style="padding-right:14px;color:#484f58;">—</td>';
+     const rel=Math.round(v.t0-cols[n].ref);
+     return '<td style="padding-right:14px;">'
+      +(v.watts_medio!=null?Math.round(v.watts_medio)+' W':'—')
+      +' <span style="color:#8b949e;">'+Math.round(v.duracao_s)+'s'
+      +' @'+(rel>=0?'+':'')+rel+'s'
+      +(v.tipo?' · '+v.tipo.toLowerCase():'')+'</span></td>';
+    }).join('')
+   +'<td style="color:'+cor+';">'+(dif!=null?dif+' W':'—')+'</td></tr>';
+ }
+ h+='</table>';
+ if(ids.length>1) h+='<p style="color:#8b949e;font-size:11px;margin-top:4px;">'
+  +'@ é o instante do degrau relativo ao ponto de alinhamento. Se os degraus '
+  +'da mesma linha tiverem watts muito diferentes (Δ a vermelho), o '
+  +'emparelhamento está errado — corrige no ajuste fino ou muda o critério '
+  +'de alinhamento.</p>';
+ box.innerHTML=h;
+}
+
+function mxEscolher(id){
+ mxAlternarSessao(id, MX_SEL.indexOf(String(id))<0);
+}
+
+mxSessoes();
+window.addEventListener('resize', function(){ mxDraw(); });
+"""
+
+
+def render():
+    from flask import render_template_string
+    return render_template_string(page('Moxy', SLUG, BODY, JS))

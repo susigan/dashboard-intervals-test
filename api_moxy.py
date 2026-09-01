@@ -1088,8 +1088,29 @@ def registar(app):
                 ate_exaustao=request.args.get('exaustao') == '1')
             hp = nbk.hipocapnia(blocos, t, canais)
 
+            # coerencia com o resto do perfil metabolico
+            coer = None
+            try:
+                from app import perfil_metabolico_dados as _pmd
+                pm, _ = _pmd(mod, {}, com_ancoras=False)
+                pm = pm or {}
+                lim = pm.get('limiares') or {}
+                mad = pm.get('mader') or {}
+                bls = bp_mx_livre
+                coer = nbk.coerencia(
+                    bp1_w=bls.get('bp1_w') or bp_mx.get('bp1_w'),
+                    bp2_w=bls.get('bp2_w') or bp_mx.get('bp2_w'),
+                    cp=pm.get('cp_w') or lim.get('cp_w'),
+                    mlss=mad.get('mlss_at_w'),
+                    pvo2max=mad.get('pvo2max_w'),
+                    lt1_campos=None, lt2_campos=None,
+                    zonas=pm.get('zonas_semaforo'))
+            except Exception as e:
+                coer = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+
             return jsonify({
                 'status': 'ok', 'activity_id': aid, 'modalidade': mod,
+                'coerencia': coer,
                 'perfil_resposta': perfil,
                 'mlss_dessaturacao': mlss,
                 'bp_taxa': bp_taxa,

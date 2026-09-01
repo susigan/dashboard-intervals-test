@@ -932,6 +932,32 @@ function mxLimiares(){
   } : null);
 
   let h='';
+  // ── coerencia com o resto do perfil ───────────────────────────────
+  const co=d.coerencia||{};
+  if(co.ok){
+   const bom=!(co.avisos||[]).length;
+   h+='<div style="border:1px solid '+(bom?'#3FB950':'#F0883E')
+    +';border-radius:6px;padding:8px 10px;margin-bottom:10px;">'
+    +'<b style="color:'+(bom?'#3FB950':'#F0883E')+';">Coerência: '
+    +co.veredicto+'</b> <span style="color:#8b949e;font-size:11px;">'
+    +co.n_passou+' de '+co.n_testes+' testes</span>';
+   if(Object.keys(co.zona_de||{}).length)
+    h+='<br><span style="font-size:11px;">'
+     +Object.keys(co.zona_de).map(function(k){
+       const z=co.zona_de[k];
+       return '<b>'+k+'</b> cai em <b>'+z.zona+'</b> ('+z.de_w+'–'+z.ate_w
+        +' W)'; }).join(' · ')+'</span>';
+   h+='<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +(co.testes||[]).map(function(t){
+      return '<tr><td style="padding-right:8px;color:'
+       +(t.ok?'#3FB950':'#F0883E')+';">'+(t.ok?'✓':'⚠')+'</td>'
+       +'<td style="color:'+(t.ok?'#8b949e':'#c9d1d9')+';">'+t.detalhe
+       +'</td></tr>'; }).join('')
+    +'</table>'
+    +'<span style="font-size:10px;color:#8b949e;">'+(co.nota||'')+'</span>'
+    +'</div>';
+  }
+
   // ── dois cartoes: um por limiar ───────────────────────────────────
   // Antes era um painel por metodo -- quatro numeros soltos sem dizer qual
   // respondia a que pergunta. Agora cada limiar tem um cartao com todas as

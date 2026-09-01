@@ -645,3 +645,189 @@ def propor_corte_laps(blocos_info):
                           else 'baixa'),
             'motivo': (f'recuperacao de {round(dur)} s marcada nos laps, '
                        f'seguida de {len(ons_depois)} laps de trabalho')}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# QUE TIPO DE SESSAO FOI ESTA
+#
+# O metodo de analise depende do protocolo, e ate' agora era o utilizador
+# que tinha de saber qual era. Isto le' os laps e diz.
+#
+# A classificacao corre SEMPRE depois do corte do aquecimento. Os degraus
+# leves do inicio, em bicicleta e remo, sao aquecimento e nao fazem parte
+# do protocolo -- inclui-los fazia uma escada de 5 degraus parecer uma de
+# 8, com os tres primeiros a nao encaixar em padrao nenhum.
+#
+# O que distingue os tipos:
+#
+#   ESCADA          a carga sobe de forma monotona entre blocos. E' o
+#                   5-1-5 e o teste de degraus. So' aqui fazem sentido
+#                   os breakpoints.
+#   INTERVALADO     a carga repete-se. Duracoes iguais = por tempo;
+#                   distancias iguais = por distancia (comum no remo, no
+#                   esqui e na corrida).
+#   DESCANSO VARIAVEL  trabalho constante mas recuperacoes de duracoes
+#                   muito diferentes -- 5/4:30 e depois 5/8. Nao invalida
+#                   a analise, mas o SmO2 de partida de cada bloco deixa
+#                   de ser comparavel.
+#   CONTINUO        sem blocos, ou um bloco so'.
+# ══════════════════════════════════════════════════════════════════════════
+
+# Coeficiente de variacao abaixo do qual se considera "constante". Nao e'
+# um valor de literatura: e' o ponto a partir do qual a variacao deixa de
+# ser execucao e passa a ser intencao. 8% num bloco de 5 min sao 24 s.
+CV_CONSTANTE = 0.08
+# Subida minima de carga entre o primeiro e o ultimo bloco para ser escada.
+SUBIDA_ESCADA = 0.15
+
+
+def _cv(vs):
+    vs = [v for v in vs if v is not None]
+    if len(vs) < 2:
+        return None
+    m = sum(vs) / len(vs)
+    if m == 0:
+        return None
+    dp = (sum((v - m) ** 2 for v in vs) / len(vs)) ** 0.5
+    return dp / abs(m)
+
+
+def _monotona(vs, tol=0.03):
+    """A serie sobe de forma monotona, tolerando pequenos recuos?"""
+    vs = [v for v in vs if v is not None]
+    if len(vs) < 3:
+        return False
+    recuos = 0
+    for i in range(1, len(vs)):
+        if vs[i] < vs[i - 1] * (1 - tol):
+            recuos += 1
+    return recuos <= max(0, len(vs) // 5)
+
+
+def classificar_sessao(blocos, corte=None, laps=None):
+    """Tipo de protocolo, a partir dos blocos JÁ CORTADOS.
+
+    corte: (inicio_s, fim_s) — se dado, só os blocos dentro entram.
+    laps: laps originais, para ler distância quando existe.
+    """
+    bl = list(blocos or [])
+    fora_do_corte = 0
+    if corte:
+        a, b = corte
+        antes = len(bl)
+        bl = [x for x in bl if x.get('t1', 0) >= a and x.get('t0', 0) <= b]
+        fora_do_corte = antes - len(bl)
+
+    ons = [x for x in bl if x.get('on')]
+    offs = [x for x in bl if not x.get('on')]
+
+    if len(ons) < 2:
+        return {'ok': True, 'tipo': 'contínuo',
+                'n_blocos_trabalho': len(ons),
+                'descricao': ('menos de dois blocos de trabalho: é uma '
+                              'sessão contínua ou só um esforço'),
+                'serve_para_breakpoints': False,
+                'blocos_fora_do_corte': fora_do_corte}
+
+    dur_on = [x['t1'] - x['t0'] for x in ons]
+    dur_off = [x['t1'] - x['t0'] for x in offs]
+    watts = [x.get('watts_medio') for x in ons]
+    dist = None
+    if laps:
+        d = [lp.get('distance') for lp in laps
+             if isinstance(lp, dict) and str(lp.get('type', '')).upper() == 'WORK'
+             and lp.get('distance')]
+        if len(d) >= len(ons) * 0.8:
+            dist = d
+
+    cv_dur = _cv(dur_on)
+    cv_off = _cv(dur_off)
+    cv_w = _cv(watts)
+    cv_dist = _cv(dist) if dist else None
+
+    ws = [w for w in watts if w is not None]
+    subida = ((ws[-1] - ws[0]) / ws[0]) if len(ws) >= 2 and ws[0] else None
+    escada = (_monotona(ws) and subida is not None
+              and subida >= SUBIDA_ESCADA)
+
+    por_distancia = cv_dist is not None and cv_dist < CV_CONSTANTE
+    dur_constante = cv_dur is not None and cv_dur < CV_CONSTANTE
+    off_constante = cv_off is not None and cv_off < CV_CONSTANTE
+
+    if escada:
+        tipo = 'escada (teste de degraus)'
+        desc = (f'a carga sobe {round(subida * 100)}% do primeiro ao último '
+                f'bloco, de forma monótona. É o formato do 5-1-5 e do teste '
+                'de degraus')
+        serve = True
+    elif por_distancia:
+        media_m = sum(dist) / len(dist)
+        tipo = 'intervalado por distância'
+        desc = (f'{len(ons)} repetições de ~{round(media_m)} m. Formato '
+                'comum no remo, esqui e corrida: a distância é fixa e a '
+                'duração varia com o ritmo')
+        serve = False
+    elif dur_constante and off_constante:
+        tipo = 'intervalado por tempo'
+        desc = (f'{len(ons)} repetições de {round(sum(dur_on) / len(dur_on))} s '
+                f'com {round(sum(dur_off) / len(dur_off))} s de recuperação, '
+                'ambos constantes')
+        serve = False
+    elif dur_constante and not off_constante:
+        tipo = 'intervalado com descanso variável'
+        desc = (f'trabalho constante ({round(sum(dur_on) / len(dur_on))} s) '
+                f'mas recuperações de {round(min(dur_off))} a '
+                f'{round(max(dur_off))} s. O SmO2 de partida de cada bloco '
+                'não é comparável entre repetições')
+        serve = False
+    else:
+        tipo = 'intervalado irregular'
+        desc = ('nem a duração do trabalho nem a da recuperação são '
+                'constantes, e a carga não sobe de forma monótona')
+        serve = False
+
+    return {
+        'ok': True,
+        'tipo': tipo,
+        'descricao': desc,
+        'serve_para_breakpoints': serve,
+        'porque': (
+            'os breakpoints precisam de cargas diferentes para traçar a '
+            'curva SmO2 × potência. Num intervalado a carga repete-se, e '
+            'não há curva para ajustar — o que se pode ler é a resposta '
+            'ao esforço repetido, não um limiar'
+            if not serve else
+            'a carga varia entre blocos, o que permite traçar a curva '
+            'SmO2 × potência e procurar as quebras'),
+        'n_blocos_trabalho': len(ons),
+        'n_recuperacoes': len(offs),
+        'blocos_fora_do_corte': fora_do_corte,
+        'trabalho': {
+            'duracao_media_s': round(sum(dur_on) / len(dur_on)),
+            'duracao_min_s': round(min(dur_on)),
+            'duracao_max_s': round(max(dur_on)),
+            'cv': round(cv_dur, 3) if cv_dur is not None else None,
+            'constante': dur_constante,
+        },
+        'recuperacao': ({
+            'duracao_media_s': round(sum(dur_off) / len(dur_off)),
+            'duracao_min_s': round(min(dur_off)),
+            'duracao_max_s': round(max(dur_off)),
+            'cv': round(cv_off, 3) if cv_off is not None else None,
+            'constante': off_constante,
+        } if dur_off else None),
+        'carga': {
+            'watts': [round(w) if w is not None else None for w in watts],
+            'cv': round(cv_w, 3) if cv_w is not None else None,
+            'subida_pct': round(subida * 100, 1) if subida is not None else None,
+            'monotona': _monotona(ws),
+        },
+        'distancia': ({'media_m': round(sum(dist) / len(dist)),
+                       'cv': round(cv_dist, 3)} if dist else None),
+        'criterio': {'cv_constante': CV_CONSTANTE,
+                     'subida_minima_escada': SUBIDA_ESCADA},
+        'nota': ('classificado DEPOIS do corte do aquecimento. Incluir os '
+                 'degraus leves do início faria uma escada de 5 degraus '
+                 'parecer uma de 8, com os primeiros sem encaixar em '
+                 'padrão nenhum'),
+    }

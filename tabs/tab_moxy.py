@@ -934,7 +934,9 @@ function mxLimiares(){
   let h='';
   // ── coerencia com o resto do perfil ───────────────────────────────
   const co=d.coerencia||{};
-  if(co.ok){
+  if(co.motivo && !co.ok){
+   h+='<p style="color:#8b949e;font-size:11px;">'+co.motivo+'</p>';
+  } else if(co.ok){
    const bom=!(co.avisos||[]).length;
    h+='<div style="border:1px solid '+(bom?'#3FB950':'#F0883E')
     +';border-radius:6px;padding:8px 10px;margin-bottom:10px;">'

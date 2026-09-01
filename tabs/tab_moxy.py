@@ -932,6 +932,33 @@ function mxLimiares(){
   } : null);
 
   let h='';
+  // ── que protocolo foi este ────────────────────────────────────────
+  const ts=d.tipo_sessao||{};
+  if(ts.ok){
+   const serve=ts.serve_para_breakpoints;
+   h+='<div style="border-left:3px solid '+(serve?'#3FB950':'#F0883E')
+    +';padding:6px 10px;margin-bottom:10px;">'
+    +'<b style="color:'+(serve?'#3FB950':'#F0883E')+';font-size:14px;">'
+    +ts.tipo+'</b> <span style="color:#8b949e;font-size:11px;">'
+    +ts.n_blocos_trabalho+' blocos de trabalho'
+    +(ts.blocos_fora_do_corte?' · '+ts.blocos_fora_do_corte
+      +' fora do corte (aquecimento)':'')+'</span>'
+    +'<br><span style="font-size:11px;">'+ts.descricao+'</span>'
+    +'<br><span style="font-size:11px;color:'+(serve?'#8b949e':'#F0883E')+';">'
+    +(serve?'✓ ':'⚠ ')+ts.porque+'</span>';
+   const tr=ts.trabalho||{}, rc=ts.recuperacao||{};
+   h+='<br><span style="font-size:10px;color:#8b949e;">trabalho '
+    +tr.duracao_min_s+'–'+tr.duracao_max_s+' s (cv '+tr.cv+')'
+    +(rc.duracao_media_s!=null
+      ? ' · recuperação '+rc.duracao_min_s+'–'+rc.duracao_max_s+' s (cv '
+        +rc.cv+')' : '')
+    +((ts.carga||{}).subida_pct!=null
+      ? ' · carga sobe '+ts.carga.subida_pct+'%' : '')
+    +((ts.distancia||{}).media_m
+      ? ' · ~'+ts.distancia.media_m+' m por repetição' : '')
+    +'</span></div>';
+  }
+
   // ── coerencia com o resto do perfil ───────────────────────────────
   const co=d.coerencia||{};
   if(co.motivo && !co.ok){

@@ -831,3 +831,192 @@ def classificar_sessao(blocos, corte=None, laps=None):
                  'parecer uma de 8, com os primeiros sem encaixar em '
                  'padrão nenhum'),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# INTERVAL_SUMMARY — classificar sem chamar a API
+#
+# A Intervals.icu guarda no sumario de cada actividade uma lista de strings
+# legiveis, uma por grupo de intervalos:
+#
+#     ["1x 5m21s 72w", "1x 5m2s 99w", ..., "3x 10m1s 215w"]
+#
+# Formato: REPETICOESx DURACAO POTENCIA. Esta em TODAS as 244 actividades
+# do atleta, o que permite classificar tudo sem uma unica chamada a API --
+# ir buscar os laps a serio custaria 244 chamadas.
+#
+# O QUE NAO TEM, e importa saber:
+#   - a marca WORK/RECOVERY
+#   - a distancia de cada bloco
+#
+# Sem WORK/RECOVERY, as recuperacoes tem de ser deduzidas pela potencia.
+# Sem distancia, nao se distingue um intervalado por distancia de um por
+# tempo. Sao os dois limites deste atalho, e estao assinalados no
+# resultado -- para quem ler nao pensar que a classificacao aqui vale o
+# mesmo que a feita com os laps.
+# ══════════════════════════════════════════════════════════════════════════
+
+import re as _re
+
+_RE_ITEM = _re.compile(
+    r'^\s*(\d+)\s*x\s+'                       # repeticoes
+    r'(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?'      # duracao
+    r'\s*(?:([\d.]+)\s*w)?',                  # potencia
+    _re.IGNORECASE)
+
+
+def ler_interval_summary(itens):
+    """['1x 5m2s 99w', ...] -> lista de blocos com repeticoes, duracao e W."""
+    fora = []
+    for it in (itens or []):
+        m = _RE_ITEM.match(str(it))
+        if not m:
+            fora.append({'texto': str(it), 'lido': False})
+            continue
+        rep = int(m.group(1) or 1)
+        h, mi, sg = (int(m.group(i) or 0) for i in (2, 3, 4))
+        dur = h * 3600 + mi * 60 + sg
+        w = float(m.group(5)) if m.group(5) else None
+        if dur <= 0:
+            fora.append({'texto': str(it), 'lido': False,
+                         'motivo': 'sem duração'})
+            continue
+        fora.append({'texto': str(it), 'lido': True, 'repeticoes': rep,
+                     'duracao_s': dur, 'watts': w})
+    return fora
+
+
+def blocos_de_summary(itens, limiar_recuperacao=0.55):
+    """Blocos ON/OFF a partir do interval_summary.
+
+    Sem a marca WORK/RECOVERY, deduz-se pela potencia: blocos abaixo de
+    'limiar_recuperacao' vezes a potencia mediana dos blocos altos contam
+    como recuperacao. E' inferencia, nao leitura -- e por isso o resultado
+    diz que a fonte foi o sumario e nao os laps.
+    """
+    lidos = [x for x in ler_interval_summary(itens) if x.get('lido')]
+    if not lidos:
+        return {'ok': False, 'motivo': 'nenhuma linha legível no summary'}
+
+    ws = sorted(x['watts'] for x in lidos if x.get('watts'))
+    if not ws:
+        return {'ok': False, 'motivo': 'sem potência no summary'}
+    p75 = ws[int(0.75 * (len(ws) - 1))]
+    limiar = p75 * limiar_recuperacao
+
+    blocos, t = [], 0.0
+    for x in lidos:
+        for _ in range(x['repeticoes']):
+            w = x.get('watts')
+            blocos.append({
+                'on': (w is not None and w >= limiar),
+                'tipo': 'inferido pela potência',
+                't0': t, 't1': t + x['duracao_s'],
+                'duracao_s': x['duracao_s'],
+                'watts_medio': w,
+                'texto': x['texto'],
+            })
+            t += x['duracao_s']
+
+    return {'ok': True, 'fonte': 'interval_summary (sem chamada à API)',
+            'blocos': blocos,
+            'n_on': sum(1 for b in blocos if b['on']),
+            'n_off': sum(1 for b in blocos if not b['on']),
+            'limiar_w': round(limiar, 1),
+            'limites': [
+                'sem marca WORK/RECOVERY: o tipo é inferido pela potência',
+                'sem distância: não se distingue intervalado por distância '
+                'de intervalado por tempo',
+                'os tempos são sequenciais e não reais — servem para durações '
+                'e ordem, não para cruzar com streams'],
+            'nota': ('classificação a partir do sumário guardado. Serve para '
+                     'saber o formato da sessão; para análise de SmO2 é '
+                     'preciso ir buscar os laps verdadeiros')}
+
+
+def separar_aquecimento_summary(blocos, tol_duracao=0.25, subida_min=0.10):
+    """Separa a escada de aquecimento inicial do treino propriamente dito.
+
+    Nas sessões deste atleta o aquecimento é sempre o mesmo: cinco blocos
+    de ~5 min com a potência a subir de ~75 para ~158 W. Sem o separar, as
+    três sessões abaixo saíam todas como "escada", quando na verdade são:
+
+        aquecimento + 1x 20min 246w   ->  esforço único
+        aquecimento + 3x 10min 215w   ->  intervalado
+        aquecimento + 1x 55min 147w   ->  rodagem longa
+
+    O que as distingue está DEPOIS do aquecimento, e era isso que se
+    perdia.
+
+    Critério: sequência inicial de blocos com durações parecidas entre si
+    (dentro de tol_duracao) e potência a subir de forma monótona. Termina
+    no primeiro bloco que quebre uma das duas condições.
+    """
+    bl = [b for b in (blocos or []) if b.get('watts_medio') is not None]
+    if len(bl) < 4:
+        return {'aquecimento': [], 'treino': list(blocos or []),
+                'motivo': 'poucos blocos para separar'}
+
+    durs = [b['duracao_s'] for b in bl]
+    ws = [b['watts_medio'] for b in bl]
+
+    fim = 0
+    for i in range(1, len(bl)):
+        # duracao parecida com a do primeiro?
+        d_ok = abs(durs[i] - durs[0]) <= durs[0] * tol_duracao
+        # potencia a subir?
+        w_ok = ws[i] > ws[i - 1] * (1 + subida_min * 0.3)
+        if d_ok and w_ok:
+            fim = i
+        else:
+            break
+
+    if fim < 2:
+        return {'aquecimento': [], 'treino': list(blocos or []),
+                'motivo': 'sem escada inicial reconhecível'}
+
+    subida = (ws[fim] - ws[0]) / ws[0] if ws[0] else 0
+    if subida < subida_min:
+        return {'aquecimento': [], 'treino': list(blocos or []),
+                'motivo': f'a escada inicial sobe só {round(subida * 100)}%'}
+
+    aq = bl[:fim + 1]
+    tr = bl[fim + 1:]
+    return {
+        'aquecimento': aq,
+        'treino': tr,
+        'n_aquecimento': len(aq),
+        'duracao_aquecimento_s': round(sum(b['duracao_s'] for b in aq)),
+        'watts_aquecimento': [round(b['watts_medio']) for b in aq],
+        'subida_pct': round(subida * 100),
+        'motivo': (f'{len(aq)} blocos de ~{round(durs[0] / 60)} min com a '
+                   f'potência a subir {round(subida * 100)}% '
+                   f'({round(ws[0])}→{round(ws[fim])} W)'),
+    }
+
+
+def classificar_de_summary(itens, separar_aquecimento=True):
+    """interval_summary -> tipo de sessão, com o aquecimento separado."""
+    b = blocos_de_summary(itens)
+    if not b.get('ok'):
+        return {'ok': False, 'motivo': b.get('motivo')}
+
+    sep = ({'aquecimento': [], 'treino': b['blocos'], 'motivo': 'não pedido'}
+           if not separar_aquecimento
+           else separar_aquecimento_summary(b['blocos']))
+
+    alvo = sep['treino'] or b['blocos']
+    c = classificar_sessao(alvo)
+    c['aquecimento'] = {
+        'n_blocos': len(sep['aquecimento']),
+        'duracao_s': sep.get('duracao_aquecimento_s'),
+        'watts': sep.get('watts_aquecimento'),
+        'motivo': sep.get('motivo'),
+    }
+    c['fonte'] = b['fonte']
+    c['limites'] = b['limites']
+    c['blocos_do_treino'] = [
+        {'duracao_s': x['duracao_s'], 'watts': round(x['watts_medio'])
+         if x.get('watts_medio') else None, 'texto': x.get('texto')}
+        for x in alvo]
+    return {'ok': True, **c}

@@ -757,8 +757,16 @@ def classificar_sessao(blocos, corte=None, laps=None):
 
     ws = [w for w in watts if w is not None]
     subida = ((ws[-1] - ws[0]) / ws[0]) if len(ws) >= 2 and ws[0] else None
+    # Uma escada tem degraus de DURACAO PARECIDA. Sem esta condicao, uma
+    # sessao como "2x 5m 167w | 8x 4m 213w" passava por escada só porque a
+    # potencia sobe uma vez -- e sao 8 repeticoes a carga constante, que e'
+    # um intervalado. Exige-se tambem que a carga suba em mais de um
+    # degrau, nao apenas do primeiro para o resto.
+    degraus_distintos = len({round(w / 5) for w in ws})
     escada = (_monotona(ws) and subida is not None
-              and subida >= SUBIDA_ESCADA)
+              and subida >= SUBIDA_ESCADA
+              and (cv_dur is None or cv_dur < 0.35)
+              and degraus_distintos >= 3)
 
     por_distancia = cv_dist is not None and cv_dist < CV_CONSTANTE
     dur_constante = cv_dur is not None and cv_dur < CV_CONSTANTE
@@ -784,11 +792,18 @@ def classificar_sessao(blocos, corte=None, laps=None):
                 'ambos constantes')
         serve = False
     elif dur_constante and not off_constante:
-        tipo = 'intervalado com descanso variável'
-        desc = (f'trabalho constante ({round(sum(dur_on) / len(dur_on))} s) '
-                f'mas recuperações de {round(min(dur_off))} a '
-                f'{round(max(dur_off))} s. O SmO2 de partida de cada bloco '
-                'não é comparável entre repetições')
+        # dur_off pode estar VAZIO: um treino sem blocos de recuperacao
+        # identificados cai aqui e o min() rebentava com
+        # "min() iterable argument is empty". E' o erro que aparecia em
+        # tres sessoes reais.
+        tipo = 'intervalado com descanso variável' if dur_off else 'blocos repetidos'
+        desc = ((f'trabalho constante ({round(sum(dur_on) / len(dur_on))} s) '
+                 f'mas recuperações de {round(min(dur_off))} a '
+                 f'{round(max(dur_off))} s. O SmO2 de partida de cada bloco '
+                 'não é comparável entre repetições') if dur_off else
+                (f'{len(ons)} blocos de '
+                 f'{round(sum(dur_on) / len(dur_on))} s à mesma carga, sem '
+                 'recuperações identificadas entre eles'))
         serve = False
     else:
         tipo = 'intervalado irregular'
@@ -944,23 +959,32 @@ def blocos_de_summary(itens, limiar_recuperacao=0.55):
                      'preciso ir buscar os laps verdadeiros')}
 
 
-def separar_aquecimento_summary(blocos, tol_duracao=0.25, subida_min=0.10):
+def separar_aquecimento_summary(blocos, tol_duracao=0.35, subida_min=0.10,
+                                max_degraus=8):
     """Separa a escada de aquecimento inicial do treino propriamente dito.
 
-    Nas sessões deste atleta o aquecimento é sempre o mesmo: cinco blocos
-    de ~5 min com a potência a subir de ~75 para ~158 W. Sem o separar, as
-    três sessões abaixo saíam todas como "escada", quando na verdade são:
+    O aquecimento deste atleta tem 5 degraus na bicicleta e 3 no remo e no
+    esqui, com a potencia a subir e as duracoes parecidas.
 
-        aquecimento + 1x 20min 246w   ->  esforço único
-        aquecimento + 3x 10min 215w   ->  intervalado
-        aquecimento + 1x 55min 147w   ->  rodagem longa
+    DUAS COISAS QUE PARTIAM A DETECCAO E JA' NAO PARTEM:
 
-    O que as distingue está DEPOIS do aquecimento, e era isso que se
-    perdia.
+    1. RECUPERACOES INTERCALADAS. Numa sessao real:
 
-    Critério: sequência inicial de blocos com durações parecidas entre si
-    (dentro de tol_duracao) e potência a subir de forma monótona. Termina
-    no primeiro bloco que quebre uma das duas condições.
+           74w | 99w | 3x 61s 64w | 119w | 138w | 158w | 1h 132w
+
+       o "3x 61s 64w" sao pausas entre degraus. A versao anterior exigia
+       degraus consecutivos a subir e parava ali, deixando tres degraus de
+       aquecimento a contar como treino. Agora os blocos curtos e de baixa
+       potencia sao SALTADOS sem interromper a escada.
+
+    2. DEGRAUS REPETIDOS. No remo:
+
+           1x 5m5s 136w | 2x 5m 167w | 8x 4m 213w
+
+       o "2x 5m 167w" e' um degrau contado duas vezes. A escada continua
+       enquanto a potencia nao DESCE, em vez de exigir que suba sempre --
+       senao o aquecimento ficava truncado e os 8x4min a 213 W passavam
+       por escada.
     """
     bl = [b for b in (blocos or []) if b.get('watts_medio') is not None]
     if len(bl) < 3:
@@ -969,35 +993,58 @@ def separar_aquecimento_summary(blocos, tol_duracao=0.25, subida_min=0.10):
 
     durs = [b['duracao_s'] for b in bl]
     ws = [b['watts_medio'] for b in bl]
+    dur_ref = durs[0]
+    # potencia abaixo da qual um bloco curto conta como pausa, nao degrau
+    lim_pausa = ws[0] * 0.9
 
     fim = 0
-    for i in range(1, len(bl)):
-        # duracao parecida com a do primeiro?
-        d_ok = abs(durs[i] - durs[0]) <= durs[0] * tol_duracao
-        # potencia a subir?
-        w_ok = ws[i] > ws[i - 1] * (1 + subida_min * 0.3)
-        if d_ok and w_ok:
+    ultimo_w = ws[0]
+    repetidos = 0
+    saltados = []
+    for i in range(1, min(len(bl), max_degraus * 3)):
+        curto = durs[i] < dur_ref * 0.5
+        baixo = ws[i] < lim_pausa
+        if curto and baixo:
+            # pausa entre degraus: salta sem quebrar a escada
+            saltados.append(i)
             fim = i
+            continue
+        d_ok = abs(durs[i] - dur_ref) <= dur_ref * tol_duracao
+        # A escada tem de SUBIR para continuar. Aceitar "nao desce" fazia o
+        # aquecimento engolir 8 blocos iguais a 213 W -- o "2x 5m 167w"
+        # repetia o degrau e os 8x4min a seguir eram absorvidos, dando
+        # "escada" a uma sessao que e' claramente um intervalado.
+        #
+        # Repeticoes do MESMO degrau sao toleradas (o 2x), mas so' uma vez
+        # seguida: duas repeticoes iguais consecutivas terminam a escada.
+        sobe = ws[i] > ultimo_w * 1.03
+        igual = abs(ws[i] - ultimo_w) <= ultimo_w * 0.03
+        if d_ok and sobe:
+            fim = i
+            ultimo_w = ws[i]
+            repetidos = 0
+        elif d_ok and igual and repetidos == 0:
+            fim = i
+            repetidos = 1
         else:
             break
 
-    # Se a escada vai ate' ao FIM da sessao, é mesmo um teste de degraus e
-    # nao ha treino a separar. Se sobra pelo menos um bloco, esse bloco e' o
-    # treino -- e era aqui que estava o erro: exigir dois blocos depois do
-    # aquecimento fazia 146 sessoes de "aquecimento + 1 esforco" contarem
-    # como escada.
+    # tirar pausas finais do aquecimento
+    while fim > 0 and fim in saltados:
+        fim -= 1
+
+    degraus = [k for k in range(fim + 1) if k not in saltados]
+    if len(degraus) < 2:
+        return {'aquecimento': [], 'treino': list(blocos or []),
+                'motivo': 'sem escada inicial reconhecível'}
+
     if fim >= len(bl) - 1:
         return {'aquecimento': [], 'treino': list(blocos or []),
                 'motivo': ('a progressão vai até ao fim da sessão: é mesmo '
                            'um teste de degraus, não aquecimento')}
-    # Dois degraus chegam. Exigir tres deixava passar aquecimentos curtos
-    # como "1x 5m4s 138w, 1x 5m6s 158w, 1x 1h 132w", onde os dois primeiros
-    # sao claramente aquecimento e a hora a seguir e' o treino.
-    if fim < 1:
-        return {'aquecimento': [], 'treino': list(blocos or []),
-                'motivo': 'sem escada inicial reconhecível'}
 
-    subida = (ws[fim] - ws[0]) / ws[0] if ws[0] else 0
+    w_ini, w_fim = ws[degraus[0]], ws[degraus[-1]]
+    subida = (w_fim - w_ini) / w_ini if w_ini else 0
     if subida < subida_min:
         return {'aquecimento': [], 'treino': list(blocos or []),
                 'motivo': f'a escada inicial sobe só {round(subida * 100)}%'}
@@ -1008,12 +1055,16 @@ def separar_aquecimento_summary(blocos, tol_duracao=0.25, subida_min=0.10):
         'aquecimento': aq,
         'treino': tr,
         'n_aquecimento': len(aq),
+        'n_degraus': len(degraus),
+        'n_pausas_saltadas': len(saltados),
         'duracao_aquecimento_s': round(sum(b['duracao_s'] for b in aq)),
-        'watts_aquecimento': [round(b['watts_medio']) for b in aq],
+        'watts_aquecimento': [round(ws[k]) for k in degraus],
         'subida_pct': round(subida * 100),
-        'motivo': (f'{len(aq)} blocos de ~{round(durs[0] / 60)} min com a '
-                   f'potência a subir {round(subida * 100)}% '
-                   f'({round(ws[0])}→{round(ws[fim])} W)'),
+        'motivo': (f'{len(degraus)} degraus de ~{round(dur_ref / 60)} min '
+                   f'com a potência a subir {round(subida * 100)}% '
+                   f'({round(w_ini)}→{round(w_fim)} W)'
+                   + (f', com {len(saltados)} pausa(s) pelo meio'
+                      if saltados else '')),
     }
 
 

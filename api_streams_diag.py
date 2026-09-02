@@ -817,7 +817,12 @@ def registar(app):
                                     'tipo': c['tipo'],
                                     'aquecimento': c.get('aquecimento'),
                                     'treino': c.get('blocos_do_treino')})
-                            continue
+                            # NAO fazer 'continue' aqui: saltava a recolha
+                            # de campos desta sessao. O efeito era que as
+                            # 198 classificadas nao contavam para os campos
+                            # e as 46 que contavam eram as nao
+                            # classificadas -- por isso o cruzamento saia
+                            # sempre vazio e o n_sessoes caiu de 244 para 46
                     except Exception as e:
                         if len(exemplos_sem_laps) < 3:
                             exemplos_sem_laps.append(

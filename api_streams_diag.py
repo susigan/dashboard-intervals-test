@@ -766,6 +766,8 @@ def registar(app):
                 tuple(args), fetch='all') or []
 
             chaves_intervalos = {}
+            amostra_summary = []
+            lap_counts = []
             com_laps = sem_laps = 0
             por_campo = {}
             classificadas = {}
@@ -777,6 +779,28 @@ def registar(app):
                 except Exception:
                     continue
                 laps = None
+                # O 'interval_summary' aparece nas 244 actividades e pode
+                # trazer o tipo e a duracao de cada intervalo. Se trouxer,
+                # classifica-se tudo sem uma unica chamada a API; se so'
+                # tiver contagens, ficamos a saber e decidimos.
+                isum = (j or {}).get('interval_summary')
+                if isinstance(isum, list) and isum:
+                    amostra = isum[0] if isinstance(isum[0], dict) else None
+                    if amostra:
+                        chaves_intervalos['interval_summary'] = \
+                            chaves_intervalos.get('interval_summary', 0) + 1
+                        if not amostra_summary:
+                            amostra_summary.append(
+                                {'id': aid, 'n_itens': len(isum),
+                                 'chaves_do_primeiro': sorted(amostra),
+                                 'primeiro': {k2: amostra[k2]
+                                              for k2 in list(amostra)[:12]}})
+                        # tem tipo e tempos? entao serve como laps
+                        if ('type' in amostra
+                                and ('start_time' in amostra
+                                     or 'moving_time' in amostra
+                                     or 'elapsed_time' in amostra)):
+                            laps = isum
                 for k in ('icu_intervals', 'intervals', 'laps', 'splits'):
                     v = (j or {}).get(k)
                     if v:
@@ -802,6 +826,10 @@ def registar(app):
                                 k for k in (j or {})
                                 if any(x in k.lower()
                                        for x in ('interv', 'lap', 'split')))})
+
+                lc = (j or {}).get('icu_lap_count')
+                if isinstance(lc, (int, float)):
+                    lap_counts.append(int(lc))
 
                 for k, v in (j or {}).items():
                     if not isinstance(v, (int, float)) or isinstance(v, bool):
@@ -835,6 +863,12 @@ def registar(app):
                 'sem_laps_no_json': sem_laps,
                 'chaves_de_intervalos_encontradas': chaves_intervalos,
                 'exemplos_sem_laps': exemplos_sem_laps,
+                'amostra_interval_summary': amostra_summary,
+                'lap_count': ({
+                    'n': len(lap_counts),
+                    'min': min(lap_counts), 'max': max(lap_counts),
+                    'com_mais_de_3': sum(1 for x in lap_counts if x > 3),
+                } if lap_counts else None),
                 'n_classificadas': len(classificadas),
                 'tipos_encontrados': {
                     t: sum(1 for x in classificadas.values() if x == t)
@@ -849,7 +883,9 @@ def registar(app):
                     'com_laps_no_json for baixo, os laps não estão no '
                     'sumário e classificar tudo exigiria uma chamada à API '
                     'por actividade — nesse caso decide-se se vale a pena, '
-                    'e para que campos'),
+                    'e para que campos. Ver amostra_interval_summary: se '
+                    'esse campo tiver type e tempos, classifica-se tudo de '
+                    'graça'),
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

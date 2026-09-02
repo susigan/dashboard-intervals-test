@@ -768,6 +768,7 @@ def registar(app):
             chaves_intervalos = {}
             amostra_summary = []
             bruto_summary = []
+            com_aquecimento = []
             campos_todos = {}
             lap_counts = []
             com_laps = sem_laps = 0
@@ -809,6 +810,12 @@ def registar(app):
                         c = _mn.classificar_de_summary(isum)
                         if c.get('ok'):
                             classificadas[str(aid)] = c['tipo']
+                            # TER aquecimento em escada e SER uma escada sao
+                            # coisas diferentes: quase todas as sessoes tem
+                            # aquecimento, so' algumas sao testes de degraus
+                            naq = (c.get('aquecimento') or {}).get('n_blocos') or 0
+                            if naq >= 2:
+                                com_aquecimento.append(str(aid))
                             com_laps += 1
                             if len(amostra_summary) < 5:
                                 amostra_summary.append({
@@ -919,6 +926,12 @@ def registar(app):
                     'com_mais_de_3': sum(1 for x in lap_counts if x > 3),
                 } if lap_counts else None),
                 'n_classificadas': len(classificadas),
+                'com_aquecimento_em_escada': len(com_aquecimento),
+                'diferenca_aquecimento_vs_escada': (
+                    'TER aquecimento em escada e SER uma escada são coisas '
+                    'diferentes. Quase todas as sessões começam com degraus '
+                    'a subir; só as classificadas como "escada" são testes '
+                    'de degraus do princípio ao fim, sem treino a seguir'),
                 'tipos_encontrados': {
                     t: sum(1 for x in classificadas.values() if x == t)
                     for t in set(classificadas.values())},

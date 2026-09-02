@@ -721,6 +721,16 @@ def classificar_sessao(blocos, corte=None, laps=None):
     ons = [x for x in bl if x.get('on')]
     offs = [x for x in bl if not x.get('on')]
 
+    # 'min() iterable argument is empty': acontecia quando nao havia
+    # blocos ON. Sai-se antes de calcular qualquer minimo.
+    if not ons:
+        return {'ok': True, 'tipo': 'sem blocos de trabalho',
+                'n_blocos_trabalho': 0,
+                'descricao': ('nenhum bloco acima do limiar de potência: '
+                              'sessão só de recuperação, ou sem potência'),
+                'serve_para_breakpoints': False,
+                'blocos_fora_do_corte': fora_do_corte}
+
     if len(ons) < 2:
         return {'ok': True, 'tipo': 'contínuo',
                 'n_blocos_trabalho': len(ons),
@@ -953,7 +963,7 @@ def separar_aquecimento_summary(blocos, tol_duracao=0.25, subida_min=0.10):
     no primeiro bloco que quebre uma das duas condições.
     """
     bl = [b for b in (blocos or []) if b.get('watts_medio') is not None]
-    if len(bl) < 4:
+    if len(bl) < 3:
         return {'aquecimento': [], 'treino': list(blocos or []),
                 'motivo': 'poucos blocos para separar'}
 
@@ -971,7 +981,19 @@ def separar_aquecimento_summary(blocos, tol_duracao=0.25, subida_min=0.10):
         else:
             break
 
-    if fim < 2:
+    # Se a escada vai ate' ao FIM da sessao, é mesmo um teste de degraus e
+    # nao ha treino a separar. Se sobra pelo menos um bloco, esse bloco e' o
+    # treino -- e era aqui que estava o erro: exigir dois blocos depois do
+    # aquecimento fazia 146 sessoes de "aquecimento + 1 esforco" contarem
+    # como escada.
+    if fim >= len(bl) - 1:
+        return {'aquecimento': [], 'treino': list(blocos or []),
+                'motivo': ('a progressão vai até ao fim da sessão: é mesmo '
+                           'um teste de degraus, não aquecimento')}
+    # Dois degraus chegam. Exigir tres deixava passar aquecimentos curtos
+    # como "1x 5m4s 138w, 1x 5m6s 158w, 1x 1h 132w", onde os dois primeiros
+    # sao claramente aquecimento e a hora a seguir e' o treino.
+    if fim < 1:
         return {'aquecimento': [], 'treino': list(blocos or []),
                 'motivo': 'sem escada inicial reconhecível'}
 

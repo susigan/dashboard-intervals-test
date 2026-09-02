@@ -799,6 +799,30 @@ def registar(app):
                                   or len(str(isum)) < 1500
                                   else str(isum)[:1500] + ' …TRUNCADO'),
                     })
+                # lista de STRINGS: e' o formato real. Classifica-se aqui,
+                # sem chamada a API.
+                if (isinstance(isum, list) and isum
+                        and isinstance(isum[0], str)):
+                    chaves_intervalos['interval_summary(str)'] = \
+                        chaves_intervalos.get('interval_summary(str)', 0) + 1
+                    try:
+                        c = _mn.classificar_de_summary(isum)
+                        if c.get('ok'):
+                            classificadas[str(aid)] = c['tipo']
+                            com_laps += 1
+                            if len(amostra_summary) < 5:
+                                amostra_summary.append({
+                                    'id': aid, 'data': str(data)[:10],
+                                    'summary': isum,
+                                    'tipo': c['tipo'],
+                                    'aquecimento': c.get('aquecimento'),
+                                    'treino': c.get('blocos_do_treino')})
+                            continue
+                    except Exception as e:
+                        if len(exemplos_sem_laps) < 3:
+                            exemplos_sem_laps.append(
+                                {'id': aid, 'erro_classificar': str(e)[:120]})
+
                 if isinstance(isum, list) and isum:
                     amostra = isum[0] if isinstance(isum[0], dict) else None
                     if amostra:
@@ -831,7 +855,7 @@ def registar(app):
                             classificadas[str(aid)] = c.get('tipo')
                     except Exception:
                         pass
-                else:
+                elif str(aid) not in classificadas:
                     sem_laps += 1
                     if len(exemplos_sem_laps) < 3:
                         exemplos_sem_laps.append({
@@ -902,10 +926,12 @@ def registar(app):
                     'passo barato: só usa o JSON já guardado. Se '
                     'com_laps_no_json for baixo, os laps não estão no '
                     'sumário e classificar tudo exigiria uma chamada à API '
-                    'por actividade — nesse caso decide-se se vale a pena, '
-                    'e para que campos. Ver amostra_interval_summary: se '
-                    'esse campo tiver type e tempos, classifica-se tudo de '
-                    'graça'),
+                    'por actividade. RESOLVIDO: o interval_summary é uma '
+                    'lista de strings ("1x 5m2s 99w") e dá para classificar '
+                    'tudo sem chamadas. Não traz WORK/RECOVERY nem '
+                    'distância, portanto as recuperações são inferidas pela '
+                    'potência e não se distingue intervalado por distância '
+                    'de intervalado por tempo'),
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

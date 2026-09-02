@@ -726,4 +726,133 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/diag/proveniencia')
+    def api_diag_proveniencia():
+        """De que TIPO de sessão vem cada campo da Intervals.icu.
+
+        O AeT, o Pvo2max, o HRVT1PLUS e o PBP não significam o mesmo em
+        todas as sessões: um Pvo2max de um rolo fácil não é um Pvo2max.
+        Isto cruza cada campo com o tipo de sessão em que foi medido.
+
+        PRIMEIRO PASSO, barato: usa só o JSON já guardado, sem chamar a API
+        400 vezes. Se os laps lá estiverem, classifica-se tudo de graça; se
+        não, fica-se a saber quanto custaria antes de o fazer.
+
+        ?modalidade=Bike   ?dias=1095   ?campo=AeT
+        """
+        try:
+            import json as _json
+            import db as _db
+            from config import TYPE_MAP
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import mnirs as _mn
+
+            dias = request.args.get('dias', type=int) or 1095
+            modalidade = request.args.get('modalidade')
+            corte = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+
+            cond, args = ["raw IS NOT NULL", "date >= ?"], [corte]
+            if modalidade:
+                vs = [k for k, v in TYPE_MAP.items() if v == modalidade]
+                if vs:
+                    cond.append(f"type IN ({','.join('?' * len(vs))})")
+                    args += vs
+            linhas = _db._exec(
+                f"""SELECT id, type, date, name, raw FROM activities
+                     WHERE {' AND '.join(cond)} ORDER BY date DESC""",
+                tuple(args), fetch='all') or []
+
+            chaves_intervalos = {}
+            com_laps = sem_laps = 0
+            por_campo = {}
+            classificadas = {}
+            exemplos_sem_laps = []
+
+            for aid, tipo, data, nome, raw in linhas:
+                try:
+                    j = raw if isinstance(raw, dict) else _json.loads(raw)
+                except Exception:
+                    continue
+                laps = None
+                for k in ('icu_intervals', 'intervals', 'laps', 'splits'):
+                    v = (j or {}).get(k)
+                    if v:
+                        chaves_intervalos[k] = chaves_intervalos.get(k, 0) + 1
+                        if laps is None and isinstance(v, list):
+                            laps = v
+                if laps:
+                    com_laps += 1
+                    try:
+                        bl = _mn.blocos_de_laps(laps)
+                        if bl.get('ok'):
+                            c = _mn.classificar_sessao(bl['blocos'], laps=laps)
+                            classificadas[str(aid)] = c.get('tipo')
+                    except Exception:
+                        pass
+                else:
+                    sem_laps += 1
+                    if len(exemplos_sem_laps) < 3:
+                        exemplos_sem_laps.append({
+                            'id': aid, 'data': str(data)[:10],
+                            'n_chaves_no_json': len(j or {}),
+                            'chaves_parecidas': sorted(
+                                k for k in (j or {})
+                                if any(x in k.lower()
+                                       for x in ('interv', 'lap', 'split')))})
+
+                for k, v in (j or {}).items():
+                    if not isinstance(v, (int, float)) or isinstance(v, bool):
+                        continue
+                    d = por_campo.setdefault(k, {'n': 0, 'por_tipo': {},
+                                                 'min': v, 'max': v})
+                    d['n'] += 1
+                    d['min'] = min(d['min'], v)
+                    d['max'] = max(d['max'], v)
+                    t = classificadas.get(str(aid))
+                    if t:
+                        d['por_tipo'][t] = d['por_tipo'].get(t, 0) + 1
+
+            alvo = request.args.get('campo')
+            if alvo:
+                por_campo = {k: v for k, v in por_campo.items()
+                             if k.lower() == alvo.lower()}
+            else:
+                interesse = ('aet', 'aetwkg', 'aethr', 'mss', 'pbp',
+                             'pvo2max', 'hrvt1', 'hrvt1plus', 'hrvt2',
+                             'hrvtmss', 'lthrdetected', 'ebp',
+                             'fractionalutilizationusing6mpower')
+                por_campo = {k: v for k, v in por_campo.items()
+                             if k.lower() in interesse}
+
+            return jsonify({
+                'status': 'ok',
+                'modalidade': modalidade, 'dias': dias,
+                'n_actividades': len(linhas),
+                'com_laps_no_json': com_laps,
+                'sem_laps_no_json': sem_laps,
+                'chaves_de_intervalos_encontradas': chaves_intervalos,
+                'exemplos_sem_laps': exemplos_sem_laps,
+                'n_classificadas': len(classificadas),
+                'tipos_encontrados': {
+                    t: sum(1 for x in classificadas.values() if x == t)
+                    for t in set(classificadas.values())},
+                'campos': {k: {'n_sessoes': v['n'],
+                               'min': round(v['min'], 2),
+                               'max': round(v['max'], 2),
+                               'por_tipo_de_sessao': v['por_tipo']}
+                           for k, v in sorted(por_campo.items())},
+                'nota': (
+                    'passo barato: só usa o JSON já guardado. Se '
+                    'com_laps_no_json for baixo, os laps não estão no '
+                    'sumário e classificar tudo exigiria uma chamada à API '
+                    'por actividade — nesse caso decide-se se vale a pena, '
+                    'e para que campos'),
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     return app

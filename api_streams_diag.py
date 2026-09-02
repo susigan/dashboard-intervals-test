@@ -767,6 +767,8 @@ def registar(app):
 
             chaves_intervalos = {}
             amostra_summary = []
+            bruto_summary = []
+            campos_todos = {}
             lap_counts = []
             com_laps = sem_laps = 0
             por_campo = {}
@@ -784,6 +786,19 @@ def registar(app):
                 # classifica-se tudo sem uma unica chamada a API; se so'
                 # tiver contagens, ficamos a saber e decidimos.
                 isum = (j or {}).get('interval_summary')
+                # a amostra veio vazia, portanto isto nao e' uma lista de
+                # dicionarios. Regista-se o que E', em bruto, em vez de se
+                # continuar a adivinhar o formato.
+                if isum is not None and len(bruto_summary) < 3:
+                    bruto_summary.append({
+                        'id': aid, 'data': str(data)[:10],
+                        'tipo_python': type(isum).__name__,
+                        'tamanho': (len(isum)
+                                    if hasattr(isum, '__len__') else None),
+                        'valor': (isum if not hasattr(isum, '__len__')
+                                  or len(str(isum)) < 1500
+                                  else str(isum)[:1500] + ' …TRUNCADO'),
+                    })
                 if isinstance(isum, list) and isum:
                     amostra = isum[0] if isinstance(isum[0], dict) else None
                     if amostra:
@@ -827,6 +842,9 @@ def registar(app):
                                 if any(x in k.lower()
                                        for x in ('interv', 'lap', 'split')))})
 
+                for k in (j or {}):
+                    campos_todos[k] = campos_todos.get(k, 0) + 1
+
                 lc = (j or {}).get('icu_lap_count')
                 if isinstance(lc, (int, float)):
                     lap_counts.append(int(lc))
@@ -864,6 +882,8 @@ def registar(app):
                 'chaves_de_intervalos_encontradas': chaves_intervalos,
                 'exemplos_sem_laps': exemplos_sem_laps,
                 'amostra_interval_summary': amostra_summary,
+                'interval_summary_em_bruto': bruto_summary,
+                'todas_as_chaves_do_json': sorted(campos_todos)[:400],
                 'lap_count': ({
                     'n': len(lap_counts),
                     'min': min(lap_counts), 'max': max(lap_counts),

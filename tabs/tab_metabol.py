@@ -2494,14 +2494,56 @@ function pmExtTabela(){
  if(mxr.bp2_w!=null) linhasMoxy.push({grupo:'limiar', rot:'BP2 (SmO2)',
    w:mxr.bp2_w, bpm:mxr.bp2_bpm, origem:mxr.bp2_origem});
 
+ // ── efeito do filtro por tipo de sessão ──────────────────────────
+ const ft=(PMEXT && PMEXT.filtro_por_tipo) || {};
+ if(ft.ok && Object.keys(ft.campos||{}).length){
+  h+='<details style="margin:8px 0;"><summary style="cursor:pointer;'
+   +'font-size:12px;color:#8b949e;padding:4px 0;">Campos que exigem esforço '
+   +'máximo — efeito do filtro</summary><div style="margin-top:6px;">'
+   +'<table style="border-collapse:collapse;font-size:11px;">'
+   +'<tr style="color:#8b949e;text-align:left;">'
+   +'<th style="padding-right:14px;">Campo</th>'
+   +'<th style="padding-right:14px;">Todas as sessões</th>'
+   +'<th style="padding-right:14px;">Só com esforço máximo</th>'
+   +'<th>Diferença</th></tr>'
+   +Object.keys(ft.campos).map(function(k){
+     const x=ft.campos[k];
+     const d=x.diferenca_pct;
+     const cor = d==null ? '#8b949e' : Math.abs(d)>15 ? '#F0883E' : '#3FB950';
+     return '<tr><td style="padding-right:14px;"><b>'+k+'</b></td>'
+      +'<td style="padding-right:14px;color:#8b949e;">'
+      +(x.todas.mediana!=null?x.todas.mediana+' W':'—')
+      +' <span style="font-size:10px;">n='+x.todas.n+'</span></td>'
+      +'<td style="padding-right:14px;"><b>'
+      +(x.com_esforco_maximo.mediana!=null
+        ?x.com_esforco_maximo.mediana+' W':'—')
+      +'</b> <span style="color:#8b949e;font-size:10px;">n='
+      +x.com_esforco_maximo.n+'</span></td>'
+      +'<td style="color:'+cor+';">'+(d!=null?(d>0?'+':'')+d+'%':'—')
+      +'</td></tr>'; }).join('')
+   +'</table>'
+   +'<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+   +ft.porque_so_estes+'</p>'
+   +'<p style="color:#8b949e;font-size:11px;">'+ft.nota+'</p>'
+   +'</div></details>';
+ } else if(ft.motivo){
+  h+='<p style="color:#8b949e;font-size:11px;">Filtro por tipo de sessão: '
+   +ft.motivo+'</p>';
+ }
+
  if(mxr.sem_dados)
   h+='<p style="color:#8b949e;font-size:11px;border-left:3px solid #F0883E;'
    +'padding-left:8px;">BP1 e BP2 do SmO2 não aparecem: '+mxr.motivo+'</p>';
  else if(mxr.erro)
   h+='<p style="color:#F85149;font-size:11px;">Moxy: '+mxr.erro+'</p>';
 
- // ── tabela por grupo ──
+ // ── tabela por grupo, em dropdown ──
+ // Aberta por omissão: é a tabela principal desta secção. As outras três
+ // (rede causal, 5-1-5 e correlações) ficam fechadas, porque são detalhe.
  let grupoActual = null;
+ h+='<details open style="margin-top:8px;"><summary style="cursor:pointer;'
+  +'font-size:12px;color:#8b949e;padding:4px 0;">Campos medidos, por grupo ('
+  +cs.length+')</summary><div style="margin-top:6px;">';
  h+='<table style="width:100%;border-collapse:collapse;font-size:12px;">'
   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
   +'<th style="padding:6px;">Campo</th><th>n</th><th>p25</th><th>Mediana</th>'
@@ -2573,6 +2615,7 @@ function pmExtTabela(){
    +'<td style="color:'+dcor+';">'+dtxt+'</td></tr>';
  });
  h+='</table>';
+ h+='</div></details>';
  h+=pmCorrelacoes();
  h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
   +'Valores entre parênteses são conversões, não medições. O Δ só é '

@@ -1126,8 +1126,49 @@ def registar(app):
                                 'limiares_externos_dados, em vez de None'),
             }
 
+            # ── reservas: W' em qualquer sessao, M' so' com SmO2 ──
+            reservas = {}
+            try:
+                import balance as _bal
+                try:
+                    from app import perfil_metabolico_dados as _pmd
+                    _pm, _ = _pmd(mod, {}, com_ancoras=False)
+                    _pm = _pm or {}
+                except Exception as e:
+                    _pm = {'erro': str(e)[:80]}
+                _lim = _pm.get('limiares') or {}
+                _cp = _pm.get('cp_w') or _lim.get('cp_w')
+                _wp = _pm.get('w_prime_j') or _lim.get('w_prime_j')
+                wt2 = canais.get('watts')
+                if wt2 and _cp and _wp:
+                    reservas['wprime'] = _bal.wprime_balance(t, wt2, _cp, _wp)
+                elif wt2:
+                    reservas['wprime'] = {
+                        'ok': False,
+                        'motivo': ('sem CP e W′ gravados para esta '
+                                   'modalidade — corre a tab CP-Model')}
+                # M' precisa do CER, que so' e' valido com ensaios de
+                # duracoes diferentes ate' a exaustao
+                if ce.get('ok') and ce.get('valido'):
+                    reservas['mprime'] = _bal.mprime_balance(
+                        t, smo2, ce.get('cer_pct_por_s'),
+                        abs(ce.get('m_linha') or 0))
+                else:
+                    reservas['mprime'] = {
+                        'ok': False,
+                        'motivo': ('o CER não é válido nesta sessão: '
+                                   + (ce.get('motivo') or ce.get('aviso')
+                                      or 'sem ajuste')),
+                        'porque_importa': (
+                            'o M′ balance é aritmética correcta sobre os '
+                            'parâmetros que receber. Com um CER inválido '
+                            'daria uma curva bonita e errada')}
+            except Exception as e:
+                reservas = {'erro': f'{type(e).__name__}: {e}'}
+
             return jsonify({
                 'status': 'ok', 'activity_id': aid, 'modalidade': mod,
+                'reservas': reservas,
                 'coerencia': coer,
                 'tipo_sessao': tipo,
                 'perfil_resposta': perfil,

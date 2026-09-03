@@ -339,7 +339,8 @@ const MX_CORES = {smo2:'#F85149', thb:'#58A6FF', o2hb:'#3FB950',
                   hhb:'#A371F7', watts:'#6e7681', heartrate:'#E3B341',
                   respiration:'#79C0FF', dfa_a1:'#D2A8FF',
                   cadence:'#F0883E', velocity_smooth:'#3FB950',
-                  torque:'#8b949e'};
+                  torque:'#8b949e',
+                  wprime:'#E3B341', mprime:'#F85149'};
 // Escalas muito diferentes no mesmo grafico ficariam ilegiveis: o SmO2 anda
 // nos 60, a potencia nos 250 e o DFA-a1 abaixo de 2. Cada canal e' normalizado
 // ao seu proprio intervalo para o desenho, e o hover mostra sempre o valor
@@ -925,6 +926,24 @@ function mxLimiares(){
   const bl0=d.bp_moxy_sem_restricao||{};
   const c1=(lc.primeiro||{}), c2=(lc.segundo||{});
   MX_RESERVAS = d.reservas || {};
+  // Injectar as reservas como CANAIS, para passarem pela máquina que já
+  // existe: aparecem nas caixas de métricas, no gráfico e no hover, sem
+  // código de desenho novo. Estavam a ser guardadas e nunca desenhadas.
+  const dd0 = MX_DADOS[id];
+  if(dd0){
+   ['wprime','mprime'].forEach(function(k){
+    const r=(d.reservas||{})[k];
+    delete dd0.canais[k];
+    if(dd0.canais_contexto)
+     dd0.canais_contexto = dd0.canais_contexto.filter(x=>x!==k);
+    if(r && r.ok && (r.serie||[]).length){
+     // a série vem no mesmo passo de tempo dos streams
+     dd0.canais[k] = r.serie;
+     dd0.canais_contexto = (dd0.canais_contexto||[]).concat([k]);
+    }
+   });
+   mxCanaisEdit();
+  }
   MX_BP = (bl0.bp1_w!=null || bl0.bp2_w!=null) ? {
     bp1: bl0.bp1_w, bp2: bl0.bp2_w,
     bp1_bpm: bl0.bp1_bpm, bp2_bpm: bl0.bp2_bpm,
@@ -1875,7 +1894,8 @@ function mxTraco(canal, nSessoes){
  if(nSessoes<2) return [];
  return {smo2:[], thb:[6,3], o2hb:[2,2], hhb:[8,3,2,3],
          heartrate:[4,2], respiration:[1,3], dfa_a1:[10,4],
-         cadence:[3,3], torque:[5,5], velocity_smooth:[7,2]}[canal] || [];
+         cadence:[3,3], torque:[5,5], velocity_smooth:[7,2],
+         wprime:[12,3], mprime:[12,3,3,3]}[canal] || [];
 }
 
 function mxLigarTip(){

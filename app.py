@@ -2033,6 +2033,135 @@ def _ultima_analise_moxy(modalidade):
         return {'erro': f'{type(e).__name__}: {e}'}
 
 
+# Campos que precisam de intensidades que o aquecimento em escada NUNCA
+# atinge. O aquecimento deste atleta vai de ~72 a ~158 W:
+#
+#   AeT      mediana 107 W  ->  fica NO MEIO da rampa. Atravessado.
+#   MSS      mediana 159 W  ->  mesmo no topo. Atravessado por pouco.
+#   PBP      mediana 185 W  ->  acima da rampa.
+#   Pvo2max  mediana 255 W  ->  100 W acima do topo.
+#
+# Os dois primeiros sao medidos de verdade em quase todas as sessoes, e
+# filtrar so' tiraria dados. Os dois ultimos nao: o valor vem de outro
+# sitio da sessao, e uma mediana de 244 valores em que a maioria e' o pico
+# de uma rodagem nao estima a potencia aerobia maxima -- estima picos de
+# rodagem.
+#
+# Por isso o filtro e' estreito de proposito. Filtrar nao acrescenta
+# dados, so' tira; so' se justifica onde o valor nao filtrado nao mede o
+# que diz medir.
+CAMPOS_QUE_EXIGEM_MAXIMO = ('pvo2max', 'pbp', 'lthrdetected')
+
+# Tipos de sessao onde um esforco quase maximo e' plausivel.
+TIPOS_COM_ESFORCO_MAXIMO = ('escada (teste de degraus)',
+                            'blocos repetidos',
+                            'intervalado por tempo',
+                            'intervalado com descanso variável',
+                            'intervalado irregular')
+
+
+def _tipo_por_sessao(modalidade, dias=1095):
+    """{id: tipo de sessão} a partir do interval_summary já guardado."""
+    try:
+        import json as _json
+        import db as _db
+        from config import TYPE_MAP
+        import os as _o
+        import sys as _s
+        _s.path.insert(0, _o.path.join(
+            _o.path.dirname(_o.path.abspath(__file__)), 'utils'))
+        import mnirs as _mn
+
+        corte = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+        cond, args = ["raw IS NOT NULL", "date >= ?"], [corte]
+        if modalidade:
+            vs = [k for k, v in TYPE_MAP.items() if v == modalidade]
+            if vs:
+                cond.append(f"type IN ({','.join('?' * len(vs))})")
+                args += vs
+        linhas = _db._exec(
+            f"SELECT id, date, raw FROM activities WHERE {' AND '.join(cond)}",
+            tuple(args), fetch='all') or []
+        fora = {}
+        for aid, data, raw in linhas:
+            try:
+                j = raw if isinstance(raw, dict) else _json.loads(raw)
+            except Exception:
+                continue
+            isum = (j or {}).get('interval_summary')
+            if not (isinstance(isum, list) and isum
+                    and isinstance(isum[0], str)):
+                continue
+            try:
+                c = _mn.classificar_de_summary(isum)
+                if c.get('ok'):
+                    fora[str(data)[:10]] = c['tipo']
+            except Exception:
+                pass
+        return fora
+    except Exception:
+        return {}
+
+
+def _filtrar_por_tipo(modalidade, por_data):
+    """Mediana filtrada vs não filtrada, para os campos que exigem máximo.
+
+    Mostra as DUAS, e não substitui uma pela outra: assim vê-se o efeito
+    do filtro em vez de se acreditar nele.
+    """
+    tipos = _tipo_por_sessao(modalidade)
+    if not tipos:
+        return {'ok': False,
+                'motivo': ('não foi possível classificar as sessões: sem '
+                           'interval_summary no JSON guardado')}
+
+    def _med(vs):
+        vs = sorted(v for v in vs if v is not None)
+        if not vs:
+            return None
+        n = len(vs)
+        return vs[n // 2] if n % 2 else (vs[n // 2 - 1] + vs[n // 2]) / 2
+
+    fora = {}
+    for campo, valores in (por_data or {}).items():
+        if campo.lower() not in CAMPOS_QUE_EXIGEM_MAXIMO:
+            continue
+        todos = list(valores.values())
+        com_max = [v for d, v in valores.items()
+                   if tipos.get(d) in TIPOS_COM_ESFORCO_MAXIMO]
+        sem_tipo = [v for d, v in valores.items() if d not in tipos]
+        m_todos, m_max = _med(todos), _med(com_max)
+        dif = ((m_max - m_todos) / m_todos * 100
+               if m_todos and m_max else None)
+        fora[campo] = {
+            'todas': {'n': len(todos),
+                      'mediana': round(m_todos, 1) if m_todos else None},
+            'com_esforco_maximo': {
+                'n': len(com_max),
+                'mediana': round(m_max, 1) if m_max else None},
+            'sem_classificacao': len(sem_tipo),
+            'diferenca_pct': round(dif, 1) if dif is not None else None,
+            'recomendado': 'com_esforco_maximo',
+        }
+
+    return {
+        'ok': True, 'campos': fora,
+        'n_sessoes_classificadas': len(tipos),
+        'tipos_aceites': list(TIPOS_COM_ESFORCO_MAXIMO),
+        'porque_so_estes': (
+            'o aquecimento em escada vai de ~72 a ~158 W. O AeT (mediana '
+            '107 W) e o MSS (159 W) são atravessados por essa rampa e são '
+            'medidos de verdade em quase todas as sessões — filtrá-los só '
+            'tirava dados. O Pvo2max (255 W) e o PBP (185 W) ficam acima do '
+            'topo da rampa: o valor vem de outro sítio da sessão, e a '
+            'mediana de 244 valores estima picos de rodagem, não potência '
+            'aeróbia máxima'),
+        'nota': ('mostram-se as duas medianas de propósito. O filtro não '
+                 'acrescenta dados, só tira — a decisão de o usar deve ser '
+                 'tomada a ver o efeito, não por confiança no critério'),
+    }
+
+
 def _correlacao_campos(por_data):
     """Spearman entre campos, sobre as sessoes em comum a cada par."""
     try:
@@ -2388,6 +2517,7 @@ def limiares_externos_dados(modalidade, args):
             'campos_duplicados': duplicados,
             'campos_por_reconhecer': nao_reconhecidos,
             'moxy': _ultima_analise_moxy(modalidade),
+            'filtro_por_tipo': _filtrar_por_tipo(modalidade, por_data),
             'correlacao_campos': _correlacao_campos(por_data),
             'a1_individualizado': a1_indiv,
             'a1_referencia_literatura': 0.75,

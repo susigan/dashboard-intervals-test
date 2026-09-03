@@ -1935,7 +1935,13 @@ function mxDiagnostico(){
  const d=(MX&&MX.diagnostico)||{};
  const ks=Object.keys(d);
  if(!ks.length){ box.innerHTML=''; return; }
- let h='<table style="border-collapse:collapse;font-size:11px;">'
+ // Diagnostico da limpeza em dropdown: interessa quando alguma coisa
+ // corre mal, nao a cada leitura do grafico. O aviso de artefacto fica
+ // FORA, a vista, porque esse muda a leitura de tudo o resto.
+ let h='<details style="margin-top:4px;"><summary style="cursor:pointer;'
+  +'font-size:12px;color:#8b949e;padding:4px 0;">Qualidade dos canais ('
+  +ks.length+' canais)</summary><div style="margin-top:6px;">';
+ h+='<table style="border-collapse:collapse;font-size:11px;">'
   +'<tr style="color:#8b949e;text-align:left;"><th style="padding-right:14px;">Canal</th>'
   +'<th style="padding-right:14px;">Pontos</th><th style="padding-right:14px;">Inválidos</th>'
   +'<th style="padding-right:14px;">Outliers</th><th style="padding-right:14px;">Substituído</th>'
@@ -1954,6 +1960,16 @@ function mxDiagnostico(){
    +(f.motivo?' ('+f.motivo+')':'')+'</td></tr>';
  });
  h+='</table>';
+ // streams e artefacto DENTRO do dropdown, e o aviso de artefacto
+ // repetido FORA quando e' alto: uma sessao com 40% de artefacto muda a
+ // leitura de tudo, e nao pode ficar escondida atras de um clique.
+ if(MX.streams_usados) h+='<p style="color:#8b949e;font-size:11px;">Streams: '
+  +Object.keys(MX.streams_usados).map(function(k){
+    return k+' \\u2190 '+MX.streams_usados[k]; }).join(' · ')+'</p>';
+ h+='</div></details>';
+
+ // aviso de artefacto FORA do dropdown: uma sessão com 40% de artefacto
+ // muda a leitura de tudo e não pode ficar atrás de um clique
  const ar = MX.artefactos;
  if(ar && ar.pct_acima_do_limiar!=null){
   const c = ar.pct_acima_do_limiar<10 ? '#3FB950'
@@ -1965,9 +1981,6 @@ function mxDiagnostico(){
    +'DFA-a1 e respiração antes de filtrar. O SmO2 e o THb vêm do Moxy e não '
    +'são afectados.</p>';
  }
- if(MX.streams_usados) h+='<p style="color:#8b949e;font-size:11px;">Streams: '
-  +Object.keys(MX.streams_usados).map(function(k){
-    return k+' \\u2190 '+MX.streams_usados[k]; }).join(' · ')+'</p>';
  box.innerHTML=h;
 }
 

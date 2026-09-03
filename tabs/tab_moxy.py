@@ -878,7 +878,8 @@ function mxResumo(){
  }).catch(e=>{ est.textContent='erro: '+e.message; });
 }
 
-let MX_BP = null;   // breakpoints para desenhar no gráfico
+let MX_BP = null;        // breakpoints para desenhar no gráfico
+let MX_RESERVAS = null;  // W′ e M′ balance ao longo da sessão
 
 function mxGuardarAnalise(){
  const ids=Object.keys(MX_DADOS);
@@ -923,6 +924,7 @@ function mxLimiares(){
   // comum entre as duas ferramentas.
   const bl0=d.bp_moxy_sem_restricao||{};
   const c1=(lc.primeiro||{}), c2=(lc.segundo||{});
+  MX_RESERVAS = d.reservas || {};
   MX_BP = (bl0.bp1_w!=null || bl0.bp2_w!=null) ? {
     bp1: bl0.bp1_w, bp2: bl0.bp2_w,
     bp1_bpm: bl0.bp1_bpm, bp2_bpm: bl0.bp2_bpm,
@@ -1101,6 +1103,31 @@ function mxLimiares(){
   if(ml.aviso_duracao)
    h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '
     +ml.aviso_duracao+'</p>';
+
+  // ── reservas W′ e M′ ──────────────────────────────────────────────
+  const rv=d.reservas||{};
+  ['wprime','mprime'].forEach(function(k){
+   const r=rv[k];
+   if(!r) return;
+   const nome = k==='wprime' ? 'W′ (potência)' : 'M′ (SmO2)';
+   if(!r.ok){
+    h+='<p style="font-size:11px;color:#8b949e;">'+nome+': '
+     +(r.motivo||r.erro||'indisponível')
+     +(r.porque_importa?' — '+r.porque_importa:'')+'</p>';
+    return;
+   }
+   const pct=r.minimo_pct;
+   const cor = r.vezes_esgotado ? '#F85149' : pct<15 ? '#F0883E' : '#3FB950';
+   h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
+    +'margin-bottom:8px;">'
+    +'<b style="color:'+cor+';">'+nome+' — mínimo '+pct+'%</b> '
+    +'<span style="color:#8b949e;font-size:11px;">'
+    +(r.vezes_esgotado?r.vezes_esgotado+'× a zero · ':'')
+    +'aos '+Math.floor((r.instante_do_minimo_s||0)/60)+' min</span>'
+    +'<br><span style="font-size:11px;">'+r.leitura+'</span>'
+    +'<br><span style="font-size:10px;color:#8b949e;">'+r.modelo
+    +(r.nota?' · '+r.nota:'')+(r.limite?' · '+r.limite:'')+'</span></div>';
+  });
 
   const bm=d.bp_moxy||{};
   if(bm.ok || bm.bp1_w!=null){

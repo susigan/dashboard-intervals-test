@@ -636,8 +636,13 @@ function mx515(){
   (d.avisos||[]).forEach(function(a){
    h+='<p style="color:#F85149;font-size:11px;margin:4px 0;">⚠ '+a+'</p>'; });
 
+  // as 13 perguntas com as figuras ficam em dropdown: os dois cartões
+  // acima são a resposta, isto é a auditoria de como se lá chegou
+  h+='<details style="margin-top:8px;"><summary style="cursor:pointer;'
+   +'font-size:12px;color:#8b949e;padding:4px 0;">As 13 perguntas, com o '
+   +'padrão de cada resposta</summary><div style="margin-top:6px;">';
   h+='<table style="width:100%;border-collapse:collapse;font-size:11px;'
-   +'margin-top:8px;"><tr style="color:#8b949e;text-align:left;'
+   +'"><tr style="color:#8b949e;text-align:left;'
    +'border-bottom:1px solid #21262d;"><th style="padding:5px;">#</th>'
    +'<th>Pergunta</th><th>Padrão</th><th>Medido</th><th>Resposta</th><th>Pontos</th>'
    +'<th>Eixo</th></tr>';
@@ -686,6 +691,7 @@ function mx515(){
    +'transição, e o patamar é o que a pergunta procura. Na figura, os '
    +'pontos cinzentos marcam exactamente onde a tendência foi tirada: em '
    +'cima nas perguntas de repouso, em baixo nas de trabalho.</p>';
+  h+='</div></details>';
   box.innerHTML=h;
   Array.prototype.forEach.call(box.querySelectorAll('.mx515R'), function(el){
    el.addEventListener('change', function(){
@@ -1299,6 +1305,11 @@ function mxRede(){
     +'controlo, nunca testados como causa: <b>'
     +d.mecanicos_excluidos.join(', ')+'</b>. "A potência precede a subida da '
     +'FC" não é um achado — é a definição de treinar.</p>';
+  h+='<details style="margin-top:6px;"><summary style="cursor:pointer;'
+   +'font-size:12px;color:#8b949e;padding:4px 0;">Arestas da rede ('
+   +((d.arestas||[]).length)+' com direcção, '
+   +((d.indecisas||[]).filter(e=>e.direccao==='ambigua').length)
+   +' ambíguas)</summary><div style="margin-top:6px;">';
   h+='<table style="border-collapse:collapse;font-size:11px;">'
    +'<tr style="color:#8b949e;text-align:left;">'
    +'<th style="padding-right:14px;">De</th><th style="padding-right:14px;">Para</th>'
@@ -1325,7 +1336,7 @@ function mxRede(){
     +'<td style="padding-right:14px;color:#8b949e;">'+e.correlacao+'</td>'
     +'<td style="color:#F0883E;">ambíguo</td></tr>';
   });
-  h+='</table>';
+  h+='</table></div></details>';
   const dg=d.diagnostico||{};
   const dif=Object.keys(dg).filter(k=>dg[k] && dg[k].diferenciada);
   const exc=Object.keys(dg).filter(k=>dg[k] && dg[k].excluido);

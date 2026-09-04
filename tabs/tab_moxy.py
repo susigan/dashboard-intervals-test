@@ -1483,14 +1483,21 @@ function mxCanaisEdit(){
   + todos.map(function(k){
    const on = MX_ON[k] === true;
    const nirsQ = nirs.indexOf(k)>=0;
+   const calc = (k==='wprime'||k==='mprime');
    const cor = MX_CORES[k]||'#c9d1d9';
+   const nome = k==='wprime' ? "W′ restante"
+              : k==='mprime' ? "M′ restante" : k;
+   // as reservas não são "de contexto": são calculadas a partir do CP e
+   // do W′. Marcá-las com o mesmo asterisco dos streams em bruto dizia
+   // que não tinham sido filtradas, o que não descreve o que são
    return '<button class="mxC" data-k="'+k+'" '
     + 'style="border:1px solid '+(on?cor:'#30363d')+';border-radius:14px;'
     + 'padding:3px 11px;background:'+(on?'rgba(255,255,255,0.05)':'transparent')
     + ';color:'+(on?cor:'#6e7681')+';font-size:11px;cursor:pointer;">'
-    + (on?'● ':'○ ') + k + (nirsQ?'':' *') + '</button>';
+    + (on?'● ':'○ ') + nome + (calc?' †':(nirsQ?'':' *')) + '</button>';
   }).join('')
-  + '<span style="color:#6e7681;font-size:10px;">* de contexto, não filtrado</span>'
+  + '<span style="color:#6e7681;font-size:10px;">* stream em bruto, '
+  + 'não filtrado &nbsp; † calculado (reserva)</span>'
   + '</div>';
  Array.prototype.forEach.call(box.querySelectorAll('.mxC'), function(el){
   el.addEventListener('click', function(){
@@ -1905,10 +1912,16 @@ function mxDraw(){
    g.setLineDash([]); g.lineWidth=1;
    g.fillStyle=b[1]; g.font='10px sans-serif'; g.textAlign='center';
    const bpm = b[2]==='BP1' ? MX_BP.bp1_bpm : MX_BP.bp2_bpm;
+   // dizer de onde vem o valor: o do script bate certo com o que se ve'
+   // na Intervals.icu, a mediana dos metodos nao
    const disp = b[2]==='BP1' ? MX_BP.bp1_disp : MX_BP.bp2_disp;
+   const doScript = MX_BP.fonte === 'script Intervals.icu';
    g.fillText(b[2]+' '+Math.round(b[0])+'W'+(bpm?' · '+bpm+'bpm':'')
               +(disp?' ±'+disp+'%':'')
               +(MX_BP.fiavel===false?' (?)':''), x, PT+10);
+   g.font='9px sans-serif';
+   g.fillText(doScript?'script icu':'mediana', x, PT+21);
+   g.font='10px sans-serif';
   });
  }
 

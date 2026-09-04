@@ -163,6 +163,113 @@ def api_debug_athlete():
     return jsonify(out)
 
 
+def api_reservas(activity_id):
+    """W' e M' balance de uma actividade.
+
+    O W' precisa so' de potencia, CP e W' -- funciona em QUALQUER sessao.
+    O M' precisa de SmO2 e so' existe onde houve Moxy.
+
+    O CP e o W' vem do perfil metabolico da modalidade, e ficam em cache
+    por modalidade: sao os mesmos para todas as actividades dessa
+    modalidade, e ir busca-los a cada actividade aberta tornava a
+    navegacao lenta sem necessidade.
+    """
+    import os as _o
+    import sys as _s
+    _s.path.insert(0, _o.path.join(
+        _o.path.dirname(_o.path.abspath(__file__)), '..', 'utils'))
+    _s.path.insert(0, _o.path.join(
+        _o.path.dirname(_o.path.abspath(__file__)), 'utils'))
+    try:
+        import balance as _bal
+    except ImportError:
+        return jsonify({'status': 'erro',
+                        'mensagem': 'utils/balance.py não encontrado'}), 200
+
+    act, err = icu_get(f"/activity/{activity_id}")
+    if err:
+        return jsonify({'status': 'erro', 'mensagem': err}), 200
+    mod = norm_tipo(act.get('type'))
+
+    raw, err2 = icu_get(f"/activity/{activity_id}/streams")
+    if err2:
+        return jsonify({'status': 'erro', 'mensagem': err2}), 200
+    lista = raw
+    if isinstance(lista, dict):
+        lista = lista.get('streams') or lista.get('content') or []
+    streams = {}
+    for st in (lista or []):
+        if isinstance(st, dict) and (st.get('type') or st.get('name')):
+            streams[st.get('type') or st.get('name')] = st.get('data') or []
+
+    def _achar(nomes):
+        norm = lambda x: ''.join(c for c in str(x).lower() if c.isalnum())
+        alvos = [norm(a) for a in nomes]
+        for k in streams:
+            if norm(k) in alvos:
+                return k
+        for k in streams:
+            if any(a and a in norm(k) for a in alvos):
+                return k
+        return None
+
+    kw = _achar(['watts', 'power'])
+    ks = _achar(['smo2'])
+    n = len(streams.get(kw) or streams.get(ks) or [])
+    tempo = streams.get('time') or list(range(n))
+
+    cp, wp = _cp_wp_da_modalidade(mod)
+    reservas = {}
+
+    if kw and cp and wp:
+        reservas['wprime'] = _bal.wprime_balance(tempo, streams[kw], cp, wp)
+    elif kw:
+        reservas['wprime'] = {
+            'ok': False,
+            'motivo': (f'sem CP e W′ para {mod} — corre e grava na tab '
+                       'CP-Model')}
+    else:
+        reservas['wprime'] = {'ok': False, 'motivo': 'sessão sem potência'}
+
+    if ks:
+        reservas['mprime'] = {
+            'ok': False,
+            'motivo': ('o M′ precisa do CER, que só é válido com ensaios de '
+                       'durações diferentes até à exaustão. Calcula-o na tab '
+                       'Moxy e, se for válido, aparece aqui')}
+    else:
+        reservas['mprime'] = {'ok': False,
+                              'motivo': 'sessão sem SmO2 — não há Moxy'}
+
+    return jsonify({'status': 'ok', 'modalidade': mod,
+                    'cp': cp, 'w_prime': wp, 'reservas': reservas,
+                    'nota': ("o W′ funciona em qualquer sessão com potência; "
+                             "o M′ só onde houve Moxy E o CER for válido")})
+
+
+# CP e W' por modalidade, calculados uma vez. Sao os mesmos para todas as
+# actividades da modalidade -- ir busca-los a cada actividade aberta
+# tornava a navegacao lenta sem nada em troca.
+_CACHE_CP = {}
+
+
+def _cp_wp_da_modalidade(mod):
+    if mod in _CACHE_CP:
+        return _CACHE_CP[mod]
+    cp = wp = None
+    try:
+        from app import perfil_metabolico_dados as _pmd
+        pm, _ = _pmd(mod, {}, com_ancoras=False)
+        pm = pm or {}
+        lim = pm.get('limiares') or {}
+        cp = pm.get('cp_w') or lim.get('cp_w')
+        wp = pm.get('w_prime_j') or lim.get('w_prime_j')
+    except Exception:
+        pass
+    _CACHE_CP[mod] = (cp, wp)
+    return cp, wp
+
+
 BODY = r"""<a href="/">&larr; Voltar a lista</a>
 <h1 id="title">A carregar...</h1>
 <div class="sub" id="subtitle"></div>
@@ -170,6 +277,13 @@ BODY = r"""<a href="/">&larr; Voltar a lista</a>
 
 <h2>Series temporais</h2>
 <div class="toggles" id="toggles"></div>
+<div class="controls" style="margin:4px 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+  <span class="sub">Suavizacao:</span>
+  <input type="range" id="rollSlider" min="0" max="4" step="1" value="0"
+         style="width:160px" oninput="setRoll()">
+  <span id="rollTxt" class="sub">sem suavizacao</span>
+  <span class="sub" style="opacity:.7">| W' e M' nao sao suavizados: ja' sao um integral</span>
+</div>
 <div class="chartbox">
   <div class="legend" id="legend"></div>
   <canvas id="chart" height="360"></canvas>
@@ -234,9 +348,46 @@ const COLORS={watts:'#5DADE2',heartrate:'#E74C3C',cadence:'#F4D03F',altitude:'#5
  thb:'#EC7063',thb_2:'#CD6155',O2Hb:'#F39C12',HHb:'#9B59B6',DiffHb:'#E59866',torque:'#85929E',
  respiration:'#7FB3D5',dfa_a1:'#F1948A',RRa1:'#82E0AA',distance:'#566573',Speed:'#A569BD',
  RespirationRateAlphaHRV:'#D7BDE2',hrv:'#F5B041',artifacts:'#5D6D7E',
- GarminDistanceperStroke:'#7DCEA0',WorkperStrokeEstimated:'#BB8FCE'};
+ GarminDistanceperStroke:'#7DCEA0',WorkperStrokeEstimated:'#BB8FCE',
+ wprime:'#E3B341',mprime:'#F85149'};
 const NIRS=['smo2','thb','O2Hb','HHb','DiffHb'];
 let STREAMS={},META=[],ACTIVE={},NACTIVE={},DATA=null;
+// STREAMS_ORIG guarda as series como vieram. O rolling e' sempre aplicado
+// a partir daqui e nunca em cima do ja' suavizado -- suavizar duas vezes
+// tira o pico duas vezes.
+let STREAMS_ORIG={};
+const ROLL_JANELAS=[0,10,30,60,120];
+// As reservas ja' sao um integral do esforco. Suavizar um integral e'
+// suavizar duas vezes, e o minimo -- que e' o numero que interessa --
+// deixaria de ser o minimo real.
+const ROLL_EXCEPCOES=['wprime','mprime'];
+
+function rollingSerie(vs,janela){
+ if(!janela||janela<=0) return vs.slice();
+ const n=vs.length, metade=Math.floor(janela/2), out=[];
+ for(let i=0;i<n;i++){
+  const a=Math.max(0,i-metade), b=Math.min(n,i+metade+1);
+  let soma=0,c=0;
+  for(let k=a;k<b;k++){ const v=vs[k]; if(typeof v==='number'){soma+=v;c++;} }
+  out.push(c?soma/c:null);
+ }
+ return out;
+}
+
+function setRoll(){
+ const idx=parseInt(document.getElementById('rollSlider').value,10)||0;
+ const j=ROLL_JANELAS[idx];
+ document.getElementById('rollTxt').textContent =
+  j ? 'media movel de '+(j<60?j+'s':(j/60)+'min')+' (centrada)'
+    : 'sem suavizacao';
+ Object.keys(STREAMS_ORIG).forEach(function(k){
+  STREAMS[k] = ROLL_EXCEPCOES.indexOf(k)>=0
+    ? STREAMS_ORIG[k].slice()
+    : rollingSerie(STREAMS_ORIG[k], j);
+ });
+ drawChart();
+ if(typeof drawNirs==='function') drawNirs();
+}
 function color(k){return COLORS[k]||'#8b949e';}
 function metaOf(k){for(var i=0;i<META.length;i++)if(META[i].key===k)return META[i];return {key:k,label:k,type:k};}
 
@@ -399,6 +550,25 @@ async function load(){
 
  STREAMS=d.streams||{};
  META=d.stream_meta||[];
+ // reservas W' e M': o W' precisa so' de potencia, CP e W'; o M' precisa
+ // de SmO2 e so' existe nas sessoes com Moxy
+ try{
+  const rb=await fetch('/api/activity/'+AID+'/reservas').then(r=>r.json());
+  if(rb && rb.status==='ok'){
+   ['wprime','mprime'].forEach(function(k){
+    const r=(rb.reservas||{})[k];
+    if(r && r.ok && (r.serie||[]).length){
+     STREAMS[k]=r.serie;
+     META.push({key:k, label:k, type:k, plotted:true,
+                sensor_name:(k==='wprime'?"W' restante (J)":"M' restante"),
+                points:r.serie.length});
+    }
+   });
+   window.__RESERVAS__=rb.reservas||{};
+  }
+ }catch(e){ window.__RESERVAS_ERRO__=String(e); }
+ STREAMS_ORIG={};
+ Object.keys(STREAMS).forEach(k=>{STREAMS_ORIG[k]=STREAMS[k].slice();});
  const names=Object.keys(STREAMS);
  const nirsKeys=META.filter(m=>NIRS.indexOf(m.type)!==-1&&m.plotted).map(m=>m.key);
  const mainKeys=names.filter(k=>nirsKeys.indexOf(k)===-1);

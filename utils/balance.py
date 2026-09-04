@@ -191,3 +191,55 @@ def _ler_balance(fraccao_minima, esgotou, nome):
                 'esforço substancial, com margem')
     return (f'a reserva {nome} nunca desceu abaixo de '
             f'{round(fraccao_minima * 100)}%: a sessão ficou longe do limite')
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ROLLING — média móvel para o gráfico
+#
+# Serve para o utilizador escolher a janela, de 10 s a 2 min, e ver o mesmo
+# sinal com mais ou menos detalhe.
+#
+# Centrada, não à esquerda: uma média móvel à esquerda desloca todos os
+# picos para a direita pela metade da janela. Com 2 min de janela isso
+# seriam 60 s de erro na leitura de quando uma coisa aconteceu — e o que
+# se procura nestes gráficos é precisamente o QUANDO.
+#
+# As reservas W′ e M′ NÃO devem ser suavizadas: já são um integral, e
+# suavizar um integral é suavizar duas vezes. Ficam na lista de excepções.
+# ══════════════════════════════════════════════════════════════════════════
+
+JANELAS_S = (0, 10, 30, 60, 120)
+
+NAO_SUAVIZAR = ('wprime', 'mprime')
+
+
+def rolling(vs, janela_s, hz=1.0, centrada=True):
+    """Média móvel. janela_s=0 devolve a série intacta."""
+    if not janela_s or janela_s <= 0:
+        return list(vs or [])
+    n = len(vs or [])
+    if not n:
+        return []
+    w = max(1, int(round(janela_s * hz)))
+    metade = w // 2
+    fora = []
+    for i in range(n):
+        a = max(0, i - metade) if centrada else max(0, i - w + 1)
+        b = min(n, i + metade + 1) if centrada else i + 1
+        jan = [x for x in vs[a:b] if x is not None]
+        fora.append(sum(jan) / len(jan) if jan else None)
+    return fora
+
+
+def aplicar_rolling(canais, janela_s, hz=1.0, excepcoes=NAO_SUAVIZAR):
+    """Aplica rolling a todos os canais, menos às excepções."""
+    if not janela_s:
+        return dict(canais or {}), []
+    fora, suavizados = {}, []
+    for k, v in (canais or {}).items():
+        if k.lower() in excepcoes:
+            fora[k] = list(v)
+        else:
+            fora[k] = rolling(v, janela_s, hz)
+            suavizados.append(k)
+    return fora, suavizados

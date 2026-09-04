@@ -1457,6 +1457,105 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/cer/<modalidade>')
+    def api_moxy_cer(modalidade):
+        """CER a partir do ÚLTIMO degrau de várias sessões.
+
+        Numa escada, o último degrau termina por exaustão: o atleta para
+        porque não sustenta mais, não porque o relógio tocou. Esse ponto é
+        um tempo-até-à-exaustão legítimo.
+
+        Os degraus anteriores não são: acabam aos 5 min porque o protocolo
+        diz 5 min, e se continuasse aguentaria mais.
+
+        Logo cada sessão dá UM ponto. O CER precisa de três — e por isso
+        junta-se o último degrau de VÁRIAS sessões da mesma modalidade,
+        que é onde as durações diferem a sério.
+
+        ?dias=1095   ?min_pontos=3
+        """
+        try:
+            import os as _o
+            import sys as _s
+            _s.path.insert(0, _o.path.join(
+                _o.path.dirname(_o.path.abspath(__file__)), 'utils'))
+            import nirs_breakpoints as nbk
+
+            with app.test_request_context(
+                    f'/api/moxy/sessoes?modalidade={modalidade}'):
+                ses = api_moxy_sessoes().get_json() or {}
+            if ses.get('status') != 'ok':
+                return jsonify({'status': 'erro',
+                                'mensagem': ses.get('mensagem')}), 200
+
+            pontos, detalhe = [], []
+            for s2 in (ses.get('sessoes') or [])[:12]:
+                aid = str(s2.get('id'))
+                try:
+                    r = api_moxy_limiares(aid)
+                    d = (r[0].get_json() if isinstance(r, tuple)
+                         else r.get_json()) or {}
+                except Exception as e:
+                    detalhe.append({'id': aid, 'data': s2.get('data'),
+                                    'erro': str(e)[:90]})
+                    continue
+                if d.get('status') != 'ok':
+                    detalhe.append({'id': aid, 'data': s2.get('data'),
+                                    'motivo': d.get('mensagem')})
+                    continue
+                blocos = d.get('blocos_usados') or []
+                if not blocos:
+                    detalhe.append({'id': aid, 'data': s2.get('data'),
+                                    'motivo': 'sem blocos com SmO2'})
+                    continue
+                # o ULTIMO bloco de trabalho, por ordem de tempo
+                ult = blocos[-1]
+                delta = ult.get('delta_smo2')
+                dur = ult.get('duracao_s')
+                tipo = (d.get('tipo_sessao') or {}).get('tipo')
+                if delta is None or not dur:
+                    detalhe.append({'id': aid, 'data': s2.get('data'),
+                                    'motivo': 'último bloco sem taxa de SmO2'})
+                    continue
+                pontos.append((delta, dur))
+                detalhe.append({
+                    'id': aid, 'data': s2.get('data'), 'tipo_sessao': tipo,
+                    'watts_do_ultimo': ult.get('watts'),
+                    'duracao_s': dur, 'delta_smo2_por_s': delta})
+
+            minimo = request.args.get('min_pontos', type=int) or 3
+            if len(pontos) < minimo:
+                return jsonify({
+                    'status': 'sem_dados', 'modalidade': modalidade,
+                    'n_pontos': len(pontos), 'minimo': minimo,
+                    'sessoes': detalhe,
+                    'motivo': (f'só {len(pontos)} sessões deram um último '
+                               f'degrau utilizável; são precisas {minimo}'),
+                    'nota': ('cada sessão contribui com UM ponto — o último '
+                             'degrau, que é o único que termina por '
+                             'exaustão')}), 200
+
+            durs = sorted({round(d) for _x, d in pontos})
+            res = nbk.cer(pontos, ate_exaustao=True)
+            res.update({
+                'status': 'ok', 'modalidade': modalidade,
+                'n_sessoes': len(pontos), 'sessoes': detalhe,
+                'duracoes_s': durs,
+                'aviso_duracoes': (
+                    None if len(durs) >= 3 else
+                    f'só {len(durs)} duração(ões) distinta(s) ({durs} s). O '
+                    'ajuste precisa de durações diferentes para ter '
+                    'inclinação — com todas iguais o r² é enganador'),
+                'como_foi_feito': (
+                    'último degrau de cada sessão, que é o que termina por '
+                    'exaustão. Os degraus anteriores acabam pelo relógio e '
+                    'não servem'),
+            })
+            return jsonify(res)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/corte', methods=['POST'])
     def api_moxy_corte():
         """Grava o intervalo a analisar de uma sessao.

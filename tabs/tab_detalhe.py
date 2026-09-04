@@ -242,7 +242,9 @@ def api_reservas(activity_id):
                               'motivo': 'sessão sem SmO2 — não há Moxy'}
 
     return jsonify({'status': 'ok', 'modalidade': mod,
-                    'cp': cp, 'w_prime': wp, 'reservas': reservas,
+                    'cp': cp, 'w_prime': wp,
+                    'origem_do_cp': _CACHE_CP.get(mod + '__origem'),
+                    'reservas': reservas,
                     'nota': ("o W′ funciona em qualquer sessão com potência; "
                              "o M′ só onde houve Moxy E o CER for válido")})
 
@@ -254,19 +256,36 @@ _CACHE_CP = {}
 
 
 def _cp_wp_da_modalidade(mod):
+    """CP e W' da modalidade, do endpoint /api/cp/actual.
+
+    Estava a ler 'cp_w' e 'w_prime_j' do perfil metabolico, chaves que nao
+    existem la' -- por isso vinha sempre null. O CP vive no modelo CP, com
+    as chaves 'cp_w' e 'wp_j', e o endpoint /api/cp/actual devolve o
+    instantaneo gravado ou calcula na hora.
+    """
     if mod in _CACHE_CP:
         return _CACHE_CP[mod]
     cp = wp = None
+    origem = None
     try:
-        from app import perfil_metabolico_dados as _pmd
-        pm, _ = _pmd(mod, {}, com_ancoras=False)
-        pm = pm or {}
-        lim = pm.get('limiares') or {}
-        cp = pm.get('cp_w') or lim.get('cp_w')
-        wp = pm.get('w_prime_j') or lim.get('w_prime_j')
-    except Exception:
-        pass
+        import api_cp as _acp
+        fn = getattr(_acp, 'cp_actual_dados', None)
+        if fn:
+            d = fn(mod) or {}
+        else:
+            # sem funcao exposta: ir pela rota interna
+            from flask import current_app
+            with current_app.test_request_context(f'/api/cp/actual/{mod}'):
+                r = current_app.view_functions['api_cp_actual'](mod)
+            d = r.get_json() if hasattr(r, 'get_json') else (
+                r[0].get_json() if isinstance(r, tuple) else {})
+        if (d or {}).get('status') == 'ok':
+            cp, wp = d.get('cp_w'), d.get('wp_j')
+            origem = d.get('origem')
+    except Exception as e:
+        origem = f'{type(e).__name__}: {e}'
     _CACHE_CP[mod] = (cp, wp)
+    _CACHE_CP[mod + '__origem'] = origem
     return cp, wp
 
 
@@ -298,6 +317,7 @@ BODY = r"""<a href="/">&larr; Voltar a lista</a>
          style="width:160px" oninput="setRollNirs()">
   <span id="rollNirsTxt" class="sub">sem suavizacao</span>
 </div>
+<div id="nirsAviso"></div>
 <div class="chartbox">
   <div class="legend" id="nirsLegend"></div>
   <canvas id="nirs" height="260"></canvas>
@@ -444,6 +464,40 @@ function drawSeries(canvasId,height,keys){
  g.textAlign='left';
 }
 function drawChart(){drawSeries('chart',360,Object.keys(ACTIVE).filter(k=>ACTIVE[k]));}
+// SmO2, O2Hb, HHb e DiffHb nao sao quatro medicoes: sao quatro leituras
+// da MESMA. O sensor mede O2Hb e HHb; o resto sai por aritmetica:
+//
+//     SmO2   = O2Hb / (O2Hb + HHb) x 100  =  O2Hb / THb x 100
+//     THb    = O2Hb + HHb
+//     DiffHb = O2Hb - HHb                 =  2xO2Hb - THb
+//
+// Quando o THb quase nao varia -- o que e' comum -- o O2Hb fica
+// PROPORCIONAL ao SmO2 e o DiffHb fica uma transformacao LINEAR dele. E
+// como o grafico normaliza cada serie ao seu proprio min-max, as tres
+// curvas ficam sobrepostas ponto por ponto.
+//
+// Nao e' um erro do grafico nem do sensor: e' o que a algebra obriga. O
+// aviso existe para nao se tomar tres linhas iguais por tres confirmacoes
+// independentes.
+function avisoDerivados(keys){
+ const tem = k => keys.indexOf(k)>=0 && STREAMS[k] && STREAMS[k].length;
+ if(!tem('smo2')) return '';
+ const dup=['O2Hb','HHb','DiffHb'].filter(tem);
+ if(!dup.length) return '';
+ let amp=null;
+ if(STREAMS.thb){
+  const v=STREAMS.thb.filter(x=>typeof x==='number');
+  if(v.length) amp=(Math.max.apply(null,v)-Math.min.apply(null,v)).toFixed(2);
+ }
+ return '<p class="sub" style="color:#F0883E;margin:4px 0;">'
+  +dup.join(', ')+' e SmO2 aparecem sobrepostos porque sao a mesma medicao: '
+  +'SmO2 = O2Hb/THb, DiffHb = 2xO2Hb - THb. Com o THb quase constante'
+  +(amp!==null?' (varia '+amp+' aqui)':'')
+  +', as tres sao transformacoes lineares uma da outra e o grafico '
+  +'normaliza cada uma ao seu proprio minimo e maximo. Nao sao tres '
+  +'confirmacoes independentes.</p>';
+}
+
 function drawNirs(){
  const keys=Object.keys(NACTIVE).filter(k=>NACTIVE[k]);
  if(!keys.length){const o=ctx('nirs',260);noData(o.g,o.W,o.H,'Sem canais NIRS selecionados');return;}
@@ -459,6 +513,8 @@ function drawNirs(){
  });
  drawSeries('nirs',260,keys);
  Object.keys(guardado).forEach(function(k){ STREAMS[k]=guardado[k]; });
+ const al=document.getElementById('nirsAviso');
+ if(al) al.innerHTML=avisoDerivados(keys);
 }
 
 function drawPvH(pvh){

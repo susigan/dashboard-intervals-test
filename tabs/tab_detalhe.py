@@ -232,11 +232,22 @@ def api_reservas(activity_id):
         reservas['wprime'] = {'ok': False, 'motivo': 'sessão sem potência'}
 
     if ks:
-        reservas['mprime'] = {
-            'ok': False,
-            'motivo': ('o M′ precisa do CER, que só é válido com ensaios de '
-                       'durações diferentes até à exaustão. Calcula-o na tab '
-                       'Moxy e, se for válido, aparece aqui')}
+        # o CER vem da analise Moxy gravada para esta modalidade. Estava a
+        # ser recusado sempre sem sequer procurar.
+        cer, mp, origem = _cer_da_modalidade(mod)
+        if cer and mp:
+            reservas['mprime'] = _bal.mprime_balance(
+                tempo, streams[ks], cer, mp)
+            if reservas['mprime'].get('ok'):
+                reservas['mprime']['origem_do_cer'] = origem
+        else:
+            reservas['mprime'] = {
+                'ok': False,
+                'motivo': ('sem CER gravado para ' + str(mod) + '. O CER '
+                           'precisa de ensaios de durações DIFERENTES até à '
+                           'exaustão — com blocos todos iguais é impossível '
+                           'por construção, não por falta de código'),
+                'onde_gravar': 'tab Moxy → Gravar análise'}
     else:
         reservas['mprime'] = {'ok': False,
                               'motivo': 'sessão sem SmO2 — não há Moxy'}
@@ -253,6 +264,38 @@ def api_reservas(activity_id):
 # actividades da modalidade -- ir busca-los a cada actividade aberta
 # tornava a navegacao lenta sem nada em troca.
 _CACHE_CP = {}
+_CACHE_CER = {}
+
+
+def _cer_da_modalidade(mod):
+    """CER e M' da ultima analise Moxy gravada para esta modalidade."""
+    if mod in _CACHE_CER:
+        return _CACHE_CER[mod]
+    cer = mp = origem = None
+    try:
+        import json as _j
+        import drive_db_perfil as ddp
+        cn = ddp.get_conn()
+        r = cn.execute(
+            """SELECT data, json_completo FROM moxy_analises
+                 WHERE modalidade = ? ORDER BY data DESC LIMIT 5""",
+            (mod,)).fetchall()
+        cn.close()
+        for data, js in (r or []):
+            try:
+                d = _j.loads(js) if js else {}
+            except Exception:
+                continue
+            ce = ((d.get('limiares') or {}).get('cer')) or {}
+            if ce.get('ok') and ce.get('valido'):
+                cer = ce.get('cer_pct_por_s')
+                mp = abs(ce.get('m_linha') or 0) or None
+                origem = f'análise Moxy de {data}'
+                break
+    except Exception as e:
+        origem = f'{type(e).__name__}: {e}'
+    _CACHE_CER[mod] = (cer, mp, origem)
+    return cer, mp, origem
 
 
 def _cp_wp_da_modalidade(mod):
@@ -434,12 +477,19 @@ function color(k){return COLORS[k]||'#8b949e';}
 function metaOf(k){for(var i=0;i<META.length;i++)if(META[i].key===k)return META[i];return {key:k,label:k,type:k};}
 
 
+// Escalas de cada gráfico, guardadas para o hover poder converter a
+// posição do rato em índice de amostra. Sem isto não há tooltip possível.
+const ESCALAS={};
+
 function drawSeries(canvasId,height,keys){
  const o=ctx(canvasId,height),g=o.g,W=o.W,H=o.H;
  const PL=46,PR=46,PT=10,PB=26,w=W-PL-PR,h=H-PT-PB;
  keys=keys.filter(k=>STREAMS[k]&&STREAMS[k].length);
- if(!keys.length){noData(g,W,H,'Seleciona pelo menos uma serie');return;}
+ if(!keys.length){noData(g,W,H,'Seleciona pelo menos uma serie');
+  ESCALAS[canvasId]=null;return;}
  const n=Math.max.apply(null,keys.map(k=>STREAMS[k].length));
+ ESCALAS[canvasId]={PL:PL,PT:PT,w:w,h:h,n:n,keys:keys.slice()};
+ ligarHover(canvasId);
  g.strokeStyle='#21262d';g.lineWidth=1;
  for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
  keys.forEach(function(k,idx){
@@ -463,6 +513,46 @@ function drawSeries(canvasId,height,keys){
  for(let i=0;i<=6;i++){const x=PL+w*i/6;g.fillText(Math.round(i/6*el/60)+'m',x,H-8);}
  g.textAlign='left';
 }
+function ligarHover(canvasId){
+ const cv=document.getElementById(canvasId);
+ if(!cv||cv.__hover) return;
+ cv.__hover=true;
+ let tip=document.getElementById(canvasId+'Tip');
+ if(!tip){
+  tip=document.createElement('div');
+  tip.id=canvasId+'Tip';
+  tip.style.cssText='display:none;position:absolute;pointer-events:none;'
+   +'background:#161b22;border:1px solid #30363d;border-radius:6px;'
+   +'padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;max-width:240px;';
+  (cv.parentNode||document.body).appendChild(tip);
+  if(cv.parentNode) cv.parentNode.style.position='relative';
+ }
+ cv.addEventListener('mousemove', function(ev){
+  const e=ESCALAS[canvasId];
+  if(!e){ tip.style.display='none'; return; }
+  const r=cv.getBoundingClientRect();
+  const esc=(cv.width/r.width)/(window.devicePixelRatio||1);
+  const mx=(ev.clientX-r.left)*esc;
+  if(mx<e.PL||mx>e.PL+e.w){ tip.style.display='none'; return; }
+  const i=Math.round((mx-e.PL)/e.w*(e.n-1));
+  const el=window.__ELAPSED__||0;
+  const seg=Math.round(i/(e.n-1)*el);
+  let h='<b>'+Math.floor(seg/60)+':'
+   +String(seg%60).padStart(2,'0')+'</b>';
+  e.keys.forEach(function(k){
+   const v=STREAMS[k] && STREAMS[k][i];
+   if(typeof v!=='number') return;
+   const m=metaOf(k);
+   h+='<br><span style="color:'+color(k)+';">'+(m.sensor_name||k)+'</span> '
+    +(Math.abs(v)>=100?Math.round(v):Math.round(v*10)/10);
+  });
+  tip.innerHTML=h; tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+14, r.width-250)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
+}
+
 function drawChart(){drawSeries('chart',360,Object.keys(ACTIVE).filter(k=>ACTIVE[k]));}
 // SmO2, O2Hb, HHb e DiffHb nao sao quatro medicoes: sao quatro leituras
 // da MESMA. O sensor mede O2Hb e HHb; o resto sai por aritmetica:
@@ -644,10 +734,28 @@ async function load(){
  try{
   const rb=await fetch('/api/activity/'+AID+'/reservas').then(r=>r.json());
   if(rb && rb.status==='ok'){
+   // O drawSeries estica CADA serie por i/(n-1) sobre a mesma largura.
+   // Se a reserva tiver comprimento diferente do stream de potencia, fica
+   // deslocada no tempo -- e' isso que faz o W' entrar errado no grafico.
+   // Ajusta-se ao comprimento de referencia antes de entrar.
+   const nRef = Math.max.apply(null,
+     Object.keys(STREAMS).map(k=>STREAMS[k].length).concat([0]));
+   function ajustar(v, n){
+    if(!n || v.length===n) return v.slice();
+    const out=[];
+    for(let i=0;i<n;i++){
+     const p=(v.length-1)*i/(n-1);
+     const a=Math.floor(p), b=Math.min(v.length-1, a+1), f=p-a;
+     const va=v[a], vb=v[b];
+     out.push((typeof va==='number' && typeof vb==='number')
+              ? va+(vb-va)*f : (typeof va==='number'?va:null));
+    }
+    return out;
+   }
    ['wprime','mprime'].forEach(function(k){
     const r=(rb.reservas||{})[k];
     if(r && r.ok && (r.serie||[]).length){
-     STREAMS[k]=r.serie;
+     STREAMS[k]=ajustar(r.serie, nRef);
      META.push({key:k, label:k, type:k, plotted:true,
                 sensor_name:(k==='wprime'?"W' restante (J)":"M' restante"),
                 points:r.serie.length});

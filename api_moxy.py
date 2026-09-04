@@ -1054,16 +1054,35 @@ def registar(app):
                     t, smo2, b['t0'], b['t1'])
                 ons.append(bb)
 
+            # Modalidade: primeiro a base local, depois a API.
+            #
+            # Lia-se so' da base local, e uma sessao que ainda nao esteja
+            # sincronizada -- ou cujo 'type' nao esteja no TYPE_MAP --
+            # deixava o mod a None. Com mod=None a rota
+            # /api/cp/actual/None nao devolve CP nenhum, e o W' aparecia
+            # como "sem CP gravado" mesmo havendo CP. Na tab Atividades
+            # funcionava porque la' a modalidade vem do JSON da API.
             mod = None
+            origem_mod = None
             try:
                 import db as _db
+                from config import TYPE_MAP
                 r = _db._exec("SELECT type FROM activities WHERE id = ?",
                               (aid,), fetch='one')
-                if r:
-                    from config import TYPE_MAP
+                if r and TYPE_MAP.get(r[0]):
                     mod = TYPE_MAP.get(r[0])
+                    origem_mod = 'base local'
             except Exception:
                 pass
+            if not mod:
+                try:
+                    from config import TYPE_MAP
+                    _act, _e = api.icu_get(f'/activity/{aid}')
+                    if not _e and isinstance(_act, dict):
+                        mod = TYPE_MAP.get(_act.get('type'))
+                        origem_mod = 'API (não estava na base local)'
+                except Exception as e:
+                    origem_mod = f'{type(e).__name__}: {e}'
 
             # Metodo principal: padrao de dessaturacao por bloco. E' o que
             # corresponde a este protocolo. A regressao segmentada fica como
@@ -1104,9 +1123,51 @@ def registar(app):
                            or nbk.PLATO_CORTE) if smo2 else None
             ensaios = [(b['delta_smo2'], b['t1'] - b['t0']) for b in ons
                        if b.get('delta_smo2') is not None]
-            ce = nbk.cer(
-                ensaios,
-                ate_exaustao=request.args.get('exaustao') == '1')
+            # Quais blocos terminaram por exaustao. O CER so' e' valido
+            # com ensaios ate' a falha, e so' o atleta sabe quais foram.
+            #
+            #   ?exaustao=1            todos os blocos
+            #   ?exaustao=ultimos:3    os 3 ultimos
+            #   ?exaustao=3,5,6        por indice (1 = primeiro bloco)
+            #
+            # Com duracoes todas iguais continua a ser impossivel, mas
+            # varias sessoes deste atleta TEM duracoes distintas
+            # suficientes -- estava a recusar sem sequer olhar.
+            _ex = (request.args.get('exaustao') or '').strip()
+            _sel = None
+            if _ex in ('1', 'todos', 'true'):
+                _sel = list(range(len(ensaios)))
+            elif _ex.startswith('ultimos:'):
+                try:
+                    _k = int(_ex.split(':')[1])
+                    _sel = list(range(max(0, len(ensaios) - _k), len(ensaios)))
+                except Exception:
+                    _sel = None
+            elif _ex:
+                try:
+                    _sel = [int(x) - 1 for x in _ex.replace(' ', '').split(',')
+                            if x.strip().isdigit()]
+                    _sel = [i for i in _sel if 0 <= i < len(ensaios)]
+                except Exception:
+                    _sel = None
+
+            if _sel:
+                ce = nbk.cer([ensaios[i] for i in _sel], ate_exaustao=True)
+                ce['blocos_usados'] = [i + 1 for i in _sel]
+                ce['de_um_total_de'] = len(ensaios)
+            else:
+                ce = nbk.cer(ensaios, ate_exaustao=False)
+                _durs = sorted({round(t) for _d, t in ensaios})
+                ce['possivel_com_estes_blocos'] = len(_durs) >= 3
+                ce['duracoes_distintas'] = _durs
+                ce['como_activar'] = (
+                    'esta sessão tem ' + str(len(_durs)) + ' durações '
+                    'distintas' + (' — chega para o ajuste. Marca quais '
+                                   'terminaram por exaustão: ?exaustao=1, '
+                                   '?exaustao=ultimos:3 ou ?exaustao=4,5,6'
+                                   if len(_durs) >= 3 else
+                                   ' — são precisas 3 para ajustar a '
+                                   'hipérbole'))
             hp = nbk.hipocapnia(blocos, t, canais)
 
             # ── coerencia PARADA a pedido ────────────────────────────
@@ -1130,23 +1191,44 @@ def registar(app):
             reservas = {}
             try:
                 import balance as _bal
+                # O CP vive no MODELO CP, nao no perfil metabolico. Estava
+                # a ler 'cp_w' e 'w_prime_j' do perfil, chaves que la' nao
+                # existem -- por isso vinha sempre None e o W' nunca era
+                # desenhado. O mesmo erro estava no tab_detalhe.
+                _cp = _wp = None
+                _origem_cp = None
                 try:
-                    from app import perfil_metabolico_dados as _pmd
-                    _pm, _ = _pmd(mod, {}, com_ancoras=False)
-                    _pm = _pm or {}
+                    from flask import current_app
+                    with current_app.test_request_context(
+                            f'/api/cp/actual/{mod}'):
+                        _r = current_app.view_functions['api_cp_actual'](mod)
+                    _d = (_r.get_json() if hasattr(_r, 'get_json')
+                          else (_r[0].get_json() if isinstance(_r, tuple)
+                                else {})) or {}
+                    if _d.get('status') == 'ok':
+                        _cp, _wp = _d.get('cp_w'), _d.get('wp_j')
+                        _origem_cp = _d.get('origem')
                 except Exception as e:
-                    _pm = {'erro': str(e)[:80]}
-                _lim = _pm.get('limiares') or {}
-                _cp = _pm.get('cp_w') or _lim.get('cp_w')
-                _wp = _pm.get('w_prime_j') or _lim.get('w_prime_j')
+                    _origem_cp = f'{type(e).__name__}: {e}'
+                reservas['cp'] = _cp
+                reservas['w_prime'] = _wp
+                reservas['origem_do_cp'] = _origem_cp
+                reservas['modalidade_usada'] = mod
+                reservas['origem_da_modalidade'] = origem_mod
                 wt2 = canais.get('watts')
                 if wt2 and _cp and _wp:
                     reservas['wprime'] = _bal.wprime_balance(t, wt2, _cp, _wp)
                 elif wt2:
                     reservas['wprime'] = {
                         'ok': False,
-                        'motivo': ('sem CP e W′ gravados para esta '
-                                   'modalidade — corre a tab CP-Model')}
+                        'motivo': (
+                            f'sem CP e W′ para {mod or "modalidade "
+                            "desconhecida"}'
+                            + ('' if mod else
+                               ' — a modalidade não foi determinada, o que '
+                               'impede ir buscar o CP')
+                            + (f' (origem do CP: {_origem_cp})'
+                               if _origem_cp else ''))}
                 # M' precisa do CER, que so' e' valido com ensaios de
                 # duracoes diferentes ate' a exaustao
                 if ce.get('ok') and ce.get('valido'):
@@ -1154,11 +1236,34 @@ def registar(app):
                         t, smo2, ce.get('cer_pct_por_s'),
                         abs(ce.get('m_linha') or 0))
                 else:
+                    # Explicar o que ESTA sessao tem, em vez de repetir a
+                    # regra geral. Numa sessao por distancia o CER e'
+                    # impossivel por construcao: os blocos acabam quando a
+                    # distancia acaba, nao quando o atleta nao aguenta.
+                    _por_dist = (tipo.get('tipo') or '').startswith(
+                        'intervalado por distância')
+                    _dist = (tipo.get('distancia') or {}).get('media_m')
+                    _diag = None
+                    if _por_dist or (_dist and
+                                     (tipo.get('distancia') or {}).get('cv',
+                                                                       1) < 0.1):
+                        _diag = (
+                            f'esta sessão é por DISTÂNCIA (~{round(_dist)} m '
+                            'por bloco). Cada bloco acaba quando a distância '
+                            'acaba, não quando não aguentas mais — por isso '
+                            'nenhuma duração é uma duração até à exaustão. O '
+                            'CER é impossível aqui, não por falta de código')
                     reservas['mprime'] = {
                         'ok': False,
                         'motivo': ('o CER não é válido nesta sessão: '
                                    + (ce.get('motivo') or ce.get('aviso')
                                       or 'sem ajuste')),
+                        'diagnostico_desta_sessao': _diag,
+                        'o_que_seria_preciso': (
+                            '3 ou mais esforços máximos de durações '
+                            'DIFERENTES, cada um até não conseguires '
+                            'continuar — por exemplo 2, 5 e 12 min. É o '
+                            'mesmo protocolo que o CP exige'),
                         'porque_importa': (
                             'o M′ balance é aritmética correcta sobre os '
                             'parâmetros que receber. Com um CER inválido '

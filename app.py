@@ -273,6 +273,11 @@ def api_activity_full(activity_id):
     return tab_detalhe.api_full(activity_id)
 
 
+@app.route('/api/activity/<activity_id>/reservas')
+def api_activity_reservas(activity_id):
+    return tab_detalhe.api_reservas(activity_id)
+
+
 # ── Debug e servico ───────────────────────────────────────────────────────
 
 @app.route('/api/activity/<activity_id>/debug')

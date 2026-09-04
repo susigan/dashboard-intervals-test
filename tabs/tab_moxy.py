@@ -1156,8 +1156,13 @@ function mxLimiares(){
    const nome = k==='wprime' ? 'W′ (potência)' : 'M′ (SmO2)';
    if(!r.ok){
     h+='<p style="font-size:11px;color:#8b949e;">'+nome+': '
-     +(r.motivo||r.erro||'indisponível')
-     +(r.porque_importa?' — '+r.porque_importa:'')+'</p>';
+     +(r.motivo||r.erro||'indisponível')+'</p>';
+    if(r.diagnostico_desta_sessao)
+     h+='<p style="font-size:11px;color:#F0883E;margin:-4px 0 4px 0;">⚠ '
+      +r.diagnostico_desta_sessao+'</p>';
+    if(r.o_que_seria_preciso)
+     h+='<p style="font-size:11px;color:#8b949e;margin:-2px 0 6px 0;">'
+      +'<b>Para o obter:</b> '+r.o_que_seria_preciso+'</p>';
     return;
    }
    const pct=r.minimo_pct;

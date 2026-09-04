@@ -123,8 +123,14 @@ BODY = """
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
     <div class="controls"><button onclick="mxLimiares()">Calcular</button>
       <button onclick="mxGuardarAnalise()" title="Grava perfil, breakpoints, 5-1-5 e rede causal. Voltar a gravar substitui, com a versão do método usada.">💾 Gravar análise</button>
-      <label class="sel"><input type="checkbox" id="mxExaustao"
-        title="Os blocos terminaram porque não aguentavas mais, e não porque o tempo acabou."> blocos até à exaustão</label>
+      <label class="sel">Terminaram por exaustão
+        <select id="mxExaustao" title="Só blocos que terminaram por falha são pontos válidos para o CER.">
+          <option value="">nenhum</option>
+          <option value="ultimos:2">os 2 últimos</option>
+          <option value="ultimos:3">os 3 últimos</option>
+          <option value="ultimos:4">os 4 últimos</option>
+          <option value="1">todos</option>
+        </select></label>
       <span id="mxLimEstado" style="color:#8b949e;font-size:12px;"></span></div>
     <div id="mxLimiares" style="margin-top:6px;"></div>
     <details style="margin-top:6px;">
@@ -909,7 +915,8 @@ function mxLimiares(){
  est.textContent='a calcular...';
  fetch('/api/moxy/limiares/'+id+'?inicio='+Math.round(c[0])
        +'&fim='+Math.round(c[1])
-       +(document.getElementById('mxExaustao').checked?'&exaustao=1':''))
+       +(document.getElementById('mxExaustao').value
+         ? '&exaustao='+document.getElementById('mxExaustao').value : ''))
  .then(r=>r.json()).then(function(d){
   if(d.status!=='ok'){ est.textContent=d.mensagem||'sem dados';
    box.innerHTML=''; MX_BP=null; mxDraw(); return; }
@@ -931,18 +938,36 @@ function mxLimiares(){
   // código de desenho novo. Estavam a ser guardadas e nunca desenhadas.
   const dd0 = MX_DADOS[id];
   if(dd0){
+   // Ajustar ao comprimento do tempo antes de entrar. As séries são
+   // desenhadas por índice contra a grelha de tempo; um comprimento
+   // diferente desloca a curva progressivamente ao longo da sessão.
+   const nT = (dd0.tempo||[]).length;
+   function ajustarN(v, n){
+    if(!n || v.length===n) return v.slice();
+    const out=[];
+    for(let i=0;i<n;i++){
+     const p=(v.length-1)*i/(n-1);
+     const a=Math.floor(p), b=Math.min(v.length-1, a+1), f=p-a;
+     const va=v[a], vb=v[b];
+     out.push((typeof va==='number' && typeof vb==='number')
+              ? va+(vb-va)*f : (typeof va==='number'?va:null));
+    }
+    return out;
+   }
    ['wprime','mprime'].forEach(function(k){
     const r=(d.reservas||{})[k];
     delete dd0.canais[k];
     if(dd0.canais_contexto)
      dd0.canais_contexto = dd0.canais_contexto.filter(x=>x!==k);
     if(r && r.ok && (r.serie||[]).length){
-     // a série vem no mesmo passo de tempo dos streams
-     dd0.canais[k] = r.serie;
+     dd0.canais[k] = ajustarN(r.serie, nT);
      dd0.canais_contexto = (dd0.canais_contexto||[]).concat([k]);
+     // ligar por omissão: se foi calculado, é para ser visto
+     if(MX_ON[k] === undefined) MX_ON[k] = true;
     }
    });
    mxCanaisEdit();
+   mxDraw();
   }
   MX_BP = (bl0.bp1_w!=null || bl0.bp2_w!=null) ? {
     bp1: bl0.bp1_w, bp2: bl0.bp2_w,
@@ -1294,7 +1319,14 @@ function mxLimiares(){
       +'</span>':'')
     +'<br><span style="font-size:10px;color:#8b949e;">'+ce.nota+'</span></div>';
   } else if(ce.motivo){
-   h+='<p style="font-size:11px;color:#8b949e;">CER: '+ce.motivo+'</p>';
+   h+='<p style="font-size:11px;color:#8b949e;">CER: '+ce.motivo
+    +(ce.como_activar
+      ? '<br><b style="color:'+(ce.possivel_com_estes_blocos?'#3FB950':'#F0883E')
+        +';">'+ce.como_activar+'</b>' : '')
+    +((ce.duracoes_distintas||[]).length
+      ? '<br><span style="color:#8b949e;">durações dos blocos: '
+        +ce.duracoes_distintas.join('s, ')+'s</span>' : '')
+    +'</p>';
   }
   if(fecharDetalhe) h+='</div></details>';
   box.innerHTML=h;

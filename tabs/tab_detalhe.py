@@ -292,6 +292,12 @@ BODY = r"""<a href="/">&larr; Voltar a lista</a>
 <div id="nirsSection" style="display:none">
 <h2>NIRS &middot; SmO<sub>2</sub> / THb</h2>
 <div class="toggles" id="nirsToggles"></div>
+<div class="controls" style="margin:4px 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+  <span class="sub">Suavizacao NIRS:</span>
+  <input type="range" id="rollNirs" min="0" max="4" step="1" value="0"
+         style="width:160px" oninput="setRollNirs()">
+  <span id="rollNirsTxt" class="sub">sem suavizacao</span>
+</div>
 <div class="chartbox">
   <div class="legend" id="nirsLegend"></div>
   <canvas id="nirs" height="260"></canvas>
@@ -374,6 +380,22 @@ function rollingSerie(vs,janela){
  return out;
 }
 
+// O NIRS tem slider proprio: o SmO2 e' muito mais lento que a potencia, e
+// a janela que serve para um raramente serve para o outro. Ligar os dois
+// ao mesmo slider obrigava a escolher entre ver o detalhe da potencia ou a
+// forma do SmO2.
+let ROLL_NIRS = 0;
+
+function setRollNirs(){
+ const idx=parseInt(document.getElementById('rollNirs').value,10)||0;
+ ROLL_NIRS=ROLL_JANELAS[idx];
+ document.getElementById('rollNirsTxt').textContent =
+  ROLL_NIRS ? 'media movel de '
+    +(ROLL_NIRS<60?ROLL_NIRS+'s':(ROLL_NIRS/60)+'min')+' (centrada)'
+    : 'sem suavizacao';
+ drawNirs();
+}
+
 function setRoll(){
  const idx=parseInt(document.getElementById('rollSlider').value,10)||0;
  const j=ROLL_JANELAS[idx];
@@ -425,7 +447,18 @@ function drawChart(){drawSeries('chart',360,Object.keys(ACTIVE).filter(k=>ACTIVE
 function drawNirs(){
  const keys=Object.keys(NACTIVE).filter(k=>NACTIVE[k]);
  if(!keys.length){const o=ctx('nirs',260);noData(o.g,o.W,o.H,'Sem canais NIRS selecionados');return;}
+ // aplica a janela do NIRS sobre os ORIGINAIS, sem mexer no STREAMS que o
+ // grafico principal usa -- os dois sliders sao independentes
+ const guardado={};
+ keys.forEach(function(k){
+  if(!STREAMS_ORIG[k]) return;
+  guardado[k]=STREAMS[k];
+  STREAMS[k] = ROLL_EXCEPCOES.indexOf(k)>=0
+    ? STREAMS_ORIG[k].slice()
+    : rollingSerie(STREAMS_ORIG[k], ROLL_NIRS);
+ });
  drawSeries('nirs',260,keys);
+ Object.keys(guardado).forEach(function(k){ STREAMS[k]=guardado[k]; });
 }
 
 function drawPvH(pvh){
@@ -571,7 +604,11 @@ async function load(){
  Object.keys(STREAMS).forEach(k=>{STREAMS_ORIG[k]=STREAMS[k].slice();});
  const names=Object.keys(STREAMS);
  const nirsKeys=META.filter(m=>NIRS.indexOf(m.type)!==-1&&m.plotted).map(m=>m.key);
- const mainKeys=names.filter(k=>nirsKeys.indexOf(k)===-1);
+ // Os canais NIRS deixam de ser excluídos do gráfico principal: têm
+ // secção própria, mas poder pô-los ao lado dos watts e da FC é
+ // precisamente o que permite ver a resposta ao esforço no mesmo eixo
+ // de tempo. Continuam a aparecer também na secção NIRS.
+ const mainKeys=names.slice();
 
  document.getElementById('streamPills').innerHTML=META.map(function(m){
   const t=m.sensor_name?(m.type+' - '+m.sensor_name):m.key;

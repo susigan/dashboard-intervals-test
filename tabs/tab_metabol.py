@@ -2541,6 +2541,24 @@ function pmExtTabela(){
  // O LT1 do modelo (175 W) e os campos medidos (108 W) discordam em 62%.
  // Este bloco diz porque é que o modelo fica como referência: um LT1
  // abaixo do FatMax não é um limiar aeróbio.
+ // ── de onde vêm as âncoras das zonas ─────────────────────────────
+ const anc=(PM && PM.ancoras) || {};
+ if(anc.optico){
+  const o=anc.optico;
+  h+='<div style="border-left:3px solid #A371F7;padding:6px 10px;'
+   +'margin:8px 0;font-size:11px;">'
+   +'<b style="color:#A371F7;">Zonas ancoradas em medição óptica</b> '
+   +'<span style="color:#8b949e;">sessão Moxy de '+(o.data||'?')+'</span><br>'
+   +(o.lt1_w!=null?'LT1 <b>'+Math.round(o.lt1_w)+' W</b>'
+     +(o.lt1_entre?' (entre '+o.lt1_entre.map(Math.round).join(' e ')+')':'')
+     :'')
+   +(o.lt2_w!=null?' · LT2 <b>'+Math.round(o.lt2_w)+' W</b>'
+     +(o.lt2_entre?' (entre '+o.lt2_entre.map(Math.round).join(' e ')+')':'')
+     :'')
+   +'<br><span style="color:#8b949e;">'+o.porque_tem_prioridade+'</span>'
+   +'</div>';
+ }
+
  const cf=((PM && PM.limiares) || {}).coerencia_fatmax;
  if(cf){
   const cor = cf.coerente ? '#3FB950' : '#F85149';

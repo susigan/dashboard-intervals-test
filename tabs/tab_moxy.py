@@ -1105,6 +1105,39 @@ function mxLimiares(){
   } else if(pf.motivo){
    h+='<p style="color:#8b949e;font-size:11px;">Perfil: '+pf.motivo+'</p>';
   }
+  // ── primeiro limiar pela reoxigenação ─────────────────────────────
+  const lr=d.lt1_reoxigenacao||{};
+  if(lr.ok){
+   h+='<div style="border-left:3px solid #A371F7;padding:6px 10px;'
+    +'margin-bottom:10px;">'
+    +'<b style="font-size:16px;color:#A371F7;">LT1 '+lr.lt1_estimado+' W</b>'
+    +' <span style="color:#8b949e;font-size:11px;">entre '
+    +lr.lt1_entre.join(' e ')+' W · ±'+lr.incerteza+' · '+lr.metodo+'</span>'
+    +'<br><span style="font-size:11px;">'+lr.leitura+'</span>'
+    +'<br><span style="font-size:10px;color:#3FB950;">'+lr.independente
+    +'</span>'
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +'<tr style="color:#8b949e;text-align:left;">'
+    +'<th style="padding-right:12px;">Carga</th>'
+    +'<th style="padding-right:12px;">2.ª metade</th>'
+    +'<th style="padding-right:12px;">Padrão</th><th>Domínio</th></tr>'
+    +(lr.blocos||[]).map(function(x){
+      if(!x.padrao) return '';
+      const c2 = x.padrao==='reoxigena' ? '#3FB950'
+               : x.padrao==='estabiliza' ? '#F0883E' : '#F85149';
+      return '<tr><td style="padding-right:12px;">'+Math.round(x.watts)
+       +' W</td><td style="padding-right:12px;color:#8b949e;">'
+       +x.declive_2a_metade+'</td>'
+       +'<td style="padding-right:12px;color:'+c2+';">'+x.padrao+'</td>'
+       +'<td style="color:#8b949e;">'+x.dominio+'</td></tr>'; }).join('')
+    +'</table>'
+    +'<span style="font-size:10px;color:#8b949e;">'+lr.nota+'</span>'
+    +'</div>';
+  } else if(lr.motivo){
+   h+='<p style="color:#8b949e;font-size:11px;">LT1 por reoxigenação: '
+    +lr.motivo+'</p>';
+  }
+
   const ml=d.mlss_dessaturacao||{};
   if(ml.ok){
    h+='<div style="border-left:3px solid #3FB950;padding:6px 10px;'

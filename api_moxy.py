@@ -64,7 +64,8 @@ def _remover_orfa(aid):
     return fora
 
 
-def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil):
+def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
+                       bp_hhb=None):
     """Junta as estimativas nos dois limiares e assinala incoerencias.
 
     Antes havia um painel por metodo -- quatro numeros soltos, sem dizer
@@ -89,6 +90,14 @@ def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil):
     if bp_livre.get('bp1_w') is not None:
         _add(p1, 'BP1, critério do script Intervals.icu', bp_livre['bp1_w'],
              'regressão por troços, sem mínimo', bp_livre.get('bp1_bpm'))
+    # o breakpoint do deoxy-Hb aproxima o FatMax, que fica no dominio
+    # moderado -- entra no PRIMEIRO limiar
+    if (bp_hhb or {}).get('bp1_w') is not None:
+        _add(p1, 'BP1 do deoxy-Hb (≈ FatMax)', bp_hhb['bp1_w'],
+             'HHb calculado de SmO2 e THb', bp_hhb.get('bp1_bpm'))
+    if (bp_hhb or {}).get('bp2_w') is not None:
+        _add(p2, 'BP2 do deoxy-Hb', bp_hhb['bp2_w'],
+             'HHb calculado de SmO2 e THb', bp_hhb.get('bp2_bpm'))
 
     # ── segundo limiar: LT2 / VT2 / RCP / MLSS ───────────────────────
     if mlss.get('ok'):
@@ -418,6 +427,19 @@ def registar(app):
             # laps reduzidos, para o classificador de protocolo: precisa do
             # tipo, dos tempos e da DISTANCIA, que e' o que distingue um
             # intervalado por tempo de um por distancia
+            # deoxy-Hb: o canal que a literatura prefere para breakpoints,
+            # e o unico dos derivados que sobe quando o SmO2 desce
+            try:
+                _k, _orig = mn.hhb_disponivel(res['canais'])
+                res['hhb'] = {'canal': _k, 'origem': _orig,
+                              'formula': 'HHb = ((100 − SmO2)/100) × THb'}
+                if _k == 'hhb_calc':
+                    res.setdefault('canais_contexto', [])
+                    if 'hhb_calc' not in res['canais_contexto']:
+                        res['canais_contexto'].append('hhb_calc')
+            except Exception as e:
+                res['hhb'] = {'erro': f'{type(e).__name__}: {e}'}
+
             res['laps'] = [
                 {'type': lp.get('type'),
                  'start_time': lp.get('start_time'),
@@ -1110,6 +1132,38 @@ def registar(app):
             # Metodo do script oficial da Moxy, com o teste F acrescentado
             bp_mx = nbk.bp_moxy(ons, t, smo2, canais.get('heartrate'),
                                 modalidade=mod, degraus_por_troco=2)
+
+            # Mesmo ajuste sobre o HHb. Zurbuchen 2020: o breakpoint do
+            # deoxy-Hb cai no FatMax, o que da' uma segunda via para o
+            # PRIMEIRO limiar -- que e' onde temos menos medicoes.
+            bp_hhb = {'ok': False, 'motivo': 'sem canal de HHb'}
+            _hhb = (d.get('canais') or {}).get('hhb_calc') or \
+                   (d.get('canais') or {}).get('HHb')
+            if _hhb:
+                _ons_h = []
+                for b in blocos:
+                    if not b.get('on'):
+                        continue
+                    vs = [_hhb[i] for i in range(min(len(t), len(_hhb)))
+                          if b['t0'] <= t[i] <= b['t1'] and _hhb[i] is not None]
+                    if vs:
+                        bb = dict(b)
+                        bb['smo2_medio'] = sum(vs) / len(vs)
+                        _ons_h.append(bb)
+                if len(_ons_h) >= 3:
+                    bp_hhb = nbk.bp_moxy(
+                        _ons_h, t, _hhb, canais.get('heartrate'),
+                        modalidade=mod, degraus_por_troco=1)
+                    bp_hhb['canal'] = 'HHb (deoxy-hemoglobina)'
+                    bp_hhb['leitura_bp1'] = (
+                        'Zurbuchen 2020: o breakpoint do deoxy-Hb cai no '
+                        'FatMax, à mesma percentagem do VO2pico. Serve como '
+                        'segunda via para o primeiro limiar')
+                    # o HHb SOBE com o esforco: os declives invertem-se
+                    bp_hhb['nota_sinal'] = (
+                        'ao contrário do SmO2, o HHb sobe com o esforço. Os '
+                        'declives vêm positivos, e a quebra é onde a subida '
+                        'muda de ritmo')
             # o mesmo sem restricao de degraus por troco: reproduz o
             # script da Intervals.icu, para se poder comparar
             bp_mx_livre = nbk.bp_moxy(
@@ -1280,9 +1334,10 @@ def registar(app):
                 'mlss_dessaturacao': mlss,
                 'bp_taxa': bp_taxa,
                 'bp_moxy': bp_mx,
+                'bp_hhb': bp_hhb,
                 'bp_moxy_sem_restricao': bp_mx_livre,
                 'limiares_consenso': _consenso_limiares(
-                    mlss, bp_mx, bp_mx_livre, bp_taxa, perfil),
+                    mlss, bp_mx, bp_mx_livre, bp_taxa, perfil, bp_hhb),
                 'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
                 'blocos_usados': [
                     {'watts': b.get('watts_medio'),

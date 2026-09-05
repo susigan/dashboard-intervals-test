@@ -65,7 +65,7 @@ def _remover_orfa(aid):
 
 
 def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
-                       bp_hhb=None):
+                       bp_hhb=None, lt1_reox=None):
     """Junta as estimativas nos dois limiares e assinala incoerencias.
 
     Antes havia um painel por metodo -- quatro numeros soltos, sem dizer
@@ -81,6 +81,10 @@ def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
                           'bpm': bpm, 'rota': rota})
 
     # ── primeiro limiar: LT1 / VT1 / FatMax ──────────────────────────
+    if (lt1_reox or {}).get('ok'):
+        _add(p1, 'Transição da reoxigenação (Yogev)',
+             lt1_reox['lt1_estimado'],
+             'onde o SmO2 deixa de subir dentro do bloco')
     if perfil.get('ok') and perfil.get('bp1_watts') is not None:
         _add(p1, 'Topo da parábola (SmO2max)', perfil['bp1_watts'],
              'média do último minuto por degrau')
@@ -1109,6 +1113,11 @@ def registar(app):
             # Metodo principal: padrao de dessaturacao por bloco. E' o que
             # corresponde a este protocolo. A regressao segmentada fica como
             # secundaria, porque foi desenhada para rampa continua.
+            # Primeiro limiar pela transicao da reoxigenacao (Yogev). Usa
+            # o padrao "sobe" que o mlss ja' detectava mas descartava.
+            lt1_reox = nbk.lt1_por_reoxigenacao(t, smo2, blocos) if smo2 \
+                else {'ok': False, 'motivo': 'sem SmO2'}
+
             mlss = nbk.mlss_por_dessaturacao(
                 t, smo2, blocos,
                 estavel=request.args.get('estavel', type=float)
@@ -1331,13 +1340,15 @@ def registar(app):
                 'coerencia': coer,
                 'tipo_sessao': tipo,
                 'perfil_resposta': perfil,
+                'lt1_reoxigenacao': lt1_reox,
                 'mlss_dessaturacao': mlss,
                 'bp_taxa': bp_taxa,
                 'bp_moxy': bp_mx,
                 'bp_hhb': bp_hhb,
                 'bp_moxy_sem_restricao': bp_mx_livre,
                 'limiares_consenso': _consenso_limiares(
-                    mlss, bp_mx, bp_mx_livre, bp_taxa, perfil, bp_hhb),
+                    mlss, bp_mx, bp_mx_livre, bp_taxa, perfil, bp_hhb,
+                    lt1_reox),
                 'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
                 'blocos_usados': [
                     {'watts': b.get('watts_medio'),

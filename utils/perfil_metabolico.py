@@ -596,6 +596,54 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
 # 'grupo'       agrupa por aquilo que a grandeza estima, para se ver se
 #               estimativas independentes do mesmo limiar concordam
 # 'eixo'        W | wkg | bpm | None -- para converter tudo para watts
+# ── FONTE de cada campo: modelo ou medicao ───────────────────────────────
+#
+# O autor dos campos da Intervals.icu confirmou-o directamente:
+#
+#   "AeT is based on the POWER CURVE, along with some additional
+#    calculations. (...) It's an ESTIMATE that can be verified in
+#    the field."
+#
+# Isso muda o que a tabela de validacao externa significa. O nosso modelo
+# de Mader parte dos MMP; a curva de potencia sao os mesmos MMP. Comparar
+# os dois nao valida nada:
+#
+#   - se concordarem, so' diz que duas formulas alimentadas pelos MESMOS
+#     dados chegam ao mesmo sitio
+#   - se discordarem, so' diz que as formulas sao diferentes
+#
+# Validacao externa a serio exige uma fonte INDEPENDENTE. Nos campos
+# disponiveis, so' a familia HRV (que vem dos streams de DFA-a1) e o
+# LTHRdetected (que vem do stream de FC) cumprem isso.
+#
+# Nao se apagam os campos de modelo -- continuam uteis como segunda
+# opiniao. Mas deixam de contar para o consenso, porque um consenso entre
+# duas versoes do mesmo calculo e' um consenso consigo proprio.
+FONTE_DO_CAMPO = {
+    # da curva de potencia -- MESMA origem que o nosso modelo
+    'aet': 'modelo', 'aetwkg': 'modelo', 'mss': 'modelo', 'pbp': 'modelo',
+    'pvo2max': 'modelo', 'fractionalutilizationusing6mpower': 'modelo',
+    'ebp': 'modelo',
+    # definicao do perfil, nao medicao (varia 3 bpm em 244 sessoes)
+    'aethr': 'perfil',
+    # dos streams -- INDEPENDENTES do modelo
+    'hrvt1': 'medido', 'hrvt1plus': 'medido', 'hrvt2': 'medido',
+    'hrvtmss': 'medido', 'lthrdetected': 'medido',
+    'a1_inflexao_w': 'medido', 'a1_inflexao_bpm': 'medido',
+}
+
+EXPLICA_FONTE = {
+    'modelo': ('vem da curva de potência — a mesma origem que o nosso '
+               'modelo. Serve de segunda opinião, não de validação'),
+    'perfil': 'é uma definição do perfil, não uma medição',
+    'medido': 'vem dos streams da sessão — independente do modelo',
+}
+
+
+def fonte_do_campo(chave):
+    return FONTE_DO_CAMPO.get(str(chave).lower(), 'desconhecida')
+
+
 # 'compara_com' chave equivalente no resultado de calcular()
 CAMPOS_EXTERNOS = [
     # ── limiar aerobio (LT1 / VT1) ───────────────────────────────────────
@@ -1015,9 +1063,27 @@ def coerencia_por_grupo(campos, modelo):
             membros = [c for c in campos
                        if c.get("grupo") == grupo and not c.get("constante")
                        and c.get(campo_valor) is not None]
-            solidos = [c for c in membros if (c.get("quartis") or {}).get("n", 0)
+
+            # Campos que vem da CURVA DE POTENCIA saem do consenso.
+            #
+            # O autor confirmou que o AeT -- e por extensao o MSS, o PBP e
+            # o Pvo2max -- e' calculado da curva de potencia. O nosso
+            # modelo de Mader parte dos MMP, que sao a mesma coisa. Incluir
+            # esses campos no consenso e' fazer o modelo concordar consigo
+            # proprio por outra via, e chamar a isso validacao.
+            #
+            # Ficam na tabela, marcados, porque sao uma segunda opiniao
+            # util -- mas nao pesam no numero que ancora as zonas.
+            for c in membros:
+                c["fonte"] = fonte_do_campo(c.get("chave"))
+            independentes = [c for c in membros if c.get("fonte") == "medido"]
+            do_modelo = [c for c in membros if c.get("fonte") == "modelo"]
+
+            candidatos = independentes or membros
+            solidos = [c for c in candidatos
+                       if (c.get("quartis") or {}).get("n", 0)
                        >= N_MINIMO_CONSENSO]
-            base = solidos or membros
+            base = solidos or candidatos
             pares = [(c["rotulo"], c[campo_valor]) for c in base]
             ini, fim = separar_transicao(pares)
 
@@ -1033,8 +1099,22 @@ def coerencia_por_grupo(campos, modelo):
 
             b["consenso"] = {
                 **(_bloco(ini + (fim or [])) or {}),
-                "n_metodos_fracos_excluidos": len(membros) - len(base),
-                "usou_fracos": not solidos and bool(membros),
+                "n_metodos_fracos_excluidos": len(candidatos) - len(base),
+                "usou_fracos": not solidos and bool(candidatos),
+                "so_independentes": bool(independentes),
+                "n_do_modelo_excluidos": len(do_modelo),
+                "metodos_do_modelo": [c["rotulo"] for c in do_modelo],
+                "porque_excluidos": (
+                    (", ".join(c["rotulo"] for c in do_modelo)
+                     + " vêm da curva de potência, a mesma origem que o "
+                     "nosso modelo. Contá-los no consenso seria o modelo a "
+                     "concordar consigo próprio. Ficam na tabela como "
+                     "segunda opinião")
+                    if do_modelo and independentes else
+                    ("não há nenhum campo independente do modelo neste "
+                     "limiar: o consenso usa os campos da curva de potência "
+                     "por falta de alternativa, e não confirma nada"
+                     if do_modelo and not independentes else None)),
             }
             if fim:
                 # Nao ha um valor: ha uma transicao com principio e fim.

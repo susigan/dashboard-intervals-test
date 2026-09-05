@@ -2400,25 +2400,41 @@ function pmExtTabela(){
     h+='<tr style="border-bottom:1px solid #161b22;">'
      +'<td style="padding:6px;">'+(bi===0?c.rotulo:'')+'</td>'
      +'<td style="color:'+(b.unidade==='W'?'#c9d1d9':'#79C0FF')+';">'+b.unidade+'</td>'
-     +'<td style="color:#8b949e;">'+b.detalhe.map(function(d){
-         // marcar de onde vem cada estimativa: as do modelo aparecem
-         // esbatidas e riscadas, porque estão na tabela como segunda
-         // opinião mas não pesam no consenso
-         const f = (d.fonte||'');
-         if(f==='modelo')
-          return '<span style="opacity:.5;text-decoration:line-through;" '
-           +'title="vem da curva de potência — a mesma origem que o modelo. '
-           +'Não conta para o consenso">'+d.campo+' '+d.valor+'</span>';
-         if(f==='perfil')
-          return '<span style="opacity:.5;" title="definição do perfil, '
-           +'não medição">'+d.campo+' '+d.valor+'</span>';
-         if(d.campo && (d.campo.indexOf('SmO2')>=0
+     +'<td style="color:#8b949e;">'+(function(){
+         // Separar em DUAS linhas: as que contam para o consenso em cima,
+         // as que não contam por baixo. Misturá-las na mesma linha fazia
+         // parecer que o consenso saía de todas — que era exactamente a
+         // dúvida que isto levantava.
+         const conta=[], fora=[];
+         (b.detalhe||[]).forEach(function(d){
+          const f=(d.fonte||'');
+          const optico = d.campo && (d.campo.indexOf('SmO2')>=0
                         || d.campo.indexOf('Reoxigen')>=0
-                        || d.campo.indexOf('Dessatur')>=0))
-          return '<b style="color:#A371F7;" title="medido com sensor óptico '
-           +'no músculo — independente do modelo">'+d.campo+' '+d.valor
-           +'</b>';
-         return d.campo+' '+d.valor; }).join(' · ')+'</td>'
+                        || d.campo.indexOf('Dessatur')>=0);
+          if(f==='modelo'){
+           fora.push('<span title="vem da curva de potência — a mesma '
+            +'origem que o modelo">'+d.campo+' '+d.valor+'</span>');
+          } else if(f==='perfil'){
+           fora.push('<span title="definição do perfil, não medição">'
+            +d.campo+' '+d.valor+'</span>');
+          } else if(optico){
+           conta.push('<b style="color:#A371F7;" title="sensor óptico no '
+            +'músculo — independente do modelo">'+d.campo+' '+d.valor
+            +'</b>');
+          } else {
+           conta.push('<span style="color:#c9d1d9;">'+d.campo+' '+d.valor
+            +'</span>');
+          }
+         });
+         let t = conta.length
+           ? conta.join(' · ')
+           : '<span style="color:#F85149;">nenhuma estimativa '
+             +'independente</span>';
+         if(fora.length)
+          t += '<br><span style="opacity:.45;font-size:10px;">fora do '
+            +'consenso: '+fora.join(' · ')+'</span>';
+         return t;
+        })()+'</td>'
      +'<td style="color:#8b949e;">'+b.min+'–'+b.max+'</td>'
      +'<td>'
      +(b.transicao

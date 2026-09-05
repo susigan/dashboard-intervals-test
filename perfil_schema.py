@@ -125,6 +125,14 @@ CREATE TABLE IF NOT EXISTS moxy_analises (
     pct_artefacto   REAL,
     corte_inicio_s  REAL,
     corte_fim_s     REAL,
+    -- limiares pelo protocolo de degraus (Yogev/Rogers): as duas
+    -- transicoes do mesmo teste, medidas opticamente
+    lt1_reox_w      REAL,
+    lt1_reox_de     REAL,
+    lt1_reox_ate    REAL,
+    mlss_dessat_w   REAL,
+    mlss_dessat_de  REAL,
+    mlss_dessat_ate REAL,
     versao_analise  TEXT,
     json_completo   TEXT,
     data_gravacao   TEXT

@@ -1420,12 +1420,22 @@ def registar(app):
                 origem2 = ('padrão de dessaturação' if ml.get('ok')
                            else 'quebra na taxa' if bt.get('ok') else None)
 
+            # limiares opticos das duas transicoes de Yogev
+            lr = lim.get('lt1_reoxigenacao') or {}
+            md = lim.get('mlss_dessaturacao') or {}
+            _lr = lr.get('lt1_entre') or [None, None]
+            _md = md.get('mlss_entre') or [None, None]
+
             s2 = MX_SESSOES_CACHE.get(aid, {})
             linha = (
                 aid, lim.get('modalidade'), s2.get('data'),
                 pf.get('perfil'), bp1, bp1_bpm,
                 bp2, bp2_bpm,
                 origem2,
+                (lr.get('lt1_estimado') if lr.get('ok') else None),
+                _lr[0], _lr[1],
+                (md.get('mlss_estimado') if md.get('ok') else None),
+                _md[0], _md[1],
                 pf.get('smo2max'), pf.get('smo2min'),
                 len([x for x in ((lim.get('blocos_usados')) or [])]),
                 (pt.get('us') or {}).get('score'),
@@ -1444,11 +1454,15 @@ def registar(app):
             cn.execute(
                 """INSERT OR REPLACE INTO moxy_analises
                    (activity_id, modalidade, data, perfil, bp1_w, bp1_bpm,
-                    bp2_w, bp2_bpm, bp2_origem, smo2max, smo2min, n_degraus,
+                    bp2_w, bp2_bpm, bp2_origem,
+                    lt1_reox_w, lt1_reox_de, lt1_reox_ate,
+                    mlss_dessat_w, mlss_dessat_de, mlss_dessat_ate,
+                    smo2max, smo2min, n_degraus,
                     us_score, us_limitador, pc_score, pc_limitador,
                     rede_limitador, rede_pct, pct_artefacto, corte_inicio_s,
                     corte_fim_s, versao_analise, json_completo, data_gravacao)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                           ?,?,?,?,?,?)""",
                 linha)
             cn.commit()
             ok, det = ddp.upload()

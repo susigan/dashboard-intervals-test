@@ -2108,6 +2108,48 @@ def _tipo_por_sessao(modalidade, dias=1095):
         return {}
 
 
+def _campos_do_moxy(modalidade):
+    """BP1 e BP2 do SmO2 como campos MEDIDOS, para entrarem no consenso.
+
+    O BP1 vem de um sensor óptico no músculo. Não tem nada a ver com a
+    curva de potência nem com os MMP — é a medição mais independente do
+    modelo que existe neste dashboard, e estava fora da tabela de
+    validação enquanto campos derivados da curva lá estavam.
+
+    Entram com n=1: são de UMA sessão, a mais recente. Isso conta contra
+    eles no peso do consenso, e é justo — mas n=1 de uma medição óptica
+    vale mais do que n=350 de um cálculo que parte dos mesmos MMP que o
+    modelo.
+    """
+    mx = _ultima_analise_moxy(modalidade) or {}
+    if mx.get('sem_dados') or mx.get('erro'):
+        return {'ok': False, 'motivo': mx.get('motivo') or mx.get('erro')}
+    fora = []
+    for chave, w, bpm, grupo, rot in (
+            ('BP1_SmO2', mx.get('bp1_w'), mx.get('bp1_bpm'), 'aerobio',
+             'BP1 SmO2'),
+            ('BP2_SmO2', mx.get('bp2_w'), mx.get('bp2_bpm'), 'limiar',
+             'BP2 SmO2')):
+        if w is None:
+            continue
+        fora.append({
+            'chave': chave, 'rotulo': rot, 'grupo': grupo,
+            'fonte': 'medido',
+            'watts_medido': round(float(w), 1),
+            'hr_medido': round(float(bpm)) if bpm else None,
+            'quartis': {'n': 1, 'p50': round(float(w), 1)},
+            'data': mx.get('data'),
+            'origem': mx.get('bp2_origem') or 'análise Moxy',
+            'nota': ('sensor óptico no músculo — independente da curva de '
+                     'potência e dos MMP. Uma sessão só'),
+        })
+    return {'ok': bool(fora), 'campos': fora, 'data': mx.get('data'),
+            'perfil': mx.get('perfil'),
+            'aviso': ('vêm de UMA sessão. Contam pouco no peso, mas são a '
+                      'única medição verdadeiramente independente do modelo'
+                      if fora else None)}
+
+
 def _filtrar_por_tipo(modalidade, por_data):
     """Mediana filtrada vs não filtrada, para os campos que exigem máximo.
 
@@ -2522,6 +2564,7 @@ def limiares_externos_dados(modalidade, args):
             'campos_duplicados': duplicados,
             'campos_por_reconhecer': nao_reconhecidos,
             'moxy': _ultima_analise_moxy(modalidade),
+            'campos_moxy': _campos_do_moxy(modalidade),
             'filtro_por_tipo': _filtrar_por_tipo(modalidade, por_data),
             'correlacao_campos': _correlacao_campos(por_data),
             'a1_individualizado': a1_indiv,

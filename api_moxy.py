@@ -1636,6 +1636,35 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/intervencoes')
+    def api_moxy_intervencoes():
+        """O que treinar, conforme o limitador.  ?limitador=Fornecimento"""
+        try:
+            import os as _o
+            import sys as _s
+            _s.path.insert(0, _o.path.join(
+                _o.path.dirname(_o.path.abspath(__file__)), 'utils'))
+            import intervencoes as _iv
+            alvo = request.args.get('limitador')
+            if alvo:
+                r = _iv.para_limitador(alvo)
+                if not r:
+                    return jsonify({
+                        'status': 'sem_correspondencia', 'limitador': alvo,
+                        'motivo': (f'"{alvo}" não corresponde a nenhum dos '
+                                   'três limitadores. Um resultado misto '
+                                   'não tem intervenção própria: significa '
+                                   'que nenhum sistema domina'),
+                        'disponiveis': list(_iv.INTERVENCOES)}), 200
+                return jsonify({'status': 'ok', 'limitador': alvo,
+                                'intervencao': r,
+                                'fundacoes': _iv.FUNDACOES,
+                                'aviso': _iv.tudo()['aviso']})
+            return jsonify({'status': 'ok', **_iv.tudo()})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/corte', methods=['POST'])
     def api_moxy_corte():
         """Grava o intervalo a analisar de uma sessao.

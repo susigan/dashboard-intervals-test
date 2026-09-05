@@ -2401,6 +2401,23 @@ function pmExtTabela(){
      +'<td style="padding:6px;">'+(bi===0?c.rotulo:'')+'</td>'
      +'<td style="color:'+(b.unidade==='W'?'#c9d1d9':'#79C0FF')+';">'+b.unidade+'</td>'
      +'<td style="color:#8b949e;">'+b.detalhe.map(function(d){
+         // marcar de onde vem cada estimativa: as do modelo aparecem
+         // esbatidas e riscadas, porque estão na tabela como segunda
+         // opinião mas não pesam no consenso
+         const f = (d.fonte||'');
+         if(f==='modelo')
+          return '<span style="opacity:.5;text-decoration:line-through;" '
+           +'title="vem da curva de potência — a mesma origem que o modelo. '
+           +'Não conta para o consenso">'+d.campo+' '+d.valor+'</span>';
+         if(f==='perfil')
+          return '<span style="opacity:.5;" title="definição do perfil, '
+           +'não medição">'+d.campo+' '+d.valor+'</span>';
+         if(d.campo && (d.campo.indexOf('SmO2')>=0
+                        || d.campo.indexOf('Reoxigen')>=0
+                        || d.campo.indexOf('Dessatur')>=0))
+          return '<b style="color:#A371F7;" title="medido com sensor óptico '
+           +'no músculo — independente do modelo">'+d.campo+' '+d.valor
+           +'</b>';
          return d.campo+' '+d.valor; }).join(' · ')+'</td>'
      +'<td style="color:#8b949e;">'+b.min+'–'+b.max+'</td>'
      +'<td>'

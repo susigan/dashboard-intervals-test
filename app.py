@@ -2031,6 +2031,12 @@ def _ultima_analise_moxy(modalidade):
         return {'data': r[0], 'perfil': r[1], 'bp1_w': r[2], 'bp1_bpm': r[3],
                 'bp2_w': r[4], 'bp2_bpm': r[5], 'bp2_origem': r[6],
                 'versao': r[7], 'activity_id': r[8],
+                'lt1_reox_w': r[9] if len(r) > 9 else None,
+                'lt1_reox_entre': ([r[10], r[11]]
+                                   if len(r) > 11 and r[10] else None),
+                'mlss_dessat_w': r[12] if len(r) > 12 else None,
+                'mlss_dessat_entre': ([r[13], r[14]]
+                                      if len(r) > 14 and r[13] else None),
                 'nota': ('última sessão com Moxy desta modalidade. Não é '
                          'média de várias: é a mais recente, porque o '
                          'breakpoint muda com a forma')}
@@ -2129,7 +2135,14 @@ def _campos_do_moxy(modalidade):
             ('BP1_SmO2', mx.get('bp1_w'), mx.get('bp1_bpm'), 'aerobio',
              'BP1 SmO2'),
             ('BP2_SmO2', mx.get('bp2_w'), mx.get('bp2_bpm'), 'limiar',
-             'BP2 SmO2')):
+             'BP2 SmO2'),
+            # as duas transicoes do protocolo de degraus, medidas
+            # opticamente: a reoxigenacao marca o primeiro limiar, o fim
+            # da estabilizacao marca o segundo
+            ('LT1_reox', mx.get('lt1_reox_w'), None, 'aerobio',
+             'Reoxigenação (Yogev)'),
+            ('MLSS_dessat', mx.get('mlss_dessat_w'), None, 'limiar',
+             'Dessaturação (Rogers)')):
         if w is None:
             continue
         fora.append({
@@ -2972,13 +2985,42 @@ def perfil_metabolico_dados(modalidade, args, com_ancoras=True):
                         (_ext or {}).get('coerencia_por_grupo') or {})
                 except Exception as _e:
                     _anc = {'erro': f'{type(_e).__name__}: {_e}'}
-            _l1 = _anc.get('lt1_w') or _lim.get('lt1_w')
-            _l2 = _anc.get('lt2_w') or _mad.get('mlss_at_w') or _lim.get('lt2_w')
+            # PRIORIDADE: medicao optica > consenso dos campos > modelo.
+            #
+            # As duas transicoes do protocolo de degraus -- reoxigenacao
+            # para o primeiro limiar, fim da estabilizacao para o segundo --
+            # sao medidas com um sensor no musculo. Nao dependem da curva de
+            # potencia nem dos MMP, que e' de onde o modelo parte E de onde
+            # o AeT parte tambem.
+            #
+            # Ancorar no AeT era ancorar as zonas num segundo modelo
+            # alimentado pelos mesmos dados do primeiro. Ancorar aqui e'
+            # ancorar numa medicao.
+            _mx = _ultima_analise_moxy(modalidade) or {}
+            _l1_optico = _mx.get('lt1_reox_w') or _mx.get('bp1_w')
+            _l2_optico = _mx.get('mlss_dessat_w') or _mx.get('bp2_w')
+
+            _l1 = _l1_optico or _anc.get('lt1_w') or _lim.get('lt1_w')
+            _l2 = (_l2_optico or _anc.get('lt2_w')
+                   or _mad.get('mlss_at_w') or _lim.get('lt2_w'))
+            _origem = ('medição óptica (Moxy)' if _l1_optico else
+                       'consenso da validação externa' if _anc.get('lt1_w')
+                       else 'modelo de Mader')
             res['ancoras'] = {
                 **_anc,
                 'lt1_w_usado': _l1, 'lt2_w_usado': _l2,
-                'origem': ('consenso da validacao externa'
-                           if _anc.get('lt1_w') else 'modelo de Mader')}
+                'origem': _origem,
+                'optico': ({
+                    'lt1_w': _l1_optico, 'lt2_w': _l2_optico,
+                    'data': _mx.get('data'),
+                    'lt1_entre': _mx.get('lt1_reox_entre'),
+                    'lt2_entre': _mx.get('mlss_dessat_entre'),
+                    'porque_tem_prioridade': (
+                        'vem de um sensor no músculo. O modelo parte dos '
+                        'MMP e o AeT parte da curva de potência, que são os '
+                        'mesmos dados — ancorar neles era o modelo a '
+                        'confirmar-se a si próprio'),
+                } if _l1_optico or _l2_optico else None)}
             res['zonas_semaforo'] = pmet.zonas_semaforo(
                 _l1, _l2, _anc.get('lt1_bpm'), _anc.get('lt2_bpm'))
             res['zonas_tres'] = pmet.zonas_tres(

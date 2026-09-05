@@ -647,6 +647,19 @@ def fonte_do_campo(chave):
     return FONTE_DO_CAMPO.get(str(chave).lower(), 'desconhecida')
 
 
+# Quando True, os campos que vêm da curva de potência não aparecem sequer
+# na tabela de validação externa.
+#
+# Ficaram visíveis, riscados, na primeira versão — a ideia era mantê-los
+# como segunda opinião. Mas numa tabela chamada VALIDAÇÃO EXTERNA, um
+# campo que partilha a origem com o modelo não é segunda opinião: é ruído
+# visual que sugere confirmação onde não há nenhuma.
+#
+# Continuam disponíveis na tabela de campos por grupo, mais abaixo na
+# página, onde o contexto é outro.
+OCULTAR_CAMPOS_DO_MODELO = True
+
+
 # 'compara_com' chave equivalente no resultado de calcular()
 CAMPOS_EXTERNOS = [
     # ── limiar aerobio (LT1 / VT1) ───────────────────────────────────────
@@ -1039,6 +1052,14 @@ def coerencia_por_grupo(campos, modelo):
             vals = [(c["rotulo"], c[campo_valor],
                      c.get("fonte") or fonte_do_campo(c.get("chave")))
                     for c in membros if c.get(campo_valor) is not None]
+            ocultos = []
+            if OCULTAR_CAMPOS_DO_MODELO:
+                ocultos = [(n, v) for n, v, f in vals if f == "modelo"]
+                restantes = [x for x in vals if x[2] != "modelo"]
+                # só se oculta se sobrar alguma coisa: uma tabela vazia é
+                # pior do que uma tabela com a origem assinalada
+                if restantes:
+                    vals = restantes
             if len(vals) < 1:
                 continue
             ws = sorted(v for _n, v, _f in vals)
@@ -1057,6 +1078,15 @@ def coerencia_por_grupo(campos, modelo):
                     ({"campo": n, "valor": round(v, 1), "fonte": f}
                      for n, v, f in vals),
                     key=lambda d: d["valor"]),
+                "ocultos_do_modelo": [
+                    {"campo": n, "valor": round(v, 1)} for n, v in ocultos],
+                "porque_ocultos": (
+                    (", ".join(n for n, _v in ocultos)
+                     + " vêm da curva de potência, a mesma origem que o "
+                     "modelo. Numa tabela de VALIDAÇÃO externa não são "
+                     "segunda opinião — são o modelo por outra via. "
+                     "Continuam na tabela de campos, mais abaixo")
+                    if ocultos else None),
             }
         # ── consenso ────────────────────────────────────────────────
         # A mediana de todos os metodos que medem o mesmo limiar na mesma

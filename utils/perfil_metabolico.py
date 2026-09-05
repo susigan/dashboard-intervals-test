@@ -1033,11 +1033,15 @@ def coerencia_por_grupo(campos, modelo):
         for unidade, chave, campo_valor in (
                 ("W", "em_watts", "watts_medido"),
                 ("bpm", "em_bpm", "hr_medido")):
-            vals = [(c["rotulo"], c[campo_valor]) for c in membros
-                    if c.get(campo_valor) is not None]
+            # a FONTE viaja com o valor. Estava a ser procurada depois,
+            # com um next() sobre 'campos' -- que nesse ponto ja' e' outra
+            # lista, e por isso devolvia sempre 'desconhecida'.
+            vals = [(c["rotulo"], c[campo_valor],
+                     c.get("fonte") or fonte_do_campo(c.get("chave")))
+                    for c in membros if c.get(campo_valor) is not None]
             if len(vals) < 1:
                 continue
-            ws = sorted(v for _n, v in vals)
+            ws = sorted(v for _n, v, _f in vals)
             mediana = quartis(ws)["p50"]
             bloco[chave] = {
                 "unidade": unidade,
@@ -1050,11 +1054,8 @@ def coerencia_por_grupo(campos, modelo):
                 # a fonte vai no detalhe para a tabela poder marcar quais
                 # estimativas contam e quais sao so' segunda opiniao
                 "detalhe": sorted(
-                    ({"campo": n, "valor": round(v, 1),
-                      "fonte": next((fonte_do_campo(c.get("chave"))
-                                     for c in campos
-                                     if c.get("rotulo") == n), "desconhecida")}
-                     for n, v in vals),
+                    ({"campo": n, "valor": round(v, 1), "fonte": f}
+                     for n, v, f in vals),
                     key=lambda d: d["valor"]),
             }
         # ── consenso ────────────────────────────────────────────────

@@ -249,7 +249,8 @@ def calcular(modalidade, mmps, peso, altura_cm, idade, pmax=None, bf_pct=None):
     mader = modelo_mader(vo2max, vlamax, peso, bf_pct)
 
     limiares = limiares_lactato(mader.get("curva") if mader else None,
-                                mader.get("mlss_at_w") if mader else None)
+                                mader.get("mlss_at_w") if mader else None,
+                                mader.get("fatmax_w") if mader else None)
 
     return {
         "status": "ok",
@@ -1116,7 +1117,7 @@ def _breakpoint_2seg(xs, ys):
     return xs[melhor], melhor_erro
 
 
-def limiares_lactato(curva, mlss_w=None):
+def limiares_lactato(curva, mlss_w=None, fatmax_w=None):
     """LT1 e LT2 a partir da curva de lactato estacionario do modelo.
 
     LT1 (limiar aerobio): primeiro aumento sustentado acima da linha de
@@ -1192,7 +1193,43 @@ def limiares_lactato(curva, mlss_w=None):
         k = min(range(len(ws)), key=lambda i: abs(ws[i] - w))
         return round(la[k], 2)
 
+    # ── coerencia do LT1 com o FatMax ────────────────────────────────
+    # O FatMax tem de ficar ABAIXO do LT1: e' a intensidade de maxima
+    # oxidacao de gordura, e essa acontece dentro do dominio moderado.
+    #
+    # Neste atleta:
+    #   LT1 por quebra      174 W  ->  FatMax 143 W fica a 82% dele. OK.
+    #   LT1 por convencao   104 W  ->  FatMax 143 W fica a 138%. Impossivel.
+    #
+    # E' este teste que decide entre os dois metodos, e nao o facto de a
+    # convencao concordar melhor com os campos da Intervals.icu. Um LT1
+    # abaixo do FatMax nao e' um limiar aerobio -- e' um numero.
+    coer_fatmax = None
+    if fatmax_w and lt1:
+        rel = fatmax_w / lt1
+        coer_fatmax = {
+            "fatmax_w": round(fatmax_w),
+            "fatmax_pct_do_lt1": round(rel * 100),
+            "coerente": rel < 1.0,
+            "leitura": (
+                f"FatMax {round(fatmax_w)} W fica a {round(rel * 100)}% do "
+                f"LT1 {round(lt1)} W — abaixo, como tem de ser"
+                if rel < 1.0 else
+                f"FatMax {round(fatmax_w)} W fica ACIMA do LT1 "
+                f"{round(lt1)} W ({round(rel * 100)}%). Isso é impossível: "
+                "a máxima oxidação de gordura acontece dentro do domínio "
+                "moderado, não acima dele. O LT1 está subestimado"),
+        }
+        if lt1_conv:
+            rel_c = fatmax_w / lt1_conv
+            coer_fatmax["convencao"] = {
+                "lt1_w": round(lt1_conv),
+                "fatmax_pct_do_lt1": round(rel_c * 100),
+                "coerente": rel_c < 1.0,
+            }
+
     return {
+        "coerencia_fatmax": coer_fatmax,
         "lt1_w": round(lt1) if lt1 else None,
         "lt1_lactato": _la_em(lt1),
         "lt1_metodo": lt1_metodo,

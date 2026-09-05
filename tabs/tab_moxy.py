@@ -346,7 +346,8 @@ const MX_CORES = {smo2:'#F85149', thb:'#58A6FF', o2hb:'#3FB950',
                   respiration:'#79C0FF', dfa_a1:'#D2A8FF',
                   cadence:'#F0883E', velocity_smooth:'#3FB950',
                   torque:'#8b949e',
-                  wprime:'#E3B341', mprime:'#F85149'};
+                  wprime:'#E3B341', mprime:'#F85149',
+                  hhb_calc:'#A371F7'};
 // Escalas muito diferentes no mesmo grafico ficariam ilegiveis: o SmO2 anda
 // nos 60, a potencia nos 250 e o DFA-a1 abaixo de 2. Cada canal e' normalizado
 // ao seu proprio intervalo para o desenho, e o hover mostra sempre o valor
@@ -1224,6 +1225,29 @@ function mxLimiares(){
     +'diferença chega a 10 W.</p>';
   }
 
+  // ── deoxy-Hb ──────────────────────────────────────────────────────
+  const bh=d.bp_hhb||{}, hh=d.hhb||{};
+  if(bh.ok || bh.bp1_w!=null){
+   h+='<div style="border-left:3px solid #A371F7;padding:6px 10px;'
+    +'margin-bottom:10px;">'
+    +'<b style="color:#A371F7;font-size:15px;">deoxy-Hb: BP1 '+bh.bp1_w+' W'
+    +(bh.bp1_bpm?' · '+bh.bp1_bpm+' bpm':'')
+    +(bh.bp2_w!=null?'  ·  BP2 '+bh.bp2_w+' W':'')+'</b>'
+    +' <span style="color:#8b949e;font-size:11px;">F='+(bh.f_vs_recta||'—')
+    +' · '+bh.n_intervalos+' degraus</span>'
+    +(bh.leitura_bp1
+      ? '<br><span style="font-size:11px;">'+bh.leitura_bp1+'</span>':'')
+    +(hh.formula
+      ? '<br><span style="font-size:10px;color:#8b949e;">'+hh.formula
+        +' · '+(hh.origem||'')+'</span>':'')
+    +(bh.nota_sinal
+      ? '<br><span style="font-size:10px;color:#8b949e;">'+bh.nota_sinal
+        +'</span>':'')
+    +'</div>';
+  } else if(bh.motivo){
+   h+='<p style="font-size:11px;color:#8b949e;">deoxy-Hb: '+bh.motivo+'</p>';
+  }
+
   const bt=d.bp_taxa||{};
   if(bt.ok){
    h+='<div style="border-left:3px solid #58A6FF;padding:6px 10px;'
@@ -1486,7 +1510,8 @@ function mxCanaisEdit(){
    const calc = (k==='wprime'||k==='mprime');
    const cor = MX_CORES[k]||'#c9d1d9';
    const nome = k==='wprime' ? "W′ restante"
-              : k==='mprime' ? "M′ restante" : k;
+              : k==='mprime' ? "M′ restante"
+              : k==='hhb_calc' ? 'deoxy-Hb' : k;
    // as reservas não são "de contexto": são calculadas a partir do CP e
    // do W′. Marcá-las com o mesmo asterisco dos streams em bruto dizia
    // que não tinham sido filtradas, o que não descreve o que são

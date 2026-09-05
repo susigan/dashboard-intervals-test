@@ -1093,3 +1093,79 @@ def classificar_de_summary(itens, separar_aquecimento=True):
          if x.get('watts_medio') else None, 'texto': x.get('texto')}
         for x in alvo]
     return {'ok': True, **c}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# DEOXY-HEMOGLOBINA — o canal preferido para breakpoints
+#
+# O Moxy nao da' HHb directamente, mas ele sai do SmO2 e do THb:
+#
+#     HHb = ((100 - SmO2) / 100) x THb
+#
+# (Zurbuchen 2020, via Peikon.)
+#
+# PORQUE E' PREFERIDO, e nao mais um canal derivado como os outros:
+#
+# Ja' vimos que o O2Hb e o DiffHb ficam sobrepostos ao SmO2 quando o THb
+# quase nao varia -- sao transformacoes lineares dele. O HHb NAO e' um
+# deles. Repare-se:
+#
+#     O2Hb   = SmO2/100 x THb          sobe quando o SmO2 sobe
+#     HHb    = (1 - SmO2/100) x THb    sobe quando o SmO2 DESCE
+#
+# O HHb mede a hemoglobina que JA' LARGOU o oxigenio, ou seja a
+# extraccao. E' por isso que a literatura o prefere:
+#
+#   "we'll want to use the deoxy-hemoglobin measurements (...) since they
+#    are LESS AFFECTED BY BLOOD VOLUME under the NIRS probe"
+#
+# Continua a depender do THb, portanto nao e' independente do SmO2 -- mas
+# responde as duas coisas (saturacao e volume) na direccao que interessa
+# para ler extraccao, e e' o canal em que os breakpoints da literatura
+# foram descritos.
+#
+# E ha um achado que o torna especialmente util aqui:
+#
+#   "the deoxy-hemoglobin breakpoint and Fatmax (...) both occur at the
+#    SAME PERCENTAGE of VO2peak"
+#
+# Ou seja: o breakpoint do HHb aproxima o FatMax, o que da' uma segunda
+# via para o primeiro limiar.
+# ══════════════════════════════════════════════════════════════════════════
+
+def calcular_hhb(smo2, thb):
+    """HHb = ((100 - SmO2)/100) x THb, ponto a ponto."""
+    if not smo2 or not thb:
+        return None
+    n = min(len(smo2), len(thb))
+    fora = []
+    validos = 0
+    for i in range(n):
+        s, t = smo2[i], thb[i]
+        if s is None or t is None:
+            fora.append(None)
+            continue
+        fora.append(round((100.0 - float(s)) / 100.0 * float(t), 4))
+        validos += 1
+    if validos < n * 0.5:
+        return None
+    return fora
+
+
+def hhb_disponivel(canais):
+    """Acrescenta 'hhb_calc' quando ha SmO2 e THb e nao ha HHb medido."""
+    if not canais:
+        return None, 'sem canais'
+    # se o sensor ja' deu HHb, usa-se esse
+    for k in canais:
+        if k.lower() in ('hhb', 'hhb_1', 'deoxyhb'):
+            return k, 'canal do sensor'
+    sm = next((k for k in canais if k.lower().startswith('smo2')), None)
+    th = next((k for k in canais if k.lower().startswith('thb')), None)
+    if not sm or not th:
+        return None, 'sem SmO2 e THb para o calcular'
+    v = calcular_hhb(canais[sm], canais[th])
+    if v is None:
+        return None, 'poucos pontos válidos'
+    canais['hhb_calc'] = v
+    return 'hhb_calc', 'calculado de SmO2 e THb'

@@ -2430,9 +2430,15 @@ function pmExtTabela(){
            ? conta.join(' · ')
            : '<span style="color:#F85149;">nenhuma estimativa '
              +'independente</span>';
+         // ocultos pelo backend: nem sequer vieram no detalhe
+         const oc=(b.ocultos_do_modelo||[]).map(function(o){
+           return o.campo+' '+o.valor; });
+         if(oc.length)
+          fora.push('<span title="'+(b.porque_ocultos||'')+'">'
+           +oc.join(' · ')+'</span>');
          if(fora.length)
-          t += '<br><span style="opacity:.45;font-size:10px;">fora do '
-            +'consenso: '+fora.join(' · ')+'</span>';
+          t += '<br><span style="opacity:.45;font-size:10px;">não conta '
+            +'(mesma origem que o modelo): '+fora.join(' · ')+'</span>';
          return t;
         })()+'</td>'
      +'<td style="color:#8b949e;">'+b.min+'–'+b.max+'</td>'

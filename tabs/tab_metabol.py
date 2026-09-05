@@ -2417,6 +2417,12 @@ function pmExtTabela(){
          +(b.consenso.n_metodos_fracos_excluidos
            ? ' · '+b.consenso.n_metodos_fracos_excluidos+' fraco'
              +(b.consenso.n_metodos_fracos_excluidos===1?'':'s')+' fora' : '')
+         +(b.consenso.n_do_modelo_excluidos
+           ? '<br><span style="color:#F0883E;">'
+             +b.consenso.n_do_modelo_excluidos+' do modelo fora</span>' : '')
+         +(b.consenso.so_independentes===false && b.consenso.n_do_modelo_excluidos
+           ? '<br><span style="color:#F85149;">sem campo independente</span>'
+           : '')
          +'</span>' : '')
      +'</td>'
      +'<td style="color:'+cor+';">'+b.amplitude+(ap!=null?' ('+ap+'%)':'')+'</td>'
@@ -2529,6 +2535,26 @@ function pmExtTabela(){
  } else if(ft.motivo){
   h+='<p style="color:#8b949e;font-size:11px;">Filtro por tipo de sessão: '
    +ft.motivo+'</p>';
+ }
+
+ // ── coerência do LT1 com o FatMax ────────────────────────────────
+ // O LT1 do modelo (175 W) e os campos medidos (108 W) discordam em 62%.
+ // Este bloco diz porque é que o modelo fica como referência: um LT1
+ // abaixo do FatMax não é um limiar aeróbio.
+ const cf=((PM && PM.limiares) || {}).coerencia_fatmax;
+ if(cf){
+  const cor = cf.coerente ? '#3FB950' : '#F85149';
+  h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
+   +'margin:8px 0;font-size:11px;">'
+   +'<b style="color:'+cor+';">LT1 vs FatMax</b> '+cf.leitura;
+  if(cf.convencao)
+   h+='<br><span style="color:#8b949e;">Pela convenção clássica (+0,5 '
+    +'mmol/L) o LT1 daria '+cf.convencao.lt1_w+' W, e aí o FatMax ficaria '
+    +'a '+cf.convencao.fatmax_pct_do_lt1+'% — '
+    +(cf.convencao.coerente?'também coerente':'impossível')+'. '
+    +'É este teste que decide entre os dois métodos, não o facto de a '
+    +'convenção concordar melhor com os campos medidos.</span>';
+  h+='</div>';
  }
 
  if(mxr.sem_dados)

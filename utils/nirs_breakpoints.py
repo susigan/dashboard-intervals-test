@@ -1383,3 +1383,139 @@ def coerencia(bp1_w=None, bp2_w=None, cp=None, mlss=None, pvo2max=None,
                  'qualquer atleta apresentaria — não para dizer que o '
                  'atleta devia estar noutro sítio'),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PRIMEIRO LIMIAR PELA REOXIGENACAO (Yogev)
+#
+# Assaf Yogev, no MESMO protocolo que este atleta faz -- incremental com
+# 1 min de recuperacao entre degraus. Confirmado tambem pelas figuras da
+# apresentacao (video 22:37), onde se veem os tres padroes lado a lado:
+#
+#   BAIXA INTENSIDADE   o SmO2 cai no arranque e depois SOBE dentro do
+#                       proprio bloco -- reoxigenacao. Na figura (a), a
+#                       linha azul desce e recupera durante o esforco.
+#
+#   MEDIA               cai e ESTABILIZA. Na figura (b) a linha assenta e
+#                       fica plana. "supply and demand being matched".
+#
+#   ALTA                cai CONTINUAMENTE ate' ao fim. Figura (c), queda
+#                       sustentada sem recuperacao.
+#
+# E o criterio, nas palavras dele:
+#
+#   "after they reach the peak of this reoxygenation response, we see a
+#    plateau in the signal (...) THIS TRANSITION is what we're looking for
+#    when we're trying to set the FIRST AEROBIC THRESHOLD"
+#
+# Ou seja: o primeiro limiar esta' entre o ULTIMO degrau que reoxigena e o
+# PRIMEIRO que apenas estabiliza.
+#
+# PORQUE E' QUE ISTO IMPORTA AQUI
+#
+# O mlss_por_dessaturacao ja' distingue "estabiliza" de "desce ate' ao
+# fim" -- e' o SEGUNDO limiar. O "sobe" era tratado como um caso a parte e
+# nao era usado para nada. Mas e' precisamente o sinal do PRIMEIRO limiar,
+# que e' onde este atleta tem menos medicoes independentes.
+#
+# Nos dados dele (Row, 2026-01-16):
+#   155 W  declive da 2a metade  +5.35  -> reoxigena
+#   173 W  declive da 2a metade  -1.35  -> ja' nao
+# Logo o primeiro limiar fica entre 155 e 173 W.
+# ══════════════════════════════════════════════════════════════════════════
+
+# Declive, em % de SmO2 por minuto, acima do qual se considera que o sinal
+# REOXIGENA dentro do bloco. Usa-se o mesmo valor de "estavel" mas com o
+# sinal ao contrario: acima de +0.5 sobe, abaixo de -0.5 desce, entre os
+# dois esta' estavel.
+REOX_MINIMA = 0.5
+
+
+def lt1_por_reoxigenacao(tempo, smo2, blocos, transiente=TRANSIENTE,
+                         reox_minima=REOX_MINIMA, dur_minima=DUR_MINIMA):
+    """Primeiro limiar: onde a reoxigenação dentro do bloco deixa de ocorrer."""
+    ons = sorted((b for b in blocos if b.get('on')),
+                 key=lambda b: b.get('watts_medio') or 0)
+    linhas = []
+    for b in ons:
+        dur = b['t1'] - b['t0']
+        w = b.get('watts_medio')
+        if dur < dur_minima or w is None:
+            linhas.append({'watts': w, 'duracao_s': round(dur),
+                           'motivo': f'bloco de {round(dur)} s'})
+            continue
+        ini = b['t0'] + dur * transiente
+        meio = ini + (b['t1'] - ini) / 2
+        d_fim = _declive_por_min(tempo, smo2, meio, b['t1'])
+        if d_fim is None:
+            linhas.append({'watts': w, 'duracao_s': round(dur),
+                           'motivo': 'poucos pontos'})
+            continue
+        if d_fim >= reox_minima:
+            padrao, fase = 'reoxigena', 'baixa'
+        elif d_fim <= -reox_minima:
+            padrao, fase = 'desce até ao fim', 'alta'
+        else:
+            padrao, fase = 'estabiliza', 'média'
+        linhas.append({'watts': round(w, 1), 'duracao_s': round(dur),
+                       'declive_2a_metade': round(d_fim, 2),
+                       'padrao': padrao, 'dominio': fase,
+                       'reoxigena': padrao == 'reoxigena'})
+
+    validos = [x for x in linhas if 'padrao' in x]
+    if len(validos) < 2:
+        return {'ok': False,
+                'motivo': f'só {len(validos)} blocos utilizáveis',
+                'blocos': linhas}
+
+    # ultimo que reoxigena, com nenhum a reoxigenar acima dele
+    ultimo_reox = primeiro_sem = None
+    for i in range(len(validos) - 1, -1, -1):
+        if not validos[i]['reoxigena']:
+            continue
+        if not any(x['reoxigena'] for x in validos[i + 1:]) and \
+                i + 1 < len(validos):
+            ultimo_reox, primeiro_sem = validos[i], validos[i + 1]
+            break
+
+    if ultimo_reox is None:
+        if validos[0]['reoxigena']:
+            return {'ok': False,
+                    'motivo': ('todos os blocos reoxigenam: o primeiro '
+                               'limiar está ACIMA da carga mais alta '
+                               'testada'),
+                    'limite_inferior': validos[-1]['watts'],
+                    'blocos': linhas}
+        return {'ok': False,
+                'motivo': ('nenhum bloco reoxigena: o primeiro limiar está '
+                           'ABAIXO da carga mais baixa testada, ou a sessão '
+                           'começou já aquecida'),
+                'limite_superior': validos[0]['watts'],
+                'blocos': linhas}
+
+    a, b2 = ultimo_reox['watts'], primeiro_sem['watts']
+    return {
+        'ok': True,
+        'lt1_entre': [round(a, 1), round(b2, 1)],
+        'lt1_estimado': round((a + b2) / 2, 1),
+        'incerteza': round((b2 - a) / 2, 1),
+        'ultimo_a_reoxigenar': ultimo_reox,
+        'primeiro_sem_reoxigenar': primeiro_sem,
+        'blocos': linhas,
+        'criterio': {'reox_acima_de': reox_minima,
+                     'transiente_ignorado_pct': round(transiente * 100),
+                     'unidade': '% de SmO2 por minuto na 2.ª metade'},
+        'metodo': 'transição da reoxigenação (Yogev)',
+        'leitura': (
+            f'até {round(a)} W o SmO2 ainda SOBE dentro do bloco depois da '
+            f'queda inicial — a entrega supera o consumo. A partir de '
+            f'{round(b2)} W deixa de subir. É essa transição que marca o '
+            'primeiro limiar aeróbio'),
+        'nota': ('mede uma coisa diferente do MLSS: este é onde a '
+                 'reoxigenação DENTRO do bloco desaparece; o MLSS é onde a '
+                 'queda deixa de estabilizar. São o primeiro e o segundo '
+                 'limiar, pela mesma via'),
+        'independente': (
+            'vem do sensor óptico, não da curva de potência. É uma medição '
+            'independente do modelo — ao contrário do AeT'),
+    }

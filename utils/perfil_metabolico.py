@@ -630,6 +630,9 @@ FONTE_DO_CAMPO = {
     'hrvt1': 'medido', 'hrvt1plus': 'medido', 'hrvt2': 'medido',
     'hrvtmss': 'medido', 'lthrdetected': 'medido',
     'a1_inflexao_w': 'medido', 'a1_inflexao_bpm': 'medido',
+    # limiares opticos: sensor no musculo, independentes do modelo
+    'bp1_smo2': 'medido', 'bp2_smo2': 'medido',
+    'lt1_reox': 'medido', 'mlss_dessat': 'medido',
 }
 
 EXPLICA_FONTE = {
@@ -1044,9 +1047,15 @@ def coerencia_por_grupo(campos, modelo):
                 "amplitude": round(max(ws) - min(ws), 1),
                 "amplitude_pct": (round((max(ws) - min(ws)) / mediana * 100, 1)
                                   if mediana else None),
-                "detalhe": sorted(({"campo": n, "valor": round(v, 1)}
-                                   for n, v in vals),
-                                  key=lambda d: d["valor"]),
+                # a fonte vai no detalhe para a tabela poder marcar quais
+                # estimativas contam e quais sao so' segunda opiniao
+                "detalhe": sorted(
+                    ({"campo": n, "valor": round(v, 1),
+                      "fonte": next((fonte_do_campo(c.get("chave"))
+                                     for c in campos
+                                     if c.get("rotulo") == n), "desconhecida")}
+                     for n, v in vals),
+                    key=lambda d: d["valor"]),
             }
         # ── consenso ────────────────────────────────────────────────
         # A mediana de todos os metodos que medem o mesmo limiar na mesma

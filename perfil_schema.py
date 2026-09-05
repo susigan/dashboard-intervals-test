@@ -150,7 +150,49 @@ CREATE INDEX IF NOT EXISTS ix_lim_mod_campo_data
 """
 
 
+# Colunas acrescentadas depois de a tabela ja' existir em producao.
+#
+# O "CREATE TABLE IF NOT EXISTS" nao toca numa tabela que ja' existe: se o
+# ficheiro no Drive foi criado antes destas colunas, elas nunca aparecem e
+# o INSERT rebenta com "table moxy_analises has no column named ...".
+#
+# Formato: (tabela, coluna, tipo). Correr ALTER TABLE para cada uma que
+# falte e' barato e idempotente.
+MIGRACOES = [
+    ('moxy_analises', 'lt1_reox_w', 'REAL'),
+    ('moxy_analises', 'lt1_reox_de', 'REAL'),
+    ('moxy_analises', 'lt1_reox_ate', 'REAL'),
+    ('moxy_analises', 'mlss_dessat_w', 'REAL'),
+    ('moxy_analises', 'mlss_dessat_de', 'REAL'),
+    ('moxy_analises', 'mlss_dessat_ate', 'REAL'),
+]
+
+
+def migrar(conn):
+    """Acrescenta colunas em falta a tabelas que ja' existem."""
+    feitas, erros = [], []
+    for tabela, coluna, tipo in MIGRACOES:
+        try:
+            existe = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name=?", (tabela,)).fetchone()
+            if not existe:
+                continue
+            cols = {r[1] for r in
+                    conn.execute(f"PRAGMA table_info({tabela})")}
+            if coluna in cols:
+                continue
+            conn.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {tipo}")
+            feitas.append(f'{tabela}.{coluna}')
+        except Exception as e:
+            erros.append(f'{tabela}.{coluna}: {e}')
+    if feitas:
+        conn.commit()
+    return {'acrescentadas': feitas, 'erros': erros}
+
+
 def aplicar_schema(conn):
     conn.executescript(SCHEMA)
     conn.commit()
+    migrar(conn)
     return conn

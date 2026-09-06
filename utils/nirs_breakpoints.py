@@ -1519,3 +1519,97 @@ def lt1_por_reoxigenacao(tempo, smo2, blocos, transiente=TRANSIENTE,
             'vem do sensor óptico, não da curva de potência. É uma medição '
             'independente do modelo — ao contrário do AeT'),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# VALORES IMPLAUSIVEIS
+#
+# Uma falha da cinta de FC, um sensor mal colado ou um bloco com artefacto
+# produzem numeros que passam por todos os testes estatisticos e nao fazem
+# sentido nenhum. O teste F nao os apanha: uma quebra bem definida em
+# dados errados continua a ser uma quebra bem definida.
+#
+# Estes limites nao vem da literatura: sao de plausibilidade fisica. Um
+# limiar aerobio de 15 W ou de 600 W nao e' um limiar mau, e' um erro de
+# leitura -- e a diferenca importa, porque um limiar mau discute-se e um
+# erro de leitura descarta-se.
+#
+# O valor NAO se apaga: mostra-se com asterisco e o motivo. Apagar
+# esconderia que houve uma medicao; o asterisco diz que houve e que nao e'
+# de confianca.
+# ══════════════════════════════════════════════════════════════════════════
+
+LIMITES_PLAUSIVEIS = {
+    'watts': (40, 600),
+    'bpm': (70, 220),
+    'smo2': (0, 100),
+}
+
+
+def validar_valor(valor, tipo='watts', contexto=None):
+    """Devolve (ok, motivo). O valor nunca se apaga — marca-se."""
+    if valor is None:
+        return True, None
+    lo, hi = LIMITES_PLAUSIVEIS.get(tipo, (None, None))
+    if lo is None:
+        return True, None
+    try:
+        v = float(valor)
+    except (TypeError, ValueError):
+        return False, 'não é um número'
+    if v < lo:
+        return False, f'{round(v)} está abaixo do mínimo plausível ({lo})'
+    if v > hi:
+        return False, f'{round(v)} está acima do máximo plausível ({hi})'
+
+    # coerencia com o contexto da propria sessao
+    c = contexto or {}
+    if tipo == 'watts':
+        wmax = c.get('watts_max_da_sessao')
+        if wmax and v > wmax * 1.15:
+            return False, (f'{round(v)} W é 15% acima da potência máxima da '
+                           f'sessão ({round(wmax)} W) — o limiar não pode '
+                           'estar fora do que foi testado')
+        wmin = c.get('watts_min_da_sessao')
+        if wmin and v < wmin * 0.7:
+            return False, (f'{round(v)} W fica muito abaixo do degrau mais '
+                           f'leve ({round(wmin)} W): está extrapolado')
+    if tipo == 'bpm':
+        fcmax = c.get('fc_max_da_sessao')
+        if fcmax and v > fcmax + 5:
+            return False, (f'{round(v)} bpm é acima da FC máxima registada '
+                           f'na sessão ({round(fcmax)}) — provável falha '
+                           'da cinta')
+        art = c.get('pct_artefacto')
+        if art is not None and art > 30:
+            return False, (f'{round(art)}% de artefacto na cinta: a FC '
+                           'desta sessão não é de confiança')
+    return True, None
+
+
+def marcar_implausiveis(estimativas, tipo='watts', contexto=None):
+    """Marca as estimativas implausíveis sem as apagar.
+
+    estimativas: [{'watts': ..., 'metodo': ...}] ou equivalente.
+    """
+    fora, marcadas = [], 0
+    for e in (estimativas or []):
+        v = e.get(tipo) if tipo in e else e.get('valor')
+        ok, motivo = validar_valor(v, tipo, contexto)
+        e = dict(e)
+        e['plausivel'] = ok
+        if not ok:
+            e['motivo_implausivel'] = motivo
+            e['marca'] = '*'
+            marcadas += 1
+        fora.append(e)
+    return {
+        'estimativas': fora,
+        'n_marcadas': marcadas,
+        'validas': [e for e in fora if e.get('plausivel')],
+        'nota': (f'{marcadas} valor(es) marcado(s) com * por não serem '
+                 'fisicamente plausíveis. Não foram apagados: continuam '
+                 'visíveis para se ver que houve medição, mas não entram '
+                 'no consenso'
+                 if marcadas else None),
+    }

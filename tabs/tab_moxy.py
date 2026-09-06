@@ -842,6 +842,86 @@ function mxResumo(){
     +'número absoluto.</p>';
   }
 
+  // ── sugestões de treino a partir do consenso entre sessões ────────
+  const itv=d.intervencao||{};
+  if(itv.ok){
+   const iv=itv.intervencao||{};
+   const cor = itv.estavel ? '#3FB950' : '#F0883E';
+   h+='<div style="border:1px solid '+cor+';border-radius:6px;'
+    +'padding:8px 10px;margin:12px 0;">'
+    +'<span style="color:#8b949e;font-size:11px;">Limitador ao longo das '
+    +'sessões</span><br>'
+    +'<b style="font-size:16px;color:'+cor+';">'+iv.nome+'</b> '
+    +'<span style="color:#8b949e;font-size:12px;">'+itv.n+' de '+itv.de
+    +' sessões ('+itv.concordancia_pct+'%)'
+    +(itv.unanime?' · unânime':'')+'</span>'
+    +'<br><span style="font-size:11px;color:'+cor+';"><b>'
+    +itv.o_que_fazer+'</b></span>'
+    +'<br><span style="font-size:10px;color:#8b949e;">'
+    +Object.keys(itv.contagem||{}).map(function(k){
+      return k+': '+itv.contagem[k]; }).join(' · ')+'</span>';
+   if(itv.partilhado)
+    h+='<p style="color:#F0883E;font-size:11px;margin:6px 0 0 0;">⚠ '
+     +itv.partilhado+'</p>';
+
+   // limitador de cada sessão
+   h+='<table style="border-collapse:collapse;font-size:11px;margin-top:8px;">'
+    +'<tr style="color:#8b949e;text-align:left;">'
+    +'<th style="padding-right:14px;">Sessão</th>'
+    +'<th style="padding-right:14px;">Limitador</th>'
+    +'<th>Concordância interna</th></tr>'
+    +(itv.sessoes||[]).map(function(x, si){
+      return '<tr><td style="padding-right:14px;color:'+mxCorSessao(si)+';">'
+       +(x.data||x.id||'—')+'</td>'
+       +'<td style="padding-right:14px;">'+(x.limitador||'—')+'</td>'
+       +'<td style="color:#8b949e;">'+(x.concordancia||'—')
+       +(x.confianca?' · '+x.confianca:'')+'</td></tr>'; }).join('')
+    +'</table>';
+
+   // métodos, em dropdown
+   if((iv.metodos||[]).length){
+    h+='<details style="margin-top:8px;"><summary style="cursor:pointer;'
+     +'font-size:12px;color:#8b949e;padding:4px 0;">Métodos e alvos para '
+     +iv.nome+'</summary><div style="margin-top:6px;">'
+     +'<p style="font-size:11px;color:#8b949e;">'+(iv.o_que_e||'')+'</p>'
+     +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+     +'<tr style="color:#8b949e;text-align:left;'
+     +'border-bottom:1px solid #21262d;">'
+     +'<th style="padding:4px;">Método</th><th>Como</th>'
+     +'<th>Alvo FC</th><th>Alvo SmO2</th></tr>'
+     +iv.metodos.map(function(m){
+       return '<tr style="border-bottom:1px solid #161b22;">'
+        +'<td style="padding:4px;"><b>'+m.metodo+'</b></td>'
+        +'<td style="color:#8b949e;">'+m.como+'</td>'
+        +'<td style="color:#c9d1d9;">'+(m.alvo_fc||'—')+'</td>'
+        +'<td style="color:#3FB950;">'
+        +(m.alvo_smo2||m.sinal_no_smo2||'—')+'</td></tr>'; }).join('')
+     +'</table>';
+    const n2=iv.nivel_dois;
+    if(n2){
+     h+='<p style="font-size:11px;margin-top:8px;"><b>Nível dois</b> — '
+      +n2.porque+'</p>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+      +(n2.metodos||[]).map(function(m){
+        return '<tr style="border-bottom:1px solid #161b22;">'
+         +'<td style="padding:4px;width:28%;"><b>'+m.metodo+'</b></td>'
+         +'<td style="color:#8b949e;">'+m.como
+         +(m.como_verificar?'<br><span style="color:#A371F7;">verificar: '
+           +m.como_verificar+'</span>':'')+'</td></tr>'; }).join('')
+      +'</table>';
+    }
+    if(iv.nao_fazer)
+     h+='<p style="color:#F0883E;font-size:11px;"><b>Não fazer:</b> '
+      +iv.nao_fazer+'</p>';
+    h+='<p style="font-size:11px;color:#8b949e;"><b>Antes de tudo:</b> '
+     +(d.intervencao.fundacoes||[]).map(function(f){
+       return f.item; }).join(' · ')+'</p>'
+     +'<p style="font-size:10px;color:#8b949e;">'+(itv.nota||'')+'</p>'
+     +'</div></details>';
+   }
+   h+='</div>';
+  }
+
   // cartoes por sessao
   h+='<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;">';
   (d.sessoes||[]).forEach(function(x, si){

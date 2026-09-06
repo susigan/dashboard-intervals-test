@@ -69,25 +69,60 @@ INTERVENCOES = {
             'volume telediastólico e volume sistólico',
             'hipertrofia ventricular esquerda',
             'coordenação cardio-pulmonar'],
+        # Peikon organiza a "endurance basica" em quatro categorias D0-D3,
+        # com alvos de FC e de SmO2 explicitos. Sao mais operacionais do
+        # que "volume em zona verde": dizem a duracao, a intensidade e o
+        # que o SmO2 deve fazer.
         'metodos': [
-            {'metodo': 'Volume em zona verde',
-             'como': ('abaixo do primeiro limiar, horas. É onde o volume '
-                      'plasmático e a capilarização se constroem'),
-             'sinal_no_smo2': 'SmO2 mantém-se alto e estável',
+            {'metodo': 'D0 — regeneração',
+             'como': ('intensidade que produz o SmO2 MÁXIMO local. Faixa '
+                      'muito estreita: é preciso volume sanguíneo elevado, '
+                      'logo alguma intensidade, mas se passar disso o SmO2 '
+                      'começa a descer'),
+             'alvo_smo2': 'no máximo local de SmO2 — "andar na linha fina"',
+             'alvo_fc': None,
+             'objectivo': ('não produz adaptação: estimula o sistema '
+                           'linfático e leva ao estado parassimpático. É '
+                           'recuperação'),
+             'precisa_de_moxy': True,
              'fonte': 'Peikon, Training The Delivery Limited Athlete'},
-            {'metodo': 'Intervalos longos perto do limiar',
-             'como': ('blocos de 8–20 min entre o primeiro e o segundo '
-                      'limiar, com recuperação completa'),
-             'sinal_no_smo2': ('SmO2 desce e ESTABILIZA dentro do bloco — '
-                               'se descer até ao fim, a carga é alta demais'),
+
+            {'metodo': 'D1 — endurance básica',
+             'como': ('20 min a 3–5 h contínuos. Para atletas pesados e '
+                      'potentes, intervalos curtos: 40 s de trabalho, 20 s '
+                      'de descanso, 40 séries — em vez de 30 min seguidos'),
+             'alvo_smo2': ('SmO2 a SUBIR ao longo do intervalo, ou estável '
+                           'num máximo local'),
+             'alvo_fc': '50–65% da FC máxima',
+             'alvo_lactato': 'sem acumulação acima da base',
+             'sensacao': ('se não consegue manter conversa fluida, está a '
+                          'trabalhar demais'),
+             'frequencia': ('várias sessões no mesmo dia ou em dias '
+                            'seguidos, sem consequências'),
              'fonte': 'Peikon, idem'},
+
+            {'metodo': 'D2 — endurance moderada',
+             'como': ('20 a 180 min contínuos, ou intervalos de 10–30 min, '
+                      '2 a 6 séries, com 30–90 s de descanso'),
+             'alvo_smo2': 'SmO2 estabilizado entre 40% e 70%',
+             'alvo_fc': '65–75% da FC máxima',
+             'alvo_lactato': 'muito pouca acumulação acima da base',
+             'sensacao': ('~70–75% do esforço; deve conseguir dizer uma '
+                          'frase completa'),
+             'nota': ('em atletas avançados com historial de trabalho '
+                      'contínuo longo, o D2 pode substituir o grosso do D1'),
+             'fonte': 'Peikon, idem'},
+
             {'metodo': 'HIIT sistémico (Moxy)',
              'como': ('3–5 min a intensidade submáxima até atingir o SmO2 '
                       'mínimo individual; recuperação até voltar à linha '
                       'de base'),
-             'sinal_no_smo2': 'chega ao mínimo em 2–5 min',
+             'alvo_smo2': 'chega ao mínimo em 2–5 min',
              'fonte': 'Moxy HIIT Guide, coluna "Systemic"'},
         ],
+        'nota_categorias': (
+            'o D1 pode substituir o D2 ou o D3 em semanas de descarga. E o '
+            'D1 é ESTIMULATIVO — o D2 e o D3 já impõem carga a sério'),
         'nao_fazer': ('mais intensidade não resolve: o músculo já usa tudo '
                       'o que recebe. O travão está a montante'),
     },
@@ -250,4 +285,100 @@ def tudo():
             'Peikon: "the athlete\'s starting point dictates what '
             'intervention will get them to their goal outcome. This is why '
             'cookie cutter programs fail"'),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TRADUZIR OS ALVOS PARA OS WATTS E BPM DESTE ATLETA
+#
+# As categorias vêm em % da FC máxima. Sem isto, o utilizador tem de fazer
+# a conta de cabeça — e a % de FCmax é justamente o tipo de âncora que
+# este dashboard evita: varia com o dia, com o calor, com a fadiga.
+#
+# Onde houver limiar medido, prefere-se o limiar. A % da FCmax só entra
+# quando não há alternativa, e vai marcada como tal.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _pct(v, lo, hi):
+    return (round(v * lo), round(v * hi)) if v else None
+
+
+def alvos_para_atleta(fc_max=None, lt1_w=None, lt2_w=None,
+                      lt1_bpm=None, lt2_bpm=None, smo2_max=None):
+    """Converte os alvos das categorias para valores concretos.
+
+    Devolve, por categoria, o que se pode dizer com o que existe — e diz
+    o que falta quando não dá.
+    """
+    fora = {}
+
+    # ── D0: só com Moxy ──────────────────────────────────────────────
+    fora['D0'] = {
+        'nome': 'D0 — regeneração',
+        'watts': None,
+        'bpm': None,
+        'smo2': (f'manter no máximo local (~{round(smo2_max)}% nesta '
+                 'modalidade)' if smo2_max else 'no máximo local de SmO2'),
+        'so_com_moxy': True,
+        'porque': ('a intensidade certa é a que produz o SmO2 mais alto, e '
+                   'isso não se sabe sem o sensor — é a definição da '
+                   'categoria, não uma limitação do cálculo'),
+    }
+
+    # ── D1: abaixo do primeiro limiar ────────────────────────────────
+    d1 = {'nome': 'D1 — endurance básica', 'ancora': None}
+    if lt1_w:
+        # o D1 fica claramente abaixo do LT1: é onde o SmO2 ainda sobe
+        d1['watts'] = (round(lt1_w * 0.60), round(lt1_w * 0.90))
+        d1['ancora'] = 'LT1 medido'
+    if lt1_bpm:
+        d1['bpm'] = (round(lt1_bpm * 0.82), round(lt1_bpm * 0.97))
+        d1['ancora'] = d1['ancora'] or 'LT1 medido'
+    if not d1.get('bpm') and fc_max:
+        d1['bpm'] = _pct(fc_max, 0.50, 0.65)
+        d1['ancora'] = '% da FC máxima (sem LT1 medido)'
+    d1['smo2'] = 'a SUBIR ao longo do intervalo, ou estável no máximo'
+    d1['duracao'] = '20 min a 3–5 h'
+    d1['teste'] = 'consegue manter conversa fluida'
+    fora['D1'] = d1
+
+    # ── D2: entre os dois limiares, na metade de baixo ───────────────
+    d2 = {'nome': 'D2 — endurance moderada', 'ancora': None}
+    if lt1_w and lt2_w:
+        d2['watts'] = (round(lt1_w * 0.95), round(lt1_w + (lt2_w - lt1_w) * 0.5))
+        d2['ancora'] = 'entre LT1 e metade do caminho para o LT2'
+    elif lt1_w:
+        d2['watts'] = (round(lt1_w * 0.95), round(lt1_w * 1.15))
+        d2['ancora'] = 'LT1 medido (sem LT2)'
+    if lt1_bpm and lt2_bpm:
+        d2['bpm'] = (round(lt1_bpm), round(lt1_bpm + (lt2_bpm - lt1_bpm) * 0.5))
+        d2['ancora'] = d2['ancora'] or 'entre LT1 e LT2 medidos'
+    if not d2.get('bpm') and fc_max:
+        d2['bpm'] = _pct(fc_max, 0.65, 0.75)
+        d2['ancora'] = '% da FC máxima (sem limiares medidos)'
+    d2['smo2'] = 'estabilizado entre 40% e 70%'
+    d2['duracao'] = '20–180 min, ou 2–6 × 10–30 min com 30–90 s de pausa'
+    d2['teste'] = 'consegue dizer uma frase completa'
+    fora['D2'] = d2
+
+    faltam = []
+    if not (lt1_w or lt1_bpm):
+        faltam.append('LT1 medido')
+    if not (lt2_w or lt2_bpm):
+        faltam.append('LT2 medido')
+    if not fc_max:
+        faltam.append('FC máxima')
+    if smo2_max is None:
+        faltam.append('SmO2 máximo de uma sessão Moxy')
+
+    return {
+        'categorias': fora,
+        'faltam': faltam,
+        'nota': ('onde há limiar medido, os alvos ancoram nele. A % da FC '
+                 'máxima só entra quando não há alternativa, e fica '
+                 'assinalada — é o tipo de âncora que varia com o dia, o '
+                 'calor e a fadiga'),
+        'aviso': ('as fronteiras entre categorias não são linhas: são '
+                  'transições. O que decide é o comportamento do SmO2, não '
+                  'o número'),
     }

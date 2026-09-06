@@ -2129,8 +2129,19 @@ def _treino_sugerido(modalidade):
         import intervencoes as _iv
 
         mx = _ultima_analise_moxy(modalidade) or {}
+        # com_ancoras=False, OBRIGATORIAMENTE.
+        #
+        # Com True, o perfil_metabolico_dados chama o
+        # limiares_externos_dados para ir buscar o consenso, e esse chama
+        # de volta o _treino_sugerido -> recursao infinita, e a tab fica
+        # em "a calcular..." para sempre.
+        #
+        # E' a MESMA armadilha que ja' apanhou este projecto uma vez, entre
+        # o perfil_metabolico_dados e o limiares_externos_dados. Qualquer
+        # funcao nova chamada a partir do limiares_externos tem de usar
+        # com_ancoras=False.
         try:
-            pm, _ = perfil_metabolico_dados(modalidade, {}, com_ancoras=True)
+            pm, _ = perfil_metabolico_dados(modalidade, {}, com_ancoras=False)
             pm = pm or {}
         except Exception:
             pm = {}
@@ -2832,7 +2843,28 @@ class _Args:
         return self._o.items()
 
 
+# Guarda contra recursão. Se o perfil_metabolico_dados voltar a ser
+# chamado enquanto já está a correr para a mesma modalidade, devolve-se
+# logo sem âncoras em vez de entrar em ciclo.
+#
+# Isto já aconteceu duas vezes neste projecto: primeiro entre o
+# perfil_metabolico_dados e o limiares_externos_dados, depois com o
+# _treino_sugerido. Uma flag é mais barata do que descobrir a terceira vez
+# com a página bloqueada em "a calcular...".
+_A_CALCULAR = set()
+
+
 def perfil_metabolico_dados(modalidade, args, com_ancoras=True):
+    if com_ancoras and modalidade in _A_CALCULAR:
+        com_ancoras = False
+    _A_CALCULAR.add(modalidade)
+    try:
+        return _perfil_metabolico_dados(modalidade, args, com_ancoras)
+    finally:
+        _A_CALCULAR.discard(modalidade)
+
+
+def _perfil_metabolico_dados(modalidade, args, com_ancoras=True):
     """VO2max, VLamax, MLSS/AT, FatMax e zonas, a partir dos MMP da season.
 
     ?altura=186&idade=40&peso=86.3&bf=15[&season=2026][&pmax=1182]

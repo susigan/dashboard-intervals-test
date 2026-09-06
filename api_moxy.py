@@ -120,15 +120,34 @@ def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
     def _resumo(lista, nome):
         if not lista:
             return {'ok': False, 'n': 0}
-        vs = [x['watts'] for x in lista]
+        # marcar os implausíveis antes de calcular o consenso: um valor
+        # fora do que a sessão testou desloca a mediana sem que se veja
+        try:
+            import nirs_breakpoints as _nbk
+            _ctx = {}
+            _ws = [b.get('watts_medio') for b in (blocos or [])
+                   if b.get('on') and b.get('watts_medio')]
+            if _ws:
+                _ctx['watts_max_da_sessao'] = max(_ws)
+                _ctx['watts_min_da_sessao'] = min(_ws)
+            _m = _nbk.marcar_implausiveis(lista, 'watts', _ctx)
+            lista_marcada = _m['estimativas']
+            validas = _m['validas'] or lista_marcada
+        except Exception:
+            lista_marcada, validas, _m = lista, lista, {'n_marcadas': 0}
+
+        vs = [x['watts'] for x in validas]
         lo, hi = min(vs), max(vs)
         med = sorted(vs)[len(vs) // 2]
         amp = hi - lo
-        return {'ok': True, 'nome': nome, 'n': len(lista),
+        return {'ok': True, 'nome': nome, 'n': len(validas),
+                'n_marcadas': _m.get('n_marcadas', 0),
+                'nota_marcadas': _m.get('nota'),
                 'de': lo, 'ate': hi, 'mediana': med,
                 'dispersao_w': round(amp, 1),
                 'dispersao_pct': round(amp / med * 100) if med else None,
-                'estimativas': sorted(lista, key=lambda x: x['watts'])}
+                'estimativas': sorted(lista_marcada,
+                                      key=lambda x: x['watts'])}
 
     r1 = _resumo(p1, 'Primeiro limiar (LT1 / VT1 / FatMax)')
     r2 = _resumo(p2, 'Segundo limiar (LT2 / VT2 / RCP / MLSS)')

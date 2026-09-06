@@ -1055,14 +1055,23 @@ function mxLimiares(){
     +'<b style="font-size:18px;color:'+cor+';">'+Math.round(r.mediana)
     +' W</b> <span style="color:#8b949e;font-size:12px;">'
     +(r.n>1 ? '('+Math.round(r.de)+'–'+Math.round(r.ate)+' W · '
-      +r.n+' métodos · dispersão '+disp+'%)' : '(1 método)')+'</span>'
+      +r.n+' métodos · dispersão '+disp+'%)' : '(1 método)')
+    +(r.n_marcadas ? ' <span style="color:#F0883E;">· '+r.n_marcadas
+      +' fora por implausível</span>' : '')+'</span>'
     +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
     +r.estimativas.map(function(x){
-      return '<tr><td style="padding-right:14px;"><b>'+Math.round(x.watts)
-       +' W</b></td><td style="padding-right:14px;color:#8b949e;">'
+      // implausíveis ficam VISÍVEIS com asterisco: apagar esconderia que
+      // houve medição; o asterisco diz que houve e que não é de confiança
+      const mau = x.plausivel===false;
+      return '<tr'+(mau?' style="opacity:.55;"':'')+'>'
+       +'<td style="padding-right:14px;'+(mau?'color:#F0883E;':'')+'"><b>'
+       +Math.round(x.watts)+' W'+(mau?' *':'')+'</b></td>'
+       +'<td style="padding-right:14px;color:#8b949e;">'
        +(x.bpm?x.bpm+' bpm':'—')+'</td>'
        +'<td style="padding-right:14px;">'+x.metodo+'</td>'
-       +'<td style="color:#6e7681;">'+x.rota+'</td></tr>'; }).join('')
+       +'<td style="color:#6e7681;">'
+       +(mau ? '<span style="color:#F0883E;">'+x.motivo_implausivel+'</span>'
+             : x.rota)+'</td></tr>'; }).join('')
     +'</table></div>';
   });
   (lc.avisos||[]).forEach(function(a){

@@ -123,6 +123,67 @@ INTERVENCOES = {
         'nota_categorias': (
             'o D1 pode substituir o D2 ou o D3 em semanas de descarga. E o '
             'D1 é ESTIMULATIVO — o D2 e o D3 já impõem carga a sério'),
+
+        # ── NIVEL DOIS ────────────────────────────────────────────────
+        # Peikon e' contundente sobre isto, e vale a pena citar:
+        #
+        #   "Long slow distance training and high volumes of 'zone two'
+        #    training WITHOUT higher intensity training inputs are akin to
+        #    training leg extensions and leg curls, but neglecting to
+        #    squat heavy."
+        #
+        # As categorias D0-D3 sao o trabalho acessorio. Isto e' o
+        # agachamento pesado -- e faltava por completo na tabela.
+        'nivel_dois': {
+            'porque': (
+                'só volume em zona verde é como treinar extensões de perna '
+                'e nunca agachar pesado. As categorias D são o acessório; '
+                'isto é o trabalho principal'),
+            'metodos': [
+                {'metodo': 'Intervalo de dessaturação gradual',
+                 'como': (
+                     'em vez de repetições à intensidade alvo desde o '
+                     'início, CONSTRUIR o ritmo dentro do intervalo. '
+                     'Exemplo real: 500 m de remo com o ritmo a apertar a '
+                     'cada 100 m — 1:55, 1:50, 1:45, 1:40, 1:35. A média '
+                     'dá o mesmo 1:45, mas a adaptação é outra'),
+                 'porque': (
+                     'em repetições ao ritmo alvo, o consumo ultrapassa a '
+                     'entrega logo no início e a maior parte do intervalo '
+                     'passa-se em hipóxia. Isso serve para afinar antes de '
+                     'competir, não para melhorar o limitador'),
+                 'como_verificar': (
+                     'a correlação entre SmO2 e THb fica entre −0,9 e −1 '
+                     'na dessaturação gradual, e só −0,2 a −0,7 nos '
+                     'intervalos tradicionais. Uma correlação forte e '
+                     'negativa mostra vasodilatação hipóxica; uma fraca '
+                     'mostra oclusão e vasoconstrição simpática — ou seja, '
+                     'entrega e consumo desacoplados'),
+                 'nota': ('é por isto que os tempo runs são valiosos para '
+                          'meio-fundo e fundo'),
+                 'fonte': 'Peikon, Training The Delivery Limited Athlete'},
+
+                {'metodo': 'Sessões combinadas',
+                 'como': ('duas ou mais intensidades na MESMA sessão, em '
+                          'blocos separados'),
+                 'fonte': 'Peikon, idem'},
+
+                {'metodo': 'Sessões misturadas',
+                 'como': ('duas ou mais intensidades DENTRO do mesmo '
+                          'intervalo — é o caso da dessaturação gradual'),
+                 'porque': ('a maioria dos programas salta de uma '
+                            'intensidade para outra de repente; isto '
+                            'integra a transição'),
+                 'fonte': 'Peikon, idem'},
+            ],
+            'modalidade': (
+                'preferir cíclico. Em formato misto exige desenvolvimento '
+                'cardiopulmonar já alto, senão as contracções criam '
+                'restrição de retorno venoso e prejudicam o débito. Se se '
+                'fizer misto, alternar membros superiores e inferiores — '
+                'desafia a regulação da pressão e a redistribuição do '
+                'débito'),
+        },
         'nao_fazer': ('mais intensidade não resolve: o músculo já usa tudo '
                       'o que recebe. O travão está a montante'),
     },
@@ -381,4 +442,96 @@ def alvos_para_atleta(fc_max=None, lt1_w=None, lt2_w=None,
         'aviso': ('as fronteiras entre categorias não são linhas: são '
                   'transições. O que decide é o comportamento do SmO2, não '
                   'o número'),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# LIGAR AOS RESULTADOS: 5-1-5, REDE CAUSAL E PERFIL
+#
+# A tabela acima organiza-se por limitador. Mas o dashboard produz TRÊS
+# resultados diferentes, e eles nem sempre concordam:
+#
+#   rede causal  -> periférico / cardíaco / respiratório
+#   5-1-5 U/S    -> utilização / fornecimento / misto
+#   5-1-5 P/C    -> pulmonar / cardíaco / misto
+#   perfil       -> monotónico / parabólico
+#
+# Faltava dizer o que fazer quando se contradizem — que é o caso comum, e
+# o mais importante de todos.
+# ══════════════════════════════════════════════════════════════════════════
+
+def sintetizar(rede=None, us=None, pc=None, perfil=None, hipocapnia=None):
+    """Junta os resultados e diz o que fazer, incluindo quando discordam."""
+    votos = {}
+    origens = {}
+
+    def _voto(chave, origem):
+        if not chave:
+            return
+        k = {'periférico': 'utilizacao', 'periferico': 'utilizacao',
+             'utilização': 'utilizacao', 'utilizacao': 'utilizacao',
+             'cardíaco': 'entrega', 'cardiaco': 'entrega',
+             'fornecimento': 'entrega',
+             'pulmonar': 'respiratorio',
+             'respiratório': 'respiratorio'}.get(str(chave).lower())
+        if k:
+            votos[k] = votos.get(k, 0) + 1
+            origens.setdefault(k, []).append(origem)
+
+    _voto(rede, 'rede causal')
+    _voto(us, '5-1-5 eixo U/S')
+    _voto(pc, '5-1-5 eixo P/C')
+
+    avisos = []
+
+    # A hipocapnia manda em tudo o resto: imita utilização.
+    if hipocapnia:
+        avisos.append(
+            'HIPOCAPNIA SUSPEITA. Respiração rápida e superficial desloca a '
+            'curva de dissociação e faz a hemoglobina segurar o oxigénio — '
+            'aparece como limitação de utilização sem o ser. Tratar a '
+            'técnica respiratória ANTES de programar trabalho de extracção; '
+            'qualquer conclusão sobre utilização fica suspensa até isso')
+
+    if perfil == 'monotónico':
+        avisos.append(
+            'perfil monotónico: o primeiro limiar não é observável no SmO2. '
+            'As categorias D1 e D2 têm de ancorar em potência e FC, não no '
+            'comportamento do SmO2')
+
+    if not votos:
+        return {'ok': False,
+                'motivo': 'nenhum limitador identificado nos resultados',
+                'avisos': avisos}
+
+    top = max(votos, key=votos.get)
+    n_top = votos[top]
+    total = sum(votos.values())
+    concordam = len(votos) == 1
+
+    if not concordam:
+        avisos.append(
+            'os métodos DISCORDAM: '
+            + ' · '.join(f'{k} ({votos[k]})' for k in votos)
+            + '. Um limitador de uma sessão não é um limitador — repetir em '
+            'várias antes de reorganizar o treino. Enquanto discordarem, '
+            'trabalhar as FUNDAÇÕES, que servem em qualquer dos casos')
+
+    return {
+        'ok': True,
+        'limitador': top,
+        'intervencao': INTERVENCOES.get(top),
+        'concordancia': f'{n_top} de {total} métodos',
+        'unanime': concordam,
+        'votos': votos,
+        'origens': origens.get(top, []),
+        'avisos': avisos,
+        'confianca': ('alta' if concordam and n_top >= 2 else
+                      'baixa' if not concordam else 'média'),
+        'o_que_fazer_agora': (
+            f'trabalhar as intervenções de {INTERVENCOES[top]["nome"]}'
+            if concordam and n_top >= 2 else
+            'fundações (movimento, coordenação, respiração) e repetir a '
+            'avaliação — não vale a pena escolher um protocolo com os '
+            'métodos a discordar'),
     }

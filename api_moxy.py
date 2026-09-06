@@ -1017,6 +1017,26 @@ def registar(app):
                 'us': _contar('us', ['i515', 'interpretacao', 'us']),
                 'pc': _contar('pc', ['i515', 'interpretacao', 'pc']),
             }
+            # limitador por sessão, para a tabela de intervenções
+            try:
+                import intervencoes as _ivm
+                _ss = []
+                for x in fora:
+                    s2 = MX_SESSOES_CACHE.get(str(x.get('activity_id')), {})
+                    _ss.append({
+                        'id': x.get('activity_id'), 'data': s2.get('data'),
+                        'rede': ((x.get('rede') or {}).get('limitador')
+                                 or {}).get('sistema'),
+                        'us': (((x.get('i515') or {}).get('interpretacao')
+                                or {}).get('us') or {}).get('limitador'),
+                        'pc': (((x.get('i515') or {}).get('interpretacao')
+                                or {}).get('pc') or {}).get('limitador'),
+                        'perfil': (x.get('limiares') or {}).get('perfil'),
+                    })
+                intervencao = _ivm.consenso_entre_sessoes(_ss)
+            except Exception as e:
+                intervencao = {'ok': False, 'erro': str(e)[:120]}
+
             resumo = {}
             for eixo, c in cons.items():
                 if not c:
@@ -1035,6 +1055,7 @@ def registar(app):
             return jsonify({
                 'status': 'ok', 'n_sessoes': len(fora),
                 'sessoes': fora, 'consenso': resumo,
+                'intervencao': intervencao,
                 'n_com_artefacto_alto': n_maus,
                 'nota': ('o consenso e uma contagem, nao uma media: com 3 '
                          'sessoes a dizer periferico e 2 cardiaco, o que '
@@ -1664,6 +1685,19 @@ def registar(app):
             _s.path.insert(0, _o.path.join(
                 _o.path.dirname(_o.path.abspath(__file__)), 'utils'))
             import intervencoes as _iv
+            # consenso ENTRE sessões, quando vem uma lista
+            if request.args.get('sessoes'):
+                import json as _j
+                try:
+                    ss = _j.loads(request.args['sessoes'])
+                except Exception as e:
+                    return jsonify({'status': 'erro',
+                                    'mensagem': f'sessoes inválido: {e}'}), 200
+                r = _iv.consenso_entre_sessoes(ss)
+                r['fundacoes'] = _iv.FUNDACOES
+                r['status'] = 'ok' if r.get('ok') else 'sem_dados'
+                return jsonify(r)
+
             # síntese dos TRÊS resultados quando são dados
             if request.args.get('rede') or request.args.get('us'):
                 r = _iv.sintetizar(

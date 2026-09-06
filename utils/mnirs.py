@@ -1169,3 +1169,122 @@ def hhb_disponivel(canais):
         return None, 'poucos pontos válidos'
     canais['hhb_calc'] = v
     return 'hhb_calc', 'calculado de SmO2 e THb'
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# CANAIS CONGELADOS — quando o sensor trava
+#
+# Uma cinta que trava nao devolve buracos: devolve o MESMO valor repetido.
+# A FC fica em 140 bpm durante meia hora, e todos os calculos a jusante
+# aceitam isso como uma medicao valida.
+#
+# E arrasta os outros: a FC, o DFA-a1 e a frequencia respiratoria saem
+# todos da MESMA serie de intervalos RR. Se a cinta congela, os tres
+# congelam juntos -- mas o DFA-a1 e a respiracao continuam a produzir
+# numeros com aspecto normal, porque sao derivados de uma serie constante.
+#
+# Detectar isto e' barato: um sinal fisiologico real nunca fica
+# exactamente igual durante minutos. O que se faz a seguir e' que importa:
+# em vez de "corrigir", APAGA-SE o troco. Um valor nulo diz "nao sei"; um
+# valor inventado diz "sei, e e' isto" -- e essa e' a mentira que custa
+# caro quando alimenta um limiar.
+# ══════════════════════════════════════════════════════════════════════════
+
+# Segundos com o valor exactamente igual a partir dos quais se considera
+# congelado. A FC varia batimento a batimento; 45 s idênticos não é
+# fisiologia, é o sensor preso.
+CONGELADO_S = 45
+
+# Canais que partilham a origem: todos vêm da série de RR da cinta. Se um
+# congela, os outros herdam o problema.
+FAMILIA_RR = ('heartrate', 'dfa_a1', 'respiration', 'rra1', 'hrv',
+              'respirationratealphahrv', 'meanrra1')
+
+
+def _troços_congelados(vs, tempo=None, minimo_s=CONGELADO_S):
+    """Devolve [(i_inicio, i_fim)] dos troços com valor repetido."""
+    if not vs:
+        return []
+    fora, i = [], 0
+    n = len(vs)
+    while i < n:
+        if vs[i] is None:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and vs[j + 1] == vs[i]:
+            j += 1
+        dur = ((tempo[j] - tempo[i]) if tempo and j < len(tempo)
+               else (j - i))
+        if dur >= minimo_s and j > i:
+            fora.append((i, j))
+        i = j + 1
+    return fora
+
+
+def detectar_congelados(canais, tempo=None, minimo_s=CONGELADO_S,
+                        apagar=True):
+    """Apaga os troços congelados e propaga à família de RR.
+
+    Não interpola nem corrige: põe a None. Um nulo é honesto, um valor
+    inventado não.
+    """
+    if not canais:
+        return {'ok': False, 'motivo': 'sem canais'}
+
+    relatorio, afectados = {}, []
+    for k, v in list(canais.items()):
+        tr = _troços_congelados(v, tempo, minimo_s)
+        if not tr:
+            continue
+        n_pontos = sum(j - i + 1 for i, j in tr)
+        pct = round(n_pontos / max(1, len(v)) * 100, 1)
+        relatorio[k] = {
+            'n_trocos': len(tr),
+            'n_pontos': n_pontos,
+            'pct_da_serie': pct,
+            'primeiro_troco_s': (round(tempo[tr[0][0]])
+                                 if tempo and tr[0][0] < len(tempo) else None),
+            'valor_preso': v[tr[0][0]],
+        }
+        afectados.append(k)
+
+    # propagar à família: se a cinta travou, o DFA-a1 e a respiração
+    # dessa janela não valem nada, mesmo que os números variem
+    da_familia = [k for k in afectados if k.lower() in FAMILIA_RR]
+    propagou = []
+    if da_familia:
+        janelas = []
+        for k in da_familia:
+            janelas += _troços_congelados(canais[k], tempo, minimo_s)
+        for k in canais:
+            if k.lower() in FAMILIA_RR and k not in da_familia:
+                propagou.append(k)
+
+    if apagar:
+        for k in afectados:
+            for i, j in _troços_congelados(canais[k], tempo, minimo_s):
+                for x in range(i, j + 1):
+                    canais[k][x] = None
+        for k in propagou:
+            for i, j in janelas:
+                for x in range(i, min(j + 1, len(canais[k]))):
+                    canais[k][x] = None
+
+    return {
+        'ok': True,
+        'canais_congelados': relatorio,
+        'propagado_para': propagou,
+        'apagado': apagar,
+        'limiar_s': minimo_s,
+        'nota': (
+            'os troços congelados foram APAGADOS, não corrigidos. Um valor '
+            'nulo diz "não sei"; um valor interpolado diz "sei, e é isto" — '
+            'e essa é a mentira que custa caro quando alimenta um limiar'
+            if afectados else None),
+        'porque_propaga': (
+            'a FC, o DFA-a1 e a respiração saem todos da mesma série de '
+            'RR. Se a cinta congelou, os três estão comprometidos nessa '
+            'janela — mesmo que os números do DFA-a1 continuem a variar'
+            if propagou else None),
+    }

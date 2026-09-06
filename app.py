@@ -2114,6 +2114,48 @@ def _tipo_por_sessao(modalidade, dias=1095):
         return {}
 
 
+def _treino_sugerido(modalidade):
+    """Categorias de treino com os watts e bpm DESTE atleta.
+
+    Fica no perfil metabólico e não na tab Moxy porque é aqui que estão as
+    âncoras: os limiares, a relação HR-Watts e a FC máxima. Na tab Moxy
+    haveria que ir buscar tudo isto de volta.
+    """
+    try:
+        import os as _o
+        import sys as _s
+        _s.path.insert(0, _o.path.join(
+            _o.path.dirname(_o.path.abspath(__file__)), 'utils'))
+        import intervencoes as _iv
+
+        mx = _ultima_analise_moxy(modalidade) or {}
+        try:
+            pm, _ = perfil_metabolico_dados(modalidade, {}, com_ancoras=True)
+            pm = pm or {}
+        except Exception:
+            pm = {}
+        anc = pm.get('ancoras') or {}
+        lim = pm.get('limiares') or {}
+        zonas = pm.get('zonas_semaforo') or []
+        fc_max = None
+        if zonas:
+            fc_max = max((z.get('ate_bpm') or 0) for z in zonas) or None
+
+        r = _iv.alvos_para_atleta(
+            fc_max=fc_max,
+            lt1_w=anc.get('lt1_w_usado') or lim.get('lt1_w'),
+            lt2_w=anc.get('lt2_w_usado') or lim.get('lt2_w'),
+            lt1_bpm=anc.get('lt1_bpm'),
+            lt2_bpm=anc.get('lt2_bpm'),
+            smo2_max=mx.get('smo2max'))
+        r['origem_das_ancoras'] = anc.get('origem')
+        r['limitador_conhecido'] = mx.get('perfil')
+        r['ok'] = True
+        return r
+    except Exception as e:
+        return {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+
+
 def _campos_do_moxy(modalidade):
     """BP1 e BP2 do SmO2 como campos MEDIDOS, para entrarem no consenso.
 
@@ -2536,6 +2578,31 @@ def limiares_externos_dados(modalidade, args):
                                    if pmet.quartis(v)},
                 'comparacao': delta,
             })
+        # ── juntar os limiares medidos com o Moxy ────────────────────
+        #
+        # Estavam a ser calculados e nunca chegavam a esta lista, que e' a
+        # que alimenta a coluna ESTIMATIVAS e o consenso. O resultado era o
+        # pior dos dois mundos: a tabela mostrava o AeT (que ja' nao conta)
+        # e escondia o BP1 e a reoxigenacao (que contam).
+        try:
+            _mxc = _campos_do_moxy(modalidade)
+            for c in (_mxc.get('campos') or []):
+                c.setdefault('unidade', 'W')
+                c.setdefault('eixo', 'W')
+                c.setdefault('constante', False)
+                c.setdefault('watts_equivalente', c.get('watts_medido'))
+                c.setdefault('descricao',
+                             'medido com sensor óptico no músculo')
+                c.setdefault('comparacao', None)
+                c.setdefault('ultimo', None)
+                c.setdefault('p50_por_season', {})
+                c.setdefault('compara_com',
+                             'lt1_w' if c.get('grupo') == 'aerobio'
+                             else 'mlss_at_w')
+                saida.append(c)
+        except Exception as _e:
+            pass
+
         _ordem = {g: i for i, g in enumerate(pmet.ORDEM_GRUPOS)}
         saida.sort(key=lambda x: (_ordem.get(x.get('grupo'), 99),
                                   x.get('hr_medido') is not None,
@@ -2578,6 +2645,7 @@ def limiares_externos_dados(modalidade, args):
             'campos_por_reconhecer': nao_reconhecidos,
             'moxy': _ultima_analise_moxy(modalidade),
             'campos_moxy': _campos_do_moxy(modalidade),
+            'treino_sugerido': _treino_sugerido(modalidade),
             'filtro_por_tipo': _filtrar_por_tipo(modalidade, por_data),
             'correlacao_campos': _correlacao_campos(por_data),
             'a1_individualizado': a1_indiv,

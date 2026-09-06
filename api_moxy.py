@@ -1664,6 +1664,18 @@ def registar(app):
             _s.path.insert(0, _o.path.join(
                 _o.path.dirname(_o.path.abspath(__file__)), 'utils'))
             import intervencoes as _iv
+            # síntese dos TRÊS resultados quando são dados
+            if request.args.get('rede') or request.args.get('us'):
+                r = _iv.sintetizar(
+                    rede=request.args.get('rede'),
+                    us=request.args.get('us'),
+                    pc=request.args.get('pc'),
+                    perfil=request.args.get('perfil'),
+                    hipocapnia=request.args.get('hipocapnia') == '1')
+                r['fundacoes'] = _iv.FUNDACOES
+                r['status'] = 'ok'
+                return jsonify(r)
+
             alvo = request.args.get('limitador')
             if alvo:
                 r = _iv.para_limitador(alvo)

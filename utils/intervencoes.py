@@ -535,3 +535,75 @@ def sintetizar(rede=None, us=None, pc=None, perfil=None, hipocapnia=None):
             'avaliação — não vale a pena escolher um protocolo com os '
             'métodos a discordar'),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# CONSENSO ENTRE SESSOES
+#
+# Quando se comparam varias sessoes, cada uma da' o seu limitador. O que
+# interessa nao e' a lista -- e' saber se ha' padrao.
+#
+# O criterio e' o mesmo que ja' usamos noutros consensos: contagem simples
+# e nao media ponderada. Com 3 sessoes a dizer periferico e 2 cardiaco, o
+# que importa e' que ha' 2 a discordar, nao que 60% ganha.
+# ══════════════════════════════════════════════════════════════════════════
+
+def consenso_entre_sessoes(sessoes):
+    """sessoes: [{'data':..., 'rede':..., 'us':..., 'pc':..., 'perfil':...}]"""
+    if not sessoes:
+        return {'ok': False, 'motivo': 'nenhuma sessão'}
+
+    por_sessao, votos = [], {}
+    for s in sessoes:
+        r = sintetizar(rede=s.get('rede'), us=s.get('us'), pc=s.get('pc'),
+                       perfil=s.get('perfil'),
+                       hipocapnia=s.get('hipocapnia'))
+        linha = {'data': s.get('data'), 'id': s.get('id'),
+                 'limitador': r.get('limitador') if r.get('ok') else None,
+                 'confianca': r.get('confianca'),
+                 'concordancia': r.get('concordancia'),
+                 'avisos': r.get('avisos') or []}
+        por_sessao.append(linha)
+        if linha['limitador']:
+            votos[linha['limitador']] = votos.get(linha['limitador'], 0) + 1
+
+    if not votos:
+        return {'ok': False, 'motivo': 'nenhuma sessão deu limitador',
+                'sessoes': por_sessao}
+
+    top = max(votos, key=votos.get)
+    n_tot = sum(votos.values())
+    pct = round(votos[top] / n_tot * 100)
+    unanime = len(votos) == 1 and n_tot > 1
+
+    # comum a TODAS: se varios limitadores aparecem, as fundacoes e o que
+    # todos partilham e' o que vale a pena fazer
+    partilhado = None
+    if len(votos) > 1:
+        partilhado = (
+            'os limitadores mudam entre sessões. Isso pode ser real — o '
+            'limitador muda com o estado de recuperação e com a modalidade '
+            '— ou pode ser ruído. Enquanto não estabilizar, o que serve em '
+            'qualquer dos casos são as FUNDAÇÕES e o trabalho de base (D1 e '
+            'D2), que nenhum limitador dispensa')
+
+    return {
+        'ok': True,
+        'limitador_mais_comum': top,
+        'intervencao': INTERVENCOES.get(top),
+        'n': votos[top], 'de': n_tot, 'concordancia_pct': pct,
+        'unanime': unanime,
+        'contagem': votos,
+        'sessoes': por_sessao,
+        'estavel': pct >= 70,
+        'o_que_fazer': (
+            f'trabalhar {INTERVENCOES[top]["nome"]} — aparece em '
+            f'{votos[top]} de {n_tot} sessões'
+            if pct >= 70 else
+            'não escolher protocolo ainda: os limitadores não estabilizaram'),
+        'partilhado': partilhado,
+        'nota': ('contagem simples, não média ponderada. Com 3 sessões a '
+                 'dizer um e 2 a dizer outro, o que importa é que há 2 a '
+                 'discordar — não que 60% ganha. Abaixo de 70% não há '
+                 'padrão utilizável'),
+    }

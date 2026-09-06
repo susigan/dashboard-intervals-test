@@ -500,9 +500,35 @@ def sintetizar(rede=None, us=None, pc=None, perfil=None, hipocapnia=None):
             'comportamento do SmO2')
 
     if not votos:
-        return {'ok': False,
-                'motivo': 'nenhum limitador identificado nos resultados',
-                'avisos': avisos}
+        # MISTO nao e' ausencia de informacao: e' um resultado, e tem
+        # consequencia pratica. Devolver ok=False fazia o cartao nao
+        # aparecer de todo -- e o utilizador ficava sem saber se o
+        # calculo tinha corrido ou nao.
+        indefinido = [x for x in (rede, us, pc) if x]
+        return {
+            'ok': True,
+            'limitador': None,
+            'indeterminado': True,
+            'lidos': indefinido,
+            'nome': 'Sem limitador dominante',
+            'o_que_significa': (
+                'nenhum sistema domina: a entrega, a extracção e a '
+                'ventilação estão equilibradas nesta sessão. Não é uma '
+                'falha da medição — é um resultado, e dos bons: significa '
+                'que não há um travão único a corrigir'),
+            'o_que_fazer_agora': (
+                'trabalho de base (D1 e D2) e fundações. Sem limitador '
+                'identificado não há protocolo específico a escolher — e '
+                'escolher um à sorte é pior do que não escolher'),
+            'quando_reavaliar': (
+                'o limitador muda com o estado de recuperação. Repetir a '
+                'avaliação noutro dia, e de preferência bem descansado: um '
+                'atleta fatigado mostra limitação de extracção que não tem '
+                'quando está fresco'),
+            'fundacoes': FUNDACOES,
+            'confianca': 'n/a',
+            'avisos': avisos,
+        }
 
     top = max(votos, key=votos.get)
     n_top = votos[top]

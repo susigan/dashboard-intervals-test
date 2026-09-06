@@ -620,6 +620,10 @@ function mx515(){
   if(d.status!=='ok'){ est.textContent=d.motivo||d.mensagem||'sem dados';
    box.innerHTML=''; return; }
   const p=d.pontuacao, i=d.interpretacao, m=d.medicoes;
+  // guardar os dois eixos para a síntese os cruzar com a rede causal
+  MX_ULT_US=(i.us||{}).limitador||null;
+  MX_ULT_PC=(i.pc||{}).limitador||null;
+  if(typeof mxSintese==='function') mxSintese();
   est.textContent=m.n_blocos_usados+' de '+m.n_blocos_trabalho
    +' blocos usados'+(d.respostas_editadas?' · com respostas editadas':'');
 
@@ -888,6 +892,9 @@ function mxResumo(){
 
 let MX_BP = null;        // breakpoints para desenhar no gráfico
 let MX_RESERVAS = null;  // W′ e M′ balance ao longo da sessão
+// resultados dos três métodos, para a síntese os poder cruzar
+let MX_ULT_REDE=null, MX_ULT_US=null, MX_ULT_PC=null,
+    MX_ULT_PERFIL=null, MX_ULT_HIPO=false;
 
 function mxGuardarAnalise(){
  const ids=Object.keys(MX_DADOS);
@@ -934,6 +941,8 @@ function mxLimiares(){
   const bl0=d.bp_moxy_sem_restricao||{};
   const c1=(lc.primeiro||{}), c2=(lc.segundo||{});
   MX_RESERVAS = d.reservas || {};
+  MX_ULT_PERFIL=(d.perfil_resposta||{}).perfil||null;
+  MX_ULT_HIPO=!!((d.hipocapnia||{}).suspeita);
   // Injectar as reservas como CANAIS, para passarem pela máquina que já
   // existe: aparecem nas caixas de métricas, no gráfico e no hover, sem
   // código de desenho novo. Estavam a ser guardadas e nunca desenhadas.
@@ -1409,6 +1418,85 @@ function mxLimiares(){
 // ligado ao resultado: sem limitador identificado não há intervenção a
 // propor -- dar um protocolo de entrega a quem tem limitação de
 // utilização não é ineficiente, é inútil.
+// Cruza a rede causal, a 5-1-5 e o perfil. Um limitador só de um método
+// não chega -- e quando discordam, dizer isso é mais útil do que escolher
+// um deles à sorte.
+function mxSintese(){
+ const box=document.getElementById('mxIntervencoes');
+ if(!box) return;
+ const q=[];
+ if(MX_ULT_REDE) q.push('rede='+encodeURIComponent(MX_ULT_REDE));
+ if(MX_ULT_US)   q.push('us='+encodeURIComponent(MX_ULT_US));
+ if(MX_ULT_PC)   q.push('pc='+encodeURIComponent(MX_ULT_PC));
+ if(MX_ULT_PERFIL) q.push('perfil='+encodeURIComponent(MX_ULT_PERFIL));
+ if(MX_ULT_HIPO) q.push('hipocapnia=1');
+ if(!q.length){ box.innerHTML=''; return; }
+ fetch('/api/moxy/intervencoes?'+q.join('&')).then(r=>r.json())
+ .then(function(d){
+  if(!d.ok){
+   box.innerHTML='<p style="color:#8b949e;font-size:11px;">'
+    +(d.motivo||'')+'</p>';
+   (d.avisos||[]).forEach(function(a){
+    box.innerHTML+='<p style="color:#F0883E;font-size:11px;">⚠ '+a+'</p>'; });
+   return;
+  }
+  const iv=d.intervencao||{};
+  const cor = d.confianca==='alta' ? '#3FB950'
+            : d.confianca==='média' ? '#F0883E' : '#F85149';
+  let h='<div style="border:1px solid '+cor+';border-radius:6px;'
+   +'padding:8px 10px;margin-top:10px;">'
+   +'<b style="color:'+cor+';font-size:14px;">'+iv.nome+'</b> '
+   +'<span style="color:#8b949e;font-size:11px;">'+d.concordancia
+   +' · confiança '+d.confianca+'</span>'
+   +'<br><span style="font-size:11px;">'+(iv.o_que_e||'')+'</span>'
+   +'<br><span style="font-size:11px;color:'+cor+';"><b>Agora:</b> '
+   +d.o_que_fazer_agora+'</span>';
+  (d.avisos||[]).forEach(function(a){
+   h+='<p style="color:#F0883E;font-size:11px;margin:6px 0 0 0;">⚠ '+a
+    +'</p>'; });
+  h+='</div>';
+  // detalhe dos métodos, em dropdown
+  h+='<details style="margin-top:6px;"><summary style="cursor:pointer;'
+   +'font-size:12px;color:#8b949e;padding:4px 0;">Métodos, ferramentas e '
+   +'sinais para '+iv.nome+'</summary><div style="margin-top:6px;'
+   +'font-size:11px;">';
+  h+='<p><b>Antes de tudo:</b> '+(d.fundacoes||[]).map(function(f){
+    return f.item; }).join(' · ')+'</p>';
+  h+='<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+   +'<th style="padding:4px;">Método</th><th>Como</th><th>Sinal no SmO2</th>'
+   +'</tr>'
+   +(iv.metodos||[]).map(function(m){
+     return '<tr style="border-bottom:1px solid #161b22;">'
+      +'<td style="padding:4px;"><b>'+m.metodo+'</b>'
+      +(m.alvo_fc?'<br><span style="color:#6e7681;">'+m.alvo_fc+'</span>':'')
+      +'</td><td style="color:#8b949e;">'+m.como+'</td>'
+      +'<td style="color:#3FB950;">'+(m.alvo_smo2||m.sinal_no_smo2||'—')
+      +'</td></tr>'; }).join('')
+   +'</table>';
+  const n2=iv.nivel_dois;
+  if(n2){
+   h+='<p style="margin-top:8px;"><b>Nível dois</b> — '+n2.porque+'</p>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+    +(n2.metodos||[]).map(function(m){
+      return '<tr style="border-bottom:1px solid #161b22;">'
+       +'<td style="padding:4px;width:30%;"><b>'+m.metodo+'</b></td>'
+       +'<td style="color:#8b949e;">'+m.como
+       +(m.porque?'<br><span style="color:#6e7681;">'+m.porque+'</span>':'')
+       +(m.como_verificar?'<br><span style="color:#A371F7;">verificar: '
+         +m.como_verificar+'</span>':'')
+       +'</td></tr>'; }).join('')
+    +'</table>';
+   if(n2.modalidade)
+    h+='<p style="color:#8b949e;">'+n2.modalidade+'</p>';
+  }
+  if(iv.nao_fazer)
+   h+='<p style="color:#F0883E;"><b>Não fazer:</b> '+iv.nao_fazer+'</p>';
+  h+='</div></details>';
+  box.innerHTML=h;
+ }).catch(function(){ box.innerHTML=''; });
+}
+
 function mxIntervencoes(limitador, destino){
  const box=document.getElementById(destino||'mxIntervencoes');
  if(!box) return;
@@ -1543,6 +1631,7 @@ function mxRede(){
   });
   h+='</table></div></details>';
   h+='<div id="mxIntervencoes"></div>';
+  MX_ULT_REDE=(d.limitador||{}).sistema||null;
   const dg=d.diagnostico||{};
   const dif=Object.keys(dg).filter(k=>dg[k] && dg[k].diferenciada);
   const exc=Object.keys(dg).filter(k=>dg[k] && dg[k].excluido);

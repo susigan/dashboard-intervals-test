@@ -221,6 +221,8 @@ BODY = """
     </details>
   </div>
 
+  <div id="mxIntervencoes"></div>
+
   <h2 style="font-size:15px;margin-top:18px;">Rede causal entre canais</h2>
   <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
     <button onclick="mxRede()">Calcular</button>
@@ -715,6 +717,12 @@ function mx515(){
 // Em comparacao esconde-se o detalhe: com 4 sessoes seriam 4 tabelas de
 // arestas e 4 de 13 perguntas. Ficam os cartoes e o consenso.
 function mxModoUnico(unico){
+ // o cartão de intervenções acompanha o modo: em sessão única sai do
+ // cruzamento dos três métodos, em comparação sai do consenso entre
+ // sessões (que o mxResumo escreve no seu próprio bloco)
+ const _bi=document.getElementById('mxIntervencoes');
+ if(_bi){ _bi.style.display = unico ? '' : 'none';
+          if(!unico) _bi.innerHTML=''; }
  ['mxRedeDetalhe','mx515Detalhe','mxLimiaresBloco'].forEach(function(id){
   const e=document.getElementById(id);
   if(e) e.style.display = unico ? '' : 'none';
@@ -1023,6 +1031,7 @@ function mxLimiares(){
   MX_RESERVAS = d.reservas || {};
   MX_ULT_PERFIL=(d.perfil_resposta||{}).perfil||null;
   MX_ULT_HIPO=!!((d.hipocapnia||{}).suspeita);
+  if(typeof mxSintese==='function') mxSintese();
   // Injectar as reservas como CANAIS, para passarem pela máquina que já
   // existe: aparecem nas caixas de métricas, no gráfico e no hover, sem
   // código de desenho novo. Estavam a ser guardadas e nunca desenhadas.
@@ -1710,8 +1719,12 @@ function mxRede(){
     +'<td style="color:#F0883E;">ambíguo</td></tr>';
   });
   h+='</table></div></details>';
-  h+='<div id="mxIntervencoes"></div>';
+  // o div do mxIntervencoes vive no BODY e não aqui: era criado no fim do
+  // mxRede, mas o mxSintese corre a partir do mx515, que pode terminar
+  // ANTES da rede -- e nessa altura o elemento ainda não existia, portanto
+  // o cartão nunca aparecia numa sessão única
   MX_ULT_REDE=(d.limitador||{}).sistema||null;
+  if(typeof mxSintese==='function') mxSintese();
   const dg=d.diagnostico||{};
   const dif=Object.keys(dg).filter(k=>dg[k] && dg[k].diferenciada);
   const exc=Object.keys(dg).filter(k=>dg[k] && dg[k].excluido);
@@ -1849,7 +1862,14 @@ function mxCarregar(){
   // correr as duas analises sozinhas, com os valores por omissao: ter de
   // carregar em dois botoes de cada vez que se muda de sessao e' trabalho
   // que a maquina pode fazer
-  if(ids.length === 1){ mxModoUnico(true); mxRede(); mx515(); mxLimiares(); }
+  if(ids.length === 1){
+   // limpar os resultados da sessão anterior: sem isto, o cartão mostrava
+   // o limitador da sessão que estava seleccionada antes
+   MX_ULT_REDE=MX_ULT_US=MX_ULT_PC=MX_ULT_PERFIL=null; MX_ULT_HIPO=false;
+   const _bi=document.getElementById('mxIntervencoes');
+   if(_bi) _bi.innerHTML='';
+   mxModoUnico(true); mxRede(); mx515(); mxLimiares();
+  }
   else if(ids.length > 1){ mxModoUnico(false); mxResumo(); }
   mxAnalises();
  });

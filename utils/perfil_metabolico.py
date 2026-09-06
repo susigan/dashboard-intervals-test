@@ -1052,6 +1052,43 @@ def coerencia_por_grupo(campos, modelo):
             vals = [(c["rotulo"], c[campo_valor],
                      c.get("fonte") or fonte_do_campo(c.get("chave")))
                     for c in membros if c.get(campo_valor) is not None]
+            # ── discrepantes dentro do próprio grupo ─────────────────
+            #
+            # Todos os métodos de um grupo estimam O MESMO limiar. Um que
+            # se afaste muito da mediana dos outros não é uma medição
+            # diferente: é um erro.
+            #
+            # Caso real: o BP2 do SmO2 deu 104 bpm quando o HRVTMSS dizia
+            # 159 e o HRVT2 dizia 168 — falha da cinta nesse dia. Os
+            # limites absolutos (70-220 bpm) não o apanham, porque 104 é
+            # uma FC perfeitamente possível. O que o denuncia é estar 55
+            # bpm abaixo dos seus pares.
+            #
+            # Não se apaga: marca-se com asterisco e sai do consenso.
+            discrepantes = []
+            if len(vals) >= 3:
+                _vs = sorted(v for _n, v, _f in vals)
+                _med = _vs[len(_vs) // 2]
+                # desvio absoluto mediano, robusto a um outlier
+                _dam = sorted(abs(v - _med) for v in _vs)[len(_vs) // 2] or 1
+                for n, v, f in list(vals):
+                    _z = abs(v - _med) / _dam
+                    # 3.5 desvios: com poucos pontos é preciso ser
+                    # generoso, senão marca-se dispersão normal como erro
+                    if _z > 3.5 and abs(v - _med) > _med * 0.20:
+                        discrepantes.append({
+                            "campo": n, "valor": round(v, 1),
+                            "motivo": (
+                                f"{round(v)} {unidade} está a "
+                                f"{round(abs(v - _med))} da mediana dos "
+                                f"outros métodos ({round(_med)}). Todos "
+                                "estimam o mesmo limiar — um afastamento "
+                                "assim é erro de medição, não discordância"),
+                        })
+                nomes_d = {d["campo"] for d in discrepantes}
+                if nomes_d and len(vals) - len(nomes_d) >= 1:
+                    vals = [x for x in vals if x[0] not in nomes_d]
+
             ocultos = []
             if OCULTAR_CAMPOS_DO_MODELO:
                 ocultos = [(n, v) for n, v, f in vals if f == "modelo"]
@@ -1080,6 +1117,7 @@ def coerencia_por_grupo(campos, modelo):
                     key=lambda d: d["valor"]),
                 "ocultos_do_modelo": [
                     {"campo": n, "valor": round(v, 1)} for n, v in ocultos],
+                "discrepantes": discrepantes,
                 "porque_ocultos": (
                     (", ".join(n for n, _v in ocultos)
                      + " vêm da curva de potência, a mesma origem que o "

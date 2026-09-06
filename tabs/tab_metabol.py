@@ -2598,6 +2598,43 @@ function pmExtTabela(){
    +'</div>';
  }
 
+ // ── categorias de treino, nos watts e bpm deste atleta ───────────
+ const ts=(PMEXT && PMEXT.treino_sugerido) || {};
+ if(ts.ok && ts.categorias){
+  h+='<details style="margin:8px 0;"><summary style="cursor:pointer;'
+   +'font-size:12px;color:#3FB950;padding:4px 0;">Categorias de treino '
+   +'nos teus watts e bpm</summary><div style="margin-top:6px;">'
+   +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+   +'<th style="padding:5px;">Categoria</th><th>Watts</th><th>bpm</th>'
+   +'<th>SmO2</th><th>Duração</th><th>Âncora</th></tr>';
+  Object.keys(ts.categorias).forEach(function(k){
+   const c=ts.categorias[k];
+   const porFCmax = (c.ancora||'').indexOf('FC máxima')>=0;
+   h+='<tr style="border-bottom:1px solid #161b22;">'
+    +'<td style="padding:5px;"><b>'+c.nome+'</b></td>'
+    +'<td>'+(c.watts?'<b>'+c.watts[0]+'–'+c.watts[1]+' W</b>':'—')+'</td>'
+    +'<td>'+(c.bpm?c.bpm[0]+'–'+c.bpm[1]:'—')+'</td>'
+    +'<td style="color:#3FB950;">'+(c.smo2||'—')+'</td>'
+    +'<td style="color:#8b949e;">'+(c.duracao||'—')+'</td>'
+    +'<td style="color:'+(porFCmax?'#F0883E':'#6e7681')+';font-size:10px;">'
+    +(c.ancora||'—')+'</td></tr>';
+   if(c.teste)
+    h+='<tr><td></td><td colspan="5" style="color:#8b949e;font-size:10px;'
+     +'padding-bottom:6px;">teste: '+c.teste+'</td></tr>';
+   if(c.so_com_moxy)
+    h+='<tr><td></td><td colspan="5" style="color:#F0883E;font-size:10px;'
+     +'padding-bottom:6px;">'+c.porque+'</td></tr>';
+  });
+  h+='</table>';
+  if((ts.faltam||[]).length)
+   h+='<p style="color:#F0883E;font-size:11px;margin-top:6px;">Em falta '
+    +'para afinar: '+ts.faltam.join(' · ')+'</p>';
+  h+='<p style="color:#8b949e;font-size:11px;">'+(ts.nota||'')+'</p>'
+   +'<p style="color:#8b949e;font-size:11px;">'+(ts.aviso||'')+'</p>'
+   +'</div></details>';
+ }
+
  const cf=((PM && PM.limiares) || {}).coerencia_fatmax;
  if(cf){
   const cor = cf.coerente ? '#3FB950' : '#F85149';

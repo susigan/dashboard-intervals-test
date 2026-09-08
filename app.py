@@ -46,7 +46,7 @@ from api_client import (fetch_activities, cache_info, invalidar_cache,
                         fetch_da_api)
 from tabs import (tab_volume, tab_atividades, tab_detalhe,
                   tab_recordes, tab_pmc, tab_corporal, tab_metabol,
-                  tab_cp_model, tab_moxy)
+                  tab_cp_model, tab_moxy, tab_recovery)
 
 if db.ENABLED:
     db.init_schema()
@@ -106,6 +106,11 @@ def page_cp_model():
 @app.route('/moxy')
 def page_moxy():
     return tab_moxy.render()
+
+
+@app.route('/recovery')
+def page_recovery():
+    return tab_recovery.render()
 
 
 @app.route('/relatorio/<modalidade>')
@@ -3904,6 +3909,9 @@ api_streams_diag.registar(app)
 
 import api_moxy
 api_moxy.registar(app)
+
+import api_recovery
+api_recovery.registar(app)
 
 
 if __name__ == '__main__':

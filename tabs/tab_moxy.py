@@ -2196,12 +2196,20 @@ function mxDraw(){
   const d=MX_DADOS[id], t=d.tempo||[], v=d.canais.watts;
   if(!v) return;
   const corte=mxCorteDe(id), ref=mxRefAlinhamento(id)+(MX_OFF[id]||0);
+  // Guardar os NULOS em vez de os saltar.
+  //
+  // Antes fazia-se 'continue' nos valores nulos, o que os removia da
+  // lista. A linha ligava então o fim de um degrau directamente ao início
+  // do seguinte, sem passar pelo descanso — e os degraus apareciam
+  // "grudados", sem descer a zero. A tab Atividades não tem este problema
+  // porque percorre a série toda e QUEBRA o traço quando encontra um
+  // nulo, em vez de o filtrar.
   const pts=[];
   for(let n=0;n<t.length;n++){
-   if(t[n]<corte[0]||t[n]>corte[1]||v[n]==null) continue;
-   pts.push([t[n]-ref, v[n]]);
+   if(t[n]<corte[0]||t[n]>corte[1]) continue;
+   pts.push([t[n]-ref, (v[n]==null ? null : v[n])]);
   }
-  if(pts.length) wsers.push({si:si, pts:pts});
+  if(pts.some(p=>p[1]!==null)) wsers.push({si:si, pts:pts});
  });
  // Normalizar do MINIMO ao MAXIMO da série, como a tab Atividades faz.
  //
@@ -2212,6 +2220,7 @@ function mxDraw(){
  // De min a max são os 380 px todos, e a escada vê-se.
  let wmin=null, wmax=null;
  wsers.forEach(function(ws){ ws.pts.forEach(function(p){
+  if(p[1]===null) return;
   if(wmin===null||p[1]<wmin) wmin=p[1];
   if(wmax===null||p[1]>wmax) wmax=p[1]; }); });
  if(wmax!==null && wmax>wmin){
@@ -2224,16 +2233,22 @@ function mxDraw(){
    const cols={};
    ws.pts.forEach(function(p){
     const px=Math.round(X(p[0]));
-    if(!cols[px]) cols[px]=[0,0];
-    cols[px][0]+=p[1]; cols[px][1]++;
+    if(!cols[px]) cols[px]=[0,0,0];
+    if(p[1]===null){ cols[px][2]++; }
+    else { cols[px][0]+=p[1]; cols[px][1]++; }
    });
    const xs=Object.keys(cols).map(Number).sort(function(a,b){return a-b;});
    g.strokeStyle=cor; g.globalAlpha=0.6; g.lineWidth=1.3;
    g.beginPath();
-   xs.forEach(function(px,n){
-    const media=cols[px][0]/cols[px][1];
+   let st=false;
+   xs.forEach(function(px){
+    const c=cols[px];
+    // coluna sem nenhum valor real: quebrar o traço, como na tab
+    // Atividades. Sem isto a linha salta o descanso e liga degraus
+    if(!c[1]){ st=false; return; }
+    const media=c[0]/c[1];
     const y = topoW + hW - (media-wmin)/(wmax-wmin)*hW;
-    n?g.lineTo(px,y):g.moveTo(px,y);
+    if(!st){ g.moveTo(px,y); st=true; } else g.lineTo(px,y);
    });
    g.stroke(); g.globalAlpha=1;
   });

@@ -1212,6 +1212,8 @@ def bp_moxy(blocos, tempo=None, smo2=None, hr=None, n_fino=N_FINO,
     }
     out['bp1_bpm'] = _hr_interp(pts, out['bp1_w'])
     out['bp2_bpm'] = _hr_interp(pts, out['bp2_w'])
+    out['bp1_fc_origem'] = _hr_do_degrau(pts, out['bp1_w'])
+    out['bp2_fc_origem'] = _hr_do_degrau(pts, out['bp2_w'])
 
     critico = 4.0 if len(xs) < 10 else 3.0
     if f_stat is None:
@@ -1234,20 +1236,45 @@ def bp_moxy(blocos, tempo=None, smo2=None, hr=None, n_fino=N_FINO,
 
 
 def _hr_interp(pts, alvo):
-    """FC interpolada na carga alvo, a partir dos pontos por degrau."""
+    """FC do DEGRAU onde o breakpoint cai — não interpolada.
+
+    Interpolar entre degraus dava um número que não corresponde a nenhuma
+    medição: era uma média ponderada de dois degraus vizinhos. Quando o
+    utilizador vê "BP1 206 W · 160 bpm" quer saber a que FC treinou
+    naquela carga, e essa é a média do intervalo onde o breakpoint caiu.
+
+    Se o breakpoint fica ENTRE dois degraus (que é o caso comum, porque a
+    regressão interpola), usa-se o degrau mais próximo e diz-se qual foi.
+    """
     if alvo is None:
         return None
-    com = [(p['watts'], p['hr']) for p in pts if p.get('hr') is not None]
+    com = [p for p in pts if p.get('hr') is not None]
     if not com:
         return None
-    com.sort()
-    ab = [p for p in com if p[0] <= alvo]
-    ac = [p for p in com if p[0] > alvo]
-    if ab and ac:
-        (w1, h1), (w2, h2) = ab[-1], ac[0]
-        f = (alvo - w1) / (w2 - w1) if w2 > w1 else 0
-        return round(h1 + (h2 - h1) * f)
-    return round(min(com, key=lambda p: abs(p[0] - alvo))[1])
+    perto = min(com, key=lambda p: abs(p['watts'] - alvo))
+    return round(perto['hr'])
+
+
+def _hr_do_degrau(pts, alvo):
+    """Como _hr_interp, mas devolve também DE ONDE veio."""
+    if alvo is None:
+        return None
+    com = [p for p in pts if p.get('hr') is not None]
+    if not com:
+        return None
+    perto = min(com, key=lambda p: abs(p['watts'] - alvo))
+    return {
+        'bpm': round(perto['hr']),
+        'do_degrau_w': round(perto['watts']),
+        'distancia_w': round(abs(perto['watts'] - alvo), 1),
+        'exacto': abs(perto['watts'] - alvo) < 1,
+        'nota': ('média da FC durante o degrau de '
+                 f"{round(perto['watts'])} W"
+                 + ('' if abs(perto['watts'] - alvo) < 1 else
+                    f", que é o mais próximo do breakpoint "
+                    f"({round(alvo)} W)")),
+    }
+
 
 
 # ══════════════════════════════════════════════════════════════════════════

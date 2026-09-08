@@ -450,6 +450,35 @@ def registar(app):
             # laps reduzidos, para o classificador de protocolo: precisa do
             # tipo, dos tempos e da DISTANCIA, que e' o que distingue um
             # intervalado por tempo de um por distancia
+            # Canais congelados: uma cinta presa devolve o mesmo valor
+            # repetido, e todos os cálculos a jusante aceitam isso como
+            # medição. Apaga-se antes de qualquer análise.
+            try:
+                res['congelados'] = mn.detectar_congelados(
+                    res['canais'], res.get('tempo'))
+                # UMA fonte de verdade para o que é inválido:
+                # mnirs.canais_invalidos. Havia duas implementações aqui,
+                # com limiares diferentes (40% e "qualquer congelamento"),
+                # e a segunda sobrescrevia a primeira em silêncio.
+                _ci = mn.canais_invalidos(res)
+                res['canais_invalidos'] = _ci['canais']
+                res['fc_valida'] = not _ci['fc_invalida']
+                res['motivo_invalidos'] = _ci.get('consequencia')
+                res['detalhe_invalidos'] = _ci
+            except Exception as e:
+                res['congelados'] = {'ok': False,
+                                     'erro': f'{type(e).__name__}: {e}'}
+                res['canais_invalidos'] = []
+                res['fc_valida'] = True
+
+
+            try:
+                res['fc_utilizavel'] = mn.fc_utilizavel(
+                    res.get('congelados'), res.get('artefactos'))
+            except Exception as e:
+                res['fc_utilizavel'] = {'utilizavel': True,
+                                        'erro': str(e)[:90]}
+
             # deoxy-Hb: o canal que a literatura prefere para breakpoints,
             # e o unico dos derivados que sobe quando o SmO2 desce
             try:
@@ -1179,7 +1208,11 @@ def registar(app):
             perfil = nbk.perfil_de_resposta(t, smo2, blocos)
             bp_taxa = nbk.bp_por_taxa(t, smo2, blocos)
             # Metodo do script oficial da Moxy, com o teste F acrescentado
-            bp_mx = nbk.bp_moxy(ons, t, smo2, canais.get('heartrate'),
+            # se a FC estiver invalida, nao se passa o canal: as
+            # estimativas em bpm sairiam de dados congelados
+            _inval = set(d.get('canais_invalidos') or [])
+            _hr = None if 'heartrate' in _inval else canais.get('heartrate')
+            bp_mx = nbk.bp_moxy(ons, t, smo2, _hr,
                                 modalidade=mod, degraus_por_troco=2)
 
             # Mesmo ajuste sobre o HHb. Zurbuchen 2020: o breakpoint do
@@ -1201,7 +1234,7 @@ def registar(app):
                         _ons_h.append(bb)
                 if len(_ons_h) >= 3:
                     bp_hhb = nbk.bp_moxy(
-                        _ons_h, t, _hhb, canais.get('heartrate'),
+                        _ons_h, t, _hhb, _hr,
                         modalidade=mod, degraus_por_troco=1)
                     bp_hhb['canal'] = 'HHb (deoxy-hemoglobina)'
                     bp_hhb['leitura_bp1'] = (
@@ -1216,7 +1249,7 @@ def registar(app):
             # o mesmo sem restricao de degraus por troco: reproduz o
             # script da Intervals.icu, para se poder comparar
             bp_mx_livre = nbk.bp_moxy(
-                ons, t, smo2, canais.get('heartrate'), modalidade=mod,
+                ons, t, smo2, _hr, modalidade=mod,
                 degraus_por_troco=1)
             bp = nbk.breakpoints(ons, mod)
             pl = nbk.plato(t, smo2,
@@ -1271,7 +1304,15 @@ def registar(app):
                                    if len(_durs) >= 3 else
                                    ' — são precisas 3 para ajustar a '
                                    'hipérbole'))
-            hp = nbk.hipocapnia(blocos, t, canais)
+            # a hipocapnia compara FR com FC: sem uma das duas valida, o
+            # teste nao pode correr
+            if _inval & {'heartrate', 'respiration'}:
+                hp = {'ok': False,
+                      'motivo': ('a FC ou a respiração estão inválidas '
+                                 'nesta sessão (sensor preso) — o teste '
+                                 'compara as duas e não pode correr')}
+            else:
+                hp = nbk.hipocapnia(blocos, t, canais)
 
             # ── coerencia PARADA a pedido ────────────────────────────
             # Estava a passar lt1_campos=None e lt2_campos=None, portanto
@@ -1289,6 +1330,9 @@ def registar(app):
                 'o_que_falta': ('passar lt1_campos e lt2_campos a partir do '
                                 'limiares_externos_dados, em vez de None'),
             }
+
+            lim_cons = _consenso_limiares(
+                mlss, bp_mx, bp_mx_livre, bp_taxa, perfil, bp_hhb, lt1_reox)
 
             # ── reservas: W' em qualquer sessao, M' so' com SmO2 ──
             reservas = {}
@@ -1374,8 +1418,51 @@ def registar(app):
             except Exception as e:
                 reservas = {'erro': f'{type(e).__name__}: {e}'}
 
+            # limpar os bpm quando a FC não é de confiança
+            fc_ok = d.get('fc_valida', True)
+            if not fc_ok:
+                for _b in (bp_mx, bp_mx_livre, bp_hhb):
+                    if isinstance(_b, dict):
+                        _b['bp1_bpm'] = _b['bp2_bpm'] = None
+                        _b['fc_descartada'] = True
+                        for _p in (_b.get('pontos') or []):
+                            _p['hr'] = None
+                for _g in ('primeiro', 'segundo'):
+                    _bloco = (lim_cons or {}).get(_g) or {}
+                    for _e in (_bloco.get('estimativas') or []):
+                        _e['bpm'] = None
+                hp = {'ok': False,
+                      'motivo': ('a cinta congelou: sem FC fiável não há '
+                                 'como testar hipocapnia')}
+
+            # ── FC não utilizável: apagar TODOS os bpm ───────────────
+            #
+            # Não basta apagar a série: os breakpoints já calcularam um
+            # bpm para cada limiar, e esse número sai de uma cinta presa.
+            # Mostrar 104 bpm porque a cinta travou é pior do que não
+            # mostrar bpm nenhum — e foi o que aconteceu.
+            fcu = d.get('fc_utilizavel') or {'utilizavel': True}
+            if not fcu.get('utilizavel'):
+                for _b in (bp_mx, bp_mx_livre, bp_hhb):
+                    if isinstance(_b, dict):
+                        _b['bp1_bpm'] = None
+                        _b['bp2_bpm'] = None
+                        for _p in (_b.get('pontos') or []):
+                            _p['hr'] = None
+                for _lst in ((lt1_reox or {}).get('blocos'),
+                             (mlss or {}).get('blocos')):
+                    for _x in (_lst or []):
+                        _x.pop('bpm', None)
+                hp = {'ok': False,
+                      'motivo': ('a frequência respiratória e a FC vêm da '
+                                 'mesma cinta, que falhou nesta sessão')}
+
             return jsonify({
                 'status': 'ok', 'activity_id': aid, 'modalidade': mod,
+                'fc_utilizavel': fcu,
+                'fc_valida': fc_ok,
+                'aviso_fc': d.get('aviso_fc'),
+                'canais_invalidos': d.get('canais_invalidos') or [],
                 'reservas': reservas,
                 'coerencia': coer,
                 'tipo_sessao': tipo,
@@ -1386,9 +1473,7 @@ def registar(app):
                 'bp_moxy': bp_mx,
                 'bp_hhb': bp_hhb,
                 'bp_moxy_sem_restricao': bp_mx_livre,
-                'limiares_consenso': _consenso_limiares(
-                    mlss, bp_mx, bp_mx_livre, bp_taxa, perfil, bp_hhb,
-                    lt1_reox),
+                'limiares_consenso': lim_cons,
                 'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
                 'blocos_usados': [
                     {'watts': b.get('watts_medio'),
@@ -1466,6 +1551,35 @@ def registar(app):
             _lr = lr.get('lt1_entre') or [None, None]
             _md = md.get('mlss_entre') or [None, None]
 
+            # se a FC não é fiável, não se grava bpm nenhum. Gravar um
+            # valor errado é pior do que não gravar: fica no histórico e
+            # ninguém se lembra porquê
+            if not lim.get('fc_valida', True):
+                bp1_bpm = bp2_bpm = None
+
+            # NAO gravar bpm de uma sessao com a FC congelada: gravado
+            # uma vez, esse valor entra no consenso do perfil metabolico
+            # e passa a contaminar tudo o resto sem deixar rasto
+            if 'heartrate' in set(lim.get('canais_invalidos') or []):
+                bp1_bpm = bp2_bpm = None
+                _fc_descartada = True
+            else:
+                _fc_descartada = False
+
+            # não gravar bpm de uma cinta que falhou: ficaria na base e
+            # contaminava o perfil metabólico e a comparação longitudinal
+            if not (lim.get('fc_utilizavel') or {}).get('utilizavel', True):
+                bp1_bpm = bp2_bpm = None
+
+            # A FC inválida não se grava. O endpoint já apaga os bpm da
+            # RESPOSTA, mas a gravação lê as variáveis locais — sem esta
+            # guarda, o 104 bpm de uma cinta presa ia para a base e depois
+            # aparecia no perfil metabólico como se fosse medição.
+            _fc_ok = (lim.get('fc_valida') if lim.get('fc_valida') is not None
+                      else True)
+            if not _fc_ok:
+                bp1_bpm = bp2_bpm = None
+
             s2 = MX_SESSOES_CACHE.get(aid, {})
             linha = (
                 aid, lim.get('modalidade'), s2.get('data'),
@@ -1507,9 +1621,92 @@ def registar(app):
             cn.commit()
             ok, det = ddp.upload()
             cn.close()
-            return jsonify({'status': 'ok' if ok else 'gravado_sem_upload',
-                            'activity_id': aid, 'versao': VERSAO_ANALISE,
-                            'drive': det})
+            return jsonify({
+                'status': 'ok' if ok else 'gravado_sem_upload',
+                'activity_id': aid, 'versao': VERSAO_ANALISE,
+                'fc_descartada': _fc_descartada,
+                'nota_fc': ('a FC estava congelada nesta sessão: os valores '
+                            'em bpm não foram gravados, para não entrarem '
+                            'no consenso do perfil metabólico'
+                            if _fc_descartada else None),
+                'drive': det})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/gravar_todas', methods=['POST'])
+    def api_moxy_gravar_todas():
+        """Grava a análise de TODAS as sessões com Moxy.
+
+        Re-grava por omissão as que foram calculadas com uma versão
+        anterior do método: é o que permite mudar um cálculo e pôr o
+        histórico todo em dia sem carregar sessão a sessão.
+
+        ?modalidade=Row   ?forcar=1   (forcar re-grava mesmo as actuais)
+        """
+        try:
+            import drive_db_perfil as ddp
+            forcar = request.args.get('forcar') == '1'
+            mods = ([request.args['modalidade']]
+                    if request.args.get('modalidade')
+                    else ['Bike', 'Row', 'Ski', 'Run'])
+
+            # que versões já estão gravadas
+            ja = {}
+            try:
+                cn = ddp.get_conn()
+                for r in cn.execute(
+                        'SELECT activity_id, versao_analise FROM '
+                        'moxy_analises').fetchall():
+                    ja[str(r[0])] = r[1]
+                cn.close()
+            except Exception:
+                pass
+
+            feitas, saltadas, erros = [], [], []
+            for mod in mods:
+                with app.test_request_context(
+                        f'/api/moxy/sessoes?modalidade={mod}'):
+                    ses = api_moxy_sessoes().get_json() or {}
+                for s2 in (ses.get('sessoes') or []):
+                    aid = str(s2.get('id'))
+                    versao = ja.get(aid)
+                    if versao == VERSAO_ANALISE and not forcar:
+                        saltadas.append({'id': aid, 'data': s2.get('data'),
+                                         'modalidade': mod,
+                                         'motivo': 'já na versão actual'})
+                        continue
+                    try:
+                        r = api_moxy_guardar_analise(aid)
+                        d = (r[0].get_json() if isinstance(r, tuple)
+                             else r.get_json()) or {}
+                        if str(d.get('status', '')).startswith(('ok',
+                                                                'gravado')):
+                            feitas.append({
+                                'id': aid, 'data': s2.get('data'),
+                                'modalidade': mod,
+                                'versao_anterior': versao,
+                                'motivo': ('versão antiga' if versao
+                                           else 'nunca gravada')})
+                        else:
+                            erros.append({'id': aid, 'data': s2.get('data'),
+                                          'motivo': d.get('mensagem')})
+                    except Exception as e:
+                        erros.append({'id': aid, 'data': s2.get('data'),
+                                      'erro': str(e)[:120]})
+
+            return jsonify({
+                'status': 'ok',
+                'versao_actual': VERSAO_ANALISE,
+                'n_gravadas': len(feitas), 'n_saltadas': len(saltadas),
+                'n_erros': len(erros),
+                'gravadas': feitas, 'saltadas': saltadas, 'erros': erros,
+                'nota': (
+                    'só se re-grava o que está numa versão anterior do '
+                    'método. A versao_analise é o que permite isso — sem '
+                    'ela não se saberia o que está por actualizar. Usa '
+                    '?forcar=1 para re-gravar tudo'),
+            })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
@@ -1672,6 +1869,60 @@ def registar(app):
                     'não servem'),
             })
             return jsonify(res)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/limitadores')
+    def api_moxy_limitadores():
+        """Limitador de cada análise GRAVADA, para a página de intervenções.
+
+        Lê da base, não recalcula: a página serve para escolher sessões e
+        procurar padrão, e recalcular dez sessões a cada clique tornaria
+        isso insuportável.
+
+        ?modalidade=Row   (sem modalidade, devolve todas)
+        """
+        try:
+            import json as _j
+            import drive_db_perfil as ddp
+            cond, args = [], []
+            if request.args.get('modalidade'):
+                cond.append('modalidade = ?')
+                args.append(request.args['modalidade'])
+            w = ('WHERE ' + ' AND '.join(cond)) if cond else ''
+            cn = ddp.get_conn()
+            rows = cn.execute(
+                f"""SELECT activity_id, modalidade, data, perfil,
+                           us_limitador, pc_limitador, rede_limitador,
+                           bp1_w, bp2_w, lt1_reox_w, mlss_dessat_w,
+                           versao_analise, json_completo
+                      FROM moxy_analises {w} ORDER BY data DESC""",
+                tuple(args)).fetchall()
+            cn.close()
+
+            fora = []
+            for r in rows:
+                hipo = None
+                try:
+                    d = _j.loads(r[12]) if r[12] else {}
+                    hipo = ((d.get('limiares') or {})
+                            .get('hipocapnia') or {}).get('suspeita')
+                except Exception:
+                    pass
+                fora.append({
+                    'id': r[0], 'modalidade': r[1], 'data': r[2],
+                    'perfil': r[3],
+                    'us': r[4], 'pc': r[5], 'rede': r[6],
+                    'bp1_w': r[7], 'bp2_w': r[8],
+                    'lt1_reox_w': r[9], 'mlss_dessat_w': r[10],
+                    'versao': r[11], 'hipocapnia': hipo,
+                })
+            return jsonify({'status': 'ok', 'n': len(fora),
+                            'sessoes': fora,
+                            'nota': ('vem da base: são as análises já '
+                                     'gravadas. Para incluir uma sessão '
+                                     'nova, gravá-la primeiro na tab Moxy')})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

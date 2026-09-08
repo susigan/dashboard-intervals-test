@@ -1374,6 +1374,11 @@ function mxLimiares(){
     +'BP1 '+bm.bp1_w+' W'+(bm.bp1_bpm?' · '+bm.bp1_bpm+' bpm':'')
     +(bm.bp2_w!=null?'  ·  BP2 '+bm.bp2_w+' W'
       +(bm.bp2_bpm?' · '+bm.bp2_bpm+' bpm':''):'')+'</b>'
+    +((bm.bp1_fc_origem||bm.bp2_fc_origem)
+      ? '<br><span style="font-size:10px;color:#8b949e;">FC: '
+        +[bm.bp1_fc_origem,bm.bp2_fc_origem].filter(Boolean)
+          .map(function(o,i2){ return (i2?'BP2':'BP1')+' — '+o.nota; })
+          .join(' · ')+'</span>' : '')
     +' <span style="color:#8b949e;font-size:11px;">F='+(bm.f_vs_recta||'—')
     +(bm.p_vs_recta!=null?' p='+bm.p_vs_recta:'')
     +' · '+bm.n_intervalos+' intervalos</span>'
@@ -2204,11 +2209,26 @@ function mxDraw(){
  if(wmaxG>0){
   wsers.forEach(function(ws){
    const cor = ids.length>1 ? mxCorSessao(ws.si) : '#8b949e';
-   g.strokeStyle=cor; g.globalAlpha=0.30; g.lineWidth=1;
+   // Reduzir a UM ponto por pixel, com a MÉDIA de cada coluna.
+   //
+   // A potência é ruidosa segundo a segundo. Desenhar 1800 pontos numa
+   // largura de ~800 px punha vários valores no mesmo pixel, e o traço
+   // saltava entre eles — a linha virava uma mancha e os degraus não se
+   // distinguiam. Na tab Atividades isto não acontece porque lá a série
+   // já vem reduzida.
+   const cols={};
+   ws.pts.forEach(function(p){
+    const px=Math.round(X(p[0]));
+    if(!cols[px]) cols[px]=[0,0];
+    cols[px][0]+=p[1]; cols[px][1]++;
+   });
+   const xs=Object.keys(cols).map(Number).sort(function(a,b){return a-b;});
+   g.strokeStyle=cor; g.globalAlpha=0.55; g.lineWidth=1.2;
    g.beginPath();
-   ws.pts.forEach(function(p,n){
-    const y=PT+h-(p[1]/wmaxG)*h*0.42;
-    n?g.lineTo(X(p[0]),y):g.moveTo(X(p[0]),y);
+   xs.forEach(function(px,n){
+    const media=cols[px][0]/cols[px][1];
+    const y=PT+h-(media/wmaxG)*h*0.42;
+    n?g.lineTo(px,y):g.moveTo(px,y);
    });
    g.stroke(); g.globalAlpha=1;
   });

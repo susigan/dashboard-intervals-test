@@ -1640,3 +1640,46 @@ def marcar_implausiveis(estimativas, tipo='watts', contexto=None):
                  'no consenso'
                  if marcadas else None),
     }
+
+
+def fc_media_do_bloco(tempo, hr, blocos, watts_alvo, tolerancia=30):
+    """FC média do bloco de trabalho onde a carga alvo cai.
+
+    Todos os limiares devem trazer a FC da mesma forma: a MÉDIA MEDIDA no
+    degrau onde o valor caiu. Alguns métodos traziam-na (os que ajustam a
+    curva SmO2 × potência, que já recebem a série de FC) e outros não — a
+    reoxigenação e o MLSS trabalham só com o SmO2 e nunca viram a FC.
+
+    Resultado: a tabela mostrava "— bpm" em metade das linhas, e o
+    utilizador não sabia se era falta de medição ou falha do sensor. Era
+    falta de código.
+    """
+    if watts_alvo is None or not hr or not tempo:
+        return None
+    cands = []
+    for b in (blocos or []):
+        if not b.get('on') or b.get('watts_medio') is None:
+            continue
+        vs = [hr[i] for i in range(min(len(tempo), len(hr)))
+              if b['t0'] <= tempo[i] <= b['t1'] and hr[i] is not None]
+        if vs:
+            cands.append({'watts': b['watts_medio'],
+                          'bpm': sum(vs) / len(vs),
+                          'n': len(vs),
+                          't0': b['t0'], 't1': b['t1']})
+    if not cands:
+        return None
+    perto = min(cands, key=lambda c: abs(c['watts'] - watts_alvo))
+    dist = abs(perto['watts'] - watts_alvo)
+    if dist > tolerancia:
+        return None
+    return {
+        'bpm': round(perto['bpm']),
+        'do_degrau_w': round(perto['watts']),
+        'distancia_w': round(dist, 1),
+        'exacto': dist < 1,
+        'n_amostras': perto['n'],
+        'nota': (f"média da FC no degrau de {round(perto['watts'])} W"
+                 + ('' if dist < 1 else
+                    f" (o mais próximo de {round(watts_alvo)} W)")),
+    }

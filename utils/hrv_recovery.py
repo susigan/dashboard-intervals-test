@@ -505,9 +505,29 @@ def _voto_beta(b, agudo, cronico):
 
 
 def sintetizar(swc=None, jav=None, kiv=None, ps=None, beta=None,
-               wellness=None, pesos=None):
+               wellness=None, pesos=None, qualidade=None):
     """Junta tudo por famílias e devolve uma leitura, não uma ordem."""
     pesos = pesos or PESOS_POR_OMISSAO
+
+    # Sem dados recentes não há prescrição. Os modelos continuam a
+    # devolver estados — a máquina de estados cai em LOW quando o sinal é
+    # indefinido — mas um LOW por falta de dados não é o mesmo que um LOW
+    # medido, e apresentá-los da mesma forma seria enganador.
+    if qualidade is not None and not qualidade.get('pode_prescrever'):
+        return {
+            'ok': True,
+            'sem_dados': True,
+            'estado': 'indeterminado',
+            'score': None,
+            'leitura': ('não há medições recentes que cheguem para '
+                        'prescrever hoje'),
+            'motivos': qualidade.get('motivos'),
+            'o_que_fazer': qualidade.get('o_que_fazer'),
+            'qualidade': qualidade,
+            'nota': ('os modelos abaixo continuam a mostrar o que se passou '
+                     'no histórico — mas o estado de hoje não é '
+                     'determinável sem medição de hoje'),
+        }
     votos_ln, detalhe = [], []
 
     if swc:
@@ -720,4 +740,78 @@ def pesos_ajustados(ln, votos_hf=None, votos_wellness=None, janela=180):
             'bem, não há forma de medir acerto — e antecipar o HRV de '
             'amanhã não é o mesmo que prescrever bem hoje. É melhor do que '
             'pesos inventados, e menos do que uma validação a sério'),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# DADOS EM FALTA — o que cada modelo faz, e o que DEVE fazer
+#
+# O teste com buracos artificiais mostrou um comportamento perigoso: com
+# 70% dos dias em falta, o SWC devolvia None (honesto) mas o Javaloyes
+# devolvia 'LOW' — que é uma prescrição, indistinguível de uma calculada
+# com dados a sério.
+#
+# A máquina de estados trata "sem dados" como sinal indefinido e cai em
+# LOW. Isso é razoável DENTRO da máquina (não se pode prescrever HIGH sem
+# saber), mas para fora parece uma decisão fundamentada.
+#
+# A regra que se aplica aqui é a mesma do Moxy: quando a medição não
+# chega, o resultado tem de dizer "não sei", não devolver o valor mais
+# conservador com ar de certeza.
+# ══════════════════════════════════════════════════════════════════════════
+
+# Dias reais que a JANELA RECENTE precisa de ter. Diferente dos MINIMOS,
+# que olham para o total: 200 dias com HRV e nenhum na última semana não
+# permitem prescrever hoje, por muito histórico que exista.
+JANELA_RECENTE = 14
+MINIMO_RECENTE = 7
+
+
+def qualidade_dos_dados(ln, hf=None, janela=JANELA_RECENTE):
+    """Há dados suficientes para prescrever HOJE?"""
+    n = len(ln)
+    recentes = ln[max(0, n - janela):]
+    n_rec = sum(1 for v in recentes if v is not None)
+    total = sum(1 for v in ln if v is not None)
+
+    # dias desde a última medição
+    desde = None
+    for i, v in enumerate(reversed(ln)):
+        if v is not None:
+            desde = i
+            break
+
+    hf_rec = None
+    if hf:
+        hf_recentes = hf[max(0, len(hf) - janela):]
+        hf_rec = sum(1 for v in hf_recentes if v is not None)
+
+    pode = (n_rec >= MINIMO_RECENTE and desde is not None and desde <= 3)
+    motivos = []
+    if n_rec < MINIMO_RECENTE:
+        motivos.append(
+            f'só {n_rec} medições nos últimos {janela} dias; são precisas '
+            f'{MINIMO_RECENTE}. As janelas de 7 e 28 dias contam dias de '
+            'calendário — com buracos, uma "média de 7 dias" pode assentar '
+            'em dois pontos')
+    if desde is None:
+        motivos.append('nenhuma medição de HRV')
+    elif desde > 3:
+        motivos.append(
+            f'a última medição foi há {desde} dias. O HRV descreve o estado '
+            'de HOJE; um valor de há uma semana não o substitui')
+
+    return {
+        'pode_prescrever': pode,
+        'n_recentes': n_rec, 'janela': janela,
+        'n_total': total,
+        'dias_desde_ultima': desde,
+        'hf_recentes': hf_rec,
+        'motivos': motivos,
+        'cobertura_recente_pct': round(n_rec / janela * 100),
+        'o_que_fazer': (
+            None if pode else
+            'medir HRV nos próximos dias antes de usar esta tab para '
+            'decidir. Com este histórico, os modelos ainda mostram '
+            'tendências passadas, mas não uma prescrição para hoje'),
     }

@@ -2185,6 +2185,8 @@ def _campos_do_moxy(modalidade):
         return {'ok': False, 'motivo': mx.get('motivo') or mx.get('erro')}
     fora = []
     for chave, w, bpm, grupo, rot in (
+            # o bpm vem a None quando a cinta congelou nessa sessão: o
+            # api_moxy não o grava, e aqui não se inventa
             ('BP1_SmO2', mx.get('bp1_w'), mx.get('bp1_bpm'), 'aerobio',
              'BP1 SmO2'),
             ('BP2_SmO2', mx.get('bp2_w'), mx.get('bp2_bpm'), 'limiar',
@@ -2198,11 +2200,17 @@ def _campos_do_moxy(modalidade):
              'Dessaturação (Rogers)')):
         if w is None:
             continue
+        # Um bpm gravado quando a cinta congelou não é medição. As
+        # gravações novas já não o trazem, mas as antigas trazem — e essas
+        # continuam na base.
+        _bpm_ok = bpm and 40 < float(bpm) < 220
         fora.append({
             'chave': chave, 'rotulo': rot, 'grupo': grupo,
             'fonte': 'medido',
             'watts_medido': round(float(w), 1),
-            'hr_medido': round(float(bpm)) if bpm else None,
+            'hr_medido': round(float(bpm)) if _bpm_ok else None,
+            'hr_descartado': (round(float(bpm))
+                              if bpm and not _bpm_ok else None),
             'quartis': {'n': 1, 'p50': round(float(w), 1)},
             'data': mx.get('data'),
             'origem': mx.get('bp2_origem') or 'análise Moxy',

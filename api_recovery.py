@@ -111,6 +111,8 @@ def registar(app):
                 votos_hf = [hrec._VOTO.get(p) for p in
                             res['kiviniemi']['prescricao']]
             votos_wl = _serie_wellness(seq)
+            res['qualidade'] = hrec.qualidade_dos_dados(
+                ln, [d.get('hf_power') for d in seq])
             res['pesos_ajustados'] = hrec.pesos_ajustados(
                 ln, votos_hf, votos_wl,
                 janela=request.args.get('janela_pesos', type=int) or 180)
@@ -129,7 +131,8 @@ def registar(app):
                        'agudo': _b.get('agudo_hoje'),
                        'cronico': _b.get('cronico_hoje')} if _b else None),
                 wellness=(res['wellness'] or {}).get('voto'),
-                pesos=res['pesos_ajustados']['pesos'])
+                pesos=res['pesos_ajustados']['pesos'],
+                qualidade=res['qualidade'])
             res['datas'] = [d['data'] for d in seq]
             return jsonify(res)
         except Exception as e:

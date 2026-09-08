@@ -610,3 +610,114 @@ PESOS_POR_OMISSAO = {
     'hf': 0.25,
     'subjectivo': 0.20,
 }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PESOS AJUSTADOS AOS DADOS
+#
+# Os 0.55/0.25/0.20 são uma escolha sem base — nenhum artigo compara estes
+# métodos entre si. Em vez de os arbitrar para sempre, medem-se.
+#
+# O PROBLEMA: não há rótulo. Não sabemos se o dia correu bem, portanto não
+# se pode medir "acerto".
+#
+# O QUE SE PODE MEDIR: se cada família antecipa o LnRMSSD de AMANHÃ. Uma
+# família que diga "recuar" hoje e veja o HRV cair amanhã antecipou
+# alguma coisa; uma que diga "recuar" e o HRV suba, não.
+#
+# ISTO É CIRCULAR PARA A FAMÍLIA DO LnRMSSD — está a prever-se a si
+# própria, e ganharia sempre. Por isso o peso do LnRMSSD fica FIXO, como
+# referência, e só o HF e o wellness são ajustados: são precisamente
+# aqueles cujo valor não conhecemos.
+#
+# Janela móvel de 180 dias, recalculada a cada dia: os pesos acompanham
+# mudanças de forma e de hábitos de medição.
+# ══════════════════════════════════════════════════════════════════════════
+
+PESO_FIXO_LNRMSSD = 0.55   # referência, não se auto-avalia
+PESO_MIN = 0.05            # nenhuma família desaparece por completo
+PESO_MAX = 0.45
+
+
+def _correlacao(xs, ys):
+    pares = [(a, b) for a, b in zip(xs, ys)
+             if a is not None and b is not None]
+    if len(pares) < 20:
+        return None, len(pares)
+    n = len(pares)
+    mx = sum(p[0] for p in pares) / n
+    my = sum(p[1] for p in pares) / n
+    sx = sum((p[0] - mx) ** 2 for p in pares) ** 0.5
+    sy = sum((p[1] - my) ** 2 for p in pares) ** 0.5
+    if sx <= 0 or sy <= 0:
+        return None, n
+    r = sum((p[0] - mx) * (p[1] - my) for p in pares) / (sx * sy)
+    return r, n
+
+
+def pesos_ajustados(ln, votos_hf=None, votos_wellness=None, janela=180):
+    """Peso de cada família pelo que antecipa da variação de amanhã.
+
+    ln            série de LnRMSSD
+    votos_hf      voto diário da família HF (−1..+1), alinhado com ln
+    votos_wellness idem para o wellness
+    """
+    n = len(ln)
+    ini = max(0, n - janela)
+    # variação do LnRMSSD de amanhã face a hoje
+    delta = [None] * n
+    for i in range(n - 1):
+        if ln[i] is not None and ln[i + 1] is not None:
+            delta[i] = ln[i + 1] - ln[i]
+
+    fora = {'lnrmssd': {'peso': PESO_FIXO_LNRMSSD, 'fixo': True,
+                        'porque': ('é a referência contra a qual as outras '
+                                   'são medidas — avaliá-la contra si '
+                                   'própria seria circular')}}
+    brutos = {}
+    for nome, votos in (('hf', votos_hf), ('subjectivo', votos_wellness)):
+        if not votos:
+            continue
+        r, n_pares = _correlacao(votos[ini:n], delta[ini:n])
+        if r is None:
+            fora[nome] = {'peso': PESO_MIN, 'r': None, 'n': n_pares,
+                          'porque': f'só {n_pares} dias em comum; são '
+                                    'precisos 20 para medir'}
+            continue
+        # só a correlação POSITIVA conta: prever ao contrário não é mérito
+        brutos[nome] = max(0.0, r)
+        fora[nome] = {'r': round(r, 3), 'n': n_pares}
+
+    # repartir o que sobra (1 − peso do LnRMSSD) na proporção do r
+    resto = 1.0 - PESO_FIXO_LNRMSSD
+    soma = sum(brutos.values())
+    for nome in ('hf', 'subjectivo'):
+        if nome not in fora:
+            continue
+        if 'peso' in fora[nome]:
+            continue
+        if soma <= 0:
+            p = resto / max(1, len(brutos)) if brutos else PESO_MIN
+        else:
+            p = resto * brutos[nome] / soma
+        fora[nome]['peso'] = round(max(PESO_MIN, min(PESO_MAX, p)), 3)
+        r = fora[nome]['r']
+        fora[nome]['porque'] = (
+            f'r={r} entre o voto de hoje e a variação do LnRMSSD de amanhã, '
+            f"em {fora[nome]['n']} dias"
+            + ('. Correlação negativa não conta — prever ao contrário não é '
+               'mérito' if r is not None and r < 0 else ''))
+
+    return {
+        'pesos': {k: v['peso'] for k, v in fora.items()},
+        'detalhe': fora,
+        'janela_dias': janela,
+        'metodo': ('cada família é medida pelo que antecipa da variação do '
+                   'LnRMSSD do dia seguinte; o peso é proporcional a essa '
+                   'correlação'),
+        'limite': (
+            'isto mede antecipação, não acerto. Sem saber se o dia correu '
+            'bem, não há forma de medir acerto — e antecipar o HRV de '
+            'amanhã não é o mesmo que prescrever bem hoje. É melhor do que '
+            'pesos inventados, e menos do que uma validação a sério'),
+    }

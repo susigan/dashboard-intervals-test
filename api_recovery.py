@@ -37,7 +37,11 @@ def registar(app):
                             'data': d,
                             'hrv': x.get('hrv'),
                             'hf_power': x.get('hf_power'),
-                            'rhr': x.get('rhr') or x.get('hr'),
+                            # o 'hr' da folha é o de dormir, medido pelo
+                            # relógio. O restingHR/avgSleepingHR da
+                            # Intervals.icu entra a seguir e tem
+                            # prioridade — ver a nota em _juntar_rhr
+                            'rhr_folha': x.get('rhr') or x.get('hr'),
                             'sono_h': x.get('sleep') or x.get('sono'),
                             'sono_qualidade': x.get('sleep_quality'),
                             'fadiga': x.get('fatiga') or x.get('fadiga'),
@@ -50,6 +54,19 @@ def registar(app):
                     origem.append('folha')
             except Exception as e:
                 origem.append(f'folha falhou: {str(e)[:60]}')
+
+            # ── FC de repouso: da Intervals.icu, não da folha ────────
+            #
+            # A folha tem um campo de FC preenchido à mão, e a
+            # Intervals.icu tem restingHR e avgSleepingHR medidos pelo
+            # relógio durante a noite. São medições diferentes, e misturar
+            # as duas numa série faz saltos que não são fisiologia.
+            #
+            # A regra que aplicámos ao HRV vale aqui: um valor deve vir
+            # da mesma fonte todos os dias.
+            registos, nota_rhr = _juntar_rhr(registos, corte)
+            if nota_rhr:
+                origem.append(nota_rhr)
 
             prep = hrec.preparar(registos)
             if not prep.get('ok'):
@@ -88,6 +105,16 @@ def registar(app):
             # wellness subjectivo: z-score dos últimos 28 dias
             res['wellness'] = _wellness(seq)
 
+            # pesos medidos nos próprios dados, com janela móvel
+            votos_hf = None
+            if res['kiviniemi'].get('ok'):
+                votos_hf = [hrec._VOTO.get(p) for p in
+                            res['kiviniemi']['prescricao']]
+            votos_wl = _serie_wellness(seq)
+            res['pesos_ajustados'] = hrec.pesos_ajustados(
+                ln, votos_hf, votos_wl,
+                janela=request.args.get('janela_pesos', type=int) or 180)
+
             # síntese
             _b = res['beta'] if res['beta'].get('ok') else {}
             res['sintese'] = hrec.sintetizar(
@@ -101,7 +128,8 @@ def registar(app):
                 beta=({'beta': _b.get('beta_hoje'),
                        'agudo': _b.get('agudo_hoje'),
                        'cronico': _b.get('cronico_hoje')} if _b else None),
-                wellness=(res['wellness'] or {}).get('voto'))
+                wellness=(res['wellness'] or {}).get('voto'),
+                pesos=res['pesos_ajustados']['pesos'])
             res['datas'] = [d['data'] for d in seq]
             return jsonify(res)
         except Exception as e:
@@ -109,6 +137,90 @@ def registar(app):
                             'trace': traceback.format_exc()}), 500
 
     return app
+
+
+def _juntar_rhr(registos, corte):
+    """FC de repouso da Intervals.icu, com a folha só como recurso.
+
+    Prioridade: avgSleepingHR > restingHR > folha. O avgSleepingHR é o
+    mais estável dos três — é a média de uma noite inteira, ao passo que
+    o restingHR pode apanhar um mínimo pontual.
+
+    Devolve (registos, nota) e marca a origem de cada dia, para se poder
+    ver depois se a série mudou de fonte a meio.
+    """
+    try:
+        from api_client import icu_get
+        from config import ATHLETE_ID
+        dados, err = icu_get(
+            f'/athlete/{ATHLETE_ID}/wellness',
+            params={'oldest': corte,
+                    'newest': datetime.now().strftime('%Y-%m-%d')})
+        if err or not isinstance(dados, list):
+            for r in registos:
+                r['rhr'] = r.get('rhr_folha')
+                r['rhr_origem'] = 'folha'
+            return registos, f'RHR da folha (Intervals falhou: {err})'
+
+        por_data = {str(d.get('id'))[:10]: d for d in dados
+                    if isinstance(d, dict)}
+        n_icu = n_folha = 0
+        for r in registos:
+            w = por_data.get(r['data']) or {}
+            v = w.get('avgSleepingHR')
+            origem = 'avgSleepingHR'
+            if not isinstance(v, (int, float)):
+                v = w.get('restingHR')
+                origem = 'restingHR'
+            if isinstance(v, (int, float)):
+                r['rhr'] = v
+                r['rhr_origem'] = origem
+                n_icu += 1
+            else:
+                r['rhr'] = r.get('rhr_folha')
+                r['rhr_origem'] = 'folha'
+                if r['rhr'] is not None:
+                    n_folha += 1
+        nota = f'RHR: {n_icu} dias da Intervals.icu'
+        if n_folha:
+            nota += (f', {n_folha} da folha (sem dado no wellness). Duas '
+                     'fontes na mesma série produzem saltos que não são '
+                     'fisiologia')
+        return registos, nota
+    except Exception as e:
+        for r in registos:
+            r['rhr'] = r.get('rhr_folha')
+            r['rhr_origem'] = 'folha'
+        return registos, f'RHR da folha ({type(e).__name__})'
+
+
+def _serie_wellness(seq):
+    """Voto de wellness dia a dia, para os pesos poderem ser medidos.
+
+    O _wellness() devolve só o valor de hoje. Para saber quanto o wellness
+    antecipa, é preciso a série toda.
+    """
+    import hrv_recovery as hrec
+    campos = {'sono_qualidade': +1, 'sono_h': +1, 'rhr': -1,
+              'fadiga': -1, 'stress': -1, 'dores': -1, 'humor': +1}
+    fora = []
+    for i in range(len(seq)):
+        votos = []
+        for campo, sentido in campos.items():
+            hoje = seq[i].get(campo)
+            if not isinstance(hoje, (int, float)):
+                continue
+            jan = [float(seq[k][campo]) for k in range(max(0, i - 27), i)
+                   if isinstance(seq[k].get(campo), (int, float))]
+            if len(jan) < 14:
+                continue
+            m = sum(jan) / len(jan)
+            s = hrec._sd(jan)
+            if not s:
+                continue
+            votos.append(max(-1.0, min(1.0, (hoje - m) / s * sentido / 1.5)))
+        fora.append(sum(votos) / len(votos) if votos else None)
+    return fora
 
 
 def _wellness(seq):

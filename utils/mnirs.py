@@ -1288,3 +1288,92 @@ def detectar_congelados(canais, tempo=None, minimo_s=CONGELADO_S,
             'janela — mesmo que os números do DFA-a1 continuem a variar'
             if propagou else None),
     }
+
+
+def fc_utilizavel(congelados, artefactos=None, limiar_pct=40):
+    """A FC desta sessão serve para alguma coisa?
+
+    Se a cinta esteve presa 85% do tempo, o bpm que sai de qualquer
+    análise é ficção. Melhor não mostrar nada do que mostrar um número.
+
+    Devolve o veredicto uma vez, para todos os cálculos o consultarem em
+    vez de cada um decidir por si.
+    """
+    r = (congelados or {}).get('canais_congelados') or {}
+    hr = r.get('heartrate') or r.get('fixed_heartrate') or {}
+    pct_congelado = hr.get('pct_da_serie') or 0
+    pct_art = (artefactos or {}).get('pct_acima_do_limiar') or 0
+
+    mau = pct_congelado >= limiar_pct or pct_art > 30
+    motivos = []
+    if pct_congelado >= limiar_pct:
+        motivos.append(
+            f'a cinta esteve presa em {hr.get("valor_preso")} durante '
+            f'{pct_congelado}% da sessão')
+    if pct_art > 30:
+        motivos.append(f'{round(pct_art)}% de artefacto na série de RR')
+
+    return {
+        'utilizavel': not mau,
+        'pct_congelado': pct_congelado,
+        'pct_artefacto': pct_art,
+        'motivos': motivos,
+        'afecta': (['heartrate', 'dfa_a1', 'respiration'] if mau else []),
+        'consequencia': (
+            'os resultados em bpm desta sessão são descartados. Os watts '
+            'não são afectados — vêm do medidor de potência, não da cinta. '
+            'A análise continua, só sem a componente de frequência cardíaca'
+            if mau else None),
+        'porque_todos': (
+            'a FC, o DFA-a1 e a respiração saem todos da mesma série de RR. '
+            'Não faz sentido descartar um e manter os outros'
+            if mau else None),
+    }
+
+
+def canais_invalidos(res):
+    """Que canais NÃO são de confiança nesta sessão, e o que isso invalida.
+
+    Serve para o resto do pipeline saber o que não pode usar. Sem isto, o
+    congelamento é detectado, os dados são apagados — e depois um limiar
+    em bpm calculado antes da limpeza é gravado na mesma.
+    """
+    cg = (res or {}).get('congelados') or {}
+    art = (res or {}).get('artefactos') or {}
+
+    maus, motivos = set(), {}
+
+    for k, v in (cg.get('canais_congelados') or {}).items():
+        # abaixo de 20% da sessão o troço apaga-se e o resto ainda serve
+        if (v.get('pct_da_serie') or 0) >= 20:
+            maus.add(k.lower())
+            motivos[k.lower()] = (
+                f"preso em {v.get('valor_preso')} durante "
+                f"{v.get('pct_da_serie')}% da sessão")
+    for k in (cg.get('propagado_para') or []):
+        if any(m in maus for m in ('heartrate', 'hr')):
+            maus.add(k.lower())
+            motivos.setdefault(k.lower(),
+                               'deriva da mesma série de RR que congelou')
+
+    pct_art = art.get('pct_acima_do_limiar')
+    if pct_art is not None and pct_art > 30:
+        for k in FAMILIA_RR:
+            maus.add(k)
+            motivos.setdefault(k, f'{pct_art}% de artefacto na cinta')
+
+    tem_fc = any(m in maus for m in ('heartrate', 'hr'))
+    return {
+        'canais': sorted(maus),
+        'motivos': motivos,
+        'fc_invalida': tem_fc,
+        'usar_apenas_watts': tem_fc,
+        'consequencia': (
+            'a FC desta sessão não é de confiança: os limiares em bpm não '
+            'devem ser calculados, gravados nem comparados. Os limiares em '
+            'watts não são afectados — o SmO2 e a potência vêm de sensores '
+            'diferentes'
+            if tem_fc else None),
+        'nota': ('canais com menos de 20% da série congelada não entram '
+                 'aqui: o troço apaga-se e o resto continua utilizável'),
+    }

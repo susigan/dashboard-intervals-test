@@ -123,6 +123,7 @@ BODY = """
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
     <div class="controls"><button onclick="mxLimiares()">Calcular</button>
       <button onclick="mxGuardarAnalise()" title="Grava perfil, breakpoints, 5-1-5 e rede causal. Voltar a gravar substitui, com a versão do método usada.">💾 Gravar análise</button>
+      <button onclick="mxGravarTodas()" title="Grava todas as sessões com Moxy. Só re-grava as que foram calculadas com uma versão anterior do método.">💾 Gravar todas</button>
       <label class="sel">Terminaram por exaustão
         <select id="mxExaustao" title="Só blocos que terminaram por falha são pontos válidos para o CER.">
           <option value="">nenhum</option>
@@ -334,6 +335,29 @@ BODY = """
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Todas as sessões</summary>
     <div id="mxLista" style="overflow-x:auto;margin-top:6px;"></div>
+  </details>
+
+  <hr style="border:0;border-top:1px solid #21262d;margin:26px 0 12px 0;">
+  <h2 style="font-size:16px;">Intervenções — o que treinar</h2>
+  <p style="color:#8b949e;font-size:12px;">Escolhe sessões de qualquer
+  modalidade. O sistema procura o que há de comum entre os limitadores
+  encontrados e propõe o trabalho correspondente.</p>
+  <div class="controls" style="margin:6px 0;">
+    <label class="sel">Modalidade
+      <select id="ivMod" onchange="ivSessoes()">
+        <option value="">todas</option>
+        <option>Bike</option><option>Row</option>
+        <option>Ski</option><option>Run</option>
+      </select></label>
+    <button onclick="ivAnalisar()">Analisar seleccionadas</button>
+    <span id="ivEstado" style="color:#8b949e;font-size:12px;"></span>
+  </div>
+  <div id="ivLista" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;"></div>
+  <div id="ivResultado" style="margin-top:8px;"></div>
+
+  <details style="margin-top:14px;">
+    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Os três sistemas — o que cada um significa</summary>
+    <div id="ivGlossario" style="margin-top:8px;"></div>
   </details>
 
 </div>
@@ -984,6 +1008,18 @@ let MX_RESERVAS = null;  // W′ e M′ balance ao longo da sessão
 let MX_ULT_REDE=null, MX_ULT_US=null, MX_ULT_PC=null,
     MX_ULT_PERFIL=null, MX_ULT_HIPO=false;
 
+function mxGravarTodas(){
+ const est=document.getElementById('mxLimEstado');
+ est.textContent='a gravar todas as sessões (pode demorar)...';
+ fetch('/api/moxy/gravar_todas', {method:'POST'}).then(r=>r.json())
+ .then(function(d){
+  if(d.status!=='ok'){ est.textContent=d.mensagem||'erro'; return; }
+  est.textContent=d.n_gravadas+' gravada(s) · '+d.n_saltadas
+   +' já na versão '+d.versao_actual
+   +(d.n_erros?' · '+d.n_erros+' com erro':'');
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
 function mxGuardarAnalise(){
  const ids=Object.keys(MX_DADOS);
  const est=document.getElementById('mxLimEstado');
@@ -1083,6 +1119,16 @@ function mxLimiares(){
   } : null);
 
   let h='';
+  if(d.fc_valida===false)
+   h+='<p style="border-left:3px solid #F85149;padding-left:8px;'
+    +'font-size:11px;margin:0 0 8px 0;">'
+    +'<b style="color:#F85149;">FC descartada nesta sessão</b> — '
+    +(d.aviso_fc||'')
+    +(d.canais_invalidos&&d.canais_invalidos.length
+      ? '<br><span style="color:#8b949e;">apagados: '
+        +d.canais_invalidos.join(', ')+'</span>' : '')
+    +'</p>';
+
   // ── que protocolo foi este ────────────────────────────────────────
   const ts=d.tipo_sessao||{};
   if(ts.ok){
@@ -1527,6 +1573,29 @@ function mxSintese(){
     +(d.motivo||'')+'</p>';
    (d.avisos||[]).forEach(function(a){
     box.innerHTML+='<p style="color:#F0883E;font-size:11px;">⚠ '+a+'</p>'; });
+   return;
+  }
+  // sem limitador dominante: mostrar na mesma. "Misto" é um resultado,
+  // não ausência de resultado
+  if(d.indeterminado){
+   let hm='<div style="border:1px solid #58A6FF;border-radius:6px;'
+    +'padding:8px 10px;margin-top:10px;">'
+    +'<b style="color:#58A6FF;font-size:14px;">'+d.nome+'</b>'
+    +(d.lidos&&d.lidos.length
+      ? ' <span style="color:#8b949e;font-size:11px;">lido: '
+        +d.lidos.join(' · ')+'</span>' : '')
+    +'<br><span style="font-size:11px;">'+d.o_que_significa+'</span>'
+    +'<br><span style="font-size:11px;color:#58A6FF;"><b>Agora:</b> '
+    +d.o_que_fazer_agora+'</span>'
+    +'<br><span style="font-size:11px;color:#8b949e;">'
+    +d.quando_reavaliar+'</span>'
+    +'<br><span style="font-size:10px;color:#8b949e;">Fundações: '
+    +(d.fundacoes||[]).map(function(f){ return f.item; }).join(' · ')
+    +'</span>';
+   (d.avisos||[]).forEach(function(a){
+    hm+='<p style="color:#F0883E;font-size:11px;margin:6px 0 0 0;">⚠ '+a
+     +'</p>'; });
+   box.innerHTML=hm+'</div>';
    return;
   }
   const iv=d.intervencao||{};
@@ -2380,6 +2449,39 @@ function mxDiagnostico(){
 
  // aviso de artefacto FORA do dropdown: uma sessão com 40% de artefacto
  // muda a leitura de tudo e não pode ficar atrás de um clique
+ // canais congelados: aviso à vista, porque invalida tudo o que depende
+ // deles — e não é óbvio a olhar para o gráfico, já que uma linha recta
+ // parece um sinal estável
+ // FC descartada: dizer que os bpm sumiram e porquê. Sem isto, o
+ // utilizador vê os limiares em watts e pensa que a FC não foi medida.
+ const ci = MX.detalhe_invalidos;
+ if(ci && ci.fc_invalida){
+  h+='<p style="font-size:11px;border-left:2px solid #F85149;'
+   +'padding-left:8px;margin:6px 0;">'
+   +'<b style="color:#F85149;">FC descartada nesta sessão</b><br>'
+   +'<span style="color:#8b949e;">'+(ci.consequencia||'')+'</span><br>'
+   +'<span style="color:#6e7681;font-size:10px;">'
+   +Object.keys(ci.motivos||{}).map(function(k){
+     return k+': '+ci.motivos[k]; }).join(' · ')+'</span></p>';
+ }
+
+ const cg = MX.congelados;
+ if(cg && cg.ok && Object.keys(cg.canais_congelados||{}).length){
+  h+='<p style="font-size:11px;border-left:2px solid #F85149;'
+   +'padding-left:8px;margin:6px 0;">'
+   +'<b style="color:#F85149;">Sensor preso</b> — '
+   +Object.keys(cg.canais_congelados).map(function(k){
+     const x=cg.canais_congelados[k];
+     return k+' em '+x.valor_preso+' durante '+x.pct_da_serie+'% da sessão'
+      +(x.primeiro_troco_s!=null?' (desde '+Math.floor(x.primeiro_troco_s/60)
+        +' min)':''); }).join(' · ')
+   +'.<br><span style="color:#8b949e;">'+(cg.nota||'')+'</span>'
+   +((cg.propagado_para||[]).length
+     ? '<br><span style="color:#F0883E;">Também apagado em '
+       +cg.propagado_para.join(', ')+': '+cg.porque_propaga+'</span>' : '')
+   +'</p>';
+ }
+
  const ar = MX.artefactos;
  if(ar && ar.pct_acima_do_limiar!=null){
   const c = ar.pct_acima_do_limiar<10 ? '#3FB950'
@@ -2490,7 +2592,184 @@ function mxEscolher(id){
  mxAlternarSessao(id, MX_SEL.indexOf(String(id))<0);
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// SECÇÃO DE INTERVENÇÕES
+//
+// Independente da análise acima. Lê as análises JÁ GRAVADAS, o que
+// permite cruzar modalidades diferentes sem recalcular nada.
+// ══════════════════════════════════════════════════════════════════════
+let IV_SESSOES = [], IV_SEL = {};
+
+function ivSessoes(){
+ const mod=document.getElementById('ivMod').value;
+ const est=document.getElementById('ivEstado');
+ est.textContent='a carregar...';
+ fetch('/api/moxy/analises'+(mod?'?modalidade='+mod:''))
+ .then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ est.textContent=d.mensagem||'erro'; return; }
+  IV_SESSOES=d.analises||[];
+  est.textContent=IV_SESSOES.length+' análise(s) gravada(s)'
+   +(IV_SESSOES.length?'':' — grava na secção acima primeiro');
+  const box=document.getElementById('ivLista');
+  box.innerHTML=IV_SESSOES.map(function(x,i){
+   const on=IV_SEL[x.activity_id]!==false;
+   IV_SEL[x.activity_id]=on;
+   return '<button class="ivS" data-id="'+x.activity_id+'" '
+    +'style="border:1px solid '+(on?'#3FB950':'#30363d')+';border-radius:14px;'
+    +'padding:3px 11px;background:transparent;color:'+(on?'#3FB950':'#6e7681')
+    +';font-size:11px;cursor:pointer;">'+(on?'● ':'○ ')
+    +(x.data||x.activity_id)+' · '+(x.modalidade||'')+'</button>';
+  }).join('');
+  Array.prototype.forEach.call(box.querySelectorAll('.ivS'), function(b){
+   b.addEventListener('click', function(){
+    const id=b.getAttribute('data-id');
+    IV_SEL[id]=!IV_SEL[id];
+    ivSessoes();
+   });
+  });
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
+function ivAnalisar(){
+ const est=document.getElementById('ivEstado');
+ const box=document.getElementById('ivResultado');
+ const sel=IV_SESSOES.filter(x=>IV_SEL[x.activity_id]);
+ if(!sel.length){ est.textContent='nenhuma sessão seleccionada'; return; }
+ // as análises gravadas trazem os limitadores de cada método
+ const payload=sel.map(function(x){
+  return {id:x.activity_id, data:x.data, modalidade:x.modalidade,
+          rede:x.rede_limitador, us:x.us_limitador, pc:x.pc_limitador,
+          perfil:x.perfil};
+ });
+ est.textContent='a cruzar '+payload.length+' sessões...';
+ fetch('/api/moxy/intervencoes?sessoes='
+       +encodeURIComponent(JSON.stringify(payload)))
+ .then(r=>r.json()).then(function(d){
+  if(!d.ok){
+   est.textContent='';
+   box.innerHTML='<p style="color:#8b949e;font-size:12px;">'
+    +(d.motivo||'sem limitador nas sessões escolhidas')+'</p>';
+   return;
+  }
+  est.textContent=d.de+' sessões cruzadas';
+  const iv=d.intervencao||{};
+  const cor=d.estavel?'#3FB950':'#F0883E';
+  // modalidades envolvidas: cruzar modalidades é intencional, mas o
+  // utilizador tem de ver que o fez
+  const mods=[...new Set(sel.map(x=>x.modalidade).filter(Boolean))];
+  let h='<div style="border:1px solid '+cor+';border-radius:6px;'
+   +'padding:10px 12px;">'
+   +'<b style="font-size:17px;color:'+cor+';">'+(iv.nome||d.limitador_mais_comum)
+   +'</b> <span style="color:#8b949e;font-size:12px;">'+d.n+' de '+d.de
+   +' sessões ('+d.concordancia_pct+'%)'+(d.unanime?' · unânime':'')+'</span>'
+   +(mods.length>1
+     ? '<br><span style="color:#F0883E;font-size:11px;">a cruzar '
+       +mods.join(', ')+' — o limitador pode ser específico da modalidade, '
+       +'porque o gesto e a massa muscular envolvida são diferentes</span>'
+     : '')
+   +'<br><span style="font-size:12px;">'+(iv.o_que_e||'')+'</span>'
+   +'<br><span style="font-size:12px;color:'+cor+';"><b>'+d.o_que_fazer
+   +'</b></span>';
+  if(d.partilhado)
+   h+='<p style="color:#F0883E;font-size:11px;">⚠ '+d.partilhado+'</p>';
+  h+='<table style="border-collapse:collapse;font-size:11px;margin-top:8px;">'
+   +'<tr style="color:#8b949e;text-align:left;">'
+   +'<th style="padding-right:14px;">Sessão</th><th style="padding-right:14px;">'
+   +'Modalidade</th><th style="padding-right:14px;">Limitador</th>'
+   +'<th>Concordância</th></tr>'
+   +(d.sessoes||[]).map(function(x,i){
+     const m=(sel[i]||{}).modalidade||'';
+     return '<tr><td style="padding-right:14px;">'+(x.data||'—')+'</td>'
+      +'<td style="padding-right:14px;color:#8b949e;">'+m+'</td>'
+      +'<td style="padding-right:14px;">'+(x.limitador||'—')+'</td>'
+      +'<td style="color:#8b949e;">'+(x.concordancia||'—')+'</td></tr>';
+    }).join('')
+   +'</table></div>';
+
+  if((iv.metodos||[]).length){
+   h+='<div style="margin-top:10px;">'
+    +'<h3 style="font-size:14px;">Métodos</h3>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+    +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+    +'<th style="padding:5px;">Método</th><th>Como</th><th>Alvo FC</th>'
+    +'<th>Alvo SmO2</th><th>Fonte</th></tr>'
+    +iv.metodos.map(function(m){
+      return '<tr style="border-bottom:1px solid #161b22;">'
+       +'<td style="padding:5px;"><b>'+m.metodo+'</b></td>'
+       +'<td style="color:#8b949e;">'+m.como+'</td>'
+       +'<td>'+(m.alvo_fc||'—')+'</td>'
+       +'<td style="color:#3FB950;">'+(m.alvo_smo2||m.sinal_no_smo2||'—')
+       +'</td><td style="color:#6e7681;font-size:10px;">'+(m.fonte||'')
+       +'</td></tr>'; }).join('')
+    +'</table></div>';
+   const n2=iv.nivel_dois;
+   if(n2){
+    h+='<div style="margin-top:10px;"><h3 style="font-size:14px;">'
+     +'Nível dois</h3><p style="color:#8b949e;font-size:11px;">'+n2.porque
+     +'</p><table style="width:100%;border-collapse:collapse;font-size:11px;">'
+     +(n2.metodos||[]).map(function(m){
+       return '<tr style="border-bottom:1px solid #161b22;">'
+        +'<td style="padding:5px;width:26%;"><b>'+m.metodo+'</b></td>'
+        +'<td style="color:#8b949e;">'+m.como
+        +(m.porque?'<br><span style="color:#6e7681;">'+m.porque+'</span>':'')
+        +(m.como_verificar?'<br><span style="color:#A371F7;">verificar: '
+          +m.como_verificar+'</span>':'')+'</td></tr>'; }).join('')
+     +'</table></div>';
+   }
+   if(iv.nao_fazer)
+    h+='<p style="color:#F0883E;font-size:12px;margin-top:8px;">'
+     +'<b>Não fazer:</b> '+iv.nao_fazer+'</p>';
+  }
+  h+='<p style="color:#8b949e;font-size:11px;margin-top:8px;">'
+   +(d.nota||'')+'</p>';
+  box.innerHTML=h;
+ }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
+function ivGlossario(){
+ const box=document.getElementById('ivGlossario');
+ if(!box || box.innerHTML) return;
+ fetch('/api/moxy/intervencoes').then(r=>r.json()).then(function(d){
+  if(d.status!=='ok') return;
+  let h='';
+  Object.keys(d.intervencoes||{}).forEach(function(k){
+   const v=d.intervencoes[k];
+   h+='<div style="border-left:3px solid #58A6FF;padding:6px 10px;'
+    +'margin-bottom:10px;">'
+    +'<b style="font-size:14px;">'+v.nome+'</b>'
+    +'<br><span style="font-size:12px;">'+v.o_que_e+'</span>'
+    +(v.sinais?'<br><span style="font-size:11px;color:#8b949e;">'
+      +'<b>Sinais:</b> '+v.sinais.join(' · ')+'</span>':'')
+    +(v.causas_possiveis?'<br><span style="font-size:11px;color:#8b949e;">'
+      +'<b>Causas:</b> '+v.causas_possiveis.join(' · ')+'</span>':'')
+    +(v.nao_fazer?'<br><span style="font-size:11px;color:#F0883E;">'
+      +'<b>Não fazer:</b> '+v.nao_fazer+'</span>':'')
+    +'</div>';
+  });
+  h+='<h3 style="font-size:13px;">Fundações — antes de qualquer '
+   +'intervenção</h3>'
+   +(d.fundacoes||[]).map(function(f){
+     return '<p style="font-size:11px;color:#8b949e;"><b>'+f.item+'</b>: '
+      +f.porque+'</p>'; }).join('')
+   +'<h3 style="font-size:13px;">Zonas por SmO2</h3>'
+   +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
+   +'<th style="padding:5px;">Zona</th><th>Sinal</th><th>Usar para</th></tr>'
+   +(d.zonas_smo2||[]).map(function(z){
+     return '<tr style="border-bottom:1px solid #161b22;">'
+      +'<td style="padding:5px;"><b>'+z.zona+'</b></td>'
+      +'<td style="color:#3FB950;">'+z.sinal+'</td>'
+      +'<td style="color:#8b949e;">'+z.usar_para+'</td></tr>'; }).join('')
+   +'</table>'
+   +'<p style="color:#8b949e;font-size:10px;">'+(d.fonte_zonas||'')+'</p>'
+   +'<p style="color:#8b949e;font-size:11px;">'+(d.principio||'')+'</p>';
+  box.innerHTML=h;
+ });
+}
+
 mxSessoes();
+ivSessoes();
+ivGlossario();
 window.addEventListener('resize', function(){ mxDraw(); });
 """
 

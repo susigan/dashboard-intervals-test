@@ -1981,6 +1981,111 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/debug_bp/<path:activity_id>')
+    def api_moxy_debug_bp(activity_id):
+        """Como cada BP foi calculado, passo a passo.
+
+        Existe para responder a "porque é que este número saiu assim" sem
+        ter de adivinhar a partir do ecrã. Mostra o degrau de onde cada
+        valor veio e a FC nesse degrau — que é onde os erros aparecem.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            dd = api_moxy_dados(aid)
+            d = (dd[0].get_json() if isinstance(dd, tuple)
+                 else dd.get_json()) or {}
+            ll = api_moxy_limiares(aid)
+            lim = (ll[0].get_json() if isinstance(ll, tuple)
+                   else ll.get_json()) or {}
+
+            t = d.get('tempo') or []
+            canais = d.get('canais') or {}
+            hr = canais.get('heartrate') or []
+            wt = canais.get('watts') or []
+            sm = canais.get('smo2') or []
+            blocos = ((d.get('blocos') or {}).get('blocos')) or []
+
+            def _stat(serie, a, b):
+                vs = [serie[i] for i in range(min(len(t), len(serie)))
+                      if a <= t[i] <= b and serie[i] is not None]
+                if not vs:
+                    return None
+                return {'n': len(vs), 'media': round(sum(vs) / len(vs), 1),
+                        'min': round(min(vs), 1), 'max': round(max(vs), 1)}
+
+            # cada bloco, ON e OFF, com o que lá está
+            detalhe = []
+            for b in blocos:
+                detalhe.append({
+                    'tipo': 'TRABALHO' if b.get('on') else 'recuperação',
+                    'de_s': round(b['t0']), 'ate_s': round(b['t1']),
+                    'duracao_s': round(b['t1'] - b['t0']),
+                    'watts_do_lap': b.get('watts_medio'),
+                    'watts_do_stream': _stat(wt, b['t0'], b['t1']),
+                    'fc': _stat(hr, b['t0'], b['t1']),
+                    'smo2': _stat(sm, b['t0'], b['t1']),
+                })
+
+            # de onde vem cada BP
+            bls = lim.get('bp_moxy_sem_restricao') or {}
+            bmx = lim.get('bp_moxy') or {}
+            origem = []
+            for nome, fonte in (('script Intervals.icu', bls),
+                                ('2 degraus por troço', bmx)):
+                if fonte.get('bp1_w') is None:
+                    continue
+                o = {'metodo': nome,
+                     'bp1_w': fonte.get('bp1_w'),
+                     'bp1_bpm': fonte.get('bp1_bpm'),
+                     'bp2_w': fonte.get('bp2_w'),
+                     'bp2_bpm': fonte.get('bp2_bpm'),
+                     'pontos_usados': fonte.get('pontos'),
+                     'fc_descartada': fonte.get('fc_descartada')}
+                # a FC do BP é INTERPOLADA entre degraus: mostrar quais
+                for chave, w in (('bp1', fonte.get('bp1_w')),
+                                 ('bp2', fonte.get('bp2_w'))):
+                    if w is None:
+                        continue
+                    ps = sorted((p for p in (fonte.get('pontos') or [])
+                                 if p.get('hr') is not None),
+                                key=lambda p: p['watts'])
+                    ab = [p for p in ps if p['watts'] <= w]
+                    ac = [p for p in ps if p['watts'] > w]
+                    o[f'{chave}_fc_interpolada_entre'] = {
+                        'abaixo': ab[-1] if ab else None,
+                        'acima': ac[0] if ac else None,
+                    }
+                origem.append(o)
+
+            return jsonify({
+                'status': 'ok', 'activity_id': aid,
+                'modalidade': lim.get('modalidade'),
+                'fc_valida': d.get('fc_valida'),
+                'canais_invalidos': d.get('canais_invalidos'),
+                'detalhe_invalidos': d.get('detalhe_invalidos'),
+                'congelados': d.get('congelados'),
+                'artefactos': d.get('artefactos'),
+                'corte_usado': [lim.get('corte_inicio_s'),
+                                lim.get('corte_fim_s')],
+                'blocos': detalhe,
+                'origem_dos_breakpoints': origem,
+                'blocos_usados_no_ajuste': lim.get('blocos_usados'),
+                'fc_global': _stat(hr, t[0] if t else 0,
+                                   t[-1] if t else 0),
+                'watts_global': _stat(wt, t[0] if t else 0,
+                                      t[-1] if t else 0),
+                'como_ler': (
+                    'watts_do_lap vem da Intervals.icu; watts_do_stream é '
+                    'calculado dos dados em bruto. Se diferirem muito num '
+                    'bloco de recuperação, o lap está a incluir tempo de '
+                    'transição. A FC do BP é INTERPOLADA entre os dois '
+                    'degraus vizinhos — se um deles tiver FC errada, o BP '
+                    'herda-a'),
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/corte', methods=['POST'])
     def api_moxy_corte():
         """Grava o intervalo a analisar de uma sessao.

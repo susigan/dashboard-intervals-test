@@ -71,6 +71,27 @@ function rcSintese(){
  const box=document.getElementById('rcSintese');
  const s=(RC||{}).sintese||{};
  if(!s.ok){ box.innerHTML='<p class="sub">'+(s.motivo||'')+'</p>'; return; }
+ // sem medições recentes: dizer isso, e não o LOW por omissão da máquina
+ // de estados — que é indistinguível de um LOW medido
+ if(s.sem_dados){
+  const q=s.qualidade||{};
+  box.innerHTML='<div style="border:1px solid #F0883E;border-radius:6px;'
+   +'padding:10px 12px;margin:8px 0;">'
+   +'<b style="font-size:18px;color:#F0883E;">Sem prescrição para hoje</b>'
+   +'<br><span style="font-size:12px;">'+s.leitura+'</span>'
+   +'<br><span class="sub" style="font-size:11px;">'
+   +q.n_recentes+' de '+q.janela+' dias com medição'
+   +(q.dias_desde_ultima!=null
+     ? ' · última há '+q.dias_desde_ultima+' dia(s)':'')+'</span>'
+   +(s.motivos||[]).map(function(m){
+     return '<p style="color:#F0883E;font-size:11px;margin:6px 0 0 0;">⚠ '
+      +m+'</p>'; }).join('')
+   +'<p style="font-size:11px;margin:6px 0 0 0;"><b>'+(s.o_que_fazer||'')
+   +'</b></p>'
+   +'<p class="sub" style="font-size:10px;margin-top:6px;">'+s.nota+'</p>'
+   +'</div>';
+  return;
+ }
  const cor = s.estado==='carga' ? '#3FB950'
            : s.estado==='moderado' ? '#F0883E' : '#F85149';
  const rot = s.estado==='carga' ? 'Treinar forte'
@@ -187,6 +208,29 @@ function rcGrafico(){
  const X=i=>PL+w*i/(n-1);
  const Y=v=>PT+h-(v-mn)/(mx-mn)*h;
 
+ // Estados como FUNDO, e não como tira: a prescrição é o contexto em
+ // que a linha se lê, não mais um dado ao lado dela. Pintar por trás
+ // deixa ver o LnRMSSD contra a banda sem competir por espaço.
+ const jpF=((RC||{}).javaloyes||{}).prescricao||[];
+ if(jpF.length===n){
+  const larguraCol=w/(n-1);
+  let ini=0;
+  for(let i=1;i<=n;i++){
+   // pintar blocos contíguos do mesmo estado, não coluna a coluna:
+   // 200 rectângulos com bordas produziam faixas visíveis
+   if(i<n && jpF[i]===jpF[ini]) continue;
+   const p=jpF[ini];
+   if(p){
+    const c = p==='HIGH'?'rgba(63,185,80,'
+            : p==='REST'?'rgba(248,81,73,' : 'rgba(139,148,158,';
+    g.fillStyle=c+(p==='LOW'?'0.06':'0.13')+')';
+    g.fillRect(X(ini)-larguraCol/2, PT,
+               (i-ini)*larguraCol, h);
+   }
+   ini=i;
+  }
+ }
+
  // grelha
  g.strokeStyle='#21262d'; g.lineWidth=1;
  for(let i=0;i<=4;i++){ const y=PT+h*i/4;
@@ -218,18 +262,6 @@ function rcGrafico(){
   st?g.lineTo(X(i),Y(v)):(g.moveTo(X(i),Y(v)),st=true); }
  g.stroke();
 
- // estados do Javaloyes como tira no fundo
- const jp=((RC||{}).javaloyes||{}).prescricao||[];
- if(jp.length===n){
-  for(let i=0;i<n;i++){
-   const p=jp[i]; if(!p) continue;
-   const c = p==='HIGH'?'#3FB950':(p==='REST'?'#F85149':'#8b949e');
-   g.fillStyle=c; g.globalAlpha=0.45;
-   g.fillRect(X(i)-0.5, PT+h-5, Math.max(1,w/n), 5);
-  }
-  g.globalAlpha=1;
- }
-
  // eixos
  g.fillStyle='#8b949e'; g.font='10px sans-serif'; g.textAlign='right';
  for(let i=0;i<=4;i++){ const v=mx-(mx-mn)*i/4;
@@ -243,55 +275,173 @@ function rcGrafico(){
   '<p class="sub" style="font-size:11px;">'
   +'<span style="color:#c9d1d9;">━</span> LnRMSSD 7d &nbsp; '
   +'<span style="color:#5DADE2;">▭</span> banda SWC (média₂₈ ± 0,5·SD) &nbsp; '
-  +'tira no fundo: <span style="color:#3FB950;">■</span> HIGH '
+  +'<br>fundo: <span style="color:#3FB950;">■</span> HIGH '
   +'<span style="color:#8b949e;">■</span> LOW '
   +'<span style="color:#F85149;">■</span> REST'
   +'<br>Uma só figura para a família do LnRMSSD: quatro gráficos '
   +'separados dariam a impressão de quatro fontes independentes.</p>';
 }
 
-// gráfico pequeno, para dentro dos dropdowns
+// ── gráficos dos modelos ─────────────────────────────────────────────
+//
+// O rcDesenhaMini genérico desenhava linhas sem escala nem referência:
+// três séries com significados diferentes no mesmo eixo, e nada a dizer
+// o que é "alto". Cada modelo passa a ter o seu, com as marcas que
+// tornam o valor legível.
+
 function rcMini(id, series, altura){
  return '<div class="chartbox" style="margin-top:6px;">'
-  +'<canvas id="'+id+'" height="'+(altura||140)+'"></canvas></div>';
+  +'<canvas id="'+id+'" height="'+(altura||150)+'"></canvas></div>';
 }
 
-function rcDesenhaMini(id, series){
+function _rcCtx(id, alt){
  const cv=document.getElementById(id);
- if(!cv) return;
+ if(!cv) return null;
  const dpr=window.devicePixelRatio||1;
- const larg=cv.parentNode.clientWidth||760;
- const alt=cv.height/dpr||140;
+ const larg=(cv.parentNode&&cv.parentNode.clientWidth)||760;
+ if(larg<50) return null;                    // dropdown fechado
  cv.width=larg*dpr; cv.height=alt*dpr;
  cv.style.width='100%'; cv.style.height=alt+'px';
  const g=cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
- const W=larg, H=alt, PL=44, PR=10, PT=8, PB=18;
- const w=W-PL-PR, h=H-PT-PB;
- g.clearRect(0,0,W,H);
- const n=(RC.datas||[]).length;
- let mn=null,mx=null;
- series.forEach(function(s2){ (s2.v||[]).forEach(function(v){
-  if(v==null) return; if(mn===null||v<mn) mn=v; if(mx===null||v>mx) mx=v; }); });
- if(mn===null) return;
- if(mx===mn) mx=mn+1;
- const marg=(mx-mn)*0.1; mn-=marg; mx+=marg;
- const X=i=>PL+w*i/(n-1), Y=v=>PT+h-(v-mn)/(mx-mn)*h;
+ g.clearRect(0,0,larg,alt);
+ return {g:g, W:larg, H:alt};
+}
+
+function _rcEixoX(g, X, n, PT, h, H){
+ const datas=RC.datas||[];
+ g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='center';
+ for(let i=0;i<=4;i++){ const k=Math.round((n-1)*i/4);
+  g.fillText((datas[k]||'').slice(5), X(k), H-6); }
+ g.textAlign='left';
+}
+
+// ── β: escala fixa 0–100, com as faixas que dão sentido ao número ────
+function rcGraficoBeta(){
+ const o=_rcCtx('rcBeta',150); if(!o) return;
+ const b=(RC||{}).beta||{}; if(!b.ok) return;
+ const g=o.g, W=o.W, H=o.H, PL=40, PR=54, PT=10, PB=18;
+ const w=W-PL-PR, h=H-PT-PB, n=(RC.datas||[]).length;
+ const X=i=>PL+w*i/(n-1);
+ // β é um percentil: 0–100 SEMPRE. Escalar ao min-max faria 48 e 52
+ // parecerem extremos opostos.
+ const Y=v=>PT+h-(v/100)*h;
+
+ // faixas: ≥60 fresco, ≤40 possível fadiga
+ g.fillStyle='rgba(63,185,80,0.10)';  g.fillRect(PL,Y(100),w,Y(60)-Y(100));
+ g.fillStyle='rgba(248,81,73,0.10)';  g.fillRect(PL,Y(40),w,Y(0)-Y(40));
  g.strokeStyle='#21262d'; g.lineWidth=1;
- for(let i=0;i<=2;i++){ const y=PT+h*i/2;
-  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke(); }
- series.forEach(function(s2){
-  g.strokeStyle=s2.cor||'#c9d1d9'; g.lineWidth=s2.larg||1.6;
-  if(s2.tracejado) g.setLineDash([4,3]);
-  g.beginPath(); let st=false;
-  for(let i=0;i<n;i++){ const v=(s2.v||[])[i];
-   if(v==null){ st=false; continue; }
-   st?g.lineTo(X(i),Y(v)):(g.moveTo(X(i),Y(v)),st=true); }
-  g.stroke(); g.setLineDash([]);
+ [0,25,50,75,100].forEach(function(v){
+  g.beginPath(); g.moveTo(PL,Y(v)); g.lineTo(PL+w,Y(v)); g.stroke(); });
+ // a mediana pessoal
+ g.strokeStyle='#8b949e'; g.setLineDash([3,3]);
+ g.beginPath(); g.moveTo(PL,Y(50)); g.lineTo(PL+w,Y(50)); g.stroke();
+ g.setLineDash([]);
+
+ g.strokeStyle='#5DADE2'; g.lineWidth=2; g.beginPath(); let st=false;
+ for(let i=0;i<n;i++){ const v=(b.beta||[])[i];
+  if(v==null){ st=false; continue; }
+  st?g.lineTo(X(i),Y(v)):(g.moveTo(X(i),Y(v)),st=true); }
+ g.stroke();
+ // ponto de hoje
+ for(let i=n-1;i>=0;i--){ const v=(b.beta||[])[i];
+  if(v==null) continue;
+  g.fillStyle='#5DADE2'; g.beginPath(); g.arc(X(i),Y(v),3.5,0,6.284); g.fill();
+  break; }
+
+ g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='right';
+ [0,25,50,75,100].forEach(function(v){ g.fillText(v, PL-5, Y(v)+3); });
+ g.textAlign='left'; g.font='9px sans-serif';
+ g.fillStyle='#3FB950'; g.fillText('fresco', PL+w+6, Y(80));
+ g.fillStyle='#8b949e'; g.fillText('mediana', PL+w+6, Y(50)+3);
+ g.fillStyle='#F85149'; g.fillText('fadiga?', PL+w+6, Y(20));
+ _rcEixoX(g, X, n, PT, h, H);
+}
+
+// ── β agudo e crónico: barras em torno de zero ───────────────────────
+// São diferenças, não níveis. Uma linha não mostra o sinal; barras a
+// partir do zero mostram.
+function rcGraficoBetaTend(){
+ const o=_rcCtx('rcBetaTend',120); if(!o) return;
+ const b=(RC||{}).beta||{}; if(!b.ok) return;
+ const g=o.g, W=o.W, H=o.H, PL=40, PR=54, PT=10, PB=18;
+ const w=W-PL-PR, h=H-PT-PB, n=(RC.datas||[]).length;
+ let mx=0;
+ [b.agudo,b.cronico].forEach(function(s2){ (s2||[]).forEach(function(v){
+  if(v!=null && Math.abs(v)>mx) mx=Math.abs(v); }); });
+ if(mx<3) mx=3;
+ const X=i=>PL+w*i/(n-1);
+ const Y=v=>PT+h/2-(v/mx)*(h/2);
+ g.strokeStyle='#30363d'; g.lineWidth=1;
+ g.beginPath(); g.moveTo(PL,Y(0)); g.lineTo(PL+w,Y(0)); g.stroke();
+ const lc=w/n;
+ [[b.agudo,'#3FB950',0],[b.cronico,'#F0883E',1]].forEach(function(par){
+  g.fillStyle=par[1]; g.globalAlpha=0.55;
+  for(let i=0;i<n;i++){ const v=(par[0]||[])[i];
+   if(v==null) continue;
+   const y=Y(v), y0=Y(0);
+   g.fillRect(X(i)-lc/2+par[2]*lc/2, Math.min(y,y0),
+              Math.max(1,lc/2), Math.abs(y-y0));
+  }
+  g.globalAlpha=1;
  });
  g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='right';
- for(let i=0;i<=2;i++){ const v=mx-(mx-mn)*i/2;
-  g.fillText(v.toFixed(2), PL-5, PT+h*i/2+3); }
+ [mx,0,-mx].forEach(function(v){
+  g.fillText(v.toFixed(0), PL-5, Y(v)+3); });
  g.textAlign='left';
+ g.fillStyle='#3FB950'; g.fillText('agudo 3d−7d', PL+w+6, PT+14);
+ g.fillStyle='#F0883E'; g.fillText('crónico 7d−28d', PL+w+6, PT+26);
+ _rcEixoX(g, X, n, PT, h, H);
+}
+
+// ── PSlope: declive com as SEIS zonas pintadas ───────────────────────
+// A zona é o que importa, e o número do declive sozinho não a mostra.
+function rcGraficoSlope(){
+ const o=_rcCtx('rcSlope',170); if(!o) return;
+ const p=(RC||{}).pslope||{}; if(!p.ok) return;
+ const g=o.g, W=o.W, H=o.H, PL=52, PR=96, PT=10, PB=18;
+ const w=W-PL-PR, h=H-PT-PB, n=(RC.datas||[]).length;
+ const m=p.media, sd=p.sd;
+ const lim=[3,1,0.5,-0.5,-1,-2,-3].map(z=>m+z*sd);
+ const mn=lim[lim.length-1], mx=lim[0];
+ const X=i=>PL+w*i/(n-1);
+ const Y=v=>PT+h-(v-mn)/(mx-mn)*h;
+
+ const zonas=[
+  ['Supercompensação','rgba(63,185,80,0.20)',1,3],
+  ['Recuperação','rgba(63,185,80,0.12)',0.5,1],
+  ['Estável','rgba(139,148,158,0.08)',-0.5,0.5],
+  ['Declínio leve','rgba(240,136,62,0.10)',-1,-0.5],
+  ['Fadiga','rgba(248,81,73,0.14)',-2,-1],
+  ['NFOR crítico','rgba(248,81,73,0.26)',-3,-2]];
+ zonas.forEach(function(z){
+  const y1=Y(m+z[3]*sd), y2=Y(m+z[2]*sd);
+  g.fillStyle=z[1]; g.fillRect(PL,y1,w,y2-y1);
+  g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='left';
+  if(y2-y1>11) g.fillText(z[0], PL+w+6, (y1+y2)/2+3);
+ });
+ g.strokeStyle='#30363d'; g.setLineDash([3,3]);
+ g.beginPath(); g.moveTo(PL,Y(m)); g.lineTo(PL+w,Y(m)); g.stroke();
+ g.setLineDash([]);
+
+ g.strokeStyle='#A371F7'; g.lineWidth=2; g.beginPath(); let st=false;
+ for(let i=0;i<n;i++){ const v=(p.declive||[])[i];
+  if(v==null){ st=false; continue; }
+  const vv=Math.max(mn,Math.min(mx,v));
+  st?g.lineTo(X(i),Y(vv)):(g.moveTo(X(i),Y(vv)),st=true); }
+ g.stroke();
+ for(let i=n-1;i>=0;i--){ const v=(p.declive||[])[i];
+  if(v==null) continue;
+  g.fillStyle='#A371F7'; g.beginPath();
+  g.arc(X(i),Y(Math.max(mn,Math.min(mx,v))),3.5,0,6.284); g.fill(); break; }
+
+ g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='right';
+ [mx,m,mn].forEach(function(v){ g.fillText(v.toFixed(3), PL-5, Y(v)+3); });
+ g.textAlign='left';
+ _rcEixoX(g, X, n, PT, h, H);
+}
+
+function rcRedesenhar(){
+ rcGraficoBeta(); rcGraficoBetaTend(); rcGraficoSlope();
 }
 
 // ── um dropdown por modelo ───────────────────────────────────────────
@@ -336,7 +486,10 @@ function rcModelos(){
    +'<tr><td style="padding-right:16px;">crónico (7d−28d)</td><td>'
    +(m.cronico_hoje!=null?m.cronico_hoje.toFixed(1):'—')+'</td></tr>'
    +'</table>'
-   +rcMini('rcBeta', null, 130)
+   +rcMini('rcBeta', null, 150)
+   +'<p class="sub" style="font-size:11px;">β de cada dia: percentil do '
+   +'LnRMSSD na distribuição dos 28 dias anteriores.</p>'
+   +rcMini('rcBetaTend', null, 120)
    +'<p class="sub" style="font-size:11px;margin-top:6px;">'+m.nota+'</p>';
  });
 
@@ -344,7 +497,7 @@ function rcModelos(){
   return '<p class="sub">'+m.metodo+'</p>'
    +'<p>Declive hoje: <b>'+m.declive_actual+'</b> '
    +'<span class="sub">(média '+m.media+' · SD '+m.sd+')</span></p>'
-   +rcMini('rcSlope', null, 130)
+   +rcMini('rcSlope', null, 170)
    +'<table style="border-collapse:collapse;font-size:11px;margin-top:8px;">'
    +'<tr class="sub" style="text-align:left;">'
    +'<th style="padding-right:14px;">Zona</th>'
@@ -378,25 +531,12 @@ function rcModelos(){
  });
  box.innerHTML=h;
  // os canvas só existem depois do innerHTML; desenhar a seguir
- const b=(RC||{}).beta||{};
- if(b.ok) rcDesenhaMini('rcBeta', [
-   {v:b.beta, cor:'#5DADE2', larg:1.8},
-   {v:b.agudo, cor:'#3FB950', larg:1.2},
-   {v:b.cronico, cor:'#F0883E', larg:1.2}]);
- const p2=(RC||{}).pslope||{};
- if(p2.ok) rcDesenhaMini('rcSlope', [{v:p2.declive, cor:'#A371F7', larg:1.8}]);
- // e outra vez quando um dropdown abre, porque um canvas escondido tem
- // largura zero e sairia em branco
+ rcRedesenhar();
+ // e outra vez quando um dropdown abre: um canvas escondido tem largura
+ // zero e sairia em branco
  Array.prototype.forEach.call(
   document.querySelectorAll('#rcModelos details'), function(d){
-   d.addEventListener('toggle', function(){
-    if(!d.open) return;
-    if(b.ok) rcDesenhaMini('rcBeta', [
-      {v:b.beta, cor:'#5DADE2', larg:1.8},
-      {v:b.agudo, cor:'#3FB950', larg:1.2},
-      {v:b.cronico, cor:'#F0883E', larg:1.2}]);
-    if(p2.ok) rcDesenhaMini('rcSlope', [{v:p2.declive, cor:'#A371F7', larg:1.8}]);
-   });
+   d.addEventListener('toggle', function(){ if(d.open) rcRedesenhar(); });
   });
 }
 

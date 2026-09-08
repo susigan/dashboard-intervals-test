@@ -2203,19 +2203,24 @@ function mxDraw(){
   }
   if(pts.length) wsers.push({si:si, pts:pts});
  });
- let wmaxG=0;
+ // Normalizar do MINIMO ao MAXIMO da série, como a tab Atividades faz.
+ //
+ // Antes dividia-se pelo máximo absoluto e usava-se 42% da altura:
+ //   y = PT + h - (v/wmax) * h * 0.42
+ // Com degraus de 117 a 251 W, isso dava 86 px de amplitude num gráfico
+ // de 380 — os degraus ficavam esmagados no fundo e pareciam planos.
+ // De min a max são os 380 px todos, e a escada vê-se.
+ let wmin=null, wmax=null;
  wsers.forEach(function(ws){ ws.pts.forEach(function(p){
-  if(p[1]>wmaxG) wmaxG=p[1]; }); });
- if(wmaxG>0){
+  if(wmin===null||p[1]<wmin) wmin=p[1];
+  if(wmax===null||p[1]>wmax) wmax=p[1]; }); });
+ if(wmax!==null && wmax>wmin){
+  // ocupa a metade de baixo, para não tapar os canais NIRS
+  const hW = h*0.45, topoW = PT + h - hW;
   wsers.forEach(function(ws){
    const cor = ids.length>1 ? mxCorSessao(ws.si) : '#8b949e';
-   // Reduzir a UM ponto por pixel, com a MÉDIA de cada coluna.
-   //
-   // A potência é ruidosa segundo a segundo. Desenhar 1800 pontos numa
-   // largura de ~800 px punha vários valores no mesmo pixel, e o traço
-   // saltava entre eles — a linha virava uma mancha e os degraus não se
-   // distinguiam. Na tab Atividades isto não acontece porque lá a série
-   // já vem reduzida.
+   // um ponto por pixel, com a média da coluna: 1800 pontos em ~800 px
+   // punham vários valores no mesmo sítio e o traço virava mancha
    const cols={};
    ws.pts.forEach(function(p){
     const px=Math.round(X(p[0]));
@@ -2223,18 +2228,24 @@ function mxDraw(){
     cols[px][0]+=p[1]; cols[px][1]++;
    });
    const xs=Object.keys(cols).map(Number).sort(function(a,b){return a-b;});
-   g.strokeStyle=cor; g.globalAlpha=0.55; g.lineWidth=1.2;
+   g.strokeStyle=cor; g.globalAlpha=0.6; g.lineWidth=1.3;
    g.beginPath();
    xs.forEach(function(px,n){
     const media=cols[px][0]/cols[px][1];
-    const y=PT+h-(media/wmaxG)*h*0.42;
+    const y = topoW + hW - (media-wmin)/(wmax-wmin)*hW;
     n?g.lineTo(px,y):g.moveTo(px,y);
    });
    g.stroke(); g.globalAlpha=1;
   });
+  // escala à direita, como nos outros canais
   g.fillStyle='#6e7681'; g.font='10px sans-serif'; g.textAlign='left';
-  g.fillText('watts em fundo (0–'+Math.round(wmaxG)+')', PL+4, PT+h-4);
+  for(let i=0;i<=2;i++){
+   const val = wmax-(wmax-wmin)*i/2;
+   g.fillText(Math.round(val)+'W', PL+w+6, topoW+hW*i/2+3);
+  }
+  g.fillText('watts', PL+4, topoW+hW-4);
  }
+
 
  // escala partilhada pelos NIRS; contexto normaliza-se por canal
  const nirs=series.filter(s2=>s2.nirs);

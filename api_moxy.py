@@ -75,25 +75,31 @@ def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
     """
     p1, p2 = [], []
 
-    def _add(lista, metodo, w, rota, bpm=None):
+    def _add(lista, metodo, w, rota, bpm=None, fc_origem=None):
         if w is not None:
             lista.append({'metodo': metodo, 'watts': round(float(w), 1),
-                          'bpm': bpm, 'rota': rota})
+                          'bpm': bpm, 'rota': rota,
+                          'fc_origem': fc_origem})
 
     # ── primeiro limiar: LT1 / VT1 / FatMax ──────────────────────────
     if (lt1_reox or {}).get('ok'):
         _add(p1, 'Transição da reoxigenação (Yogev)',
              lt1_reox['lt1_estimado'],
-             'onde o SmO2 deixa de subir dentro do bloco')
+             'onde o SmO2 deixa de subir dentro do bloco',
+             (lt1_reox.get('fc') or {}).get('bpm'),
+             (lt1_reox.get('fc') or {}).get('nota'))
     if perfil.get('ok') and perfil.get('bp1_watts') is not None:
         _add(p1, 'Topo da parábola (SmO2max)', perfil['bp1_watts'],
              'média do último minuto por degrau')
     if bp_mx.get('bp1_w') is not None:
         _add(p1, 'BP1 da curva SmO2 × potência', bp_mx['bp1_w'],
-             'regressão por troços, 2 degraus por troço', bp_mx.get('bp1_bpm'))
+             'regressão por troços, 2 degraus por troço',
+             bp_mx.get('bp1_bpm'),
+             (bp_mx.get('bp1_fc_origem') or {}).get('nota'))
     if bp_livre.get('bp1_w') is not None:
         _add(p1, 'BP1, critério do script Intervals.icu', bp_livre['bp1_w'],
-             'regressão por troços, sem mínimo', bp_livre.get('bp1_bpm'))
+             'regressão por troços, sem mínimo', bp_livre.get('bp1_bpm'),
+             (bp_livre.get('bp1_fc_origem') or {}).get('nota'))
     # o breakpoint do deoxy-Hb aproxima o FatMax, que fica no dominio
     # moderado -- entra no PRIMEIRO limiar
     if (bp_hhb or {}).get('bp1_w') is not None:
@@ -106,16 +112,21 @@ def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
     # ── segundo limiar: LT2 / VT2 / RCP / MLSS ───────────────────────
     if mlss.get('ok'):
         _add(p2, 'MLSS por padrão de dessaturação', mlss['mlss_estimado'],
-             'forma dentro de cada bloco, no tempo')
+             'forma dentro de cada bloco, no tempo',
+             (mlss.get('fc') or {}).get('bpm'),
+             (mlss.get('fc') or {}).get('nota'))
     if bp_mx.get('bp2_w') is not None:
         _add(p2, 'BP2 da curva SmO2 × potência', bp_mx['bp2_w'],
              'regressão por troços, 2 degraus por troço', bp_mx.get('bp2_bpm'))
     if bp_livre.get('bp2_w') is not None:
         _add(p2, 'BP2, critério do script Intervals.icu', bp_livre['bp2_w'],
-             'regressão por troços, sem mínimo', bp_livre.get('bp2_bpm'))
+             'regressão por troços, sem mínimo', bp_livre.get('bp2_bpm'),
+             (bp_livre.get('bp2_fc_origem') or {}).get('nota'))
     if bp_taxa.get('ok'):
         _add(p2, 'Quebra na taxa de dessaturação', bp_taxa['bp_watts'],
-             'velocidade de queda por degrau')
+             'velocidade de queda por degrau',
+             (bp_taxa.get('fc') or {}).get('bpm'),
+             (bp_taxa.get('fc') or {}).get('nota'))
 
     def _resumo(lista, nome):
         if not lista:
@@ -1203,10 +1214,23 @@ def registar(app):
                        fim if fim is not None else (t[-1] if t else 0)),
                 laps=d.get('laps'))
 
+            # FC média do degrau para os métodos que só olham ao SmO2.
+            # Sem isto ficavam com "— bpm" e parecia falta de medição.
+            _hrs = None if 'heartrate' in set(d.get('canais_invalidos') or []) \
+                else canais.get('heartrate')
+            for _obj, _chave in ((lt1_reox, 'lt1_estimado'),
+                                 (mlss, 'mlss_estimado')):
+                if isinstance(_obj, dict) and _obj.get('ok'):
+                    _obj['fc'] = nbk.fc_media_do_bloco(
+                        t, _hrs, blocos, _obj.get(_chave))
+
             # Metodo canonico do Arnold para este protocolo: media do
             # ultimo minuto de cada degrau, e classificacao do perfil.
             perfil = nbk.perfil_de_resposta(t, smo2, blocos)
             bp_taxa = nbk.bp_por_taxa(t, smo2, blocos)
+            if bp_taxa.get('ok'):
+                bp_taxa['fc'] = nbk.fc_media_do_bloco(
+                    t, _hrs, blocos, bp_taxa.get('bp_watts'))
             # Metodo do script oficial da Moxy, com o teste F acrescentado
             # se a FC estiver invalida, nao se passa o canal: as
             # estimativas em bpm sairiam de dados congelados

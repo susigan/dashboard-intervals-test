@@ -145,6 +145,11 @@ def registar(app):
                 pesos=res['pesos_ajustados']['pesos'],
                 qualidade=res['qualidade'])
             res['datas'] = [d['data'] for d in seq]
+            # o LnRMSSD DIÁRIO: o gráfico do SWC precisa dele para se ver
+            # a dispersão de que a banda foi feita. Só a média de 7 dias
+            # esconde os dias que a produziram
+            res['lnrmssd'] = [round(v, 4) if v is not None else None
+                              for v in ln]
             return jsonify(res)
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

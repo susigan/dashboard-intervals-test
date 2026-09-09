@@ -123,10 +123,22 @@ def preparar(dias):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# BASELINE E SWC (Altini / Plews)
+# PLEWS e ALTINI — DOIS métodos, não um
 #
-# LnRMSSD, média móvel de 7 dias, e a banda de mudança minimamente
-# relevante: média₂₈ ± 0.5 × SD₂₈.
+# Estavam fundidos numa função só chamada "Altini/Plews", o que escondia
+# que fazem perguntas diferentes:
+#
+#   PLEWS   compara a MÉDIA DE 7 DIAS com a banda de 28 dias.
+#           Saídas: dentro / acima / abaixo.
+#           Pergunta: "a minha tendência mudou?"
+#
+#   ALTINI  compara o valor de HOJE com a baseline de 7 dias.
+#           Saídas: normal / supressão / supressão multi-dia / pico.
+#           Pergunta: "hoje está fora do normal?"
+#
+# Na prática: o Plews só muda quando a tendência semanal se desloca; o
+# Altini reage a um único dia mau. Mostrar só o primeiro com o nome dos
+# dois dava a entender que concordavam sempre.
 # ══════════════════════════════════════════════════════════════════════════
 
 def baseline_swc(ln, janela_base=7, janela_swc=28, k_swc=0.5):
@@ -150,7 +162,82 @@ def baseline_swc(ln, janela_base=7, janela_swc=28, k_swc=0.5):
     return {'ln7': ln7, 'media28': m28, 'sd28': s28,
             'swc_sup': sup, 'swc_inf': inf, 'estado': estado,
             'k_swc': k_swc,
-            'metodo': 'Altini/Plews — LnRMSSD 7d vs SWC de 28d (±0.5 SD)'}
+            'metodo': ('Plews — média de 7 dias do LnRMSSD contra a banda '
+                       'de 28 dias (±0.5 SD). Responde a "a tendência '
+                       'mudou?", e por isso só muda quando a semana muda')}
+
+
+def altini(ln, janela_base=7, k=1.0, dias_multi=2):
+    """O valor de HOJE contra a baseline de 7 dias.
+
+    Altini publica isto como o critério prático da app HRV4Training: o
+    dia é "normal" se cair dentro de baseline ± k·SD, e a supressão só
+    conta como sinal quando se repete.
+
+    Um dia isolado abaixo acontece por dormir mal, por álcool, por medir
+    mais tarde. Dois ou mais seguidos é outra coisa — por isso a saída
+    distingue 'supressão' de 'supressão multi-dia'.
+    """
+    n = len(ln)
+    base = [None] * n
+    sd = [None] * n
+    for i in range(n):
+        # baseline dos dias ANTERIORES: o dia não entra no seu limiar
+        jan = [v for v in ln[max(0, i - janela_base):i] if v is not None]
+        if len(jan) >= 4:
+            base[i] = _media(jan)
+            sd[i] = _sd(jan)
+
+    estados, seguidos = [], 0
+    for i in range(n):
+        v, b, s = ln[i], base[i], sd[i]
+        if v is None or b is None or not s:
+            estados.append(None)
+            continue
+        if v < b - k * s:
+            seguidos += 1
+            estados.append('supressão multi-dia' if seguidos >= dias_multi
+                           else 'supressão')
+        elif v > b + k * s:
+            seguidos = 0
+            estados.append('pico')
+        else:
+            seguidos = 0
+            estados.append('normal')
+
+    hoje = next((e for e in reversed(estados) if e), None)
+    reais = sum(1 for e in estados if e)
+    if reais < 7:
+        return {'ok': False,
+                'motivo': f'só {reais} dias classificáveis; são precisos 7'}
+    return {
+        'ok': True, 'estado': estados, 'baseline': base, 'sd': sd,
+        'sup': [(b + k * x) if b is not None and x else None
+                for b, x in zip(base, sd)],
+        'inf': [(b - k * x) if b is not None and x else None
+                for b, x in zip(base, sd)],
+        'estado_hoje': hoje,
+        'dias_seguidos_suprimido': seguidos,
+        'k': k,
+        'metodo': (f'Altini — LnRMSSD de hoje contra a baseline de '
+                   f'{janela_base} dias ±{k}·SD'),
+        'leitura': {
+            'normal': 'o dia está dentro da tua variação habitual',
+            'supressão': ('hoje abaixo do normal. Um dia isolado acontece '
+                          'por dormir mal, álcool ou medir mais tarde'),
+            'supressão multi-dia': (
+                f'{seguidos} dias seguidos abaixo do normal. É a repetição '
+                'que faz disto um sinal, não o valor de um dia'),
+            'pico': ('hoje acima do normal. Pode ser recuperação, mas '
+                     'também aparece depois de dias muito fáceis ou de '
+                     'medições em condições diferentes'),
+        }.get(hoje),
+        'diferenca_do_plews': (
+            'o Plews olha para a média da semana e só muda quando a '
+            'tendência muda; este olha para hoje e reage a um dia. '
+            'Discordarem é normal e informativo — significa que o dia se '
+            'afastou sem a semana ainda ter mexido'),
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -482,6 +569,8 @@ _VOTO = {
     'acima': 1, 'dentro': 0, 'abaixo': -1,
     'Supercompensação': 1, 'Recuperação': 1, 'Estável': 0,
     'Declínio leve': 0, 'Fadiga': -1, 'NFOR crítico': -1,
+    # Altini: a supressão de um dia não é sinal; a repetida é
+    'normal': 0, 'pico': 1, 'supressão': 0, 'supressão multi-dia': -1,
 }
 
 
@@ -505,7 +594,7 @@ def _voto_beta(b, agudo, cronico):
 
 
 def sintetizar(swc=None, jav=None, kiv=None, ps=None, beta=None,
-               wellness=None, pesos=None, qualidade=None):
+               wellness=None, pesos=None, qualidade=None, altini=None):
     """Junta tudo por famílias e devolve uma leitura, não uma ordem."""
     pesos = pesos or PESOS_POR_OMISSAO
 
@@ -533,8 +622,14 @@ def sintetizar(swc=None, jav=None, kiv=None, ps=None, beta=None,
     if swc:
         v = _VOTO.get(swc)
         votos_ln.append(v)
-        detalhe.append({'modelo': 'SWC (Altini/Plews)', 'familia': 'lnrmssd',
+        detalhe.append({'modelo': 'Plews', 'familia': 'lnrmssd',
                         'estado': swc, 'voto': v})
+    if altini:
+        v = _VOTO.get(altini)
+        if v is not None:
+            votos_ln.append(v)
+            detalhe.append({'modelo': 'Altini', 'familia': 'lnrmssd',
+                            'estado': altini, 'voto': v})
     if jav:
         v = _VOTO.get(jav)
         votos_ln.append(v)

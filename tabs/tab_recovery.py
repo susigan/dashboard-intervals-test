@@ -133,17 +133,57 @@ function rcSintese(){
  h+='<table style="width:100%;border-collapse:collapse;font-size:11px;">'
   +'<tr class="sub" style="text-align:left;border-bottom:1px solid #21262d;">'
   +'<th style="padding:5px;">Modelo</th><th>Família</th><th>Hoje</th>'
-  +'<th>Voto</th></tr>'
+  +'<th>Valor</th><th>Voto</th></tr>'
   +(s.detalhe||[]).map(function(d){
     const c = d.voto>0 ? '#3FB950' : (d.voto<0 ? '#F85149' : '#8b949e');
     return '<tr style="border-bottom:1px solid #161b22;">'
      +'<td style="padding:5px;">'+d.modelo+'</td>'
      +'<td class="sub">'+(nomes[d.familia]||d.familia)+'</td>'
      +'<td><b>'+d.estado+'</b></td>'
+     +'<td class="sub">'+rcValorHoje(d.modelo)+'</td>'
      +'<td style="color:'+c+';">'+(d.voto>0?'+':'')+d.voto+'</td></tr>';
    }).join('')
   +'</table>';
  box.innerHTML=h;
+}
+
+// O número que produziu o estado de hoje. Sem isto a tabela diz "abaixo"
+// e não diz abaixo de quê, nem por quanto.
+function rcValorHoje(modelo){
+ const ult=a=>{ for(let i=(a||[]).length-1;i>=0;i--)
+   if(a[i]!=null) return a[i]; return null; };
+ const f=(v,d)=>v==null?'—':(+v).toFixed(d==null?3:d);
+ if(modelo==='Plews'){
+  const m=RC.swc||{};
+  return f(ult(m.ln7))+' vs '+f(ult(m.swc_inf))+'–'+f(ult(m.swc_sup));
+ }
+ if(modelo==='Altini'){
+  const a=RC.altini||{};
+  const v=ult(RC.lnrmssd), b=ult(a.baseline), s=ult(a.sd);
+  return (v!=null&&b!=null&&s)
+    ? f(v)+' vs '+f(b)+' ('+((v-b)/s).toFixed(2)+' SD)' : '—';
+ }
+ if(modelo==='Javaloyes'){
+  const j=RC.javaloyes||{};
+  return f(ult(j.ln7))+' vs '+f(ult(j.swc_inf))+'–'+f(ult(j.swc_sup));
+ }
+ if(modelo==='Kiviniemi'){
+  const k=RC.kiviniemi||{};
+  return f(ult(k.hf))+' vs ref '+f(ult(k.referencia));
+ }
+ if(modelo==='PSlope'){
+  const p=RC.pslope||{};
+  return f(p.declive_actual,4)+' · '+p.dias_na_zona+'d na zona';
+ }
+ if(modelo==='Modelo β'){
+  const b=RC.beta||{};
+  return 'agudo '+f(b.agudo_hoje,1)+' · crónico '+f(b.cronico_hoje,1);
+ }
+ if(modelo==='Wellness'){
+  const wl=RC.wellness||{};
+  return (wl.n_campos||0)+' campos';
+ }
+ return '—';
 }
 
 // ── persistência: fica FORA dos dropdowns ────────────────────────────
@@ -271,6 +311,12 @@ function rcGrafico(){
   g.fillText((datas[k]||'').slice(5), X(k), H-8); }
  g.textAlign='left';
 
+ rcHover('rcCanvas', PL, w, n, [
+  {rot:'LnRMSSD 7d', v:ln7, cor:'#c9d1d9', dec:3},
+  {rot:'banda sup.', v:sup, cor:'#5DADE2', dec:3},
+  {rot:'banda inf.', v:inf, cor:'#5DADE2', dec:3},
+  {rot:'Javaloyes', v:jpF, cor:'#8b949e'}]);
+
  document.getElementById('rcLegenda').innerHTML=
   '<p class="sub" style="font-size:11px;">'
   +'<span style="color:#c9d1d9;">━</span> LnRMSSD 7d &nbsp; '
@@ -292,6 +338,51 @@ function rcGrafico(){
 function rcMini(id, series, altura){
  return '<div class="chartbox" style="margin-top:6px;">'
   +'<canvas id="'+id+'" height="'+(altura||150)+'"></canvas></div>';
+}
+
+// ── hover ────────────────────────────────────────────────────────────
+// Guarda a escala de cada canvas para converter a posição do rato em
+// índice de dia. Sem isto não há forma de saber que dia está debaixo do
+// cursor.
+const RC_ESC={};
+
+function rcHover(id, PL, w, n, linhas){
+ RC_ESC[id]={PL:PL, w:w, n:n, linhas:linhas};
+ const cv=document.getElementById(id);
+ if(!cv || cv.__hv) return;
+ cv.__hv=true;
+ let tip=document.getElementById(id+'Tip');
+ if(!tip){
+  tip=document.createElement('div');
+  tip.id=id+'Tip';
+  tip.style.cssText='display:none;position:absolute;pointer-events:none;'
+   +'background:#161b22;border:1px solid #30363d;border-radius:6px;'
+   +'padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;'
+   +'white-space:nowrap;';
+  (cv.parentNode||document.body).appendChild(tip);
+  if(cv.parentNode) cv.parentNode.style.position='relative';
+ }
+ cv.addEventListener('mousemove', function(ev){
+  const e=RC_ESC[id]; if(!e){ tip.style.display='none'; return; }
+  const r=cv.getBoundingClientRect();
+  const esc=(cv.width/r.width)/(window.devicePixelRatio||1);
+  const mx=(ev.clientX-r.left)*esc;
+  if(mx<e.PL||mx>e.PL+e.w){ tip.style.display='none'; return; }
+  const i=Math.round((mx-e.PL)/e.w*(e.n-1));
+  let h='<b>'+((RC.datas||[])[i]||'')+'</b>';
+  e.linhas.forEach(function(l){
+   const v=(l.v||[])[i];
+   if(v==null) return;
+   const txt = typeof v==='number'
+     ? (l.dec!=null ? v.toFixed(l.dec) : v) : v;
+   h+='<br><span style="color:'+(l.cor||'#8b949e')+';">'+l.rot+'</span> '
+    +txt+(l.un||'');
+  });
+  tip.innerHTML=h; tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+12, r.width-190)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-34)+'px';
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
 }
 
 function _rcCtx(id, alt){
@@ -391,6 +482,9 @@ function rcGraficoBetaTend(){
  g.fillStyle='#3FB950'; g.fillText('agudo 3d−7d', PL+w+6, PT+14);
  g.fillStyle='#F0883E'; g.fillText('crónico 7d−28d', PL+w+6, PT+26);
  _rcEixoX(g, X, n, PT, h, H);
+ rcHover('rcBetaTend', PL, w, n, [
+  {rot:'agudo', v:b.agudo, cor:'#3FB950', dec:1},
+  {rot:'crónico', v:b.cronico, cor:'#F0883E', dec:1}]);
 }
 
 // ── PSlope: declive com as SEIS zonas pintadas ───────────────────────
@@ -438,6 +532,9 @@ function rcGraficoSlope(){
  [mx,m,mn].forEach(function(v){ g.fillText(v.toFixed(3), PL-5, Y(v)+3); });
  g.textAlign='left';
  _rcEixoX(g, X, n, PT, h, H);
+ rcHover('rcSlope', PL, w, n, [
+  {rot:'declive', v:p.declive, cor:'#A371F7', dec:4},
+  {rot:'zona', v:p.zonas, cor:'#8b949e'}]);
 }
 
 // ── SWC: os dias soltos, a média de 7d e a banda ─────────────────────
@@ -474,14 +571,22 @@ function rcGraficoSwc(){
  for(let i=0;i<=3;i++){ const y=PT+h*i/3;
   g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke(); }
 
- // pontos diários, coloridos por posição face à banda
+ // Barras a partir da média de 28 dias, não pontos.
+ //
+ // O ponto mostra onde o dia está; a barra mostra QUANTO se afastou do
+ // centro, que é a pergunta. E a altura acumula visualmente: uma série
+ // de barras curtas para baixo lê-se de relance, uma nuvem de pontos não.
+ const m28=m.media28||[];
+ const lb=Math.max(1, Math.min(6, w/n*0.7));
  for(let i=0;i<n;i++){
   const v=ln[i]; if(v==null) continue;
+  const centro = m28[i]!=null ? m28[i] : (ln7[i]!=null?ln7[i]:v);
   const lo=inf[i], hi=sup[i];
-  let c='#6e7681';
-  if(lo!=null){ c = v>hi ? '#3FB950' : (v<lo ? '#F85149' : '#8b949e'); }
-  g.fillStyle=c; g.globalAlpha=0.55;
-  g.beginPath(); g.arc(X(i), Y(v), 1.8, 0, 6.284); g.fill();
+  let c='#8b949e';
+  if(lo!=null) c = v>hi ? '#3FB950' : (v<lo ? '#F85149' : '#8b949e');
+  const y=Y(v), y0=Y(centro);
+  g.fillStyle=c; g.globalAlpha=0.5;
+  g.fillRect(X(i)-lb/2, Math.min(y,y0), lb, Math.max(1,Math.abs(y-y0)));
  }
  g.globalAlpha=1;
 
@@ -501,10 +606,64 @@ function rcGraficoSwc(){
   g.fillText(v.toFixed(2), PL-5, PT+h*i/3+3); }
  g.textAlign='left';
  _rcEixoX(g, X, n, PT, h, H);
+ rcHover('rcSwc', PL, w, n, [
+  {rot:'LnRMSSD', v:ln, cor:'#c9d1d9', dec:3},
+  {rot:'média 7d', v:ln7, cor:'#c9d1d9', dec:3},
+  {rot:'Plews', v:m.estado, cor:'#5DADE2'},
+  {rot:'Altini', v:((RC||{}).altini||{}).estado, cor:'#A371F7'}]);
+}
+
+// ── Altini: barras do desvio face à baseline, coloridas pelo estado ──
+function rcGraficoAltini(){
+ const o=_rcCtx('rcAltini',160); if(!o) return;
+ const a=(RC||{}).altini||{}; if(!a.ok) return;
+ const g=o.g, W=o.W, H=o.H, PL=48, PR=14, PT=10, PB=18;
+ const w=W-PL-PR, h=H-PT-PB, n=(RC.datas||[]).length;
+ const ln=(RC||{}).lnrmssd||[];
+ // desvio em unidades de SD: é assim que o critério é definido
+ const z=[];
+ for(let i=0;i<n;i++){
+  const v=ln[i], b=(a.baseline||[])[i], s2=(a.sd||[])[i];
+  z.push((v==null||b==null||!s2) ? null : (v-b)/s2);
+ }
+ let mx=1.5;
+ z.forEach(function(v){ if(v!=null && Math.abs(v)>mx) mx=Math.abs(v); });
+ mx=Math.min(mx,4);
+ const X=i=>PL+w*i/(n-1), Y=v=>PT+h/2-(Math.max(-mx,Math.min(mx,v))/mx)*(h/2);
+
+ // faixa do "normal": ±k SD
+ g.fillStyle='rgba(139,148,158,0.10)';
+ g.fillRect(PL, Y(a.k), w, Y(-a.k)-Y(a.k));
+ g.strokeStyle='#30363d'; g.lineWidth=1;
+ g.beginPath(); g.moveTo(PL,Y(0)); g.lineTo(PL+w,Y(0)); g.stroke();
+ g.strokeStyle='#F85149'; g.globalAlpha=0.4; g.setLineDash([4,3]);
+ g.beginPath(); g.moveTo(PL,Y(-a.k)); g.lineTo(PL+w,Y(-a.k)); g.stroke();
+ g.setLineDash([]); g.globalAlpha=1;
+
+ const lb=Math.max(1, Math.min(6, w/n*0.7));
+ for(let i=0;i<n;i++){
+  const v=z[i]; if(v==null) continue;
+  const e=(a.estado||[])[i];
+  const c = e==='pico' ? '#3FB950'
+          : e==='supressão multi-dia' ? '#F85149'
+          : e==='supressão' ? '#F0883E' : '#8b949e';
+  const y=Y(v), y0=Y(0);
+  g.fillStyle=c; g.globalAlpha=0.65;
+  g.fillRect(X(i)-lb/2, Math.min(y,y0), lb, Math.max(1,Math.abs(y-y0)));
+ }
+ g.globalAlpha=1;
+ g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='right';
+ [mx,0,-mx].forEach(function(v){ g.fillText(v.toFixed(1)+'σ', PL-5, Y(v)+3); });
+ g.textAlign='left';
+ _rcEixoX(g, X, n, PT, h, H);
+ rcHover('rcAltini', PL, w, n, [
+  {rot:'desvio', v:z, cor:'#c9d1d9', dec:2, un:' SD'},
+  {rot:'estado', v:a.estado, cor:'#A371F7'}]);
 }
 
 function rcRedesenhar(){
- rcGraficoSwc(); rcGraficoBeta(); rcGraficoBetaTend(); rcGraficoSlope();
+ rcGraficoSwc(); rcGraficoAltini();
+ rcGraficoBeta(); rcGraficoBetaTend(); rcGraficoSlope();
 }
 
 // ── um dropdown por modelo ───────────────────────────────────────────
@@ -512,7 +671,20 @@ function rcModelos(){
  const box=document.getElementById('rcModelos');
  let h='';
 
- h+=rcBloco('SWC — Altini / Plews', RC.swc, function(m){
+ h+=rcBloco('Altini — o dia de hoje', RC.altini, function(m){
+  const c = m.estado_hoje==='pico' ? '#3FB950'
+          : m.estado_hoje==='normal' ? '#8b949e' : '#F85149';
+  return '<p class="sub">'+m.metodo+'</p>'
+   +'<p>Hoje: <b style="color:'+c+';">'+(m.estado_hoje||'—')+'</b>'
+   +(m.dias_seguidos_suprimido
+     ? ' <span class="sub">('+m.dias_seguidos_suprimido
+       +' dia(s) seguido(s))</span>':'')+'</p>'
+   +'<p style="font-size:12px;">'+(m.leitura||'')+'</p>'
+   +rcMini('rcAltini', null, 160)
+   +'<p class="sub" style="font-size:11px;">'+m.diferenca_do_plews+'</p>';
+ });
+
+ h+=rcBloco('Plews — a tendência da semana', RC.swc, function(m){
   const e=m.estado||[];
   const hoje=e[e.length-1];
   const cor = hoje==='acima' ? '#3FB950'

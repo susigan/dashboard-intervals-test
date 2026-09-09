@@ -276,6 +276,18 @@ def _carga_e_pmc(seq):
         tss = [v if v is not None else 0.0 for v in tss]
         if sum(1 for v in kj if v) >= 30:
             fora['kj'] = kj
+            # Carga ACUMULADA, não a de um dia isolado.
+            #
+            # Testar o kJ de há 21 dias contra o HRV de hoje procura o
+            # efeito de UM treino três semanas depois — que não existe. O
+            # que persiste é a carga acumulada dessas semanas, e é isso
+            # que tem de ser a série.
+            for jan in (7, 21):
+                acum = []
+                for i in range(len(kj)):
+                    j = kj[max(0, i - jan + 1):i + 1]
+                    acum.append(sum(j) / len(j) if j else None)
+                fora[f'kj_media_{jan}d'] = acum
         if sum(1 for v in tss if v) >= 30:
             fora['tss'] = tss
             # CTL/ATL/TSB dos próprios dados, com as constantes usuais

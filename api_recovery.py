@@ -99,6 +99,7 @@ def registar(app):
             res['kiviniemi'] = hrec.kiviniemi(
                 [d.get('hf_power') for d in seq],
                 usar_log=request.args.get('log_hf') != '0')
+            res['altini'] = hrec.altini(ln)
             res['pslope'] = hrec.pslope(ln)
             res['beta'] = hrec.modelo_beta(ln)
 
@@ -133,6 +134,8 @@ def registar(app):
             res['sintese'] = hrec.sintetizar(
                 swc=(res['swc'].get('estado') or [None])[-1]
                 if res['swc'].get('estado') else None,
+                altini=res['altini'].get('estado_hoje')
+                if res['altini'].get('ok') else None,
                 jav=(res['javaloyes'].get('prescricao') or [None])[-1]
                 if res['javaloyes'].get('prescricao') else None,
                 kiv=(res['kiviniemi'].get('prescricao') or [None])[-1]

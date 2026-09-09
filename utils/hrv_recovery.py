@@ -910,3 +910,188 @@ def qualidade_dos_dados(ln, hf=None, janela=JANELA_RECENTE):
             'decidir. Com este histórico, os modelos ainda mostram '
             'tendências passadas, mas não uma prescrição para hoje'),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# CORRELAÇÕES — só entre fontes INDEPENDENTES
+#
+# A tentação é correlacionar tudo com tudo. Mas o Plews, o Altini, o
+# Javaloyes, o PSlope e o β saem todos do mesmo LnRMSSD: correlacioná-los
+# entre si dá r alto sempre, e esse r mede quanto as JANELAS se sobrepõem,
+# não quanto os métodos concordam. Seria o erro do AeT outra vez.
+#
+# O que se correlaciona aqui:
+#
+#   HRV × wellness      sensor contra percepção
+#   HRV × RHR           mesma medição, relação que muda com a adaptação
+#   HRV × carga         causa e efeito, separados no tempo
+#   HRV × CTL/ATL/TSB   o PMC vem da carga, o HRV da resposta
+#
+# COM DESFASAMENTO. A carga de hoje afecta o HRV de amanhã, não o de hoje.
+# Sem testar lags de 0 a 3 dias, a relação mais importante fica invisível.
+# ══════════════════════════════════════════════════════════════════════════
+
+LAGS = (0, 1, 2, 3)
+MIN_PARES_CORR = 30
+
+# Pares que NÃO se testam, e porquê. Fica escrito para não voltar a
+# aparecer a ideia de os incluir.
+# As chaves são ordenadas alfabeticamente, porque a procura faz
+# tuple(sorted(...)). Escrevê-las por outra ordem faz a regra não pegar —
+# e um par circular passa com rho=1.0 sem ninguém dar por isso.
+CIRCULARES = {
+    ('beta', 'lnrmssd'): 'o β é uma transformação do LnRMSSD',
+    ('lnrmssd', 'plews'): 'o Plews é a média de 7 dias do LnRMSSD',
+    ('altini', 'lnrmssd'): 'o Altini é o LnRMSSD contra a sua baseline',
+    ('lnrmssd', 'pslope'): 'o PSlope é o declive do LnRMSSD',
+    ('beta', 'plews'): 'ambos usam média₂₈ e SD₂₈ do mesmo sinal',
+    ('altini', 'beta'): 'ambos comparam o dia com a sua própria baseline',
+    ('altini', 'plews'): 'mesma banda, janelas diferentes',
+    ('javaloyes', 'lnrmssd'): 'o Javaloyes parte da média de 7d do LnRMSSD',
+    ('javaloyes', 'plews'): 'mesma banda SWC, tecto de HIGH à parte',
+}
+
+# Famílias: qualquer par DENTRO da mesma família é circular, mesmo que não
+# esteja listado acima. É mais seguro do que enumerar todos os pares.
+FAMILIA_DE = {
+    'lnrmssd': 'ln', 'beta': 'ln', 'plews': 'ln', 'altini': 'ln',
+    'pslope': 'ln', 'javaloyes': 'ln',
+    'kiviniemi': 'hf', 'hf_power': 'hf',
+}
+
+
+def _spearman(a, b):
+    pares = [(x, y) for x, y in zip(a, b) if x is not None and y is not None]
+    if len(pares) < MIN_PARES_CORR:
+        return None, len(pares)
+
+    def _postos(vs):
+        ordem = sorted(range(len(vs)), key=lambda i: vs[i])
+        r = [0.0] * len(vs)
+        i = 0
+        while i < len(ordem):
+            j = i
+            while j + 1 < len(ordem) and vs[ordem[j + 1]] == vs[ordem[i]]:
+                j += 1
+            med = (i + j) / 2.0 + 1
+            for k in range(i, j + 1):
+                r[ordem[k]] = med
+            i = j + 1
+        return r
+
+    n = len(pares)
+    ra = _postos([p[0] for p in pares])
+    rb = _postos([p[1] for p in pares])
+    ma, mb = sum(ra) / n, sum(rb) / n
+    sa = sum((v - ma) ** 2 for v in ra) ** 0.5
+    sb = sum((v - mb) ** 2 for v in rb) ** 0.5
+    if sa <= 0 or sb <= 0:
+        return None, n
+    r = sum((ra[i] - ma) * (rb[i] - mb) for i in range(n)) / (sa * sb)
+    return max(-1.0, min(1.0, r)), n
+
+
+def _p_de_r(r, n):
+    if r is None or n < 4 or abs(r) >= 1:
+        return 0.0 if r is not None and abs(r) >= 1 else None
+    t = abs(r) * math.sqrt((n - 2) / (1 - r * r))
+    try:
+        from scipy.stats import t as _td
+        return float(2 * (1 - _td.cdf(t, n - 2)))
+    except ImportError:
+        z = t
+        return 2 * (1 - 0.5 * (1 + math.erf(z / math.sqrt(2))))
+
+
+def _bh(ps, alfa=0.05):
+    vs = sorted((p, i) for i, p in enumerate(ps) if p is not None)
+    m = len(vs)
+    corte = None
+    for pos, (p, _i) in enumerate(vs, start=1):
+        if p <= alfa * pos / m:
+            corte = p
+    return corte
+
+
+def correlacoes(series, alvo='lnrmssd', lags=LAGS, alfa=0.05):
+    """series: {'lnrmssd': [...], 'wellness': [...], 'kj': [...], ...}
+
+    Testa cada série contra o alvo, com desfasamento. Lag positivo
+    significa: a série X de HÁ n DIAS contra o alvo de hoje.
+    """
+    base = series.get(alvo)
+    if not base:
+        return {'ok': False, 'motivo': f'sem série "{alvo}"'}
+
+    resultados, ps = [], []
+    saltados = []
+    for nome, vs in series.items():
+        if nome == alvo or not vs:
+            continue
+        chave = tuple(sorted((alvo, nome)))
+        fa, fb = FAMILIA_DE.get(alvo), FAMILIA_DE.get(nome)
+        if chave in CIRCULARES:
+            saltados.append({'par': f'{alvo} × {nome}',
+                             'motivo': CIRCULARES[chave]})
+            continue
+        if fa and fa == fb:
+            saltados.append({
+                'par': f'{alvo} × {nome}',
+                'motivo': (f'ambos vêm da família "{fa}" — o r mediria '
+                           'quanto as janelas se sobrepõem, não quanto os '
+                           'métodos concordam')})
+            continue
+        for lag in lags:
+            # X de há `lag` dias contra o alvo de hoje
+            a = vs[:len(vs) - lag] if lag else vs
+            b = base[lag:] if lag else base
+            m = min(len(a), len(b))
+            r, n = _spearman(a[:m], b[:m])
+            if r is None:
+                continue
+            p = _p_de_r(r, n)
+            resultados.append({'serie': nome, 'lag': lag, 'rho': round(r, 3),
+                               'n': n, 'p': round(p, 5) if p else 0.0})
+            ps.append(p)
+
+    corte = _bh(ps, alfa)
+    for e in resultados:
+        e['significativa'] = (corte is not None and e['p'] <= corte)
+
+    # por série, o lag com maior |rho| entre os significativos
+    melhores = {}
+    for e in resultados:
+        if not e['significativa']:
+            continue
+        m = melhores.get(e['serie'])
+        if not m or abs(e['rho']) > abs(m['rho']):
+            melhores[e['serie']] = e
+
+    notas = []
+    for nome, e in sorted(melhores.items(),
+                          key=lambda kv: -abs(kv[1]['rho'])):
+        sentido = 'sobem juntos' if e['rho'] > 0 else 'movem-se ao contrário'
+        quando = ('no mesmo dia' if e['lag'] == 0
+                  else f"com {e['lag']} dia(s) de atraso")
+        notas.append(
+            f"{nome} e {alvo} {sentido} {quando} (rho={e['rho']}, n={e['n']})"
+            + ('. O atraso é o que dá direcção: a causa vem antes do efeito'
+               if e['lag'] > 0 else ''))
+
+    return {
+        'ok': True, 'alvo': alvo,
+        'pares': sorted(resultados,
+                        key=lambda e: (e['serie'], e['lag'])),
+        'melhores': melhores,
+        'saltados_por_circularidade': saltados,
+        'p_corte_bh': corte,
+        'n_testes': len(resultados),
+        'notas': notas,
+        'metodo': ('Spearman com desfasamento de 0 a 3 dias, corrigido por '
+                   'Benjamini-Hochberg. Mínimo de '
+                   f'{MIN_PARES_CORR} dias em comum por par'),
+        'aviso': (
+            'os modelos que saem do LnRMSSD não são testados uns contra os '
+            'outros: correlacioná-los mede quanto as janelas se sobrepõem, '
+            'não quanto concordam. Só entram aqui fontes independentes'),
+    }

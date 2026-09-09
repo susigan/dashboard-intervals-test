@@ -931,7 +931,17 @@ def qualidade_dos_dados(ln, hf=None, janela=JANELA_RECENTE):
 # Sem testar lags de 0 a 3 dias, a relação mais importante fica invisível.
 # ══════════════════════════════════════════════════════════════════════════
 
-LAGS = (0, 1, 2, 3)
+# Lags curtos E longos.
+#
+# 0-3 dias apanha o efeito directo de um treino. Mas a adaptação a uma
+# carga crónica leva semanas: um bloco de base de três semanas só se vê
+# no HRV muito depois, e com lags de 3 dias essa relação fica invisível.
+#
+# Não se testam todos os dias de 0 a 28 — seriam 29 testes por série, e a
+# correcção para comparações múltiplas comeria qualquer achado. Testam-se
+# pontos espaçados, que é o suficiente para localizar a escala temporal
+# da relação; se houver sinal aos 15 dias, também há aos 14 e aos 16.
+LAGS = (0, 1, 2, 3, 7, 15, 21, 28)
 MIN_PARES_CORR = 30
 
 # Pares que NÃO se testam, e porquê. Fica escrito para não voltar a
@@ -1050,8 +1060,13 @@ def correlacoes(series, alvo='lnrmssd', lags=LAGS, alfa=0.05):
             if r is None:
                 continue
             p = _p_de_r(r, n)
-            resultados.append({'serie': nome, 'lag': lag, 'rho': round(r, 3),
-                               'n': n, 'p': round(p, 5) if p else 0.0})
+            resultados.append({
+                'serie': nome, 'lag': lag, 'rho': round(r, 3),
+                'n': n, 'p': round(p, 5) if p else 0.0,
+                'escala': ('imediato' if lag <= 1
+                           else 'dias' if lag <= 3
+                           else 'semana' if lag <= 7
+                           else 'bloco' if lag <= 21 else 'mesociclo')})
             ps.append(p)
 
     corte = _bh(ps, alfa)
@@ -1073,13 +1088,32 @@ def correlacoes(series, alvo='lnrmssd', lags=LAGS, alfa=0.05):
         sentido = 'sobem juntos' if e['rho'] > 0 else 'movem-se ao contrário'
         quando = ('no mesmo dia' if e['lag'] == 0
                   else f"com {e['lag']} dia(s) de atraso")
+        contexto = {
+            'imediato': 'é o efeito directo, do próprio dia ou do seguinte',
+            'dias': 'é o efeito de um treino, que passa em poucos dias',
+            'semana': ('é a escala de uma semana de carga, não de uma '
+                       'sessão'),
+            'bloco': ('é a escala de um bloco de treino. Relações a este '
+                      'prazo não se veem no dia-a-dia'),
+            'mesociclo': ('é a escala de um mesociclo. A esta distância a '
+                          'relação pode ser real ou pode ser sazonalidade '
+                          '— vale a pena olhar para o gráfico antes de '
+                          'concluir'),
+        }.get(e['escala'], '')
         notas.append(
-            f"{nome} e {alvo} {sentido} {quando} (rho={e['rho']}, n={e['n']})"
-            + ('. O atraso é o que dá direcção: a causa vem antes do efeito'
-               if e['lag'] > 0 else ''))
+            f"{nome} e {alvo} {sentido} {quando} (rho={e['rho']}, "
+            f"n={e['n']}). {contexto}")
+
+    # a que escala temporal cada série se relaciona
+    por_escala = {}
+    for e in resultados:
+        if e['significativa']:
+            por_escala.setdefault(e['escala'], []).append(e['serie'])
 
     return {
         'ok': True, 'alvo': alvo,
+        'lags_testados': list(lags),
+        'por_escala': {k: sorted(set(v)) for k, v in por_escala.items()},
         'pares': sorted(resultados,
                         key=lambda e: (e['serie'], e['lag'])),
         'melhores': melhores,

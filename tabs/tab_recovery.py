@@ -40,6 +40,9 @@ BODY = """
 <h2 style="font-size:15px;margin-top:18px;">Os modelos, um a um</h2>
 <div id="rcModelos"></div>
 
+<h2 style="font-size:15px;margin-top:18px;">O que anda com o quê</h2>
+<div id="rcCorrelacoes"></div>
+
 <div id="rcCobertura"></div>
 
 </div>
@@ -62,7 +65,8 @@ function rcCarregar(){
   const p=x.periodo;
   est.textContent=p.n_com_hrv+' de '+p.n_dias+' dias com HRV ('
    +p.cobertura_pct+'%) · '+p.de+' a '+p.ate;
-  rcSintese(); rcPersistencia(); rcGrafico(); rcModelos(); rcCobertura();
+  rcSintese(); rcPersistencia(); rcGrafico(); rcModelos();
+  rcCorrelacoes(); rcCobertura();
  }).catch(e=>{ est.textContent='erro: '+e.message; });
 }
 
@@ -839,6 +843,93 @@ function rcEstados(pres){
  }
  return h+'</div><p class="sub" style="font-size:10px;">últimos 21 dias · '
   +'H alta intensidade · L baixa · R descanso</p>';
+}
+
+// ── correlações ──────────────────────────────────────────────────────
+function rcCorrelacoes(){
+ const box=document.getElementById('rcCorrelacoes');
+ const c=(RC||{}).correlacoes||{};
+ if(!c.ok){
+  box.innerHTML='<p class="sub">'+(c.motivo||c.erro||'sem dados')+'</p>';
+  return;
+ }
+ let h='';
+ (c.notas||[]).forEach(function(n){
+  h+='<p style="font-size:12px;border-left:3px solid #3FB950;'
+   +'padding-left:8px;margin:6px 0;">'+n+'</p>'; });
+ if(!(c.notas||[]).length)
+  h+='<p class="sub">Nenhuma relação sobrevive à correcção para '
+   +'comparações múltiplas. Não é falta de relação — é falta de dias '
+   +'para a demonstrar.</p>';
+
+ // a que ESCALA cada coisa se relaciona — é a leitura mais útil, e a
+ // que os lags longos permitem fazer
+ const esc=c.por_escala||{};
+ const rotEsc={imediato:'Imediato (0–1 dia)', dias:'Dias (2–3)',
+               semana:'Semana (7)', bloco:'Bloco (15–21)',
+               mesociclo:'Mesociclo (28)'};
+ if(Object.keys(esc).length){
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;">';
+  ['imediato','dias','semana','bloco','mesociclo'].forEach(function(k){
+   if(!esc[k]) return;
+   h+='<div style="flex:1;min-width:150px;border:1px solid #30363d;'
+    +'border-radius:6px;padding:6px 9px;">'
+    +'<span class="sub" style="font-size:10px;">'+rotEsc[k]+'</span><br>'
+    +'<span style="font-size:12px;">'+esc[k].join(', ')+'</span></div>';
+  });
+  h+='</div>';
+ }
+
+ // melhor lag de cada série
+ const mel=c.melhores||{};
+ if(Object.keys(mel).length){
+  h+='<table style="width:100%;border-collapse:collapse;font-size:11px;'
+   +'margin-top:8px;">'
+   +'<tr class="sub" style="text-align:left;border-bottom:1px solid #21262d;">'
+   +'<th style="padding:5px;">Série</th><th>Atraso</th><th>Escala</th>'
+   +'<th>rho</th><th>n</th><th>p</th></tr>'
+   +Object.keys(mel).sort(function(a,b){
+     return Math.abs(mel[b].rho)-Math.abs(mel[a].rho); })
+    .map(function(k){
+     const e=mel[k];
+     const cor = Math.abs(e.rho)>=0.5 ? '#3FB950'
+               : Math.abs(e.rho)>=0.3 ? '#E3B341' : '#8b949e';
+     return '<tr style="border-bottom:1px solid #161b22;">'
+      +'<td style="padding:5px;">'+k+'</td>'
+      +'<td class="sub">'+(e.lag?e.lag+' dia(s)':'mesmo dia')+'</td>'
+      +'<td class="sub">'+(e.escala||'')+'</td>'
+      +'<td style="color:'+cor+';"><b>'+e.rho+'</b></td>'
+      +'<td class="sub">'+e.n+'</td>'
+      +'<td class="sub">'+e.p+'</td></tr>'; }).join('')
+   +'</table>';
+ }
+
+ // tudo, incluindo os lags que não passaram
+ h+='<details style="margin-top:8px;"><summary style="cursor:pointer;'
+  +'font-size:12px;color:#8b949e;padding:4px 0;">Todos os '+c.n_testes
+  +' testes, por atraso</summary><div style="margin-top:6px;">'
+  +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+  +'<tr class="sub" style="text-align:left;">'
+  +'<th style="padding:4px;">Série</th><th>Atraso</th><th>Escala</th>'
+  +'<th>rho</th><th>p</th><th>n</th></tr>'
+  +(c.pares||[]).map(function(e){
+    return '<tr'+(e.significativa?'':' style="opacity:.45;"')+'>'
+     +'<td style="padding:4px;">'+e.serie+'</td>'
+     +'<td>'+e.lag+'</td><td class="sub">'+(e.escala||'')+'</td>'
+     +'<td>'+e.rho+'</td>'
+     +'<td>'+e.p+'</td><td>'+e.n+'</td></tr>'; }).join('')
+  +'</table>';
+ if((c.saltados_por_circularidade||[]).length){
+  h+='<p style="color:#F0883E;font-size:11px;margin-top:8px;">'
+   +'<b>Não testados, por serem circulares:</b></p>'
+   +'<ul style="margin:2px 0 0 16px;font-size:11px;color:#8b949e;">'
+   +c.saltados_por_circularidade.map(function(s2){
+     return '<li>'+s2.par+' — '+s2.motivo+'</li>'; }).join('')+'</ul>';
+ }
+ h+='<p class="sub" style="font-size:11px;margin-top:6px;">'+c.metodo+'</p>'
+  +'<p class="sub" style="font-size:11px;">'+c.aviso+'</p>'
+  +'</div></details>';
+ box.innerHTML=h;
 }
 
 function rcCobertura(){

@@ -104,6 +104,17 @@ def registar(app):
 
             # wellness subjectivo: z-score dos últimos 28 dias
             res['wellness'] = _wellness(seq)
+            res['rhr_qualidade'] = {
+                'n_com_rhr': sum(1 for d in seq if d.get('rhr') is not None),
+                'n_mesma_medicao': sum(1 for d in seq
+                                       if d.get('rhr_mesma_medicao')),
+                'fontes': sorted({d.get('rhr_origem') for d in seq
+                                  if d.get('rhr_origem')}),
+                'nota': ('o restingHR e o hrv do mesmo dia saem do mesmo '
+                         'registo — mesma janela, mesmos intervalos RR. É '
+                         'por isso que se prefere ao avgSleepingHR, que é '
+                         'a média da noite inteira'),
+            }
 
             # pesos medidos nos próprios dados, com janela móvel
             votos_hf = None
@@ -143,14 +154,21 @@ def registar(app):
 
 
 def _juntar_rhr(registos, corte):
-    """FC de repouso da Intervals.icu, com a folha só como recurso.
+    """FC de repouso da MESMA medição que produziu o HRV.
 
-    Prioridade: avgSleepingHR > restingHR > folha. O avgSleepingHR é o
-    mais estável dos três — é a média de uma noite inteira, ao passo que
-    o restingHR pode apanhar um mínimo pontual.
+    Prioridade ao restingHR, não ao avgSleepingHR.
 
-    Devolve (registos, nota) e marca a origem de cada dia, para se poder
-    ver depois se a série mudou de fonte a meio.
+    O restingHR e o hrv saem do MESMO registo: a app calcula o rMSSD e a
+    FC dos mesmos intervalos RR, na mesma janela, no mesmo momento. O
+    avgSleepingHR é a média da noite inteira — outra janela, outro estado.
+
+    Cruzar o HRV da manhã com a FC da noite compara dois momentos
+    diferentes, e a diferença entre eles não é fisiologia: é o intervalo
+    entre as duas medições. É a mesma razão pela qual o fórum diz que o
+    HRV normalizado tem de ser rMSSD sobre o RR médio DA MEDIÇÃO.
+
+    O avgSleepingHR fica como recurso e vai MARCADO, porque uma série que
+    troca de fonte a meio produz degraus que parecem mudanças de forma.
     """
     try:
         from api_client import icu_get
@@ -167,28 +185,32 @@ def _juntar_rhr(registos, corte):
 
         por_data = {str(d.get('id'))[:10]: d for d in dados
                     if isinstance(d, dict)}
-        n_icu = n_folha = 0
+        conta = {}
         for r in registos:
             w = por_data.get(r['data']) or {}
-            v = w.get('avgSleepingHR')
-            origem = 'avgSleepingHR'
+            v, origem = w.get('restingHR'), 'restingHR'
             if not isinstance(v, (int, float)):
-                v = w.get('restingHR')
-                origem = 'restingHR'
-            if isinstance(v, (int, float)):
-                r['rhr'] = v
-                r['rhr_origem'] = origem
-                n_icu += 1
-            else:
-                r['rhr'] = r.get('rhr_folha')
-                r['rhr_origem'] = 'folha'
-                if r['rhr'] is not None:
-                    n_folha += 1
-        nota = f'RHR: {n_icu} dias da Intervals.icu'
-        if n_folha:
-            nota += (f', {n_folha} da folha (sem dado no wellness). Duas '
-                     'fontes na mesma série produzem saltos que não são '
-                     'fisiologia')
+                v, origem = w.get('avgSleepingHR'), 'avgSleepingHR'
+            if not isinstance(v, (int, float)):
+                v, origem = r.get('rhr_folha'), 'folha'
+            r['rhr'] = v if isinstance(v, (int, float)) else None
+            r['rhr_origem'] = origem if r['rhr'] is not None else None
+            # a FC e o HRV vieram do mesmo registo?
+            r['rhr_mesma_medicao'] = (
+                origem == 'restingHR'
+                and isinstance(w.get('hrv'), (int, float)))
+            if r['rhr'] is not None:
+                conta[origem] = conta.get(origem, 0) + 1
+
+        n_par = sum(1 for r in registos if r.get('rhr_mesma_medicao'))
+        nota = 'RHR: ' + ', '.join(f'{v} dias de {k}'
+                                   for k, v in sorted(conta.items()))
+        if n_par:
+            nota += f'. {n_par} desses vieram do mesmo registo que o HRV'
+        if len(conta) > 1:
+            nota += ('. ATENÇÃO: mais de uma fonte na mesma série. Os '
+                     'degraus que isso produz parecem mudanças de forma e '
+                     'não são')
         return registos, nota
     except Exception as e:
         for r in registos:

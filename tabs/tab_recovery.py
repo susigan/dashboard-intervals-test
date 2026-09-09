@@ -514,6 +514,18 @@ function rcModelos(){
    +'</table>';
  });
 
+ // qualidade do emparelhamento HRV↔FC
+ const rq=(RC||{}).rhr_qualidade;
+ if(rq && rq.n_com_rhr){
+  const misturado=(rq.fontes||[]).length>1;
+  h+='<p class="sub" style="font-size:11px;margin:6px 0;'
+   +(misturado?'color:#F0883E;':'')+'">'
+   +'<b>FC de repouso:</b> '+rq.n_mesma_medicao+' de '+rq.n_com_rhr
+   +' dias vieram do MESMO registo que o HRV'
+   +(misturado?' · fontes misturadas: '+rq.fontes.join(', '):'')
+   +'<br>'+rq.nota+'</p>';
+ }
+
  h+=rcBloco('Wellness — folha diária', RC.wellness, function(m){
   return '<p class="sub">'+m.nota+'</p>'
    +'<table style="border-collapse:collapse;font-size:11px;">'

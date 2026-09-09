@@ -147,6 +147,32 @@ def registar(app):
                 wellness=(res['wellness'] or {}).get('voto'),
                 pesos=res['pesos_ajustados']['pesos'],
                 qualidade=res['qualidade'])
+            # ── correlações com fontes independentes ─────────────────
+            try:
+                series = {'lnrmssd': ln}
+                rhr = [d.get('rhr') for d in seq]
+                if sum(1 for v in rhr if v is not None) >= 30:
+                    series['rhr'] = [float(v) if v is not None else None
+                                     for v in rhr]
+                wl_serie = _serie_wellness(seq)
+                if sum(1 for v in wl_serie if v is not None) >= 30:
+                    series['wellness'] = wl_serie
+                hfp = [d.get('hf_power') for d in seq]
+                if sum(1 for v in hfp if v is not None) >= 30:
+                    series['hf_power'] = [hrec._ln(v) for v in hfp]
+                for campo in ('sono_h', 'sono_qualidade', 'fadiga',
+                              'stress', 'dores', 'peso'):
+                    vs = [d.get(campo) for d in seq]
+                    if sum(1 for v in vs if isinstance(v, (int, float))) >= 30:
+                        series[campo] = [float(v) if isinstance(
+                            v, (int, float)) else None for v in vs]
+                # carga e PMC, se existirem
+                series.update(_carga_e_pmc(seq))
+                res['correlacoes'] = hrec.correlacoes(series)
+            except Exception as e:
+                res['correlacoes'] = {'ok': False,
+                                      'erro': f'{type(e).__name__}: {e}'}
+
             res['datas'] = [d['data'] for d in seq]
             # o LnRMSSD DIÁRIO: o gráfico do SWC precisa dele para se ver
             # a dispersão de que a banda foi feita. Só a média de 7 dias
@@ -225,6 +251,47 @@ def _juntar_rhr(registos, corte):
             r['rhr'] = r.get('rhr_folha')
             r['rhr_origem'] = 'folha'
         return registos, f'RHR da folha ({type(e).__name__})'
+
+
+def _carga_e_pmc(seq):
+    """kJ, TSS e CTL/ATL/TSB alinhados com os dias.
+
+    Estes são a única fonte com DIRECÇÃO clara: a carga vem antes da
+    resposta. Por isso é neles que o desfasamento tem mais a dizer.
+    """
+    fora = {}
+    try:
+        import db as _db
+        d0, d1 = seq[0]['data'], seq[-1]['data']
+        linhas = _db._exec(
+            """SELECT date, SUM(COALESCE(icu_joules,0))/1000.0,
+                      SUM(COALESCE(icu_training_load,0))
+                 FROM activities WHERE date BETWEEN ? AND ?
+                GROUP BY date""", (d0, d1), fetch='all') or []
+        por_data = {str(r[0])[:10]: (r[1], r[2]) for r in linhas}
+        kj = [por_data.get(d['data'], (None, None))[0] for d in seq]
+        tss = [por_data.get(d['data'], (None, None))[1] for d in seq]
+        # dias sem treino são 0, não são dados em falta
+        kj = [v if v is not None else 0.0 for v in kj]
+        tss = [v if v is not None else 0.0 for v in tss]
+        if sum(1 for v in kj if v) >= 30:
+            fora['kj'] = kj
+        if sum(1 for v in tss if v) >= 30:
+            fora['tss'] = tss
+            # CTL/ATL/TSB dos próprios dados, com as constantes usuais
+            ctl, atl = [], []
+            c = a = 0.0
+            for v in tss:
+                c += (v - c) / 42.0
+                a += (v - a) / 7.0
+                ctl.append(round(c, 1))
+                atl.append(round(a, 1))
+            fora['ctl'] = ctl
+            fora['atl'] = atl
+            fora['tsb'] = [round(x - y, 1) for x, y in zip(ctl, atl)]
+    except Exception:
+        pass
+    return fora
 
 
 def _serie_wellness(seq):

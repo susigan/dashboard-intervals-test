@@ -440,8 +440,71 @@ function rcGraficoSlope(){
  _rcEixoX(g, X, n, PT, h, H);
 }
 
+// ── SWC: os dias soltos, a média de 7d e a banda ─────────────────────
+//
+// O gráfico principal mostra a média de 7 dias contra a banda. Aqui
+// mostram-se também os PONTOS DIÁRIOS — porque a banda é feita da
+// dispersão deles, e só com a média não se vê de onde ela sai.
+function rcGraficoSwc(){
+ const o=_rcCtx('rcSwc',180); if(!o) return;
+ const m=(RC||{}).swc||{}; if(m.ok===false) return;
+ const g=o.g, W=o.W, H=o.H, PL=48, PR=14, PT=10, PB=18;
+ const w=W-PL-PR, h=H-PT-PB, n=(RC.datas||[]).length;
+ const ln=(RC||{}).lnrmssd||[];
+ const ln7=m.ln7||[], sup=m.swc_sup||[], inf=m.swc_inf||[];
+
+ let mn=null, mx=null;
+ [ln, ln7, sup, inf].forEach(function(s2){ (s2||[]).forEach(function(v){
+  if(v==null) return;
+  if(mn===null||v<mn) mn=v; if(mx===null||v>mx) mx=v; }); });
+ if(mn===null) return;
+ const marg=(mx-mn)*0.08||0.1; mn-=marg; mx+=marg;
+ const X=i=>PL+w*i/(n-1), Y=v=>PT+h-(v-mn)/(mx-mn)*h;
+
+ // banda
+ let st=false; g.beginPath();
+ for(let i=0;i<n;i++){ const v=sup[i];
+  if(v==null){ st=false; continue; }
+  st?g.lineTo(X(i),Y(v)):(g.moveTo(X(i),Y(v)),st=true); }
+ for(let i=n-1;i>=0;i--){ const v=inf[i];
+  if(v==null) continue; g.lineTo(X(i),Y(v)); }
+ g.closePath(); g.fillStyle='rgba(93,173,226,0.14)'; g.fill();
+
+ g.strokeStyle='#21262d'; g.lineWidth=1;
+ for(let i=0;i<=3;i++){ const y=PT+h*i/3;
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke(); }
+
+ // pontos diários, coloridos por posição face à banda
+ for(let i=0;i<n;i++){
+  const v=ln[i]; if(v==null) continue;
+  const lo=inf[i], hi=sup[i];
+  let c='#6e7681';
+  if(lo!=null){ c = v>hi ? '#3FB950' : (v<lo ? '#F85149' : '#8b949e'); }
+  g.fillStyle=c; g.globalAlpha=0.55;
+  g.beginPath(); g.arc(X(i), Y(v), 1.8, 0, 6.284); g.fill();
+ }
+ g.globalAlpha=1;
+
+ // média de 7 dias
+ g.strokeStyle='#c9d1d9'; g.lineWidth=2; g.beginPath(); st=false;
+ for(let i=0;i<n;i++){ const v=ln7[i];
+  if(v==null){ st=false; continue; }
+  st?g.lineTo(X(i),Y(v)):(g.moveTo(X(i),Y(v)),st=true); }
+ g.stroke();
+ for(let i=n-1;i>=0;i--){ const v=ln7[i];
+  if(v==null) continue;
+  g.fillStyle='#c9d1d9'; g.beginPath(); g.arc(X(i),Y(v),3.5,0,6.284);
+  g.fill(); break; }
+
+ g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='right';
+ for(let i=0;i<=3;i++){ const v=mx-(mx-mn)*i/3;
+  g.fillText(v.toFixed(2), PL-5, PT+h*i/3+3); }
+ g.textAlign='left';
+ _rcEixoX(g, X, n, PT, h, H);
+}
+
 function rcRedesenhar(){
- rcGraficoBeta(); rcGraficoBetaTend(); rcGraficoSlope();
+ rcGraficoSwc(); rcGraficoBeta(); rcGraficoBetaTend(); rcGraficoSlope();
 }
 
 // ── um dropdown por modelo ───────────────────────────────────────────
@@ -451,11 +514,17 @@ function rcModelos(){
 
  h+=rcBloco('SWC — Altini / Plews', RC.swc, function(m){
   const e=m.estado||[];
+  const hoje=e[e.length-1];
+  const cor = hoje==='acima' ? '#3FB950'
+            : hoje==='abaixo' ? '#F85149' : '#8b949e';
   return '<p class="sub">'+m.metodo+'</p>'
-   +'<p>Hoje: <b>'+(e[e.length-1]||'—')+'</b> da banda '
-   +'(média₂₈ ± '+m.k_swc+'·SD)</p>'
-   +rcSerie(['LnRMSSD 7d', m.ln7], ['limite superior', m.swc_sup],
-            ['limite inferior', m.swc_inf]);
+   +'<p>Hoje: <b style="color:'+cor+';">'+(hoje||'—')+'</b> da banda '
+   +'<span class="sub">(média₂₈ ± '+m.k_swc+'·SD)</span></p>'
+   +rcMini('rcSwc', null, 180)
+   +'<p class="sub" style="font-size:11px;">Os pontos são o LnRMSSD de '
+   +'cada dia; a linha é a média de 7 dias. A banda vem da média e do '
+   +'desvio dos últimos 28 — é a variação que se espera de ti quando '
+   +'nada mudou.</p>';
  });
 
  h+=rcBloco('Javaloyes — máquina de estados', RC.javaloyes, function(m){

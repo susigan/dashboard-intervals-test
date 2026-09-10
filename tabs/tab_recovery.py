@@ -43,6 +43,9 @@ BODY = """
 <h2 style="font-size:15px;margin-top:18px;">O que anda com o quê</h2>
 <div id="rcCorrelacoes"></div>
 
+<h3 style="font-size:14px;margin-top:14px;">E qual dos modelos acompanha melhor o treino?</h3>
+<div id="rcCorrModelos"></div>
+
 <div id="rcCobertura"></div>
 
 </div>
@@ -951,6 +954,75 @@ function rcCorrelacoes(){
  h+='<p class="sub" style="font-size:11px;margin-top:6px;">'+c.metodo+'</p>'
   +'<p class="sub" style="font-size:11px;">'+c.aviso+'</p>'
   +'</div></details>';
+ box.innerHTML=h;
+ rcCorrModelos();
+}
+
+// ── cada modelo contra a carga ───────────────────────────────────────
+// A pergunta aqui não é "a carga mexe no HRV" — é "qual dos modelos
+// acompanha melhor o que treinaste".
+function rcCorrModelos(){
+ const box=document.getElementById('rcCorrModelos');
+ if(!box) return;
+ const c=(RC||{}).correlacoes_modelos||{};
+ if(!c.ok){
+  box.innerHTML='<p class="sub">'+(c.motivo||c.erro||'sem dados')+'</p>';
+  return;
+ }
+ let h='';
+ if(c.conclusao)
+  h+='<p style="font-size:12px;border-left:3px solid #5DADE2;'
+   +'padding-left:8px;margin:6px 0;">'+c.conclusao+'</p>';
+
+ // ranking dos alvos
+ const pa=c.por_alvo||{};
+ if(Object.keys(pa).length){
+  h+='<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+   +'<tr class="sub" style="text-align:left;border-bottom:1px solid #21262d;">'
+   +'<th style="padding:5px;">Modelo</th><th>Relações</th>'
+   +'<th>Mais forte com</th><th>Atraso</th><th>rho</th></tr>'
+   +(c.ranking||[]).map(function(k){
+     const d=pa[k]; if(!d) return '';
+     const cor = Math.abs(d.melhor_rho)>=0.4 ? '#3FB950'
+               : Math.abs(d.melhor_rho)>=0.25 ? '#E3B341' : '#8b949e';
+     return '<tr style="border-bottom:1px solid #161b22;">'
+      +'<td style="padding:5px;"><b>'+k+'</b></td>'
+      +'<td class="sub">'+d.n_relacoes+'</td>'
+      +'<td>'+(d.melhor_serie||'—')+'</td>'
+      +'<td class="sub">'+(d.melhor_lag?d.melhor_lag+' dia(s)':'mesmo dia')
+      +'</td>'
+      +'<td style="color:'+cor+';"><b>'+d.melhor_rho+'</b></td></tr>';
+    }).join('')
+   +'</table>';
+ } else {
+  h+='<p class="sub">Nenhuma relação sobrevive à correcção. Com '
+   +c.n_testes+' testes, o corte é exigente — e é isso que impede a '
+   +'tabela de se encher de achados falsos.</p>';
+ }
+
+ // matriz completa
+ const mel=c.melhores||[];
+ if(mel.length){
+  h+='<details style="margin-top:8px;"><summary style="cursor:pointer;'
+   +'font-size:12px;color:#8b949e;padding:4px 0;">Todas as relações '
+   +'encontradas ('+mel.length+')</summary><div style="margin-top:6px;">'
+   +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
+   +'<tr class="sub" style="text-align:left;">'
+   +'<th style="padding:4px;">Modelo</th><th>Série</th><th>Atraso</th>'
+   +'<th>Escala</th><th>rho</th><th>n</th></tr>'
+   +mel.slice().sort(function(a,b){
+     return Math.abs(b.rho)-Math.abs(a.rho); }).map(function(e){
+     return '<tr style="border-bottom:1px solid #161b22;">'
+      +'<td style="padding:4px;">'+e.alvo+'</td>'
+      +'<td>'+e.serie+'</td>'
+      +'<td class="sub">'+e.lag+'d</td>'
+      +'<td class="sub">'+e.escala+'</td>'
+      +'<td>'+e.rho+'</td><td class="sub">'+e.n+'</td></tr>'; }).join('')
+   +'</table>'
+   +'<p class="sub" style="font-size:11px;margin-top:6px;">'+c.metodo+'</p>'
+   +'<p class="sub" style="font-size:11px;">'+c.nota_ordinal+'</p>'
+   +'</div></details>';
+ }
  box.innerHTML=h;
 }
 

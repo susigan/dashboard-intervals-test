@@ -1129,3 +1129,149 @@ def correlacoes(series, alvo='lnrmssd', lags=LAGS, alfa=0.05):
             'outros: correlacioná-los mede quanto as janelas se sobrepõem, '
             'não quanto concordam. Só entram aqui fontes independentes'),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# OS MODELOS COMO ALVO, não só o HRV em bruto
+#
+# Correlacionar a carga com o LnRMSSD responde a "a carga mexe no HRV?".
+# Mas a pergunta prática é outra: "a carga mexe no que o modelo DIZ?" — e
+# não é a mesma coisa.
+#
+# O Altini só reage quando o dia sai da banda; o Javaloyes tem memória de
+# estado; o PSlope depende do declive. São transformações não-lineares do
+# mesmo sinal, e uma delas pode alinhar-se melhor com a carga do que o
+# valor contínuo. Se assim for, é essa que vale a pena seguir.
+#
+# Os estados têm de virar números ORDENADOS para se poder correlacionar.
+# A escala é a mesma do voto (−1 pior, +1 melhor), mas com mais degraus
+# onde o modelo os tem — o Spearman usa as ordens, portanto o que importa
+# é a sequência e não a distância entre valores.
+# ══════════════════════════════════════════════════════════════════════════
+
+ESCALA_ORDINAL = {
+    # Plews
+    'abaixo': -1, 'dentro': 0, 'acima': 1,
+    # Altini
+    'supressão multi-dia': -2, 'supressão': -1, 'normal': 0, 'pico': 1,
+    # Javaloyes e Kiviniemi
+    'REST': -1, 'LOW': 0, 'HIGH': 1,
+    # PSlope
+    'NFOR crítico': -3, 'Fadiga': -2, 'Declínio leve': -1,
+    'Estável': 0, 'Recuperação': 1, 'Supercompensação': 2,
+}
+
+
+def ordinal(estados):
+    """Estados -> números ordenados, para o Spearman poder trabalhar."""
+    return [ESCALA_ORDINAL.get(e) if e is not None else None
+            for e in (estados or [])]
+
+
+def correlacoes_multi_alvo(series_alvo, series_preditoras, lags=LAGS,
+                           alfa=0.05):
+    """Cada modelo contra cada série de carga, volume e PMC.
+
+    series_alvo       {'lnrmssd': [...], 'plews': [...], 'altini': [...]}
+                      já em escala numérica
+    series_preditoras {'kj': [...], 'ctl': [...], 'horas': [...]}
+
+    A correcção de Benjamini-Hochberg corre sobre TODOS os testes de
+    todos os alvos ao mesmo tempo — não por alvo. Com 6 alvos × 15 séries
+    × 8 lags são 720 testes, e corrigir por alvo deixaria passar 36
+    falsos positivos.
+    """
+    todos, ps = [], []
+    saltados = []
+
+    for alvo, base in series_alvo.items():
+        if not base:
+            continue
+        for nome, vs in series_preditoras.items():
+            if not vs or nome == alvo:
+                continue
+            chave = tuple(sorted((alvo, nome)))
+            fa, fb = FAMILIA_DE.get(alvo), FAMILIA_DE.get(nome)
+            if chave in CIRCULARES or (fa and fa == fb):
+                saltados.append({
+                    'alvo': alvo, 'serie': nome,
+                    'motivo': CIRCULARES.get(
+                        chave, f'ambos da família "{fa}"')})
+                continue
+            for lag in lags:
+                a = vs[:len(vs) - lag] if lag else vs
+                b = base[lag:] if lag else base
+                m = min(len(a), len(b))
+                r, n = _spearman(a[:m], b[:m])
+                if r is None:
+                    continue
+                p = _p_de_r(r, n)
+                todos.append({
+                    'alvo': alvo, 'serie': nome, 'lag': lag,
+                    'rho': round(r, 3), 'n': n,
+                    'p': round(p, 6) if p else 0.0,
+                    'escala': ('imediato' if lag <= 1 else
+                               'dias' if lag <= 3 else
+                               'semana' if lag <= 7 else
+                               'bloco' if lag <= 21 else 'mesociclo')})
+                ps.append(p)
+
+    corte = _bh(ps, alfa)
+    for e in todos:
+        e['significativa'] = (corte is not None and e['p'] <= corte)
+
+    # melhor par (alvo, série) — o lag com maior |rho| significativo
+    melhores = {}
+    for e in todos:
+        if not e['significativa']:
+            continue
+        k = (e['alvo'], e['serie'])
+        if k not in melhores or abs(e['rho']) > abs(melhores[k]['rho']):
+            melhores[k] = e
+
+    # que alvo responde melhor à carga? é a pergunta que isto resolve
+    por_alvo = {}
+    for (alvo, _s), e in melhores.items():
+        d = por_alvo.setdefault(alvo, {'n_relacoes': 0, 'melhor_rho': 0,
+                                       'melhor_serie': None})
+        d['n_relacoes'] += 1
+        if abs(e['rho']) > abs(d['melhor_rho']):
+            d['melhor_rho'] = e['rho']
+            d['melhor_serie'] = e['serie']
+            d['melhor_lag'] = e['lag']
+
+    ranking = sorted(por_alvo.items(),
+                     key=lambda kv: -abs(kv[1]['melhor_rho']))
+    conclusao = None
+    if ranking:
+        top, d = ranking[0]
+        conclusao = (
+            f'de todos os modelos, o {top} é o que mais se relaciona com o '
+            f'treino: {d["n_relacoes"]} relações, a mais forte com '
+            f'{d["melhor_serie"]} '
+            + ('no mesmo dia' if d.get('melhor_lag') == 0
+               else f'com {d.get("melhor_lag")} dia(s) de atraso')
+            + f' (rho={d["melhor_rho"]}). Isso não o torna o modelo certo — '
+              'torna-o o que melhor acompanha a carga, que é uma pergunta '
+              'diferente de qual prescreve melhor')
+
+    return {
+        'ok': True,
+        'testes': todos,
+        'melhores': [{'alvo': k[0], **v} for k, v in melhores.items()],
+        'por_alvo': por_alvo,
+        'ranking': [k for k, _v in ranking],
+        'conclusao': conclusao,
+        'saltados': saltados,
+        'p_corte_bh': corte,
+        'n_testes': len(todos),
+        'metodo': (
+            'Spearman com atrasos de 0 a 28 dias. A correcção de '
+            'Benjamini-Hochberg corre sobre todos os testes de todos os '
+            'alvos em conjunto — corrigir por alvo deixaria passar falsos '
+            'positivos proporcionais ao número de alvos'),
+        'nota_ordinal': (
+            'os estados (fadiga, normal, supressão…) foram convertidos '
+            'numa escala ordenada. O Spearman usa as ordens, portanto o '
+            'que conta é a sequência e não a distância entre os valores'),
+    }

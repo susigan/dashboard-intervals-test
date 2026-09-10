@@ -167,7 +167,10 @@ def registar(app):
                         series[campo] = [float(v) if isinstance(
                             v, (int, float)) else None for v in vs]
                 # carga e PMC, se existirem
-                series.update(_carga_e_pmc(seq))
+                diag_carga = {}
+                series.update(_carga_e_pmc(seq, diag_carga))
+                if diag_carga:
+                    res['erros_series_treino'] = diag_carga
                 res['correlacoes'] = hrec.correlacoes(series)
 
                 # ── cada MODELO como alvo, não só o HRV em bruto ─────
@@ -192,10 +195,25 @@ def registar(app):
                 if res['beta'].get('ok'):
                     alvos['beta'] = res['beta']['beta']
 
-                # as preditoras são só carga, volume e PMC — nada que
-                # venha do HRV, senão volta a circularidade
-                pred = {k: v for k, v in series.items()
-                        if k not in ('lnrmssd', 'hf_power')}
+                # AS PREDITORAS SÃO SÓ TREINO.
+                #
+                # O filtro anterior tirava apenas o lnrmssd e o hf_power, e
+                # deixava passar o rhr, o wellness, o sono, a fadiga. Nada
+                # disso é treino — e o RHR ganhava sempre, porque sai do
+                # MESMO registo que o HRV. Um rho de −0.72 entre eles não
+                # diz nada sobre a carga: diz que a FC e o HRV da mesma
+                # medição estão relacionados, o que já se sabia.
+                #
+                # Lista explícita, por prefixo, em vez de exclusão: o que
+                # não for reconhecido como treino fica de fora.
+                def _e_treino(k):
+                    return k.startswith((
+                        'kj', 'tss', 'horas', 'distancia', 'n_sessoes',
+                        'ctl', 'atl', 'tsb', 'ftlm'))
+                pred = {k: v for k, v in series.items() if _e_treino(k)}
+                res['preditoras_usadas'] = sorted(pred)
+                res['preditoras_ignoradas'] = sorted(
+                    k for k in series if not _e_treino(k))
                 res['correlacoes_modelos'] = hrec.correlacoes_multi_alvo(
                     alvos, pred)
             except Exception as e:
@@ -282,13 +300,18 @@ def _juntar_rhr(registos, corte):
         return registos, f'RHR da folha ({type(e).__name__})'
 
 
-def _carga_e_pmc(seq):
-    """kJ, TSS e CTL/ATL/TSB alinhados com os dias.
+def _carga_e_pmc(seq, diag=None):
+    """kJ, TSS, volume e CTL/ATL/TSB/FTLM alinhados com os dias.
 
     Estes são a única fonte com DIRECÇÃO clara: a carga vem antes da
     resposta. Por isso é neles que o desfasamento tem mais a dizer.
+
+    O `diag` recolhe o que falhou. Antes, qualquer excepção era engolida
+    por um `except: pass` e as séries desapareciam sem explicação — a
+    tabela ficava só com kJ e TSS e não havia forma de saber porquê.
     """
     fora = {}
+    diag = diag if diag is not None else {}
     try:
         import db as _db
         d0, d1 = seq[0]['data'], seq[-1]['data']
@@ -357,8 +380,8 @@ def _carga_e_pmc(seq):
             fora['ctl'] = ctl
             fora['atl'] = atl
             fora['tsb'] = [round(x - y, 1) for x, y in zip(ctl, atl)]
-    except Exception:
-        pass
+    except Exception as e:
+        diag['carga'] = f'{type(e).__name__}: {e}'
 
     # ── séries do PMC: reserva homeostática, FTLM ────────────────────
     #
@@ -389,8 +412,8 @@ def _carga_e_pmc(seq):
                 vs = [por_data.get(d['data'], {}).get(campo) for d in seq]
                 if sum(1 for v in vs if v is not None) >= 30:
                     fora[nome] = vs
-    except Exception:
-        pass
+    except Exception as e:
+        diag['pmc'] = f'{type(e).__name__}: {e}'
     try:
         import ftlm as _ftlm
         kj_lim = [v or 0.0 for v in (fora.get('kj') or [])]
@@ -400,8 +423,8 @@ def _carga_e_pmc(seq):
             for g in (0.3, 0.7):
                 v = _ftlm.ftlm_fractional(kj_lim, g)
                 fora[f'ftlm_g{g}'] = [float(x) for x in v]
-    except Exception:
-        pass
+    except Exception as e:
+        diag['ftlm'] = f'{type(e).__name__}: {e}'
     return fora
 
 

@@ -853,7 +853,9 @@ function rcCorrelacoes(){
   box.innerHTML='<p class="sub">'+(c.motivo||c.erro||'sem dados')+'</p>';
   return;
  }
- let h='';
+ let h='<p class="sub" style="font-size:11px;">Cada série de carga e de '
+  +'volume contra o HRV, com atrasos de 0 a 28 dias. A pergunta é: o que '
+  +'treinaste tem eco na recuperação, e a que prazo?</p>';
  (c.notas||[]).forEach(function(n){
   h+='<p style="font-size:12px;border-left:3px solid #3FB950;'
    +'padding-left:8px;margin:6px 0;">'+n+'</p>'; });
@@ -880,17 +882,34 @@ function rcCorrelacoes(){
   h+='</div>';
  }
 
- // melhor lag de cada série
+ // melhor lag de cada série, AGRUPADO por origem — 20 linhas soltas
+ // não se lêem; três grupos de sete lêem-se
  const mel=c.melhores||{};
+ const grupo=function(k){
+  if(/^kj|^tss/.test(k)) return 'Carga';
+  if(/^horas|^distancia|^n_sessoes/.test(k)) return 'Volume';
+  if(/^ctl|^atl|^tsb|^ftlm/.test(k)) return 'PMC e memória';
+  if(/^hf_power|^rhr/.test(k)) return 'Fisiológico';
+  return 'Wellness';
+ };
  if(Object.keys(mel).length){
   h+='<table style="width:100%;border-collapse:collapse;font-size:11px;'
    +'margin-top:8px;">'
    +'<tr class="sub" style="text-align:left;border-bottom:1px solid #21262d;">'
    +'<th style="padding:5px;">Série</th><th>Atraso</th><th>Escala</th>'
    +'<th>rho</th><th>n</th><th>p</th></tr>'
-   +Object.keys(mel).sort(function(a,b){
-     return Math.abs(mel[b].rho)-Math.abs(mel[a].rho); })
-    .map(function(k){
+   +(function(){
+     const ordenadas=Object.keys(mel).sort(function(a,b){
+      const ga=grupo(a), gb=grupo(b);
+      if(ga!==gb) return ga.localeCompare(gb);
+      return Math.abs(mel[b].rho)-Math.abs(mel[a].rho); });
+     let gAnt=null, linhas='';
+     ordenadas.forEach(function(k){
+      const gr=grupo(k);
+      if(gr!==gAnt){ gAnt=gr;
+       linhas+='<tr><td colspan="6" style="padding:8px 5px 3px 5px;'
+        +'color:#58A6FF;font-size:11px;">'+gr+'</td></tr>'; }
+      linhas+=(function(k){
      const e=mel[k];
      const cor = Math.abs(e.rho)>=0.5 ? '#3FB950'
                : Math.abs(e.rho)>=0.3 ? '#E3B341' : '#8b949e';
@@ -900,7 +919,10 @@ function rcCorrelacoes(){
       +'<td class="sub">'+(e.escala||'')+'</td>'
       +'<td style="color:'+cor+';"><b>'+e.rho+'</b></td>'
       +'<td class="sub">'+e.n+'</td>'
-      +'<td class="sub">'+e.p+'</td></tr>'; }).join('')
+      +'<td class="sub">'+e.p+'</td></tr>'; })(k);
+     });
+     return linhas;
+    })()
    +'</table>';
  }
 

@@ -996,15 +996,20 @@ function rcCorrModelos(){
    +'<th>Mais forte com</th><th>Atraso</th><th>rho</th></tr>'
    +(c.ranking||[]).map(function(k){
      const d=pa[k]; if(!d) return '';
-     const cor = Math.abs(d.melhor_rho)>=0.4 ? '#3FB950'
+     const sem = d.n_relacoes===0;
+     const cor = sem ? '#8b949e'
+               : Math.abs(d.melhor_rho)>=0.4 ? '#3FB950'
                : Math.abs(d.melhor_rho)>=0.25 ? '#E3B341' : '#8b949e';
-     return '<tr style="border-bottom:1px solid #161b22;">'
+     return '<tr style="border-bottom:1px solid #161b22;'
+      +(sem?'opacity:.55;':'')+'">'
       +'<td style="padding:5px;"><b>'+k+'</b></td>'
-      +'<td class="sub">'+d.n_relacoes+'</td>'
-      +'<td>'+(d.melhor_serie||'—')+'</td>'
-      +'<td class="sub">'+(d.melhor_lag?d.melhor_lag+' dia(s)':'mesmo dia')
-      +'</td>'
-      +'<td style="color:'+cor+';"><b>'+d.melhor_rho+'</b></td></tr>';
+      +'<td class="sub">'+d.n_relacoes+' de '+d.n_testado+'</td>'
+      +'<td>'+(sem?'<span class="sub">nenhuma relação encontrada</span>'
+               :(d.melhor_serie||'—'))+'</td>'
+      +'<td class="sub">'+(sem?'—':(d.melhor_lag?d.melhor_lag+' dia(s)'
+        :'mesmo dia'))+'</td>'
+      +'<td style="color:'+cor+';"><b>'+(sem?'—':d.melhor_rho)
+      +'</b></td></tr>';
     }).join('')
    +'</table>';
  } else {

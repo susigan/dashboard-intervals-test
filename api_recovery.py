@@ -169,8 +169,12 @@ def registar(app):
                 # carga e PMC, se existirem
                 diag_carga = {}
                 series.update(_carga_e_pmc(seq, diag_carga))
-                if diag_carga:
-                    res['erros_series_treino'] = diag_carga
+                res['diagnostico_series_treino'] = diag_carga
+                if diag_carga.get('carga') or diag_carga.get('pmc') \
+                        or diag_carga.get('ftlm'):
+                    res['erros_series_treino'] = {
+                        k: v for k, v in diag_carga.items()
+                        if k in ('carga', 'pmc', 'ftlm')}
                 res['correlacoes'] = hrec.correlacoes(series)
 
                 # ── cada MODELO como alvo, não só o HRV em bruto ─────
@@ -300,30 +304,90 @@ def _juntar_rhr(registos, corte):
         return registos, f'RHR da folha ({type(e).__name__})'
 
 
+# Nomes de coluna candidatos para cada campo. Os literais 'icu_joules' e
+# 'icu_training_load' rebentaram em produção com UndefinedColumn — a
+# tabela real usa outros nomes, que eu não tinha visto (o db.py nunca
+# passou por esta conversa). Em vez de adivinhar de novo, descobre-se o
+# que existe e usa-se isso.
+_CAND_COLUNAS = {
+    'joules': ['icu_joules', 'joules', 'work', 'kilojoules', 'kj'],
+    'load':   ['icu_training_load', 'training_load', 'load', 'tss',
+               'icu_hrss', 'hrss'],
+    'tempo':  ['moving_time', 'elapsed_time', 'duration'],
+    'dist':   ['distance', 'icu_distance'],
+}
+
+
+def _colunas_existentes(nomes_tabela='activities'):
+    """Que colunas de facto existem na tabela, para escolher os nomes certos."""
+    try:
+        import db as _db
+        r = _db._exec(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = %s" if _db.MODO == 'postgres' else
+            f"PRAGMA table_info({nomes_tabela})",
+            (nomes_tabela,) if _db.MODO == 'postgres' else (),
+            fetch='all') or []
+        return {str(row[0]).lower() for row in r}
+    except Exception:
+        return set()
+
+
+def _escolher_coluna(disponiveis, candidatos):
+    for c in candidatos:
+        if c.lower() in disponiveis:
+            return c
+    return None
+
+
 def _carga_e_pmc(seq, diag=None):
     """kJ, TSS, volume e CTL/ATL/TSB/FTLM alinhados com os dias.
 
     Estes são a única fonte com DIRECÇÃO clara: a carga vem antes da
     resposta. Por isso é neles que o desfasamento tem mais a dizer.
 
+    As colunas são descobertas em runtime — ver _colunas_existentes — em
+    vez de assumidas por nome. 'icu_joules' e 'icu_training_load' não
+    existem nesta base; os nomes reais aparecem em res['colunas_activities']
+    para se poder confirmar.
+
     O `diag` recolhe o que falhou. Antes, qualquer excepção era engolida
-    por um `except: pass` e as séries desapareciam sem explicação — a
-    tabela ficava só com kJ e TSS e não havia forma de saber porquê.
+    por um `except: pass` e as séries desapareciam sem explicação.
     """
     fora = {}
     diag = diag if diag is not None else {}
+    disp = _colunas_existentes()
+    diag['colunas_encontradas'] = sorted(disp)[:40] if disp else None
+    col_j = _escolher_coluna(disp, _CAND_COLUNAS['joules'])
+    col_l = _escolher_coluna(disp, _CAND_COLUNAS['load'])
+    col_t = _escolher_coluna(disp, _CAND_COLUNAS['tempo'])
+    col_d = _escolher_coluna(disp, _CAND_COLUNAS['dist'])
+    if not disp:
+        diag['carga'] = ('não foi possível listar as colunas de '
+                         '"activities" — ver erro em baixo')
+        return fora
+    if not (col_j or col_l):
+        diag['carga'] = (
+            f'nenhuma coluna de carga reconhecida entre as candidatas '
+            f"{_CAND_COLUNAS['joules'] + _CAND_COLUNAS['load']}. "
+            f'Colunas disponíveis: {sorted(disp)[:20]}')
+        return fora
     try:
         import db as _db
         d0, d1 = seq[0]['data'], seq[-1]['data']
+        # A query usa as colunas DESCOBERTAS acima, não nomes fixos.
+        # kJ = joules/1000 quando há coluna de joules; senão fica None e
+        # só o 'load' (TSS/HRSS/o que existir) entra.
+        sel_j = f'SUM(COALESCE({col_j},0))/1000.0' if col_j else 'NULL'
+        sel_l = f'SUM(COALESCE({col_l},0))' if col_l else 'NULL'
+        sel_t = f'SUM(COALESCE({col_t},0))/3600.0' if col_t else 'NULL'
+        sel_d = f'SUM(COALESCE({col_d},0))/1000.0' if col_d else 'NULL'
         linhas = _db._exec(
-            """SELECT date,
-                      SUM(COALESCE(icu_joules,0))/1000.0,
-                      SUM(COALESCE(icu_training_load,0)),
-                      SUM(COALESCE(moving_time,0))/3600.0,
-                      SUM(COALESCE(distance,0))/1000.0,
-                      COUNT(*)
+            f"""SELECT date, {sel_j}, {sel_l}, {sel_t}, {sel_d}, COUNT(*)
                  FROM activities WHERE date BETWEEN ? AND ?
                 GROUP BY date""", (d0, d1), fetch='all') or []
+        diag['colunas_usadas'] = {'joules': col_j, 'load': col_l,
+                                  'tempo': col_t, 'distancia': col_d}
         por_data = {str(r[0])[:10]: r[1:] for r in linhas}
         vazio = (None, None, None, None, None)
         kj = [por_data.get(d['data'], vazio)[0] for d in seq]

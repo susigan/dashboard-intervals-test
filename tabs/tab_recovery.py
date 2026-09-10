@@ -977,12 +977,24 @@ function rcCorrModelos(){
  if(pu.length)
   h+='<p class="sub" style="font-size:11px;">Séries de treino testadas ('
    +pu.length+'): '+pu.join(', ')+'</p>';
- if(er)
+ if(er){
+  const dg=(RC||{}).diagnostico_series_treino||{};
   h+='<p style="color:#F0883E;font-size:11px;">⚠ não foi possível '
    +'construir algumas séries: '
    +Object.keys(er).map(function(k){ return k+' ('+er[k]+')'; }).join(' · ')
    +'. As que faltam não aparecem abaixo — a ausência não significa '
    +'ausência de relação.</p>';
+  if(dg.colunas_usadas)
+   h+='<p class="sub" style="font-size:10px;">colunas usadas: '
+    +Object.keys(dg.colunas_usadas).map(function(k){
+      return k+'='+(dg.colunas_usadas[k]||'—'); }).join(' · ')+'</p>';
+  if(dg.colunas_encontradas)
+   h+='<details style="margin-top:4px;"><summary style="cursor:pointer;'
+    +'font-size:10px;color:#8b949e;">colunas existentes na tabela ('
+    +dg.colunas_encontradas.length+')</summary>'
+    +'<p class="sub" style="font-size:10px;">'
+    +dg.colunas_encontradas.join(', ')+'</p></details>';
+ }
  if(c.conclusao)
   h+='<p style="font-size:12px;border-left:3px solid #5DADE2;'
    +'padding-left:8px;margin:6px 0;">'+c.conclusao+'</p>';

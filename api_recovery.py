@@ -303,6 +303,49 @@ def _carga_e_pmc(seq):
             fora['tsb'] = [round(x - y, 1) for x, y in zip(ctl, atl)]
     except Exception:
         pass
+
+    # ── séries do PMC: reserva homeostática, FTLM ────────────────────
+    #
+    # Estas são a razão pela qual as correlações com lags longos valem a
+    # pena. O CTL clássico satura em poucas semanas; o FTLM tem memória
+    # longa por construção, e a reserva homeostática é ajustada aos
+    # dados do atleta em vez de usar τ=42/7 fixos.
+    #
+    # Se o HRV se relacionar com a reserva a 21 dias e não com o CTL,
+    # isso diz que o modelo ajustado descreve melhor a resposta — e é o
+    # tipo de coisa que só se vê testando as duas.
+    try:
+        import pmc as _pmc
+        import db as _db2
+        # o pmc.calcular espera as sessões, não vai buscá-las sozinho
+        ses = _db2._exec(
+            "SELECT date, type, icu_training_load, icu_joules "
+            "FROM activities WHERE date BETWEEN ? AND ? ORDER BY date",
+            (seq[0]['data'], seq[-1]['data']), fetch='all') or []
+        sessoes = [{'date': str(r[0])[:10], 'type': r[1],
+                    'tl': r[2] or 0, 'icu_joules': r[3] or 0}
+                   for r in ses]
+        serie = _pmc.calcular(sessoes) if sessoes else None
+        if serie:
+            por_data = {r['date']: r for r in serie}
+            for campo, nome in (('ctl', 'ctl_pmc'), ('atl', 'atl_pmc'),
+                                ('tsb', 'tsb_pmc')):
+                vs = [por_data.get(d['data'], {}).get(campo) for d in seq]
+                if sum(1 for v in vs if v is not None) >= 30:
+                    fora[nome] = vs
+    except Exception:
+        pass
+    try:
+        import ftlm as _ftlm
+        kj_lim = [v or 0.0 for v in (fora.get('kj') or [])]
+        if len(kj_lim) >= 60:
+            # dois gamas: memória curta e longa, para se ver a que escala
+            # a carga ainda pesa
+            for g in (0.3, 0.7):
+                v = _ftlm.ftlm_fractional(kj_lim, g)
+                fora[f'ftlm_g{g}'] = [float(x) for x in v]
+    except Exception:
+        pass
     return fora
 
 

@@ -410,7 +410,14 @@ def _carga_e_pmc(seq, diag=None):
                 GROUP BY date""", (d0, d1), fetch='all') or []
         diag['colunas_usadas'] = {'joules': col_j, 'load': col_l,
                                   'tempo': col_t, 'distancia': col_d}
-        por_data = {str(r[0])[:10]: r[1:] for r in linhas}
+        # psycopg devolve DOUBLE PRECISION como decimal.Decimal, não
+        # float — e Decimal + float rebenta com TypeError assim que
+        # qualquer conta abaixo mistura os dois. Converte-se logo aqui,
+        # uma vez, em vez de perseguir o erro em cada soma.
+        def _f(v):
+            return float(v) if v is not None else None
+        por_data = {str(r[0])[:10]: tuple(_f(x) for x in r[1:-1]) + (r[-1],)
+                    for r in linhas}
         vazio = (None, None, None, None, None)
         kj = [por_data.get(d['data'], vazio)[0] for d in seq]
         tss = [por_data.get(d['data'], vazio)[1] for d in seq]
@@ -482,13 +489,22 @@ def _carga_e_pmc(seq, diag=None):
     try:
         import pmc as _pmc
         import db as _db2
-        # o pmc.calcular espera as sessões, não vai buscá-las sozinho
+        # Mesmo erro da _carga_e_pmc, aqui numa query separada que eu não
+        # tinha corrigido: usava icu_training_load/icu_joules, que não
+        # existem. Usa-se as MESMAS colunas já descobertas acima — não se
+        # descobre outra vez, para as duas partes nunca poderem divergir.
+        sel_l2 = f'{col_l}' if col_l else '0'
+        sel_j2 = f'{col_j}' if col_j else '0'
         ses = _db2._exec(
-            "SELECT date, type, icu_training_load, icu_joules "
+            f"SELECT date, type, {sel_l2}, {sel_j2} "
             "FROM activities WHERE date BETWEEN ? AND ? ORDER BY date",
             (seq[0]['data'], seq[-1]['data']), fetch='all') or []
+        # Postgres devolve DOUBLE PRECISION como decimal.Decimal via
+        # psycopg, não como float — float(...) converte, e int(...) só
+        # falharia da mesma forma se aparecesse um Decimal(None).
         sessoes = [{'date': str(r[0])[:10], 'type': r[1],
-                    'tl': r[2] or 0, 'icu_joules': r[3] or 0}
+                    'tl': float(r[2]) if r[2] is not None else 0.0,
+                    'icu_joules': float(r[3]) if r[3] is not None else 0.0}
                    for r in ses]
         serie = _pmc.calcular(sessoes) if sessoes else None
         if serie:
@@ -497,7 +513,8 @@ def _carga_e_pmc(seq, diag=None):
                                 ('tsb', 'tsb_pmc')):
                 vs = [por_data.get(d['data'], {}).get(campo) for d in seq]
                 if sum(1 for v in vs if v is not None) >= 30:
-                    fora[nome] = vs
+                    fora[nome] = [float(v) if v is not None else None
+                                 for v in vs]
     except Exception as e:
         diag['pmc'] = f'{type(e).__name__}: {e}'
     try:

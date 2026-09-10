@@ -169,6 +169,35 @@ def registar(app):
                 # carga e PMC, se existirem
                 series.update(_carga_e_pmc(seq))
                 res['correlacoes'] = hrec.correlacoes(series)
+
+                # ── cada MODELO como alvo, não só o HRV em bruto ─────
+                #
+                # "a carga mexe no HRV?" e "a carga mexe no que o modelo
+                # DIZ?" são perguntas diferentes. Os modelos são
+                # transformações não-lineares do mesmo sinal, e um deles
+                # pode acompanhar a carga melhor do que o valor contínuo.
+                alvos = {'lnrmssd': ln}
+                if res['swc'].get('estado'):
+                    alvos['plews'] = hrec.ordinal(res['swc']['estado'])
+                if res['altini'].get('ok'):
+                    alvos['altini'] = hrec.ordinal(res['altini']['estado'])
+                if res['javaloyes'].get('prescricao'):
+                    alvos['javaloyes'] = hrec.ordinal(
+                        res['javaloyes']['prescricao'])
+                if res['kiviniemi'].get('ok'):
+                    alvos['kiviniemi'] = hrec.ordinal(
+                        res['kiviniemi']['prescricao'])
+                if res['pslope'].get('ok'):
+                    alvos['pslope'] = hrec.ordinal(res['pslope']['zonas'])
+                if res['beta'].get('ok'):
+                    alvos['beta'] = res['beta']['beta']
+
+                # as preditoras são só carga, volume e PMC — nada que
+                # venha do HRV, senão volta a circularidade
+                pred = {k: v for k, v in series.items()
+                        if k not in ('lnrmssd', 'hf_power')}
+                res['correlacoes_modelos'] = hrec.correlacoes_multi_alvo(
+                    alvos, pred)
             except Exception as e:
                 res['correlacoes'] = {'ok': False,
                                       'erro': f'{type(e).__name__}: {e}'}

@@ -264,13 +264,40 @@ def _carga_e_pmc(seq):
         import db as _db
         d0, d1 = seq[0]['data'], seq[-1]['data']
         linhas = _db._exec(
-            """SELECT date, SUM(COALESCE(icu_joules,0))/1000.0,
-                      SUM(COALESCE(icu_training_load,0))
+            """SELECT date,
+                      SUM(COALESCE(icu_joules,0))/1000.0,
+                      SUM(COALESCE(icu_training_load,0)),
+                      SUM(COALESCE(moving_time,0))/3600.0,
+                      SUM(COALESCE(distance,0))/1000.0,
+                      COUNT(*)
                  FROM activities WHERE date BETWEEN ? AND ?
                 GROUP BY date""", (d0, d1), fetch='all') or []
-        por_data = {str(r[0])[:10]: (r[1], r[2]) for r in linhas}
-        kj = [por_data.get(d['data'], (None, None))[0] for d in seq]
-        tss = [por_data.get(d['data'], (None, None))[1] for d in seq]
+        por_data = {str(r[0])[:10]: r[1:] for r in linhas}
+        vazio = (None, None, None, None, None)
+        kj = [por_data.get(d['data'], vazio)[0] for d in seq]
+        tss = [por_data.get(d['data'], vazio)[1] for d in seq]
+
+        # VOLUME: horas, distância e número de sessões.
+        #
+        # A carga (kJ, TSS) e o volume não são a mesma coisa — três horas
+        # fáceis e uma hora dura podem dar o mesmo TSS e afectar a
+        # recuperação de formas diferentes. Testá-los em separado é a
+        # única maneira de ver qual dos dois se relaciona com o HRV.
+        horas = [por_data.get(d['data'], vazio)[2] or 0.0 for d in seq]
+        dist = [por_data.get(d['data'], vazio)[3] or 0.0 for d in seq]
+        n_ses = [por_data.get(d['data'], vazio)[4] or 0 for d in seq]
+        for nome, vs in (('horas', horas), ('distancia_km', dist),
+                         ('n_sessoes', n_ses)):
+            if sum(1 for v in vs if v) >= 30:
+                fora[nome] = [float(v) for v in vs]
+                # acumulados: o volume de uma semana pesa mais do que o
+                # de um dia, e é o que a periodização manipula
+                for jan in (7, 21):
+                    ac = []
+                    for i in range(len(vs)):
+                        j = vs[max(0, i - jan + 1):i + 1]
+                        ac.append(float(sum(j)) / len(j) if j else None)
+                    fora[f'{nome}_media_{jan}d'] = ac
         # dias sem treino são 0, não são dados em falta
         kj = [v if v is not None else 0.0 for v in kj]
         tss = [v if v is not None else 0.0 for v in tss]

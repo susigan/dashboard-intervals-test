@@ -1183,10 +1183,12 @@ def correlacoes_multi_alvo(series_alvo, series_preditoras, lags=LAGS,
     """
     todos, ps = [], []
     saltados = []
+    testados_por_alvo = {}
 
     for alvo, base in series_alvo.items():
         if not base:
             continue
+        testados_por_alvo.setdefault(alvo, 0)
         for nome, vs in series_preditoras.items():
             if not vs or nome == alvo:
                 continue
@@ -1215,6 +1217,7 @@ def correlacoes_multi_alvo(series_alvo, series_preditoras, lags=LAGS,
                                'semana' if lag <= 7 else
                                'bloco' if lag <= 21 else 'mesociclo')})
                 ps.append(p)
+                testados_por_alvo[alvo] = testados_por_alvo.get(alvo, 0) + 1
 
     corte = _bh(ps, alfa)
     for e in todos:
@@ -1229,11 +1232,19 @@ def correlacoes_multi_alvo(series_alvo, series_preditoras, lags=LAGS,
         if k not in melhores or abs(e['rho']) > abs(melhores[k]['rho']):
             melhores[k] = e
 
-    # que alvo responde melhor à carga? é a pergunta que isto resolve
+    # que alvo responde melhor à carga? é a pergunta que isto resolve.
+    #
+    # TODOS os alvos passados entram aqui, mesmo sem relação
+    # significativa — sem isto, um modelo sem relação desaparecia da
+    # tabela exactamente como um modelo nunca testado, e as duas coisas
+    # são informação diferente.
     por_alvo = {}
+    for alvo in series_alvo:
+        por_alvo[alvo] = {'n_relacoes': 0, 'melhor_rho': 0,
+                          'melhor_serie': None, 'melhor_lag': None,
+                          'n_testado': testados_por_alvo.get(alvo, 0)}
     for (alvo, _s), e in melhores.items():
-        d = por_alvo.setdefault(alvo, {'n_relacoes': 0, 'melhor_rho': 0,
-                                       'melhor_serie': None})
+        d = por_alvo[alvo]
         d['n_relacoes'] += 1
         if abs(e['rho']) > abs(d['melhor_rho']):
             d['melhor_rho'] = e['rho']
@@ -1241,7 +1252,8 @@ def correlacoes_multi_alvo(series_alvo, series_preditoras, lags=LAGS,
             d['melhor_lag'] = e['lag']
 
     ranking = sorted(por_alvo.items(),
-                     key=lambda kv: -abs(kv[1]['melhor_rho']))
+                     key=lambda kv: (-abs(kv[1]['melhor_rho']),
+                                     -kv[1]['n_testado']))
     conclusao = None
     if ranking:
         top, d = ranking[0]
@@ -1261,6 +1273,10 @@ def correlacoes_multi_alvo(series_alvo, series_preditoras, lags=LAGS,
         'melhores': [{'alvo': k[0], **v} for k, v in melhores.items()],
         'por_alvo': por_alvo,
         'ranking': [k for k, _v in ranking],
+        'alvos_sem_relacao': [k for k, v in por_alvo.items()
+                              if v['n_relacoes'] == 0 and v['n_testado']],
+        'alvos_nao_testados': [k for k in series_alvo
+                               if not testados_por_alvo.get(k)],
         'conclusao': conclusao,
         'saltados': saltados,
         'p_corte_bh': corte,

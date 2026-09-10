@@ -970,6 +970,19 @@ function rcCorrModelos(){
   return;
  }
  let h='';
+ // que séries entraram como "treino" — sem isto não se sabe se a
+ // ausência do CTL significa "sem relação" ou "não foi testado"
+ const pu=(RC||{}).preditoras_usadas||[];
+ const er=(RC||{}).erros_series_treino;
+ if(pu.length)
+  h+='<p class="sub" style="font-size:11px;">Séries de treino testadas ('
+   +pu.length+'): '+pu.join(', ')+'</p>';
+ if(er)
+  h+='<p style="color:#F0883E;font-size:11px;">⚠ não foi possível '
+   +'construir algumas séries: '
+   +Object.keys(er).map(function(k){ return k+' ('+er[k]+')'; }).join(' · ')
+   +'. As que faltam não aparecem abaixo — a ausência não significa '
+   +'ausência de relação.</p>';
  if(c.conclusao)
   h+='<p style="font-size:12px;border-left:3px solid #5DADE2;'
    +'padding-left:8px;margin:6px 0;">'+c.conclusao+'</p>';

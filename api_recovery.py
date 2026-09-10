@@ -309,25 +309,43 @@ def _juntar_rhr(registos, corte):
 # tabela real usa outros nomes, que eu não tinha visto (o db.py nunca
 # passou por esta conversa). Em vez de adivinhar de novo, descobre-se o
 # que existe e usa-se isso.
+# Schema real de activities (lido em susigan/dashboard-intervals-test,
+# db.py): kj, training_load, moving_time, distance_m. NÃO são
+# icu_joules/icu_training_load/distance — os nomes que eu tinha
+# assumido antes, e que rebentaram em produção com UndefinedColumn.
 _CAND_COLUNAS = {
-    'joules': ['icu_joules', 'joules', 'work', 'kilojoules', 'kj'],
-    'load':   ['icu_training_load', 'training_load', 'load', 'tss',
-               'icu_hrss', 'hrss'],
+    'joules': ['kj', 'icu_joules', 'joules', 'work', 'kilojoules'],
+    'load':   ['training_load', 'icu_training_load', 'load', 'tss',
+               'xss', 'icu_hrss', 'hrss'],
     'tempo':  ['moving_time', 'elapsed_time', 'duration'],
-    'dist':   ['distance', 'icu_distance'],
+    'dist':   ['distance_m', 'distance', 'icu_distance'],
 }
+# 'kj' já vem em quilojoules — a query antiga assumia joules e dividia
+# por 1000 sempre, o que teria dado valores 1000x pequenos demais.
+_JA_EM_KJ = {'kj'}
+# distance_m está em metros; outras candidatas podem já vir em km.
+_JA_EM_KM = set()
 
 
 def _colunas_existentes(nomes_tabela='activities'):
-    """Que colunas de facto existem na tabela, para escolher os nomes certos."""
+    """Que colunas de facto existem na tabela, para escolher os nomes certos.
+
+    db.py chama a variável DRIVER (não MODO) e vale 'postgres' ou
+    'sqlite'. A query de introspecção muda com o motor.
+    """
     try:
         import db as _db
-        r = _db._exec(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = %s" if _db.MODO == 'postgres' else
-            f"PRAGMA table_info({nomes_tabela})",
-            (nomes_tabela,) if _db.MODO == 'postgres' else (),
-            fetch='all') or []
+        driver = getattr(_db, 'DRIVER', 'sqlite')
+        if driver == 'postgres':
+            r = _db._exec(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = %s", (nomes_tabela,), fetch='all') or []
+        else:
+            r = _db._exec(f"PRAGMA table_info({nomes_tabela})",
+                          fetch='all') or []
+            # PRAGMA table_info devolve (cid, name, type, ...): o nome é
+            # a coluna 1, não a 0 como no resultado do Postgres
+            return {str(row[1]).lower() for row in r}
         return {str(row[0]).lower() for row in r}
     except Exception:
         return set()
@@ -378,10 +396,14 @@ def _carga_e_pmc(seq, diag=None):
         # A query usa as colunas DESCOBERTAS acima, não nomes fixos.
         # kJ = joules/1000 quando há coluna de joules; senão fica None e
         # só o 'load' (TSS/HRSS/o que existir) entra.
-        sel_j = f'SUM(COALESCE({col_j},0))/1000.0' if col_j else 'NULL'
+        # divisão condicional: 'kj' já está em quilojoules, não se divide
+        # por 1000 outra vez; 'distance_m' está em metros, divide-se
+        div_j = '' if col_j in _JA_EM_KJ else '/1000.0'
+        sel_j = f'SUM(COALESCE({col_j},0)){div_j}' if col_j else 'NULL'
         sel_l = f'SUM(COALESCE({col_l},0))' if col_l else 'NULL'
         sel_t = f'SUM(COALESCE({col_t},0))/3600.0' if col_t else 'NULL'
-        sel_d = f'SUM(COALESCE({col_d},0))/1000.0' if col_d else 'NULL'
+        div_d = '' if col_d in _JA_EM_KM else '/1000.0'
+        sel_d = f'SUM(COALESCE({col_d},0)){div_d}' if col_d else 'NULL'
         linhas = _db._exec(
             f"""SELECT date, {sel_j}, {sel_l}, {sel_t}, {sel_d}, COUNT(*)
                  FROM activities WHERE date BETWEEN ? AND ?

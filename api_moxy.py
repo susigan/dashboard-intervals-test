@@ -1502,9 +1502,36 @@ def registar(app):
             try:
                 _smo2_min_sessao = min((v for v in smo2 if v is not None),
                                        default=None)
-                _fc_repouso = (min((v for v in _hrs if v is not None),
-                                   default=None) if _hrs else None)
-                vo2 = nbk.vo2max_previsto(_smo2_min_sessao, _fc_repouso)
+                # FC de repouso A SÉRIO, não o mínimo dentro da sessão.
+                #
+                # O mínimo da FC durante um teste de degraus pode ficar
+                # 30-40 bpm acima do repouso real, se não houver nenhum
+                # troço realmente fácil — e a fórmula do VO2max amplifica
+                # esse erro (1 bpm a mais tira 1.129 ml/kg/min). Foi isto
+                # que deu 2.5 ml/kg/min num teste de ski.
+                #
+                # Vai-se buscar o restingHR/avgSleepingHR da Intervals.icu
+                # para o dia da sessão — a mesma fonte que já usamos na
+                # tab Recovery. Sem isso, o VO2max não se calcula: um
+                # valor de má qualidade não é melhor que nenhum valor.
+                _fc_repouso = None
+                _dia = MX_SESSOES_CACHE.get(aid, {}).get('data')
+                if _dia:
+                    _w, _werr = api.icu_get(
+                        f'/athlete/{api.ATHLETE_ID}/wellness/{_dia}')
+                    if not _werr and isinstance(_w, dict):
+                        _fc_repouso = (_w.get('restingHR')
+                                       or _w.get('avgSleepingHR'))
+                if _fc_repouso is not None:
+                    vo2 = nbk.vo2max_previsto(_smo2_min_sessao, _fc_repouso)
+                    vo2['fc_repouso_origem'] = 'wellness da Intervals.icu'
+                else:
+                    vo2 = {'ok': False,
+                          'motivo': ('sem FC de repouso da Intervals.icu '
+                                     'para este dia — não se usa o mínimo '
+                                     'da sessão como substituto, porque '
+                                     'num teste sem troço fácil isso não é '
+                                     'repouso e produz valores impossíveis')}
             except Exception as e:
                 vo2 = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
 

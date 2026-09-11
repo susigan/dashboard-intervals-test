@@ -1007,6 +1007,10 @@ let MX_RESERVAS = null;  // W′ e M′ balance ao longo da sessão
 // resultados dos três métodos, para a síntese os poder cruzar
 let MX_ULT_REDE=null, MX_ULT_US=null, MX_ULT_PC=null,
     MX_ULT_PERFIL=null, MX_ULT_HIPO=false;
+// valores concretos do teste actual (watts, bpm, smo2, limitador
+// fisiológico), para as intervenções mostrarem "a que carga" e não só
+// receitas genéricas
+let MX_ULT_VALORES=null;
 
 function mxGravarTodas(){
  const est=document.getElementById('mxLimEstado');
@@ -1057,6 +1061,21 @@ function mxLimiares(){
   // lia-o na zona morta temporal, ficando sempre nulo -- era por isso que
   // o BP2 nao aparecia no grafico
   const lc=d.limiares_consenso||{};
+  // Valores encontrados NESTE teste, para aparecerem dentro do dropdown
+  // de intervenções em vez de só watts/paces genéricos. Sem isto, a
+  // sugestão de treino não dizia a que carga a limitação apareceu.
+  const p1=lc.primeiro||{}, p2=lc.segundo||{};
+  MX_ULT_VALORES = {
+   bp1_w: p1.mediana, bp1_bpm: (p1.estimativas||[]).find(e=>e.bpm)?.bpm,
+   bp2_w: p2.mediana, bp2_bpm: (p2.estimativas||[]).find(e=>e.bpm)?.bpm,
+   smo2_min: Math.min.apply(null,
+     (d.blocos_usados||[]).map(b=>b.smo2_min).filter(v=>v!=null)) || null,
+   fc_max_teste: null,
+   modalidade: d.modalidade,
+   limitador_fisiologico: d.limitador_fisiologico,
+   vo2max_previsto: d.vo2max_previsto,
+  };
+  MX_ULT_HIPO = MX_ULT_HIPO || false;
   est.textContent=(d.modalidade||'')+' · '+(f.n_degraus||0)+' degraus';
   // No grafico vai o resultado do SCRIPT do Intervals.icu, para bater
   // certo com o que ves la'. As tabelas continuam a mostrar todos os
@@ -1619,6 +1638,31 @@ function mxSintese(){
    h+='<p style="color:#F0883E;font-size:11px;margin:6px 0 0 0;">⚠ '+a
     +'</p>'; });
   h+='</div>';
+  // Valores REAIS deste teste (watts, bpm, SmO2), não só receitas
+  // genéricas. Sem isto a sugestão dizia "treina abaixo do 1º limiar"
+  // sem dizer a que carga é que isso ficou.
+  const vv=MX_ULT_VALORES;
+  if(vv && (vv.bp1_w!=null || vv.bp2_w!=null)){
+   h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
+    +'margin-top:6px;font-size:11px;">'
+    +'<b>Valores encontrados neste teste ('+(vv.modalidade||'')+')</b><br>';
+   if(vv.bp1_w!=null)
+    h+='1.º limiar (aeróbio): <b>'+Math.round(vv.bp1_w)+' W</b>'
+     +(vv.bp1_bpm?' · '+Math.round(vv.bp1_bpm)+' bpm':'')+'<br>';
+   if(vv.bp2_w!=null)
+    h+='2.º limiar (MLSS/RCP): <b>'+Math.round(vv.bp2_w)+' W</b>'
+     +(vv.bp2_bpm?' · '+Math.round(vv.bp2_bpm)+' bpm':'')+'<br>';
+   if(vv.smo2_min!=null)
+    h+='SmO2 mínimo atingido: <b>'+Math.round(vv.smo2_min)+'%</b><br>';
+   const lf=vv.limitador_fisiologico||{};
+   if(lf.ok)
+    h+='<span style="color:#8b949e;">padrão observado: '
+     +(lf.candidatos||[]).join(', ')+' (amplitude SmO2 '
+     +lf.amplitude_smo2+'%)</span><br>'
+     +'<span style="color:#F0883E;font-size:10px;">'
+     +lf.aviso_limited_vs_limiting+'</span>';
+   h+='</div>';
+  }
   // detalhe dos métodos, em dropdown
   h+='<details style="margin-top:6px;"><summary style="cursor:pointer;'
    +'font-size:12px;color:#8b949e;padding:4px 0;">Métodos, ferramentas e '

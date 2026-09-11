@@ -134,6 +134,7 @@ BODY = """
         </select></label>
       <span id="mxLimEstado" style="color:#8b949e;font-size:12px;"></span></div>
     <div id="mxLimiares" style="margin-top:6px;"></div>
+    <div id="mxDerivadas" style="margin-top:6px;"></div>
     <details style="margin-top:6px;">
       <summary style="cursor:pointer;font-size:12px;color:#8b949e;">Método e fiabilidade por modalidade</summary>
       <div style="font-size:11px;color:#8b949e;margin-top:6px;">
@@ -1065,17 +1066,29 @@ function mxLimiares(){
   // de intervenções em vez de só watts/paces genéricos. Sem isto, a
   // sugestão de treino não dizia a que carga a limitação apareceu.
   const p1=lc.primeiro||{}, p2=lc.segundo||{};
+  // Escolher a estimativa mais PRÓXIMA da mediana, não a primeira com
+  // bpm. ".find(e=>e.bpm)" pegava na primeira do array, que podia ser
+  // de um método com watts bem diferentes da mediana escolhida.
+  function _bpmDaMediana(consenso){
+   const es=(consenso.estimativas||[]).filter(e=>e.bpm!=null);
+   if(!es.length || consenso.mediana==null) return null;
+   return es.reduce(function(a,b){
+     return Math.abs(a.watts-consenso.mediana)<=Math.abs(b.watts-consenso.mediana)?a:b;
+   }).bpm;
+  }
   MX_ULT_VALORES = {
-   bp1_w: p1.mediana, bp1_bpm: (p1.estimativas||[]).find(e=>e.bpm)?.bpm,
-   bp2_w: p2.mediana, bp2_bpm: (p2.estimativas||[]).find(e=>e.bpm)?.bpm,
+   bp1_w: p1.mediana, bp1_bpm: _bpmDaMediana(p1),
+   bp2_w: p2.mediana, bp2_bpm: _bpmDaMediana(p2),
    smo2_min: Math.min.apply(null,
      (d.blocos_usados||[]).map(b=>b.smo2_min).filter(v=>v!=null)) || null,
    fc_max_teste: null,
    modalidade: d.modalidade,
    limitador_fisiologico: d.limitador_fisiologico,
    vo2max_previsto: d.vo2max_previsto,
+   smo2_derivadas: d.smo2_derivadas,
   };
   MX_ULT_HIPO = MX_ULT_HIPO || false;
+  mxDerivadasEVo2(d);
   est.textContent=(d.modalidade||'')+' · '+(f.n_degraus||0)+' degraus';
   // No grafico vai o resultado do SCRIPT do Intervals.icu, para bater
   // certo com o que ves la'. As tabelas continuam a mostrar todos os
@@ -1663,96 +1676,6 @@ function mxSintese(){
      +lf.aviso_limited_vs_limiting+'</span>';
    h+='</div>';
   }
-  // detalhe dos métodos, em dropdown
-  h+='<details style="margin-top:6px;"><summary style="cursor:pointer;'
-   +'font-size:12px;color:#8b949e;padding:4px 0;">Métodos, ferramentas e '
-   +'sinais para '+iv.nome+'</summary><div style="margin-top:6px;'
-   +'font-size:11px;">';
-  h+='<p><b>Antes de tudo:</b> '+(d.fundacoes||[]).map(function(f){
-    return f.item; }).join(' · ')+'</p>';
-  h+='<table style="width:100%;border-collapse:collapse;font-size:11px;">'
-   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
-   +'<th style="padding:4px;">Método</th><th>Como</th><th>Sinal no SmO2</th>'
-   +'</tr>'
-   +(iv.metodos||[]).map(function(m){
-     return '<tr style="border-bottom:1px solid #161b22;">'
-      +'<td style="padding:4px;"><b>'+m.metodo+'</b>'
-      +(m.alvo_fc?'<br><span style="color:#6e7681;">'+m.alvo_fc+'</span>':'')
-      +'</td><td style="color:#8b949e;">'+m.como+'</td>'
-      +'<td style="color:#3FB950;">'+(m.alvo_smo2||m.sinal_no_smo2||'—')
-      +'</td></tr>'; }).join('')
-   +'</table>';
-  const n2=iv.nivel_dois;
-  if(n2){
-   h+='<p style="margin-top:8px;"><b>Nível dois</b> — '+n2.porque+'</p>'
-    +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
-    +(n2.metodos||[]).map(function(m){
-      return '<tr style="border-bottom:1px solid #161b22;">'
-       +'<td style="padding:4px;width:30%;"><b>'+m.metodo+'</b></td>'
-       +'<td style="color:#8b949e;">'+m.como
-       +(m.porque?'<br><span style="color:#6e7681;">'+m.porque+'</span>':'')
-       +(m.como_verificar?'<br><span style="color:#A371F7;">verificar: '
-         +m.como_verificar+'</span>':'')
-       +'</td></tr>'; }).join('')
-    +'</table>';
-   if(n2.modalidade)
-    h+='<p style="color:#8b949e;">'+n2.modalidade+'</p>';
-  }
-  if(iv.nao_fazer)
-   h+='<p style="color:#F0883E;"><b>Não fazer:</b> '+iv.nao_fazer+'</p>';
-  h+='</div></details>';
-  box.innerHTML=h;
- }).catch(function(){ box.innerHTML=''; });
-}
-
-function mxIntervencoes(limitador, destino){
- const box=document.getElementById(destino||'mxIntervencoes');
- if(!box) return;
- if(!limitador){ box.innerHTML=''; return; }
- fetch('/api/moxy/intervencoes?limitador='+encodeURIComponent(limitador))
- .then(r=>r.json()).then(function(d){
-  if(d.status==='sem_correspondencia'){
-   box.innerHTML='<p style="color:#8b949e;font-size:11px;">'+d.motivo+'</p>';
-   return;
-  }
-  if(d.status!=='ok'){ box.innerHTML=''; return; }
-  const iv=d.intervencao||{};
-  let h='<details style="margin-top:8px;"><summary style="cursor:pointer;'
-   +'font-size:12px;color:#A371F7;padding:4px 0;">O que treinar para: '
-   +iv.nome+'</summary><div style="margin-top:6px;font-size:11px;">';
-  h+='<p style="color:#8b949e;">'+iv.o_que_e+'</p>';
-
-  h+='<p><b>Antes de qualquer intervenção</b> — fundações:</p><ul '
-   +'style="margin:2px 0 8px 16px;color:#8b949e;">'
-   +(d.fundacoes||[]).map(function(f){
-     return '<li><b>'+f.item+'</b>: '+f.porque+'</li>'; }).join('')+'</ul>';
-
-  if((iv.sinais||[]).length)
-   h+='<p><b>Sinais</b>: <span style="color:#8b949e;">'
-    +iv.sinais.join(' · ')+'</span></p>';
-
-  h+='<table style="width:100%;border-collapse:collapse;font-size:11px;">'
-   +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
-   +'<th style="padding:4px;">Método</th><th>Como</th>'
-   +'<th>Sinal no SmO2</th><th>Fonte</th></tr>'
-   +(iv.metodos||[]).map(function(m){
-     return '<tr style="border-bottom:1px solid #161b22;">'
-      +'<td style="padding:4px;"><b>'+m.metodo+'</b></td>'
-      +'<td style="color:#8b949e;">'+m.como+'</td>'
-      +'<td style="color:#3FB950;">'+(m.sinal_no_smo2||'—')+'</td>'
-      +'<td style="color:#6e7681;font-size:10px;">'+(m.fonte||'')+'</td>'
-      +'</tr>'; }).join('')
-   +'</table>';
-
-  if(iv.nao_fazer)
-   h+='<p style="color:#F0883E;margin-top:6px;"><b>Não fazer:</b> '
-    +iv.nao_fazer+'</p>';
-  if(iv.causas_possiveis)
-   h+='<p style="color:#8b949e;"><b>Causas possíveis:</b> '
-    +iv.causas_possiveis.join(' · ')+'</p>';
-  if(d.aviso)
-   h+='<p style="color:#8b949e;margin-top:6px;">'+d.aviso+'</p>';
-  h+='</div></details>';
   box.innerHTML=h;
  }).catch(function(){ box.innerHTML=''; });
 }

@@ -1106,9 +1106,24 @@ def bp_moxy(blocos, tempo=None, smo2=None, hr=None, n_fino=N_FINO,
             continue
         h = b.get('hr_medio')
         if h is None and tempo and hr:
-            vs = [hr[i] for i in range(min(len(tempo), len(hr)))
-                  if b['t0'] <= tempo[i] <= b['t1'] and hr[i] is not None]
-            h = sum(vs) / len(vs) if vs else None
+            # Último minuto do bloco, não o bloco inteiro.
+            #
+            # A FC sobe ao longo de um degrau; os primeiros segundos ainda
+            # trazem a FC do degrau anterior. Com blocos vizinhos e curtos,
+            # a média do bloco inteiro esbatia a diferença entre eles — o
+            # BP1 e o BP2 podiam cair em degraus próximos e sair com o
+            # MESMO bpm arredondado. O último minuto está sempre no
+            # estado mais estável, e é o mesmo critério que já se usa
+            # para o SmO2 (Arnold) — as duas séries deixam de ser
+            # medidas por regras diferentes.
+            ini_ult = max(b['t0'], b['t1'] - 60)
+            vs_ult = [hr[i] for i in range(min(len(tempo), len(hr)))
+                     if ini_ult <= tempo[i] <= b['t1'] and hr[i] is not None]
+            if not vs_ult:
+                vs_ult = [hr[i] for i in range(min(len(tempo), len(hr)))
+                         if b['t0'] <= tempo[i] <= b['t1']
+                         and hr[i] is not None]
+            h = sum(vs_ult) / len(vs_ult) if vs_ult else None
         pts.append({'watts': float(w), 'smo2': float(s),
                     'hr': round(h) if h is not None else None})
 
@@ -1268,7 +1283,7 @@ def _hr_do_degrau(pts, alvo):
         'do_degrau_w': round(perto['watts']),
         'distancia_w': round(abs(perto['watts'] - alvo), 1),
         'exacto': abs(perto['watts'] - alvo) < 1,
-        'nota': ('média da FC durante o degrau de '
+        'nota': ('média do último minuto do degrau de '
                  f"{round(perto['watts'])} W"
                  + ('' if abs(perto['watts'] - alvo) < 1 else
                     f", que é o mais próximo do breakpoint "
@@ -1642,17 +1657,31 @@ def marcar_implausiveis(estimativas, tipo='watts', contexto=None):
     }
 
 
-def fc_media_do_bloco(tempo, hr, blocos, watts_alvo, tolerancia=30):
-    """FC média do bloco de trabalho onde a carga alvo cai.
+def fc_media_do_bloco(tempo, hr, blocos, watts_alvo, tolerancia=30,
+                      ultimo_min_s=60):
+    """FC do bloco de trabalho onde a carga alvo cai — último minuto.
 
     Todos os limiares devem trazer a FC da mesma forma: a MÉDIA MEDIDA no
     degrau onde o valor caiu. Alguns métodos traziam-na (os que ajustam a
     curva SmO2 × potência, que já recebem a série de FC) e outros não — a
-    reoxigenação e o MLSS trabalham só com o SmO2 e nunca viram a FC.
+    reoxigenação e o MLSS trabalham só com o SmO2 e nunca viam a FC.
 
-    Resultado: a tabela mostrava "— bpm" em metade das linhas, e o
-    utilizador não sabia se era falta de medição ou falha do sensor. Era
-    falta de código.
+    MUDANÇA: a média passou a ser do ÚLTIMO MINUTO do bloco, não do bloco
+    inteiro. Duas razões:
+
+    1. É o mesmo critério do Arnold já usado no resto do ficheiro para o
+       SmO2 — "média do último minuto", porque é aí que o sinal estabiliza.
+       Misturar bloco inteiro num método e último minuto noutro dava
+       números que não eram comparáveis entre si.
+
+    2. Quando o BP1 e o BP2 caem em degraus vizinhos, a média do bloco
+       inteiro esbate a diferença entre eles — os primeiros segundos de
+       um degrau ainda têm a FC do degrau anterior, subindo. Isso podia
+       fazer dois limiares próximos saírem com o MESMO bpm arredondado.
+       A janela do último minuto está sempre em estado mais estável.
+
+    Devolve também a média do bloco inteiro, para se poder comparar as
+    duas se for preciso depurar.
     """
     if watts_alvo is None or not hr or not tempo:
         return None
@@ -1660,12 +1689,21 @@ def fc_media_do_bloco(tempo, hr, blocos, watts_alvo, tolerancia=30):
     for b in (blocos or []):
         if not b.get('on') or b.get('watts_medio') is None:
             continue
-        vs = [hr[i] for i in range(min(len(tempo), len(hr)))
-              if b['t0'] <= tempo[i] <= b['t1'] and hr[i] is not None]
+        vs_todo = [hr[i] for i in range(min(len(tempo), len(hr)))
+                  if b['t0'] <= tempo[i] <= b['t1'] and hr[i] is not None]
+        ini_ultimo = max(b['t0'], b['t1'] - ultimo_min_s)
+        vs_ultimo = [hr[i] for i in range(min(len(tempo), len(hr)))
+                    if ini_ultimo <= tempo[i] <= b['t1']
+                    and hr[i] is not None]
+        vs = vs_ultimo or vs_todo
         if vs:
             cands.append({'watts': b['watts_medio'],
                           'bpm': sum(vs) / len(vs),
+                          'bpm_bloco_inteiro': (sum(vs_todo) / len(vs_todo)
+                                                if vs_todo else None),
                           'n': len(vs),
+                          'janela': f'último {ultimo_min_s}s' if vs_ultimo
+                                    else 'bloco inteiro (curto demais)',
                           't0': b['t0'], 't1': b['t1']})
     if not cands:
         return None
@@ -1675,11 +1713,16 @@ def fc_media_do_bloco(tempo, hr, blocos, watts_alvo, tolerancia=30):
         return None
     return {
         'bpm': round(perto['bpm']),
+        'bpm_bloco_inteiro': (round(perto['bpm_bloco_inteiro'])
+                              if perto.get('bpm_bloco_inteiro') is not None
+                              else None),
         'do_degrau_w': round(perto['watts']),
         'distancia_w': round(dist, 1),
         'exacto': dist < 1,
         'n_amostras': perto['n'],
-        'nota': (f"média da FC no degrau de {round(perto['watts'])} W"
+        'janela': perto['janela'],
+        'nota': (f"média do {perto['janela']} do degrau de "
+                 f"{round(perto['watts'])} W"
                  + ('' if dist < 1 else
                     f" (o mais próximo de {round(watts_alvo)} W)")),
     }

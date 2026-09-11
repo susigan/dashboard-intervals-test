@@ -1481,6 +1481,33 @@ def registar(app):
                       'motivo': ('a frequência respiratória e a FC vêm da '
                                  'mesma cinta, que falhou nesta sessão')}
 
+            # ── limitador (Peikon/NNOXX), derivadas e VO2max previsto ──
+            try:
+                def _fc_media_bloco(b):
+                    if not _hrs:
+                        return None
+                    vs = [_hrs[i] for i in range(min(len(t), len(_hrs)))
+                          if b['t0'] <= t[i] <= b['t1']
+                          and _hrs[i] is not None]
+                    return sum(vs) / len(vs) if vs else None
+                _smo2_deg = [b.get('smo2_min') for b in (ons or [])]
+                _fc_deg = [_fc_media_bloco(b) for b in (ons or [])]
+                lim_fisio = nbk.classificar_limitador(_smo2_deg, _fc_deg)
+            except Exception as e:
+                lim_fisio = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+            try:
+                deriv = nbk.smo2_derivadas(t, smo2)
+            except Exception as e:
+                deriv = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+            try:
+                _smo2_min_sessao = min((v for v in smo2 if v is not None),
+                                       default=None)
+                _fc_repouso = (min((v for v in _hrs if v is not None),
+                                   default=None) if _hrs else None)
+                vo2 = nbk.vo2max_previsto(_smo2_min_sessao, _fc_repouso)
+            except Exception as e:
+                vo2 = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+
             return jsonify({
                 'status': 'ok', 'activity_id': aid, 'modalidade': mod,
                 'fc_utilizavel': fcu,
@@ -1498,6 +1525,9 @@ def registar(app):
                 'bp_hhb': bp_hhb,
                 'bp_moxy_sem_restricao': bp_mx_livre,
                 'limiares_consenso': lim_cons,
+                'limitador_fisiologico': lim_fisio,
+                'smo2_derivadas': deriv,
+                'vo2max_previsto': vo2,
                 'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
                 'blocos_usados': [
                     {'watts': b.get('watts_medio'),

@@ -1807,14 +1807,36 @@ def vo2max_previsto(smo2_min, fc_repouso):
     broad population". Serve como referência de ORDEM DE GRANDEZA, não
     como medição. Precisaria de ser recalibrada com dados do próprio
     atleta para significar alguma coisa.
+
+    fc_repouso TEM de ser uma FC de repouso a sério — medida antes do
+    esforço ou da noite anterior — nunca o mínimo da FC dentro da
+    sessão. Num teste de degraus sem período de repouso verdadeiro, o
+    mínimo da sessão pode ficar 30-40 bpm acima do repouso real, e a
+    fórmula amplifica esse erro: 1 bpm a mais em FCrepouso tira 1.129
+    ml/kg/min ao resultado. Foi isto que deu 2.5 ml/kg/min num teste de
+    ski — um valor fisiologicamente impossível, produzido por uma FC de
+    "repouso" de 104 bpm que era na verdade o ponto mais fácil do teste.
     """
     if smo2_min is None or fc_repouso is None:
         return {'ok': False, 'motivo': 'faltam SmO2 mínimo ou FC repouso'}
     y = 159.468 - 1.258 * smo2_min - 1.129 * fc_repouso
+    # Plausibilidade fisiológica: fora de 20–85 ml/kg/min não é VO2max de
+    # ninguém — é a fórmula a amplificar um mau valor de entrada. Marca-se
+    # em vez de devolver um número que parece medição.
+    plausivel = 20 <= y <= 85
     return {
         'ok': True, 'vo2max_estimado': round(y, 1),
+        'plausivel': plausivel,
         'formula': 'VO2max = 159.468 − 1.258·SmO2min − 1.129·FCrep',
         'entrada': {'smo2_min': smo2_min, 'fc_repouso': fc_repouso},
+        'motivo_implausivel': (
+            None if plausivel else
+            f'{round(y,1)} ml/kg/min está fora do que é fisiologicamente '
+            'possível. A causa mais provável é a FC de repouso usada não '
+            'ser repouso a sério — se veio do mínimo da sessão em vez de '
+            'uma medição antes do esforço, um teste sem troço realmente '
+            'fácil dá um "repouso" alto demais e a fórmula amplifica o '
+            'erro'),
         'aviso': ('coeficientes de um estudo com n=10, população muito '
                   'heterogénea. O próprio autor diz que não generaliza — '
                   'isto é uma ordem de grandeza, não uma medição. Só serve '

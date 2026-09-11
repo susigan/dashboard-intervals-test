@@ -1594,6 +1594,37 @@ function mxLimiares(){
 // Cruza a rede causal, a 5-1-5 e o perfil. Um limitador só de um método
 // não chega -- e quando discordam, dizer isso é mais útil do que escolher
 // um deles à sorte.
+// VO2max previsto e SmO2'/SmO2'' — estavam a ser calculados no backend e
+// nunca chegavam a aparecer na tab. Painel pequeno, sem gráfico: o valor
+// e o aviso são o que importa aqui, não uma curva ao longo do tempo.
+function mxDerivadasEVo2(d){
+ const box=document.getElementById('mxDerivadas');
+ if(!box) return;
+ let h='';
+ const vo2=d.vo2max_previsto||{};
+ if(vo2.ok){
+  h+='<p style="font-size:11px;border-left:2px solid #A371F7;'
+   +'padding-left:8px;margin:6px 0;">'
+   +'<b style="color:#A371F7;">VO2max previsto: '+vo2.vo2max_estimado
+   +' ml/kg/min</b><br>'
+   +'<span style="color:#8b949e;">'+vo2.formula+'</span><br>'
+   +'<span style="color:#F0883E;">'+vo2.aviso+'</span></p>';
+ } else if(vo2.motivo){
+  h+='<p style="font-size:11px;color:#8b949e;">VO2max previsto: '
+   +vo2.motivo+'</p>';
+ }
+ const dv=d.smo2_derivadas||{};
+ if(dv.ok){
+  h+='<p style="font-size:11px;border-left:2px solid #58A6FF;'
+   +'padding-left:8px;margin:6px 0;">'
+   +'<b style="color:#58A6FF;">SmO2\' agora: '+(dv.estado_actual||'—')
+   +'</b> <span style="color:#8b949e;">(janela de '+dv.janela_s+'s)</span>'
+   +'<br><span style="color:#8b949e;font-size:10px;">'+dv.metodo+'</span>'
+   +'</p>';
+ }
+ box.innerHTML=h;
+}
+
 function mxSintese(){
  const box=document.getElementById('mxIntervencoes');
  if(!box) return;

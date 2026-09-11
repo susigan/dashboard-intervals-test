@@ -1603,12 +1603,17 @@ function mxDerivadasEVo2(d){
  let h='';
  const vo2=d.vo2max_previsto||{};
  if(vo2.ok){
-  h+='<p style="font-size:11px;border-left:2px solid #A371F7;'
+  const cor = vo2.plausivel===false ? '#F85149' : '#A371F7';
+  h+='<p style="font-size:11px;border-left:2px solid '+cor+';'
    +'padding-left:8px;margin:6px 0;">'
-   +'<b style="color:#A371F7;">VO2max previsto: '+vo2.vo2max_estimado
-   +' ml/kg/min</b><br>'
-   +'<span style="color:#8b949e;">'+vo2.formula+'</span><br>'
-   +'<span style="color:#F0883E;">'+vo2.aviso+'</span></p>';
+   +'<b style="color:'+cor+';'
+   +(vo2.plausivel===false?'text-decoration:line-through;':'')+'">'
+   +'VO2max previsto: '+vo2.vo2max_estimado+' ml/kg/min</b>'
+   +(vo2.plausivel===false?' <span style="color:'+cor+';">(implausível)</span>':'')
+   +'<br><span style="color:#8b949e;">'+vo2.formula+'</span>';
+  if(vo2.motivo_implausivel)
+   h+='<br><span style="color:'+cor+';">'+vo2.motivo_implausivel+'</span>';
+  h+='<br><span style="color:#F0883E;">'+vo2.aviso+'</span></p>';
  } else if(vo2.motivo){
   h+='<p style="font-size:11px;color:#8b949e;">VO2max previsto: '
    +vo2.motivo+'</p>';

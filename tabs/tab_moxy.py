@@ -33,7 +33,7 @@ BODY = """
   <div id="mxDatas" style="margin:8px 0;"></div>
   <div id="mxCanais" style="margin:6px 0;"></div>
   <label style="font-size:11px;color:#8b949e;margin-left:4px;">
-   <input type="checkbox" id="mxTendencia" onchange="mxDraw()"> mostrar tendência (regressão linear) dos canais activos
+   <input type="checkbox" id="mxTendencia" onchange="mxDraw()"> mostrar tendência (média móvel de 30s) dos canais activos
   </label>
 
   <div class="controls" style="margin:4px 0;flex-wrap:wrap;gap:6px 14px;">
@@ -1099,6 +1099,25 @@ function mxLimiares(){
   // comum entre as duas ferramentas.
   const bl0=d.bp_moxy_sem_restricao||{};
   const c1=(lc.primeiro||{}), c2=(lc.segundo||{});
+  // MX_BP tem de ficar atribuído ANTES do mxDraw() mais abaixo (dentro do
+  // bloco das reservas). Estava DEPOIS, e por isso a primeira vez que o
+  // gráfico desenhava — logo a seguir a carregar os limiares — fazia-o
+  // sem os marcadores de BP1/BP2, porque MX_BP ainda tinha o valor
+  // anterior (ou null). Só apareciam depois de qualquer outra interacção
+  // que chamasse mxDraw() de novo.
+  MX_BP = (bl0.bp1_w!=null || bl0.bp2_w!=null) ? {
+    bp1: bl0.bp1_w, bp2: bl0.bp2_w,
+    bp1_bpm: bl0.bp1_bpm, bp2_bpm: bl0.bp2_bpm,
+    bp1_disp: null, bp2_disp: null,
+    fonte: 'script Intervals.icu', fiavel: true
+  } : ((c1.ok || c2.ok) ? {
+    bp1: c1.ok ? c1.mediana : null,
+    bp2: c2.ok ? c2.mediana : null,
+    bp1_bpm: c1.ok ? (c1.estimativas.find(x=>x.bpm)||{}).bpm : null,
+    bp2_bpm: c2.ok ? (c2.estimativas.find(x=>x.bpm)||{}).bpm : null,
+    bp1_disp: c1.dispersao_pct, bp2_disp: c2.dispersao_pct,
+    fonte: 'mediana dos métodos', fiavel: !(lc.avisos||[]).length
+  } : null);
   MX_RESERVAS = d.reservas || {};
   MX_ULT_PERFIL=(d.perfil_resposta||{}).perfil||null;
   MX_ULT_HIPO=!!((d.hipocapnia||{}).suspeita);
@@ -1139,19 +1158,6 @@ function mxLimiares(){
    mxCanaisEdit();
    mxDraw();
   }
-  MX_BP = (bl0.bp1_w!=null || bl0.bp2_w!=null) ? {
-    bp1: bl0.bp1_w, bp2: bl0.bp2_w,
-    bp1_bpm: bl0.bp1_bpm, bp2_bpm: bl0.bp2_bpm,
-    bp1_disp: null, bp2_disp: null,
-    fonte: 'script Intervals.icu', fiavel: true
-  } : ((c1.ok || c2.ok) ? {
-    bp1: c1.ok ? c1.mediana : null,
-    bp2: c2.ok ? c2.mediana : null,
-    bp1_bpm: c1.ok ? (c1.estimativas.find(x=>x.bpm)||{}).bpm : null,
-    bp2_bpm: c2.ok ? (c2.estimativas.find(x=>x.bpm)||{}).bpm : null,
-    bp1_disp: c1.dispersao_pct, bp2_disp: c2.dispersao_pct,
-    fonte: 'mediana dos métodos', fiavel: !(lc.avisos||[]).length
-  } : null);
 
   let h='';
   if(d.fc_valida===false)
@@ -2311,18 +2317,27 @@ function mxDraw(){
  // para ver a DIRECÇÃO geral (a subir, a descer, estável) sem o ruído
  // amostra a amostra — pedido explicitamente para SmO2, THb, FC,
  // respiração e DFA-a1.
- function mxRegressao(pts){
+ //
+ // Rolling de 30s, centrada, em vez de regressão linear: um sinal
+ // fisiológico raramente é uma recta, e a média móvel segue a FORMA da
+ // curva (sobe, estabiliza, desce) em vez de resumir tudo a um único
+ // declive. Centrada e não à esquerda, para não deslocar os picos no
+ // tempo — o mesmo critério já usado no resto do dashboard.
+ function mxRolling(pts, janela_s){
   const validos=pts.filter(p=>p[1]!=null);
   const n=validos.length;
   if(n<3) return null;
-  let sx=0,sy=0,sxy=0,sxx=0;
-  validos.forEach(function(p){ sx+=p[0]; sy+=p[1]; sxy+=p[0]*p[1]; sxx+=p[0]*p[0]; });
-  const den=n*sxx-sx*sx;
-  if(Math.abs(den)<1e-9) return null;
-  const decl=(n*sxy-sx*sy)/den, inter=(sy-decl*sx)/n;
-  return {x0:validos[0][0], x1:validos[n-1][0],
-          y0:decl*validos[0][0]+inter, y1:decl*validos[n-1][0]+inter,
-          declive:decl};
+  const meia=janela_s/2;
+  const fora=[];
+  let ini=0;
+  for(let i=0;i<n;i++){
+   const alvo=validos[i][0];
+   while(ini<n && validos[ini][0]<alvo-meia) ini++;
+   let soma=0,c=0,k=ini;
+   while(k<n && validos[k][0]<=alvo+meia){ soma+=validos[k][1]; c++; k++; }
+   fora.push([alvo, c?soma/c:validos[i][1]]);
+  }
+  return fora;
  }
  nirs.forEach(function(s2){
   g.strokeStyle=ids.length>1 ? mxCorSessao(s2.si) : (MX_CORES[s2.canal]||'#c9d1d9');
@@ -2333,11 +2348,14 @@ function mxDraw(){
                                  :g.moveTo(X(p[0]),Y(p[1])); });
   g.stroke(); g.setLineDash([]); g.lineWidth=1;
   if(mostrarTendencia){
-   const r=mxRegressao(s2.pts);
-   if(r){
-    g.strokeStyle=g.strokeStyle; g.globalAlpha=0.85; g.lineWidth=2;
+   const cor=g.strokeStyle;
+   const roll=mxRolling(s2.pts, 30);
+   if(roll){
+    g.strokeStyle=cor; g.globalAlpha=0.9; g.lineWidth=2.2;
     g.setLineDash([2,3]);
-    g.beginPath(); g.moveTo(X(r.x0),Y(r.y0)); g.lineTo(X(r.x1),Y(r.y1));
+    g.beginPath();
+    roll.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y(p[1]))
+                                  :g.moveTo(X(p[0]),Y(p[1])); });
     g.stroke(); g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
    }
   }
@@ -2356,10 +2374,12 @@ function mxDraw(){
                                  :g.moveTo(X(p[0]),Y2(p[1])); });
   g.stroke(); g.setLineDash([]); g.globalAlpha=1;
   if(mostrarTendencia){
-   const r=mxRegressao(s2.pts);
-   if(r){
-    g.globalAlpha=0.9; g.lineWidth=2; g.setLineDash([2,3]);
-    g.beginPath(); g.moveTo(X(r.x0),Y2(r.y0)); g.lineTo(X(r.x1),Y2(r.y1));
+   const roll=mxRolling(s2.pts, 30);
+   if(roll){
+    g.globalAlpha=0.95; g.lineWidth=2.2; g.setLineDash([2,3]);
+    g.beginPath();
+    roll.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y2(p[1]))
+                                  :g.moveTo(X(p[0]),Y2(p[1])); });
     g.stroke(); g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
    }
   }

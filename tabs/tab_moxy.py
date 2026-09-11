@@ -1617,8 +1617,9 @@ function mxDerivadasEVo2(d){
  if(dv.ok){
   h+='<p style="font-size:11px;border-left:2px solid #58A6FF;'
    +'padding-left:8px;margin:6px 0;">'
-   +'<b style="color:#58A6FF;">SmO2\' agora: '+(dv.estado_actual||'—')
-   +'</b> <span style="color:#8b949e;">(janela de '+dv.janela_s+'s)</span>'
+   +'<b style="color:#58A6FF;">Taxa de variacao do SmO2 agora: </b>'
+   +(dv.estado_actual||'\u2014')
+   +'<br><span style="color:#8b949e;">(janela de '+dv.janela_s+'s)</span>'
    +'<br><span style="color:#8b949e;font-size:10px;">'+dv.metodo+'</span>'
    +'</p>';
  }

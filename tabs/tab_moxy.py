@@ -32,6 +32,9 @@ BODY = """
 
   <div id="mxDatas" style="margin:8px 0;"></div>
   <div id="mxCanais" style="margin:6px 0;"></div>
+  <label style="font-size:11px;color:#8b949e;margin-left:4px;">
+   <input type="checkbox" id="mxTendencia" onchange="mxDraw()"> mostrar tendência (regressão linear) dos canais activos
+  </label>
 
   <div class="controls" style="margin:4px 0;flex-wrap:wrap;gap:6px 14px;">
     <label class="sel">Alinhar por
@@ -1614,9 +1617,9 @@ function mxDerivadasEVo2(d){
   if(vo2.motivo_implausivel)
    h+='<br><span style="color:'+cor+';">'+vo2.motivo_implausivel+'</span>';
   h+='<br><span style="color:#F0883E;">'+vo2.aviso+'</span></p>';
- } else if(vo2.motivo){
+ } else if(vo2.motivo || vo2.erro){
   h+='<p style="font-size:11px;color:#8b949e;">VO2max previsto: '
-   +vo2.motivo+'</p>';
+   +(vo2.motivo||vo2.erro)+'</p>';
  }
  const dv=d.smo2_derivadas||{};
  if(dv.ok){
@@ -1627,6 +1630,9 @@ function mxDerivadasEVo2(d){
    +'<br><span style="color:#8b949e;">(janela de '+dv.janela_s+'s)</span>'
    +'<br><span style="color:#8b949e;font-size:10px;">'+dv.metodo+'</span>'
    +'</p>';
+ } else if(dv.motivo||dv.erro){
+  h+='<p style="font-size:11px;color:#8b949e;">Taxa de variacao do SmO2: '
+   +(dv.motivo||dv.erro)+'</p>';
  }
  box.innerHTML=h;
 }
@@ -2299,6 +2305,25 @@ function mxDraw(){
  }
 
  // NIRS na escala comum; contexto na sua
+ const mostrarTendencia = document.getElementById('mxTendencia')
+   && document.getElementById('mxTendencia').checked;
+ // Regressão linear simples sobre os pontos válidos de uma série. Serve
+ // para ver a DIRECÇÃO geral (a subir, a descer, estável) sem o ruído
+ // amostra a amostra — pedido explicitamente para SmO2, THb, FC,
+ // respiração e DFA-a1.
+ function mxRegressao(pts){
+  const validos=pts.filter(p=>p[1]!=null);
+  const n=validos.length;
+  if(n<3) return null;
+  let sx=0,sy=0,sxy=0,sxx=0;
+  validos.forEach(function(p){ sx+=p[0]; sy+=p[1]; sxy+=p[0]*p[1]; sxx+=p[0]*p[0]; });
+  const den=n*sxx-sx*sx;
+  if(Math.abs(den)<1e-9) return null;
+  const decl=(n*sxy-sx*sy)/den, inter=(sy-decl*sx)/n;
+  return {x0:validos[0][0], x1:validos[n-1][0],
+          y0:decl*validos[0][0]+inter, y1:decl*validos[n-1][0]+inter,
+          declive:decl};
+ }
  nirs.forEach(function(s2){
   g.strokeStyle=ids.length>1 ? mxCorSessao(s2.si) : (MX_CORES[s2.canal]||'#c9d1d9');
   g.lineWidth = ids.length>1 ? (s2.canal==='smo2'?2.2:1.4) : 2;
@@ -2307,6 +2332,15 @@ function mxDraw(){
   s2.pts.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y(p[1]))
                                  :g.moveTo(X(p[0]),Y(p[1])); });
   g.stroke(); g.setLineDash([]); g.lineWidth=1;
+  if(mostrarTendencia){
+   const r=mxRegressao(s2.pts);
+   if(r){
+    g.strokeStyle=g.strokeStyle; g.globalAlpha=0.85; g.lineWidth=2;
+    g.setLineDash([2,3]);
+    g.beginPath(); g.moveTo(X(r.x0),Y(r.y0)); g.lineTo(X(r.x1),Y(r.y1));
+    g.stroke(); g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
+   }
+  }
  });
  const outros=series.filter(s2=>!s2.nirs && s2.canal!=='watts');
  outros.forEach(function(s2){
@@ -2321,25 +2355,55 @@ function mxDraw(){
   s2.pts.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y2(p[1]))
                                  :g.moveTo(X(p[0]),Y2(p[1])); });
   g.stroke(); g.setLineDash([]); g.globalAlpha=1;
+  if(mostrarTendencia){
+   const r=mxRegressao(s2.pts);
+   if(r){
+    g.globalAlpha=0.9; g.lineWidth=2; g.setLineDash([2,3]);
+    g.beginPath(); g.moveTo(X(r.x0),Y2(r.y0)); g.lineTo(X(r.x1),Y2(r.y1));
+    g.stroke(); g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
+   }
+  }
  });
 
  // breakpoints como riscas verticais, quando calculados
- // Usava-se 'wser', que uma edicao anterior renomeou para a lista
- // 'wsers'. Ficou a referencia antiga e qualquer sessao com breakpoints
- // calculados rebentava com "wser is not defined".
+ //
+ // Antes procurava-se a AMOSTRA BRUTA (segundo a segundo) mais próxima do
+ // valor do BP. Num desporto não-ergo, com um pico logo no início do
+ // bloco (o atleta empurra forte no arranque), essa amostra passava perto
+ // do valor do BP tanto a SUBIR no início como depois a ESTABILIZAR — e
+ // ficava-se com a PRIMEIRA encontrada, normalmente a transitória do
+ // início. A marca aparecia antes de o SmO2 sequer começar a cair.
+ //
+ // Agora procura-se o BLOCO (não a amostra) cujo watts_medio — já a média
+ // da parte ESTÁVEL, sem o transitório inicial — está mais perto do valor
+ // do BP, e a marca fica no MEIO desse bloco. É onde a medição realmente
+ // aconteceu.
  const wserBP = wsers.find(function(w){ return w.si===0; }) || wsers[0];
  if(MX_BP && wserBP){
-  const wmax=Math.max.apply(null, wserBP.pts.map(p=>p[1]))||1;
+  const blocosOn = ((MX.blocos||{}).blocos||[]).filter(b=>b.on
+    && b.watts_medio!=null);
   [[MX_BP.bp1,'#3FB950','BP1'],[MX_BP.bp2,'#F85149','BP2']].forEach(function(b){
    if(b[0]==null) return;
-   // o BP esta em watts: encontrar quando a potencia o atravessa
-   let melhor=null, dmin=1e18;
-   wserBP.pts.forEach(function(p){
-    const dd=Math.abs(p[1]-b[0]);
-    if(dd<dmin){ dmin=dd; melhor=p[0]; }
-   });
-   if(melhor==null || dmin>25) return;
-   const x=X(melhor);
+   let x=null;
+   if(blocosOn.length){
+    const bloco=blocosOn.reduce(function(a,c){
+      return Math.abs(c.watts_medio-b[0])<=Math.abs(a.watts_medio-b[0])?c:a;
+    });
+    if(Math.abs(bloco.watts_medio-b[0])<=25){
+     const meio=(bloco.t0+bloco.t1)/2 - ref;
+     x=X(meio);
+    }
+   }
+   if(x==null){
+    // recurso: sem blocos disponíveis, volta ao método antigo
+    let melhor=null, dmin=1e18;
+    wserBP.pts.forEach(function(p){
+     const dd=Math.abs(p[1]-b[0]);
+     if(dd<dmin){ dmin=dd; melhor=p[0]; }
+    });
+    if(melhor==null || dmin>25) return;
+    x=X(melhor);
+   }
    g.strokeStyle=b[1]; g.setLineDash([5,4]); g.lineWidth=1.5;
    g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
    g.setLineDash([]); g.lineWidth=1;

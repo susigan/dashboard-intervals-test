@@ -1683,3 +1683,185 @@ def fc_media_do_bloco(tempo, hr, blocos, watts_alvo, tolerancia=30):
                  + ('' if dist < 1 else
                     f" (o mais próximo de {round(watts_alvo)} W)")),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# SmO2' e SmO2'' (Peikon, NNOXX — "SmO2 and rates of change")
+#
+#   SmO2   = saturacao num instante
+#   SmO2'  = taxa de variacao (%/s). Positivo = reoxigena, negativo =
+#            desatura. ~0 = estado estavel.
+#   SmO2'' = taxa de variacao da taxa (analogo ao "jerk" em cinematica).
+#            Reservado para uso avancado -- diz se a queda esta' a
+#            ACELERAR ou a ABRANDAR, nao so' que existe.
+#
+# Isto NAO e' o mesmo "jerk" do outro artigo (aceleracao biomecanica de
+# um movimento, medido por acelerometro). Sao dois conceitos com o mesmo
+# nome; aqui implementa-se o do SmO2, que e' o que os nossos dados tem.
+# ══════════════════════════════════════════════════════════════════════════
+
+def smo2_derivadas(tempo, smo2, janela_s=5):
+    """SmO2' e SmO2'' por diferenca central, suavizadas em janela_s.
+
+    A derivada ponto a ponto do SmO2 e' dominada por ruido do sensor;
+    sem suavizar, o sinal da derivada muda a cada amostra e a leitura de
+    'esta a acelerar ou a abrandar' fica sem sentido.
+    """
+    n = len(smo2)
+    if n < 5 or not tempo:
+        return {'ok': False, 'motivo': 'poucos pontos'}
+
+    meia = max(1, janela_s // 2)
+    d1 = [None] * n
+    for i in range(n):
+        a, b = max(0, i - meia), min(n - 1, i + meia)
+        if smo2[a] is None or smo2[b] is None or tempo[b] == tempo[a]:
+            continue
+        d1[i] = (smo2[b] - smo2[a]) / (tempo[b] - tempo[a])
+
+    d2 = [None] * n
+    for i in range(n):
+        a, b = max(0, i - meia), min(n - 1, i + meia)
+        if d1[a] is None or d1[b] is None or tempo[b] == tempo[a]:
+            continue
+        d2[i] = (d1[b] - d1[a]) / (tempo[b] - tempo[a])
+
+    def _estado(v1, v2):
+        if v1 is None:
+            return None
+        if abs(v1) < 0.01:
+            return 'estável'
+        fase = 'reoxigena' if v1 > 0 else 'desatura'
+        # sem limiar aqui, ruído residual do sensor fazia a 2ª derivada
+        # nunca dar exactamente zero e a leitura "acelera/abranda" saía
+        # sempre, mesmo em troços perfeitamente lineares
+        if v2 is None or abs(v2) < 0.002:
+            return fase
+        if fase == 'desatura':
+            return 'desatura, a abrandar' if v2 > 0 else 'desatura, a acelerar'
+        return 'reoxigena, a abrandar' if v2 < 0 else 'reoxigena, a acelerar'
+
+    estados = [_estado(d1[i], d2[i]) for i in range(n)]
+    return {
+        'ok': True, 'smo2_linha': d1, 'smo2_linha_linha': d2,
+        'estado': estados, 'janela_s': janela_s,
+        'estado_actual': next((e for e in reversed(estados) if e), None),
+        'metodo': ("Peikon — SmO2' é a taxa de variação, SmO2'' é a taxa "
+                   "dessa taxa (análogo ao jerk cinemático). Uso avançado: "
+                   "diz se a dessaturação está a acelerar ou a abrandar, "
+                   "não só que está a acontecer"),
+    }
+
+
+def vo2max_previsto(smo2_min, fc_repouso):
+    """Estimativa de VO2max por regressão múltipla (Peikon, NNOXX).
+
+    y = 159.468 − 1.258·SmO2min − 1.129·FCrepouso
+
+    ATENÇÃO: os coeficientes vêm de n=10 sujeitos de idade, sexo e nível
+    de fitness muito variados. O próprio autor avisa que isto não
+    generaliza — "we should not expect this to generalize across a
+    broad population". Serve como referência de ORDEM DE GRANDEZA, não
+    como medição. Precisaria de ser recalibrada com dados do próprio
+    atleta para significar alguma coisa.
+    """
+    if smo2_min is None or fc_repouso is None:
+        return {'ok': False, 'motivo': 'faltam SmO2 mínimo ou FC repouso'}
+    y = 159.468 - 1.258 * smo2_min - 1.129 * fc_repouso
+    return {
+        'ok': True, 'vo2max_estimado': round(y, 1),
+        'formula': 'VO2max = 159.468 − 1.258·SmO2min − 1.129·FCrep',
+        'entrada': {'smo2_min': smo2_min, 'fc_repouso': fc_repouso},
+        'aviso': ('coeficientes de um estudo com n=10, população muito '
+                  'heterogénea. O próprio autor diz que não generaliza — '
+                  'isto é uma ordem de grandeza, não uma medição. Só serve '
+                  'para comparar sessões DO MESMO atleta ao longo do '
+                  'tempo, não como valor absoluto'),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# LIMITADOR — "limited" vs "limiting" (Peikon, NNOXX)
+#
+# O aviso central do fórum: um sistema pode estar LIMITADO (tem pouca
+# margem) sem ser o LIMITANTE (o que primeiro trava a subida de VO2max).
+# SmO2 comprimido não prova utilização -- pode ser a entrega ou a
+# respiração a travar antes de a utilização chegar a ser testada.
+#
+# Critérios do artigo "Identifying Physiological Limitations":
+#
+#   Respiratório  declínio progressivo de SmO2 até à falha; SpO2 cai
+#                 visivelmente; FC continua a subir até à falha
+#   Entrega       declínio progressivo de SmO2 até à falha; FC ou NO
+#                 ESTABILIZA acima de ~85% antes da falha
+#   Utilização    SmO2 fica alto e comprimido, platô bem antes da falha;
+#                 "fixed gear" -- gama estreita de potências acessíveis
+#
+# Sem SpO2 nem NO (não temos os sensores), os critérios ficam parciais e
+# isso é dito explicitamente -- em vez de fingir uma classificação
+# completa com metade dos dados.
+# ══════════════════════════════════════════════════════════════════════════
+
+def classificar_limitador(smo2_por_bloco, fc_por_bloco, spo2_por_bloco=None):
+    """smo2_por_bloco, fc_por_bloco: [médias por degrau, em ordem crescente
+    de carga]. spo2_por_bloco: opcional.
+    """
+    if len(smo2_por_bloco) < 3:
+        return {'ok': False, 'motivo': 'poucos degraus para avaliar padrão'}
+
+    vs = [v for v in smo2_por_bloco if v is not None]
+    amplitude = (max(vs) - min(vs)) if vs else 0
+    ultimo3_smo2 = vs[-3:] if len(vs) >= 3 else vs
+    declina_ate_ao_fim = (len(ultimo3_smo2) >= 2
+                          and ultimo3_smo2[-1] < ultimo3_smo2[0])
+
+    hrs = [v for v in fc_por_bloco if v is not None]
+    hr_platou = False
+    if len(hrs) >= 3:
+        ultimo3_hr = hrs[-3:]
+        variacao = max(ultimo3_hr) - min(ultimo3_hr)
+        hr_platou = variacao < 3  # bpm quase parado nos últimos degraus
+
+    spo2_cai = None
+    if spo2_por_bloco:
+        sv = [v for v in spo2_por_bloco if v is not None]
+        if len(sv) >= 3:
+            spo2_cai = (sv[0] - sv[-1]) >= 3  # queda de 3+ pontos
+
+    utilizacao = amplitude < 15 and vs and min(vs) > 30
+    entrega = declina_ate_ao_fim and hr_platou
+    respiratorio = declina_ate_ao_fim and not hr_platou and spo2_cai
+
+    candidatos = []
+    if utilizacao:
+        candidatos.append('utilizacao')
+    if entrega:
+        candidatos.append('entrega')
+    if respiratorio:
+        candidatos.append('respiratorio')
+    if declina_ate_ao_fim and not hr_platou and spo2_cai is None:
+        candidatos.append('entrega_ou_respiratorio')
+
+    dados_em_falta = spo2_por_bloco is None
+    return {
+        'ok': True,
+        'candidatos': candidatos or ['indeterminado'],
+        'amplitude_smo2': round(amplitude, 1),
+        'declina_ate_ao_fim': declina_ate_ao_fim,
+        'fc_platou_no_fim': hr_platou,
+        'spo2_cai': spo2_cai,
+        'dados_em_falta': (
+            'sem SpO2: não se distingue entrega de respiratório com '
+            'confiança — ambos mostram declínio de SmO2 até à falha; o '
+            'que os separa é a queda de SpO2, que não temos'
+            if dados_em_falta else None),
+        'aviso_limited_vs_limiting': (
+            "compressão de SmO2 mostra que a utilização está LIMITADA, "
+            "não que seja o LIMITANTE. Só se pode concluir isso comparando "
+            "tendências ao longo de várias sessões — um único teste não "
+            "chega. Ver Peikon: 'It's easy to assume utilization when we "
+            "see compressed SmO2 ranges, though it's possible another "
+            "system is rate-limiting despite room for utilization to "
+            "improve'"),
+        'fonte': 'Peikon, NNOXX — Identifying Physiological Limitations',
+    }

@@ -2851,8 +2851,13 @@ function ivSessoes(){
    +(IV_SESSOES.length?'':' — grava na secção acima primeiro');
   const box=document.getElementById('ivLista');
   box.innerHTML=IV_SESSOES.map(function(x,i){
-   const on=IV_SEL[x.activity_id]!==false;
-   IV_SEL[x.activity_id]=on;
+   // Por omissão só a MAIS RECENTE fica seleccionada (i===0, porque
+   // /api/moxy/analises devolve por 'data DESC'), não todas. Antes
+   // "!==false" marcava tudo como ligado enquanto não houvesse uma
+   // escolha explícita — com muitas sessões gravadas, isso juntava-as
+   // todas na análise sem o utilizador ter pedido.
+   if(IV_SEL[x.activity_id] === undefined) IV_SEL[x.activity_id] = (i === 0);
+   const on=IV_SEL[x.activity_id]===true;
    return '<button class="ivS" data-id="'+x.activity_id+'" '
     +'style="border:1px solid '+(on?'#3FB950':'#30363d')+';border-radius:14px;'
     +'padding:3px 11px;background:transparent;color:'+(on?'#3FB950':'#6e7681')

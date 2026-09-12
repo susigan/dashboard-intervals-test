@@ -138,6 +138,7 @@ BODY = """
       <span id="mxLimEstado" style="color:#8b949e;font-size:12px;"></span></div>
     <div id="mxLimiares" style="margin-top:6px;"></div>
     <div id="mxDerivadas" style="margin-top:6px;"></div>
+    <div id="mxEstilosRecentes" style="margin-top:10px;"></div>
     <details style="margin-top:6px;">
       <summary style="cursor:pointer;font-size:12px;color:#8b949e;">Método e fiabilidade por modalidade</summary>
       <div style="font-size:11px;color:#8b949e;margin-top:6px;">
@@ -1092,6 +1093,7 @@ function mxLimiares(){
   };
   MX_ULT_HIPO = MX_ULT_HIPO || false;
   mxDerivadasEVo2(d);
+  mxEstilosRecentes();
   est.textContent=(d.modalidade||'')+' · '+(f.n_degraus||0)+' degraus';
   // No grafico vai o resultado do SCRIPT do Intervals.icu, para bater
   // certo com o que ves la'. As tabelas continuam a mostrar todos os
@@ -1641,6 +1643,35 @@ function mxDerivadasEVo2(d){
    +(dv.motivo||dv.erro)+'</p>';
  }
  box.innerHTML=h;
+}
+
+// O que o atleta tem treinado de facto, nos últimos 60 dias, por
+// modalidade — para comparar com o que estamos a sugerir em cima. Um
+// atleta que só faz contínuo não precisa de ouvir "faz D1 contínuo".
+function mxEstilosRecentes(){
+ const box=document.getElementById('mxEstilosRecentes');
+ if(!box) return;
+ fetch('/api/moxy/estilos_recentes?dias=60').then(r=>r.json())
+ .then(function(d){
+  if(d.status!=='ok'){ box.innerHTML=''; return; }
+  let h='<details style="margin-top:4px;"><summary style="cursor:pointer;'
+   +'font-size:12px;color:#8b949e;padding:4px 0;">Estilos treinados nos '
+   +'últimos '+d.janela_dias+' dias</summary><div style="margin-top:6px;'
+   +'font-size:11px;">';
+  Object.keys(d.por_modalidade||{}).forEach(function(mod){
+   const m=d.por_modalidade[mod];
+   h+='<p><b>'+mod+'</b> — '+m.n_sessoes+' sessões, '+m.variedade
+    +' estilo(s): '
+    +m.tipos.map(function(t){ return t.tipo+' ('+t.n+')'; }).join(' · ')
+    +'</p>';
+  });
+  if((d.estilos_ausentes||[]).length)
+   h+='<p style="color:#F0883E;">Ausentes nos últimos '+d.janela_dias
+    +' dias: '+d.estilos_ausentes.join(' · ')+'</p>';
+  h+='<p class="sub" style="color:#8b949e;font-size:10px;">'+d.nota+'</p>'
+   +'</div></details>';
+  box.innerHTML=h;
+ }).catch(function(){ box.innerHTML=''; });
 }
 
 function mxSintese(){

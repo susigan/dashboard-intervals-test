@@ -2066,6 +2066,19 @@ def registar(app):
             _s.path.insert(0, _o.path.join(
                 _o.path.dirname(_o.path.abspath(__file__)), 'utils'))
             import intervencoes as _iv
+            # plano por zona com os NÚMEROS REAIS do teste
+            if request.args.get('plano_limitador'):
+                def _f(nome):
+                    v = request.args.get(nome, type=float)
+                    return v
+                r = _iv.plano_personalizado(
+                    request.args['plano_limitador'],
+                    bp1_w=_f('bp1_w'), bp2_w=_f('bp2_w'),
+                    bp1_bpm=_f('bp1_bpm'), bp2_bpm=_f('bp2_bpm'),
+                    smo2_min=_f('smo2_min'), fc_max=_f('fc_max'))
+                r['status'] = 'ok' if r.get('ok') else 'sem_plano'
+                return jsonify(r)
+
             # consenso ENTRE sessões, quando vem uma lista
             if request.args.get('sessoes'):
                 import json as _j

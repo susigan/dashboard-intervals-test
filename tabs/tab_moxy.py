@@ -1673,8 +1673,10 @@ function mxPlanoPorZona(limitador, valores){
   if((d.faltam||[]).length)
    h+='<p style="color:#8b949e;font-size:10px;">em falta para completar '
     +'todas as zonas: '+d.faltam.join(', ')+'</p>';
-  ['Zona 1','Zona 2','Zona 3'].forEach(function(nome){
-   const z=(d.zonas||{})[nome]; if(!z) return;
+  [['zona1','Zona 1'],['zona2','Zona 2'],['zona3','Zona 3']].forEach(
+   function(par){
+   const chave=par[0], nome=par[1];
+   const z=(d.zonas||{})[chave]; if(!z) return;
    const alvo = (z.watts && z.watts[0]!=null)
      ? (z.watts[0]+'–'+(z.watts[1]||'?')+' W'
         +(z.bpm && z.bpm[0]!=null ? ' · '+z.bpm[0]+'–'+(z.bpm[1]||'?')+' bpm' : ''))

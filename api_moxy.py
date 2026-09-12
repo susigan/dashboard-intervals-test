@@ -2019,6 +2019,97 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/rpe/<path:activity_id>')
+    def api_moxy_rpe_ver(activity_id):
+        """Blocos de trabalho da sessão, com o RPE já gravado (se houver).
+
+        Devolve um item por bloco ON, com watts_medio e o RPE gravado ou
+        None. O frontend decide, por bloco, se mostra a caixa de escrever
+        ou o botão de "re-gravar".
+
+        A tabela moxy_rpe vive na MESMA base que moxy_analises
+        (drive_db_perfil), não na base de 'db' (que é só a cópia local
+        das actividades da Intervals.icu) — são duas bases diferentes.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            dd = api_moxy_dados(aid)
+            d = (dd[0].get_json() if isinstance(dd, tuple)
+                 else dd.get_json()) or {}
+            blocos = ((d.get('blocos') or {}).get('blocos')) or []
+            trabalho = [b for b in blocos if b.get('on')
+                       and b.get('watts_medio') is not None]
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            linhas = cn.execute(
+                "SELECT bloco_indice, rpe FROM moxy_rpe "
+                "WHERE activity_id=?", (aid,)).fetchall()
+            rpe_por_indice = {int(r[0]): r[1] for r in linhas}
+
+            fora = []
+            for i, b in enumerate(trabalho):
+                fora.append({
+                    'bloco_indice': i,
+                    'watts_medio': round(b['watts_medio']),
+                    't0_s': round(b['t0']), 't1_s': round(b['t1']),
+                    'duracao_s': round(b['t1'] - b['t0']),
+                    'rpe': rpe_por_indice.get(i),
+                })
+            return jsonify({
+                'status': 'ok', 'activity_id': aid,
+                'blocos': fora,
+                'todos_gravados': bool(fora) and all(
+                    b['rpe'] is not None for b in fora),
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/rpe/<path:activity_id>', methods=['POST'])
+    def api_moxy_rpe_gravar(activity_id):
+        """Grava (ou substitui) o RPE de cada bloco enviado.
+
+        Corpo: {"blocos": [{"bloco_indice":0,"watts_medio":170,
+                            "t0_s":0,"t1_s":180,"rpe":7}, ...]}
+
+        INSERT OR REPLACE pela chave (activity_id, bloco_indice): gravar
+        outra vez sobrepõe o valor antigo, nunca acumula.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            corpo = request.get_json(force=True, silent=True) or {}
+            blocos = corpo.get('blocos') or []
+            if not blocos:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'sem blocos para gravar'}), 200
+
+            for b in blocos:
+                rpe = b.get('rpe')
+                if not isinstance(rpe, (int, float)) or not (1 <= rpe <= 10):
+                    return jsonify({
+                        'status': 'erro',
+                        'mensagem': (f'RPE inválido no bloco '
+                                     f'{b.get("bloco_indice")}: {rpe!r} — '
+                                     'tem de ser 1 a 10')}), 200
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            agora = datetime.now().isoformat(timespec='seconds')
+            for b in blocos:
+                cn.execute(
+                    "INSERT OR REPLACE INTO moxy_rpe "
+                    "(activity_id, bloco_indice, watts_medio, t0_s, t1_s, "
+                    "rpe, gravado_em) VALUES (?,?,?,?,?,?,?)",
+                    (aid, int(b['bloco_indice']), b.get('watts_medio'),
+                     b.get('t0_s'), b.get('t1_s'), int(b['rpe']), agora))
+            cn.commit()
+            return jsonify({'status': 'ok', 'n_gravados': len(blocos),
+                            'gravado_em': agora})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/estilos_recentes')
     def api_moxy_estilos_recentes():
         """O que o atleta tem treinado, por modalidade, nos últimos N dias.

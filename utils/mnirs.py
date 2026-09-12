@@ -304,7 +304,19 @@ def detectar_blocos(tempo, watts, hz=1.0, limiar_rel=0.35, min_dur=20):
         b['t1'] = float(tempo[b['i1']]) if b['i1'] < len(tempo) else None
         b['duracao_s'] = round((b['t1'] - b['t0']) if b['t0'] is not None else 0, 1)
         jan = [vs[k] for k in range(b['i0'], b['i1'] + 1)]
-        b['watts_medio'] = round(sum(jan) / len(jan), 1) if jan else None
+        # A média do bloco INTEIRO fica puxada para cima quando o atleta
+        # empurra mais força no arranque para lá chegar à potência alvo
+        # (comum sem modo ERG, onde a resistência não é controlada
+        # electronicamente). Ignora-se o arranque -- até 20 s ou 15% do
+        # bloco, o que for menor -- e usa-se a média do estado estável a
+        # seguir, que é o que representa de facto o degrau.
+        n = len(jan)
+        corte = min(int(n * 0.15), 20) if n > 10 else 0
+        jan_estavel = jan[corte:] if corte < n else jan
+        b['watts_medio'] = (round(sum(jan_estavel) / len(jan_estavel), 1)
+                            if jan_estavel else None)
+        b['watts_medio_bloco_inteiro'] = (round(sum(jan) / len(jan), 1)
+                                          if jan else None)
 
     return {'ok': True, 'limiar_w': round(limiar, 1),
             'p75_watts': round(p75, 1), 'blocos': fundidos,
@@ -468,8 +480,19 @@ def emparelhar_degraus(sessoes, tolerancia=15.0, campo='watts'):
 # potencia so' serve para descrever.
 # ══════════════════════════════════════════════════════════════════════════
 
-def blocos_de_laps(laps, tempo_inicial=0.0):
-    """Blocos ON/OFF a partir dos laps. laps: lista da API."""
+def blocos_de_laps(laps, tempo_inicial=0.0, watts_stream=None,
+                   tempo_stream=None):
+    """Blocos ON/OFF a partir dos laps. laps: lista da API.
+
+    watts_medio vinha SEMPRE de lp.get('average_watts') — a média que a
+    Intervals.icu já calculou para o lap inteiro. Sem modo ERG, o atleta
+    empurra mais força no arranque do bloco para lá chegar à potência
+    alvo, e essa ponta puxa a média do lap inteiro para cima. Quando
+    watts_stream e tempo_stream são dados, recalcula-se a média em ESTADO
+    ESTÁVEL a partir do sinal em bruto — ignorando os primeiros segundos
+    do bloco — e usa-se essa em vez da da API. Sem os streams, mantém-se
+    o valor da API como antes.
+    """
     fora = []
     for lp in (laps or []):
         if not isinstance(lp, dict):
@@ -479,13 +502,29 @@ def blocos_de_laps(laps, tempo_inicial=0.0):
         if t0 is None or t1 is None:
             continue
         tipo = str(lp.get('type') or '').upper()
+        watts_medio = lp.get('average_watts')
+        watts_medio_bloco_inteiro = watts_medio
+        if watts_stream and tempo_stream and tipo.startswith('WORK'):
+            vs = [watts_stream[i] for i in range(min(len(tempo_stream),
+                                                      len(watts_stream)))
+                  if t0 <= tempo_stream[i] <= t1
+                  and watts_stream[i] is not None]
+            if len(vs) > 10:
+                watts_medio_bloco_inteiro = round(sum(vs) / len(vs), 1)
+                n = len(vs)
+                corte = min(int(n * 0.15), 20)
+                vs_estavel = vs[corte:] if corte < n else vs
+                if vs_estavel:
+                    watts_medio = round(sum(vs_estavel) / len(vs_estavel), 1)
         fora.append({
             'on': tipo.startswith('WORK'),
             'tipo': tipo or None,
             't0': float(t0) - tempo_inicial,
             't1': float(t1) - tempo_inicial,
             'duracao_s': round(float(t1) - float(t0), 1),
-            'watts_medio': lp.get('average_watts'),
+            'watts_medio': watts_medio,
+            'watts_medio_bloco_inteiro': watts_medio_bloco_inteiro,
+            'watts_medio_da_api': lp.get('average_watts'),
             'hr_medio': lp.get('average_heartrate'),
             'label': lp.get('label') or lp.get('name'),
         })
@@ -561,125 +600,6 @@ def propor_corte_laps(blocos_info, min_work_depois=2):
 # Garmin. Se o tipo diz recuperacao, e' recuperacao; a potencia media
 # desse lap serve para mostrar, nao para decidir.
 # ══════════════════════════════════════════════════════════════════════════
-
-TIPOS_TRABALHO = {'WORK', 'work', 'Work'}
-
-
-def blocos_de_laps(laps, tempo=None):
-    """Blocos ON/OFF a partir dos intervalos da Intervals.icu."""
-    if not laps:
-        return {'ok': False, 'motivo': 'sem laps na actividade'}
-    blocos = []
-    for lp in laps:
-        if not isinstance(lp, dict):
-            continue
-        t0 = lp.get('start_time')
-        t1 = lp.get('end_time')
-        if t0 is None or t1 is None:
-            continue
-        tipo = str(lp.get('type') or '')
-        blocos.append({
-            'on': tipo in TIPOS_TRABALHO,
-            'tipo': tipo or '?',
-            't0': float(t0), 't1': float(t1),
-            'duracao_s': round(float(t1) - float(t0), 1),
-            'watts_medio': lp.get('average_watts'),
-            'hr_medio': lp.get('average_heartrate'),
-            'nome': lp.get('label') or lp.get('name'),
-        })
-    if not blocos:
-        return {'ok': False, 'motivo': 'laps sem indices de tempo'}
-    blocos.sort(key=lambda b: b['t0'])
-    return {'ok': True, 'fonte': 'laps da Intervals.icu',
-            'blocos': blocos,
-            'n_on': sum(1 for b in blocos if b['on']),
-            'n_off': sum(1 for b in blocos if not b['on']),
-            'nota': ('tipo do lap decide o que e trabalho, nao a potencia: '
-                     'ha laps marcados RECOVERY com 174 W de media por erro '
-                     'de gravacao')}
-
-
-def propor_corte_laps(blocos_info):
-    """Inicio do protocolo: apos o RECOVERY longo que precede a sequencia.
-
-    E' o padrao que o atleta descreve: aquecimento continuo, uma pausa
-    grande, e depois ON/OFF a alternar. O aquecimento aparece como um
-    unico RECOVERY muito mais longo do que as recuperacoes entre series.
-    """
-    if not blocos_info.get('ok'):
-        return {'ok': False, 'motivo': blocos_info.get('motivo')}
-    bl = blocos_info['blocos']
-    offs = sorted(b['duracao_s'] for b in bl if not b['on'])
-    if not offs:
-        ons = [b for b in bl if b['on']]
-        if not ons:
-            return {'ok': False, 'motivo': 'nenhum lap de trabalho'}
-        return {'ok': True, 'inicio_s': ons[0]['t0'], 'fim_s': bl[-1]['t1'],
-                'n_blocos_on': len(ons), 'fonte': 'laps',
-                'motivo': 'sem laps de recuperacao; primeiro lap de trabalho'}
-    mediana = offs[len(offs) // 2]
-    candidatos = []
-    for k, b in enumerate(bl):
-        if b['on'] or b['duracao_s'] < max(60.0, mediana * 1.5):
-            continue
-        ons_depois = [x for x in bl[k + 1:] if x['on']]
-        if len(ons_depois) >= 2:
-            candidatos.append((b['duracao_s'], k, b, ons_depois))
-    if not candidatos:
-        ons = [b for b in bl if b['on']]
-        if not ons:
-            return {'ok': False, 'motivo': 'nenhum lap de trabalho'}
-        return {'ok': True, 'inicio_s': ons[0]['t0'], 'fim_s': bl[-1]['t1'],
-                'n_blocos_on': len(ons), 'fonte': 'laps',
-                'confianca': 'baixa',
-                'motivo': ('nenhuma recuperacao se destaca das outras; '
-                           'proposto o primeiro lap de trabalho')}
-    dur, k, b, ons_depois = max(candidatos, key=lambda c: c[0])
-    outras = sorted(c[0] for c in candidatos if c[1] != k)
-    return {'ok': True, 'fonte': 'laps',
-            'inicio_s': ons_depois[0]['t0'], 'fim_s': bl[-1]['t1'],
-            'pausa_antes_s': dur, 'n_blocos_on': len(ons_depois),
-            'outras_pausas_s': outras,
-            'mediana_das_pausas_s': round(mediana, 1),
-            'confianca': ('alta' if not outras or dur > max(outras) * 1.4
-                          else 'baixa'),
-            'motivo': (f'recuperacao de {round(dur)} s marcada nos laps, '
-                       f'seguida de {len(ons_depois)} laps de trabalho')}
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# QUE TIPO DE SESSAO FOI ESTA
-#
-# O metodo de analise depende do protocolo, e ate' agora era o utilizador
-# que tinha de saber qual era. Isto le' os laps e diz.
-#
-# A classificacao corre SEMPRE depois do corte do aquecimento. Os degraus
-# leves do inicio, em bicicleta e remo, sao aquecimento e nao fazem parte
-# do protocolo -- inclui-los fazia uma escada de 5 degraus parecer uma de
-# 8, com os tres primeiros a nao encaixar em padrao nenhum.
-#
-# O que distingue os tipos:
-#
-#   ESCADA          a carga sobe de forma monotona entre blocos. E' o
-#                   5-1-5 e o teste de degraus. So' aqui fazem sentido
-#                   os breakpoints.
-#   INTERVALADO     a carga repete-se. Duracoes iguais = por tempo;
-#                   distancias iguais = por distancia (comum no remo, no
-#                   esqui e na corrida).
-#   DESCANSO VARIAVEL  trabalho constante mas recuperacoes de duracoes
-#                   muito diferentes -- 5/4:30 e depois 5/8. Nao invalida
-#                   a analise, mas o SmO2 de partida de cada bloco deixa
-#                   de ser comparavel.
-#   CONTINUO        sem blocos, ou um bloco so'.
-# ══════════════════════════════════════════════════════════════════════════
-
-# Coeficiente de variacao abaixo do qual se considera "constante". Nao e'
-# um valor de literatura: e' o ponto a partir do qual a variacao deixa de
-# ser execucao e passa a ser intencao. 8% num bloco de 5 min sao 24 s.
-CV_CONSTANTE = 0.08
-# Subida minima de carga entre o primeiro e o ultimo bloco para ser escada.
-SUBIDA_ESCADA = 0.15
-
 
 def _cv(vs):
     vs = [v for v in vs if v is not None]

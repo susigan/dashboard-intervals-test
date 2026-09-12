@@ -65,7 +65,7 @@ def _remover_orfa(aid):
 
 
 def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
-                       bp_hhb=None, lt1_reox=None):
+                       bp_hhb=None, lt1_reox=None, blocos=None):
     """Junta as estimativas nos dois limiares e assinala incoerencias.
 
     Antes havia um painel por metodo -- quatro numeros soltos, sem dizer
@@ -1185,6 +1185,7 @@ def registar(app):
             if not mod:
                 try:
                     from config import TYPE_MAP
+                    import api_client as api
                     _act, _e = api.icu_get(f'/activity/{aid}')
                     if not _e and isinstance(_act, dict):
                         mod = TYPE_MAP.get(_act.get('type'))
@@ -1358,7 +1359,8 @@ def registar(app):
             }
 
             lim_cons = _consenso_limiares(
-                mlss, bp_mx, bp_mx_livre, bp_taxa, perfil, bp_hhb, lt1_reox)
+                mlss, bp_mx, bp_mx_livre, bp_taxa, perfil, bp_hhb, lt1_reox,
+                blocos)
 
             # ── reservas: W' em qualquer sessao, M' so' com SmO2 ──
             reservas = {}

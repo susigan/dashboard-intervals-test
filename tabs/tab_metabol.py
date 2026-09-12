@@ -2159,9 +2159,37 @@ function carregarCobertura(){
 
 // ═════ PERFIL METABOLICO ═════
 let PM = null;
+// Pontos de RPE (watts, rpe) gravados para a modalidade actual — vêm de
+// TODAS as sessões com RPE, não só a que estiver aberta noutra tab. O
+// alinhamento é sempre pelos WATTS, porque é a única grandeza comum
+// entre uma sessão Moxy e as zonas do perfil metabólico.
+let PM_RPE_PONTOS = [];
+
+function pmCarregarRpe(modalidade){
+ if(!modalidade){ PM_RPE_PONTOS=[]; return; }
+ fetch('/api/metabol/rpe_pontos/'+modalidade).then(r=>r.json())
+ .then(function(d){
+  PM_RPE_PONTOS = (d.status==='ok') ? (d.pontos||[]) : [];
+  pmDraw();
+  if(typeof pmSemaforo==='function') pmSemaforo();
+ }).catch(function(){ PM_RPE_PONTOS=[]; });
+}
+
+// Intervalo de RPE (min–max) dos pontos cujos watts caem em [de, ate).
+// Devolve null se não houver nenhum ponto na zona — a zona não ganha
+// texto de RPE nesse caso, em vez de mostrar um intervalo vazio.
+function pmRpeDaZona(de, ate){
+ const rs = PM_RPE_PONTOS.filter(function(p){
+   return p.watts_medio>=de && p.watts_medio<ate; })
+  .map(function(p){ return p.rpe; });
+ if(!rs.length) return null;
+ const lo=Math.min.apply(null,rs), hi=Math.max.apply(null,rs);
+ return lo===hi ? String(lo) : (lo+' a '+hi);
+}
 
 function pmCarregar(usarManuais){
  const mod = document.getElementById('pmModalidade').value;
+ pmCarregarRpe(mod);
  const est = document.getElementById('pmEstado');
  const p = new URLSearchParams();
  ['Altura','Idade','Peso','Bf'].forEach(function(k){
@@ -2885,7 +2913,9 @@ function pmExtDraw(){
    if(x1<=x0) return;
    g.fillStyle=z.cor; g.fillRect(x0, PT, x1-x0, h);
    g.fillStyle=z.rot; g.font='bold 11px sans-serif'; g.textAlign='center';
-   if(x1-x0>80) g.fillText(z.nome, (x0+x1)/2, PT-8);
+   const rpeZ=pmRpeDaZona(z.de, z.ate);
+   const rot=rpeZ ? z.nome+' (RPE '+rpeZ+')' : z.nome;
+   if(x1-x0>80) g.fillText(rot, (x0+x1)/2, PT-8);
   });
   // a largura da transicao, sombreada
   [[fA,'#3FB950'],[fB,'#F0883E']].forEach(function(t){
@@ -3299,7 +3329,9 @@ function pmDraw(){
    if(x1<=x0) return;
    g.fillStyle=z.cor; g.fillRect(x0, PT, x1-x0, h);
    g.fillStyle=z.rot; g.font='10px sans-serif'; g.textAlign='center';
-   if(x1-x0>52) g.fillText(z.nome, (x0+x1)/2, PT-6);
+   const rpeZ2=pmRpeDaZona(z.de, z.ate);
+   const rot2=rpeZ2 ? z.nome+' (RPE '+rpeZ2+')' : z.nome;
+   if(x1-x0>52) g.fillText(rot2, (x0+x1)/2, PT-6);
   });
  }
 
@@ -3643,15 +3675,17 @@ function pmSemaforo(){
  let h = '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
   + '<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
   + '<th style="padding:6px;">Zona</th><th>Potência</th><th>Sensação</th>'
-  + '<th>Respiração</th><th>Duração</th><th>% treino</th></tr>';
+  + '<th>Respiração</th><th>Duração</th><th>% treino</th><th>RPE</th></tr>';
  zs.forEach(function(z){
+  const rpeZ=pmRpeDaZona(z.de_w, z.ate_w);
   h += '<tr style="border-bottom:1px solid #161b22;">'
    + '<td style="padding:6px;border-left:3px solid '+z.cor+';">'+z.zona+'</td>'
    + '<td><b>'+z.de_w+' – '+z.ate_w+' W</b></td>'
    + '<td style="color:#8b949e;">'+z.sensacao+'</td>'
    + '<td style="color:#8b949e;">'+z.respiracao+'</td>'
    + '<td style="color:#8b949e;">'+z.duracao+'</td>'
-   + '<td style="color:#8b949e;">'+z.pct_treino+'</td></tr>';
+   + '<td style="color:#8b949e;">'+z.pct_treino+'</td>'
+   + '<td style="color:'+(rpeZ?'#58A6FF':'#484f58')+';">'+(rpeZ||'—')+'</td></tr>';
  });
  h += '</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">'
   + 'Ancoradas no LT1 (fim do verde) e no MLSS (topo do limiar), não numa '

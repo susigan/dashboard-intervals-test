@@ -601,6 +601,23 @@ def propor_corte_laps(blocos_info, min_work_depois=2):
 # desse lap serve para mostrar, nao para decidir.
 # ══════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════
+# CLASSIFICAR O TIPO DE SESSÃO — constantes
+#
+# Estas duas foram apagadas por engano numa limpeza anterior (a remover um
+# bloco duplicado de propor_corte_laps, a faixa de linhas escolhida
+# também levou estas duas constantes, que estavam no meio). Ficam aqui
+# restauradas com o mesmo critério original.
+# ══════════════════════════════════════════════════════════════════════════
+
+# Coeficiente de variacao abaixo do qual se considera "constante". Nao e'
+# um valor de literatura: e' o ponto a partir do qual a variacao deixa de
+# ser execucao e passa a ser intencao. 8% num bloco de 5 min sao 24 s.
+CV_CONSTANTE = 0.08
+# Subida minima de carga entre o primeiro e o ultimo bloco para ser escada.
+SUBIDA_ESCADA = 0.15
+
+
 def _cv(vs):
     vs = [v for v in vs if v is not None]
     if len(vs) < 2:

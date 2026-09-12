@@ -1936,6 +1936,35 @@ def api_fisiologia_qualidade():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/metabol/rpe_pontos/<modalidade>')
+def api_metabol_rpe_pontos(modalidade):
+    """RPE gravado, com os watts do bloco, para todas as sessões da
+    modalidade — para as zonas do Perfil Metabólico mostrarem o RPE
+    que corresponde a cada uma.
+
+    O RPE alinha-se pelos WATTS do bloco, não por FC nem por SmO2: os
+    watts são a única grandeza comum entre uma sessão Moxy e as zonas do
+    perfil metabólico, que também são definidas em watts.
+    """
+    try:
+        import drive_db_perfil as ddp
+        cn = ddp.get_conn()
+        linhas = cn.execute(
+            """SELECT r.watts_medio, r.rpe
+                 FROM moxy_rpe r
+                 JOIN moxy_analises a ON a.activity_id = r.activity_id
+                WHERE a.modalidade = ? AND r.watts_medio IS NOT NULL
+             ORDER BY r.watts_medio""", (modalidade,)).fetchall()
+        pontos = [{'watts_medio': round(r[0]), 'rpe': int(r[1])}
+                  for r in linhas]
+        return jsonify({'status': 'ok', 'modalidade': modalidade,
+                        'pontos': pontos, 'n': len(pontos)})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/metabol/custom_fields')
 def api_metabol_custom_fields():
     """Descobre que campos existem mesmo no JSON das atividades.

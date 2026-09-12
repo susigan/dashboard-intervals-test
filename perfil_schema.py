@@ -147,6 +147,23 @@ CREATE INDEX IF NOT EXISTS ix_perfil_mod_data
     ON perfil_snapshots (modalidade, data_referencia);
 CREATE INDEX IF NOT EXISTS ix_lim_mod_campo_data
     ON limiares_snapshots (modalidade, campo, data_referencia);
+
+-- RPE (esforço percebido, 1-10) por bloco de TRABALHO de uma sessão.
+--
+-- Um bloco pode ser regravado: o atleta engana-se a escrever o RPE, ou
+-- quer corrigir depois de reflectir. Por isso a chave e' (activity_id,
+-- bloco_indice), nao um id proprio -- gravar outra vez SUBSTITUI a
+-- entrada anterior desse bloco, nunca acumula duplicados.
+CREATE TABLE IF NOT EXISTS moxy_rpe (
+    activity_id     TEXT NOT NULL,
+    bloco_indice    INTEGER NOT NULL,
+    watts_medio     REAL,
+    t0_s            REAL,
+    t1_s            REAL,
+    rpe             INTEGER NOT NULL,
+    gravado_em      TEXT,
+    PRIMARY KEY (activity_id, bloco_indice)
+);
 """
 
 

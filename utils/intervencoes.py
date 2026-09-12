@@ -844,3 +844,179 @@ def estilos_recentes(sessoes, dias=60):
             'a nenhum estilo específico, por isso pode aparecer com '
             'frequência sem que isso signifique nada em falta'),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PLANO POR ZONAS — o que a tabela de "Métodos" devia ter sido desde o
+# início: números REAIS do teste, não percentagens genéricas, e opções
+# por zona em vez de uma lista só.
+#
+# Três zonas, ancoradas nos limiares DESTA sessão:
+#   Zona 1  abaixo do BP1
+#   Zona 2  entre o BP1 e o BP2
+#   Zona 3  acima do BP2
+#
+# Para cada zona e cada limitador: o que fazer (contínuo e/ou
+# intervalado, como OPÇÕES) e o que evitar NESSA zona PARA ESSE
+# limitador — porque o mesmo protocolo pode ser certo para um limitador
+# e errado para outro na mesma zona.
+# ══════════════════════════════════════════════════════════════════════════
+
+PLANO_ZONAS = {
+    'entrega': {
+        'zona1': {
+            'protocolos': [
+                {'nome': 'D1 contínuo', 'tipo': 'contínuo',
+                 'como': '20 min a 3–5 h'},
+                {'nome': 'D1 em blocos (atletas pesados)', 'tipo': 'intervalado',
+                 'como': '40s trabalho / 20s descanso, 40 séries'},
+            ],
+            'evitar': [],  # zona segura para qualquer limitador
+        },
+        'zona2': {
+            'protocolos': [
+                {'nome': 'D2 contínuo', 'tipo': 'contínuo',
+                 'como': '20–180 min'},
+                {'nome': 'D2 intervalado', 'tipo': 'intervalado',
+                 'como': '2–6 × 10–30 min, 30–90 s de pausa'},
+            ],
+            'evitar': [],
+        },
+        'zona3': {
+            'protocolos': [
+                {'nome': 'HIIT longo', 'tipo': 'intervalado',
+                 'como': '4–5 × 3–5 min, 2–3 min de recuperação activa'},
+                {'nome': '30/30 ou 40/20 em blocos', 'tipo': 'intervalado',
+                 'como': '2–3 blocos de 10 min'},
+            ],
+            'evitar': [
+                {'o_que': 'Sprints curtos com descanso muito longo (10s/3min)',
+                 'porque': ('fosfagénio, contribuição aeróbia mínima. O '
+                            'descanso de 3 min nunca deixa a FC sustentar-se '
+                            'perto do máximo — sem tempo, sem estímulo '
+                            'central')},
+                {'o_que': 'Isometria ou força de alta repetição perto da falha',
+                 'porque': ('a resposta pressora eleva a pressão arterial de '
+                            'forma aguda — mais pós-carga, menos volume '
+                            'ejectado durante o próprio esforço')},
+            ],
+        },
+    },
+
+    'utilizacao': {
+        'zona1': {
+            'protocolos': [
+                {'nome': 'Força específica, cadência baixa e torque alto',
+                 'tipo': 'intervalado', 'como': 'séries curtas, torque alto'},
+            ],
+            'evitar': [
+                {'o_que': 'Volume puro de zona 1 como único estímulo',
+                 'porque': ('Usher: a única forma de encorajar stress '
+                            'metabólico alto e a capacidade de extrair é '
+                            'através de alta intensidade. Zona 2 não dá '
+                            'isso')},
+            ],
+        },
+        'zona2': {
+            'protocolos': [
+                {'nome': 'Dessaturação gradual', 'tipo': 'intervalado',
+                 'como': 'construir o ritmo dentro do intervalo, não entrar '
+                         'já no ritmo alvo'},
+            ],
+            'evitar': [],
+        },
+        'zona3': {
+            'protocolos': [
+                {'nome': 'HIIT local O2-dependente', 'tipo': 'intervalado',
+                 'como': 'sprints <30s até ao SmO2 mínimo, recuperar até à '
+                         'linha de base'},
+                {'nome': 'SIT supramáximo 20s/10s', 'tipo': 'intervalado',
+                 'como': '20s esforço máximo / 10s recuperação, repetido em '
+                         'rondas'},
+            ],
+            'evitar': [
+                {'o_que': 'Recuperação longa entre séries (>60-90s)',
+                 'porque': ('quebra a acumulação de stress metabólico que '
+                            'é o alvo aqui — o objectivo é empilhar '
+                            'esforços, não os isolar')},
+            ],
+        },
+    },
+
+    'respiratorio': {
+        'zona1': {
+            'protocolos': [
+                {'nome': 'Trabalho respiratório dedicado', 'tipo': 'outro',
+                 'como': 'SpiroTiger ou equivalente, fora do treino'},
+            ],
+            'evitar': [],
+        },
+        'zona2': {
+            'protocolos': [
+                {'nome': 'Base contínua com foco técnico',
+                 'tipo': 'contínuo', 'como': 'postura das costelas, do '
+                         'diafragma e da pélvis antes de subir a carga'},
+            ],
+            'evitar': [],
+        },
+        'zona3': {
+            'protocolos': [
+                {'nome': 'EDT — dessaturação prolongada', 'tipo': 'contínuo',
+                 'como': 'potência fixa e rápida mas não máxima; manter até '
+                         'a taxa de queda do SmO2 chegar a zero'},
+            ],
+            'evitar': [
+                {'o_que': 'Sprints muito curtos (<60-90s) como estímulo principal',
+                 'porque': ('a ventilação precisa de tempo sustentado para '
+                            'se tornar o factor limitante. Um sprint de 20s '
+                            'acaba antes de a respiração ser o travão')},
+                {'o_que': 'Isometria com apneia ou Valsalva',
+                 'porque': 'reduz directamente a ventilação durante o esforço'},
+            ],
+        },
+    },
+}
+
+
+def plano_personalizado(limitador, bp1_w=None, bp2_w=None, bp1_bpm=None,
+                        bp2_bpm=None, smo2_min=None, fc_max=None):
+    """O plano de zonas com os NÚMEROS REAIS desta sessão.
+
+    Não usa percentagens genéricas: zona 1 é "abaixo do BP1 medido nesta
+    sessão", zona 2 é "entre o BP1 e o BP2 medidos", zona 3 é "acima do
+    BP2 medido". Se faltar algum limiar, a zona correspondente fica sem
+    números — não se inventa um substituto.
+    """
+    tpl = PLANO_ZONAS.get(limitador)
+    if not tpl:
+        return {'ok': False, 'motivo': f'sem plano para "{limitador}"'}
+
+    zonas = {}
+    limites_w = {
+        'zona1': (None, bp1_w), 'zona2': (bp1_w, bp2_w), 'zona3': (bp2_w, None)}
+    limites_bpm = {
+        'zona1': (None, bp1_bpm), 'zona2': (bp1_bpm, bp2_bpm),
+        'zona3': (bp2_bpm, fc_max)}
+
+    for chave, bloco in tpl.items():
+        lo_w, hi_w = limites_w[chave]
+        lo_bpm, hi_bpm = limites_bpm[chave]
+        zonas[chave] = {
+            'watts': (round(lo_w) if lo_w else None,
+                     round(hi_w) if hi_w else None),
+            'bpm': (round(lo_bpm) if lo_bpm else None,
+                   round(hi_bpm) if hi_bpm else None),
+            'tem_numeros': bool(lo_w or hi_w or lo_bpm or hi_bpm),
+            'protocolos': bloco['protocolos'],
+            'evitar': bloco['evitar'],
+        }
+
+    return {
+        'ok': True, 'limitador': limitador,
+        'zonas': zonas,
+        'smo2_min_da_sessao': smo2_min,
+        'nota': ('os watts e bpm de cada zona vêm do BP1 e do BP2 medidos '
+                 'NESTA sessão — não são percentagens genéricas da FC '
+                 'máxima. Sem os dois limiares, a zona correspondente fica '
+                 'sem números em vez de usar um substituto'),
+    }

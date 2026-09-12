@@ -139,6 +139,7 @@ BODY = """
     <div id="mxLimiares" style="margin-top:6px;"></div>
     <div id="mxDerivadas" style="margin-top:6px;"></div>
     <div id="mxEstilosRecentes" style="margin-top:10px;"></div>
+    <div id="mxRpe" style="margin-top:10px;"></div>
     <details style="margin-top:6px;">
       <summary style="cursor:pointer;font-size:12px;color:#8b949e;">Método e fiabilidade por modalidade</summary>
       <div style="font-size:11px;color:#8b949e;margin-top:6px;">
@@ -1071,6 +1072,8 @@ function mxLimiares(){
   MX_ULT_HIPO = MX_ULT_HIPO || false;
   mxDerivadasEVo2(d);
   mxEstilosRecentes();
+  MX_RPE_EDITAR=false;
+  mxRpe(d.activity_id);
   est.textContent=(d.modalidade||'')+' · '+(f.n_degraus||0)+' degraus';
   // No grafico vai o resultado do SCRIPT do Intervals.icu, para bater
   // certo com o que ves la'. As tabelas continuam a mostrar todos os
@@ -1625,6 +1628,102 @@ function mxDerivadasEVo2(d){
 // O que o atleta tem treinado de facto, nos últimos 60 dias, por
 // modalidade — para comparar com o que estamos a sugerir em cima. Um
 // atleta que só faz contínuo não precisa de ouvir "faz D1 contínuo".
+// RPE (1-10) por bloco de trabalho. Se algum bloco ainda não tem RPE,
+// mostra a caixa para escrever; se JÁ TODOS têm, mostra só "re-gravar" e
+// esconde as caixas até se clicar — para não ficar sempre a mostrar
+// inputs de algo que já está gravado.
+let MX_RPE_EDITAR = false;
+
+function mxRpe(id){
+ const box=document.getElementById('mxRpe');
+ if(!box || !id) return;
+ fetch('/api/moxy/rpe/'+id).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ box.innerHTML=''; return; }
+  if(!(d.blocos||[]).length){
+   box.innerHTML='<p class="sub" style="font-size:11px;">sem blocos de '
+    +'trabalho identificados nesta sessão para pedir RPE.</p>';
+   return;
+  }
+  MX_RPE_ULTIMOS = d.blocos;
+  let h='<div style="border:1px solid #30363d;border-radius:6px;'
+   +'padding:8px 10px;">'
+   +'<b style="font-size:12px;">RPE por bloco de trabalho</b> '
+   +'<span class="sub" style="font-size:10px;">(1 fácil — 10 esforço máximo)</span>';
+
+  if(d.todos_gravados && !MX_RPE_EDITAR){
+   h+='<br><span class="sub" style="font-size:11px;">'
+    +d.blocos.map(function(b){
+      return b.watts_medio+'W → RPE '+b.rpe; }).join(' · ')+'</span>'
+    +'<br><button id="mxRpeBtnRegravar" data-id="'+id+'" '
+    +'style="margin-top:6px;font-size:11px;padding:3px 10px;'
+    +'border-radius:6px;border:1px solid #58A6FF;background:transparent;'
+    +'color:#58A6FF;cursor:pointer;">↻ Re-gravar RPE</button>';
+   box.innerHTML=h+'</div>';
+   const btnR=document.getElementById('mxRpeBtnRegravar');
+   if(btnR) btnR.addEventListener('click', function(){
+    MX_RPE_EDITAR=true; mxRpe(btnR.getAttribute('data-id'));
+   });
+   return;
+  }
+
+  h+='<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+   +'<tr class="sub" style="text-align:left;">'
+   +'<th style="padding-right:12px;">Bloco</th>'
+   +'<th style="padding-right:12px;">Watts médio</th>'
+   +'<th style="padding-right:12px;">Duração</th><th>RPE</th></tr>'
+   +d.blocos.map(function(b,i){
+     return '<tr><td style="padding-right:12px;">#'+(i+1)+'</td>'
+      +'<td style="padding-right:12px;"><b>'+b.watts_medio+' W</b></td>'
+      +'<td style="padding-right:12px;" class="sub">'+b.duracao_s+' s</td>'
+      +'<td><input type="number" min="1" max="10" step="1" '
+      +'id="mxRpeInput'+i+'" value="'+(b.rpe!=null?b.rpe:'')+'" '
+      +'style="width:44px;background:#0d1117;border:1px solid #30363d;'
+      +'color:#c9d1d9;border-radius:4px;padding:2px 4px;"></td></tr>';
+    }).join('')
+   +'</table>'
+   +'<button id="mxRpeBtnGravar" data-id="'+id+'" style="margin-top:8px;'
+   +'font-size:11px;padding:4px 12px;border-radius:6px;'
+   +'border:1px solid #3FB950;background:transparent;color:#3FB950;'
+   +'cursor:pointer;">💾 Gravar RPE</button>'
+   +' <span id="mxRpeEstado" class="sub" style="font-size:11px;"></span>';
+  box.innerHTML=h+'</div>';
+  const btnG=document.getElementById('mxRpeBtnGravar');
+  if(btnG) btnG.addEventListener('click', function(){
+   mxRpeGravar(btnG.getAttribute('data-id'));
+  });
+ }).catch(function(){ box.innerHTML=''; });
+}
+
+let MX_RPE_ULTIMOS = [];
+
+function mxRpeGravar(id){
+ const est=document.getElementById('mxRpeEstado');
+ const blocos=[];
+ for(let i=0;i<MX_RPE_ULTIMOS.length;i++){
+  const el=document.getElementById('mxRpeInput'+i);
+  const v=el?parseInt(el.value,10):NaN;
+  if(isNaN(v) || v<1 || v>10){
+   if(est) est.textContent='bloco #'+(i+1)+' precisa de um RPE entre 1 e 10';
+   return;
+  }
+  const b=MX_RPE_ULTIMOS[i];
+  blocos.push({bloco_indice:i, watts_medio:b.watts_medio,
+              t0_s:b.t0_s, t1_s:b.t1_s, rpe:v});
+ }
+ if(est) est.textContent='a gravar...';
+ fetch('/api/moxy/rpe/'+id, {method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({blocos:blocos})})
+ .then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){
+   if(est) est.textContent=d.mensagem||'erro';
+   return;
+  }
+  MX_RPE_EDITAR=false;
+  mxRpe(id);
+ }).catch(function(e){ if(est) est.textContent='erro: '+e.message; });
+}
+
 function mxEstilosRecentes(){
  const box=document.getElementById('mxEstilosRecentes');
  if(!box) return;

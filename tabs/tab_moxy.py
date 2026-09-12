@@ -33,7 +33,7 @@ BODY = """
   <div id="mxDatas" style="margin:8px 0;"></div>
   <div id="mxCanais" style="margin:6px 0;"></div>
   <label style="font-size:11px;color:#8b949e;margin-left:4px;">
-   <input type="checkbox" id="mxTendencia" onchange="mxDraw()"> mostrar tendência (média móvel de 30s) dos canais activos
+   <input type="checkbox" id="mxTendencia" onchange="mxDraw()"> mostrar tendência (topo/fundo de cada bloco) dos canais activos
   </label>
 
   <div class="controls" style="margin:4px 0;flex-wrap:wrap;gap:6px 14px;">
@@ -2393,44 +2393,38 @@ function mxDraw(){
  // curva (sobe, estabiliza, desce) em vez de resumir tudo a um único
  // declive. Centrada e não à esquerda, para não deslocar os picos no
  // tempo — o mesmo critério já usado no resto do dashboard.
- function mxRolling(pts, janela_s){
-  const validos=pts.filter(p=>p[1]!=null);
-  const n=validos.length;
-  if(n<3) return null;
-  const meia=janela_s/2;
-  const fora=[];
-  let ini=0;
-  for(let i=0;i<n;i++){
-   const alvo=validos[i][0];
-   while(ini<n && validos[ini][0]<alvo-meia) ini++;
-   let soma=0,c=0,k=ini;
-   while(k<n && validos[k][0]<=alvo+meia){ soma+=validos[k][1]; c++; k++; }
-   fora.push([alvo, c?soma/c:validos[i][1]]);
-  }
-  return fora;
- }
-
- // Tendência DENTRO de cada bloco (WORK ou RECOVERY), não uma linha
- // contínua a atravessar a sessão toda.
+ // Linha de tendência ao estilo das figuras do 5-1-5: um ponto por
+ // bloco (o TOPO ou o FUNDO, conforme o canal e o tipo de bloco), ligados
+ // por uma linha tracejada com marcas — não uma média móvel contínua.
  //
- // Uma linha contínua confunde a transição entre um bloco de trabalho e
- // o descanso seguinte — a média desliza de um regime para o outro e o
- // que se vê no meio não é nem um nem outro. Cortando por bloco, cada
- // segmento mostra só a tendência DAQUELE período, e a quebra entre
- // segmentos mostra onde a fisiologia muda de regime.
- function mxRollingPorBloco(pts, si, janela_s){
+ // A convenção é a mesma do interpretacao_515.py (PERGUNTAS 3A/4A/6A/7A/
+ // 10/11): SmO2 e THb leem-se no VALE do trabalho e no PICO da
+ // recuperação (última terça parte); a FC e a respiração leem-se ao
+ // contrário — pico no trabalho, vale na recuperação — porque sobem com
+ // o esforço em vez de descerem.
+ const CANAL_INVERTIDO = {heartrate:true, respiration:true};
+ function mxPontosPorBloco(pts, si, canal){
   const idS = ids[si] || ids[0];
   const blocos = (((MX_DADOS[idS]||{}).blocos||{}).blocos || []);
-  if(!blocos.length) return [mxRolling(pts, janela_s)].filter(Boolean);
+  if(!blocos.length) return null;
   const refS = mxRefAlinhamento(idS) + (MX_OFF[idS]||0);
-  const segmentos=[];
+  const invertido = !!CANAL_INVERTIDO[canal];
+  const fora=[];
   blocos.forEach(function(b){
    const t0=b.t0-refS, t1=b.t1-refS;
-   const sub=pts.filter(function(p){ return p[0]>=t0 && p[0]<=t1; });
-   const r=mxRolling(sub, janela_s);
-   if(r && r.length>1) segmentos.push(r);
+   // recuperação: só o último terço, como nas perguntas 3A/6A/10
+   const de = b.on ? t0 : t0 + (t1-t0)*2/3;
+   const sub=pts.filter(function(p){ return p[0]>=de && p[0]<=t1
+                                      && p[1]!=null; });
+   if(!sub.length) return;
+   // trabalho quer o vale (SmO2/THb) ou o pico (FC/respiração);
+   // recuperação é o contrário
+   const querMax = b.on ? invertido : !invertido;
+   const alvo = sub.reduce(function(a,c){
+     return (querMax ? c[1]>a[1] : c[1]<a[1]) ? c : a; });
+   fora.push(alvo);
   });
-  return segmentos;
+  return fora.length>1 ? fora : null;
  }
  nirs.forEach(function(s2){
   g.strokeStyle=ids.length>1 ? mxCorSessao(s2.si) : (MX_CORES[s2.canal]||'#c9d1d9');
@@ -2442,16 +2436,19 @@ function mxDraw(){
   g.stroke(); g.setLineDash([]); g.lineWidth=1;
   if(mostrarTendencia){
    const cor=g.strokeStyle;
-   const segs=mxRollingPorBloco(s2.pts, s2.si, 30);
-   g.strokeStyle=cor; g.globalAlpha=0.9; g.lineWidth=2.2;
-   g.setLineDash([2,3]);
-   segs.forEach(function(roll){
+   const pts=mxPontosPorBloco(s2.pts, s2.si, s2.canal);
+   if(pts){
+    g.strokeStyle=cor; g.globalAlpha=0.9; g.lineWidth=1.4;
+    g.setLineDash([3,2]);
     g.beginPath();
-    roll.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y(p[1]))
-                                  :g.moveTo(X(p[0]),Y(p[1])); });
-    g.stroke();
-   });
-   g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
+    pts.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y(p[1]))
+                                 :g.moveTo(X(p[0]),Y(p[1])); });
+    g.stroke(); g.setLineDash([]);
+    g.fillStyle=cor;
+    pts.forEach(function(p){
+     g.beginPath(); g.arc(X(p[0]),Y(p[1]),2.4,0,6.284); g.fill(); });
+    g.globalAlpha=1; g.lineWidth=1;
+   }
   }
  });
  const outros=series.filter(s2=>!s2.nirs && s2.canal!=='watts');
@@ -2468,15 +2465,17 @@ function mxDraw(){
                                  :g.moveTo(X(p[0]),Y2(p[1])); });
   g.stroke(); g.setLineDash([]); g.globalAlpha=1;
   if(mostrarTendencia){
-   const segs=mxRollingPorBloco(s2.pts, s2.si, 30);
-   g.globalAlpha=0.95; g.lineWidth=2.2; g.setLineDash([2,3]);
-   segs.forEach(function(roll){
+   const pts=mxPontosPorBloco(s2.pts, s2.si, s2.canal);
+   if(pts){
+    g.globalAlpha=0.95; g.lineWidth=1.4; g.setLineDash([3,2]);
     g.beginPath();
-    roll.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y2(p[1]))
-                                  :g.moveTo(X(p[0]),Y2(p[1])); });
-    g.stroke();
-   });
-   g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
+    pts.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y2(p[1]))
+                                 :g.moveTo(X(p[0]),Y2(p[1])); });
+    g.stroke(); g.setLineDash([]);
+    pts.forEach(function(p){
+     g.beginPath(); g.arc(X(p[0]),Y2(p[1]),2.4,0,6.284); g.fill(); });
+    g.globalAlpha=1; g.lineWidth=1;
+   }
   }
  });
 

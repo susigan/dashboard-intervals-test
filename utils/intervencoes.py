@@ -66,8 +66,11 @@ INTERVENCOES = {
                    'SmO2 mínimo de trabalho abaixo de 30%'],
         'adaptacoes_alvo': [
             'fluxo sanguíneo e circulação periférica',
-            'volume telediastólico e volume sistólico',
-            'hipertrofia ventricular esquerda',
+            ('débito cardíaco — FC × volume de ejeção, não só o volume '
+             'sozinho'),
+            'volume telediastólico (enchimento do ventrículo)',
+            ('hipertrofia excêntrica do ventrículo esquerdo — adaptação de '
+             'meses/anos de carga de volume repetida, não de uma sessão'),
             'coordenação cardio-pulmonar'],
         # Peikon organiza a "endurance basica" em quatro categorias D0-D3,
         # com alvos de FC e de SmO2 explicitos. Sao mais operacionais do
@@ -184,6 +187,62 @@ INTERVENCOES = {
                 'desafia a regulação da pressão e a redistribuição do '
                 'débito'),
         },
+
+        # ── ESTILOS NOMEADOS — os que o atleta reconhece por nome ────────
+        #
+        # As categorias D0-D2 e o nível dois acima cobrem a mesma
+        # fisiologia, mas com nomes técnicos. Aqui ficam os mesmos alvos
+        # sob os nomes que se usam na prática, com watts/bpm calculados
+        # para este atleta em alvos_para_atleta().
+        'estilos_treino': [
+            {'estilo': 'D3 — HIIT longo (perto do VO2máx)',
+             'como': ('4–5 séries de 3–5 min a >90% da FC máxima, com '
+                      '2–3 min de recuperação activa leve entre séries'),
+             'porque': ('estímulo perto do débito cardíaco máximo, mantido '
+                        'tempo suficiente para ser um estímulo de volume, '
+                        'não só de intensidade'),
+             'adaptacao_esperada': (
+                 'é o protocolo clássico para volume de ejeção (o "4×4" '
+                 'norueguês, Helgerud 2007). A hipertrofia excêntrica do '
+                 'ventrículo é uma adaptação de meses de treino repetido '
+                 'deste tipo — não desta sessão isolada; o erro comum é '
+                 'apresentar como mecanismo directo da sessão o que é na '
+                 'verdade o efeito acumulado de muitas sessões'),
+             'alvo_fc': 'acima de 90% da FC máxima',
+             'fonte': 'Helgerud et al. 2007; protocolo "4×4" norueguês'},
+
+            {'estilo': '30/30 ou 40/20 em blocos',
+             'como': ('2–3 blocos de 10 min: 30 s de esforço muito alto / '
+                      '30 s de descanso leve (ou 40s/20s)'),
+             'porque': ('acumula tempo perto do VO2máx sem a fadiga '
+                        'periférica que o mesmo esforço contínuo geraria — '
+                        'o descanso curto mantém a FC perto do tecto ao '
+                        'longo do bloco todo'),
+             'adaptacao_esperada': 'central, igual ao D3, com menos fadiga',
+             'alvo_fc': 'sustentada acima de 85-90% durante o bloco',
+             'fonte': 'família Billat/Rønnestad de protocolos intermitentes'},
+        ],
+        'nao_fazer_lista': [
+            {'evitar': 'Isometria ou força de alta repetição perto da falha',
+             'porque': (
+                 'dois mecanismos diferentes, não um só: (1) a contracção '
+                 'sustentada comprime os vasos LOCALMENTE, restringindo o '
+                 'fluxo só para aquele músculo; (2) contracções isométricas '
+                 'pesadas elevam a pressão arterial de forma aguda — a '
+                 '"resposta pressora" bem documentada em treino de força '
+                 '(MacDougall 1985) — e essa subida sistémica de pressão '
+                 'é que aumenta a pós-carga a sério, contra a qual o '
+                 'coração inteiro empurra. As duas coisas juntam-se no '
+                 'mesmo efeito prático (menos volume ejectado durante o '
+                 'esforço), mas não são o mesmo mecanismo')},
+            {'evitar': 'Sprints curtos com descanso muito longo (10s/3min)',
+             'porque': (
+                 'esforços abaixo de 10-15s são dominados pelo sistema '
+                 'fosfagénio, com contribuição aeróbia mínima. Um descanso '
+                 'de 3 min nunca deixa a FC sustentar-se perto do máximo '
+                 'tempo suficiente para gerar estímulo central — é '
+                 'potência neuromuscular, não débito cardíaco')},
+        ],
         'nao_fazer': ('mais intensidade não resolve: o músculo já usa tudo '
                       'o que recebe. O travão está a montante'),
     },
@@ -221,7 +280,39 @@ INTERVENCOES = {
              'como': 'obriga o músculo a puxar oxigénio',
              'sinal_no_smo2': 'queda mais profunda à mesma potência',
              'fonte': 'Peikon, Training The Utilization Limited Athlete'},
+            {'metodo': 'SIT supramáximo, 20s/10s (estilo boxe)',
+             'como': ('20 s a esforço máximo absoluto, 10 s de recuperação, '
+                      'repetido por "rondas" de vários minutos. Variante '
+                      '"undulating": alternar 20on/60off com 30on/50off na '
+                      'mesma sessão'),
+             'sinal_no_smo2': ('dessaturação rápida e repetida; o objectivo '
+                               'é supramáximo a sério — a maior parte dos '
+                               'atletas fica submáxima sem perceber'),
+             'fonte': ('Usher, Sprint Protocols For Boxing (SSOF #19) — '
+                       '"supramaximal is where you need to be to get those '
+                       'fast adaptive changes"')},
+            {'metodo': 'Sprint de 30s com paragem por forma da recuperação',
+             'como': ('30 s a esforço máximo no bike. Entre sprints, olhar '
+                      'para a FORMA da queda da FC — não o número. '
+                      'Queda rápida e nítida até um patamar = pronto para '
+                      'o próximo. Queda lenta, com atraso, ou presa acima '
+                      'do patamar anterior = parar a sessão'),
+             'sinal_no_smo2': ('critério de FC, não de SmO2 — mas o mesmo '
+                               'princípio de "olhar a forma, não só o '
+                               'número" aplica-se ao SmO2 entre blocos'),
+             'fonte': ('Babraj/Usher, Why VO2max Doesnt Matter — "look at '
+                       'shapes: how is the heart rate dropping, is it '
+                       'sharp then plateau, or slow and delayed? If it\'s '
+                       'stuck, that\'s the signal to stop"')},
         ],
+        'nota_fonte_sit': (
+            'estes dois protocolos vêm de fisiologistas que discordam '
+            'explicitamente do enquadramento "débito cardíaco": "we tend '
+            'to think in systemic terms — cardiac output, stroke volume, '
+            'VO2max. What we tend to think LESS about is what\'s the '
+            'actual muscle doing." O alvo declarado é mitocondrial, não '
+            'central — por isso ficam aqui e não em entrega, mesmo '
+            'elevando a FC perto do máximo'),
         'nao_fazer': ('antes de concluir que é utilização, descartar '
                       'hipocapnia: respiração rápida e superficial produz '
                       'exactamente o mesmo padrão'),
@@ -421,6 +512,36 @@ def alvos_para_atleta(fc_max=None, lt1_w=None, lt2_w=None,
     d2['duracao'] = '20–180 min, ou 2–6 × 10–30 min com 30–90 s de pausa'
     d2['teste'] = 'consegue dizer uma frase completa'
     fora['D2'] = d2
+
+    # ── D3: acima do LT2 — HIIT longo e 30/30, perto do débito máximo ──
+    d3 = {'nome': 'D3 — HIIT longo (perto do VO2máx)', 'ancora': None}
+    if lt2_w:
+        d3['watts'] = (round(lt2_w * 1.02), round(lt2_w * 1.15))
+        d3['ancora'] = 'LT2 medido'
+    if lt2_bpm and fc_max:
+        d3['bpm'] = (round(lt2_bpm), round(fc_max * 0.97))
+        d3['ancora'] = d3['ancora'] or 'LT2 medido e FC máxima'
+    if not d3.get('bpm') and fc_max:
+        d3['bpm'] = _pct(fc_max, 0.90, 0.97)
+        d3['ancora'] = '% da FC máxima (sem LT2 medido)'
+    d3['duracao'] = '3–5 min × 4–5 séries, 2–3 min de recuperação activa'
+    d3['teste'] = 'FC não deve estabilizar abaixo do alvo — se estagnar, a carga está baixa'
+    fora['D3'] = d3
+
+    # SIT (sprint interval, estilo boxe): alvo separado por natureza —
+    # é supramáximo, acima de qualquer limiar contínuo, e o alvo é uma FC
+    # de referência no PRIMEIRO sprint, não uma gama sustentada.
+    sit = {'nome': 'SIT supramáximo (20s/10s ou 30s)', 'ancora': None}
+    if fc_max:
+        sit['fc_1o_sprint'] = round(fc_max * 0.84)
+        sit['ancora'] = ('FC máxima — o 1.º sprint de 30s "a frio" deve '
+                         'chegar perto disto (referência de Babraj/Usher: '
+                         '~160 bpm num atleta com FCmáx próxima de 190)')
+    sit['criterio_paragem'] = (
+        'não é um número de repetições fixo — é a FORMA da recuperação da '
+        'FC entre sprints. Queda rápida até um patamar = continuar. Queda '
+        'lenta, com atraso, ou presa acima do patamar anterior = parar')
+    fora['SIT'] = sit
 
     faltam = []
     if not (lt1_w or lt1_bpm):
@@ -632,4 +753,94 @@ def consenso_entre_sessoes(sessoes):
                  'dizer um e 2 a dizer outro, o que importa é que há 2 a '
                  'discordar — não que 60% ganha. Abaixo de 70% não há '
                  'padrão utilizável'),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ESTILOS RECENTES — o que o atleta tem feito de facto
+#
+# Usa o classificador de tipo de sessão que já existe (mnirs.classificar_
+# de_summary), que só precisa do interval_summary de cada actividade — não
+# precisa de streams, por isso é barato correr sobre muitas sessões de
+# uma vez.
+#
+# A pergunta que isto responde: dos estilos que sugerimos, quais já fazes
+# e quais nunca apareceram nos últimos N dias? Um atleta que só faz
+# contínuo há dois meses não precisa de ouvir "faz D1 contínuo" — precisa
+# de ouvir que falta o outro lado.
+# ══════════════════════════════════════════════════════════════════════════
+
+# Mapa do tipo devolvido pelo classificador para o estilo mais próximo
+# nas listas de metodos/estilos_treino acima. Usado só para dar a
+# correspondência ao utilizador — não filtra nem decide nada por si.
+_TIPO_PARA_ESTILO = {
+    'escada (teste de degraus)': 'D3 — HIIT longo / teste incremental',
+    'contínuo': 'D1/D2 — endurance contínua',
+    'intervalado por tempo': '30/30 ou 40/20 em blocos',
+    'intervalado por distância': '30/30 ou 40/20 em blocos (por distância)',
+    'blocos repetidos': 'SIT supramáximo, séries repetidas',
+    'intervalado com descanso variável': 'undulating (Usher/Babraj)',
+    'intervalado irregular': None,  # sem correspondência clara
+}
+
+
+def estilos_recentes(sessoes, dias=60):
+    """sessoes: [{'modalidade':..., 'data':..., 'interval_summary':[...]}]
+
+    Classifica cada sessão pelo interval_summary e agrega por modalidade.
+    """
+    import mnirs as _mn
+    from datetime import date, timedelta
+
+    corte = (date.today() - timedelta(days=dias)).isoformat()
+    por_modalidade = {}
+    ignoradas = 0
+    for s in (sessoes or []):
+        if not s.get('interval_summary') or (s.get('data') or '') < corte:
+            continue
+        try:
+            c = _mn.classificar_de_summary(s['interval_summary'])
+        except Exception:
+            ignoradas += 1
+            continue
+        if not c.get('ok'):
+            ignoradas += 1
+            continue
+        mod = s.get('modalidade') or '?'
+        bloco = por_modalidade.setdefault(mod, {})
+        tipo = c.get('tipo') or 'indeterminado'
+        bloco[tipo] = bloco.get(tipo, 0) + 1
+
+    resumo = {}
+    for mod, tipos in por_modalidade.items():
+        total = sum(tipos.values())
+        ordenado = sorted(tipos.items(), key=lambda kv: -kv[1])
+        resumo[mod] = {
+            'n_sessoes': total,
+            'tipos': [{'tipo': t, 'n': n,
+                      'estilo_correspondente': _TIPO_PARA_ESTILO.get(t)}
+                     for t, n in ordenado],
+            'dominante': ordenado[0][0] if ordenado else None,
+            'variedade': len(tipos),
+        }
+
+    faltam = []
+    todos_tipos = {t for r in resumo.values() for t in
+                   (x['tipo'] for x in r['tipos'])}
+    for nome_tipo, nome_estilo in _TIPO_PARA_ESTILO.items():
+        if nome_estilo and nome_tipo not in todos_tipos:
+            faltam.append(nome_estilo)
+
+    return {
+        'ok': bool(resumo),
+        'janela_dias': dias,
+        'por_modalidade': resumo,
+        'ignoradas': ignoradas,
+        'estilos_ausentes': faltam,
+        'nota': (
+            'classificado pelo interval_summary de cada sessão, sem ler '
+            'streams — a mesma lógica que classifica o tipo de sessão na '
+            'tab Moxy. Uma sessão "intervalado irregular" não corresponde '
+            'a nenhum estilo específico, por isso pode aparecer com '
+            'frequência sem que isso signifique nada em falta'),
     }

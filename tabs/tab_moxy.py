@@ -2874,11 +2874,76 @@ function mxLista(){
 // alinhamento ser verificavel: se duas sessoes foram emparelhadas pelo
 // primeiro bloco mas os degraus nao correspondem, ve-se aqui e corrige-se
 // no ajuste fino, em vez de se descobrir a olho no grafico.
+// Média de um canal dentro de [t0,t1]. Usada para watts/respiração/FC/
+// SmO2 por degrau — o mesmo princípio da FC do último minuto, mas aqui é
+// a média do bloco inteiro, porque a pergunta é "como foi o degrau", não
+// "onde estabilizou".
+function _mxMedia(canal, tempo, t0, t1){
+ if(!canal || !tempo) return null;
+ let soma=0, n=0;
+ for(let i=0;i<tempo.length && i<canal.length;i++){
+  if(tempo[i]>=t0 && tempo[i]<=t1 && canal[i]!=null){ soma+=canal[i]; n++; }
+ }
+ return n ? soma/n : null;
+}
+
+function mxBlocosTabelaUnica(id){
+ const box=document.getElementById('mxBlocos');
+ const d=MX_DADOS[id];
+ if(!d){ box.innerHTML=''; return; }
+ const corte=mxCorteDe(id);
+ const t=d.tempo||[];
+ const ons=(((d.blocos||{}).blocos)||[])
+   .filter(b=>b.on && b.t1>=corte[0] && b.t0<=corte[1]);
+ if(!ons.length){
+  box.innerHTML='<p class="sub" style="font-size:11px;">Sem blocos de '
+   +'trabalho detectados no intervalo.</p>';
+  return;
+ }
+ // RPE já carregado por mxRpe(), na mesma ordem dos blocos de trabalho
+ const rpes=MX_RPE_ULTIMOS||[];
+
+ let h='<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr class="sub" style="text-align:left;">'
+  +'<th style="padding-right:12px;">Degrau</th>'
+  +'<th style="padding-right:12px;">Watts (média)</th>'
+  +'<th style="padding-right:12px;">Respiração</th>'
+  +'<th style="padding-right:12px;">FC</th>'
+  +'<th style="padding-right:12px;">SmO2</th>'
+  +'<th>RPE</th></tr>';
+ ons.forEach(function(b,k){
+  const w=_mxMedia(d.canais.watts, t, b.t0, b.t1);
+  const resp=_mxMedia(d.canais.respiration, t, b.t0, b.t1);
+  const hr=_mxMedia(d.canais.heartrate, t, b.t0, b.t1);
+  const smo2=_mxMedia(d.canais.smo2, t, b.t0, b.t1);
+  const rpe=(rpes[k]||{}).rpe;
+  h+='<tr><td style="padding-right:12px;color:#8b949e;">'+(k+1)+'</td>'
+   +'<td style="padding-right:12px;"><b>'
+   +(w!=null?Math.round(w)+' W':(b.watts_medio!=null
+     ?Math.round(b.watts_medio)+' W':'—'))+'</b></td>'
+   +'<td style="padding-right:12px;color:#8b949e;">'
+   +(resp!=null?resp.toFixed(1)+'/min':'—')+'</td>'
+   +'<td style="padding-right:12px;color:#E3B341;">'
+   +(hr!=null?Math.round(hr)+' bpm':'—')+'</td>'
+   +'<td style="padding-right:12px;color:#3FB950;">'
+   +(smo2!=null?smo2.toFixed(1)+'%':'—')+'</td>'
+   +'<td style="'+(rpe!=null?'color:#58A6FF;':'color:#484f58;')+'">'
+   +(rpe!=null?rpe:'—')+'</td></tr>';
+ });
+ h+='</table>';
+ box.innerHTML=h;
+}
+
 function mxBlocosTabela(){
  const box=document.getElementById('mxBlocos');
  if(!box) return;
  const ids=Object.keys(MX_DADOS);
  if(!ids.length){ box.innerHTML=''; return; }
+
+ // Sessão única: tabela rica por degrau, com as métricas médias e o
+ // RPE — não a comparação entre sessões, que não faz sentido aqui.
+ if(ids.length===1){ mxBlocosTabelaUnica(ids[0]); return; }
+
  const cols=[];
  ids.forEach(function(id,si){
   const d=MX_DADOS[id];

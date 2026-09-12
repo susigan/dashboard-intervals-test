@@ -1938,8 +1938,12 @@ function mxCanaisEdit(){
  const base=MX_DADOS[ids[0]];
  const nirs=base.canais_nirs||[], ctx2=base.canais_contexto||[];
  const todos=nirs.concat(ctx2);
+ // Por omissão: só SmO2, THb, watts e FC. Os outros (respiração, DFA-a1,
+ // deoxy-Hb calculado, etc.) começam desligados — o utilizador liga-os
+ // se quiser, mas o gráfico não abre carregado com tudo.
+ const PADRAO = ['smo2', 'thb', 'watts', 'heartrate'];
  if(!Object.keys(MX_ON).length)
-  nirs.forEach(function(k){ MX_ON[k]=true; });
+  todos.forEach(function(k){ MX_ON[k] = PADRAO.indexOf(k) >= 0; });
  box.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:6px;'
   + 'align-items:center;">'
   + todos.map(function(k){
@@ -2405,6 +2409,29 @@ function mxDraw(){
   }
   return fora;
  }
+
+ // Tendência DENTRO de cada bloco (WORK ou RECOVERY), não uma linha
+ // contínua a atravessar a sessão toda.
+ //
+ // Uma linha contínua confunde a transição entre um bloco de trabalho e
+ // o descanso seguinte — a média desliza de um regime para o outro e o
+ // que se vê no meio não é nem um nem outro. Cortando por bloco, cada
+ // segmento mostra só a tendência DAQUELE período, e a quebra entre
+ // segmentos mostra onde a fisiologia muda de regime.
+ function mxRollingPorBloco(pts, si, janela_s){
+  const idS = ids[si] || ids[0];
+  const blocos = (((MX_DADOS[idS]||{}).blocos||{}).blocos || []);
+  if(!blocos.length) return [mxRolling(pts, janela_s)].filter(Boolean);
+  const refS = mxRefAlinhamento(idS) + (MX_OFF[idS]||0);
+  const segmentos=[];
+  blocos.forEach(function(b){
+   const t0=b.t0-refS, t1=b.t1-refS;
+   const sub=pts.filter(function(p){ return p[0]>=t0 && p[0]<=t1; });
+   const r=mxRolling(sub, janela_s);
+   if(r && r.length>1) segmentos.push(r);
+  });
+  return segmentos;
+ }
  nirs.forEach(function(s2){
   g.strokeStyle=ids.length>1 ? mxCorSessao(s2.si) : (MX_CORES[s2.canal]||'#c9d1d9');
   g.lineWidth = ids.length>1 ? (s2.canal==='smo2'?2.2:1.4) : 2;
@@ -2415,15 +2442,16 @@ function mxDraw(){
   g.stroke(); g.setLineDash([]); g.lineWidth=1;
   if(mostrarTendencia){
    const cor=g.strokeStyle;
-   const roll=mxRolling(s2.pts, 30);
-   if(roll){
-    g.strokeStyle=cor; g.globalAlpha=0.9; g.lineWidth=2.2;
-    g.setLineDash([2,3]);
+   const segs=mxRollingPorBloco(s2.pts, s2.si, 30);
+   g.strokeStyle=cor; g.globalAlpha=0.9; g.lineWidth=2.2;
+   g.setLineDash([2,3]);
+   segs.forEach(function(roll){
     g.beginPath();
     roll.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y(p[1]))
                                   :g.moveTo(X(p[0]),Y(p[1])); });
-    g.stroke(); g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
-   }
+    g.stroke();
+   });
+   g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
   }
  });
  const outros=series.filter(s2=>!s2.nirs && s2.canal!=='watts');
@@ -2440,14 +2468,15 @@ function mxDraw(){
                                  :g.moveTo(X(p[0]),Y2(p[1])); });
   g.stroke(); g.setLineDash([]); g.globalAlpha=1;
   if(mostrarTendencia){
-   const roll=mxRolling(s2.pts, 30);
-   if(roll){
-    g.globalAlpha=0.95; g.lineWidth=2.2; g.setLineDash([2,3]);
+   const segs=mxRollingPorBloco(s2.pts, s2.si, 30);
+   g.globalAlpha=0.95; g.lineWidth=2.2; g.setLineDash([2,3]);
+   segs.forEach(function(roll){
     g.beginPath();
     roll.forEach(function(p,n){ n?g.lineTo(X(p[0]),Y2(p[1]))
                                   :g.moveTo(X(p[0]),Y2(p[1])); });
-    g.stroke(); g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
-   }
+    g.stroke();
+   });
+   g.setLineDash([]); g.globalAlpha=1; g.lineWidth=1;
   }
  });
 
@@ -2894,39 +2923,22 @@ function ivAnalisar(){
     }).join('')
    +'</table></div>';
 
-  if((iv.metodos||[]).length){
-   h+='<div style="margin-top:10px;">'
-    +'<h3 style="font-size:14px;">Métodos</h3>'
-    +'<table style="width:100%;border-collapse:collapse;font-size:11px;">'
-    +'<tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;">'
-    +'<th style="padding:5px;">Método</th><th>Como</th><th>Alvo FC</th>'
-    +'<th>Alvo SmO2</th><th>Fonte</th></tr>'
-    +iv.metodos.map(function(m){
-      return '<tr style="border-bottom:1px solid #161b22;">'
-       +'<td style="padding:5px;"><b>'+m.metodo+'</b></td>'
-       +'<td style="color:#8b949e;">'+m.como+'</td>'
-       +'<td>'+(m.alvo_fc||'—')+'</td>'
-       +'<td style="color:#3FB950;">'+(m.alvo_smo2||m.sinal_no_smo2||'—')
-       +'</td><td style="color:#6e7681;font-size:10px;">'+(m.fonte||'')
-       +'</td></tr>'; }).join('')
-    +'</table></div>';
-   const n2=iv.nivel_dois;
-   if(n2){
-    h+='<div style="margin-top:10px;"><h3 style="font-size:14px;">'
-     +'Nível dois</h3><p style="color:#8b949e;font-size:11px;">'+n2.porque
-     +'</p><table style="width:100%;border-collapse:collapse;font-size:11px;">'
-     +(n2.metodos||[]).map(function(m){
-       return '<tr style="border-bottom:1px solid #161b22;">'
-        +'<td style="padding:5px;width:26%;"><b>'+m.metodo+'</b></td>'
-        +'<td style="color:#8b949e;">'+m.como
-        +(m.porque?'<br><span style="color:#6e7681;">'+m.porque+'</span>':'')
-        +(m.como_verificar?'<br><span style="color:#A371F7;">verificar: '
-          +m.como_verificar+'</span>':'')+'</td></tr>'; }).join('')
-     +'</table></div>';
-   }
-   if(iv.nao_fazer)
-    h+='<p style="color:#F0883E;font-size:12px;margin-top:8px;">'
-     +'<b>Não fazer:</b> '+iv.nao_fazer+'</p>';
+  // plano por zona — a sessão mais recente do grupo cruzado dá os números
+  const lc3=((sel[0]||{}).limiares||{}).limiares_consenso||{};
+  const p1c=lc3.primeiro||{}, p2c=lc3.segundo||{};
+  h+='<div id="mxPlanoZonasIv" style="margin-top:8px;"></div>';
+  if(d.limitador_mais_comum){
+   setTimeout(function(){
+    const _box=document.getElementById('mxPlanoZonasIv');
+    if(_box) _box.id='mxPlanoZonas';
+    mxPlanoPorZona(d.limitador_mais_comum, {
+     bp1_w: p1c.mediana, bp2_w: p2c.mediana,
+     bp1_bpm: (p1c.estimativas||[]).find(e=>e.bpm) ?
+       (p1c.estimativas||[]).find(e=>e.bpm).bpm : null,
+     bp2_bpm: (p2c.estimativas||[]).find(e=>e.bpm) ?
+       (p2c.estimativas||[]).find(e=>e.bpm).bpm : null,
+    });
+   }, 0);
   }
   h+='<p style="color:#8b949e;font-size:11px;margin-top:8px;">'
    +(d.nota||'')+'</p>';

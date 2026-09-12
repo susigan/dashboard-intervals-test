@@ -2400,7 +2400,14 @@ function mxDraw(){
  // aconteceu.
  const wserBP = wsers.find(function(w){ return w.si===0; }) || wsers[0];
  if(MX_BP && wserBP){
-  const blocosOn = ((MX.blocos||{}).blocos||[]).filter(b=>b.on
+  // 'ref' (o ponto de alinhamento entre sessões) está declarado dentro
+  // do forEach mais acima, fora de alcance aqui — usá-lo lançava
+  // "ReferenceError: ref is not defined" e abortava o resto do desenho
+  // em silêncio, incluindo os próprios marcadores. Recalcula-se para a
+  // sessão de wserBP.
+  const idBP = ids[wserBP.si] || ids[0];
+  const refBP = mxRefAlinhamento(idBP) + (MX_OFF[idBP]||0);
+  const blocosOn = ((MX_DADOS[idBP].blocos||{}).blocos||[]).filter(b=>b.on
     && b.watts_medio!=null);
   [[MX_BP.bp1,'#3FB950','BP1'],[MX_BP.bp2,'#F85149','BP2']].forEach(function(b){
    if(b[0]==null) return;
@@ -2410,7 +2417,7 @@ function mxDraw(){
       return Math.abs(c.watts_medio-b[0])<=Math.abs(a.watts_medio-b[0])?c:a;
     });
     if(Math.abs(bloco.watts_medio-b[0])<=25){
-     const meio=(bloco.t0+bloco.t1)/2 - ref;
+     const meio=(bloco.t0+bloco.t1)/2 - refBP;
      x=X(meio);
     }
    }

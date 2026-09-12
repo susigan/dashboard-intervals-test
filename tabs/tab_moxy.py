@@ -228,6 +228,7 @@ BODY = """
   </div>
 
   <div id="mxIntervencoes"></div>
+  <div id="mxPlanoZonas" style="margin-top:6px;"></div>
 
   <h2 style="font-size:15px;margin-top:18px;">Rede causal entre canais</h2>
   <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
@@ -1674,6 +1675,61 @@ function mxEstilosRecentes(){
  }).catch(function(){ box.innerHTML=''; });
 }
 
+// Plano por zona, com os watts/bpm DESTE teste — substitui a antiga
+// tabela de "Métodos" (genérica, em %) e o "nível dois" solto no fim.
+// Cada zona tem opção contínua e intervalada, e o "evitar" só aparece
+// onde é relevante para ESTE limitador — o mesmo protocolo que é a
+// ferramenta principal noutro limitador.
+function mxPlanoPorZona(limitador, valores){
+ const box=document.getElementById('mxPlanoZonas');
+ if(!box || !limitador) return;
+ const vv=valores||{};
+ const q=['plano_limitador='+encodeURIComponent(limitador)];
+ ['bp1_w','bp2_w','bp1_bpm','bp2_bpm','smo2_min'].forEach(function(k){
+  if(vv[k]!=null) q.push(k+'='+vv[k]);
+ });
+ fetch('/api/moxy/intervencoes?'+q.join('&')).then(r=>r.json())
+ .then(function(d){
+  if(d.status!=='ok'){ box.innerHTML=''; return; }
+  let h='';
+  if((d.faltam||[]).length)
+   h+='<p style="color:#8b949e;font-size:10px;">em falta para completar '
+    +'todas as zonas: '+d.faltam.join(', ')+'</p>';
+  ['Zona 1','Zona 2','Zona 3'].forEach(function(nome){
+   const z=(d.zonas||{})[nome]; if(!z) return;
+   const alvo = (z.watts && z.watts[0]!=null)
+     ? (z.watts[0]+'–'+(z.watts[1]||'?')+' W'
+        +(z.bpm && z.bpm[0]!=null ? ' · '+z.bpm[0]+'–'+(z.bpm[1]||'?')+' bpm' : ''))
+     : (z.bpm && z.bpm[1]!=null ? 'até '+z.bpm[1]+' bpm' : 'sem números');
+   h+='<div style="border:1px solid #30363d;border-radius:6px;'
+    +'padding:6px 10px;margin-top:6px;">'
+    +'<b style="font-size:12px;">'+nome+'</b> '
+    +'<span style="color:#8b949e;font-size:11px;">'+alvo+'</span>';
+   ['continuo','intervalado'].forEach(function(tipo){
+    const opcoes=(z.protocolos||[]).filter(function(p){
+      return p.tipo===(tipo==='continuo'?'contínuo':'intervalado'); });
+    if(!opcoes.length) return;
+    h+='<div style="margin-top:4px;font-size:11px;">'
+     +'<span style="color:'+(tipo==='continuo'?'#5DADE2':'#3FB950')
+     +';">'+(tipo==='continuo'?'Contínuo':'Intervalado')+'</span>: '
+     +opcoes.map(function(p){ return '<b>'+p.nome+'</b> — '+p.como; })
+       .join(' &nbsp;|&nbsp; ')+'</div>';
+   });
+   if((z.evitar||[]).length){
+    h+='<div style="margin-top:4px;font-size:11px;color:#F0883E;">'
+     +z.evitar.map(function(e){
+       return '<b>Evitar:</b> '+e.o_que
+        +' <span style="color:#8b949e;">— '+e.porque+'</span>'; })
+       .join('<br>')+'</div>';
+   }
+   h+='</div>';
+  });
+  h+='<p class="sub" style="font-size:10px;margin-top:4px;">'+(d.nota||'')
+   +'</p>';
+  box.innerHTML=h;
+ }).catch(function(){ box.innerHTML=''; });
+}
+
 function mxSintese(){
  const box=document.getElementById('mxIntervencoes');
  if(!box) return;
@@ -1757,6 +1813,7 @@ function mxSintese(){
    h+='</div>';
   }
   box.innerHTML=h;
+  mxPlanoPorZona(d.limitador, vv);
  }).catch(function(){ box.innerHTML=''; });
 }
 

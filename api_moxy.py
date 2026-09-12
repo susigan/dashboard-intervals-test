@@ -440,7 +440,9 @@ def registar(app):
             laps, err_l = api.icu_get(f'/activity/{aid}/intervals')
             if isinstance(laps, dict):
                 laps = laps.get('icu_intervals') or laps.get('intervals') or []
-            bl = mn.blocos_de_laps(laps or [])
+            bl = mn.blocos_de_laps(laps or [],
+                                   watts_stream=res['canais'].get('watts'),
+                                   tempo_stream=res.get('tempo'))
             if bl.get('ok'):
                 res['blocos'] = bl
                 res['corte_proposto'] = mn.propor_corte_laps(bl)
@@ -1498,7 +1500,8 @@ def registar(app):
             try:
                 deriv = nbk.smo2_derivadas(t, smo2)
             except Exception as e:
-                deriv = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+                deriv = {'ok': False, 'erro': f'{type(e).__name__}: {e}',
+                        'motivo': f'{type(e).__name__}: {e}'}
             try:
                 _smo2_min_sessao = min((v for v in smo2 if v is not None),
                                        default=None)
@@ -1517,6 +1520,7 @@ def registar(app):
                 _fc_repouso = None
                 _dia = MX_SESSOES_CACHE.get(aid, {}).get('data')
                 if _dia:
+                    import api_client as api
                     _w, _werr = api.icu_get(
                         f'/athlete/{api.ATHLETE_ID}/wellness/{_dia}')
                     if not _werr and isinstance(_w, dict):
@@ -1533,7 +1537,12 @@ def registar(app):
                                      'num teste sem troço fácil isso não é '
                                      'repouso e produz valores impossíveis')}
             except Exception as e:
-                vo2 = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+                # o 'erro' sozinho não chegava à interface: a tab só lia
+                # 'motivo'. Sem isto, qualquer excepção aqui (endpoint da
+                # Intervals.icu fora do ar, wellness sem esse dia, etc.)
+                # fazia o painel do VO2max desaparecer sem explicação.
+                vo2 = {'ok': False, 'erro': f'{type(e).__name__}: {e}',
+                      'motivo': f'falha ao calcular: {type(e).__name__}: {e}'}
 
             return jsonify({
                 'status': 'ok', 'activity_id': aid, 'modalidade': mod,

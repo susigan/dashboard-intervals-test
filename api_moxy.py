@@ -2019,6 +2019,44 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/estilos_recentes')
+    def api_moxy_estilos_recentes():
+        """O que o atleta tem treinado, por modalidade, nos últimos N dias.
+
+        Não filtra por Moxy — lê TODAS as actividades, porque a pergunta é
+        sobre o estilo de treino em geral, não só as sessões com sensor.
+        ?dias=60
+        """
+        try:
+            import db as _db
+            import intervencoes as _iv
+            from config import TYPE_MAP
+            dias = request.args.get('dias', type=int) or 60
+            corte = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+            linhas = _db._exec(
+                "SELECT type, date, raw FROM activities "
+                "WHERE raw IS NOT NULL AND date >= ? ORDER BY date DESC",
+                (corte,), fetch='all') or []
+            sessoes = []
+            for tipo, data, raw in linhas:
+                mod = TYPE_MAP.get(tipo)
+                if not mod:
+                    continue
+                try:
+                    j = raw if isinstance(raw, dict) else json.loads(raw)
+                except Exception:
+                    continue
+                isum = j.get('interval_summary')
+                if isum:
+                    sessoes.append({'modalidade': mod, 'data': str(data)[:10],
+                                    'interval_summary': isum})
+            r = _iv.estilos_recentes(sessoes, dias=dias)
+            r['status'] = 'ok' if r.get('ok') else 'sem_dados'
+            return jsonify(r)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/intervencoes')
     def api_moxy_intervencoes():
         """O que treinar, conforme o limitador.  ?limitador=Fornecimento"""

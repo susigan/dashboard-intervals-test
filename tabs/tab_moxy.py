@@ -1721,6 +1721,12 @@ function mxRpeGravar(id){
   }
   MX_RPE_EDITAR=false;
   mxRpe(id);
+  // gravar o RPE sem actualizar a análise deixava o RPE guardado mas a
+  // análise gravada continuar sem ele até se clicar noutro botão à
+  // parte — o utilizador tinha de se lembrar de fazer as duas coisas.
+  // Um "gravar RPE" já implica querer a análise actualizada com ele.
+  if(est) est.textContent='RPE gravado. A actualizar a análise...';
+  mxGuardarAnalise();
  }).catch(function(e){ if(est) est.textContent='erro: '+e.message; });
 }
 
@@ -1778,10 +1784,24 @@ function mxPlanoPorZona(limitador, valores, destino){
      ? (z.watts[0]+'–'+(z.watts[1]||'?')+' W'
         +(z.bpm && z.bpm[0]!=null ? ' · '+z.bpm[0]+'–'+(z.bpm[1]||'?')+' bpm' : ''))
      : (z.bpm && z.bpm[1]!=null ? 'até '+z.bpm[1]+' bpm' : 'sem números');
+   // RPE que o utilizador já gravou para blocos DESTA sessão cujos watts
+   // caem dentro desta zona — só aparece se já houver algum gravado.
+   let rpeTxt='';
+   if(z.watts && z.watts[0]!=null && (MX_RPE_ULTIMOS||[]).length){
+    const lo=z.watts[0], hi=z.watts[1]==null?1e9:z.watts[1];
+    const rs=(MX_RPE_ULTIMOS||[]).filter(function(b){
+      return b.rpe!=null && b.watts_medio!=null
+        && b.watts_medio>=lo && b.watts_medio<=hi;
+    }).map(function(b){ return b.rpe; });
+    if(rs.length){
+     const rmin=Math.min.apply(null,rs), rmax=Math.max.apply(null,rs);
+     rpeTxt=' · RPE '+(rmin===rmax?rmin:rmin+'–'+rmax);
+    }
+   }
    h+='<div style="border:1px solid #30363d;border-radius:6px;'
     +'padding:6px 10px;margin-top:6px;">'
     +'<b style="font-size:12px;">'+nome+'</b> '
-    +'<span style="color:#8b949e;font-size:11px;">'+alvo+'</span>';
+    +'<span style="color:#8b949e;font-size:11px;">'+alvo+rpeTxt+'</span>';
    ['continuo','intervalado'].forEach(function(tipo){
     const opcoes=(z.protocolos||[]).filter(function(p){
       return p.tipo===(tipo==='continuo'?'contínuo':'intervalado'); });

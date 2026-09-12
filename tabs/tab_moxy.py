@@ -923,15 +923,13 @@ function mxResumo(){
    h+='<div id="mxPlanoZonasComp" style="margin-top:8px;"></div>';
    if(itv.limitador_mais_comum){
     setTimeout(function(){
-     const _box=document.getElementById('mxPlanoZonasComp');
-     if(_box) _box.id='mxPlanoZonas';
      mxPlanoPorZona(itv.limitador_mais_comum, {
       bp1_w: p1z.mediana, bp2_w: p2z.mediana,
       bp1_bpm: (p1z.estimativas||[]).find(e=>e.bpm) ?
         (p1z.estimativas||[]).find(e=>e.bpm).bpm : null,
       bp2_bpm: (p2z.estimativas||[]).find(e=>e.bpm) ?
         (p2z.estimativas||[]).find(e=>e.bpm).bpm : null,
-     });
+     }, 'mxPlanoZonasComp');
     }, 0);
    }
    h+='<p style="font-size:10px;color:#8b949e;">'+(itv.nota||'')+'</p>';
@@ -1658,8 +1656,8 @@ function mxEstilosRecentes(){
 // Cada zona tem opção contínua e intervalada, e o "evitar" só aparece
 // onde é relevante para ESTE limitador — o mesmo protocolo que é a
 // ferramenta principal noutro limitador.
-function mxPlanoPorZona(limitador, valores){
- const box=document.getElementById('mxPlanoZonas');
+function mxPlanoPorZona(limitador, valores, destino){
+ const box=document.getElementById(destino||'mxPlanoZonas');
  if(!box || !limitador) return;
  const vv=valores||{};
  const q=['plano_limitador='+encodeURIComponent(limitador)];
@@ -2936,15 +2934,13 @@ function ivAnalisar(){
   h+='<div id="mxPlanoZonasIv" style="margin-top:8px;"></div>';
   if(d.limitador_mais_comum){
    setTimeout(function(){
-    const _box=document.getElementById('mxPlanoZonasIv');
-    if(_box) _box.id='mxPlanoZonas';
     mxPlanoPorZona(d.limitador_mais_comum, {
      bp1_w: p1c.mediana, bp2_w: p2c.mediana,
      bp1_bpm: (p1c.estimativas||[]).find(e=>e.bpm) ?
        (p1c.estimativas||[]).find(e=>e.bpm).bpm : null,
      bp2_bpm: (p2c.estimativas||[]).find(e=>e.bpm) ?
        (p2c.estimativas||[]).find(e=>e.bpm).bpm : null,
-    });
+    }, 'mxPlanoZonasIv');
    }, 0);
   }
   h+='<p style="color:#8b949e;font-size:11px;margin-top:8px;">'

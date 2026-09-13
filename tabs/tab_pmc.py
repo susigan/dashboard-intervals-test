@@ -56,6 +56,11 @@ def api_data():
             # eFTP da PROPRIA Intervals.icu, so' para comparar com o CP
             # da curva ajustada -- fontes diferentes, podem divergir
             'eftp_icu': num(a.get('icu_eftp')),
+            # kJ -- para o modelo TRIMP~kJ (CTL vs KJ). icu_joules e' o
+            # integral real do stream de potencia; watts_medio*duracao e'
+            # so' o fallback quando falta o icu_joules
+            'kj': (num(a.get('icu_joules')) / 1000.0
+                  if num(a.get('icu_joules')) else None),
         })
 
     desde = request.args.get('desde') or None

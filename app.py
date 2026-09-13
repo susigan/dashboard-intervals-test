@@ -1975,9 +1975,9 @@ def api_metabol_vo2max_moxy(modalidade):
             import re as _re
             import json as _json
             linhas = _db._exec(
-                "SELECT id, date, type, average_watts, distance_m, "
+                "SELECT id, date, type, avg_watts, distance_m, "
                 "moving_time, raw FROM activities "
-                "WHERE raw IS NOT NULL AND average_watts IS NOT NULL "
+                "WHERE raw IS NOT NULL AND avg_watts IS NOT NULL "
                 "ORDER BY date DESC", fetch='all') or []
             padrao_2km = _re.compile(r'2\s*[\-]?\s*k\s*m', _re.I)
             for aid2, data2, tipo2, watts2, dist2, dur2, raw2 in linhas:

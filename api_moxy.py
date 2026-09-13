@@ -1673,6 +1673,7 @@ def registar(app):
                 bp1_bpm = bp2_bpm = None
 
             s2 = MX_SESSOES_CACHE.get(aid, {})
+            _vo2 = lim.get('vo2max_previsto') or {}
             linha = (
                 aid, lim.get('modalidade'), s2.get('data'),
                 pf.get('perfil'), bp1, bp1_bpm,
@@ -1694,7 +1695,10 @@ def registar(app):
                 None, None, VERSAO_ANALISE,
                 json.dumps({'limiares': lim, 'i515': itp, 'rede': rd},
                            ensure_ascii=False)[:400000],
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                (_vo2.get('vo2max_estimado') if _vo2.get('ok') else None),
+                (1 if _vo2.get('plausivel') else
+                 (0 if _vo2.get('ok') else None)))
 
             cn = ddp.get_conn()
             cn.execute(
@@ -1706,9 +1710,10 @@ def registar(app):
                     smo2max, smo2min, n_degraus,
                     us_score, us_limitador, pc_score, pc_limitador,
                     rede_limitador, rede_pct, pct_artefacto, corte_inicio_s,
-                    corte_fim_s, versao_analise, json_completo, data_gravacao)
+                    corte_fim_s, versao_analise, json_completo, data_gravacao,
+                    vo2max_previsto, vo2max_plausivel)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                           ?,?,?,?,?,?)""",
+                           ?,?,?,?,?,?,?,?)""",
                 linha)
             cn.commit()
             ok, det = ddp.upload()

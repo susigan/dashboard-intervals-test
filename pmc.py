@@ -1825,3 +1825,85 @@ def aumentar_com_pace(resultado_watts, rel_pace, campos_watts):
     out['pace_r2'] = rel_pace.get('r2')
     out['pace_n'] = rel_pace.get('n')
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# MÉDIA DE WATTS → CP, COM DESFASAMENTO — alternativa ao Modelo 2 que evita
+# o problema de colinearidade (ver modelo_polar/prescricao_zona): em vez
+# de decompor a carga em Z1/Z2/Z3 (que sobem e descem juntas), usa UM só
+# preditor — a média de watts do treino recente — e testa a que
+# desfasamento (0 a 60 dias) essa média melhor prevê o CP.
+#
+# Reaproveita calibracao.calibrar_lag, já usada no resto do projecto para
+# testar HRV/carga com correcção por permutação — não é um método novo.
+# ══════════════════════════════════════════════════════════════════════════
+
+def avg_watts_vs_cp(sessoes, modalidades, janela_dias=14, lags=range(0, 61, 5)):
+    """Testa se uma média de watts mais alta PRECEDE um CP mais alto,
+    0 a 60 dias depois — um único preditor, sem decompor por zona.
+    """
+    import numpy as np
+    import calibracao as cal
+    from datetime import timedelta
+
+    out = {}
+    for mod in modalidades:
+        ses = [s for s in sessoes
+              if s.get('type') == mod and s.get('watts_medio')]
+        if len(ses) < 30:
+            continue
+        datas_w = sorted({s['date'] for s in ses})
+        d0 = datetime.strptime(datas_w[0], '%Y-%m-%d')
+        d1 = datetime.strptime(datas_w[-1], '%Y-%m-%d')
+        todas = []
+        d = d0
+        while d <= d1:
+            todas.append(d.strftime('%Y-%m-%d'))
+            d += timedelta(days=1)
+        idx = {dt: i for i, dt in enumerate(todas)}
+
+        watts_por_dia = {}
+        for s in ses:
+            watts_por_dia.setdefault(s['date'], []).append(s['watts_medio'])
+        watts_diario = np.full(len(todas), np.nan)
+        for dt, vals in watts_por_dia.items():
+            i = idx.get(dt)
+            if i is not None:
+                watts_diario[i] = float(np.mean(vals))
+
+        # média rolling de janela_dias, ignorando dias sem sessão — um
+        # dia sem treino não é "zero watts", é ausência de observação
+        media_rolling = np.full(len(todas), np.nan)
+        for i in range(len(todas)):
+            j0 = max(0, i - janela_dias + 1)
+            seg = watts_diario[j0:i + 1]
+            seg = seg[np.isfinite(seg)]
+            if len(seg) >= 3:
+                media_rolling[i] = float(np.mean(seg))
+
+        cp_por_dia = np.full(len(todas), np.nan)
+        cp_por_data = {s['date']: s['cp'] for s in sessoes
+                      if s.get('type') == mod and s.get('cp')}
+        for dt, cp in cp_por_data.items():
+            i = idx.get(dt)
+            if i is not None:
+                cp_por_dia[i] = cp
+
+        if int(np.isfinite(cp_por_dia).sum()) < 30:
+            continue
+
+        r = cal.calibrar_lag(media_rolling, cp_por_dia, lags=lags, sinal=1)
+        out[mod] = {
+            'fonte': r.get('fonte'),
+            'lag_dias': r.get('valor'),
+            'r': r.get('r'), 'r2': r.get('r2'), 'forca': r.get('forca'),
+            'p_permutacao': r.get('p_permutacao'), 'n': r.get('n'),
+            'motivo': r.get('motivo'),
+            'janela_media_dias': janela_dias,
+            'aviso': (
+                'correlação com desfasamento positivo — não é causal. '
+                'Pode ser o mesmo período de forma geral a puxar os '
+                'dois números, não necessariamente "mais watts causou '
+                'mais CP"' if r.get('fonte') == 'dados' else None),
+        }
+    return out

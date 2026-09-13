@@ -188,11 +188,14 @@ def api_data():
         prescricao = {}
 
     try:
-        avg_watts_cp = pmc.avg_watts_vs_cp(sessoes, CICLICOS)
+        avg_watts_cp = pmc.avg_watts_vs_cp(sessoes, CICLICOS, campo_alvo='cp')
+        avg_watts_eftp_icu = pmc.avg_watts_vs_cp(sessoes, CICLICOS,
+                                                 campo_alvo='eftp_icu')
     except Exception as e:
         import traceback
         traceback.print_exc()
         avg_watts_cp = {}
+        avg_watts_eftp_icu = {}
 
     fim = serie[-1] if serie else {}
     return jsonify({
@@ -225,6 +228,7 @@ def api_data():
         'modelo_polar': modelo_polar,
         'prescricao': prescricao,
         'avg_watts_cp': avg_watts_cp,
+        'avg_watts_eftp_icu': avg_watts_eftp_icu,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
     })
 
@@ -1306,34 +1310,45 @@ function mostrarCpPolar(){
 // (com pace ao lado, so' na Run).
 // Media de watts -> CP com desfasamento -- alternativa ao Modelo 2 que
 // nao sofre de colinearidade, porque so' tem UM preditor.
+function _cardAvgWatts(m, v, rotulo){
+ if(!v || v.fonte!=='dados'){
+  return '<div class="card"><div class="label">'+m+' · '+rotulo+'</div>'+
+   '<div style="font-size:12px;color:#8b949e">'+
+   ((v&&v.motivo)||'sem relacao detectada')+'</div></div>';
+ }
+ const cor=v.forca==='forte'?'#2ECC71':(v.forca==='moderada'?'#F4D03F':'#E67E22');
+ const sig=v.p_permutacao!=null&&v.p_permutacao<0.05;
+ return '<div class="card"><div class="label">'+m+' · '+rotulo+
+  ' <span style="color:'+cor+'">('+(v.forca||'?')+
+  (sig?', significativo':', nao sobrevive a permutacao')+')</span></div>'+
+  '<div class="value">'+v.lag_dias+' dias</div>'+
+  '<div style="font-size:12px;color:#8b949e">'+
+  'r='+v.r+' · R²='+v.r2+' · n='+v.n+' · p(perm)='+v.p_permutacao+'<br>'+
+  'media de watts em janelas de '+v.janela_media_dias+' dias</div>'+
+  (v.aviso?'<div style="font-size:10px;color:#E67E22;margin-top:4px">'+
+   v.aviso+'</div>':'')+
+  '</div>';
+}
+
+// Duas fontes lado a lado: CP da curva ajustada (sofre de circularidade
+// dentro da mesma sessao) vs eFTP da propria Intervals.icu (pode ser
+// uma estimativa mais lenta, nao presa a uma sessao so). Comparar as
+// duas ajuda a perceber se um sinal e' real ou um artefacto da fonte.
 function mostrarAvgWattsCp(){
  const A=D.avg_watts_cp||{};
- const mods=Object.keys(A);
+ const B=D.avg_watts_eftp_icu||{};
+ const mods=Array.from(new Set(Object.keys(A).concat(Object.keys(B))));
  const cont=document.getElementById('avgWattsCpCards');
  if(!mods.length){
-  cont.innerHTML='<div class="sub">Sem dados suficientes de watts e CP '+
-   'com sobreposicao, em nenhuma modalidade.</div>';
+  cont.innerHTML='<div class="sub">Sem dados suficientes de watts com '+
+   'CP ou eFTP com sobreposicao, em nenhuma modalidade.</div>';
   return;
  }
  cont.innerHTML='<div class="cards">'+mods.map(function(m){
-  const v=A[m];
-  if(v.fonte!=='dados'){
-   return '<div class="card"><div class="label">'+m+'</div>'+
-    '<div style="font-size:12px;color:#8b949e">'+
-    (v.motivo||'sem relacao detectada')+'</div></div>';
-  }
-  const cor=v.forca==='forte'?'#2ECC71':(v.forca==='moderada'?'#F4D03F':'#E67E22');
-  const sig=v.p_permutacao!=null&&v.p_permutacao<0.05;
-  return '<div class="card"><div class="label">'+m+
-   ' <span style="color:'+cor+'">('+(v.forca||'?')+
-   (sig?', significativo':', nao sobrevive a permutacao')+')</span></div>'+
-   '<div class="value">'+v.lag_dias+' dias</div>'+
-   '<div style="font-size:12px;color:#8b949e">'+
-   'r='+v.r+' · R²='+v.r2+' · n='+v.n+' · p(perm)='+v.p_permutacao+'<br>'+
-   'media de watts em janelas de '+v.janela_media_dias+' dias</div>'+
-   (v.aviso?'<div style="font-size:10px;color:#E67E22;margin-top:4px">'+
-    v.aviso+'</div>':'')+
-   '</div>';
+  return _cardAvgWatts(m, A[m], 'CP (curva ajustada)');
+ }).join('')+'</div>'+
+ '<div class="cards" style="margin-top:6px">'+mods.map(function(m){
+  return _cardAvgWatts(m, B[m], 'eFTP (Intervals.icu)');
  }).join('')+'</div>';
 }
 

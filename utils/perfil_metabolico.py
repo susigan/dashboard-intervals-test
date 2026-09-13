@@ -80,6 +80,34 @@ def vo2max_hawley(mmp_curto, mmp_medio, peso):
     return max(20.0, min(95.0, (v1 + v2) / 2))
 
 
+def vo2max_2km_erg(watts_medio_2km, peso):
+    """VO2max a partir de um teste de 2000 m no ergómetro (remo ou ski).
+
+    Reutiliza a MESMA fórmula de Hawley já usada para a bike — não é uma
+    fórmula nova, é a mesma equação potência→VO2 (watts/kg × 10.8 + 7),
+    aplicada à potência média de um teste de 2 km em vez de à potência de
+    um MMP de curva.
+
+    Porquê a mesma fórmula e não uma específica de remo/ski: a equação de
+    Hawley não assume nada sobre o desporto — assume só uma relação
+    quase-linear entre potência relativa ao peso e VO2. Um teste de 2 km
+    é, na prática, um esforço quase-máximo sustentado durante 6-8 min —
+    a mesma janela de esforço que o MMP5 já usa na bike. Não há, até à
+    data, uma equação publicada e validada especificamente para
+    ergómetros de remo/ski que se tenha encontrado (o Runalyze tem uma
+    calculadora de VO2max, mas está num repositório arquivado cujo
+    caminho exacto do ficheiro não foi possível confirmar).
+
+    Isto é uma ADAPTAÇÃO, não uma fórmula publicada e validada para
+    ergómetros — trata-se como mais uma estimativa a comparar, não como
+    a fonte de verdade.
+    """
+    if not (watts_medio_2km and peso):
+        return None
+    v = watts_medio_2km / peso * 10.8 + 7
+    return max(20.0, min(95.0, v))
+
+
 def vol_rel_vlamax(mmp_curto, mmp_medio, peso):
     """vol_rel especifico da formula do VLamax: carga relativa, nao 0.45."""
     if not (mmp_curto and mmp_medio and peso):

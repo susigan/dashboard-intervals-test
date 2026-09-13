@@ -53,6 +53,9 @@ def api_data():
             'watts_medio': (num(a.get('icu_average_watts'))
                            or num(a.get('average_watts'))),
             'duracao_s': num(a.get('moving_time')) or num(a.get('elapsed_time')),
+            # eFTP da PROPRIA Intervals.icu, so' para comparar com o CP
+            # da curva ajustada -- fontes diferentes, podem divergir
+            'eftp_icu': num(a.get('icu_eftp')),
         })
 
     desde = request.args.get('desde') or None
@@ -184,6 +187,13 @@ def api_data():
         traceback.print_exc()
         prescricao = {}
 
+    try:
+        avg_watts_cp = pmc.avg_watts_vs_cp(sessoes, CICLICOS)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        avg_watts_cp = {}
+
     fim = serie[-1] if serie else {}
     return jsonify({
         'status': 'OK',
@@ -214,6 +224,7 @@ def api_data():
         'cp_projecao': cp_proj,
         'modelo_polar': modelo_polar,
         'prescricao': prescricao,
+        'avg_watts_cp': avg_watts_cp,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
     })
 
@@ -670,6 +681,16 @@ __EXPL_alos__
   base (integração real do stream de potência) — não é aproximado.
 </div>
 <div id="cpPolarCards"></div>
+
+<h2>Média de watts → CP, com desfasamento</h2>
+<div class="sub">
+  Alternativa ao Modelo 2 que evita a colinearidade entre zonas: em vez
+  de decompor a carga por Z1/Z2/Z3 (que sobem e descem juntas), usa um
+  único preditor — a média de watts do treino recente — e testa a que
+  desfasamento (0 a 60 dias) essa média melhor prevê o CP. A correcção
+  por permutação já é a mesma usada no resto desta tab.
+</div>
+<div id="avgWattsCpCards"></div>
 
 <h2>O que fazer com isto — prescrição por zona</h2>
 <div class="sub">
@@ -1283,6 +1304,39 @@ function mostrarCpPolar(){
 // Prescricao: inverte o alpha do Modelo 2 -- para a meta de CP, qual a
 // zona com maior efeito, quanto kJ extra por semana, e a gama de watts
 // (com pace ao lado, so' na Run).
+// Media de watts -> CP com desfasamento -- alternativa ao Modelo 2 que
+// nao sofre de colinearidade, porque so' tem UM preditor.
+function mostrarAvgWattsCp(){
+ const A=D.avg_watts_cp||{};
+ const mods=Object.keys(A);
+ const cont=document.getElementById('avgWattsCpCards');
+ if(!mods.length){
+  cont.innerHTML='<div class="sub">Sem dados suficientes de watts e CP '+
+   'com sobreposicao, em nenhuma modalidade.</div>';
+  return;
+ }
+ cont.innerHTML='<div class="cards">'+mods.map(function(m){
+  const v=A[m];
+  if(v.fonte!=='dados'){
+   return '<div class="card"><div class="label">'+m+'</div>'+
+    '<div style="font-size:12px;color:#8b949e">'+
+    (v.motivo||'sem relacao detectada')+'</div></div>';
+  }
+  const cor=v.forca==='forte'?'#2ECC71':(v.forca==='moderada'?'#F4D03F':'#E67E22');
+  const sig=v.p_permutacao!=null&&v.p_permutacao<0.05;
+  return '<div class="card"><div class="label">'+m+
+   ' <span style="color:'+cor+'">('+(v.forca||'?')+
+   (sig?', significativo':', nao sobrevive a permutacao')+')</span></div>'+
+   '<div class="value">'+v.lag_dias+' dias</div>'+
+   '<div style="font-size:12px;color:#8b949e">'+
+   'r='+v.r+' · R²='+v.r2+' · n='+v.n+' · p(perm)='+v.p_permutacao+'<br>'+
+   'media de watts em janelas de '+v.janela_media_dias+' dias</div>'+
+   (v.aviso?'<div style="font-size:10px;color:#E67E22;margin-top:4px">'+
+    v.aviso+'</div>':'')+
+   '</div>';
+ }).join('')+'</div>';
+}
+
 function mostrarCpPrescricao(){
  const P=D.prescricao||{};
  const mods=Object.keys(P);
@@ -2068,7 +2122,7 @@ async function load(){
  carregarSugestoes();
 montarExport();
  drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos(); mostrarCpBlocos();
- mostrarCpProjecao(); mostrarCpPolar(); mostrarCpPrescricao();
+ mostrarCpProjecao(); mostrarCpPolar(); mostrarAvgWattsCp(); mostrarCpPrescricao();
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──
  const F=d.ftlm;
@@ -2140,6 +2194,7 @@ function redesenhar(){
  if(D.cp_blocos)mostrarCpBlocos();
  if(D.cp_projecao)mostrarCpProjecao();
  if(D.modelo_polar)mostrarCpPolar();
+ if(D.avg_watts_cp)mostrarAvgWattsCp();
  if(D.prescricao)mostrarCpPrescricao();}
 document.getElementById('janelaPMC').onchange=redesenhar;
 document.getElementById('cpBlocosMod').onchange=function(){if(D)mostrarCpBlocos();};

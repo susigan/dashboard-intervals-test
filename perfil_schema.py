@@ -182,6 +182,10 @@ MIGRACOES = [
     ('moxy_analises', 'mlss_dessat_w', 'REAL'),
     ('moxy_analises', 'mlss_dessat_de', 'REAL'),
     ('moxy_analises', 'mlss_dessat_ate', 'REAL'),
+    # VO2max previsto pela regressão SmO2×FC (Peikon, NNOXX) — para
+    # cruzar no Perfil Metabólico com o VO2max do modelo de Hawley.
+    ('moxy_analises', 'vo2max_previsto', 'REAL'),
+    ('moxy_analises', 'vo2max_plausivel', 'INTEGER'),
 ]
 
 

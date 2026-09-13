@@ -80,33 +80,51 @@ def vo2max_hawley(mmp_curto, mmp_medio, peso):
     return max(20.0, min(95.0, (v1 + v2) / 2))
 
 
-def vo2max_2km_erg(watts_medio_2km, peso):
+def pct_vo2max_por_duracao(t_min):
+    """Fracção do VO2max sustentável num esforço quase-máximo de t_min.
+
+    Fórmula de Daniels & Gilbert (1979) — confirmada numericamente contra
+    o código-fonte real do Runalyze (VO2maxCalculatorTest.php): 10 km em
+    2481 s (41,35 min) a FC = FC máxima dá VO2max = 50,0. A reprodução
+    aqui devolveu 49,97 — bate dentro do arredondamento.
+
+    A um esforço de ~7 min (a duração típica de um 2 km competitivo em
+    remo/ski), esta fracção fica perto ou pouco acima de 100% — é a razão
+    pela qual um 2 km "parece" mais duro que o VO2max sozinho explicaria:
+    tem contribuição anaeróbia a mais. Dividir por esta fracção "desconta"
+    essa contribuição e aproxima do VO2max aeróbio real.
+    """
+    return (0.8 + 0.1894393 * math.exp(-0.012778 * t_min)
+            + 0.2989558 * math.exp(-0.1932605 * t_min))
+
+
+def vo2max_2km_erg(watts_medio_2km, peso, duracao_s=None):
     """VO2max a partir de um teste de 2000 m no ergómetro (remo ou ski).
 
-    Reutiliza a MESMA fórmula de Hawley já usada para a bike — não é uma
-    fórmula nova, é a mesma equação potência→VO2 (watts/kg × 10.8 + 7),
-    aplicada à potência média de um teste de 2 km em vez de à potência de
-    um MMP de curva.
+    Duas peças, de fontes diferentes:
 
-    Porquê a mesma fórmula e não uma específica de remo/ski: a equação de
-    Hawley não assume nada sobre o desporto — assume só uma relação
-    quase-linear entre potência relativa ao peso e VO2. Um teste de 2 km
-    é, na prática, um esforço quase-máximo sustentado durante 6-8 min —
-    a mesma janela de esforço que o MMP5 já usa na bike. Não há, até à
-    data, uma equação publicada e validada especificamente para
-    ergómetros de remo/ski que se tenha encontrado (o Runalyze tem uma
-    calculadora de VO2max, mas está num repositório arquivado cujo
-    caminho exacto do ficheiro não foi possível confirmar).
+    1. Potência → VO2 bruto: a fórmula de Hawley (watts/kg × 10.8 + 7),
+       a MESMA já usada para a bike — não assume nada sobre o desporto,
+       só uma relação quase-linear entre potência relativa e VO2. Não há,
+       até à data, uma equação publicada e validada especificamente para
+       ergómetros de remo/ski.
 
-    Isto é uma ADAPTAÇÃO, não uma fórmula publicada e validada para
-    ergómetros — trata-se como mais uma estimativa a comparar, não como
-    a fonte de verdade.
+    2. Duração → correcção: a curva %VO2max(t) de Daniels & Gilbert,
+       confirmada contra o Runalyze (ver pct_vo2max_por_duracao). Um 2 km
+       não é um esforço a VO2max verdadeiro — esta correcção tira a
+       contribuição anaeróbia extra de um esforço de poucos minutos.
+
+    Sem duracao_s, devolve o VO2 bruto sem a correcção — pior estimativa,
+    mas ainda uma estimativa, para não obrigar a ter sempre a duração.
     """
     if not (watts_medio_2km and peso):
         return None
-    v = watts_medio_2km / peso * 10.8 + 7
-    return max(20.0, min(95.0, v))
-
+    vo2_bruto = watts_medio_2km / peso * 10.8 + 7
+    if duracao_s:
+        pct = pct_vo2max_por_duracao(duracao_s / 60.0)
+        if pct > 0:
+            return max(20.0, min(95.0, vo2_bruto / pct))
+    return max(20.0, min(95.0, vo2_bruto))
 
 def vol_rel_vlamax(mmp_curto, mmp_medio, peso):
     """vol_rel especifico da formula do VLamax: carga relativa, nao 0.45."""

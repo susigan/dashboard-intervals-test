@@ -1936,6 +1936,74 @@ def api_fisiologia_qualidade():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/metabol/vo2max_moxy/<modalidade>')
+def api_metabol_vo2max_moxy(modalidade):
+    """VO2max previsto pelo Moxy (SmO2×FC repouso, Peikon/NNOXX) para esta
+    modalidade, com a verificação cruzada contra o VO2max do modelo
+    (Hawley/Mader) já calculado no Perfil Metabólico.
+
+    ?peso=  ?pvo2max_hawley=  ?w_at=  — vêm do que já está carregado no
+    frontend, para não recalcular o modelo aqui outra vez.
+    """
+    try:
+        import drive_db_perfil as ddp
+        peso = request.args.get('peso', type=float)
+        pvo2_hawley = request.args.get('pvo2max_hawley', type=float)
+        w_at = request.args.get('w_at', type=float)
+
+        cn = ddp.get_conn()
+        r = cn.execute(
+            "SELECT vo2max_previsto, vo2max_plausivel, data, activity_id "
+            "FROM moxy_analises "
+            "WHERE modalidade=? AND vo2max_previsto IS NOT NULL "
+            "ORDER BY data DESC LIMIT 1", (modalidade,)).fetchone()
+        if not r:
+            return jsonify({'status': 'sem_dados',
+                            'mensagem': ('nenhuma sessão Moxy desta '
+                                        'modalidade tem VO2max previsto '
+                                        'gravado')})
+        vo2_moxy, plausivel, data, aid = r
+        fora = {'status': 'ok', 'vo2max_moxy': round(vo2_moxy, 1),
+                'plausivel': bool(plausivel), 'data': data,
+                'activity_id': aid}
+
+        if not peso:
+            fora['aviso'] = 'sem peso — não dá para converter em watts'
+            return jsonify(fora)
+
+        pvo2_moxy_w = round(vo2_moxy * peso / 12.5)
+        fora['pvo2max_moxy_w'] = pvo2_moxy_w
+        if w_at:
+            fora['fractional_utilization_moxy_pct'] = round(
+                w_at / pvo2_moxy_w * 100, 1)
+
+        if pvo2_hawley:
+            delta = pvo2_moxy_w - pvo2_hawley
+            delta_pct = round(delta / pvo2_hawley * 100, 1)
+            fora['pvo2max_hawley_w'] = round(pvo2_hawley)
+            fora['delta_w'] = round(delta)
+            fora['delta_pct'] = delta_pct
+            fora['concordam'] = abs(delta_pct) <= 10
+            fora['leitura'] = (
+                f'{"concordam" if fora["concordam"] else "discordam"} — '
+                f'{abs(delta_pct)}% de diferença entre os dois modelos. '
+                + ('Modelos independentes a apontar para o mesmo sítio é '
+                   'um bom sinal.' if fora['concordam'] else
+                   'Vale a pena olhar para qual dos dois tem os dados de '
+                   'entrada mais fiáveis nesta sessão — o Hawley depende '
+                   'da curva de potência (MMP), o Moxy da FC de repouso '
+                   'da Intervals.icu e do SmO2 mínimo da sessão.'))
+        if not plausivel:
+            fora['aviso'] = ('o VO2max do Moxy desta sessão foi marcado '
+                             'como implausível — a comparação existe mas '
+                             'não é de confiar')
+        return jsonify(fora)
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/metabol/rpe_pontos/<modalidade>')
 def api_metabol_rpe_pontos(modalidade):
     """RPE gravado, com os watts do bloco, para todas as sessões da

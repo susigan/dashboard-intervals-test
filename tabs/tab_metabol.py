@@ -673,8 +673,6 @@ BODY = r"""
     <button onclick="pmCarregar()">Actualizar</button>
     <span id="pmEstado" style="color:#8b949e;font-size:12px;margin-left:8px;"></span>
   </div>
-  <div id="pmMMP" style="margin:8px 0;padding:8px 10px;background:#0d1117;
-       border:1px solid #21262d;border-radius:6px;"></div>
   <div id="pmAviso" style="color:#F0883E;font-size:11px;margin-bottom:8px;"></div>
   <div id="pmResumo"></div>
   <h2>Substratos — gordura e hidratos vs potência</h2>
@@ -2230,7 +2228,7 @@ function pmCarregar(usarManuais){
     + (ct.bf ? ' · BF ' + ct.bf + '%' : '');
   av.textContent = [d.aviso_coerencia, d.aviso_recuo, d.aviso_datas]
     .filter(Boolean).join(' | ');
-  pmCorporal(); pmResumo(); pmMMPEdit(); pmDraw(); pmCurva(); pmZonas3();
+  pmCorporal(); pmResumo(); pmDraw(); pmCurva(); pmZonas3();
   pmSemaforo(); pmZonas(); pmDetalhe();
   pmExtCarregar();
   pmCarregarCP();
@@ -3260,6 +3258,8 @@ function pmResumo(){
  let h = '<div style="display:flex;flex-wrap:wrap;">';
  h += pmCartao('VO\u2082max', (PM.vo2max||'—') + ' <span style="font-size:12px;">ml/min/kg</span>',
                PM.vo2max_validade, '#58A6FF');
+ h += pmCartao('VO\u2082max (Moxy)', '<span id="pmVo2MoxyValor">—</span>',
+               '<span id="pmVo2MoxyNota" style="color:#8b949e;">a carregar\u2026</span>', '#79C0FF');
  h += pmCartao('VLamax', (PM.vlamax||'—') + ' <span style="font-size:12px;">mmol/L/s</span>',
                PM.perfil + (PM.vlamax_saturado ? ' \u26A0 no limite do modelo' : ''), '#F0883E');
  h += pmCartao('MLSS / AT', (m.mlss_at_w||'—') + ' W' + _pc('mlss_at_w'),
@@ -3301,9 +3301,82 @@ function pmResumo(){
  if(m.glicogenio) h += pmCartao('Glicogénio', m.glicogenio.total_g + ' g',
    m.glicogenio.nivel + ' · ' + m.glicogenio.musculo_kg + ' kg músculo');
  h += '</div>';
+ h += '<div id="pmVo2MoxyCards" style="display:flex;flex-wrap:wrap;"></div>';
+ h += '<div id="pmVo2CruzDropdown" style="margin-top:6px;"></div>';
  document.getElementById('pmResumo').innerHTML = h;
+ pmVo2MoxyCarregar();
 }
 
+// VO2max previsto pelo Moxy (SmO2×FC repouso), a cruzar com o do modelo
+// (Hawley/Mader) já calculado acima — mesma modalidade, sessão mais
+// recente com o valor gravado.
+function pmVo2MoxyCarregar(){
+ const mod = document.getElementById('pmModalidade').value;
+ const m = (PM && PM.mader) || {};
+ const peso = ((PM && PM.entradas) || {}).peso
+   || (document.getElementById('pmPeso') && document.getElementById('pmPeso').value);
+ const q = [];
+ if(peso) q.push('peso=' + peso);
+ if(m.pvo2max_w) q.push('pvo2max_hawley=' + m.pvo2max_w);
+ if(m.mlss_at_w) q.push('w_at=' + m.mlss_at_w);
+ fetch('/api/metabol/vo2max_moxy/' + mod + '?' + q.join('&'))
+ .then(r=>r.json()).then(function(d){
+  const valorEl = document.getElementById('pmVo2MoxyValor');
+  const notaEl = document.getElementById('pmVo2MoxyNota');
+  const cardsEl = document.getElementById('pmVo2MoxyCards');
+  const dropEl = document.getElementById('pmVo2CruzDropdown');
+  if(!valorEl) return;
+  if(d.status==='sem_dados'){
+   valorEl.textContent = '\u2014';
+   notaEl.textContent = 'sem sess\u00e3o Moxy com VO\u2082max gravado';
+   if(cardsEl) cardsEl.innerHTML = ''; if(dropEl) dropEl.innerHTML = '';
+   return;
+  }
+  if(d.status!=='ok'){
+   valorEl.textContent = '\u2014'; notaEl.textContent = d.mensagem||'erro';
+   if(cardsEl) cardsEl.innerHTML = ''; if(dropEl) dropEl.innerHTML = '';
+   return;
+  }
+  valorEl.innerHTML = d.vo2max_moxy
+   + ' <span style="font-size:12px;">ml/min/kg</span>'
+   + (d.plausivel===false ? ' <span style="color:#F85149;">(implaus\u00edvel)</span>' : '');
+  notaEl.textContent = 'sess\u00e3o de ' + (d.data||'?');
+
+  // Cart\u00f5es pr\u00f3prios com os valores DERIVADOS do Moxy \u2014 mesmo tratamento
+  // que os cart\u00f5es do modelo (Pvo2max, utiliza\u00e7\u00e3o fraccional), n\u00e3o
+  // escondidos dentro de um dropdown.
+  if(cardsEl){
+   let hc = '';
+   if(d.pvo2max_moxy_w!=null)
+    hc += pmCartao('Pvo\u2082max (Moxy)', d.pvo2max_moxy_w + ' W',
+      'sess\u00e3o de ' + (d.data||'?'), '#79C0FF');
+   if(d.fractional_utilization_moxy_pct!=null)
+    hc += pmCartao('Utiliza\u00e7\u00e3o fraccional (Moxy)',
+      d.fractional_utilization_moxy_pct + '%',
+      'MLSS \u00f7 Pvo\u2082max (Moxy)', '#79C0FF');
+   cardsEl.innerHTML = hc;
+  }
+
+  if(!dropEl) return;
+  if(d.delta_pct==null){
+   dropEl.innerHTML = d.aviso ? '<p class="sub" style="font-size:11px;">'
+    + d.aviso + '</p>' : '';
+   return;
+  }
+  const cor = d.concordam ? '#3FB950' : '#F0883E';
+  dropEl.innerHTML = '<details><summary style="cursor:pointer;'
+   + 'font-size:12px;color:' + cor + ';padding:4px 0;">'
+   + '\u2194 Verifica\u00e7\u00e3o cruzada VO\u2082max: Hawley vs Moxy ('
+   + (d.concordam?'concordam':'discordam') + ')</summary>'
+   + '<div style="margin-top:6px;font-size:11px;">'
+   + '<p><b>Diferen\u00e7a de Pvo\u2082max:</b> <span style="color:' + cor + ';">'
+   + (d.delta_w>0?'+':'') + d.delta_w + ' W ('
+   + (d.delta_pct>0?'+':'') + d.delta_pct + '%)</span></p>'
+   + '<p style="color:#8b949e;">' + (d.leitura||'') + '</p>'
+   + (d.aviso ? '<p style="color:#F85149;">' + d.aviso + '</p>' : '')
+   + '</div></details>';
+ }).catch(function(){});
+}
 let PM_PONTOS = [], PM_ESCALA = null, PM_ZONAS = [], PM_MARCOS = [];
 
 function pmDraw(){
@@ -3491,44 +3564,6 @@ function pmLigarTip(){
  cv.addEventListener('mouseleave',function(){
   tip.style.display='none'; pmDraw();
  });
-}
-
-function pmMMPEdit(){
- const box = document.getElementById('pmMMP');
- if(!box) return;
- const mm = (PM && PM.mmp_usados) || {};
- const dt = (PM && PM.datas_dos_mmp) || {};
- if(!Object.keys(mm).length){ box.innerHTML = ''; return; }
- let h = '<div style="color:#8b949e;font-size:11px;margin-bottom:6px;">'
-   + 'MMP usados no cálculo — podes alterar os watts ou os segundos para testar</div>'
-   + '<div style="display:flex;flex-wrap:wrap;align-items:flex-end;">';
- const se = (PM && PM.seasons_dos_mmp) || {};
- const rc = (PM && PM.recuou_de_season) || {};
- Object.keys(mm).forEach(function(sec, i){
-  const cor = rc[sec] ? '#F0883E' : '#8b949e';
-  const eti = (dt[sec]||'—') + (se[sec] && se[sec] !== 'manual'
-    ? ' · ' + se[sec] + (rc[sec] ? ' (recuou)' : '') : '');
-  h += '<div style="margin-right:14px;margin-bottom:6px;">'
-    + '<div style="color:' + cor + ';font-size:10px;">' + eti + '</div>'
-    + '<input type="number" class="pmSec" value="' + sec + '" style="width:64px" title="segundos">'
-    + ' <span style="color:#8b949e;">s</span> '
-    + '<input type="number" class="pmW" data-sec="' + sec + '" value="'
-    + Math.round(mm[sec]) + '" style="width:70px" title="watts">'
-    + ' <span style="color:#8b949e;">W</span></div>';
- });
- if(PM.pmax_w) h += '<div style="margin-right:14px;margin-bottom:6px;">'
-   + '<div style="color:' + (PM.pmax_recuou ? '#F0883E' : '#8b949e')
-   + ';font-size:10px;">' + (PM.pmax_data||'—')
-   + (PM.pmax_season ? ' · ' + PM.pmax_season
-      + (PM.pmax_recuou ? ' (recuou)' : '') : '') + '</div>'
-   + 'Pmax <input type="number" id="pmPmax" value="' + Math.round(PM.pmax_w)
-   + '" style="width:75px"> <span style="color:#8b949e;">W</span></div>';
- h += '<button onclick="pmCarregar(true)" style="margin-bottom:6px;">Recalcular</button>'
-   + '<button onclick="pmCarregar(false)" style="margin-left:6px;margin-bottom:6px;">Repor automáticos</button>'
-   + '</div>';
- if(Object.keys(PM.mmp_manuais||{}).length)
-  h += '<div style="color:#F0883E;font-size:11px;">a usar valores manuais</div>';
- box.innerHTML = h;
 }
 
 let PMC_ITENS = [], PMC_ESC = null;

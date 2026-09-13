@@ -3374,10 +3374,20 @@ function pmVo2MoxyCarregar(){
   }
   const t2 = d.teste_2km;
   if(t2){
+   const durTxt = t2.duracao_s
+     ? Math.floor(t2.duracao_s/60) + ':' + String(t2.duracao_s%60).padStart(2,'0')
+     : null;
    hc += pmCartao('VO\u2082max (teste 2 km)',
      t2.vo2max_2km + ' <span style="font-size:12px;">ml/min/kg</span>',
-     t2.watts_medio_2km + ' W m\u00e9dios \u00b7 ' + t2.distancia_m
-     + ' m \u00b7 ' + t2.data, '#A371F7');
+     t2.watts_medio_2km + ' W m\u00e9dios \u00b7 ' + t2.distancia_m + ' m'
+     + (durTxt ? ' em ' + durTxt : '') + ' \u00b7 ' + t2.data
+     + (t2.corrigido_pela_duracao
+        ? '<br><span style="color:#3FB950;">corrigido pela dura\u00e7\u00e3o '
+          + '(Daniels-Gilbert)</span>'
+        : '<br><span style="color:#F0883E;">sem corre\u00e7\u00e3o de '
+          + 'dura\u00e7\u00e3o \u2014 sobrestima o esfor\u00e7o aer\u00f3bio '
+          + 'puro</span>'),
+     '#A371F7');
   }
   cardsEl.innerHTML = hc;
 

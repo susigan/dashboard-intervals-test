@@ -1,1645 +1,1089 @@
-"""PMC — Performance Management Chart.
+"""Persistencia — Postgres (Railway) com fallback SQLite.
 
-Duas camadas:
-  classica   CTL/ATL/TSB por media exponencial (42/7 dias)
-  FTLM       CTLgamma fraccionario Della Mattia (2025), gamma ajustado aos
-             dados do proprio atleta, fases de treino e tensor FMT
+A app funciona sem base de dados: se nao houver nenhuma, api_client vai
+directo a API como antes. A BD e uma cache persistente, nao um requisito.
 
-
-CTL/ATL/TSB a partir do icu_training_load, com a mesma logica do dashboard
-original (tab_pmc.py):
-
-  CTL = media exponencial a 42 dias da carga diaria
-  ATL = media exponencial a 7 dias
-  TSB = CTL - ATL   (calculado com os valores de ONTEM, ver abaixo)
-
-Sem pandas: as series sao listas de dicts, calculadas em Python puro.
-
-NOTA: TSB é modulador principal (r²=6.5%, pré-registo 2026-08-13).
-      HRV lag mais relevante é +10d, métrica RPE ≥7.
-      Valores continuam dinâmicos; sistema avisa se divergem.
+Tabelas
+  activities  1 linha por sessao; colunas indexadas + JSON completo em 'raw'
+  streams     1 linha por (actividade, stream); dados comprimidos com zlib
+  sync_log    historico de sincronizacoes
 """
 
-from datetime import datetime, timedelta
+import os
+import json
+import zlib
+from datetime import datetime, date
 
-CTL_DIAS = 42
-ATL_DIAS = 7
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+SQLITE_PATH = os.getenv("SQLITE_PATH", "/tmp/intervals.db").strip()
+
+DRIVER = None      # 'postgres' | 'sqlite' | None
+ENABLED = False
+_conn = None
+
+# Colunas da tabela activities pela ordem do INSERT
+COLS = ['id', 'athlete_id', 'date', 'start_local', 'type_raw', 'type', 'name',
+        'elapsed_time', 'moving_time', 'distance_m', 'kj', 'kj_acima_ftp',
+        'z1_kj', 'z2_kj', 'z3_kj', 'z1_sec', 'z2_sec', 'z3_sec',
+        'training_load', 'rpe', 'xss', 'aerobic', 'glycolytic', 'sprint',
+        'epoc', 'elevation', 'avg_hr', 'max_hr', 'avg_watts', 'ftp',
+        'source', 'icu_sync_date', 'analyzed', 'raw']
 
 
-def _ewm(valores, span):
-    """Media exponencial, equivalente a pandas.ewm(span=N, adjust=False)."""
-    alpha = 2.0 / (span + 1.0)
-    out, anterior = [], None
-    for v in valores:
-        anterior = v if anterior is None else alpha * v + (1 - alpha) * anterior
-        out.append(anterior)
-    return out
+def _connect():
+    global _conn, DRIVER, ENABLED
+    if _conn is not None:
+        return _conn
+
+    if DATABASE_URL:
+        try:
+            import psycopg
+            url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+            _conn = psycopg.connect(url, autocommit=True)
+            DRIVER, ENABLED = 'postgres', True
+            print("DB: Postgres ligado")
+            return _conn
+        except Exception as e:
+            print(f"DB: Postgres indisponivel ({e})")
+
+    try:
+        import sqlite3
+        _conn = sqlite3.connect(SQLITE_PATH, check_same_thread=False)
+        _conn.execute("PRAGMA journal_mode=WAL")
+        DRIVER, ENABLED = 'sqlite', True
+        print(f"DB: SQLite em {SQLITE_PATH}")
+        return _conn
+    except Exception as e:
+        print(f"DB: sem persistencia ({e}) — a usar a API directamente")
+        DRIVER, ENABLED = None, False
+        return None
 
 
-def serie_diaria(sessoes, campo='tl', ate=None, desde=None):
-    """Soma por dia, com os dias sem treino a zero.
+_connect()   # determina DRIVER/ENABLED no arranque
 
-    Os dias vazios contam: e o descanso que faz o ATL cair mais depressa
-    que o CTL, e e dai que vem a forma.
+
+def _q(sql):
+    """? -> %s quando o driver e Postgres."""
+    return sql.replace('?', '%s') if DRIVER == 'postgres' else sql
+
+
+def _exec(sql, params=None, fetch=None, many=None):
+    conn = _connect()
+    if conn is None:
+        return None
+    cur = conn.cursor()
+    try:
+        if many is not None:
+            cur.executemany(_q(sql), many)
+        else:
+            cur.execute(_q(sql), params or ())
+        out = None
+        if fetch == 'one':
+            out = cur.fetchone()
+        elif fetch == 'all':
+            out = cur.fetchall()
+        if DRIVER == 'sqlite':
+            conn.commit()
+        return out
+    finally:
+        cur.close()
+
+
+def init_schema():
+    if _connect() is None:
+        return False
+    pg = DRIVER == 'postgres'
+    blob = 'BYTEA' if pg else 'BLOB'
+    ts = 'TIMESTAMP' if pg else 'TEXT'
+    jsn = 'JSONB' if pg else 'TEXT'
+    serial = 'SERIAL PRIMARY KEY' if pg else 'INTEGER PRIMARY KEY AUTOINCREMENT'
+
+    _exec(f"""CREATE TABLE IF NOT EXISTS activities (
+        id             TEXT PRIMARY KEY,
+        athlete_id     TEXT,
+        date           DATE,
+        start_local    {ts},
+        type_raw       TEXT,
+        type           TEXT,
+        name           TEXT,
+        elapsed_time   INTEGER,
+        moving_time    INTEGER,
+        distance_m     DOUBLE PRECISION,
+        kj             DOUBLE PRECISION,
+        kj_acima_ftp   DOUBLE PRECISION,
+        z1_kj          DOUBLE PRECISION,
+        z2_kj          DOUBLE PRECISION,
+        z3_kj          DOUBLE PRECISION,
+        z1_sec         DOUBLE PRECISION,
+        z2_sec         DOUBLE PRECISION,
+        z3_sec         DOUBLE PRECISION,
+        training_load  DOUBLE PRECISION,
+        rpe            DOUBLE PRECISION,
+        xss            DOUBLE PRECISION,
+        aerobic        DOUBLE PRECISION,
+        glycolytic     DOUBLE PRECISION,
+        sprint         DOUBLE PRECISION,
+        epoc           DOUBLE PRECISION,
+        elevation      DOUBLE PRECISION,
+        avg_hr         DOUBLE PRECISION,
+        max_hr         DOUBLE PRECISION,
+        avg_watts      DOUBLE PRECISION,
+        ftp            DOUBLE PRECISION,
+        source         TEXT,
+        icu_sync_date  {ts},
+        analyzed       {ts},
+        raw            {jsn},
+        updated_at     {ts}
+    )""")
+    _exec("CREATE INDEX IF NOT EXISTS ix_act_date ON activities(date)")
+    _exec("CREATE INDEX IF NOT EXISTS ix_act_type ON activities(type)")
+    _exec("CREATE INDEX IF NOT EXISTS ix_act_type_date ON activities(type, date)")
+
+    _exec(f"""CREATE TABLE IF NOT EXISTS streams (
+        activity_id  TEXT,
+        skey         TEXT,
+        stype        TEXT,
+        sensor_name  TEXT,
+        is_custom    BOOLEAN,
+        points       INTEGER,
+        data         {blob},
+        updated_at   {ts},
+        PRIMARY KEY (activity_id, skey)
+    )""")
+    _exec("CREATE INDEX IF NOT EXISTS ix_str_type ON streams(stype)")
+
+    _exec(f"""CREATE TABLE IF NOT EXISTS power_curves (
+        activity_id  TEXT PRIMARY KEY,
+        type         TEXT,
+        date         DATE,
+        weight       DOUBLE PRECISION,
+        secs         TEXT,
+        watts        TEXT,
+        updated_at   {ts}
+    )""")
+    _exec("CREATE INDEX IF NOT EXISTS ix_pc_type_date ON power_curves(type, date)")
+
+    _exec(f"""CREATE TABLE IF NOT EXISTS zone_times (
+        activity_id  TEXT,
+        date         DATE,
+        type         TEXT,
+        code         TEXT,
+        kind         TEXT,
+        zone_id      TEXT,
+        zone_idx     INTEGER,
+        secs         INTEGER,
+        start_value  DOUBLE PRECISION,
+        end_value    DOUBLE PRECISION,
+        n_zonas      INTEGER,
+        PRIMARY KEY (activity_id, code, zone_idx)
+    )""")
+    _exec("CREATE INDEX IF NOT EXISTS ix_zt_type ON zone_times(type, kind)")
+    _exec("CREATE INDEX IF NOT EXISTS ix_zt_date ON zone_times(date)")
+
+    _exec(f"""CREATE TABLE IF NOT EXISTS sync_log (
+        id            {serial},
+        modo          TEXT,
+        oldest        DATE,
+        recebidas     INTEGER,
+        inseridas     INTEGER,
+        actualizadas  INTEGER,
+        segundos      DOUBLE PRECISION,
+        erro          TEXT,
+        criado_em     {ts}
+    )""")
+    return True
+
+
+def _now():
+    return datetime.utcnow() if DRIVER == 'postgres' else datetime.utcnow().isoformat()
+
+
+def _dt(v):
+    """datetime -> valor aceite pelo driver."""
+    if v is None:
+        return None
+    if DRIVER == 'postgres':
+        return v
+    return v.isoformat() if hasattr(v, 'isoformat') else str(v)
+
+
+# ── actividades ───────────────────────────────────────────────────────────
+
+def upsert_activities(rows):
+    """Grava/actualiza. Devolve (inseridas, actualizadas)."""
+    if not ENABLED or not rows:
+        return 0, 0
+
+    existentes = ids_existentes()
+    novos = sum(1 for r in rows if r['id'] not in existentes)
+
+    now = _now()
+    params = []
+    for r in rows:
+        raw = r.get('raw')
+        raw_val = json.dumps(raw, ensure_ascii=False) if raw is not None else None
+        params.append(tuple(
+            [r.get('id'), r.get('athlete_id'), r.get('date'),
+             _dt(r.get('start_local')), r.get('type_raw'), r.get('type'), r.get('name'),
+             r.get('elapsed_time'), r.get('moving_time'), r.get('distance_m'),
+             r.get('kj'), r.get('kj_acima_ftp'),
+             r.get('z1_kj'), r.get('z2_kj'), r.get('z3_kj'),
+             r.get('z1_sec'), r.get('z2_sec'), r.get('z3_sec'),
+             r.get('training_load'), r.get('rpe'), r.get('xss'),
+             r.get('aerobic'), r.get('glycolytic'), r.get('sprint'),
+             r.get('epoc'), r.get('elevation'), r.get('avg_hr'), r.get('max_hr'),
+             r.get('avg_watts'), r.get('ftp'), r.get('source'),
+             _dt(r.get('icu_sync_date')), _dt(r.get('analyzed')), raw_val, now]))
+
+    placeholders = ','.join(['?'] * (len(COLS) + 1))
+    updates = ','.join(f"{c}=EXCLUDED.{c}" for c in COLS if c != 'id')
+    _exec(f"""INSERT INTO activities ({','.join(COLS)}, updated_at)
+              VALUES ({placeholders})
+              ON CONFLICT (id) DO UPDATE SET {updates}, updated_at=EXCLUDED.updated_at""",
+          many=params)
+
+    return novos, len(rows) - novos
+
+
+def ids_existentes():
+    rows = _exec("SELECT id FROM activities", fetch='all') or []
+    return {r[0] for r in rows}
+
+
+def ultima_data():
+    """Data mais recente na base, como date. None se vazia."""
+    row = _exec("SELECT MAX(date) FROM activities", fetch='one')
+    if not row or not row[0]:
+        return None
+    v = row[0]
+    if isinstance(v, date) and not isinstance(v, datetime):
+        return v
+    if isinstance(v, datetime):
+        return v.date()
+    try:
+        return datetime.fromisoformat(str(v)[:10]).date()
+    except Exception:
+        return None
+
+
+def actividades_processadas(desde=None):
+    """Colunas ja normalizadas da tabela activities.
+
+    Diferente de load_activities(), que devolve o JSON original da API. Para
+    exportar interessa o que o dashboard usa de facto.
     """
-    if not sessoes:
+    if not ENABLED:
         return []
-    por_dia = {}
-    for s in sessoes:
-        d = (s.get('date') or '')[:10]
-        if len(d) != 10:
-            continue
-        por_dia[d] = por_dia.get(d, 0.0) + float(s.get(campo) or 0)
-
-    d0 = desde or min(por_dia)
-    d1 = ate or datetime.now().strftime('%Y-%m-%d')
-    ini = datetime.strptime(d0, '%Y-%m-%d')
-    fim = datetime.strptime(d1, '%Y-%m-%d')
-    dias = []
-    while ini <= fim:
-        k = ini.strftime('%Y-%m-%d')
-        dias.append({'date': k, 'load': round(por_dia.get(k, 0.0), 1)})
-        ini += timedelta(days=1)
-    return dias
-
-
-def calcular(sessoes, campo='tl', ate=None, desde=None):
-    """CTL, ATL, TSB e ramp rate, dia a dia."""
-    dias = serie_diaria(sessoes, campo, ate, desde)
-    if not dias:
-        return []
-    cargas = [d['load'] for d in dias]
-    ctl = _ewm(cargas, CTL_DIAS)
-    atl = _ewm(cargas, ATL_DIAS)
-
-    for i, d in enumerate(dias):
-        d['ctl'] = round(ctl[i], 1)
-        d['atl'] = round(atl[i], 1)
-        # TSB de hoje usa os valores de ontem: a forma que trazes para o treino
-        # de hoje nao pode incluir o treino de hoje.
-        d['tsb'] = round((ctl[i - 1] - atl[i - 1]) if i else 0.0, 1)
-        # ramp rate: quanto o CTL subiu nos ultimos 7 dias
-        d['ramp'] = round(ctl[i] - ctl[i - 7], 1) if i >= 7 else 0.0
-    return dias
-
-
-def por_modalidade(sessoes, modalidades, campo='tl', ate=None, desde=None):
-    """CTL por modalidade — para ver de onde vem a carga."""
-    out = {}
-    for m in modalidades:
-        sub = [s for s in sessoes if s.get('type') == m]
-        if not sub:
-            continue
-        serie = calcular(sub, campo, ate, desde)
-        out[m] = [{'date': d['date'], 'ctl': d['ctl'], 'atl': d['atl']}
-                  for d in serie]
-    return out
-
-
-def estado_forma(tsb):
-    """Interpretacao do TSB. Os limites sao convencao do TrainingPeaks,
-    nao uma verdade fisiologica — servem de referencia, nao de regra.
-    
-    NOTA: TSB é modulador principal da recuperação HRV (pré-registo 2026-08-13).
-          Efeito RPE→HRV é máximo em TSB negativo (cansaço) e mínimo em TSB positivo.
-    """
-    if tsb is None:
-        return {'label': '—', 'cor': '#8b949e', 'nota': ''}
-    if tsb > 25:
-        return {'label': 'Muito fresco', 'cor': '#5DADE2',
-                'nota': 'forma alta, mas fitness a cair se durar'}
-    if tsb > 5:
-        return {'label': 'Fresco', 'cor': '#2ECC71', 'nota': 'pronto para competir'}
-    if tsb > -10:
-        return {'label': 'Neutro', 'cor': '#F4D03F', 'nota': 'treino sustentavel'}
-    if tsb > -30:
-        return {'label': 'Em carga', 'cor': '#E67E22', 'nota': 'bloco de trabalho'}
-    return {'label': 'Muito carregado', 'cor': '#E74C3C',
-            'nota': 'risco se se prolongar'}
-
-
-def alertas(dias, wellness=None):
-    """Sinais que merecem atencao. Descritivos, nao prescritivos."""
-    if not dias:
-        return []
-    fim = dias[-1]
+    cols = ['id', 'date', 'type', 'type_raw', 'name', 'elapsed_time',
+            'moving_time', 'distance_m', 'kj', 'kj_acima_ftp',
+            'z1_kj', 'z2_kj', 'z3_kj', 'z1_sec', 'z2_sec', 'z3_sec',
+            'training_load', 'rpe', 'xss', 'aerobic', 'glycolytic',
+            'sprint', 'epoc', 'elevation', 'avg_hr', 'max_hr',
+            'avg_watts', 'ftp', 'source']
+    cond = "WHERE date >= ?" if desde else ""
+    params = (desde,) if desde else ()
+    rows = _exec(f"SELECT {', '.join(cols)} FROM activities {cond} "
+                 "ORDER BY date", params, fetch='all') or []
     out = []
-
-    if fim['ramp'] > 8:
-        out.append({'nivel': 'aviso',
-                    'texto': f"CTL subiu {fim['ramp']} em 7 dias. "
-                             "Acima de ~8/semana costuma ser dificil de aguentar."})
-    if fim['tsb'] < -30:
-        out.append({'nivel': 'aviso',
-                    'texto': f"TSB em {fim['tsb']}. Carga acumulada alta."})
-    if fim['tsb'] > 25 and fim['ctl'] > 0:
-        out.append({'nivel': 'info',
-                    'texto': f"TSB em {fim['tsb']} — muito fresco. "
-                             "Bom para competir, mau para manter fitness."})
-
-    # HRV abaixo da media dos 60 dias, tres dias seguidos
-    if wellness:
-        hrvs = [(w['date'], w.get('hrv')) for w in wellness
-                if w.get('hrv') is not None]
-        if len(hrvs) >= 10:
-            vals = [v for _, v in hrvs[-60:]]
-            media = sum(vals) / len(vals)
-            desv = (sum((v - media) ** 2 for v in vals) / len(vals)) ** 0.5
-            ultimos = [v for _, v in hrvs[-3:]]
-            if len(ultimos) == 3 and all(v < media - desv for v in ultimos):
-                out.append({'nivel': 'aviso',
-                            'texto': f"HRV abaixo de {media - desv:.0f} ha 3 dias "
-                                     f"(media 60d: {media:.0f})."})
+    for r in rows:
+        d = dict(zip(cols, r))
+        d['date'] = str(d['date']) if d['date'] is not None else None
+        out.append(d)
     return out
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# FTLM fraccionario, fases e FMT — sobre a camada classica acima
-# ══════════════════════════════════════════════════════════════════════════
-
-def _serie_por_dia(sessoes, datas, campo, agregacao='sum'):
-    """Valor diario alinhado com a lista de datas. NaN onde nao ha sessao."""
-    import numpy as np
-    por_dia = {}
-    for s in sessoes:
-        v = s.get(campo)
-        if v is None:
-            continue
-        por_dia.setdefault(s['date'], []).append(float(v))
-    out = np.full(len(datas), np.nan)
-    for i, d in enumerate(datas):
-        vals = por_dia.get(d)
-        if vals:
-            out[i] = sum(vals) if agregacao == 'sum' else sum(vals) / len(vals)
-    return out
-
-
-def _dias_sem_treino(cargas):
-    import numpy as np
-    n = len(cargas)
-    out = np.zeros(n, dtype=int)
-    contador = 0
-    for i, c in enumerate(cargas):
-        contador = 0 if c > 0 else contador + 1
-        out[i] = contador
-    return out
-
-
-def _zscore_rolling_28(valores, datas, minimo=7):
-    """z-score de cada dia contra a sua propria linha de base de 28 dias.
-
-    E assim que o dashboard trata as escalas 1-5: em vez de comparar com um
-    valor absoluto, compara com o teu normal recente. Fica invariante a escala.
-    """
-    import numpy as np
-    v = np.asarray(valores, dtype=np.float64)
-    n = len(v)
-    out = np.full(n, np.nan)
-    for t in range(n):
-        seg = v[max(0, t - 27):t + 1]
-        seg = seg[np.isfinite(seg)]
-        if len(seg) >= minimo and np.std(seg) > 1e-9:
-            out[t] = (v[t] - seg.mean()) / seg.std()
-    return out
-
-
-def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
-    """CTLgamma, gammas ajustados, fases e FMT.
-
-    Devolve um dict pronto a serializar para JSON.
-    """
-    import numpy as np
-    import ftlm
-
-    if not serie_classica:
+def load_activities(desde=None):
+    """Dicts originais das actividades (coluna raw). None se a BD nao servir."""
+    if not ENABLED:
         return None
-
-    datas = [d['date'] for d in serie_classica]
-    cargas = np.array([d['load'] for d in serie_classica], dtype=np.float64)
-    n = len(datas)
-    max_lag = min(365, n)
-
-    # ── sinal de recuperacao: LnRMSSD, WEED e sono ────────────────────────
-    hrv_ln = np.full(n, np.nan)
-    weed_z = None
-    sleep_z = None
-    if wellness:
-        idx = {w['date']: w for w in wellness}
-        bruto = np.array([(idx.get(d) or {}).get('hrv') or np.nan for d in datas],
-                         dtype=np.float64)
-        hrv_ln = np.where(bruto > 0, np.log(bruto), np.nan)
-
-        # WEED: stress, dores e cansaco. Escala 1-5 em que 5 = melhor nos tres,
-        # por isso nao ha nada a inverter.
-        partes = []
-        for campo in ('stress', 'soreness', 'fatiga'):
-            vals = [(idx.get(d) or {}).get(campo) for d in datas]
-            vals = np.array([v if v is not None else np.nan for v in vals],
-                            dtype=np.float64)
-            if np.isfinite(vals).sum() >= 10:
-                partes.append(_zscore_rolling_28(vals, datas))
-        if partes:
-            arr = np.array(partes)
-            # dias em que nenhuma das componentes tem valor ficam NaN, sem aviso
-            validos = np.isfinite(arr).any(axis=0)
-            weed_z = np.full(arr.shape[1], np.nan)
-            if validos.any():
-                with np.errstate(all='ignore'):
-                    weed_z[validos] = np.nanmean(arr[:, validos], axis=0)
-
-        sq = [(idx.get(d) or {}).get('sleep_quality') for d in datas]
-        sq = np.array([v if v is not None else np.nan for v in sq], dtype=np.float64)
-        if np.isfinite(sq).sum() >= 5:
-            sleep_z = _zscore_rolling_28(sq, datas)
-
-    # ── gamma de recuperacao: carga de ontem contra HRV de hoje (lag=1) ────
-    gamma_rec, r2_rec, n_rec = ftlm.GAMMA_DEFAULT, 0.0, 0
-    fit_rec = {'motivo': 'sem serie de HRV suficiente', 'aceite': False}
-    hrv_tendencia = np.full(n, np.nan)
-    if int(np.isfinite(hrv_ln).sum()) >= 21:
-        hrv_tendencia = ftlm.hrv_trend(hrv_ln, window=7)
-        fit_rec = ftlm.fit_gamma(cargas, hrv_tendencia, lag=1, max_lag=max_lag)
-        gamma_rec = fit_rec['gamma']
-        r2_rec, n_rec = fit_rec['r2'], fit_rec['n']
-
-    # ── gamma de performance, global e por modalidade ─────────────────────
-    cp = _serie_por_dia(sessoes, datas, 'cp', 'mean')
-    gamma_perf, r2_perf, n_perf = ftlm.GAMMA_DEFAULT, 0.0, 0
-    fit_perf = {'motivo': 'sem pontos de CP suficientes', 'aceite': False}
-    if np.isfinite(cp).sum() >= 10:
-        fit_perf = ftlm.fit_gamma(cargas, cp, lag=0, max_lag=max_lag,
-                                  suavizar=3)
-        gamma_perf = fit_perf['gamma']
-        r2_perf, n_perf = fit_perf['r2'], fit_perf['n']
-
-    ctlg_perf = ftlm.ftlm_fractional(cargas, gamma_perf, max_lag)
-    ctlg_rec = ftlm.ftlm_fractional(cargas, gamma_rec, max_lag)
-
-    por_mod, ctlg_mod, fases_mod = {}, {}, {}
-    for mod in modalidades:
-        ses_mod = [s for s in sessoes if s.get('type') == mod]
-        if len(ses_mod) < 5:
+    if desde:
+        rows = _exec("SELECT raw FROM activities WHERE date >= ? ORDER BY date DESC",
+                     (desde,), fetch='all')
+    else:
+        rows = _exec("SELECT raw FROM activities ORDER BY date DESC", fetch='all')
+    if not rows:
+        return None
+    out = []
+    for (raw,) in rows:
+        if raw is None:
             continue
-        carga_mod = _serie_por_dia(ses_mod, datas, 'tl', 'sum')
-        carga_mod = np.nan_to_num(carga_mod)
-        cp_mod = _serie_por_dia(ses_mod, datas, 'cp', 'mean')
+        try:
+            out.append(raw if isinstance(raw, dict) else json.loads(raw))
+        except Exception:
+            continue
+    return out
 
-        g_m, r2_m, n_m = ftlm.GAMMA_DEFAULT, 0.0, 0
-        fit_m = {'gamma_encontrado': None, 'aceite': False,
-                 'na_fronteira': False, 'p_permutacao': None,
-                 'motivo': 'sem pontos de CP suficientes'}
-        if np.isfinite(cp_mod).sum() >= 5:
-            fit_m = ftlm.fit_gamma(carga_mod, cp_mod, lag=0,
-                                   max_lag=max_lag, suavizar=3)
-            g_m, r2_m, n_m = fit_m['gamma'], fit_m['r2'], fit_m['n']
-        serie_mod = ftlm.ftlm_fractional(carga_mod, g_m, max_lag)
-        ctlg_mod[mod] = serie_mod
 
-        f_mod = ftlm.detect_phases(serie_mod, hrv_tendencia, weed_z,
-                                   _dias_sem_treino(carga_mod))
-        fases_mod[mod] = f_mod['fase'][-1]
+# ── streams ───────────────────────────────────────────────────────────────
 
-        por_mod[mod] = {
-            'gamma': g_m, 'r2': r2_m, 'n': n_m,
-            'gamma_fit': {k: fit_m.get(k) for k in
-                          ('gamma_encontrado', 'aceite', 'na_fronteira',
-                           'p_permutacao', 'motivo')},
-            # CTLgamma normalizado ao proprio maximo: e o unico numero
-            # comparavel entre modalidades, ja que gammas diferentes dao
-            # ordens de grandeza diferentes
-            'ctlg_pct': (round(float(serie_mod[-1] / serie_mod.max() * 100), 1)
-                         if serie_mod.max() > 0 else None),
-            'n_sessoes': len(ses_mod),
-            'ctlg_actual': round(float(serie_mod[-1]), 2),
-            'fase': f_mod['fase'][-1],
-            'serie': [{'date': datas[i], 'ctlg': round(float(serie_mod[i]), 2)}
-                      for i in range(n)],
-        }
+def upsert_streams(activity_id, meta, streams):
+    """Guarda os streams comprimidos (zlib nivel 6)."""
+    if not ENABLED or not streams:
+        return 0
+    now = _now()
+    by_key = {m['key']: m for m in (meta or [])}
+    params = []
+    for key, data in streams.items():
+        m = by_key.get(key, {})
+        blob = zlib.compress(json.dumps(data).encode(), 6)
+        custom = m.get('custom')
+        params.append((activity_id, key, m.get('type'), m.get('sensor_name'),
+                       bool(custom) if DRIVER == 'postgres' else int(bool(custom)),
+                       m.get('points'), blob, now))
+    _exec("""INSERT INTO streams
+             (activity_id, skey, stype, sensor_name, is_custom, points, data, updated_at)
+             VALUES (?,?,?,?,?,?,?,?)
+             ON CONFLICT (activity_id, skey) DO UPDATE SET
+               stype=EXCLUDED.stype, sensor_name=EXCLUDED.sensor_name,
+               is_custom=EXCLUDED.is_custom, points=EXCLUDED.points,
+               data=EXCLUDED.data, updated_at=EXCLUDED.updated_at""",
+          many=params)
+    return len(params)
 
-    # ── fases: overall e global ponderada pelo CTLgamma de cada modalidade ─
-    sem_treino = _dias_sem_treino(cargas)
-    # Duas nocoes de "global", propositadamente diferentes:
-    #
-    #  agregada  — soma a carga de TODAS as modalidades num unico sinal e
-    #              deteta a fase sobre ele. E o estado do corpo, que nao
-    #              distingue de onde veio a carga.
-    #
-    #  ponderada — deteta a fase de cada modalidade separadamente e escolhe a
-    #              moda pesada pelo CTLgamma de cada uma. E o estado do
-    #              treino, dominado pela modalidade que mais pesa.
-    #
-    # Divergirem e informacao: significa que o corpo esta num estado que
-    # nenhuma modalidade isolada explica.
-    f_overall = ftlm.detect_phases(ctlg_perf, hrv_tendencia, weed_z, sem_treino)
-    ctlg_actual_mod = {m: float(s[-1]) for m, s in ctlg_mod.items()}
-    fase_global, contrib = ftlm.fase_global_ponderada(fases_mod, ctlg_actual_mod)
 
-    # ── FMT: quanto o sistema esta a oscilar ──────────────────────────────
-    dimensoes = [ctlg_perf, ctlg_rec]
-    nomes_dim = ['CTLg_perf', 'CTLg_rec']
-    if np.isfinite(hrv_tendencia).sum() >= 30:
-        dimensoes.append(hrv_tendencia)
-        nomes_dim.append('HRV_trend')
-    if weed_z is not None and np.isfinite(weed_z).sum() >= 30:
-        dimensoes.append(weed_z)
-        nomes_dim.append('WEED')
-    if sleep_z is not None and np.isfinite(sleep_z).sum() >= 30:
-        dimensoes.append(sleep_z)
-        nomes_dim.append('Sono')
-    wp = _serie_por_dia(sessoes, datas, 'w_prime', 'mean')
-    if np.isfinite(wp).sum() >= 30:
-        dimensoes.append(wp)
-        nomes_dim.append("W'")
+def get_streams(activity_id):
+    """(streams, meta) ou (None, None) se ainda nao foram guardados."""
+    if not ENABLED:
+        return None, None
+    rows = _exec("""SELECT skey, stype, sensor_name, is_custom, points, data
+                    FROM streams WHERE activity_id = ?""", (activity_id,), fetch='all')
+    if not rows:
+        return None, None
+    streams, meta = {}, []
+    for skey, stype, sensor, custom, points, blob in rows:
+        try:
+            streams[skey] = json.loads(zlib.decompress(bytes(blob)).decode())
+        except Exception:
+            continue
+        meta.append({'key': skey, 'type': stype, 'label': sensor or stype,
+                     'sensor_name': sensor, 'custom': bool(custom),
+                     'points': points, 'plotted': True,
+                     'nirs': stype in ('smo2', 'thb', 'O2Hb', 'HHb', 'DiffHb')})
+    return streams, meta
 
-    kappa, lam1 = ftlm.kappa_fmt(dimensoes)
 
-    def _f(v):
-        return round(float(v), 4) if np.isfinite(v) else None
+# ── curvas de potencia e recordes ──────────────────────────────────────────
 
-    fase_actual = f_overall['fase'][-1]
-    serie = [{
-        'date': datas[i],
-        'ctlg_perf': round(float(ctlg_perf[i]), 2),
-        'ctlg_rec': round(float(ctlg_rec[i]), 2),
-        'dctlg': _f(f_overall['dctlg'][i]),
-        'hrv_z': _f(f_overall['hrv_z'][i]),
-        'weed_z': _f(f_overall['weed_z'][i]),
-        'kappa': _f(kappa[i]) if i < len(kappa) else None,
-        'lambda1': _f(lam1[i]) if i < len(lam1) else None,
-        'fase': f_overall['fase'][i],
-    } for i in range(n)]
+# Duracoes canonicas. Incluem as dos custom fields MMP (60s, 180, 300, 720,
+# 1200, 3600) mais o intervalo curto que interessa ao W'.
+DURACOES = [1, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300, 420, 600,
+            720, 900, 1200, 1800, 2400, 3600, 5400]
 
+
+def diagnostico_curvas(limite=3):
+    """Estado real da tabela de curvas: contagens, amostra crua e parsing.
+
+    Serve para perceber porque e que a pagina fica a zero apesar de o sync
+    dizer que gravou.
+    """
+    if not ENABLED:
+        return {'enabled': False}
+    out = {'driver': DRIVER, 'colunas': colunas_de('power_curves')}
+
+    tot = _exec("SELECT COUNT(*) FROM power_curves", fetch='one')
+    out['linhas'] = tot[0] if tot else 0
+
+    por_tipo = _exec("""SELECT type, COUNT(*) FROM power_curves
+                        GROUP BY type ORDER BY COUNT(*) DESC""", fetch='all') or []
+    out['por_tipo'] = [{'type': t, 'n': n} for t, n in por_tipo]
+
+    nulos = _exec("""SELECT
+                       SUM(CASE WHEN secs IS NULL THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN watts IS NULL THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN date IS NULL THEN 1 ELSE 0 END)
+                     FROM power_curves""", fetch='one')
+    if nulos:
+        out['nulos'] = {'secs': nulos[0], 'watts': nulos[1], 'date': nulos[2]}
+
+    rows = _exec(f"""SELECT activity_id, type, date, weight, secs, watts
+                     FROM power_curves LIMIT {int(limite)}""", fetch='all') or []
+    amostra = []
+    for aid, tp, dt, w, secs, watts in rows:
+        item = {'activity_id': aid, 'type': tp, 'date': str(dt),
+                'tipo_python_secs': type(secs).__name__,
+                'tipo_python_watts': type(watts).__name__,
+                'secs_cru': str(secs)[:80], 'watts_cru': str(watts)[:80]}
+        try:
+            item['secs_parsed'] = _lista(secs)[:5]
+            item['watts_parsed'] = _lista(watts)[:5]
+            item['parse'] = 'ok'
+        except Exception as e:
+            item['parse'] = f'{type(e).__name__}: {e}'
+        amostra.append(item)
+    out['amostra'] = amostra
+    out['load_power_curves'] = len(load_power_curves() or [])
+    return out
+
+
+def actividades_sem_streams(limite=100, tipos=None, desde=None, com_potencia=True):
+    """Sessoes que ainda nao tem streams guardados, mais recentes primeiro.
+
+    Serve para carregar em blocos: sao N pedidos a API, um por sessao, e o
+    limite da Intervals.icu e 2500 por 15 min.
+    """
+    if not ENABLED:
+        return []
+    cond = ["NOT EXISTS (SELECT 1 FROM streams s WHERE s.activity_id = a.id)"]
+    params = []
+    if tipos:
+        cond.append("a.type IN (" + ",".join(["?"] * len(tipos)) + ")")
+        params += list(tipos)
+    else:
+        cond.append("a.type <> 'WeightTraining'")
+    if desde:
+        cond.append("a.date >= ?")
+        params.append(desde)
+    if com_potencia:
+        # sem potencia nao ha kJ/kg para calcular
+        cond.append("a.avg_watts > 0")
+    params.append(limite)
+    rows = _exec(f"""SELECT a.id, a.date, a.type FROM activities a
+                     WHERE {' AND '.join(cond)}
+                     ORDER BY a.date DESC LIMIT ?""", tuple(params), fetch='all') or []
+    return [{'id': r[0], 'date': str(r[1]), 'type': r[2]} for r in rows]
+
+
+def streams_stats():
+    """Cobertura dos streams: quantas sessoes tem, quantas faltam, tamanho.
+
+    Cada consulta e independente: se uma falhar, as outras ainda respondem —
+    isto e diagnostico, nao deve rebentar por causa de um detalhe de dialecto.
+    """
+    if not ENABLED:
+        return {'enabled': False}
+    # LENGTH() sobre BYTEA no Postgres conta caracteres, nao bytes — e em
+    # algumas versoes rebenta. OCTET_LENGTH funciona nos dois dialectos.
+    fn = 'OCTET_LENGTH' if DRIVER == 'postgres' else 'LENGTH'
+    tot = _exec(f"""SELECT COUNT(DISTINCT activity_id), COUNT(*),
+                          COALESCE(SUM(points), 0), COALESCE(SUM({fn}(data)), 0)
+                   FROM streams""", fetch='one') or (0, 0, 0, 0)
+    falta = _exec("""SELECT COUNT(*) FROM activities a
+                     WHERE NOT EXISTS (SELECT 1 FROM streams s
+                                       WHERE s.activity_id = a.id)
+                       AND a.type <> 'WeightTraining' AND a.avg_watts > 0""",
+                  fetch='one') or (0,)
+    por_tipo = _exec("""SELECT a.type, COUNT(DISTINCT s.activity_id)
+                        FROM activities a JOIN streams s ON s.activity_id = a.id
+                        GROUP BY a.type ORDER BY 2 DESC""", fetch='all') or []
+    tipos_stream = _exec("""SELECT stype, COUNT(DISTINCT activity_id)
+                            FROM streams GROUP BY stype ORDER BY 2 DESC""",
+                         fetch='all') or []
+    mb = (tot[3] or 0) / (1024 * 1024) if tot else 0.0
     return {
-        'serie': serie,
-        'gammas': {
-            'perf': {'gamma': gamma_perf, 'r2': r2_perf, 'n': n_perf,
-                     **{k: (fit_perf or {}).get(k) for k in
-                        ('gamma_encontrado', 'aceite', 'na_fronteira',
-                         'p_permutacao', 'motivo')}},
-            'rec': {'gamma': gamma_rec, 'r2': r2_rec, 'n': n_rec,
-                    **{k: (fit_rec or {}).get(k) for k in
-                       ('gamma_encontrado', 'aceite', 'na_fronteira',
-                        'p_permutacao', 'motivo')}},
-        },
-        'por_modalidade': por_mod,
-        'fase_actual': {
-            'codigo': fase_actual,
-            'base': 'carga agregada de todas as modalidades',
-            'modalidades_incluidas': sorted(set(
-                s.get('type') for s in sessoes if s.get('type'))),
-            'dias': int(f_overall['dias_na_fase'][-1]) + 1,
-            'dctlg': _f(f_overall['dctlg'][-1]),
-            'hrv_z': _f(f_overall['hrv_z'][-1]),
-            **ftlm.FASES[fase_actual],
-        },
-        'fase_global': ({'codigo': fase_global, 'contribuicoes': contrib,
-                         'base': 'moda das fases por modalidade, pesada pelo CTLgamma',
-                         'fases_por_modalidade': fases_mod,
-                         **ftlm.FASES[fase_global]} if fase_global else None),
-        'fmt': {
-            'dimensoes': nomes_dim,
-            'kappa': _f(kappa[-1]) if len(kappa) else None,
-            'lambda1': _f(lam1[-1]) if len(lam1) else None,
-        },
-        'fases_legenda': ftlm.FASES,
+        'enabled': True,
+        'actividades_com_streams': tot[0],
+        'series_guardadas': tot[1],
+        'pontos': int(tot[2] or 0),
+        'tamanho_mb': round(mb, 1),
+        'por_carregar': falta[0],
+        'por_tipo': [{'type': t, 'n': n} for t, n in por_tipo],
+        'tipos_de_stream': [{'stream': t, 'sessoes': n} for t, n in tipos_stream],
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Modelo homeostatico e indice alostatico
-# ══════════════════════════════════════════════════════════════════════════
+def diagnostico_zonas():
+    """Que conjuntos de custom_zones existem, por modalidade.
 
-def modelo_homeostatico(serie_classica, sessoes, p0=None,
-                        tau_sugerido=None, lag_hrv_sugerido=None):
-    """Reserva de performance p̂(t) = p₀ + K₁·EWM(carga,T₁) − K₂·EWM(carga,T₂).
-
-    O PMC classico fixa τ em 42 e 7 dias. Aqui T₁ e T₂ sao ajustados aos
-    dados deste atleta: procuramos a combinacao (K₁,K₂,T₁,T₂) que melhor
-    explica a serie de CP observada.
-
-    Sem testes de performance suficientes devolve os valores por defeito e
-    diz que sao insuficientes — em vez de fingir um ajuste.
+    Le do JSON ja guardado — zero pedidos a API. Mostra o codigo de cada
+    conjunto, quantas zonas tem, os ids, os limites e em quantas sessoes
+    aparece. Serve para ver onde faltam zonas definidas.
     """
-    import numpy as np
-    import ftlm
+    if not ENABLED:
+        return {'enabled': False}
 
-    if not serie_classica:
-        return None
-
-    datas = [d['date'] for d in serie_classica]
-    cargas = np.array([d['load'] for d in serie_classica], dtype=np.float64)
-    n = len(datas)
-
-    alvo = _serie_por_dia(sessoes, datas, 'cp', 'mean')
-    n_testes = int(np.isfinite(alvo).sum())
-
-    if p0 is None:
-        p0 = float(np.nanmedian(alvo)) if n_testes else 200.0
-
-    melhor = {'k1': 2.0, 'k2': 3.0, 't1': 42.0, 't2': 7.0, 'r2': 0.0}
-    ajustado = False
-    tentativas, rejeitados = 0, 0
-    melhor_rejeitado = {'k1': None, 'k2': None, 't1': None, 't2': None, 'r2': -9e9}
-
-    # Se a calibracao encontrou um tau para a carga, a grelha do T1 e
-    # centrada nele — a mesma constante de tempo que explica o HRV tem de
-    # explicar tambem a componente de fitness.
-    grelha_t1 = (25, 30, 35, 40, 45, 50, 60)
-    grelha_t2 = (4, 5, 6, 7, 9, 11, 14)
-    if tau_sugerido:
-        t = float(tau_sugerido)
-        grelha_t1 = tuple(sorted({max(7, round(t * f))
-                                  for f in (0.6, 0.8, 1.0, 1.3, 1.8, 2.5, 3.5)}))
-    if lag_hrv_sugerido:
-        L = max(2.0, float(lag_hrv_sugerido))
-        grelha_t2 = tuple(sorted({max(2, round(L * f))
-                                  for f in (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)}))
-
-    if n_testes >= 20:
-        m = np.isfinite(alvo)
-        y = alvo[m]
-        for t1 in grelha_t1:
-            e1 = ftlm.ewm(cargas, t1)[m]
-            for t2 in grelha_t2:
-                e2 = ftlm.ewm(cargas, t2)[m]
-                # K1 e K2 por minimos quadrados, dados T1 e T2
-                A = np.column_stack([np.ones(len(y)), e1, -e2])
-                try:
-                    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
-                except Exception:
-                    continue
-                tentativas += 1
-                if coef[1] <= 0 or coef[2] <= 0:
-                    # K negativos nao tem sentido fisico (Banister): o fitness
-                    # tem de somar e a fadiga tem de subtrair.
-                    # Guardamos o melhor rejeitado so para diagnostico.
-                    rejeitados += 1
-                    prev_r = A @ coef
-                    sr = float(((y - prev_r) ** 2).sum())
-                    st = float(((y - y.mean()) ** 2).sum())
-                    if st > 0:
-                        r2r = 1 - sr / st
-                        if r2r > melhor_rejeitado['r2']:
-                            melhor_rejeitado = {
-                                'k1': round(float(coef[1]), 3),
-                                'k2': round(float(coef[2]), 3),
-                                't1': float(t1), 't2': float(t2),
-                                'r2': round(r2r, 4)}
-                    continue
-                prev = A @ coef
-                ss_res = float(((y - prev) ** 2).sum())
-                ss_tot = float(((y - y.mean()) ** 2).sum())
-                if ss_tot <= 0:
-                    continue
-                r2 = 1 - ss_res / ss_tot
-                if r2 > melhor['r2']:
-                    melhor = {'k1': float(coef[1]), 'k2': float(coef[2]),
-                              't1': float(t1), 't2': float(t2), 'r2': r2}
-                    p0 = float(coef[0])
-                    ajustado = True
-
-    fit = ftlm.ewm(cargas, melhor['t1'])
-    fad = ftlm.ewm(cargas, melhor['t2'])
-    p_hat = p0 + melhor['k1'] * fit - melhor['k2'] * fad
-    suave = _savgol(p_hat, 21, 3)
-    sd = _banda_sd(p_hat, 14)
-
-    # porque e que falhou, em detalhe — para se poder comparar modalidades
-    if ajustado:
-        motivo = 'ok'
-    elif n_testes < 20:
-        motivo = 'poucos_pontos_cp'
-    elif tentativas == 0:
-        motivo = 'sem_tentativas'
-    elif rejeitados == tentativas:
-        motivo = 'k_negativo'
-    else:
-        motivo = 'r2_nao_positivo'
-
-    return {
-        'ajustado': ajustado,
-        'motivo': motivo,
-        'tentativas': tentativas,
-        'rejeitados_k_negativo': rejeitados,
-        'n_testes': n_testes,
-        'p0': round(p0, 1),
-        'k1': round(melhor['k1'], 3), 'k2': round(melhor['k2'], 3),
-        't1': round(melhor['t1'], 1), 't2': round(melhor['t2'], 1),
-        'grelha_t1': list(grelha_t1), 'grelha_t2': list(grelha_t2),
-        'grelha_calibrada': bool(tau_sugerido or lag_hrv_sugerido),
-        'r2': round(melhor['r2'], 4),
-        'melhor_rejeitado': (melhor_rejeitado
-                             if melhor_rejeitado['k1'] is not None else None),
-        'nota': _nota_homeo(ajustado, n_testes, tentativas, rejeitados,
-                            melhor['r2']),
-        'serie': [{'date': datas[i],
-                   'p_hat': round(float(p_hat[i]), 1),
-                   'p_hat_suave': round(float(suave[i]), 1),
-                   'banda_sup': round(float(suave[i] + sd[i]), 1),
-                   'banda_inf': round(float(suave[i] - sd[i]), 1),
-                   'fitness': round(float(fit[i]), 1),
-                   'fadiga': round(float(fad[i]), 1)} for i in range(n)],
-    }
-
-
-def _nota_homeo(ajustado, n_testes, tentativas, rejeitados, r2):
-    if ajustado:
-        return f'K e tau ajustados aos teus dados de CP (R² {r2:.3f})'
-    if n_testes < 20:
-        return (f'so {n_testes} pontos de CP (precisa de 20) — '
-                'a usar tau 42/7 do PMC classico')
-    if tentativas and rejeitados == tentativas:
-        return ('nenhuma combinacao deu K₁ e K₂ positivos: a CP nao segue o '
-                'padrao fitness-menos-fadiga neste periodo — a usar tau 42/7')
-    return 'sem ajuste com R² positivo — a usar tau 42/7 do PMC classico'
-
-
-def _savgol(y, janela=21, grau=3):
-    """Savitzky-Golay: ajusta um polinomio local por minimos quadrados.
-
-    Ao contrario da media movel, preserva a amplitude dos picos — e por isso
-    que o dashboard o usa para a reserva de performance.
-    """
-    import numpy as np
-    y = np.asarray(y, dtype=np.float64)
-    n = len(y)
-    if n < grau + 2:
-        return y.copy()
-    j = min(janela, n if n % 2 == 1 else n - 1)
-    if j % 2 == 0:
-        j -= 1
-    j = max(j, grau + 2 if (grau + 2) % 2 == 1 else grau + 3)
-    if j > n:
-        return y.copy()
-    meio = j // 2
-
-    # coeficientes do filtro: linha central da pseudo-inversa de Vandermonde
-    x = np.arange(-meio, meio + 1, dtype=np.float64)
-    A = np.vander(x, grau + 1, increasing=True)
-    coef = np.linalg.pinv(A)[0]
-
-    ext = np.concatenate([np.full(meio, y[0]), y, np.full(meio, y[-1])])
-    return np.array([float(np.dot(coef, ext[i:i + j])) for i in range(n)])
-
-
-def _banda_sd(y, janela=14):
-    """Desvio padrao movel centrado, para a banda +/-1 SD."""
-    import numpy as np
-    y = np.asarray(y, dtype=np.float64)
-    n = len(y)
-    out = np.zeros(n)
-    meio = janela // 2
-    for i in range(n):
-        seg = y[max(0, i - meio):min(n, i + meio + 1)]
-        seg = seg[np.isfinite(seg)]
-        if len(seg) >= 3:
-            out[i] = float(seg.std())
-    return out
-
-
-def homeostatico_por_modalidade(serie_classica, sessoes, modalidades):
-    """Reserva de performance calculada por modalidade.
-
-    Cada desporto tem a sua CP e a sua carga, por isso os K e os tau saem
-    diferentes: o Ski absorve e dissipa a outro ritmo que o Bike. Sobrepor
-    as curvas mostra qual das modalidades esta a puxar a reserva global.
-    """
-    out = {}
-    for mod in modalidades:
-        ses = [s for s in sessoes if s.get('type') == mod]
-        if len(ses) < 30:
-            continue
-        # a serie diaria tem de cobrir o mesmo intervalo que a global,
-        # senao as curvas nao alinham no grafico
-        datas = [d['date'] for d in serie_classica]
-        por_dia = {}
-        for s in ses:
-            por_dia[s['date']] = por_dia.get(s['date'], 0.0) + float(s.get('tl') or 0)
-        serie_mod = [{'date': d, 'load': round(por_dia.get(d, 0.0), 1)}
-                     for d in datas]
-        r = modelo_homeostatico(serie_mod, ses)
-        if r:
-            out[mod] = r
-    return out
-
-
-def _media_periodo(linhas, campo, ini, fim, detalhe=None):
-    """Media de um campo num intervalo. Se detalhe for um dict, escreve la
-    quantos dias entraram e de que datas — para se poder auditar diferencas
-    entre implementacoes."""
-    import numpy as np
-    sel = [r for r in linhas
-           if r.get(campo) is not None and ini <= r['date'] <= fim]
-    vals = [r[campo] for r in sel]
-    if detalhe is not None:
-        detalhe['n'] = len(vals)
-        detalhe['primeiro'] = sel[0]['date'] if sel else None
-        detalhe['ultimo'] = sel[-1]['date'] if sel else None
-    return float(np.mean(vals)) if vals else float('nan')
-
-
-def indice_alostatico(serie_classica, homeostatico, wellness,
-                      p_ant=None, p_rec=None):
-    """Adaptacao vs sobrecarga alostatica, em 6 dimensoes.
-
-    Compara dois periodos. Cada dimensao da um score entre -1 e +1:
-      score = sinal · clip(variacao% / 50, -1, +1)
-    onde o sinal e -1 nas dimensoes em que subir e mau (HR de repouso).
-    """
-    import numpy as np
-    from datetime import datetime, timedelta
-
-    if not serie_classica:
-        return None
-
-    datas = [d['date'] for d in serie_classica]
-    fim = datas[-1]
-    if not p_rec:
-        ini_rec = (datetime.strptime(fim, '%Y-%m-%d') - timedelta(days=59)
-                   ).strftime('%Y-%m-%d')
-        p_rec = (ini_rec, fim)
-    if not p_ant:
-        f_ant = (datetime.strptime(p_rec[0], '%Y-%m-%d') - timedelta(days=1)
-                 ).strftime('%Y-%m-%d')
-        i_ant = (datetime.strptime(f_ant, '%Y-%m-%d') - timedelta(days=59)
-                 ).strftime('%Y-%m-%d')
-        p_ant = (i_ant, f_ant)
-
-    ph = ((homeostatico or {}).get('serie')) or []
-    w = wellness or []
-
-    # Escala de referencia do TSB: o desvio-padrao do proprio atleta, em vez
-    # de um numero fixo. Uma variacao de 1 SD passa a valer o mesmo para
-    # qualquer pessoa, seja o TSB dela estavel ou muito oscilante.
-    tsbs = [r['tsb'] for r in serie_classica if r.get('tsb') is not None]
-    ref_tsb = float(np.std(tsbs)) if len(tsbs) >= 30 else 25.0
-    ref_tsb = max(ref_tsb, 1.0)
-    ref_tsb_fonte = 'desvio do atleta' if len(tsbs) >= 30 else 'referencia 25 au'
-
-    dims = []
-    # 'ref' != None -> a dimensao usa diferenca absoluta em vez de percentagem.
-    # O TSB oscila em torno de zero: dividir por uma base proxima de zero faz
-    # a percentagem explodir. Um TSB de 3.4 -> 1.2 e uma variacao de 2 pontos,
-    # mas da -65% e satura o score, enquanto -47 -> -50 (variacao maior) da -6%.
-    # Escala de referencia 25 au: e a largura tipica das bandas de forma.
-    for nome, uni, bom, fonte, campo, ref in [
-            ('Reserva pico', 'u.a.', True, ph, 'p_hat', None),
-            ('CTL fitness', 'au', True, serie_classica, 'ctl', None),
-            ('Recovery TSB', 'au', True, serie_classica, 'tsb', ref_tsb),
-            ('HRV matinal', 'ms', True, w, 'hrv', None),
-            ('HR repouso', 'bpm', False, w, 'rhr', None),
-            ('Sono', '/5', True, w, 'sleep_quality', None)]:
-        da, dr = {}, {}
-        va = _media_periodo(fonte, campo, p_ant[0], p_ant[1], da)
-        vr = _media_periodo(fonte, campo, p_rec[0], p_rec[1], dr)
-        dims.append((nome, uni, bom, va, vr, (da, dr), ref))
-
-    linhas, scores = [], []
-    for nome, uni, bom_positivo, ant, rec, det, ref in dims:
-        if not np.isfinite(ant) or not np.isfinite(rec):
-            linhas.append({'dim': nome, 'unidade': uni, 'ant': None,
-                           'rec': None, 'delta_pct': None, 'score': None,
-                           'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),
-                           'motivo': 'sem dados'})
-            continue
-
-        delta = rec - ant
-        if ref is not None:
-            # diferenca absoluta escalada: imune a base proxima de zero
-            dp = delta / ref * 100
-            base_metodo = f'diferenca absoluta / {ref:.1f}'
-        elif abs(ant) < 0.001:
-            linhas.append({'dim': nome, 'unidade': uni, 'ant': round(ant, 2),
-                           'rec': round(rec, 2), 'delta_pct': None, 'score': None,
-                           'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),
-                           'motivo': 'base proxima de zero'})
-            continue
-        else:
-            dp = delta / abs(ant) * 100
-            base_metodo = 'variacao percentual'
-        sc = (1 if bom_positivo else -1) * float(np.clip(dp / 50.0, -1.0, 1.0))
-        scores.append(sc)
-        linhas.append({'dim': nome, 'unidade': uni,
-                       'ant': round(ant, 2), 'rec': round(rec, 2),
-                       'delta_pct': round(dp, 2), 'score': round(sc, 4),
-                       'bom_positivo': bom_positivo,
-                       'delta_abs': round(delta, 2), 'metodo': base_metodo,
-                       # quantos dias entraram em cada media — a causa mais
-                       # comum de duas implementacoes darem numeros diferentes
-                       'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),
-                       'datas_ant': [det[0].get('primeiro'), det[0].get('ultimo')],
-                       'datas_rec': [det[1].get('primeiro'), det[1].get('ultimo')],
-                       'saturado': abs(dp) >= 50})
-
-    total = float(np.clip(np.mean(scores), -1, 1)) if scores else 0.0
-    if total > 0.20:
-        estado = {'label': 'BOA ADAPTACAO', 'cor': '#27ae60',
-                  'desc': 'O corpo responde positivamente a carga'}
-    elif total > -0.10:
-        estado = {'label': 'ESTAVEL', 'cor': '#f39c12',
-                  'desc': 'Sistema em equilibrio — sem adaptacao clara nem sobrecarga'}
-    else:
-        estado = {'label': 'SOBRECARGA', 'cor': '#e74c3c',
-                  'desc': 'O corpo nao esta a compensar a carga'}
-
-    return {'total': round(total, 4), 'n_dims': len(scores),
-            'estado': estado, 'dimensoes': linhas,
-            'periodo_anterior': list(p_ant), 'periodo_recente': list(p_rec),
-            'formula': 'score = sinal * clip(delta_pct / 50, -1, +1); '
-                       'total = media dos scores com dados',
-            'ref_tsb': round(ref_tsb, 2), 'ref_tsb_fonte': ref_tsb_fonte,
-            'scores': [round(s, 4) for s in scores],
-            'p_hat_disponivel': len(ph),
-            'wellness_disponivel': len(w)}
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# FMT 5x5 (Della Mattia 2019, §02) — tensor completo e mapa de atencao
-# ══════════════════════════════════════════════════════════════════════════
-
-def calcular_fmt(sessoes, wellness, serie_classica, janela=28, desde_hrv=None):
-    """Sequencia de tensores FMT 5x5 e mapa de atencao sobre 28 dias.
-
-    As cinco dimensoes sao as da Figura 1 do paper: Load, HRV, W', Sleep e
-    WEED. Dimensoes sem dados suficientes ficam de fora e o tensor encolhe —
-    e melhor do que enche-las com zeros, que criariam covariancias falsas.
-    """
-    import numpy as np
-    import fmt as _fmt
-
-    if not serie_classica:
-        return None
-
-    datas = [d['date'] for d in serie_classica]
-    n = len(datas)
-    dims = {'Load': np.array([d['load'] for d in serie_classica], dtype=np.float64)}
-
-    # so o wellness dentro da janela util entra no tensor
-    if desde_hrv:
-        wellness = [w for w in (wellness or []) if w['date'] >= desde_hrv]
-    idx = {w['date']: w for w in (wellness or [])}
-
-    def do_wellness(campo):
-        v = np.array([(idx.get(d) or {}).get(campo) if idx.get(d) else None
-                      for d in datas], dtype=object)
-        return np.array([x if isinstance(x, (int, float)) else np.nan
-                         for x in v], dtype=np.float64)
-
-    hrv = do_wellness('hrv')
-    if np.isfinite(hrv).sum() >= janela + 10:
-        with np.errstate(all='ignore'):
-            dims['HRV'] = np.where(hrv > 0, np.log(hrv), np.nan)
-
-    wp = _serie_por_dia(sessoes, datas, 'w_prime', 'mean')
-    if np.isfinite(wp).sum() >= janela + 10:
-        dims["W'"] = wp
-
-    sono = do_wellness('sleep_quality')
-    if np.isfinite(sono).sum() >= janela + 10:
-        dims['Sleep'] = sono
-
-    partes = []
-    for campo in ('stress', 'soreness', 'fatiga'):
-        v = do_wellness(campo)
-        if np.isfinite(v).sum() >= janela + 10:
-            partes.append(_zscore_rolling_28(v, datas))
-    if partes:
-        arr = np.array(partes)
-        validos = np.isfinite(arr).any(axis=0)
-        weed = np.full(arr.shape[1], np.nan)
-        if validos.any():
-            with np.errstate(all='ignore'):
-                weed[validos] = np.nanmean(arr[:, validos], axis=0)
-        if np.isfinite(weed).sum() >= janela + 10:
-            dims['WEED'] = weed
-
-    if len(dims) < 2:
-        return {'erro': 'sao precisas pelo menos 2 dimensoes com dados',
-                'dimensoes': list(dims)}
-
-    # Interpolar SO buracos curtos. Um dia sem resposta ao formulario nao deve
-    # apagar a janela de 28 dias; mas np.interp sobre a serie toda preenche
-    # tambem lacunas de anos, e extrapola plano antes do primeiro valor.
-    # Se o HRV so comeca em 2024, isso transformava 2021-2023 numa constante
-    # inventada — 56% da serie — e a calibracao corria sobre dados falsos.
-    MAX_LACUNA = 7
-    cobertura = {}
-    for k, v in dims.items():
-        m = np.isfinite(v)
-        cobertura[k] = {
-            'dias_reais': int(m.sum()),
-            'primeiro': datas[int(np.argmax(m))] if m.any() else None,
-            'ultimo': datas[n - 1 - int(np.argmax(m[::-1]))] if m.any() else None,
-        }
-        if m.sum() < 2 or not (~m).any():
-            continue
-        idx = np.flatnonzero(m)
-        preenchido = v.copy()
-        for a, b in zip(idx[:-1], idx[1:]):
-            if 1 < b - a <= MAX_LACUNA + 1:
-                preenchido[a + 1:b] = np.interp(np.arange(a + 1, b), [a, b],
-                                                [v[a], v[b]])
-        dims[k] = preenchido
-        cobertura[k]['apos_interpolacao'] = int(np.isfinite(preenchido).sum())
-
-    # Janela util: onde TODAS as dimensoes tem dados. E aqui que o tensor
-    # e a calibracao podem correr sem inventar nada.
-    todas = np.ones(n, dtype=bool)
-    for v in dims.values():
-        todas &= np.isfinite(v)
-    if todas.sum() < janela + 30:
-        return {'erro': 'sem periodo em que todas as dimensoes tenham dados',
-                'dimensoes': list(dims), 'cobertura': cobertura,
-                'dias_com_todas': int(todas.sum())}
-    ini_util = int(np.argmax(todas))
-    fim_util = n - 1 - int(np.argmax(todas[::-1]))
-
-    tensores, kappa, eig, nomes = _fmt.construir(dims, janela)
-    if tensores is None:
-        return None
-
-    # ── calibracao nos dados deste atleta ────────────────────────────────
-    import calibracao as _cal
-    cp_serie = _serie_por_dia(sessoes, datas, 'cp', 'mean')
-    # Calibrar contra o LnRMSSD directamente, nao contra a tendencia: a
-    # tendencia e ja uma transformacao (nivel + declive em z-score) e destroi
-    # a relacao directa entre carga acumulada e nivel de HRV. Testado: com
-    # tau real de 14 dias, calibrar pela tendencia recupera 3; pelo LnRMSSD
-    # recupera 14.
-    hrv_para_calibrar = dims.get('HRV')
-    if hrv_para_calibrar is not None and np.isfinite(hrv_para_calibrar).sum() < 30:
-        hrv_para_calibrar = None
-    l1_hist = []
-    for linha in eig:
-        v = linha[np.isfinite(linha)]
-        v = v[v > 0]
-        l1_hist.append(float(v[0] / v.sum()) if len(v) >= 2 else None)
-
-    # A calibracao corre so no periodo em que os dados existem mesmo.
-    sl = slice(ini_util, fim_util + 1)
-    cal = _cal.calibrar_tudo(
-        carga=dims['Load'][sl],
-        hrv_trend=(hrv_para_calibrar[sl] if hrv_para_calibrar is not None
-                   else None),
-        cp=(cp_serie[sl] if np.isfinite(cp_serie[sl]).sum() >= 30 else None),
-        kappa=kappa[sl],
-        lambda1=l1_hist[ini_util:fim_util + 1])
-    cal['periodo'] = {
-        'de': datas[ini_util], 'ate': datas[fim_util],
-        'dias': fim_util - ini_util + 1,
-        'nota': 'periodo em que todas as dimensoes tem dados; fora dele nao '
-                'se calibra para nao inventar valores',
-    }
-    cal['cobertura_por_dimensao'] = cobertura
-
-    # Um parametro so e usado se medir o que diz medir.
-    #
-    # O canal 1 e um decaimento de FADIGA: exige que mais carga acumulada
-    # ande com HRV mais baixo. Se a correlacao sai positiva, o que foi
-    # medido e causalidade invertida (treina-se mais quando o HRV esta bom)
-    # — usar esse tau como decaimento de fadiga seria pior do que usar o
-    # valor de referencia, porque parece individualizado e nao e.
-    import calibracao as _c
-    rejeitados = {}
-
-    def _usar(chave, defeito, exigir_negativo=False):
-        v = cal.get(chave) or {}
-        if v.get('fonte') != 'dados' or v.get('valor') is None:
-            return defeito
-        if exigir_negativo and (v.get('r') or 0) > 0:
-            rejeitados[chave] = {
-                'valor_encontrado': v.get('valor'), 'r': v.get('r'),
-                'motivo': 'correlacao positiva — mede causalidade invertida, '
-                          'nao decaimento de fadiga',
-                'usado': defeito}
-            return defeito
-        pp = v.get('p_permutacao')
-        if pp is not None and pp >= 0.05:
-            nu = v.get('distribuicao_nula') or {}
-            rejeitados[chave] = {
-                'valor_encontrado': v.get('valor'), 'p_permutacao': pp,
-                'motivo': f'p corrigido por permutacao = {pp}: o |r| obtido '
-                          f'esta dentro do acaso (mediana nula '
-                          f"{nu.get('nulo_mediana')})",
-                'usado': defeito}
-            return defeito
-        if (v.get('r2') or 0) < 0.02:
-            rejeitados[chave] = {
-                'valor_encontrado': v.get('valor'), 'r2': v.get('r2'),
-                'motivo': f"explica so {(v.get('r2') or 0)*100:.1f}% da "
-                          'variacao — abaixo do minimo utilizavel',
-                'usado': defeito}
-            return defeito
-        return v['valor']
-
-    params = {
-        'tau_carga': _usar('canal1_tau', _c.REFERENCIA['tau_carga'], True),
-        'lag_hrv': _usar('canal2_lag', _c.REFERENCIA['lag_hrv'], True),
-        'lag_super': _usar('canal3_lag', _c.REFERENCIA['lag_super']),
-        'largura_super': (cal['canal3_lag'].get('largura', 3.5)
-                          if cal.get('canal3_lag', {}).get('fonte') == 'dados'
-                          else _c.REFERENCIA['largura_super']),
-        'tau_risco': max(2.0, float(_usar('canal4_lag',
-                                          _c.REFERENCIA['tau_risco']) or 8)),
-    }
-    cal['parametros_rejeitados'] = rejeitados
-
-    ultimo = None
-    for t in range(n - 1, -1, -1):
-        if np.isfinite(kappa[t]):
-            ultimo = t
-            break
-    if ultimo is None:
-        return {'erro': 'sem janelas completas de 28 dias',
-                'dimensoes': nomes}
-
-    fonte_por_canal = {'load': 'canal1_tau', 'hrv': 'canal2_lag',
-                       'super': 'canal3_lag', 'risco': 'canal4_lag'}
-    canais = {}
-    for c in _fmt.CANAIS:
-        a = _fmt.atencao(tensores, kappa, eig, nomes, ultimo, c, janela, params)
-        if a:
-            info = cal.get(fonte_por_canal.get(c, ''), {})
-            canais[c] = {**a, 'datas': [datas[i] for i in a['idx']],
-                         **_fmt.CANAIS[c],
-                         'calibracao': {k: info.get(k) for k in
-                                        ('fonte', 'valor', 'r', 'p', 'n',
-                                         'motivo', 'janela')}
-                         if info else None}
-
-    return {
-        'dimensoes': nomes,
-        'janela': janela,
-        'dia': datas[ultimo],
-        'dia_idx': ultimo,
-        'resumo': _fmt.resumo_dia(tensores, kappa, eig, nomes, ultimo,
-                                  cal.get('limiares_lambda1')),
-        'calibracao': cal,
-        'params_usados': params,
-        'canais': canais,
-        'serie': [{'date': datas[i],
-                   'kappa': (round(float(kappa[i]), 4)
-                             if np.isfinite(kappa[i]) else None),
-                   'lambda1': (round(float(eig[i][0] / eig[i][eig[i] > 0].sum()), 4)
-                               if np.isfinite(eig[i]).all() and (eig[i] > 0).any()
-                               else None)}
-                  for i in range(n)],
-        'nota_atencao': ('Os canais do paper emergem de um Transformer treinado '
-                         'em 30 atletas. Aqui sao kernels explicitos cujos '
-                         'parametros sao estimados por correlacao cruzada nas '
-                         'tuas series — ve a coluna "fonte" de cada canal. '
-                         'Onde diz "referencia", o valor vem do paper e '
-                         'descreve outros atletas, nao ti.'),
-    }
-
-
-def _janela_hrv(datas, wellness, desde=None):
-    """Primeiro e ultimo dia com HRV real, respeitando um limite opcional.
-
-    As analises que dependem de HRV so devem correr onde ha HRV. Sem isto,
-    anos inteiros sem medicoes entram como se tivessem dados.
-    """
-    idx = {w['date']: w for w in (wellness or [])}
-    com = [d for d in datas
-           if isinstance((idx.get(d) or {}).get('hrv'), (int, float))
-           and (not desde or d >= desde)]
-    if not com:
-        return None, None, 0
-    return com[0], com[-1], len(com)
-
-
-def teste_eventos(sessoes, wellness, serie_classica, modalidades, desde=None):
-    """Teste por eventos: HRV depois de dias duros vs dias leves.
-
-    Corre no agregado e por modalidade. E mais sensivel que a correlacao —
-    se nem aqui houver efeito, a limitacao esta nos dados, nao no metodo.
-    """
-    import numpy as np
-    import calibracao as _cal
-
-    if not serie_classica or not wellness:
-        return None
-
-    datas_todas = [d['date'] for d in serie_classica]
-    de, ate, n_hrv = _janela_hrv(datas_todas, wellness, desde)
-    if not de or n_hrv < 100:
-        return {'erro': f'so {n_hrv} dias com HRV (precisa de 100)',
-                'desde_pedido': desde}
-
-    # cortar tudo para o periodo em que ha HRV
-    sel = [i for i, d in enumerate(datas_todas) if de <= d <= ate]
-    datas = [datas_todas[i] for i in sel]
-    idx_w = {w['date']: w for w in wellness}
-    hrv = np.array([(idx_w.get(d) or {}).get('hrv') or np.nan for d in datas],
-                   dtype=np.float64)
-    carga = np.array([serie_classica[i]['load'] for i in sel], dtype=np.float64)
-    out = {'periodo': {'de': de, 'ate': ate, 'dias': len(datas),
-                       'dias_com_hrv': int(np.isfinite(hrv).sum()),
-                       'nota': 'restrito ao periodo com HRV real'},
-           'agregado': _cal.teste_dias_duros(datas, carga, hrv),
-           'por_modalidade': {}}
-
-    for mod in modalidades:
-        ses = [s for s in sessoes if s.get('type') == mod and de <= s['date'] <= ate]
-        if len(ses) < 80:
-            out['por_modalidade'][mod] = {
-                'motivo': f'so {len(ses)} sessoes no periodo com HRV'}
-            continue
-        cm = np.nan_to_num(_serie_por_dia(ses, datas, 'tl', 'sum'))
-        out['por_modalidade'][mod] = _cal.teste_dias_duros(datas, cm, hrv)
-
-    efeitos = [('agregado', out['agregado'].get('maior_efeito'))]
-    for m, v in out['por_modalidade'].items():
-        efeitos.append((m, v.get('maior_efeito')))
-    validos = [(k, v) for k, v in efeitos if v is not None]
-    if validos:
-        k, v = max(validos, key=lambda x: abs(x[1]))
-        out['maior_efeito_global'] = {'onde': k, 'cohen_d': v}
-    return out
-
-
-def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
-                        minimo_testes=25):
-    """Calibra contra os dias de esforco maximo, nao contra a CP de todas as
-    sessoes.
-
-    A CP de uma sessao de Z2 tranquilo e baixa porque escolheste treinar
-    suave, nao porque estas pior — isso e ruido a afogar o sinal. Nos dias
-    de esforco maximo a CP mede capacidade, e o estimulo foi decidido pelo
-    esforco e nao pelo estado, o que reduz a causalidade invertida.
-    """
-    import numpy as np
-    import calibracao as _cal
-    import protocolo as _prot
-    import db
-
-    if not serie_classica:
-        return None
-
-    datas = [d['date'] for d in serie_classica]
-    idx = {d: i for i, d in enumerate(datas)}
-    n = len(datas)
-    carga_total = np.array([d['load'] for d in serie_classica], dtype=np.float64)
-
-    out = {'duracao': secs, 'por_modalidade': {}}
-    for mod in modalidades:
-        curvas = db.load_power_curves(mod)
-        if not curvas:
-            continue
-        det = _prot.detectar_testes(curvas)
-        ancora = _prot.serie_ancora(det, mod, secs)
-        if len(ancora) < minimo_testes:
-            out['por_modalidade'][mod] = {
-                'n_testes': len(ancora),
-                'motivo': f'so {len(ancora)} testes (precisa de {minimo_testes})'}
-            continue
-
-        alvo = np.full(n, np.nan)
-        for t in ancora:
-            i = idx.get(t['date'])
-            if i is not None:
-                alvo[i] = t['valor']
-
-        # carga da propria modalidade
-        r = _cal.calibrar_lag(carga_total, alvo, range(5, 29), None, 'lag_super')
-        primeiro = ancora[0]['date']
-        ultimo = ancora[-1]['date']
-        out['por_modalidade'][mod] = {
-            'n_testes': len(ancora),
-            'de': primeiro, 'ate': ultimo,
-            'lag': r.get('valor'), 'r': r.get('r'), 'r2': r.get('r2'),
-            'forca': r.get('forca'),
-            'p_permutacao': r.get('p_permutacao'),
-            'distribuicao_nula': r.get('distribuicao_nula'),
-            'sobrevive': (r.get('p_permutacao') is not None
-                          and r['p_permutacao'] < 0.05),
-        }
-
-    validos = [(m, v) for m, v in out['por_modalidade'].items()
-               if v.get('sobrevive')]
-    out['sobrevivem'] = [m for m, _ in validos]
-    if validos:
-        m, v = max(validos, key=lambda x: x[1].get('r2') or 0)
-        out['leitura'] = (
-            f"{m}: a CP nos dias de teste responde a carga {v['lag']} dias "
-            f"antes (r={v['r']}, {v['r2']*100:.0f}% da variacao, "
-            f"p permutacao {v['p_permutacao']}, {v['n_testes']} testes).")
-    else:
-        out['leitura'] = (
-            'Nenhuma modalidade sobrevive a correccao por permutacao, mesmo '
-            'usando so os dias de esforco maximo. Com esta ancora — que e a '
-            'melhor disponivel — continua sem haver relacao detectavel entre '
-            'carga e performance.')
-    return out
-
-
-def calibrar_segmentado(sessoes, wellness, serie_classica, modalidades,
-                        desde=None):
-    """Calibracao por modalidade e por ano, para ver onde o sinal existe.
-
-    No agregado de anos e desportos, relacoes reais diluem-se. Isto separa
-    para se poder comparar: se um segmento tiver r2 muito acima do agregado,
-    a relacao existe la e some ao juntar tudo.
-    """
-    import numpy as np
-    import calibracao as _cal
-
-    if not serie_classica:
-        return None
-
-    datas_todas = [d['date'] for d in serie_classica]
-    de, ate, n_hrv = _janela_hrv(datas_todas, wellness, desde)
-    if de:
-        sel = [i for i, d in enumerate(datas_todas) if de <= d <= ate]
-    else:
-        sel = list(range(len(datas_todas)))
-    datas = [datas_todas[i] for i in sel]
-    n = len(datas)
-    carga_total = np.array([serie_classica[i]['load'] for i in sel],
-                           dtype=np.float64)
-
-    idx_w = {w['date']: w for w in (wellness or [])}
-    hrv = np.array([(idx_w.get(d) or {}).get('hrv') or np.nan for d in datas],
-                   dtype=np.float64)
-    with np.errstate(all='ignore'):
-        hrv = np.where(hrv > 0, np.log(hrv), np.nan)
-    cp = _serie_por_dia(sessoes, datas, 'cp', 'mean')
-
-    out = {}
-
-    # ── por modalidade: carga so dessa modalidade, HRV e CP dessa modalidade ─
+    rows = _exec("SELECT type, raw FROM activities", fetch='all') or []
     por_mod = {}
-    for mod in modalidades:
-        ses = [s for s in sessoes if s.get('type') == mod]
-        if len(ses) < 60:
+    for tipo, raw in rows:
+        if raw is None:
             continue
-        carga_mod = np.nan_to_num(_serie_por_dia(ses, datas, 'tl', 'sum'))
-        cp_mod = _serie_por_dia(ses, datas, 'cp', 'mean')
-        # dias com actividade desta modalidade, mais os 30 dias seguintes
-        activo = carga_mod > 0
-        janela = activo.copy()
-        for k in range(1, 31):
-            janela[k:] |= activo[:-k]
-        seg = _cal.calibrar_por_segmento({mod: janela}, carga_mod, hrv, cp_mod)
-        por_mod[mod] = seg.get(mod)
-    out['por_modalidade'] = por_mod
-
-    # ── por ano civil ────────────────────────────────────────────────────
-    anos = {}
-    for d in datas:
-        anos.setdefault(d[:4], []).append(d)
-    segs = {}
-    for ano, ds in anos.items():
-        if len(ds) < 120:
+        try:
+            a = raw if isinstance(raw, dict) else json.loads(raw)
+        except Exception:
             continue
-        mask = np.array([d[:4] == ano for d in datas])
-        segs[ano] = mask
-    out['por_ano'] = (_cal.calibrar_por_segmento(segs, carga_total, hrv, cp)
-                      if segs else {})
-
-    # ── agregado, para comparar ──────────────────────────────────────────
-    tudo = np.ones(n, dtype=bool)
-    ag = _cal.calibrar_por_segmento({'agregado': tudo}, carga_total, hrv, cp)
-    out['agregado'] = ag.get('agregado')
-    # tambem restringimos os segmentos por ano ao periodo com HRV, ja feito
-    # acima ao cortar `datas`
-
-    base = (out['agregado'] or {}).get('melhor_r2') or 0.0
-    melhores = []
-    for grupo, dic in (('modalidade', por_mod), ('ano', out['por_ano'])):
-        for k, v in (dic or {}).items():
-            if k.startswith('_') or not isinstance(v, dict):
+        alvo = por_mod.setdefault(tipo, {'sessoes': 0, 'com_zonas': 0, 'conjuntos': {}})
+        alvo['sessoes'] += 1
+        cz = a.get('custom_zones')
+        if not isinstance(cz, list) or not cz:
+            continue
+        alvo['com_zonas'] += 1
+        for zs in cz:
+            if not isinstance(zs, dict):
                 continue
-            r2 = v.get('melhor_r2')
-            if r2 and r2 > max(base * 2, 0.02):
-                melhores.append({'grupo': grupo, 'nome': k, 'r2': r2,
-                                 'n_dias': v.get('n_dias')})
-    melhores.sort(key=lambda x: -x['r2'])
-    out['destaques'] = melhores[:5]
-    out['r2_agregado'] = round(base, 4)
-    out['periodo'] = {'de': de, 'ate': ate, 'dias': n,
-                      'dias_com_hrv': n_hrv,
-                      'nota': ('restrito ao periodo com HRV real'
-                               if de else 'sem HRV — so as series de carga/CP')}
-    out['leitura'] = (
-        f"Segmentos com sinal claramente acima do agregado ({base*100:.1f}%): "
-        + (', '.join(f"{m['nome']} ({m['r2']*100:.0f}%)" for m in melhores[:3])
-           if melhores else 'nenhum — a ausencia de sinal nao vem da mistura '
-                           'de fases ou modalidades'))
+            code = zs.get('code') or '?'
+            zonas = zs.get('zones') or []
+            c = alvo['conjuntos'].setdefault(code, {
+                'sessoes': 0, 'n_zonas': len(zonas),
+                'ids': [z.get('id') for z in zonas],
+                'exemplo': None, 'com_secs': 0})
+            c['sessoes'] += 1
+            if any(z.get('secs') for z in zonas):
+                c['com_secs'] += 1
+            if c['exemplo'] is None and zonas:
+                c['exemplo'] = [{
+                    'id': z.get('id'), 'start': z.get('start'), 'end': z.get('end'),
+                    'start_value': z.get('start_value'), 'end_value': z.get('end_value'),
+                    'secs': z.get('secs')} for z in zonas]
+
+    # o que falta: modalidade sem conjunto de HR ou sem conjunto de potencia
+    lacunas = []
+    for mod, v in por_mod.items():
+        if mod == 'WeightTraining':
+            continue
+        codes = list(v['conjuntos'])
+        tem_hr = any('hr' in c.lower() for c in codes)
+        tem_pw = any('power' in c.lower() or 'pace' in c.lower() for c in codes)
+        if not tem_hr:
+            lacunas.append(f"{mod}: sem zonas de HR")
+        if not tem_pw:
+            lacunas.append(f"{mod}: sem zonas de potencia/pace")
+
+    return {'enabled': True, 'por_modalidade': por_mod, 'lacunas': sorted(lacunas)}
+
+
+def recriar_power_curves():
+    """Apaga e recria a tabela de curvas.
+
+    CREATE TABLE IF NOT EXISTS nao altera uma tabela que ja exista, por isso
+    se o esquema mudou e preciso deitar abaixo. Nao se perde nada: as curvas
+    vem todas da API em 4 pedidos (/api/sync/curvas).
+    """
+    if not ENABLED:
+        return {'ok': False, 'erro': 'sem base de dados'}
+    antes = colunas_de('power_curves')
+    _exec("DROP TABLE IF EXISTS power_curves")
+    init_schema()
+    return {'ok': True, 'colunas_antes': antes,
+            'colunas_agora': colunas_de('power_curves'),
+            'nota': 'corre /api/sync/curvas para voltar a preencher'}
+
+
+def colunas_de(tabela):
+    """Colunas de uma tabela, para diagnostico."""
+    if not ENABLED:
+        return []
+    if DRIVER == 'postgres':
+        rows = _exec("""SELECT column_name, data_type
+                        FROM information_schema.columns
+                        WHERE table_name = ? ORDER BY ordinal_position""",
+                     (tabela,), fetch='all')
+    else:
+        rows = _exec(f"PRAGMA table_info({tabela})", fetch='all')
+        rows = [(r[1], r[2]) for r in (rows or [])]
+    return [{'nome': r[0], 'tipo': r[1]} for r in (rows or [])]
+
+
+def upsert_power_curves(rows):
+    """rows: lista de {activity_id, type, date, weight, secs, watts}."""
+    if not ENABLED or not rows:
+        return 0
+    now = _now()
+    params = [(r['activity_id'], r['type'], r['date'], r.get('weight'),
+               json.dumps(r['secs']), json.dumps(r['watts']), now) for r in rows]
+    _exec("""INSERT INTO power_curves
+             (activity_id, type, date, weight, secs, watts, updated_at)
+             VALUES (?,?,?,?,?,?,?)
+             ON CONFLICT (activity_id) DO UPDATE SET
+               type=EXCLUDED.type, date=EXCLUDED.date, weight=EXCLUDED.weight,
+               secs=EXCLUDED.secs, watts=EXCLUDED.watts,
+               updated_at=EXCLUDED.updated_at""", many=params)
+    return len(params)
+
+
+def load_power_curves(tipo=None, desde=None):
+    """Curvas ordenadas por data (a ordem importa para calcular progressao)."""
+    if not ENABLED:
+        return []
+    cond, params = [], []
+    if tipo:
+        cond.append("type = ?")
+        params.append(tipo)
+    if desde:
+        cond.append("date >= ?")
+        params.append(desde)
+    where = ("WHERE " + " AND ".join(cond)) if cond else ""
+    rows = _exec(f"""SELECT activity_id, type, date, weight, secs, watts
+                     FROM power_curves {where} ORDER BY date, activity_id""",
+                 tuple(params), fetch='all') or []
+    out, falhas = [], []
+    for aid, tp, dt, w, secs, watts in rows:
+        try:
+            out.append({'activity_id': aid, 'type': tp, 'date': str(dt)[:10],
+                        'weight': float(w) if w is not None else None,
+                        'secs': _lista(secs), 'watts': _lista(watts)})
+        except Exception as e:
+            falhas.append(f"{aid}: {type(e).__name__}: {e}")
+    if falhas:
+        # nao engolir em silencio: sem isto a pagina fica a zero sem explicacao
+        print(f"load_power_curves: {len(falhas)} linhas ilegiveis, ex: {falhas[:3]}")
     return out
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# FIABILIDADE DO CP — adaptado da tab eFTP do dashboard Streamlit
-# (susigan/dashboard, tabs/tab_eftp.py), com duas mudanças deliberadas:
-#
-# 1. Usa o CP da curva ajustada (db.cp_por_sessao, r2>=0.80), que já é a
-#    fonte mais rigorosa deste projecto — não o icu_eftp da Intervals.icu.
-# 2. Os limiares de kappa NÃO são hardcoded (o Streamlit usa p75=5.954,
-#    p87=7.182, valores calibrados para OUTRO atleta) — aqui são
-#    percentis móveis do histórico do PRÓPRIO atleta, a mesma filosofia
-#    já usada em detect_phases() para os limiares de fase.
-# ══════════════════════════════════════════════════════════════════════════
-
-def _sem_mdc_cp(pares_data_valor, janela_dias=14, min_n=10):
-    """SEM (erro-padrão de medição) e MDC (mínima diferença detectável)
-    do CP, a partir da variação real dia-a-dia em janelas curtas.
-
-    Método: std das diferenças entre medições consecutivas em ≤14 dias,
-    dividido por √2 (as diferenças combinam duas medições). MDC 95% =
-    1.96×√2×SEM. Isto NÃO é uma suposição — é o ruído medido do próprio
-    estimador de CP, não um número da literatura.
-    """
-    import numpy as np
-    pares = sorted([(d, v) for d, v in pares_data_valor if v is not None])
-    if len(pares) < min_n:
-        return None
-    difs = []
-    for i in range(1, len(pares)):
-        d0, v0 = pares[i - 1]
-        d1, v1 = pares[i]
-        gap = (datetime.strptime(d1, '%Y-%m-%d')
-               - datetime.strptime(d0, '%Y-%m-%d')).days
-        if 0 < gap <= janela_dias:
-            difs.append(v1 - v0)
-    if len(difs) < min_n:
-        return None
-    sem = float(np.std(difs, ddof=1) / np.sqrt(2))
-    mdc = round(1.96 * np.sqrt(2) * sem, 1)
-    media = float(np.median([v for _, v in pares]))
-    mdc_pct = round(mdc / media * 100, 1) if media > 0 else None
-    return {'sem': round(sem, 2), 'mdc': mdc, 'mdc_pct': mdc_pct,
-            'n': len(difs), 'n_medicoes': len(pares)}
+def _lista(v):
+    """secs/watts podem vir como lista (JSONB), string JSON (TEXT) ou memoryview."""
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return v
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        v = bytes(v).decode()
+    if isinstance(v, str):
+        return json.loads(v)
+    return list(v)
 
 
-def cp_fiabilidade(sessoes, modalidades):
-    """SEM/MDC do CP por modalidade — quanto do que parece progresso é
-    ruído do próprio método de medição."""
-    out = {}
-    for mod in modalidades:
-        pares = [(s['date'], s.get('cp')) for s in sessoes
-                 if s.get('type') == mod and s.get('cp')]
-        r = _sem_mdc_cp(pares)
-        if r:
-            out[mod] = r
-    return out
-
-
-def _diagnostico_cp(ctl_medio, kappa_medio, kappa_hist, ctl_dose_min=45):
-    """Diagnóstico diferencial de porque um bloco não é REAL — mesmo
-    framework do dashboard Streamlit, três causas com fonte:
-
-    1. Dose insuficiente (Montero & Lundby 2017)
-    2. Stress silencioso — kappa do FMT Tensor (Della Mattia 2019)
-    3. Meseta homeostática, se nenhuma das anteriores (Issurin 2010)
-
-    kappa_hist: lista de kappa diários do atleta, para calcular os
-    percentis MÓVEIS — não valores fixos doutro atleta.
-    """
-    import numpy as np
-    causas = []
-    if ctl_medio is not None and ctl_medio < ctl_dose_min:
-        causas.append({
-            'causa': (f'Dose insuficiente (CTL médio={ctl_medio:.0f}, '
-                     f'mínimo sugerido={ctl_dose_min})'),
-            'prescricao': ('Aumentar frequência/volume de sessões antes '
-                          'de mudar qualidade'),
-            'fonte': 'Montero & Lundby 2017'})
-
-    if kappa_medio is not None and kappa_hist:
-        vals = [k for k in kappa_hist if k is not None]
-        if len(vals) >= 30:
-            p75 = float(np.percentile(vals, 75))
-            p87 = float(np.percentile(vals, 87))
-            if kappa_medio > p75:
-                nivel = ('crítico (acima do teu p87)' if kappa_medio > p87
-                         else 'elevado (acima do teu p75)')
-                causas.append({
-                    'causa': (f'Stress silencioso (κ={kappa_medio:.3f}, '
-                             f'{nivel})'),
-                    'prescricao': ('Sistema em modo defensivo — reduzir '
-                                  'κ antes de aumentar o estímulo'),
-                    'fonte': 'Della Mattia 2019 (FMT Tensor)'})
-
-    if not causas:
-        causas.append({
-            'causa': 'Possível meseta homeostática — estímulo familiar',
-            'prescricao': ('Mudar a natureza do estímulo: novo tipo de '
-                          'sessão ou intensidade-alvo'),
-            'fonte': 'Issurin 2010'})
-    return causas
-
-
-def cp_blocos(sessoes, modalidades, serie_classica, fmt_serie=None,
-              janela_semanas=8):
-    """Classifica blocos rolantes de N semanas de CP como REAL / INCERTO
-    / RUÍDO, e junta o diagnóstico diferencial quando não é REAL.
-
-    Cada bloco compara o CP no fim da janela contra o CP no início — se
-    a diferença for >= MDC, é REAL; >= metade do MDC, é INCERTO; senão,
-    é RUÍDO, estatisticamente indistinguível de zero.
-    """
-    from datetime import timedelta
-    import numpy as np
-
-    fiab = cp_fiabilidade(sessoes, modalidades)
-    ctl_por_data = {d['date']: d.get('ctl') for d in (serie_classica or [])}
-    kappa_por_data = {d['date']: d.get('kappa') for d in (fmt_serie or [])}
-    kappa_hist = list(kappa_por_data.values())
-
-    out = {}
-    for mod in modalidades:
-        r = fiab.get(mod)
-        if not r:
-            continue
-        mdc = r['mdc']
-        pares = sorted([(s['date'], s['cp']) for s in sessoes
-                        if s.get('type') == mod and s.get('cp')])
-        if len(pares) < 10:
-            continue
-
-        # agregação semanal: último valor de cada semana ISO
-        semanal = {}
-        for d, v in pares:
-            dt = datetime.strptime(d, '%Y-%m-%d')
-            semana = (dt - timedelta(days=dt.weekday())).strftime('%Y-%m-%d')
-            semanal[semana] = v
-        semanas = sorted(semanal.keys())
-        if len(semanas) <= janela_semanas:
-            continue
-
-        blocos = []
-        for i in range(janela_semanas, len(semanas)):
-            s_ini, s_fim = semanas[i - janela_semanas], semanas[i]
-            cp_ini, cp_fim = semanal[s_ini], semanal[s_fim]
-            delta = cp_fim - cp_ini
-            ad = abs(delta)
-            classif = ('REAL' if ad >= mdc else
-                      'INCERTO' if ad >= mdc * 0.5 else 'RUÍDO')
-
-            ctl_vals = [v for d, v in ctl_por_data.items()
-                       if s_ini <= d <= s_fim and v is not None]
-            ctl_medio = float(np.mean(ctl_vals)) if ctl_vals else None
-            kappa_vals = [v for d, v in kappa_por_data.items()
-                         if s_ini <= d <= s_fim and v is not None]
-            kappa_medio = float(np.mean(kappa_vals)) if kappa_vals else None
-
-            bloco = {
-                'periodo_fim': s_fim, 'cp_fim': round(cp_fim, 1),
-                'delta': round(delta, 1), 'classificacao': classif,
-                'ctl_medio': round(ctl_medio, 1) if ctl_medio else None,
-                'kappa_medio': round(kappa_medio, 3) if kappa_medio else None,
-            }
-            if classif != 'REAL' or delta < 0:
-                bloco['diagnostico'] = _diagnostico_cp(
-                    ctl_medio, kappa_medio, kappa_hist)
-            blocos.append(bloco)
-
-        out[mod] = {'mdc': mdc, 'sem': r['sem'], 'mdc_pct': r['mdc_pct'],
-                    'n_medicoes': r['n_medicoes'], 'blocos': blocos[-10:]}
-    return out
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# PROJECÇÃO 28 DIAS — adaptado do Modelo 1 da tab eFTP (Della Mattia 2025,
-# FTLM Part II): β = OLS(Δln(CP) ~ CTLγ_norm). Reaproveita o ctlg_perf já
-# calculado por calcular_ftlm — não recalcula CTLγ do zero.
-# ══════════════════════════════════════════════════════════════════════════
-
-def cp_projecao_28d(sessoes, ftlm_res, modalidades, dias_proj=28):
-    """Projecção do CP a 28 dias, por regressão Δln(CP) ~ CTLγ_norm.
-
-    x = CTLγ_norm = CTLγ/mediana(CTLγ) − 1 [adimensional, centrado em 0]
-    y = Δln(CP) = ln(CP / CP_ref_90d) [CP_ref = mediana dos 90 dias
-        anteriores a essa medição — sem olhar para o futuro]
-    β = OLS(y ~ x)
-
-    Projecção: CTLγ evolui linearmente ao ritmo do declive dos últimos
-    14 dias. Cap implícito no IC 90%: nunca mais de 25% do CP actual.
-    """
-    import numpy as np
-
-    if not ftlm_res or not ftlm_res.get('por_modalidade'):
+def _nomes_actividades(ids):
+    if not ids or not ENABLED:
         return {}
-    por_mod_ftlm = ftlm_res['por_modalidade']
-    out = {}
+    marcas = ','.join(['?'] * len(ids))
+    rows = _exec(f"SELECT id, name, type FROM activities WHERE id IN ({marcas})",
+                 tuple(ids), fetch='all') or []
+    return {r[0]: {'name': r[1], 'type': r[2]} for r in rows}
 
-    for mod in modalidades:
-        info = por_mod_ftlm.get(mod)
-        if not info:
-            continue
-        serie_mod = info.get('serie') or []
-        if len(serie_mod) < 40:
-            continue
-        ctlg_por_data = {r['date']: r['ctlg'] for r in serie_mod}
 
-        pares_cp = sorted([(s['date'], s['cp']) for s in sessoes
-                           if s.get('type') == mod and s.get('cp')])
-        if len(pares_cp) < 10:
-            continue
+def curvas_por_periodo(tipo=None, marcos=None, por='season'):
+    """Melhor curva de cada periodo — season (do calendario) ou ano civil.
 
-        # CP_ref: mediana dos 90 dias ANTERIORES a cada medição — nunca
-        # olha para a frente, senão o beta "adivinharia" o futuro
-        obs = []
-        for i, (d, cp) in enumerate(pares_cp):
-            dt = datetime.strptime(d, '%Y-%m-%d')
-            janela = [v for dd, v in pares_cp[:i]
-                     if (dt - datetime.strptime(dd, '%Y-%m-%d')).days <= 90]
-            if len(janela) < 5:
+    por='ano'    -> agrupa por ano civil, sempre
+    por='season' -> usa os SEASON_START; sem eles cai no ano civil
+    """
+    from config import season_de, season_por_mes
+
+    curvas = load_power_curves(tipo)
+    if not curvas:
+        return {'periodos': [], 'por_periodo': {}, 'duracoes': []}
+
+    def etiqueta(d):
+        if por == 'ano':
+            return str(d)[:4]
+        return season_de(d, marcos)
+
+    grupos, duracoes = {}, set()
+    for c in curvas:
+        s = etiqueta(c['date'])
+        if not s:
+            continue
+        alvo = grupos.setdefault(s, {'melhores': {}, 'n_sessoes': 0,
+                                     'de': c['date'], 'ate': c['date']})
+        alvo['n_sessoes'] += 1
+        alvo['de'] = min(alvo['de'], c['date'])
+        alvo['ate'] = max(alvo['ate'], c['date'])
+        for secs, w in zip(c['secs'], c['watts']):
+            if not isinstance(w, (int, float)) or w <= 0:
                 continue
-            cp_ref = float(np.median(janela))
-            ctlg = ctlg_por_data.get(d)
-            if ctlg is None or cp_ref <= 0:
+            duracoes.add(secs)
+            m = alvo['melhores'].get(secs)
+            if m is None or w > m['watts']:
+                alvo['melhores'][secs] = {'watts': w, 'date': c['date'],
+                                          'activity_id': c['activity_id']}
+
+    ids = {m['activity_id'] for v in grupos.values() for m in v['melhores'].values()}
+    nomes = _nomes_actividades(list(ids))
+    for v in grupos.values():
+        for m in v['melhores'].values():
+            m['name'] = (nomes.get(m['activity_id']) or {}).get('name')
+
+    ordem = sorted(grupos, key=lambda s: grupos[s]['de'], reverse=True)
+    return {'periodos': ordem, 'por_periodo': grupos,
+            'duracoes': sorted(duracoes)}
+
+
+def curvas_por_season(tipo=None, marcos=None):
+    """Melhor curva de cada season.
+
+    Para cada season e cada duracao, o melhor watt de todas as sessoes dessa
+    season — e a sessao onde aconteceu. E o que permite sobrepor a epoca
+    actual com as anteriores.
+    """
+    from config import season_de
+
+    curvas = load_power_curves(tipo)
+    if not curvas:
+        return {'seasons': [], 'por_season': {}, 'duracoes': []}
+
+    por_season, duracoes = {}, set()
+    for c in curvas:
+        s = season_de(c['date'], marcos)
+        if not s:
+            continue
+        alvo = por_season.setdefault(s, {'melhores': {}, 'n_sessoes': 0,
+                                         'de': c['date'], 'ate': c['date']})
+        alvo['n_sessoes'] += 1
+        alvo['de'] = min(alvo['de'], c['date'])
+        alvo['ate'] = max(alvo['ate'], c['date'])
+        for secs, w in zip(c['secs'], c['watts']):
+            if not isinstance(w, (int, float)) or w <= 0:
                 continue
-            obs.append((d, cp, cp_ref, ctlg))
-        if len(obs) < 8:
+            duracoes.add(secs)
+            m = alvo['melhores'].get(secs)
+            if m is None or w > m['watts']:
+                alvo['melhores'][secs] = {'watts': w, 'date': c['date'],
+                                          'activity_id': c['activity_id']}
+
+    ids = {m['activity_id'] for v in por_season.values()
+           for m in v['melhores'].values()}
+    nomes = _nomes_actividades(list(ids))
+    for v in por_season.values():
+        for m in v['melhores'].values():
+            m['name'] = (nomes.get(m['activity_id']) or {}).get('name')
+
+    # ordenar pela data de inicio de cada season, nao pelo nome
+    ordem = sorted(por_season, key=lambda s: por_season[s]['de'], reverse=True)
+    return {'seasons': ordem, 'por_season': por_season,
+            'duracoes': sorted(duracoes)}
+
+
+def cp_por_sessao(tipo=None, secs_min=120, secs_max=1200, minimo_pontos=4):
+    """CP e W' por sessao, ajustados a curva de potencia ja guardada.
+
+    Modelo de dois parametros (Monod & Scherrer):
+        P(t) = W'/t + CP
+    Regressao linear de P contra 1/t: a ordenada na origem e o CP, o declive
+    e o W'. Usamos 2 a 20 min — abaixo disso o esforco e demasiado anaerobio
+    para o modelo, acima ha deriva e o CP sai subestimado.
+
+    Melhor proxy que o icu_pm_cp por sessao: aquele usa so a curva daquela
+    actividade e, num dia sem esforcos maximos, subestima muito.
+    """
+    if not ENABLED:
+        return []
+    curvas = load_power_curves(tipo)
+    out = []
+    for c in curvas:
+        pts = [(s, w) for s, w in zip(c['secs'], c['watts'])
+               if isinstance(w, (int, float)) and w > 0
+               and secs_min <= s <= secs_max]
+        if len(pts) < minimo_pontos:
             continue
-
-        ctlg_vals = np.array([o[3] for o in obs])
-        ctlg_med = float(np.median(ctlg_vals))
-        if ctlg_med < 0.01:
+        n = len(pts)
+        xs = [1.0 / s for s, _ in pts]
+        ys = [float(w) for _, w in pts]
+        mx = sum(xs) / n
+        my = sum(ys) / n
+        den = sum((x - mx) ** 2 for x in xs)
+        if den < 1e-12:
             continue
-        x = ctlg_vals / ctlg_med - 1.0
-        ratio = np.clip(np.array([o[1] / o[2] for o in obs]), 0.5, 2.0)
-        y = np.log(ratio)
-
-        n = len(x)
-        xm, ym = x.mean(), y.mean()
-        sxx = float(((x - xm) ** 2).sum())
-        if sxx < 1e-9:
-            continue
-        beta = float(((x - xm) * (y - ym)).sum() / sxx)
-        alpha = ym - beta * xm
-        pred = alpha + beta * x
-        ss_res = float(((y - pred) ** 2).sum())
-        ss_tot = float(((y - ym) ** 2).sum())
-        r2 = max(0.0, 1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
-        sigma_ln = float(np.std(y - pred, ddof=2)) if n > 2 else 0.1
-
-        ultimos14 = ctlg_vals[-14:] if len(ctlg_vals) >= 14 else ctlg_vals
-        if len(ultimos14) >= 5:
-            slope = float(np.polyfit(np.arange(len(ultimos14)),
-                                     ultimos14, 1)[0])
-        else:
-            slope = 0.0
-
-        ctlg_now = ctlg_vals[-1]
-        cp_now = obs[-1][1]
-        ctlg_28 = ctlg_now + slope * dias_proj
-        x28 = ctlg_28 / ctlg_med - 1.0
-        cp_28 = float(cp_now * np.exp(beta * (x28 - x[-1])))
-
-        z90 = 1.645
-        ic = float(min(cp_now * (np.exp(sigma_ln * z90) - 1.0),
-                       cp_now * 0.25))
-
-        out[mod] = {
-            'beta': round(beta, 4), 'r2': round(r2, 4), 'n': n,
-            'cp_actual': round(cp_now, 1),
-            'cp_proj_28d': round(cp_28, 1),
-            'delta_w': round(cp_28 - cp_now, 1),
-            'delta_pct': (round((cp_28 - cp_now) / cp_now * 100, 1)
-                         if cp_now else None),
-            'ic90_w': round(ic, 1),
-            'ctlg_slope_14d': round(slope, 4),
-            'fiavel': r2 >= 0.20,
-            'leitura': (('modelo com poder preditivo razoável' if r2 >= 0.20
-                        else 'direcção indicativa, magnitude incerta' if r2 >= 0.08
-                        else 'CTLγ não explica a variação do CP neste período')),
-        }
+        w_prime = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den
+        cp = my - w_prime * mx
+        if cp <= 0 or w_prime <= 0:
+            continue                    # ajuste sem sentido fisico
+        ss_tot = sum((y - my) ** 2 for y in ys)
+        prev = [cp + w_prime * x for x in xs]
+        ss_res = sum((y - p) ** 2 for y, p in zip(ys, prev))
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        out.append({'activity_id': c['activity_id'], 'date': c['date'],
+                    'type': c['type'], 'cp': round(cp, 1),
+                    'w_prime': round(w_prime, 0), 'r2': round(r2, 4),
+                    'n_pontos': n})
+    out.sort(key=lambda r: r['date'])
     return out
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# MODELO 2 — FTLM POLAR: CTLγ decomposto por zona de intensidade
-# Extensão do FTLM Part II (Della Mattia 2025), adaptada da tab eFTP do
-# dashboard Streamlit (susigan/dashboard) — mesma lógica, mas usa dados
-# que JÁ existem neste projecto (db.tempo_por_zona), em vez de colunas
-# z1_kj/z2_kj/z3_kj que teriam de vir doutro sítio.
-#
-# A tabela zone_times já guarda segundos por zona E os limites em watts
-# (start_value/end_value) de cada zona — o kJ é aproximado por
-# segundos × watts_representativo_da_zona, não medido directamente
-# (a Intervals.icu não dá kJ por zona, só tempo).
-# ══════════════════════════════════════════════════════════════════════════
+def calcular_recordes(tipo=None, desde=None, ate=None):
+    """Recordes por duracao dentro de uma janela.
 
-def kj_por_zona(tipo, kind='power'):
-    """kJ aproximado por zona (Z1/baixo, Z2/moderado, Z3/alto), por
-    sessão, a partir do tempo por zona já guardado em zone_times.
-
-    Colapsa o número de zonas do atleta (5, 6, 7...) em três grupos
-    proporcionais pelo índice — generaliza a qualquer esquema, em vez de
-    assumir sempre 3 ou sempre 7 zonas.
+    Sem 'desde', devolve o melhor de sempre — util para saber do que ja foste
+    capaz, mas enganador como retrato da forma actual: um esforco de 2022 fica
+    a marcar o recorde para sempre. Por isso a janela existe: com desde/ate
+    vemos o melhor DESSE periodo, e comparamos com o de sempre.
     """
-    import db
+    curvas = load_power_curves(tipo, desde)
+    if ate:
+        curvas = [c for c in curvas if c['date'] < ate]
+    if not curvas:
+        return {'duracoes': [], 'progressao': {}, 'melhores': {}, 'n_sessoes': 0}
 
-    linhas = db.tempo_por_zona(tipo, kind=kind)
-    if not linhas:
+    melhores = {}      # secs -> {watts, date, activity_id, anterior_*}
+    progressao = {}    # secs -> [{date, watts, activity_id, delta}]
+    prs_por_act = {}   # activity_id -> [secs...]
+
+    for c in curvas:
+        for s, w in zip(c['secs'], c['watts']):
+            if not isinstance(w, (int, float)) or w <= 0:
+                continue
+            m = melhores.get(s)
+            if m is None or w > m['watts']:
+                anterior = dict(m) if m else None
+                melhores[s] = {
+                    'watts': w, 'date': c['date'], 'activity_id': c['activity_id'],
+                    'anterior_watts': anterior['watts'] if anterior else None,
+                    'anterior_date': anterior['date'] if anterior else None,
+                    'anterior_activity_id': anterior['activity_id'] if anterior else None,
+                }
+                progressao.setdefault(s, []).append({
+                    'date': c['date'], 'watts': w, 'activity_id': c['activity_id'],
+                    'delta': round(w - anterior['watts'], 1) if anterior else None,
+                })
+                prs_por_act.setdefault(c['activity_id'], []).append(s)
+
+    ids = {v['activity_id'] for v in melhores.values()}
+    nomes = _nomes_actividades(list(ids))
+    for v in melhores.values():
+        v['name'] = (nomes.get(v['activity_id']) or {}).get('name')
+
+    out = {
+        'duracoes': sorted(melhores),
+        'melhores': melhores,
+        'progressao': progressao,
+        'prs_por_actividade': prs_por_act,
+        'n_sessoes': len(curvas),
+        'periodo': {'de': curvas[0]['date'], 'ate': curvas[-1]['date']},
+        'janela': {'desde': desde, 'ate': ate},
+    }
+
+    # Referencia de sempre, para o periodo poder ser lido em contexto:
+    # 260 W aos 20min so diz alguma coisa se souberes que o teu melhor e 285.
+    if desde or ate:
+        todas = load_power_curves(tipo)
+        sempre = {}
+        for c in todas:
+            for s, w in zip(c['secs'], c['watts']):
+                if not isinstance(w, (int, float)) or w <= 0:
+                    continue
+                m = sempre.get(s)
+                if m is None or w > m['watts']:
+                    sempre[s] = {'watts': w, 'date': c['date'],
+                                 'activity_id': c['activity_id']}
+        nomes_s = _nomes_actividades([v['activity_id'] for v in sempre.values()])
+        for v in sempre.values():
+            v['name'] = (nomes_s.get(v['activity_id']) or {}).get('name')
+        out['sempre'] = sempre
+        out['n_sessoes_sempre'] = len(todas)
+    else:
+        out['sempre'] = melhores
+        out['n_sessoes_sempre'] = len(curvas)
+
+    return out
+
+
+def prs_da_actividade(activity_id):
+    """Que duracoes esta sessao bateu, comparando so com as ANTERIORES.
+
+    Um PR so conta contra o que ja tinha acontecido nessa data — comparar com
+    o historico completo diria que quase nada foi recorde.
+    """
+    if not ENABLED:
+        return None
+    row = _exec("""SELECT type, date, secs, watts FROM power_curves
+                   WHERE activity_id = ?""", (activity_id,), fetch='one')
+    if not row:
+        return None
+    tipo, data, secs, watts = row
+    secs = secs if isinstance(secs, list) else json.loads(secs)
+    watts = watts if isinstance(watts, list) else json.loads(watts)
+    data = str(data)[:10]
+
+    anteriores = load_power_curves(tipo)
+    melhor_antes = {}
+    for c in anteriores:
+        if c['date'] >= data and c['activity_id'] != activity_id:
+            continue
+        if c['activity_id'] == activity_id:
+            continue
+        for s, w in zip(c['secs'], c['watts']):
+            if isinstance(w, (int, float)) and w > melhor_antes.get(s, 0):
+                melhor_antes[s] = w
+
+    out = []
+    for s, w in zip(secs, watts):
+        if not isinstance(w, (int, float)) or w <= 0:
+            continue
+        antes = melhor_antes.get(s)
+        out.append({
+            'secs': s, 'watts': w,
+            'melhor_anterior': antes,
+            'pr': antes is None or w > antes,
+            'delta': round(w - antes, 1) if antes else None,
+            'pct_do_melhor': round(w / antes * 100, 1) if antes else None,
+        })
+    return {'activity_id': activity_id, 'type': tipo, 'date': data, 'duracoes': out}
+
+
+# ── log e estado ──────────────────────────────────────────────────────────
+
+def log_sync(modo, oldest, recebidas, inseridas, actualizadas, segundos, erro=None):
+    if not ENABLED:
+        return
+    _exec("""INSERT INTO sync_log
+             (modo, oldest, recebidas, inseridas, actualizadas, segundos, erro, criado_em)
+             VALUES (?,?,?,?,?,?,?,?)""",
+          (modo, oldest, recebidas, inseridas, actualizadas,
+           round(segundos, 2), erro, _now()))
+
+
+def stats():
+    if not ENABLED:
+        return {'enabled': False, 'driver': None,
+                'nota': 'sem DATABASE_URL — a app usa a API directamente'}
+    a = _exec("""SELECT COUNT(*), MIN(date), MAX(date), COUNT(DISTINCT type)
+                 FROM activities""", fetch='one') or (0, None, None, 0)
+    s = _exec("""SELECT COUNT(DISTINCT activity_id), COUNT(*), COALESCE(SUM(points),0)
+                 FROM streams""", fetch='one') or (0, 0, 0)
+    por_tipo = _exec("""SELECT type, COUNT(*), ROUND(SUM(kj)::numeric, 0)
+                        FROM activities GROUP BY type ORDER BY COUNT(*) DESC"""
+                     if DRIVER == 'postgres' else
+                     """SELECT type, COUNT(*), ROUND(SUM(kj), 0)
+                        FROM activities GROUP BY type ORDER BY COUNT(*) DESC""",
+                     fetch='all') or []
+    pc = _exec("SELECT COUNT(*), COUNT(DISTINCT type) FROM power_curves",
+               fetch='one') or (0, 0)
+    ult = _exec("""SELECT modo, oldest, recebidas, inseridas, actualizadas,
+                          segundos, erro, criado_em
+                   FROM sync_log ORDER BY id DESC LIMIT 5""", fetch='all') or []
+    return {
+        'enabled': True, 'driver': DRIVER,
+        'actividades': a[0], 'date_min': str(a[1]) if a[1] else None,
+        'date_max': str(a[2]) if a[2] else None, 'modalidades': a[3],
+        'por_tipo': [{'type': t, 'n': n, 'kj': float(k or 0)} for t, n, k in por_tipo],
+        'streams': {'actividades': s[0], 'series': s[1], 'pontos': int(s[2] or 0)},
+        'power_curves': {'actividades': pc[0], 'modalidades': pc[1]},
+        'ultimos_syncs': [{
+            'modo': r[0], 'oldest': str(r[1]), 'recebidas': r[2],
+            'inseridas': r[3], 'actualizadas': r[4], 'segundos': r[5],
+            'erro': r[6], 'em': str(r[7])} for r in ult],
+    }
+
+
+# ── agregacao em SQL ──────────────────────────────────────────────────────
+
+def volume_rows(desde=None):
+    """So as colunas que o Volume usa — evita carregar 183 campos x N sessoes."""
+    if not ENABLED:
+        return None
+    cols = """id, date, type, type_raw, elapsed_time, moving_time, distance_m,
+              kj, kj_acima_ftp, z1_kj, z2_kj, z3_kj, z1_sec, z2_sec, z3_sec,
+              training_load, rpe, xss, aerobic, glycolytic, sprint, epoc, elevation"""
+    where = "WHERE date >= ?" if desde else ""
+    rows = _exec(f"SELECT {cols} FROM activities {where} ORDER BY date",
+                 (desde,) if desde else (), fetch='all')
+    if rows is None:
+        return None
+    nomes = [c.strip() for c in cols.replace('\n', ' ').split(',')]
+    return [dict(zip(nomes, r)) for r in rows]
+
+
+# ── tempo por zona (custom zones do atleta) ───────────────────────────────
+
+def _kind_do_code(code):
+    """HR, potencia ou pace, a partir do nome do conjunto."""
+    c = (code or '').lower()
+    if 'hr' in c or 'heart' in c:
+        return 'hr'
+    if 'pace' in c:
+        return 'pace'
+    if 'power' in c or 'watt' in c:
+        return 'power'
+    return 'outro'
+
+
+def extrair_zone_times():
+    """Preenche zone_times a partir do JSON ja guardado das actividades.
+
+    Nao gasta pedidos a API: o campo custom_zones ja traz o secs de cada
+    zona calculado pela Intervals.icu.
+    """
+    if not ENABLED:
+        return {'ok': False, 'erro': 'sem base de dados'}
+
+    rows = _exec("SELECT id, date, type, raw FROM activities", fetch='all') or []
+    params, sessoes, sem = [], 0, 0
+    for aid, d, tipo, raw in rows:
+        if raw is None:
+            continue
+        try:
+            a = raw if isinstance(raw, dict) else json.loads(raw)
+        except Exception:
+            continue
+        cz = a.get('custom_zones')
+        if not isinstance(cz, list) or not cz:
+            sem += 1
+            continue
+        usou = False
+        for zs in cz:
+            if not isinstance(zs, dict):
+                continue
+            code = zs.get('code')
+            zonas = zs.get('zones') or []
+            kind = _kind_do_code(code)
+            for i, z in enumerate(zonas):
+                secs = z.get('secs')
+                if secs is None:
+                    continue
+                usou = True
+                params.append((aid, d, tipo, code, kind, z.get('id'), i,
+                               int(secs), z.get('start_value'), z.get('end_value'),
+                               len(zonas)))
+        if usou:
+            sessoes += 1
+
+    if params:
+        _exec("""INSERT INTO zone_times
+                 (activity_id, date, type, code, kind, zone_id, zone_idx,
+                  secs, start_value, end_value, n_zonas)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                 ON CONFLICT (activity_id, code, zone_idx) DO UPDATE SET
+                   date=EXCLUDED.date, type=EXCLUDED.type, kind=EXCLUDED.kind,
+                   zone_id=EXCLUDED.zone_id, secs=EXCLUDED.secs,
+                   start_value=EXCLUDED.start_value, end_value=EXCLUDED.end_value,
+                   n_zonas=EXCLUDED.n_zonas""", many=params)
+
+    return {'ok': True, 'sessoes_com_zonas': sessoes,
+            'sessoes_sem_zonas': sem, 'linhas': len(params),
+            'resumo': zonas_disponiveis()}
+
+
+def zonas_disponiveis():
+    """Conjuntos de zonas guardados, por modalidade e tipo."""
+    if not ENABLED:
+        return []
+    rows = _exec("""SELECT type, kind, code, MAX(n_zonas), COUNT(DISTINCT activity_id)
+                    FROM zone_times GROUP BY type, kind, code
+                    ORDER BY type, kind""", fetch='all') or []
+    return [{'type': t, 'kind': k, 'code': c, 'n_zonas': n, 'sessoes': s}
+            for t, k, c, n, s in rows]
+
+
+def tempo_por_zona(tipo=None, kind='power', desde=None):
+    """Horas em cada zona, por sessao — para os graficos do Volume."""
+    if not ENABLED:
+        return []
+    cond, params = ["secs > 0"], []
+    if tipo:
+        cond.append("type = ?")
+        params.append(tipo)
+    if kind:
+        cond.append("kind = ?")
+        params.append(kind)
+    if desde:
+        cond.append("date >= ?")
+        params.append(desde)
+    rows = _exec(f"""SELECT activity_id, date, type, code, zone_id, zone_idx,
+                            secs, start_value, end_value, n_zonas
+                     FROM zone_times WHERE {' AND '.join(cond)}
+                     ORDER BY date, zone_idx""", tuple(params), fetch='all') or []
+    return [{'activity_id': r[0], 'date': str(r[1]), 'type': r[2], 'code': r[3],
+             'zone_id': r[4], 'zone_idx': r[5], 'secs': r[6],
+             'start_value': r[7], 'end_value': r[8], 'n_zonas': r[9]}
+            for r in rows]
+
+
+def kj_por_zona_real(tipo=None):
+    """z1_kj/z2_kj/z3_kj REAIS por sessão — já vêm calculados e guardados
+    nas colunas da tabela activities, da integração real do stream de
+    potência (não uma aproximação por tempo×watts representativo).
+
+    Devolve {activity_id: {'date':, 'z1':, 'z2':, 'z3':}}.
+    """
+    if not ENABLED:
         return {}
-
-    por_sessao = {}
-    for r in linhas:
-        n = r['n_zonas'] or 1
-        idx = r['zone_idx']
-        frac = idx / max(n - 1, 1)
-        grupo = 'z1' if frac < 0.35 else ('z2' if frac < 0.65 else 'z3')
-
-        sv, ev = r['start_value'], r['end_value']
-        if sv is None:
-            continue
-        # a ultima zona nao tem end_value (e' "acima de X") — usa-se um
-        # watts representativo 15% acima do inicio, so' para nao ficar
-        # sem peso nenhum
-        watts_rep = (sv + ev) / 2 if (ev and ev > sv) else sv * 1.15
-
-        kj = (r['secs'] or 0) * watts_rep / 1000.0
-        d = por_sessao.setdefault(r['activity_id'],
-                                  {'date': r['date'], 'z1': 0.0,
-                                   'z2': 0.0, 'z3': 0.0})
-        d[grupo] += kj
-    return por_sessao
-
-
-def modelo_polar(sessoes, modalidades, gamma_map=None):
-    """eFTP/CP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1 (OLS múltipla).
-
-    O mesmo γ modal (já calibrado por modalidade no FTLM) é aplicado
-    separadamente a cada zona de intensidade — não é um parâmetro novo,
-    é a mesma decomposição fraccionária, agora por zona em vez de só
-    por modalidade.
-    """
-    import numpy as np
-    from datetime import timedelta
-
-    gamma_map = gamma_map or {}
-    out = {}
-    for mod in modalidades:
-        zonas = kj_por_zona(mod)
-        if not zonas:
-            continue
-        cp_por_id = {s['id']: s.get('cp') for s in sessoes
-                    if s.get('type') == mod and s.get('cp')}
-        obs = [{'date': z['date'], 'z1': z['z1'], 'z2': z['z2'],
-               'z3': z['z3'], 'cp': cp_por_id[aid]}
-              for aid, z in zonas.items() if cp_por_id.get(aid)]
-        if len(obs) < 10:
-            continue
-        obs.sort(key=lambda o: o['date'])
-
-        gamma = gamma_map.get(mod, 0.5)
-        tau = max(42.0 * (1.0 - gamma) + 7.0 * gamma, 7.0)
-
-        d0 = datetime.strptime(obs[0]['date'], '%Y-%m-%d')
-        d1 = datetime.strptime(obs[-1]['date'], '%Y-%m-%d')
-        todas_datas = []
-        d = d0
-        while d <= d1:
-            todas_datas.append(d.strftime('%Y-%m-%d'))
-            d += timedelta(days=1)
-
-        soma = {dt: {'z1': 0.0, 'z2': 0.0, 'z3': 0.0} for dt in todas_datas}
-        for o in obs:
-            if o['date'] in soma:
-                for k in ('z1', 'z2', 'z3'):
-                    soma[o['date']][k] += o[k]
-
-        z1_d = [soma[dt]['z1'] for dt in todas_datas]
-        z2_d = [soma[dt]['z2'] for dt in todas_datas]
-        z3_d = [soma[dt]['z3'] for dt in todas_datas]
-        ctlg_z1 = _ewm(z1_d, tau)
-        ctlg_z2 = _ewm(z2_d, tau)
-        ctlg_z3 = _ewm(z3_d, tau)
-        idx_data = {dt: i for i, dt in enumerate(todas_datas)}
-
-        X_rows, y_vals = [], []
-        for o in obs:
-            i = idx_data.get(o['date'])
-            if i is None:
-                continue
-            X_rows.append([ctlg_z3[i], ctlg_z2[i], ctlg_z1[i], 1.0])
-            y_vals.append(o['cp'])
-        if len(X_rows) < 10:
-            continue
-
-        X = np.array(X_rows)
-        y = np.array(y_vals)
-        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
-        a_z3, a_z2, a_z1, intc = [float(c) for c in coef]
-        y_pred = X @ coef
-        ss_res = float(((y - y_pred) ** 2).sum())
-        ss_tot = float(((y - y.mean()) ** 2).sum())
-        r2 = max(0.0, 1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
-
-        out[mod] = {
-            'alpha_z3': round(a_z3, 4), 'alpha_z2': round(a_z2, 4),
-            'alpha_z1': round(a_z1, 4), 'intercepto': round(intc, 1),
-            'r2': round(r2, 4), 'n': len(X_rows),
-            'gamma_modal': round(gamma, 3),
-            'ctlg_z3_actual': round(ctlg_z3[-1], 2),
-            'ctlg_z2_actual': round(ctlg_z2[-1], 2),
-            'ctlg_z1_actual': round(ctlg_z1[-1], 2),
-            'kj_z3_ultimos_7d': round(sum(z3_d[-7:]), 0),
-            'kj_total_ultimos_7d': round(sum(z1_d[-7:]) + sum(z2_d[-7:])
-                                         + sum(z3_d[-7:]), 0),
-        }
-    return out
+    cond = ["z1_kj IS NOT NULL OR z2_kj IS NOT NULL OR z3_kj IS NOT NULL"]
+    params = []
+    if tipo:
+        cond.append("type = ?")
+        params.append(tipo)
+    rows = _exec(
+        f"SELECT id, date, z1_kj, z2_kj, z3_kj FROM activities "
+        f"WHERE {' AND '.join(cond)}", tuple(params), fetch='all') or []
+    return {r[0]: {'date': str(r[1])[:10],
+                   'z1': float(r[2] or 0), 'z2': float(r[3] or 0),
+                   'z3': float(r[4] or 0)}
+            for r in rows}

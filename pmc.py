@@ -1610,3 +1610,176 @@ def modelo_polar(sessoes, modalidades, gamma_map=None):
                                          + sum(z3_d[-7:]), 0),
         }
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PRESCRIÇÃO — traduz o α do Modelo 2 em "quanto e onde"
+#
+# O CP em si é sempre um número agregado — não distingue de onde veio o
+# estímulo. O que o Modelo 2 decompõe é a CARGA que o explica, não o
+# resultado. Esta função inverte essa relação: dado quanto CP se quer
+# ganhar, calcula quanto CTLγ extra é preciso na zona com o α mais alto,
+# e traduz isso em kJ/semana e numa gama de watts real (das zonas
+# guardadas em zone_times).
+# ══════════════════════════════════════════════════════════════════════════
+
+def prescricao_zona(modalidades, modelo_polar_res, meta_delta_w=5.0):
+    """Quanto tempo, a que watts, para subir meta_delta_w de CP.
+
+    NOTA sobre o que "kJ/semana extra" significa aqui: modelo_polar usa
+    uma EWM simples (não o kernel fraccionário completo do FTLM), então
+    em regime estacionário um input diário constante de X converge para
+    CTLγ≈X. Por isso delta_ctlg_necessario já É directamente o kJ/dia
+    extra, ×7 dá o kJ/semana — não é preciso inverter uma potência de
+    lag fraccionária.
+
+    Isto é uma EXTRAPOLAÇÃO LINEAR de um modelo correlacional, não
+    causal — sobretudo em amostras pequenas com R² alto, vale a pena
+    desconfiar antes de prescrever a sério.
+    """
+    import db
+
+    out = {}
+    for mod in modalidades:
+        info = modelo_polar_res.get(mod)
+        if not info:
+            continue
+        alphas = {'z1': info['alpha_z1'], 'z2': info['alpha_z2'],
+                 'z3': info['alpha_z3']}
+        zona_melhor = max(alphas, key=lambda k: alphas[k])
+        alpha_melhor = alphas[zona_melhor]
+
+        if alpha_melhor <= 0:
+            out[mod] = {
+                'ok': False,
+                'motivo': ('nenhuma zona tem coeficiente positivo — o '
+                          'modelo não encontra uma zona que explique '
+                          'ganhos de CP nesta modalidade')}
+            continue
+
+        delta_ctlg_necessario = meta_delta_w / alpha_melhor
+        kj_extra_dia = delta_ctlg_necessario
+        kj_extra_semana = kj_extra_dia * 7
+
+        # gama de watts real da zona escolhida, das zonas guardadas
+        linhas = db.tempo_por_zona(mod, kind='power')
+        vals_lo, vals_hi = [], []
+        for r in linhas:
+            n = r['n_zonas'] or 1
+            frac = r['zone_idx'] / max(n - 1, 1)
+            grp = ('z1' if frac < 0.35 else ('z2' if frac < 0.65 else 'z3'))
+            if grp == zona_melhor and r['start_value'] is not None:
+                vals_lo.append(r['start_value'])
+                if r['end_value']:
+                    vals_hi.append(r['end_value'])
+
+        watts_lo = round(sum(vals_lo) / len(vals_lo)) if vals_lo else None
+        watts_hi = round(sum(vals_hi) / len(vals_hi)) if vals_hi else None
+        horas_semana = None
+        if watts_lo:
+            watts_medio = (watts_lo + watts_hi) / 2 if watts_hi else watts_lo * 1.15
+            # kJ = W × s / 1000; 1h = 3600s → kJ/h = W × 3.6
+            horas_semana = kj_extra_semana / (watts_medio * 3.6)
+
+        out[mod] = {
+            'ok': True,
+            'zona_melhor': zona_melhor.upper(),
+            'alpha': round(alpha_melhor, 4),
+            'r2_modelo': info.get('r2'),
+            'n_modelo': info.get('n'),
+            'delta_cp_alvo_w': meta_delta_w,
+            'kj_extra_dia': round(kj_extra_dia, 1),
+            'kj_extra_semana': round(kj_extra_semana, 0),
+            'watts_range': ([watts_lo, watts_hi] if watts_lo else None),
+            'horas_extra_semana': (round(horas_semana, 1)
+                                   if horas_semana else None),
+            'aviso': ('extrapolação linear de um modelo correlacional — '
+                     'não é causal. Com poucas medições e R² alto ao '
+                     'mesmo tempo, desconfiar antes de prescrever a '
+                     'sério' if (info.get('n') or 0) < 150 else None),
+        }
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PACE PARA A RUN — os modelos correm em watts, mas quem treina reconhece
+# pace, não watts. Usa a calibração pace↔watts do próprio atleta
+# (perfil_metabolico.regressao_pace_watts) para mostrar os dois lado a
+# lado, só na Run — nas outras modalidades watts já é a unidade natural.
+# ══════════════════════════════════════════════════════════════════════════
+
+def calibracao_pace_run(sessoes):
+    """Recta pace↔watts da Run, e a partir de quando a Run tem potência.
+
+    O aviso da data-limite é importante: se houve um período longo sem
+    correr, ou a correr sem sensor de potência, a série de CP/watts da
+    Run só é válida a partir daí — misturar as duas eras dava uma recta
+    calibrada com dados que não existem.
+    """
+    import perfil_metabolico as pmet
+
+    ses_run = [s for s in sessoes if s.get('type') == 'Run']
+    pontos = [(s.get('watts_medio'), s.get('distancia_m'), s.get('duracao_s'))
+             for s in ses_run
+             if s.get('watts_medio') and s.get('distancia_m')
+             and s.get('duracao_s')]
+    rel = pmet.regressao_pace_watts(pontos)
+
+    com_potencia = sorted(s['date'] for s in ses_run if s.get('watts_medio'))
+    primeira_com_potencia = com_potencia[0] if com_potencia else None
+    todas_datas_run = sorted(s['date'] for s in ses_run)
+    primeira_sessao_run = todas_datas_run[0] if todas_datas_run else None
+
+    return {
+        'relacao': rel,
+        'primeira_sessao_com_potencia': primeira_com_potencia,
+        'primeira_sessao_run': primeira_sessao_run,
+        'n_com_potencia': len(com_potencia),
+        'n_total_run': len(todas_datas_run),
+        'aviso': (
+            f'a Run só tem potência a partir de {primeira_com_potencia} — '
+            f'{len(com_potencia)} de {len(todas_datas_run)} sessões de Run '
+            'têm watts. Os modelos de CP/CTLγ da Run só usam essas '
+            'sessões; um histórico antigo sem potência não entra nem '
+            'distorce a calibração'
+            if primeira_com_potencia else
+            'nenhuma sessão de Run com potência gravada'),
+    }
+
+
+def _watts_para_pace_fmt(rel, watts):
+    """round + formatar, ou None se a recta não for fiável."""
+    import perfil_metabolico as pmet
+    if watts is None:
+        return None
+    seg = pmet.pace_de_watts(rel, watts)
+    return pmet.formatar_pace(seg) if seg is not None else None
+
+
+def aumentar_com_pace(resultado_watts, rel_pace, campos_watts):
+    """Acrescenta o equivalente em pace a um dict que já tem valores em
+    watts — usado para a Run, sobre cp_projecao_28d e prescricao_zona.
+
+    campos_watts: lista de nomes de campo em `resultado_watts` que são
+    valores em watts a converter (ex.: ['cp_actual', 'cp_proj_28d']).
+    Campos que sejam [lo, hi] (como watts_range) viram um par formatado.
+    """
+    if not resultado_watts or not rel_pace or not rel_pace.get('suficiente'):
+        return resultado_watts
+    out = dict(resultado_watts)
+    for campo in campos_watts:
+        v = out.get(campo)
+        if v is None:
+            continue
+        if isinstance(v, (list, tuple)) and len(v) == 2:
+            p_lo = _watts_para_pace_fmt(rel_pace, v[0])
+            p_hi = _watts_para_pace_fmt(rel_pace, v[1])
+            if p_lo and p_hi:
+                out[campo + '_pace'] = [p_hi, p_lo]  # mais watts = pace mais rapido = 1o
+        else:
+            p = _watts_para_pace_fmt(rel_pace, v)
+            if p:
+                out[campo + '_pace'] = p
+    out['pace_r2'] = rel_pace.get('r2')
+    out['pace_n'] = rel_pace.get('n')
+    return out

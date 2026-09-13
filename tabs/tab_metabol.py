@@ -3316,6 +3316,16 @@ function pmResumo(){
 // recente com o valor gravado.
 function pmVo2MoxyCarregar(){
  const mod = document.getElementById('pmModalidade').value;
+ // Modalidade vazia dá SEMPRE 404 — o Flask não associa um segmento de
+ // URL vazio a <modalidade>. Sem esta guarda, o pedido saía de qualquer
+ // forma e o utilizador via "erro a carregar: HTTP 404" sem perceber
+ // que a causa era não ter modalidade seleccionada ainda.
+ if(!mod){
+  const cardsEl0 = document.getElementById('pmVo2MoxyCards');
+  if(cardsEl0) cardsEl0.innerHTML = pmCartao('VO\u2082max (Moxy)', '\u2014',
+    'escolhe uma modalidade primeiro', '#8b949e');
+  return;
+ }
  const m = (PM && PM.mader) || {};
  const peso = ((PM && PM.entradas) || {}).peso
    || (document.getElementById('pmPeso') && document.getElementById('pmPeso').value);
@@ -3323,9 +3333,12 @@ function pmVo2MoxyCarregar(){
  if(peso) q.push('peso=' + peso);
  if(m.pvo2max_w) q.push('pvo2max_hawley=' + m.pvo2max_w);
  if(m.mlss_at_w) q.push('w_at=' + m.mlss_at_w);
- fetch('/api/metabol/vo2max_moxy/' + mod + '?' + q.join('&'))
+ fetch('/api/metabol/vo2max_moxy/' + encodeURIComponent(mod) + '?' + q.join('&'))
  .then(function(r){
-  if(!r.ok) throw new Error('HTTP ' + r.status);
+  if(!r.ok) throw new Error('HTTP ' + r.status
+    + (r.status===404 ? ' — a rota pode ainda não estar no servidor '
+      + '(precisa de um novo deploy) ou "' + mod + '" não é uma '
+      + 'modalidade reconhecida' : ''));
   return r.json();
  }).then(function(d){
   const cardsEl = document.getElementById('pmVo2MoxyCards');

@@ -132,6 +132,22 @@ def api_data():
         traceback.print_exc()
         cp_blocos = {}
 
+    try:
+        cp_proj = pmc.cp_projecao_28d(sessoes, ftlm_res, CICLICOS)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        cp_proj = {}
+
+    try:
+        gamma_map = {m: (v or {}).get('gamma', 0.5)
+                    for m, v in ((ftlm_res or {}).get('por_modalidade') or {}).items()}
+        modelo_polar = pmc.modelo_polar(sessoes, CICLICOS, gamma_map)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        modelo_polar = {}
+
     fim = serie[-1] if serie else {}
     return jsonify({
         'status': 'OK',
@@ -159,6 +175,8 @@ def api_data():
         'homeostatico': homeo, 'homeostatico_mod': homeo_mod,
         'alostatico': alos,
         'cp_blocos': cp_blocos,
+        'cp_projecao': cp_proj,
+        'modelo_polar': modelo_polar,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
     })
 
@@ -596,6 +614,25 @@ __EXPL_alos__
 <div id="cpBlocosResumo"></div>
 <div class="wrap" style="max-height:320px;margin-bottom:14px"><table>
   <thead><tr id="cpBlocosHead"></tr></thead><tbody id="cpBlocosBody"></tbody></table></div>
+
+<h2>Projecção de CP — 28 dias</h2>
+<div class="sub">
+  β = OLS(Δln(CP) ~ CTLγ_norm) — reaproveita o CTLγ já calculado acima,
+  não recalcula do zero. Projecção assume que o CTLγ evolui ao ritmo do
+  declive dos últimos 14 dias. R² baixo (&lt;0.08) significa que o CTLγ
+  não explica a variação do CP neste período — a projecção existe mas
+  não é de confiar.
+</div>
+<div id="cpProjCards"></div>
+
+<h2>Modelo 2 — FTLM Polar (CTLγ por zona de intensidade)</h2>
+<div class="sub">
+  Extensão do FTLM: o mesmo γ modal aplicado separadamente a cada zona
+  de potência (Z1 baixa, Z2 moderada, Z3 alta), em vez de só à carga
+  total. kJ por zona é aproximado de segundos×watts_representativo — a
+  Intervals.icu dá tempo por zona, não kJ directamente.
+</div>
+<div id="cpPolarCards"></div>
 
 <h2>Exportar dados</h2>
 <div class="sub">Os mesmos dados que o dashboard usa, para analisares por fora.
@@ -1137,6 +1174,58 @@ function mostrarCpBlocos(){
     '<td class="num">'+(b.kappa_medio!=null?b.kappa_medio:'—')+'</td>'+
     '<td style="font-size:12px">'+(diag||'—')+'</td></tr>';
   }).join('');
+}
+
+// Projeccao de CP a 28 dias — cartoes por modalidade, um beta e um R2 por
+// desporto, com a leitura de fiabilidade.
+function mostrarCpProjecao(){
+ const P=D.cp_projecao||{};
+ const mods=Object.keys(P);
+ const cont=document.getElementById('cpProjCards');
+ if(!mods.length){
+  cont.innerHTML='<div class="sub">Sem dados suficientes para nenhuma '+
+   'modalidade (precisa de historico de CTLg e CP com sobreposicao).</div>';
+  return;
+ }
+ const CORF={true:'#2ECC71',false:'#E67E22'};
+ cont.innerHTML='<div class="cards">'+mods.map(function(m){
+  const v=P[m];
+  const cor=v.r2>=0.20?'#2ECC71':(v.r2>=0.08?'#F4D03F':'#E74C3C');
+  return '<div class="card"><div class="label">'+m+
+   ' <span style="color:'+cor+'">('+(v.r2>=0.20?'fiavel':v.r2>=0.08?'incerto':'baixa fiabilidade')+
+   ')</span></div>'+
+   '<div class="value">'+v.cp_proj_28d+' W</div>'+
+   '<div style="font-size:12px;color:#8b949e">'+
+   'actual '+v.cp_actual+'W · Δ '+(v.delta_w>=0?'+':'')+v.delta_w+'W ('+
+   (v.delta_pct>=0?'+':'')+v.delta_pct+'%) · ±'+v.ic90_w+'W (IC90)</div>'+
+   '<div style="font-size:11px;color:#8b949e;margin-top:4px">'+
+   'β='+v.beta+' R²='+v.r2+' n='+v.n+'<br>'+v.leitura+'</div></div>';
+ }).join('')+'</div>';
+}
+
+// Modelo 2 (FTLM Polar) — coeficientes alpha por zona, um cartao por
+// modalidade, comparando com o R2 do modelo simples (CTLg total) quando
+// disponivel.
+function mostrarCpPolar(){
+ const M=D.modelo_polar||{};
+ const mods=Object.keys(M);
+ const cont=document.getElementById('cpPolarCards');
+ if(!mods.length){
+  cont.innerHTML='<div class="sub">Sem zonas de potencia guardadas para '+
+   'nenhuma modalidade — corre a extraccao de zone_times primeiro.</div>';
+  return;
+ }
+ cont.innerHTML='<div class="cards">'+mods.map(function(m){
+  const v=M[m];
+  const cor=v.r2>=0.20?'#2ECC71':(v.r2>=0.08?'#F4D03F':'#E74C3C');
+  return '<div class="card"><div class="label">'+m+'</div>'+
+   '<div style="font-size:13px;color:#e6e6e6;margin:4px 0">'+
+   'α_Z3='+v.alpha_z3+' · α_Z2='+v.alpha_z2+' · α_Z1='+v.alpha_z1+'</div>'+
+   '<div style="font-size:12px;color:'+cor+'">R²='+v.r2+' (n='+v.n+')</div>'+
+   '<div style="font-size:11px;color:#8b949e;margin-top:4px">'+
+   'γ modal='+v.gamma_modal+' · kJ Z3 (7d)='+v.kj_z3_ultimos_7d+
+   ' de '+v.kj_total_ultimos_7d+' totais</div></div>';
+ }).join('')+'</div>';
 }
 
 function hexRgba(h,a){h=h.replace('#','');
@@ -1886,6 +1975,7 @@ async function load(){
  carregarSugestoes();
 montarExport();
  drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos(); mostrarCpBlocos();
+ mostrarCpProjecao(); mostrarCpPolar();
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──
  const F=d.ftlm;
@@ -1954,7 +2044,9 @@ function redesenhar(){
  if(D.ftlm){drawCTLg();drawFMT();}
  if(D.fmt){drawMatriz();drawEigen();drawAtencao();}
  if(D.homeostatico){drawHomeo();}
- if(D.cp_blocos)mostrarCpBlocos();}
+ if(D.cp_blocos)mostrarCpBlocos();
+ if(D.cp_projecao)mostrarCpProjecao();
+ if(D.modelo_polar)mostrarCpPolar();}
 document.getElementById('janelaPMC').onchange=redesenhar;
 document.getElementById('cpBlocosMod').onchange=function(){if(D)mostrarCpBlocos();};
 window.addEventListener('resize',redesenhar);

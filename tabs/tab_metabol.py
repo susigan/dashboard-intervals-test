@@ -3258,8 +3258,6 @@ function pmResumo(){
  let h = '<div style="display:flex;flex-wrap:wrap;">';
  h += pmCartao('VO\u2082max', (PM.vo2max||'—') + ' <span style="font-size:12px;">ml/min/kg</span>',
                PM.vo2max_validade, '#58A6FF');
- h += pmCartao('VO\u2082max (Moxy)', '<span id="pmVo2MoxyValor">—</span>',
-               '<span id="pmVo2MoxyNota" style="color:#8b949e;">a carregar\u2026</span>', '#79C0FF');
  h += pmCartao('VLamax', (PM.vlamax||'—') + ' <span style="font-size:12px;">mmol/L/s</span>',
                PM.perfil + (PM.vlamax_saturado ? ' \u26A0 no limite do modelo' : ''), '#F0883E');
  h += pmCartao('MLSS / AT', (m.mlss_at_w||'—') + ' W' + _pc('mlss_at_w'),
@@ -3301,7 +3299,13 @@ function pmResumo(){
  if(m.glicogenio) h += pmCartao('Glicogénio', m.glicogenio.total_g + ' g',
    m.glicogenio.nivel + ' · ' + m.glicogenio.musculo_kg + ' kg músculo');
  h += '</div>';
- h += '<div id="pmVo2MoxyCards" style="display:flex;flex-wrap:wrap;"></div>';
+ h += '<h3 style="font-size:13px;color:#8b949e;margin:14px 0 4px;">'
+   + 'VO\u2082max (Moxy) — SmO2 × FC de repouso</h3>';
+ h += '<div id="pmVo2MoxyCards" style="display:flex;flex-wrap:wrap;">'
+   + pmCartao('VO\u2082max (Moxy)', '<span id="pmVo2MoxyValor">—</span>',
+       '<span id="pmVo2MoxyNota" style="color:#8b949e;">a carregar\u2026</span>',
+       '#79C0FF')
+   + '</div>';
  h += '<div id="pmVo2CruzDropdown" style="margin-top:6px;"></div>';
  document.getElementById('pmResumo').innerHTML = h;
  pmVo2MoxyCarregar();
@@ -3320,42 +3324,43 @@ function pmVo2MoxyCarregar(){
  if(m.pvo2max_w) q.push('pvo2max_hawley=' + m.pvo2max_w);
  if(m.mlss_at_w) q.push('w_at=' + m.mlss_at_w);
  fetch('/api/metabol/vo2max_moxy/' + mod + '?' + q.join('&'))
- .then(r=>r.json()).then(function(d){
-  const valorEl = document.getElementById('pmVo2MoxyValor');
-  const notaEl = document.getElementById('pmVo2MoxyNota');
+ .then(function(r){
+  if(!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+ }).then(function(d){
   const cardsEl = document.getElementById('pmVo2MoxyCards');
   const dropEl = document.getElementById('pmVo2CruzDropdown');
-  if(!valorEl) return;
+  if(!cardsEl) return;
+
   if(d.status==='sem_dados'){
-   valorEl.textContent = '\u2014';
-   notaEl.textContent = 'sem sess\u00e3o Moxy com VO\u2082max gravado';
-   if(cardsEl) cardsEl.innerHTML = ''; if(dropEl) dropEl.innerHTML = '';
+   cardsEl.innerHTML = pmCartao('VO\u2082max (Moxy)', '\u2014',
+     'sem sess\u00e3o Moxy com VO\u2082max gravado', '#79C0FF');
+   if(dropEl) dropEl.innerHTML = '';
    return;
   }
   if(d.status!=='ok'){
-   valorEl.textContent = '\u2014'; notaEl.textContent = d.mensagem||'erro';
-   if(cardsEl) cardsEl.innerHTML = ''; if(dropEl) dropEl.innerHTML = '';
+   cardsEl.innerHTML = pmCartao('VO\u2082max (Moxy)', '\u2014',
+     d.mensagem||'erro', '#F85149');
+   if(dropEl) dropEl.innerHTML = '';
    return;
   }
-  valorEl.innerHTML = d.vo2max_moxy
-   + ' <span style="font-size:12px;">ml/min/kg</span>'
-   + (d.plausivel===false ? ' <span style="color:#F85149;">(implaus\u00edvel)</span>' : '');
-  notaEl.textContent = 'sess\u00e3o de ' + (d.data||'?');
 
-  // Cart\u00f5es pr\u00f3prios com os valores DERIVADOS do Moxy \u2014 mesmo tratamento
-  // que os cart\u00f5es do modelo (Pvo2max, utiliza\u00e7\u00e3o fraccional), n\u00e3o
-  // escondidos dentro de um dropdown.
-  if(cardsEl){
-   let hc = '';
-   if(d.pvo2max_moxy_w!=null)
-    hc += pmCartao('Pvo\u2082max (Moxy)', d.pvo2max_moxy_w + ' W',
-      'sess\u00e3o de ' + (d.data||'?'), '#79C0FF');
-   if(d.fractional_utilization_moxy_pct!=null)
-    hc += pmCartao('Utiliza\u00e7\u00e3o fraccional (Moxy)',
-      d.fractional_utilization_moxy_pct + '%',
-      'MLSS \u00f7 Pvo\u2082max (Moxy)', '#79C0FF');
-   cardsEl.innerHTML = hc;
-  }
+  // Cart\u00e3o principal + os que se derivam dele (Pvo2max, utiliza\u00e7\u00e3o
+  // fraccional) \u2014 tudo na MESMA linha, reconstru\u00edda de uma vez, para
+  // n\u00e3o deixar o cart\u00e3o principal preso em "a carregar" se os
+  // derivados chegarem primeiro ou faltarem.
+  let hc = pmCartao('VO\u2082max (Moxy)',
+    d.vo2max_moxy + ' <span style="font-size:12px;">ml/min/kg</span>'
+    + (d.plausivel===false ? ' <span style="color:#F85149;">(implaus\u00edvel)</span>' : ''),
+    'sess\u00e3o de ' + (d.data||'?'), '#79C0FF');
+  if(d.pvo2max_moxy_w!=null)
+   hc += pmCartao('Pvo\u2082max (Moxy)', d.pvo2max_moxy_w + ' W',
+     'sess\u00e3o de ' + (d.data||'?'), '#79C0FF');
+  if(d.fractional_utilization_moxy_pct!=null)
+   hc += pmCartao('Utiliza\u00e7\u00e3o fraccional (Moxy)',
+     d.fractional_utilization_moxy_pct + '%',
+     'MLSS \u00f7 Pvo\u2082max (Moxy)', '#79C0FF');
+  cardsEl.innerHTML = hc;
 
   if(!dropEl) return;
   if(d.delta_pct==null){
@@ -3375,7 +3380,14 @@ function pmVo2MoxyCarregar(){
    + '<p style="color:#8b949e;">' + (d.leitura||'') + '</p>'
    + (d.aviso ? '<p style="color:#F85149;">' + d.aviso + '</p>' : '')
    + '</div></details>';
- }).catch(function(){});
+ }).catch(function(e){
+  // ANTES o catch ficava vazio e o cart\u00e3o ficava preso em "a carregar"
+  // para sempre se o pedido falhasse -- sem erro nenhum vis\u00edvel.
+  const cardsEl = document.getElementById('pmVo2MoxyCards');
+  if(cardsEl) cardsEl.innerHTML = pmCartao('VO\u2082max (Moxy)', '\u2014',
+    '<span style="color:#F85149;">erro a carregar: ' + e.message + '</span>',
+    '#79C0FF');
+ });
 }
 let PM_PONTOS = [], PM_ESCALA = null, PM_ZONAS = [], PM_MARCOS = [];
 

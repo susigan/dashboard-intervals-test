@@ -1227,3 +1227,174 @@ def calibrar_segmentado(sessoes, wellness, serie_classica, modalidades,
            if melhores else 'nenhum — a ausencia de sinal nao vem da mistura '
                            'de fases ou modalidades'))
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FIABILIDADE DO CP — adaptado da tab eFTP do dashboard Streamlit
+# (susigan/dashboard, tabs/tab_eftp.py), com duas mudanças deliberadas:
+#
+# 1. Usa o CP da curva ajustada (db.cp_por_sessao, r2>=0.80), que já é a
+#    fonte mais rigorosa deste projecto — não o icu_eftp da Intervals.icu.
+# 2. Os limiares de kappa NÃO são hardcoded (o Streamlit usa p75=5.954,
+#    p87=7.182, valores calibrados para OUTRO atleta) — aqui são
+#    percentis móveis do histórico do PRÓPRIO atleta, a mesma filosofia
+#    já usada em detect_phases() para os limiares de fase.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _sem_mdc_cp(pares_data_valor, janela_dias=14, min_n=10):
+    """SEM (erro-padrão de medição) e MDC (mínima diferença detectável)
+    do CP, a partir da variação real dia-a-dia em janelas curtas.
+
+    Método: std das diferenças entre medições consecutivas em ≤14 dias,
+    dividido por √2 (as diferenças combinam duas medições). MDC 95% =
+    1.96×√2×SEM. Isto NÃO é uma suposição — é o ruído medido do próprio
+    estimador de CP, não um número da literatura.
+    """
+    import numpy as np
+    pares = sorted([(d, v) for d, v in pares_data_valor if v is not None])
+    if len(pares) < min_n:
+        return None
+    difs = []
+    for i in range(1, len(pares)):
+        d0, v0 = pares[i - 1]
+        d1, v1 = pares[i]
+        gap = (datetime.strptime(d1, '%Y-%m-%d')
+               - datetime.strptime(d0, '%Y-%m-%d')).days
+        if 0 < gap <= janela_dias:
+            difs.append(v1 - v0)
+    if len(difs) < min_n:
+        return None
+    sem = float(np.std(difs, ddof=1) / np.sqrt(2))
+    mdc = round(1.96 * np.sqrt(2) * sem, 1)
+    media = float(np.median([v for _, v in pares]))
+    mdc_pct = round(mdc / media * 100, 1) if media > 0 else None
+    return {'sem': round(sem, 2), 'mdc': mdc, 'mdc_pct': mdc_pct,
+            'n': len(difs), 'n_medicoes': len(pares)}
+
+
+def cp_fiabilidade(sessoes, modalidades):
+    """SEM/MDC do CP por modalidade — quanto do que parece progresso é
+    ruído do próprio método de medição."""
+    out = {}
+    for mod in modalidades:
+        pares = [(s['date'], s.get('cp')) for s in sessoes
+                 if s.get('type') == mod and s.get('cp')]
+        r = _sem_mdc_cp(pares)
+        if r:
+            out[mod] = r
+    return out
+
+
+def _diagnostico_cp(ctl_medio, kappa_medio, kappa_hist, ctl_dose_min=45):
+    """Diagnóstico diferencial de porque um bloco não é REAL — mesmo
+    framework do dashboard Streamlit, três causas com fonte:
+
+    1. Dose insuficiente (Montero & Lundby 2017)
+    2. Stress silencioso — kappa do FMT Tensor (Della Mattia 2019)
+    3. Meseta homeostática, se nenhuma das anteriores (Issurin 2010)
+
+    kappa_hist: lista de kappa diários do atleta, para calcular os
+    percentis MÓVEIS — não valores fixos doutro atleta.
+    """
+    import numpy as np
+    causas = []
+    if ctl_medio is not None and ctl_medio < ctl_dose_min:
+        causas.append({
+            'causa': (f'Dose insuficiente (CTL médio={ctl_medio:.0f}, '
+                     f'mínimo sugerido={ctl_dose_min})'),
+            'prescricao': ('Aumentar frequência/volume de sessões antes '
+                          'de mudar qualidade'),
+            'fonte': 'Montero & Lundby 2017'})
+
+    if kappa_medio is not None and kappa_hist:
+        vals = [k for k in kappa_hist if k is not None]
+        if len(vals) >= 30:
+            p75 = float(np.percentile(vals, 75))
+            p87 = float(np.percentile(vals, 87))
+            if kappa_medio > p75:
+                nivel = ('crítico (acima do teu p87)' if kappa_medio > p87
+                         else 'elevado (acima do teu p75)')
+                causas.append({
+                    'causa': (f'Stress silencioso (κ={kappa_medio:.3f}, '
+                             f'{nivel})'),
+                    'prescricao': ('Sistema em modo defensivo — reduzir '
+                                  'κ antes de aumentar o estímulo'),
+                    'fonte': 'Della Mattia 2019 (FMT Tensor)'})
+
+    if not causas:
+        causas.append({
+            'causa': 'Possível meseta homeostática — estímulo familiar',
+            'prescricao': ('Mudar a natureza do estímulo: novo tipo de '
+                          'sessão ou intensidade-alvo'),
+            'fonte': 'Issurin 2010'})
+    return causas
+
+
+def cp_blocos(sessoes, modalidades, serie_classica, fmt_serie=None,
+              janela_semanas=8):
+    """Classifica blocos rolantes de N semanas de CP como REAL / INCERTO
+    / RUÍDO, e junta o diagnóstico diferencial quando não é REAL.
+
+    Cada bloco compara o CP no fim da janela contra o CP no início — se
+    a diferença for >= MDC, é REAL; >= metade do MDC, é INCERTO; senão,
+    é RUÍDO, estatisticamente indistinguível de zero.
+    """
+    from datetime import timedelta
+    import numpy as np
+
+    fiab = cp_fiabilidade(sessoes, modalidades)
+    ctl_por_data = {d['date']: d.get('ctl') for d in (serie_classica or [])}
+    kappa_por_data = {d['date']: d.get('kappa') for d in (fmt_serie or [])}
+    kappa_hist = list(kappa_por_data.values())
+
+    out = {}
+    for mod in modalidades:
+        r = fiab.get(mod)
+        if not r:
+            continue
+        mdc = r['mdc']
+        pares = sorted([(s['date'], s['cp']) for s in sessoes
+                        if s.get('type') == mod and s.get('cp')])
+        if len(pares) < 10:
+            continue
+
+        # agregação semanal: último valor de cada semana ISO
+        semanal = {}
+        for d, v in pares:
+            dt = datetime.strptime(d, '%Y-%m-%d')
+            semana = (dt - timedelta(days=dt.weekday())).strftime('%Y-%m-%d')
+            semanal[semana] = v
+        semanas = sorted(semanal.keys())
+        if len(semanas) <= janela_semanas:
+            continue
+
+        blocos = []
+        for i in range(janela_semanas, len(semanas)):
+            s_ini, s_fim = semanas[i - janela_semanas], semanas[i]
+            cp_ini, cp_fim = semanal[s_ini], semanal[s_fim]
+            delta = cp_fim - cp_ini
+            ad = abs(delta)
+            classif = ('REAL' if ad >= mdc else
+                      'INCERTO' if ad >= mdc * 0.5 else 'RUÍDO')
+
+            ctl_vals = [v for d, v in ctl_por_data.items()
+                       if s_ini <= d <= s_fim and v is not None]
+            ctl_medio = float(np.mean(ctl_vals)) if ctl_vals else None
+            kappa_vals = [v for d, v in kappa_por_data.items()
+                         if s_ini <= d <= s_fim and v is not None]
+            kappa_medio = float(np.mean(kappa_vals)) if kappa_vals else None
+
+            bloco = {
+                'periodo_fim': s_fim, 'cp_fim': round(cp_fim, 1),
+                'delta': round(delta, 1), 'classificacao': classif,
+                'ctl_medio': round(ctl_medio, 1) if ctl_medio else None,
+                'kappa_medio': round(kappa_medio, 3) if kappa_medio else None,
+            }
+            if classif != 'REAL' or delta < 0:
+                bloco['diagnostico'] = _diagnostico_cp(
+                    ctl_medio, kappa_medio, kappa_hist)
+            blocos.append(bloco)
+
+        out[mod] = {'mdc': mdc, 'sem': r['sem'], 'mdc_pct': r['mdc_pct'],
+                    'n_medicoes': r['n_medicoes'], 'blocos': blocos[-10:]}
+    return out

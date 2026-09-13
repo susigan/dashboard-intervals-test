@@ -124,6 +124,14 @@ def api_data():
         traceback.print_exc()
         homeo, homeo_mod, alos = None, {}, None
 
+    try:
+        cp_blocos = pmc.cp_blocos(sessoes, CICLICOS, serie,
+                                  fmt_serie=(ftlm_res or {}).get('serie'))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        cp_blocos = {}
+
     fim = serie[-1] if serie else {}
     return jsonify({
         'status': 'OK',
@@ -150,6 +158,7 @@ def api_data():
         'fmt': fmt_res,
         'homeostatico': homeo, 'homeostatico_mod': homeo_mod,
         'alostatico': alos,
+        'cp_blocos': cp_blocos,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
     })
 
@@ -570,6 +579,23 @@ __EXPL_alos__
 <div id="alosCard"></div>
 <div class="wrap" style="max-height:320px;margin-bottom:14px"><table>
   <thead><tr id="alosHead"></tr></thead><tbody id="alosBody"></tbody></table></div>
+
+<h2>Fiabilidade do CP — o que é ganho real</h2>
+<div class="sub">
+  Adaptado da tab eFTP do dashboard Streamlit (susigan/dashboard) — usa o
+  CP da curva ajustada, não o icu_eftp. Cada mudança de 8 semanas é
+  comparada contra o MDC (mínima diferença detectável), calculado do
+  ruído real de medição do próprio CP — não um número da literatura.
+  Quando não é REAL, o diagnóstico usa o κ do FMT Tensor acima, já
+  calculado nesta mesma tab.
+</div>
+<div class="controls">
+  <label class="sel">Modalidade
+    <select id="cpBlocosMod"></select></label>
+</div>
+<div id="cpBlocosResumo"></div>
+<div class="wrap" style="max-height:320px;margin-bottom:14px"><table>
+  <thead><tr id="cpBlocosHead"></tr></thead><tbody id="cpBlocosBody"></tbody></table></div>
 
 <h2>Exportar dados</h2>
 <div class="sub">Os mesmos dados que o dashboard usa, para analisares por fora.
@@ -1059,6 +1085,60 @@ function mostrarAlos(){
    '<td class="num" style="color:'+cor+'">'+(d.score>=0?'+':'')+
     d.score.toFixed(3)+'</td></tr>';}).join('');
 }
+// Fiabilidade do CP — adaptado da tab eFTP do dashboard Streamlit.
+// Cada bloco de 8 semanas comparado contra o MDC do proprio metodo;
+// quando nao e' REAL, mostra o diagnostico diferencial (dose/kappa/meseta).
+function mostrarCpBlocos(){
+ const CB=D.cp_blocos||{};
+ const mods=Object.keys(CB);
+ const sel=document.getElementById('cpBlocosMod');
+ if(!mods.length){
+  document.getElementById('cpBlocosResumo').innerHTML=
+   '<div class="sub">Sem dados suficientes de CP para nenhuma modalidade '+
+   '(precisa de pelo menos 10 medicoes e 8+ semanas de historico).</div>';
+  sel.innerHTML=''; document.getElementById('cpBlocosBody').innerHTML='';
+  document.getElementById('cpBlocosHead').innerHTML='';
+  return;
+ }
+ if(sel.options.length!==mods.length)
+  sel.innerHTML=mods.map(m=>'<option>'+m+'</option>').join('');
+ const mod=sel.value||mods[0];
+ const info=CB[mod];
+ if(!info) return;
+
+ document.getElementById('cpBlocosResumo').innerHTML=
+  '<div class="cards">'+
+  [['MDC (95%)',info.mdc+' W'],
+   ['SEM',info.sem+' W'],
+   ['MDC em % do CP',info.mdc_pct!=null?info.mdc_pct+'%':'—'],
+   ['Medicoes usadas',info.n_medicoes]]
+  .map(k=>'<div class="card"><div class="label">'+k[0]+'</div>'+
+   '<div class="value">'+k[1]+'</div></div>').join('')+
+  '</div>';
+
+ document.getElementById('cpBlocosHead').innerHTML=
+  ['Periodo (fim)','CP (W)','Δ 8 sem (W)','Sinal','CTL medio','κ medio','Diagnostico']
+  .map((c,i)=>'<th class="'+(i&&i<6?'num':'')+'">'+c+'</th>').join('');
+
+ const CORES={'REAL':'#2ECC71','INCERTO':'#F4D03F','RUÍDO':'#E74C3C'};
+ document.getElementById('cpBlocosBody').innerHTML=
+  (info.blocos||[]).slice().reverse().map(function(b){
+   const cor=CORES[b.classificacao]||'#8b949e';
+   const diag=(b.diagnostico||[]).map(function(d){
+    return '<div style="margin-bottom:4px"><b>'+d.causa+'</b><br>'+
+     '<span style="color:#8b949e">'+d.prescricao+' — '+d.fonte+'</span></div>';
+   }).join('');
+   return '<tr><td>'+b.periodo_fim+'</td>'+
+    '<td class="num">'+b.cp_fim+'</td>'+
+    '<td class="num" style="color:'+cor+'">'+
+     (b.delta>=0?'+':'')+b.delta+'</td>'+
+    '<td class="num" style="color:'+cor+'">'+b.classificacao+'</td>'+
+    '<td class="num">'+(b.ctl_medio!=null?b.ctl_medio:'—')+'</td>'+
+    '<td class="num">'+(b.kappa_medio!=null?b.kappa_medio:'—')+'</td>'+
+    '<td style="font-size:12px">'+(diag||'—')+'</td></tr>';
+  }).join('');
+}
+
 function hexRgba(h,a){h=h.replace('#','');
  return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+
   parseInt(h.slice(4,6),16)+','+a+')';}
@@ -1805,7 +1885,7 @@ async function load(){
 
  carregarSugestoes();
 montarExport();
- drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos();
+ drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos(); mostrarCpBlocos();
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──
  const F=d.ftlm;
@@ -1873,8 +1953,10 @@ function redesenhar(){
  drawPMC();
  if(D.ftlm){drawCTLg();drawFMT();}
  if(D.fmt){drawMatriz();drawEigen();drawAtencao();}
- if(D.homeostatico){drawHomeo();}}
+ if(D.homeostatico){drawHomeo();}
+ if(D.cp_blocos)mostrarCpBlocos();}
 document.getElementById('janelaPMC').onchange=redesenhar;
+document.getElementById('cpBlocosMod').onchange=function(){if(D)mostrarCpBlocos();};
 window.addEventListener('resize',redesenhar);
 load();
 carregarSugestoes();

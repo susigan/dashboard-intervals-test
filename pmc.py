@@ -1921,3 +1921,159 @@ def avg_watts_vs_cp(sessoes, modalidades, janela_dias=14, lags=range(7, 91, 7),
                 'a si mesmo' if r.get('fonte') == 'dados' else None),
         }
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# CTL vs KJ — adaptado do dashboard Streamlit (susigan/dashboard,
+# tabs/tab_ctl_kj.py). Duas peças: o coeficiente dTRIMP/dkJ (quanto custa
+# fisiologicamente cada kJ, por modalidade e tipo de sessão) e a
+# eficiência rolling (o mesmo kJ está a ficar mais barato ou mais caro).
+#
+# TRIMP aqui é sessão-RPE (duração × RPE), ajustado por IF quando há
+# watts e CP — não precisa de zonas de FC, que este projecto não lê.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _trimp_e_kj(sessoes, modalidades):
+    """TRIMP corrigido e kJ de trabalho por sessão.
+
+    Densidade = IF×RPE quando há potência e CP; senão, só RPE. Na Bike,
+    os primeiros 30 min não contam para o kJ de trabalho (aquecimento),
+    mesma correcção do dashboard Streamlit.
+    """
+    out = []
+    for s in sessoes:
+        if s.get('type') not in modalidades:
+            continue
+        dur_min = None
+        if s.get('duracao_s'):
+            dur_min = s['duracao_s'] / 60.0
+        elif s.get('horas'):
+            dur_min = s['horas'] * 60.0
+        rpe, kj = s.get('rpe'), s.get('kj')
+        if not (dur_min and rpe and kj):
+            continue
+        if not (dur_min >= 10 and 1 <= rpe <= 10 and kj > 0):
+            continue
+
+        fator_if = None
+        if s.get('watts_medio') and s.get('cp'):
+            fator_if = s['watts_medio'] / s['cp']
+            if not (0.3 <= fator_if <= 2.0):
+                fator_if = None
+
+        if s['type'] == 'Bike' and s.get('duracao_s'):
+            work_fraction = max(0.1, min(1.0,
+                                        (s['duracao_s'] - 1800) / s['duracao_s']))
+        else:
+            work_fraction = 1.0
+        kj_work = kj * work_fraction
+
+        densidade = min((fator_if * rpe) if fator_if else rpe, 15.0)
+        trimp = dur_min * rpe * (fator_if if fator_if else 1.0)
+        tipo = 'base' if rpe <= 5 else ('tempo' if rpe <= 7 else 'intervalado')
+
+        out.append({'date': s['date'], 'type': s['type'], 'kj_work': kj_work,
+                   'densidade': densidade, 'trimp': trimp, 'tipo': tipo})
+    return out
+
+
+def dtrimp_dkj(sessoes, modalidades, minimo=8):
+    """dTRIMP/dkJ por modalidade e tipo de sessão (OLS: TRIMP ~
+    kJ_trabalho + densidade) — quanto custa fisiologicamente cada kJ.
+    """
+    import numpy as np
+
+    dados = _trimp_e_kj(sessoes, modalidades)
+    out = {}
+    for mod in modalidades:
+        dm = [d for d in dados if d['type'] == mod]
+        if len(dm) < minimo:
+            continue
+        linhas = []
+        for tipo_seg in ['todos'] + sorted(set(d['tipo'] for d in dm)):
+            ds = (dm if tipo_seg == 'todos'
+                 else [d for d in dm if d['tipo'] == tipo_seg])
+            if len(ds) < 5:
+                continue
+            x_kj = np.array([d['kj_work'] for d in ds])
+            x_dens = np.array([d['densidade'] for d in ds])
+            y = np.array([d['trimp'] for d in ds])
+            X = np.column_stack([np.ones(len(y)), x_kj, x_dens])
+            try:
+                coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+            except Exception:
+                continue
+            y_pred = X @ coef
+            ss_res = float(((y - y_pred) ** 2).sum())
+            ss_tot = float(((y - y.mean()) ** 2).sum())
+            r2 = max(0.0, 1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+            linhas.append({
+                'tipo': tipo_seg, 'n': len(ds),
+                'dtrimp_dkj': round(float(coef[1]), 4),
+                'coef_densidade': round(float(coef[2]), 3),
+                'r2': round(r2, 3),
+                'kj_medio': round(float(x_kj.mean())),
+                'trimp_medio': round(float(y.mean()), 1),
+            })
+        if linhas:
+            out[mod] = linhas
+    return out
+
+
+def eficiencia_rolling(sessoes, modalidades, janela_semanas=4):
+    """eff = TRIMP/kJ_trabalho, mediana semanal, rolling de N semanas.
+
+    A subir = o mesmo kJ está a custar mais (fadiga acumulada). A
+    descer = o mesmo kJ está a custar menos (adaptação).
+    """
+    from datetime import timedelta
+    import numpy as np
+
+    dados = _trimp_e_kj(sessoes, modalidades)
+    out = {}
+    for mod in modalidades:
+        dm = sorted([d for d in dados if d['type'] == mod and d['kj_work'] > 0],
+                   key=lambda d: d['date'])
+        if len(dm) < 10:
+            continue
+        for d in dm:
+            d['eff'] = d['trimp'] / d['kj_work']
+
+        effs = sorted(d['eff'] for d in dm)
+        n = len(effs)
+        p5, p95 = effs[int(n * 0.05)], effs[int(n * 0.95)]
+        dm = [d for d in dm if p5 <= d['eff'] <= p95]
+        if len(dm) < 8:
+            continue
+
+        semanal = {}
+        for d in dm:
+            dt = datetime.strptime(d['date'], '%Y-%m-%d')
+            semana = (dt - timedelta(days=dt.weekday())).strftime('%Y-%m-%d')
+            semanal.setdefault(semana, []).append(d['eff'])
+        semanas = sorted(semanal.keys())
+        eff_semanal = [float(np.median(semanal[s])) for s in semanas]
+
+        eff_roll = []
+        for i in range(len(eff_semanal)):
+            j0 = max(0, i - janela_semanas + 1)
+            eff_roll.append(float(np.mean(eff_semanal[j0:i + 1])))
+
+        rec = eff_roll[-8:]
+        tendencia = 'estável'
+        if len(rec) >= 4:
+            slope = float(np.polyfit(np.arange(len(rec)), rec, 1)[0])
+            if slope > 0.005:
+                tendencia = 'fadiga'
+            elif slope < -0.005:
+                tendencia = 'adaptação'
+
+        out[mod] = {
+            'semanas': semanas[-16:], 'eff_semanal': [round(v, 3) for v in eff_semanal[-16:]],
+            'eff_roll': [round(v, 3) for v in eff_roll[-16:]],
+            'tendencia': tendencia,
+            'eff_actual': round(eff_roll[-1], 3) if eff_roll else None,
+            'eff_historica': round(float(np.median(eff_semanal)), 3),
+            'n_sessoes': len(dm),
+        }
+    return out

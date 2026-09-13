@@ -1398,3 +1398,248 @@ def cp_blocos(sessoes, modalidades, serie_classica, fmt_serie=None,
         out[mod] = {'mdc': mdc, 'sem': r['sem'], 'mdc_pct': r['mdc_pct'],
                     'n_medicoes': r['n_medicoes'], 'blocos': blocos[-10:]}
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PROJECÇÃO 28 DIAS — adaptado do Modelo 1 da tab eFTP (Della Mattia 2025,
+# FTLM Part II): β = OLS(Δln(CP) ~ CTLγ_norm). Reaproveita o ctlg_perf já
+# calculado por calcular_ftlm — não recalcula CTLγ do zero.
+# ══════════════════════════════════════════════════════════════════════════
+
+def cp_projecao_28d(sessoes, ftlm_res, modalidades, dias_proj=28):
+    """Projecção do CP a 28 dias, por regressão Δln(CP) ~ CTLγ_norm.
+
+    x = CTLγ_norm = CTLγ/mediana(CTLγ) − 1 [adimensional, centrado em 0]
+    y = Δln(CP) = ln(CP / CP_ref_90d) [CP_ref = mediana dos 90 dias
+        anteriores a essa medição — sem olhar para o futuro]
+    β = OLS(y ~ x)
+
+    Projecção: CTLγ evolui linearmente ao ritmo do declive dos últimos
+    14 dias. Cap implícito no IC 90%: nunca mais de 25% do CP actual.
+    """
+    import numpy as np
+
+    if not ftlm_res or not ftlm_res.get('por_modalidade'):
+        return {}
+    por_mod_ftlm = ftlm_res['por_modalidade']
+    out = {}
+
+    for mod in modalidades:
+        info = por_mod_ftlm.get(mod)
+        if not info:
+            continue
+        serie_mod = info.get('serie') or []
+        if len(serie_mod) < 40:
+            continue
+        ctlg_por_data = {r['date']: r['ctlg'] for r in serie_mod}
+
+        pares_cp = sorted([(s['date'], s['cp']) for s in sessoes
+                           if s.get('type') == mod and s.get('cp')])
+        if len(pares_cp) < 10:
+            continue
+
+        # CP_ref: mediana dos 90 dias ANTERIORES a cada medição — nunca
+        # olha para a frente, senão o beta "adivinharia" o futuro
+        obs = []
+        for i, (d, cp) in enumerate(pares_cp):
+            dt = datetime.strptime(d, '%Y-%m-%d')
+            janela = [v for dd, v in pares_cp[:i]
+                     if (dt - datetime.strptime(dd, '%Y-%m-%d')).days <= 90]
+            if len(janela) < 5:
+                continue
+            cp_ref = float(np.median(janela))
+            ctlg = ctlg_por_data.get(d)
+            if ctlg is None or cp_ref <= 0:
+                continue
+            obs.append((d, cp, cp_ref, ctlg))
+        if len(obs) < 8:
+            continue
+
+        ctlg_vals = np.array([o[3] for o in obs])
+        ctlg_med = float(np.median(ctlg_vals))
+        if ctlg_med < 0.01:
+            continue
+        x = ctlg_vals / ctlg_med - 1.0
+        ratio = np.clip(np.array([o[1] / o[2] for o in obs]), 0.5, 2.0)
+        y = np.log(ratio)
+
+        n = len(x)
+        xm, ym = x.mean(), y.mean()
+        sxx = float(((x - xm) ** 2).sum())
+        if sxx < 1e-9:
+            continue
+        beta = float(((x - xm) * (y - ym)).sum() / sxx)
+        alpha = ym - beta * xm
+        pred = alpha + beta * x
+        ss_res = float(((y - pred) ** 2).sum())
+        ss_tot = float(((y - ym) ** 2).sum())
+        r2 = max(0.0, 1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+        sigma_ln = float(np.std(y - pred, ddof=2)) if n > 2 else 0.1
+
+        ultimos14 = ctlg_vals[-14:] if len(ctlg_vals) >= 14 else ctlg_vals
+        if len(ultimos14) >= 5:
+            slope = float(np.polyfit(np.arange(len(ultimos14)),
+                                     ultimos14, 1)[0])
+        else:
+            slope = 0.0
+
+        ctlg_now = ctlg_vals[-1]
+        cp_now = obs[-1][1]
+        ctlg_28 = ctlg_now + slope * dias_proj
+        x28 = ctlg_28 / ctlg_med - 1.0
+        cp_28 = float(cp_now * np.exp(beta * (x28 - x[-1])))
+
+        z90 = 1.645
+        ic = float(min(cp_now * (np.exp(sigma_ln * z90) - 1.0),
+                       cp_now * 0.25))
+
+        out[mod] = {
+            'beta': round(beta, 4), 'r2': round(r2, 4), 'n': n,
+            'cp_actual': round(cp_now, 1),
+            'cp_proj_28d': round(cp_28, 1),
+            'delta_w': round(cp_28 - cp_now, 1),
+            'delta_pct': (round((cp_28 - cp_now) / cp_now * 100, 1)
+                         if cp_now else None),
+            'ic90_w': round(ic, 1),
+            'ctlg_slope_14d': round(slope, 4),
+            'fiavel': r2 >= 0.20,
+            'leitura': (('modelo com poder preditivo razoável' if r2 >= 0.20
+                        else 'direcção indicativa, magnitude incerta' if r2 >= 0.08
+                        else 'CTLγ não explica a variação do CP neste período')),
+        }
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# MODELO 2 — FTLM POLAR: CTLγ decomposto por zona de intensidade
+# Extensão do FTLM Part II (Della Mattia 2025), adaptada da tab eFTP do
+# dashboard Streamlit (susigan/dashboard) — mesma lógica, mas usa dados
+# que JÁ existem neste projecto (db.tempo_por_zona), em vez de colunas
+# z1_kj/z2_kj/z3_kj que teriam de vir doutro sítio.
+#
+# A tabela zone_times já guarda segundos por zona E os limites em watts
+# (start_value/end_value) de cada zona — o kJ é aproximado por
+# segundos × watts_representativo_da_zona, não medido directamente
+# (a Intervals.icu não dá kJ por zona, só tempo).
+# ══════════════════════════════════════════════════════════════════════════
+
+def kj_por_zona(tipo, kind='power'):
+    """kJ aproximado por zona (Z1/baixo, Z2/moderado, Z3/alto), por
+    sessão, a partir do tempo por zona já guardado em zone_times.
+
+    Colapsa o número de zonas do atleta (5, 6, 7...) em três grupos
+    proporcionais pelo índice — generaliza a qualquer esquema, em vez de
+    assumir sempre 3 ou sempre 7 zonas.
+    """
+    import db
+
+    linhas = db.tempo_por_zona(tipo, kind=kind)
+    if not linhas:
+        return {}
+
+    por_sessao = {}
+    for r in linhas:
+        n = r['n_zonas'] or 1
+        idx = r['zone_idx']
+        frac = idx / max(n - 1, 1)
+        grupo = 'z1' if frac < 0.35 else ('z2' if frac < 0.65 else 'z3')
+
+        sv, ev = r['start_value'], r['end_value']
+        if sv is None:
+            continue
+        # a ultima zona nao tem end_value (e' "acima de X") — usa-se um
+        # watts representativo 15% acima do inicio, so' para nao ficar
+        # sem peso nenhum
+        watts_rep = (sv + ev) / 2 if (ev and ev > sv) else sv * 1.15
+
+        kj = (r['secs'] or 0) * watts_rep / 1000.0
+        d = por_sessao.setdefault(r['activity_id'],
+                                  {'date': r['date'], 'z1': 0.0,
+                                   'z2': 0.0, 'z3': 0.0})
+        d[grupo] += kj
+    return por_sessao
+
+
+def modelo_polar(sessoes, modalidades, gamma_map=None):
+    """eFTP/CP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1 (OLS múltipla).
+
+    O mesmo γ modal (já calibrado por modalidade no FTLM) é aplicado
+    separadamente a cada zona de intensidade — não é um parâmetro novo,
+    é a mesma decomposição fraccionária, agora por zona em vez de só
+    por modalidade.
+    """
+    import numpy as np
+    from datetime import timedelta
+
+    gamma_map = gamma_map or {}
+    out = {}
+    for mod in modalidades:
+        zonas = kj_por_zona(mod)
+        if not zonas:
+            continue
+        cp_por_id = {s['id']: s.get('cp') for s in sessoes
+                    if s.get('type') == mod and s.get('cp')}
+        obs = [{'date': z['date'], 'z1': z['z1'], 'z2': z['z2'],
+               'z3': z['z3'], 'cp': cp_por_id[aid]}
+              for aid, z in zonas.items() if cp_por_id.get(aid)]
+        if len(obs) < 10:
+            continue
+        obs.sort(key=lambda o: o['date'])
+
+        gamma = gamma_map.get(mod, 0.5)
+        tau = max(42.0 * (1.0 - gamma) + 7.0 * gamma, 7.0)
+
+        d0 = datetime.strptime(obs[0]['date'], '%Y-%m-%d')
+        d1 = datetime.strptime(obs[-1]['date'], '%Y-%m-%d')
+        todas_datas = []
+        d = d0
+        while d <= d1:
+            todas_datas.append(d.strftime('%Y-%m-%d'))
+            d += timedelta(days=1)
+
+        soma = {dt: {'z1': 0.0, 'z2': 0.0, 'z3': 0.0} for dt in todas_datas}
+        for o in obs:
+            if o['date'] in soma:
+                for k in ('z1', 'z2', 'z3'):
+                    soma[o['date']][k] += o[k]
+
+        z1_d = [soma[dt]['z1'] for dt in todas_datas]
+        z2_d = [soma[dt]['z2'] for dt in todas_datas]
+        z3_d = [soma[dt]['z3'] for dt in todas_datas]
+        ctlg_z1 = _ewm(z1_d, tau)
+        ctlg_z2 = _ewm(z2_d, tau)
+        ctlg_z3 = _ewm(z3_d, tau)
+        idx_data = {dt: i for i, dt in enumerate(todas_datas)}
+
+        X_rows, y_vals = [], []
+        for o in obs:
+            i = idx_data.get(o['date'])
+            if i is None:
+                continue
+            X_rows.append([ctlg_z3[i], ctlg_z2[i], ctlg_z1[i], 1.0])
+            y_vals.append(o['cp'])
+        if len(X_rows) < 10:
+            continue
+
+        X = np.array(X_rows)
+        y = np.array(y_vals)
+        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+        a_z3, a_z2, a_z1, intc = [float(c) for c in coef]
+        y_pred = X @ coef
+        ss_res = float(((y - y_pred) ** 2).sum())
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        r2 = max(0.0, 1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+        out[mod] = {
+            'alpha_z3': round(a_z3, 4), 'alpha_z2': round(a_z2, 4),
+            'alpha_z1': round(a_z1, 4), 'intercepto': round(intc, 1),
+            'r2': round(r2, 4), 'n': len(X_rows),
+            'gamma_modal': round(gamma, 3),
+            'ctlg_z3_actual': round(ctlg_z3[-1], 2),
+            'ctlg_z2_actual': round(ctlg_z2[-1], 2),
+            'ctlg_z1_actual': round(ctlg_z1[-1], 2),
+            'kj_z3_ultimos_7d': round(sum(z3_d[-7:]), 0),
+            'kj_total_ultimos_7d': round(sum(z1_d[-7:]) + sum(z2_d[-7:])
+                                         + sum(z3_d[-7:]), 0),
+        }
+    return out

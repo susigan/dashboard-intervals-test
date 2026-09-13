@@ -1597,6 +1597,17 @@ def modelo_polar(sessoes, modalidades, gamma_map=None):
         ss_tot = float(((y - y.mean()) ** 2).sum())
         r2 = max(0.0, 1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
 
+        # Multicolinearidade: se as zonas sobem e descem JUNTAS no treino
+        # real (quem treina mais, treina mais em tudo), os alpha
+        # individuais ficam instáveis — podem sair muito diferentes uns
+        # dos outros mesmo que o efeito real de cada zona seja igual.
+        # Testado com dados sintéticos onde a resposta certa é conhecida:
+        # correlação de 0.4-0.7 já basta para os alpha divergirem 3x.
+        corr_z1z2 = float(np.corrcoef(z1_d, z2_d)[0, 1]) if len(set(z1_d)) > 1 else 0.0
+        corr_z1z3 = float(np.corrcoef(z1_d, z3_d)[0, 1]) if len(set(z1_d)) > 1 else 0.0
+        corr_z2z3 = float(np.corrcoef(z2_d, z3_d)[0, 1]) if len(set(z2_d)) > 1 else 0.0
+        corr_max = max(abs(corr_z1z2), abs(corr_z1z3), abs(corr_z2z3))
+
         out[mod] = {
             'alpha_z3': round(a_z3, 4), 'alpha_z2': round(a_z2, 4),
             'alpha_z1': round(a_z1, 4), 'intercepto': round(intc, 1),
@@ -1608,6 +1619,19 @@ def modelo_polar(sessoes, modalidades, gamma_map=None):
             'kj_z3_ultimos_7d': round(sum(z3_d[-7:]), 0),
             'kj_total_ultimos_7d': round(sum(z1_d[-7:]) + sum(z2_d[-7:])
                                          + sum(z3_d[-7:]), 0),
+            'colinearidade': {
+                'corr_z1_z2': round(corr_z1z2, 2),
+                'corr_z1_z3': round(corr_z1z3, 2),
+                'corr_z2_z3': round(corr_z2z3, 2),
+                'corr_max': round(corr_max, 2),
+                # 0.6 deixava passar casos que ja' saiam com o SINAL
+                # trocado (testado: corr=0.59 deu alpha negativo com
+                # efeito real positivo). Baixado para 0.45, e juntou-se
+                # o R2 como segunda condicao -- um modelo que mal explica
+                # a variancia (R2 baixo) tambem nao sustenta apontar
+                # para uma zona especifica, mesmo sem colinearidade.
+                'zonas_separaveis': corr_max < 0.45 and r2 >= 0.15,
+            },
         }
     return out
 
@@ -1644,6 +1668,24 @@ def prescricao_zona(modalidades, modelo_polar_res, meta_delta_w=5.0):
         info = modelo_polar_res.get(mod)
         if not info:
             continue
+
+        col = info.get('colinearidade') or {}
+        if col.get('zonas_separaveis') is False:
+            out[mod] = {
+                'ok': False,
+                'motivo': (
+                    f'as três zonas sobem e descem juntas neste treino '
+                    f'(correlação até {col.get("corr_max")}) — quem treina '
+                    f'mais numa zona treina mais em todas. Nestas '
+                    f'condições, os α individuais não são fiáveis para '
+                    f'separar o efeito de uma zona das outras. Testado '
+                    f'com dados sintéticos: uma correlação de 0.4-0.7 já '
+                    f'basta para os α divergirem 3× mesmo quando o '
+                    f'efeito real de cada zona é igual — apontar para '
+                    f'"a zona X é a melhor" seria dar mais confiança ao '
+                    f'número do que ele merece')}
+            continue
+
         alphas = {'z1': info['alpha_z1'], 'z2': info['alpha_z2'],
                  'z3': info['alpha_z3']}
         zona_melhor = max(alphas, key=lambda k: alphas[k])

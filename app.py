@@ -1939,7 +1939,7 @@ def api_fisiologia_qualidade():
 @app.route('/api/metabol/vo2max_moxy/<modalidade>')
 def api_metabol_vo2max_moxy(modalidade):
     """VO2max previsto pelo Moxy (SmO2×FC repouso, Peikon/NNOXX) e, para
-    Row/SkiErg, pelo teste de 2000 m — comparados com o VO2max do modelo
+    Row/Ski, pelo teste de 2000 m — comparados com o VO2max do modelo
     (Hawley/Mader) já calculado no Perfil Metabólico.
 
     ?peso=  ?pvo2max_hawley=  ?w_at=  — vêm do que já está carregado no
@@ -1959,7 +1959,7 @@ def api_metabol_vo2max_moxy(modalidade):
             "WHERE modalidade=? AND vo2max_previsto IS NOT NULL "
             "ORDER BY data DESC LIMIT 1", (modalidade,)).fetchone()
 
-        # Teste de 2000 m — só faz sentido para Row/SkiErg. Procura-se
+        # Teste de 2000 m — só faz sentido para Row/Ski. Procura-se
         # pela TAG "2km" (não pela distância — a distância registada varia
         # com GPS/ergómetro e não é fiável para identificar o teste certo).
         #
@@ -1969,7 +1969,7 @@ def api_metabol_vo2max_moxy(modalidade):
         # tipo→modalidade em Python, com TYPE_MAP, como já se faz no
         # endpoint de estilos recentes.
         teste_2km = None
-        if modalidade in ('Row', 'SkiErg') and peso:
+        if modalidade in ('Row', 'Ski') and peso:
             import db as _db
             from config import TYPE_MAP
             import re as _re

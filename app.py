@@ -1960,26 +1960,51 @@ def api_metabol_vo2max_moxy(modalidade):
             "ORDER BY data DESC LIMIT 1", (modalidade,)).fetchone()
 
         # Teste de 2000 m — só faz sentido para Row/SkiErg. Procura-se
-        # nas actividades normais (não Moxy), pela distância — entre
-        # 1950 e 2050 m, para apanhar variações de GPS/ergómetro.
+        # pela TAG "2km" (não pela distância — a distância registada varia
+        # com GPS/ergómetro e não é fiável para identificar o teste certo).
+        #
+        # A coluna `type` na base guarda o tipo EM BRUTO da Intervals.icu
+        # (ex.: "Rowing"), não a modalidade já mapeada ("Row") — filtrar
+        # com "WHERE type=?" e a modalidade nunca batia certo. Mapeia-se
+        # tipo→modalidade em Python, com TYPE_MAP, como já se faz no
+        # endpoint de estilos recentes.
         teste_2km = None
         if modalidade in ('Row', 'SkiErg') and peso:
             import db as _db
-            l2 = _db._exec(
-                "SELECT id, date, average_watts, distance_m, moving_time "
-                "FROM activities "
-                "WHERE type=? AND distance_m BETWEEN 1950 AND 2050 "
-                "AND average_watts IS NOT NULL "
-                "ORDER BY date DESC LIMIT 1",
-                (modalidade,), fetch='all')
-            if l2:
-                aid2, data2, watts2, dist2, dur2 = l2[0]
+            from config import TYPE_MAP
+            import re as _re
+            import json as _json
+            linhas = _db._exec(
+                "SELECT id, date, type, average_watts, distance_m, "
+                "moving_time, raw FROM activities "
+                "WHERE raw IS NOT NULL AND average_watts IS NOT NULL "
+                "ORDER BY date DESC", fetch='all') or []
+            padrao_2km = _re.compile(r'2\s*[\-]?\s*k\s*m', _re.I)
+            for aid2, data2, tipo2, watts2, dist2, dur2, raw2 in linhas:
+                if TYPE_MAP.get(tipo2) != modalidade:
+                    continue
+                try:
+                    j2 = raw2 if isinstance(raw2, dict) else _json.loads(raw2)
+                except Exception:
+                    continue
+                tt = j2.get('tags')
+                if isinstance(tt, str):
+                    tags2 = [x.strip() for x in tt.split(',') if x.strip()]
+                else:
+                    tags2 = [str(x).strip() for x in (tt or []) if x]
+                if not any(padrao_2km.search(t) for t in tags2):
+                    continue
+                # psycopg devolve DOUBLE PRECISION como Decimal, nao
+                # float -- watts2/peso rebentava com TypeError sem isto
+                watts2 = float(watts2) if watts2 is not None else None
+                dist2 = float(dist2) if dist2 is not None else None
+                dur2 = float(dur2) if dur2 is not None else None
                 v2km = pmet.vo2max_2km_erg(watts2, peso, duracao_s=dur2)
                 if v2km:
                     teste_2km = {
                         'vo2max_2km': round(v2km, 1),
                         'watts_medio_2km': round(watts2),
-                        'distancia_m': round(dist2),
+                        'distancia_m': round(dist2) if dist2 else None,
                         'duracao_s': round(dur2) if dur2 else None,
                         'corrigido_pela_duracao': bool(dur2),
                         'data': str(data2)[:10], 'activity_id': aid2,
@@ -1989,6 +2014,7 @@ def api_metabol_vo2max_moxy(modalidade):
                                  'publicada e validada especificamente '
                                  'para ergómetros'),
                     }
+                break  # a mais recente com a tag — já não se procura mais
 
         if not r and not teste_2km:
             return jsonify({'status': 'sem_dados',

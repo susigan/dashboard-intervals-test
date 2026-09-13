@@ -2931,6 +2931,30 @@ function pmExtDraw(){
   });
  }
 
+ // Curva de lactato sobreposta, mesma fonte que a tab da Curva de
+ // Lactato (PM.mader.curva) — para ver, no mesmo gráfico onde se
+ // comparam os métodos de limiar, como o lactato se comporta ao longo
+ // dos watts. Escala própria à direita, em baixo — a parte de cima da
+ // margem direita já tem a legenda dos marcadores.
+ const mCurva = ((PM && PM.mader) || {}).curva || [];
+ const visLa = mCurva.filter(function(p){
+   return p.watts>=xa && p.watts<=xb && p.lactato!=null; });
+ if(visLa.length>1){
+  const laMax = Math.max(2, Math.max.apply(null,
+    visLa.map(function(p){ return p.lactato; }))*1.15);
+  const Yl = v => PT+h-v/laMax*h;
+  g.strokeStyle='#c9d1d9'; g.globalAlpha=0.85; g.lineWidth=2;
+  g.setLineDash([]);
+  g.beginPath();
+  visLa.forEach(function(p,i){ i?g.lineTo(X(p.watts),Yl(p.lactato))
+                                :g.moveTo(X(p.watts),Yl(p.lactato)); });
+  g.stroke(); g.globalAlpha=1; g.lineWidth=1;
+  // só uma legenda, no canto inferior direito — a parte de cima da
+  // margem já tem a legenda dos marcadores (modelo/medido/DFA)
+  g.textAlign='left'; g.fillStyle='#c9d1d9'; g.font='10px sans-serif';
+  g.fillText('Lactato: 0–'+laMax.toFixed(1)+' mmol/L', PL+w+6, PT+h+4);
+ }
+
  g.strokeStyle='#21262d'; g.lineWidth=1; g.fillStyle='#8b949e';
  g.font='11px sans-serif';
  for(let i=0;i<=4;i++){
@@ -3573,7 +3597,9 @@ function pmCurva(){
   if(x1<=x0) return;
   g.fillStyle=z[2]; g.fillRect(x0,PT,x1-x0,h);
   g.fillStyle=z[3]; g.font='bold 11px sans-serif'; g.textAlign='center';
-  if(x1-x0>70) g.fillText(z[4],(x0+x1)/2,PT-8);
+  const rpeZ3=pmRpeDaZona(z[0], z[1]);
+  const rot3=rpeZ3 ? z[4]+' (RPE '+rpeZ3+')' : z[4];
+  if(x1-x0>70) g.fillText(rot3,(x0+x1)/2,PT-8);
  });
 
  g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';

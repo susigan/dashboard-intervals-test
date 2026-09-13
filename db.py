@@ -1064,3 +1064,26 @@ def tempo_por_zona(tipo=None, kind='power', desde=None):
              'zone_id': r[4], 'zone_idx': r[5], 'secs': r[6],
              'start_value': r[7], 'end_value': r[8], 'n_zonas': r[9]}
             for r in rows]
+
+
+def kj_por_zona_real(tipo=None):
+    """z1_kj/z2_kj/z3_kj REAIS por sessão — já vêm calculados e guardados
+    nas colunas da tabela activities, da integração real do stream de
+    potência (não uma aproximação por tempo×watts representativo).
+
+    Devolve {activity_id: {'date':, 'z1':, 'z2':, 'z3':}}.
+    """
+    if not ENABLED:
+        return {}
+    cond = ["z1_kj IS NOT NULL OR z2_kj IS NOT NULL OR z3_kj IS NOT NULL"]
+    params = []
+    if tipo:
+        cond.append("type = ?")
+        params.append(tipo)
+    rows = _exec(
+        f"SELECT id, date, z1_kj, z2_kj, z3_kj FROM activities "
+        f"WHERE {' AND '.join(cond)}", tuple(params), fetch='all') or []
+    return {r[0]: {'date': str(r[1])[:10],
+                   'z1': float(r[2] or 0), 'z2': float(r[3] or 0),
+                   'z3': float(r[4] or 0)}
+            for r in rows}

@@ -629,8 +629,8 @@ __EXPL_alos__
 <div class="sub">
   Extensão do FTLM: o mesmo γ modal aplicado separadamente a cada zona
   de potência (Z1 baixa, Z2 moderada, Z3 alta), em vez de só à carga
-  total. kJ por zona é aproximado de segundos×watts_representativo — a
-  Intervals.icu dá tempo por zona, não kJ directamente.
+  total. kJ por zona vem das colunas z1_kj/z2_kj/z3_kj já guardadas na
+  base (integração real do stream de potência) — não é aproximado.
 </div>
 <div id="cpPolarCards"></div>
 

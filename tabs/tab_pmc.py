@@ -671,6 +671,16 @@ __EXPL_alos__
 </div>
 <div id="cpPolarCards"></div>
 
+<h2>O que fazer com isto — prescrição por zona</h2>
+<div class="sub">
+  Inverte o α do Modelo 2: para uma meta de +5 W de CP, qual a zona com
+  maior efeito, e quanto kJ extra por semana isso implica. Na Run, a
+  gama de watts vem também em pace. Isto é uma extrapolação linear de um
+  modelo correlacional, não uma relação causal — ver o aviso em cada
+  cartão antes de levar o número à letra.
+</div>
+<div id="cpPrescricaoCards"></div>
+
 <h2>Exportar dados</h2>
 <div class="sub">Os mesmos dados que o dashboard usa, para analisares por fora.
   O CSV abre directamente no pandas ou no Excel.</div>
@@ -1270,6 +1280,46 @@ function mostrarCpPolar(){
    ' de '+v.kj_total_ultimos_7d+' totais</div></div>';
  }).join('')+'</div>';
 }
+// Prescricao: inverte o alpha do Modelo 2 -- para a meta de CP, qual a
+// zona com maior efeito, quanto kJ extra por semana, e a gama de watts
+// (com pace ao lado, so' na Run).
+function mostrarCpPrescricao(){
+ const P=D.prescricao||{};
+ const mods=Object.keys(P);
+ const cont=document.getElementById('cpPrescricaoCards');
+ if(!mods.length){
+  cont.innerHTML='<div class="sub">Sem dados suficientes -- precisa do '+
+   'Modelo 2 (FTLM Polar) calculado primeiro.</div>';
+  return;
+ }
+ cont.innerHTML='<div class="cards">'+mods.map(function(m){
+  const v=P[m];
+  if(!v || v.ok===false){
+   return '<div class="card"><div class="label">'+m+'</div>'+
+    '<div style="font-size:12px;color:#8b949e">'+
+    (v&&v.motivo?v.motivo:'sem dados')+'</div></div>';
+  }
+  const wr=v.watts_range;
+  const wrTxt=wr?(wr[0]+'–'+wr[1]+' W'):'—';
+  const paceTxt=v.watts_range_pace?
+   ' <span style="color:#8b949e">('+v.watts_range_pace[0]+'–'+
+   v.watts_range_pace[1]+')</span>':'';
+  const horasTxt=(v.horas_extra_semana!=null)?
+   v.horas_extra_semana+' h/semana extra':'—';
+  return '<div class="card"><div class="label">'+m+
+   ' <span style="color:#58A6FF">zona '+v.zona_melhor+'</span></div>'+
+   '<div class="value">+'+v.delta_cp_alvo_w+' W de CP</div>'+
+   '<div style="font-size:12px;color:#8b949e">'+
+   'gama: '+wrTxt+paceTxt+'<br>'+
+   horasTxt+' · '+v.kj_extra_semana+' kJ/semana extra</div>'+
+   '<div style="font-size:11px;color:#8b949e;margin-top:4px">'+
+   'α='+v.alpha+' · R² do modelo='+v.r2_modelo+' (n='+v.n_modelo+')</div>'+
+   (v.aviso?'<div style="font-size:10px;color:#E67E22;margin-top:4px">'+
+    v.aviso+'</div>':'')+
+   '</div>';
+ }).join('')+'</div>';
+}
+
 
 function hexRgba(h,a){h=h.replace('#','');
  return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+
@@ -2018,7 +2068,7 @@ async function load(){
  carregarSugestoes();
 montarExport();
  drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos(); mostrarCpBlocos();
- mostrarCpProjecao(); mostrarCpPolar();
+ mostrarCpProjecao(); mostrarCpPolar(); mostrarCpPrescricao();
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──
  const F=d.ftlm;
@@ -2089,7 +2139,8 @@ function redesenhar(){
  if(D.homeostatico){drawHomeo();}
  if(D.cp_blocos)mostrarCpBlocos();
  if(D.cp_projecao)mostrarCpProjecao();
- if(D.modelo_polar)mostrarCpPolar();}
+ if(D.modelo_polar)mostrarCpPolar();
+ if(D.prescricao)mostrarCpPrescricao();}
 document.getElementById('janelaPMC').onchange=redesenhar;
 document.getElementById('cpBlocosMod').onchange=function(){if(D)mostrarCpBlocos();};
 window.addEventListener('resize',redesenhar);

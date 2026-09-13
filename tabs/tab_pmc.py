@@ -1,2062 +1,1785 @@
-"""Tab PMC — Performance Management Chart.
+"""PMC — Performance Management Chart.
 
-Carga vem da Intervals.icu (icu_training_load, ja na base de dados).
-Wellness e composicao corporal vem dos Google Sheets, como no dashboard
-original: HRV/RMSSD, HRR, sono, stress, fadiga, humor, dores musculares,
-peso, gordura, calorias e macros.
+Duas camadas:
+  classica   CTL/ATL/TSB por media exponencial (42/7 dias)
+  FTLM       CTLgamma fraccionario Della Mattia (2025), gamma ajustado aos
+             dados do proprio atleta, fases de treino e tensor FMT
+
+
+CTL/ATL/TSB a partir do icu_training_load, com a mesma logica do dashboard
+original (tab_pmc.py):
+
+  CTL = media exponencial a 42 dias da carga diaria
+  ATL = media exponencial a 7 dias
+  TSB = CTL - ATL   (calculado com os valores de ONTEM, ver abaixo)
+
+Sem pandas: as series sao listas de dicts, calculadas em Python puro.
+
+NOTA: TSB é modulador principal (r²=6.5%, pré-registo 2026-08-13).
+      HRV lag mais relevante é +10d, métrica RPE ≥7.
+      Valores continuam dinâmicos; sistema avisa se divergem.
 """
 
 from datetime import datetime, timedelta
-from flask import jsonify, request
 
-import db
-import pmc
-import sheets_client as sheets
-from api_client import fetch_activities, norm_tipo, num
-from config import CICLICOS, CORES_MOD, ANOS_HRV, limite_hrv
-from tabs.base import page, explicacao
-
-SLUG = 'pmc'
+CTL_DIAS = 42
+ATL_DIAS = 7
 
 
-def _sheets(force=False):
-    """Wellness e composicao corporal. A cache vive no sheets_client, para
-    que as tabs nao dependam umas das outras."""
-    return sheets.carregar(force)
+def _ewm(valores, span):
+    """Media exponencial, equivalente a pandas.ewm(span=N, adjust=False)."""
+    alpha = 2.0 / (span + 1.0)
+    out, anterior = [], None
+    for v in valores:
+        anterior = v if anterior is None else alpha * v + (1 - alpha) * anterior
+        out.append(anterior)
+    return out
 
 
-_cache_pmc = {'chave': None, 'valor': None, 'time': None}
-TTL_PMC = 900
+def serie_diaria(sessoes, campo='tl', ate=None, desde=None):
+    """Soma por dia, com os dias sem treino a zero.
 
-
-def api_data():
-    acts = fetch_activities()
-    if not acts:
-        return jsonify({'error': 'sem actividades'}), 500
-
-    sessoes = []
-    for a in acts:
-        d = (a.get('start_date_local') or '')[:10]
-        if len(d) != 10:
-            continue
-        sessoes.append({
-            'id': a.get('id'), 'date': d, 'type': norm_tipo(a.get('type')),
-            'name': a.get('name'), 'tl': num(a.get('icu_training_load')),
-            'horas': (num(a.get('elapsed_time')) or num(a.get('moving_time'))) / 3600,
-            'rpe': a.get('icu_rpe'), 'xss': num(a.get('SS')),
-            # proxies de performance para ajustar o gamma
-            'cp': (num(a.get('icu_pm_cp')) or num(a.get('icu_rolling_ftp'))
-                   or num(a.get('icu_pm_ftp')) or None),
-            'w_prime': num(a.get('icu_pm_w_prime')) or None,
-        })
-
-    desde = request.args.get('desde') or None
-    serie = pmc.calcular(sessoes, 'tl', desde=desde)
-    mods = pmc.por_modalidade(sessoes, CICLICOS, 'tl', desde=desde)
-
-    wellness, corporal, erros_sheets = _sheets()
-
-    # CP ajustado a curva de potencia tem prioridade sobre o icu_pm_cp: aquele
-    # e a estimativa de uma sessao isolada e, nos dias sem esforcos maximos,
-    # subestima muito e enche a serie de ruido.
-    cp_curva, n_cp_curva = {}, 0
-    try:
-        for r in db.cp_por_sessao():
-            if r['r2'] >= 0.80:      # so ajustes que sao mesmo uma recta
-                cp_curva[r['activity_id']] = r
-    except Exception as e:
-        print(f"cp_por_sessao: {e}")
-    for s in sessoes:
-        r = cp_curva.get(s['id'])
-        if r:
-            s['cp'] = r['cp']
-            s['w_prime'] = r['w_prime'] or s.get('w_prime')
-            n_cp_curva += 1
-
-    try:
-        ftlm_res = pmc.calcular_ftlm(sessoes, wellness, serie, CICLICOS)
-        erro_ftlm = None
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        ftlm_res, erro_ftlm = None, f'{type(e).__name__}: {e}'
-
-    # calcular_fmt corre a calibracao com permutacao — cara. Em cache, com a
-    # chave a mudar quando chegam sessoes novas.
-    chave_fmt = (serie[-1]['date'] if serie else None, len(sessoes))
-    agora = datetime.now()
-    if (_cache_pmc['chave'] == chave_fmt and _cache_pmc['time']
-            and (agora - _cache_pmc['time']).total_seconds() < TTL_PMC):
-        fmt_res, erro_ftlm = _cache_pmc['valor'], None
-    else:
-        fmt_res = None
-    try:
-        if fmt_res is None:
-            fmt_res = pmc.calcular_fmt(sessoes, wellness, serie,
-                                       desde_hrv=limite_hrv())
-            _cache_pmc.update({'chave': chave_fmt, 'valor': fmt_res,
-                               'time': agora})
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        fmt_res = {'erro': f'{type(e).__name__}: {e}'}
-
-    # os parametros calibrados do FMT alimentam tambem o homeostatico
-    par = (fmt_res or {}).get('params_usados') or {}
-    cal_fmt = (fmt_res or {}).get('calibracao') or {}
-    tau_ok = (cal_fmt.get('canal1_tau') or {}).get('fonte') == 'dados'
-    lag_ok = (cal_fmt.get('canal2_lag') or {}).get('fonte') == 'dados'
-
-    try:
-        homeo = pmc.modelo_homeostatico(
-            serie, sessoes,
-            tau_sugerido=par.get('tau_carga') if tau_ok else None,
-            lag_hrv_sugerido=par.get('lag_hrv') if lag_ok else None)
-        homeo_mod = pmc.homeostatico_por_modalidade(serie, sessoes, CICLICOS)
-        alos = pmc.indice_alostatico(
-            serie, homeo, wellness,
-            p_ant=(request.args.get('ant_ini'), request.args.get('ant_fim'))
-                  if request.args.get('ant_ini') else None,
-            p_rec=(request.args.get('rec_ini'), request.args.get('rec_fim'))
-                  if request.args.get('rec_ini') else None)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        homeo, homeo_mod, alos = None, {}, None
-
-    try:
-        cp_blocos = pmc.cp_blocos(sessoes, CICLICOS, serie,
-                                  fmt_serie=(ftlm_res or {}).get('serie'))
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        cp_blocos = {}
-
-    try:
-        cp_proj = pmc.cp_projecao_28d(sessoes, ftlm_res, CICLICOS)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        cp_proj = {}
-
-    try:
-        gamma_map = {m: (v or {}).get('gamma', 0.5)
-                    for m, v in ((ftlm_res or {}).get('por_modalidade') or {}).items()}
-        modelo_polar = pmc.modelo_polar(sessoes, CICLICOS, gamma_map)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        modelo_polar = {}
-
-    fim = serie[-1] if serie else {}
-    return jsonify({
-        'status': 'OK',
-        'serie': serie,
-        'por_modalidade': mods,
-        'sessoes': sessoes,
-        'wellness': wellness or [],
-        'corporal': corporal or [],
-        'escala_1a5': sheets.ESCALA_1A5,
-        'erros_sheets': erros_sheets,
-        'sheets_ok': sheets.disponivel(),
-        'actual': {
-            'ctl': fim.get('ctl'), 'atl': fim.get('atl'),
-            'tsb': fim.get('tsb'), 'ramp': fim.get('ramp'),
-            'estado': pmc.estado_forma(fim.get('tsb')),
-        },
-        'alertas': pmc.alertas(serie, wellness),
-        'ftlm': ftlm_res, 'erro_ftlm': erro_ftlm,
-        'cp_fonte': {
-            'da_curva': n_cp_curva,
-            'do_icu_pm_cp': sum(1 for s in sessoes
-                                if s.get('cp') and s['id'] not in cp_curva),
-            'nota': "ajustado a P(t)=W'/t+CP nas duracoes 2-20min, R2>=0.80"},
-        'fmt': fmt_res,
-        'homeostatico': homeo, 'homeostatico_mod': homeo_mod,
-        'alostatico': alos,
-        'cp_blocos': cp_blocos,
-        'cp_projecao': cp_proj,
-        'modelo_polar': modelo_polar,
-        'cores': CORES_MOD, 'ciclicos': CICLICOS,
-    })
-
-
-_cache_cal = {'chave': None, 'valor': None, 'time': None}
-TTL_CAL = 3600
-
-
-def api_calibracao_dados():
-    """Calibracao isolada, para inspeccao e exportacao.
-
-    Corre o mesmo calculo do FMT mas devolve so os parametros e a evidencia.
-    Nao e preciso exportar CSV nenhum: as series ja estao na base de dados.
+    Os dias vazios contam: e o descanso que faz o ATL cair mais depressa
+    que o CTL, e e dai que vem a forma.
     """
-    acts = fetch_activities()
-    if not acts:
-        return {'erro': 'sem actividades'}
-
-    sessoes = []
-    for a in acts:
-        d = (a.get('start_date_local') or '')[:10]
+    if not sessoes:
+        return []
+    por_dia = {}
+    for s in sessoes:
+        d = (s.get('date') or '')[:10]
         if len(d) != 10:
             continue
-        sessoes.append({
-            'id': a.get('id'), 'date': d, 'type': norm_tipo(a.get('type')),
-            'tl': num(a.get('icu_training_load')),
-            'cp': (num(a.get('icu_pm_cp')) or num(a.get('icu_rolling_ftp'))
-                   or num(a.get('icu_pm_ftp')) or None),
-            'w_prime': num(a.get('icu_pm_w_prime')) or None,
-        })
+        por_dia[d] = por_dia.get(d, 0.0) + float(s.get(campo) or 0)
 
-    cp_curva = {}
-    try:
-        for r in db.cp_por_sessao():
-            if r['r2'] >= 0.80:
-                cp_curva[r['activity_id']] = r
-    except Exception:
-        pass
+    d0 = desde or min(por_dia)
+    d1 = ate or datetime.now().strftime('%Y-%m-%d')
+    ini = datetime.strptime(d0, '%Y-%m-%d')
+    fim = datetime.strptime(d1, '%Y-%m-%d')
+    dias = []
+    while ini <= fim:
+        k = ini.strftime('%Y-%m-%d')
+        dias.append({'date': k, 'load': round(por_dia.get(k, 0.0), 1)})
+        ini += timedelta(days=1)
+    return dias
+
+
+def calcular(sessoes, campo='tl', ate=None, desde=None):
+    """CTL, ATL, TSB e ramp rate, dia a dia."""
+    dias = serie_diaria(sessoes, campo, ate, desde)
+    if not dias:
+        return []
+    cargas = [d['load'] for d in dias]
+    ctl = _ewm(cargas, CTL_DIAS)
+    atl = _ewm(cargas, ATL_DIAS)
+
+    for i, d in enumerate(dias):
+        d['ctl'] = round(ctl[i], 1)
+        d['atl'] = round(atl[i], 1)
+        # TSB de hoje usa os valores de ontem: a forma que trazes para o treino
+        # de hoje nao pode incluir o treino de hoje.
+        d['tsb'] = round((ctl[i - 1] - atl[i - 1]) if i else 0.0, 1)
+        # ramp rate: quanto o CTL subiu nos ultimos 7 dias
+        d['ramp'] = round(ctl[i] - ctl[i - 7], 1) if i >= 7 else 0.0
+    return dias
+
+
+def por_modalidade(sessoes, modalidades, campo='tl', ate=None, desde=None):
+    """CTL por modalidade — para ver de onde vem a carga."""
+    out = {}
+    for m in modalidades:
+        sub = [s for s in sessoes if s.get('type') == m]
+        if not sub:
+            continue
+        serie = calcular(sub, campo, ate, desde)
+        out[m] = [{'date': d['date'], 'ctl': d['ctl'], 'atl': d['atl']}
+                  for d in serie]
+    return out
+
+
+def estado_forma(tsb):
+    """Interpretacao do TSB. Os limites sao convencao do TrainingPeaks,
+    nao uma verdade fisiologica — servem de referencia, nao de regra.
+    
+    NOTA: TSB é modulador principal da recuperação HRV (pré-registo 2026-08-13).
+          Efeito RPE→HRV é máximo em TSB negativo (cansaço) e mínimo em TSB positivo.
+    """
+    if tsb is None:
+        return {'label': '—', 'cor': '#8b949e', 'nota': ''}
+    if tsb > 25:
+        return {'label': 'Muito fresco', 'cor': '#5DADE2',
+                'nota': 'forma alta, mas fitness a cair se durar'}
+    if tsb > 5:
+        return {'label': 'Fresco', 'cor': '#2ECC71', 'nota': 'pronto para competir'}
+    if tsb > -10:
+        return {'label': 'Neutro', 'cor': '#F4D03F', 'nota': 'treino sustentavel'}
+    if tsb > -30:
+        return {'label': 'Em carga', 'cor': '#E67E22', 'nota': 'bloco de trabalho'}
+    return {'label': 'Muito carregado', 'cor': '#E74C3C',
+            'nota': 'risco se se prolongar'}
+
+
+def alertas(dias, wellness=None):
+    """Sinais que merecem atencao. Descritivos, nao prescritivos."""
+    if not dias:
+        return []
+    fim = dias[-1]
+    out = []
+
+    if fim['ramp'] > 8:
+        out.append({'nivel': 'aviso',
+                    'texto': f"CTL subiu {fim['ramp']} em 7 dias. "
+                             "Acima de ~8/semana costuma ser dificil de aguentar."})
+    if fim['tsb'] < -30:
+        out.append({'nivel': 'aviso',
+                    'texto': f"TSB em {fim['tsb']}. Carga acumulada alta."})
+    if fim['tsb'] > 25 and fim['ctl'] > 0:
+        out.append({'nivel': 'info',
+                    'texto': f"TSB em {fim['tsb']} — muito fresco. "
+                             "Bom para competir, mau para manter fitness."})
+
+    # HRV abaixo da media dos 60 dias, tres dias seguidos
+    if wellness:
+        hrvs = [(w['date'], w.get('hrv')) for w in wellness
+                if w.get('hrv') is not None]
+        if len(hrvs) >= 10:
+            vals = [v for _, v in hrvs[-60:]]
+            media = sum(vals) / len(vals)
+            desv = (sum((v - media) ** 2 for v in vals) / len(vals)) ** 0.5
+            ultimos = [v for _, v in hrvs[-3:]]
+            if len(ultimos) == 3 and all(v < media - desv for v in ultimos):
+                out.append({'nivel': 'aviso',
+                            'texto': f"HRV abaixo de {media - desv:.0f} ha 3 dias "
+                                     f"(media 60d: {media:.0f})."})
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FTLM fraccionario, fases e FMT — sobre a camada classica acima
+# ══════════════════════════════════════════════════════════════════════════
+
+def _serie_por_dia(sessoes, datas, campo, agregacao='sum'):
+    """Valor diario alinhado com a lista de datas. NaN onde nao ha sessao."""
+    import numpy as np
+    por_dia = {}
     for s in sessoes:
-        r = cp_curva.get(s['id'])
-        if r:
-            s['cp'] = r['cp']
+        v = s.get(campo)
+        if v is None:
+            continue
+        por_dia.setdefault(s['date'], []).append(float(v))
+    out = np.full(len(datas), np.nan)
+    for i, d in enumerate(datas):
+        vals = por_dia.get(d)
+        if vals:
+            out[i] = sum(vals) if agregacao == 'sum' else sum(vals) / len(vals)
+    return out
 
-    wellness, _c, _e = _sheets()
-    serie = pmc.calcular(sessoes, 'tl')
 
-    completo = request.args.get('completo') in ('1', 'true', 'yes')
-    chave = (serie[0]['date'] if serie else None,
-             serie[-1]['date'] if serie else None, len(sessoes), completo)
-    agora = datetime.now()
-    if (_cache_cal['chave'] == chave and _cache_cal['time']
-            and (agora - _cache_cal['time']).total_seconds() < TTL_CAL):
-        return {**_cache_cal['valor'], 'de_cache': True}
+def _dias_sem_treino(cargas):
+    import numpy as np
+    n = len(cargas)
+    out = np.zeros(n, dtype=int)
+    contador = 0
+    for i, c in enumerate(cargas):
+        contador = 0 if c > 0 else contador + 1
+        out[i] = contador
+    return out
 
-    res = pmc.calcular_fmt(sessoes, wellness, serie, desde_hrv=limite_hrv())
-    if not res or res.get('erro'):
-        return {'erro': (res or {}).get('erro', 'nao foi possivel calibrar')}
 
-    cal = res.get('calibracao') or {}
-    # ?desde=YYYY-MM-DD limita as analises que dependem de HRV.
-    # Util quando as medicoes so comecaram a meio do historico.
-    desde_hrv = request.args.get('desde') or limite_hrv()
-    # O teste de eventos e barato; a segmentacao por ano/modalidade e a
-    # ancora sao ~35 buscas com permutacao. Ficam atras de ?completo=1,
-    # senao cada carregamento da tab espera minutos por elas.
-    eventos = pmc.teste_eventos(sessoes, wellness, serie, CICLICOS,
-                                desde=desde_hrv)
-    # A ancora corre SEMPRE: e a analise com mais hipoteses de dar sinal, e
-    # depois de vectorizar o _ewm e os percentis passou a custar segundos.
-    try:
-        # a CP de um teste de 2022 e comparavel com a de 2026, ao contrario
-        # do HRV — por isso aqui usa-se o historico completo
-        ancora = pmc.calibrar_com_ancora(serie, CICLICOS)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        ancora = {'erro': f'{type(e).__name__}: {e}'}
+def _zscore_rolling_28(valores, datas, minimo=7):
+    """z-score de cada dia contra a sua propria linha de base de 28 dias.
 
-    # A segmentacao por ano e modalidade sao ~30 buscas; fica atras da flag.
-    if completo:
-        segmentado = pmc.calibrar_segmentado(sessoes, wellness, serie, CICLICOS,
-                                             desde=desde_hrv)
-    else:
-        segmentado = {'nota': 'por ano e modalidade — pedir com ?completo=1'}
+    E assim que o dashboard trata as escalas 1-5: em vez de comparar com um
+    valor absoluto, compara com o teu normal recente. Fica invariante a escala.
+    """
+    import numpy as np
+    v = np.asarray(valores, dtype=np.float64)
+    n = len(v)
+    out = np.full(n, np.nan)
+    for t in range(n):
+        seg = v[max(0, t - 27):t + 1]
+        seg = seg[np.isfinite(seg)]
+        if len(seg) >= minimo and np.std(seg) > 1e-9:
+            out[t] = (v[t] - seg.mean()) / seg.std()
+    return out
 
-    resposta = {
-        'status': 'OK',
-        'completo': completo,
-        'dias': len(serie),
-        'de': serie[0]['date'] if serie else None,
-        'ate': serie[-1]['date'] if serie else None,
-        'sessoes': len(sessoes),
-        'cp_de_curva': len(cp_curva),
-        'dimensoes_fmt': res.get('dimensoes'),
-        'parametros': res.get('params_usados'),
-        'calibracao': cal,
-        'janela_hrv': {
-            'desde': desde_hrv, 'anos': ANOS_HRV,
-            'motivo': ('as analises com HRV usam so os ultimos '
-                       f'{ANOS_HRV:g} anos — dados mais antigos podem vir de '
-                       'outro dispositivo ou protocolo. Carga, CP e curvas de '
-                       'potencia continuam a usar o historico completo.'),
-            'configuravel': 'ANOS_HRV no Railway, ou ?desde=YYYY-MM-DD'},
-        'ancora_testes': ancora,
-        'segmentado': segmentado,
-        'teste_eventos': eventos,
-        'onde_sao_usados': {
-            'tau_carga': 'canal 1 do mapa de atencao (decaimento da carga)',
-            'lag_hrv': 'canal 2 (onde o HRV cai mais depois da carga)',
-            'lag_super': 'canal 3 (janela de supercompensacao)',
-            'largura_super': 'canal 3 (largura da janela)',
-            'tau_risco': 'canal 4 (horizonte do sinal de risco)',
-            'limiares_lambda1': 'classificacao focal vs multissistemico',
+
+def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
+    """CTLgamma, gammas ajustados, fases e FMT.
+
+    Devolve um dict pronto a serializar para JSON.
+    """
+    import numpy as np
+    import ftlm
+
+    if not serie_classica:
+        return None
+
+    datas = [d['date'] for d in serie_classica]
+    cargas = np.array([d['load'] for d in serie_classica], dtype=np.float64)
+    n = len(datas)
+    max_lag = min(365, n)
+
+    # ── sinal de recuperacao: LnRMSSD, WEED e sono ────────────────────────
+    hrv_ln = np.full(n, np.nan)
+    weed_z = None
+    sleep_z = None
+    if wellness:
+        idx = {w['date']: w for w in wellness}
+        bruto = np.array([(idx.get(d) or {}).get('hrv') or np.nan for d in datas],
+                         dtype=np.float64)
+        hrv_ln = np.where(bruto > 0, np.log(bruto), np.nan)
+
+        # WEED: stress, dores e cansaco. Escala 1-5 em que 5 = melhor nos tres,
+        # por isso nao ha nada a inverter.
+        partes = []
+        for campo in ('stress', 'soreness', 'fatiga'):
+            vals = [(idx.get(d) or {}).get(campo) for d in datas]
+            vals = np.array([v if v is not None else np.nan for v in vals],
+                            dtype=np.float64)
+            if np.isfinite(vals).sum() >= 10:
+                partes.append(_zscore_rolling_28(vals, datas))
+        if partes:
+            arr = np.array(partes)
+            # dias em que nenhuma das componentes tem valor ficam NaN, sem aviso
+            validos = np.isfinite(arr).any(axis=0)
+            weed_z = np.full(arr.shape[1], np.nan)
+            if validos.any():
+                with np.errstate(all='ignore'):
+                    weed_z[validos] = np.nanmean(arr[:, validos], axis=0)
+
+        sq = [(idx.get(d) or {}).get('sleep_quality') for d in datas]
+        sq = np.array([v if v is not None else np.nan for v in sq], dtype=np.float64)
+        if np.isfinite(sq).sum() >= 5:
+            sleep_z = _zscore_rolling_28(sq, datas)
+
+    # ── gamma de recuperacao: carga de ontem contra HRV de hoje (lag=1) ────
+    gamma_rec, r2_rec, n_rec = ftlm.GAMMA_DEFAULT, 0.0, 0
+    fit_rec = {'motivo': 'sem serie de HRV suficiente', 'aceite': False}
+    hrv_tendencia = np.full(n, np.nan)
+    if int(np.isfinite(hrv_ln).sum()) >= 21:
+        hrv_tendencia = ftlm.hrv_trend(hrv_ln, window=7)
+        fit_rec = ftlm.fit_gamma(cargas, hrv_tendencia, lag=1, max_lag=max_lag)
+        gamma_rec = fit_rec['gamma']
+        r2_rec, n_rec = fit_rec['r2'], fit_rec['n']
+
+    # ── gamma de performance, global e por modalidade ─────────────────────
+    cp = _serie_por_dia(sessoes, datas, 'cp', 'mean')
+    gamma_perf, r2_perf, n_perf = ftlm.GAMMA_DEFAULT, 0.0, 0
+    fit_perf = {'motivo': 'sem pontos de CP suficientes', 'aceite': False}
+    if np.isfinite(cp).sum() >= 10:
+        fit_perf = ftlm.fit_gamma(cargas, cp, lag=0, max_lag=max_lag,
+                                  suavizar=3)
+        gamma_perf = fit_perf['gamma']
+        r2_perf, n_perf = fit_perf['r2'], fit_perf['n']
+
+    ctlg_perf = ftlm.ftlm_fractional(cargas, gamma_perf, max_lag)
+    ctlg_rec = ftlm.ftlm_fractional(cargas, gamma_rec, max_lag)
+
+    por_mod, ctlg_mod, fases_mod = {}, {}, {}
+    for mod in modalidades:
+        ses_mod = [s for s in sessoes if s.get('type') == mod]
+        if len(ses_mod) < 5:
+            continue
+        carga_mod = _serie_por_dia(ses_mod, datas, 'tl', 'sum')
+        carga_mod = np.nan_to_num(carga_mod)
+        cp_mod = _serie_por_dia(ses_mod, datas, 'cp', 'mean')
+
+        g_m, r2_m, n_m = ftlm.GAMMA_DEFAULT, 0.0, 0
+        fit_m = {'gamma_encontrado': None, 'aceite': False,
+                 'na_fronteira': False, 'p_permutacao': None,
+                 'motivo': 'sem pontos de CP suficientes'}
+        if np.isfinite(cp_mod).sum() >= 5:
+            fit_m = ftlm.fit_gamma(carga_mod, cp_mod, lag=0,
+                                   max_lag=max_lag, suavizar=3)
+            g_m, r2_m, n_m = fit_m['gamma'], fit_m['r2'], fit_m['n']
+        serie_mod = ftlm.ftlm_fractional(carga_mod, g_m, max_lag)
+        ctlg_mod[mod] = serie_mod
+
+        f_mod = ftlm.detect_phases(serie_mod, hrv_tendencia, weed_z,
+                                   _dias_sem_treino(carga_mod))
+        fases_mod[mod] = f_mod['fase'][-1]
+
+        por_mod[mod] = {
+            'gamma': g_m, 'r2': r2_m, 'n': n_m,
+            'gamma_fit': {k: fit_m.get(k) for k in
+                          ('gamma_encontrado', 'aceite', 'na_fronteira',
+                           'p_permutacao', 'motivo')},
+            # CTLgamma normalizado ao proprio maximo: e o unico numero
+            # comparavel entre modalidades, ja que gammas diferentes dao
+            # ordens de grandeza diferentes
+            'ctlg_pct': (round(float(serie_mod[-1] / serie_mod.max() * 100), 1)
+                         if serie_mod.max() > 0 else None),
+            'n_sessoes': len(ses_mod),
+            'ctlg_actual': round(float(serie_mod[-1]), 2),
+            'fase': f_mod['fase'][-1],
+            'serie': [{'date': datas[i], 'ctlg': round(float(serie_mod[i]), 2)}
+                      for i in range(n)],
+        }
+
+    # ── fases: overall e global ponderada pelo CTLgamma de cada modalidade ─
+    sem_treino = _dias_sem_treino(cargas)
+    # Duas nocoes de "global", propositadamente diferentes:
+    #
+    #  agregada  — soma a carga de TODAS as modalidades num unico sinal e
+    #              deteta a fase sobre ele. E o estado do corpo, que nao
+    #              distingue de onde veio a carga.
+    #
+    #  ponderada — deteta a fase de cada modalidade separadamente e escolhe a
+    #              moda pesada pelo CTLgamma de cada uma. E o estado do
+    #              treino, dominado pela modalidade que mais pesa.
+    #
+    # Divergirem e informacao: significa que o corpo esta num estado que
+    # nenhuma modalidade isolada explica.
+    f_overall = ftlm.detect_phases(ctlg_perf, hrv_tendencia, weed_z, sem_treino)
+    ctlg_actual_mod = {m: float(s[-1]) for m, s in ctlg_mod.items()}
+    fase_global, contrib = ftlm.fase_global_ponderada(fases_mod, ctlg_actual_mod)
+
+    # ── FMT: quanto o sistema esta a oscilar ──────────────────────────────
+    dimensoes = [ctlg_perf, ctlg_rec]
+    nomes_dim = ['CTLg_perf', 'CTLg_rec']
+    if np.isfinite(hrv_tendencia).sum() >= 30:
+        dimensoes.append(hrv_tendencia)
+        nomes_dim.append('HRV_trend')
+    if weed_z is not None and np.isfinite(weed_z).sum() >= 30:
+        dimensoes.append(weed_z)
+        nomes_dim.append('WEED')
+    if sleep_z is not None and np.isfinite(sleep_z).sum() >= 30:
+        dimensoes.append(sleep_z)
+        nomes_dim.append('Sono')
+    wp = _serie_por_dia(sessoes, datas, 'w_prime', 'mean')
+    if np.isfinite(wp).sum() >= 30:
+        dimensoes.append(wp)
+        nomes_dim.append("W'")
+
+    kappa, lam1 = ftlm.kappa_fmt(dimensoes)
+
+    def _f(v):
+        return round(float(v), 4) if np.isfinite(v) else None
+
+    fase_actual = f_overall['fase'][-1]
+    serie = [{
+        'date': datas[i],
+        'ctlg_perf': round(float(ctlg_perf[i]), 2),
+        'ctlg_rec': round(float(ctlg_rec[i]), 2),
+        'dctlg': _f(f_overall['dctlg'][i]),
+        'hrv_z': _f(f_overall['hrv_z'][i]),
+        'weed_z': _f(f_overall['weed_z'][i]),
+        'kappa': _f(kappa[i]) if i < len(kappa) else None,
+        'lambda1': _f(lam1[i]) if i < len(lam1) else None,
+        'fase': f_overall['fase'][i],
+    } for i in range(n)]
+
+    return {
+        'serie': serie,
+        'gammas': {
+            'perf': {'gamma': gamma_perf, 'r2': r2_perf, 'n': n_perf,
+                     **{k: (fit_perf or {}).get(k) for k in
+                        ('gamma_encontrado', 'aceite', 'na_fronteira',
+                         'p_permutacao', 'motivo')}},
+            'rec': {'gamma': gamma_rec, 'r2': r2_rec, 'n': n_rec,
+                    **{k: (fit_rec or {}).get(k) for k in
+                       ('gamma_encontrado', 'aceite', 'na_fronteira',
+                        'p_permutacao', 'motivo')}},
         },
+        'por_modalidade': por_mod,
+        'fase_actual': {
+            'codigo': fase_actual,
+            'base': 'carga agregada de todas as modalidades',
+            'modalidades_incluidas': sorted(set(
+                s.get('type') for s in sessoes if s.get('type'))),
+            'dias': int(f_overall['dias_na_fase'][-1]) + 1,
+            'dctlg': _f(f_overall['dctlg'][-1]),
+            'hrv_z': _f(f_overall['hrv_z'][-1]),
+            **ftlm.FASES[fase_actual],
+        },
+        'fase_global': ({'codigo': fase_global, 'contribuicoes': contrib,
+                         'base': 'moda das fases por modalidade, pesada pelo CTLgamma',
+                         'fases_por_modalidade': fases_mod,
+                         **ftlm.FASES[fase_global]} if fase_global else None),
+        'fmt': {
+            'dimensoes': nomes_dim,
+            'kappa': _f(kappa[-1]) if len(kappa) else None,
+            'lambda1': _f(lam1[-1]) if len(lam1) else None,
+        },
+        'fases_legenda': ftlm.FASES,
     }
-    _cache_cal.update({'chave': chave, 'valor': resposta, 'time': agora})
-    return resposta
-
-
-def api_sheets_debug():
-    return jsonify(sheets.diagnostico())
-
-
-EXPLICACOES = {
-    'ctlg': ('O que e o CTL&gamma; e o FTLM fraccionario?', r"""
-<p>O PMC classico trata a memoria do treino como um decaimento exponencial: cada
-dia que passa, o peso de um treino cai numa fraccao fixa. Ao fim de tres meses,
-um treino praticamente deixou de existir para o modelo.</p>
-
-<p>O <b>FTLM fraccionario</b> (Della Mattia, 2025) substitui isso por um kernel
-de Riemann-Liouville, em que o peso cai segundo uma <b>lei de potencia</b>:</p>
-
-<div class="form">CTL&gamma;(t) = &Sigma;<sub>k</sub> Load(t&minus;k) &middot; k<sup>&gamma;&minus;1</sup> / &Gamma;(&gamma;)</div>
-
-<p>A diferenca pratica: os treinos antigos nunca desaparecem, so pesam cada vez
-menos. Isso aproxima-se mais do que se observa em atletas com anos de base — a
-adaptacao estrutural persiste muito para la das seis semanas do CTL.</p>
-
-<p>O <b>&gamma;</b> controla o comprimento dessa memoria:</p>
-<ul>
-<li><code>&gamma; proximo de 0.1</code> — memoria curta, a serie converge depressa</li>
-<li><code>&gamma; proximo de 0.9</code> — memoria muito longa, a serie cresce quase sem limite</li>
-</ul>
-
-<p>Nao escolhemos o &gamma;: procuramos, entre 0.10 e 0.90, aquele que maximiza o
-R&sup2; entre o CTL&gamma; e um indicador real teu. Sao dois &gamma; independentes:</p>
-<ul>
-<li><b>&gamma;<sub>perf</sub></b> — ajustado contra a tua CP por sessao, no proprio dia</li>
-<li><b>&gamma;<sub>rec</sub></b> — ajustado contra a tendencia do teu LnRMSSD, com um dia
-de desfasamento (a carga de ontem explica o HRV de hoje)</li>
-</ul>
-
-<p class="nota">Porque e que as duas curvas tem escalas tao diferentes: com
-&gamma;=0.9 o expoente e &minus;0.1 e a soma quase nao decai, chegando aos milhares;
-com &gamma;=0.1 o expoente e &minus;0.9 e converge para umas dezenas. Por isso o eixo
-direito esta em indice 0-100 por defeito — compara as formas, nao as grandezas.</p>
-"""),
-    'fases': ('Como sao detectadas as fases de treino?', r"""
-<p>Cada dia e classificado cruzando tres sinais: o declive do CTL&gamma; a 14 dias
-(<code>&Delta;CTL&gamma;</code>), o HRV relativo em desvios-padrao, e o WEED — a media
-dos z-scores de stress, dores e cansaco.</p>
-
-<p>Os limiares nao sao numeros fixos: sao <b>percentis moveis de 60 dias</b> dos
-teus proprios dados. O que conta como "carga a subir muito" e relativo ao teu
-historico recente, nao a uma tabela generica.</p>
-
-<ul>
-<li><b>Overreach</b> — HRV abaixo do p10, WEED acima do p90, carga acima da mediana</li>
-<li><b>Fatigue</b> — carga a subir e HRV abaixo do p20</li>
-<li><b>Build</b> — carga a subir forte (p70+) com HRV ainda aceitavel (p30+)</li>
-<li><b>Peak</b> — carga estavel e HRV acima do p60</li>
-<li><b>Recovery</b> — carga a cair e HRV a recuperar</li>
-</ul>
-
-<p>A ordem importa: Overreach e testado antes de Fatigue, e Fatigue antes de
-Build. Sem isso, um dia de sobrecarga real seria classificado como Build so por
-a carga estar a subir.</p>
-
-<p>Ha ainda uma salvaguarda: se estiveres ha mais de 10 dias sem treinar, as
-fases que implicam carga activa deixam de fazer sentido — o declive pode estar
-positivo so por inercia da media exponencial.</p>
-
-<p>A <b>fase global ponderada</b> e a moda das fases de cada modalidade, pesada
-pelo CTL&gamma; de cada uma: se o Bike domina a tua carga, e o estado do Bike que
-manda no estado global.</p>
-"""),
-    'fmt': ("O que e o tensor FMT e o mapa de atencao?", r"""
-<p>Todas as metricas anteriores olham para uma dimensao de cada vez. O FMT
-(Della Mattia, 2019) olha para a <b>estrutura de covariacao entre todas</b>.</p>
-
-<p>Cada dia tem um vector de estado com cinco dimensoes — carga, HRV, W&prime;,
-sono e WEED. O tensor e o momento de segunda ordem das variacoes diarias
-numa janela de 28 dias:</p>
-
-<div class="form">F(d) = (1/L) &middot; &Sigma; &Delta;x(t) &otimes; &Delta;x(t)<sup>T</sup></div>
-
-<p>O resultado e uma matriz simetrica 5&times;5. A <b>diagonal</b> tem a
-variancia de cada dimensao; fora da diagonal estao as covariacoes — se a carga
-e o HRV se movem juntos, essa celula acende.</p>
-
-<ul>
-<li><b>&kappa; = tr(F)</b> — a soma da diagonal. E o equivalente enriquecido do
-TSS: alto quando varias dimensoes mudam de forma abrupta e simultanea.</li>
-<li><b>Valores proprios</b> — dizem <i>onde</i> esta o stress. Se &lambda;&#8321;
-domina, o stress e <b>focal</b>: quase toda a variabilidade vem de uma direccao.
-Se estao equilibrados, e <b>multissistemico</b>.</li>
-</ul>
-
-<p>O argumento do paper para isto: o TSS e um mapa escalar, e qualquer mapa
-escalar e muitos-para-um sobre o espaco de trajectorias fisiologicas. Duas
-sessoes com o mesmo NP — e portanto o mesmo TSS — deixam o atleta em estados
-mensuravelmente diferentes no dia seguinte. O escalar descarta exactamente a
-informacao que interessa.</p>
-
-<p>O caso operacional mais util e a <b>fadiga silenciosa</b>: TSB positivo (o
-modelo classico diz "pronto") mas &kappa; a subir na dimensao autonomica. Essa
-configuracao precede episodios de queda de rendimento que o CTL/ATL nao sinaliza.</p>
-
-<h3 style="color:#E67E22">Sobre o mapa de atencao — leia isto</h3>
-
-<p>No paper, os quatro canais <b>emergem</b> de um Transformer treinado numa
-coorte de 30 atletas &times; 365 dias. Nao temos esse modelo treinado.</p>
-
-<p>O que esta aqui sao <b>kernels explicitos</b> que reproduzem o comportamento
-descrito para cada canal: decaimento exponencial para a acumulacao de carga,
-janela em d-14 a d-21 para a supercompensacao, e por ai fora. Sao uteis para
-ler a janela de 28 dias, mas <b>nao sao pesos aprendidos</b> — nao ha aqui nada
-que tenha descoberto padroes sozinho.</p>
-
-<p>A excepcao e o canal <b>Similaridade entre tensores</b>, que e atencao no
-sentido literal da equacao (4) do paper: <code>softmax(QK&#7488;/&radic;d)</code>
-com Q e K a serem os proprios vec(F), sem projeccoes aprendidas. Diz quais dos
-28 dias tem uma estrutura de covariacao parecida com a de hoje.</p>
-
-<p class="nota">Treinar o Transformer a serio exigiria uma coorte com alvos
-rotulados (falha de execucao no dia seguinte, &Delta;CP a 28 dias). Com os dados
-de um atleta so, o modelo sobreajustaria — daria previsoes confiantes e erradas.</p>
-"""),
-    'homeo': ('O que e o modelo homeostatico?', r"""
-<p>O PMC classico assume que o teu fitness responde a 42 dias e a fadiga a 7,
-para toda a gente. O modelo homeostatico pergunta: <b>e para ti?</b></p>
-
-<div class="form">p&#770;(t) = p&#8320; + K&#8321;&middot;EWM(carga, T&#8321;) &minus; K&#8322;&middot;EWM(carga, T&#8322;)</div>
-
-<p>E o modelo de Banister: a performance e o que o fitness acrescenta menos o
-que a fadiga tira. Os quatro parametros sao estimados dos teus dados:</p>
-<ul>
-<li><b>K&#8321;</b> — quanto ganhas de fitness por unidade de carga</li>
-<li><b>K&#8322;</b> — quanto pagas de fadiga por unidade de carga</li>
-<li><b>T&#8321;</b> — em quantos dias a adaptacao e absorvida</li>
-<li><b>T&#8322;</b> — em quantos dias a fadiga se dissipa</li>
-</ul>
-
-<p>Procuramos a combinacao de T&#8321; e T&#8322; que melhor explica a tua serie de CP,
-e para cada uma resolvemos K&#8321; e K&#8322; por minimos quadrados.</p>
-
-<p><b>Quando aparece "defeito 42/7":</b> ou tens menos de 20 pontos de CP nessa
-modalidade, ou nenhuma combinacao deu K&#8321; e K&#8322; ambos positivos. K&#8322; negativo
-significaria que treinar nao custa fadiga nenhuma — recusamos esse ajuste em
-vez de mostrar numeros sem sentido fisico.</p>
-
-<p class="nota">Repara sempre no R&sup2;. Um ajuste com R&sup2; de 0.02 explica 2% da
-variacao da tua CP: os parametros existem, mas nao sustentam decisoes. R&sup2;
-baixo e comum quando a CP por sessao depende mais do tipo de treino do dia do
-que do estado de forma.</p>
-"""),
-    'alos': ('O que e o indice alostatico?', r"""
-<p>Homeostasia e manter o equilibrio. <b>Alostasia</b> e mudar o ponto de
-equilibrio para responder a uma exigencia — o que o treino faz. <b>Allostatic
-overload</b> e quando essa mudanca deixa de ser compensada.</p>
-
-<p>O indice compara dois periodos em seis dimensoes e resume num numero entre
-&minus;1 e +1:</p>
-
-<div class="form">score = sinal &middot; clip(&Delta;% / 50, &minus;1, +1)</div>
-
-<ul>
-<li><b>Reserva pico</b>, <b>CTL fitness</b>, <b>Recovery TSB</b>, <b>HRV
-matinal</b>, <b>Sono</b> — subir e bom</li>
-<li><b>HR repouso</b> — subir e mau, por isso o sinal inverte-se</li>
-</ul>
-
-<p>Uma variacao de 50% satura o score dessa dimensao. O total e a media das
-dimensoes com dados.</p>
-
-<ul>
-<li><code>acima de +0.20</code> — boa adaptacao</li>
-<li><code>entre &minus;0.10 e +0.20</code> — estavel</li>
-<li><code>abaixo de &minus;0.10</code> — sobrecarga</li>
-</ul>
-
-<p class="nota">Os periodos por defeito sao os ultimos 60 dias contra os 60
-anteriores. Faz sentido alinha-los com os teus blocos de treino reais.</p>
-"""),
-}
-
-
-BODY = r"""
-<h1>PMC — Performance Management Chart</h1>
-<div class="sub" id="sub">A carregar...</div>
-<div id="sugestoesTeste"></div>
-
-<div id="sugestoesTeste"></div>
-
-<div class="cards" id="kpis"></div>
-<div id="faseCard"></div>
-<div id="alertas"></div>
-
-<h2>PMC — CTL / ATL / TSB / FTLM</h2>
-__EXPL_ctlg__
-<div class="sub" id="subPMC">CTL 42d e ATL 7d no eixo esquerdo &middot; CTL&gamma; no eixo direito
-  &middot; carga diaria empilhada por modalidade em baixo</div>
-<div class="controls">
-  <label class="sel">Janela
-    <select id="janelaPMC">
-      <option value="90" selected>90 dias</option>
-      <option value="180">6 meses</option>
-      <option value="365">1 ano</option>
-      <option value="0">Tudo</option>
-    </select></label>
-  <label class="sel"><input type="checkbox" id="verFTLM" checked> Mostrar CTL&gamma;</label>
-  <label class="sel"><input type="checkbox" id="verFases" checked> Bandas de fase</label>
-  <label class="sel">CTL&gamma; em
-    <select id="escCTLgPMC">
-      <option value="indice" selected>Indice 0-100</option>
-      <option value="real">Valores reais</option>
-    </select></label>
-</div>
-<div class="chartbox">
-  <div class="legend" id="lgPMC"></div>
-  <canvas id="chPMC" height="330"></canvas>
-  <canvas id="chLoad" height="120"></canvas>
-</div>
-
-<h2>CTL&gamma; por modalidade</h2>
-__EXPL_fases__
-<div class="sub">Um painel por desporto. Linha cheia = CTL&gamma; com o &gamma; ajustado
-  a essa modalidade; ponteado = CTL e ATL classicos, como referencia.<br>
-  <b>O CTL&gamma; bruto nao e comparavel entre modalidades:</b> o kernel e
-  k<sup>&gamma;&minus;1</sup>, por isso &gamma;=0.9 da dezenas de milhar e
-  &gamma;=0.1 da dezenas. Compara a coluna em percentagem.</div>
-<div id="painelMods" class="grid2"></div>
-<div class="wrap" style="max-height:280px;margin-bottom:14px"><table>
-  <thead><tr id="gHead"></tr></thead><tbody id="gBody"></tbody></table></div>
-
-<h2>FMT — tensor 5&times;5 e mapa de atencao</h2>
-<div class="sub" id="subFMT5"></div>
-<div class="grid2">
-  <div class="chartbox">
-    <div class="legend"><span>Matriz de covariacoes F(d)</span></div>
-    <canvas id="chMatriz" height="260"></canvas>
-  </div>
-  <div class="chartbox">
-    <div class="legend"><span>Valores proprios</span></div>
-    <canvas id="chEigen" height="260"></canvas>
-  </div>
-</div>
-<div id="leituraFMT"></div>
-<div class="controls">
-  <label class="sel">Canal <select id="canalFMT"></select></label>
-</div>
-<div class="chartbox">
-  <div class="legend" id="lgAtencao"></div>
-  <canvas id="chAtencao" height="200"></canvas>
-</div>
-<div class="sub" id="notaAtencao" style="font-style:italic"></div>
-<div id="poderBox"></div>
-<h3>Calibracao dos parametros</h3>
-<div id="veredicto"></div>
-<div class="sub" id="notaCal"></div>
-<div class="wrap" style="max-height:260px;margin-bottom:14px"><table>
-  <thead><tr id="calHead"></tr></thead><tbody id="calBody"></tbody></table></div>
-
-<h2>Curvatura &kappa; ao longo do tempo</h2>
-__EXPL_fmt__
-<div class="sub" id="subFMT"></div>
-<div class="chartbox">
-  <div class="legend" id="lgFMT"></div>
-  <canvas id="chFMT" height="220"></canvas>
-</div>
-
-
-
-<h2>Modelo homeostatico — reserva de performance</h2>
-__EXPL_homeo__
-<div class="sub" id="subHomeo"></div>
-<div class="cards" id="homeoKpis"></div>
-<div class="controls">
-  <label class="sel">Modalidade
-    <select id="homeoMod"><option value="">Global</option></select></label>
-  <label class="sel">Vista
-    <select id="homeoVista">
-      <option value="todo" selected>Tudo</option>
-      <option value="banda">Fit + banda</option>
-      <option value="fits">So os fits</option>
-    </select></label>
-  <label class="sel"><input type="checkbox" id="homeoMods" checked> Sobrepor modalidades</label>
-</div>
-<div class="controls" style="font-size:12px">
-  <label class="sel">Periodo anterior
-    <input type="date" id="haIni" style="min-width:auto">
-    <input type="date" id="haFim" style="min-width:auto"></label>
-  <label class="sel">Periodo recente
-    <input type="date" id="hrIni" style="min-width:auto">
-    <input type="date" id="hrFim" style="min-width:auto"></label>
-</div>
-<div id="homeoAnalise"></div>
-<div class="chartbox">
-  <div class="legend" id="lgHomeo"></div>
-  <canvas id="chHomeo" height="280"></canvas>
-</div>
-<div class="wrap" style="max-height:260px;margin-bottom:14px"><table>
-  <thead><tr id="hmHead"></tr></thead><tbody id="hmBody"></tbody></table></div>
-
-<h2>Indice alostatico</h2>
-__EXPL_alos__
-<div class="sub" id="subAlos"></div>
-<div id="alosCard"></div>
-<div class="wrap" style="max-height:320px;margin-bottom:14px"><table>
-  <thead><tr id="alosHead"></tr></thead><tbody id="alosBody"></tbody></table></div>
-
-<h2>Fiabilidade do CP — o que é ganho real</h2>
-<div class="sub">
-  Adaptado da tab eFTP do dashboard Streamlit (susigan/dashboard) — usa o
-  CP da curva ajustada, não o icu_eftp. Cada mudança de 8 semanas é
-  comparada contra o MDC (mínima diferença detectável), calculado do
-  ruído real de medição do próprio CP — não um número da literatura.
-  Quando não é REAL, o diagnóstico usa o κ do FMT Tensor acima, já
-  calculado nesta mesma tab.
-</div>
-<div class="controls">
-  <label class="sel">Modalidade
-    <select id="cpBlocosMod"></select></label>
-</div>
-<div id="cpBlocosResumo"></div>
-<div class="wrap" style="max-height:320px;margin-bottom:14px"><table>
-  <thead><tr id="cpBlocosHead"></tr></thead><tbody id="cpBlocosBody"></tbody></table></div>
-
-<h2>Projecção de CP — 28 dias</h2>
-<div class="sub">
-  β = OLS(Δln(CP) ~ CTLγ_norm) — reaproveita o CTLγ já calculado acima,
-  não recalcula do zero. Projecção assume que o CTLγ evolui ao ritmo do
-  declive dos últimos 14 dias. R² baixo (&lt;0.08) significa que o CTLγ
-  não explica a variação do CP neste período — a projecção existe mas
-  não é de confiar.
-</div>
-<div id="cpProjCards"></div>
-
-<h2>Modelo 2 — FTLM Polar (CTLγ por zona de intensidade)</h2>
-<div class="sub">
-  Extensão do FTLM: o mesmo γ modal aplicado separadamente a cada zona
-  de potência (Z1 baixa, Z2 moderada, Z3 alta), em vez de só à carga
-  total. kJ por zona vem das colunas z1_kj/z2_kj/z3_kj já guardadas na
-  base (integração real do stream de potência) — não é aproximado.
-</div>
-<div id="cpPolarCards"></div>
-
-<h2>Exportar dados</h2>
-<div class="sub">Os mesmos dados que o dashboard usa, para analisares por fora.
-  O CSV abre directamente no pandas ou no Excel.</div>
-<div class="wrap" style="margin-bottom:14px"><table>
-  <thead><tr><th>Ficheiro</th><th>O que tem</th><th class="num">Formato</th></tr></thead>
-  <tbody>
-  <tr><td>Atividades</td><td>uma linha por sessao: carga, kJ, zonas, HR, potencia</td>
-    <td class="num"><a href="/api/export/atividades.csv">CSV</a></td></tr>
-  <tr><td>Wellness</td><td>HRV, HR repouso, sono, stress, cansaco, dores</td>
-    <td class="num"><a href="/api/export/wellness.csv">CSV</a></td></tr>
-  <tr><td>Corporal</td><td>peso, gordura, calorias, macros</td>
-    <td class="num"><a href="/api/export/corporal.csv">CSV</a></td></tr>
-  <tr><td>Curvas de potencia</td><td>uma linha por sessao e duracao</td>
-    <td class="num"><a href="/api/export/curvas.csv">CSV</a> &middot;
-      <a href="/api/export/curvas.json">JSON</a></td></tr>
-  <tr><td>Testes maximos</td><td>esforcos detectados — a ancora de performance</td>
-    <td class="num"><a href="/api/export/testes.csv">CSV</a></td></tr>
-  <tr><td>CP ajustado</td><td>CP e W&prime; por sessao, de P(t)=W&prime;/t+CP</td>
-    <td class="num"><a href="/api/export/cp.csv">CSV</a></td></tr>
-  <tr><td>Serie diaria</td><td>CTL, ATL, TSB dia a dia</td>
-    <td class="num"><a href="/api/export/serie_diaria.csv">CSV</a></td></tr>
-  <tr><td><b>Tudo</b></td><td>todos os anteriores num so ficheiro</td>
-    <td class="num"><a href="/api/export/tudo.json">JSON</a></td></tr>
-  </tbody></table></div>
-
-<h2>Descarregar os dados</h2>
-<div class="sub">Dados em bruto, sem as transformacoes deste codigo — para
-  correres as tuas proprias analises noutro sitio.</div>
-<div id="exportBox"></div>
-
-<div class="sub" style="margin-top:20px">
-  <a href="/api/pmc" target="_blank">JSON do PMC</a> &middot;
-  <a href="/api/export" target="_blank">Indice das exportacoes</a> &middot;
-  <a href="/api/calibracao" target="_blank">Calibracao</a> &middot;
-  <a href="/api/protocolo" target="_blank">Protocolo de testes</a> &middot;
-  <a href="/api/debug/sheets" target="_blank">Diagnostico dos Sheets</a>
-</div>
-"""
-
-JS = r"""
-let D=null;
-const COR={ctl:'#5DADE2',atl:'#E74C3C',tsb:'#2ECC71',load:'#30363d'};
-
-function janelaPMC(arr){
- const n=parseInt(document.getElementById('janelaPMC').value,10);
- return (n>0&&arr.length>n)?arr.slice(-n):arr;
-}
-
-// linhas sobre um eixo comum, com barras de carga por tras
-function drawLinhas(canvasId,legendId,dados,series,cores,labels,opcoes){
- opcoes=opcoes||{};
- const o=ctx(canvasId,opcoes.height||300); if(!o)return;
- const g=o.g,W=o.W,H=o.H;
- const ativas=series.filter(s=>dados.some(d=>d[s]!=null));
- if(legendId)document.getElementById(legendId).innerHTML=ativas.map(s=>
-  '<span class="tog'+(opcoes.off&&opcoes.off[s]?' off':'')+'" data-c="'+canvasId+
-  '" data-k="'+s+'"><i style="background:'+(cores[s]||'#8b949e')+'"></i>'+
-  ((labels&&labels[s])||s)+'</span>').join('');
- if(!dados.length){noData(g,W,H);return;}
-
- const vis=ativas.filter(s=>!(opcoes.off&&opcoes.off[s]));
- const PL=48,PR=48,PT=14,PB=28,w=W-PL-PR,h=H-PT-PB;
- const n=dados.length;
- const X=i=>PL+w*(n>1?i/(n-1):0.5);
-
- // bandas de fase ao fundo, para ler o contexto de cada periodo
- if(opcoes.fases&&D&&D.ftlm){
-  const leg=D.ftlm.fases_legenda||{};
-  let ini=0;
-  for(let i=1;i<=dados.length;i++){
-   const mudou=(i===dados.length)||(dados[i].fase!==dados[ini].fase);
-   if(!mudou)continue;
-   const f=leg[dados[ini].fase];
-   if(f&&dados[ini].fase!=='TRANSITION'){
-    g.fillStyle=hexRgba(f.cor,0.10);
-    g.fillRect(X(ini),PT,Math.max(1,X(i-1)-X(ini)),h);}
-   ini=i;}
- }
- g.strokeStyle='#21262d';g.lineWidth=1;
- for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
-
- // barras de carga diaria, escala propria, ao fundo
- if(opcoes.barras&&dados.some(d=>d[opcoes.barras])){
-  const bv=dados.map(d=>d[opcoes.barras]||0);
-  const bmx=Math.max.apply(null,bv)||1;
-  const bw=Math.max(1,w/n*0.7);
-  g.fillStyle='rgba(88,101,116,0.45)';
-  dados.forEach(function(d,i){
-   const v=d[opcoes.barras]||0; if(!v)return;
-   const bh=h*0.32*v/bmx;
-   g.fillRect(X(i)-bw/2,PT+h-bh,bw,bh);});
- }
-
- if(!vis.length){noData(g,W,H,'Todas as series desligadas');return;}
-
- // Modo de escala. Series com gamma diferente diferem em ordens de grandeza
- // (gamma=0.9 chega a 13000, gamma=0.1 a 55), por isso partilhar eixo esconde
- // a de menor amplitude.
- //   'partilhada' — um so eixo (CTL/ATL/TSB, mesma unidade)
- //   'propria'    — cada serie no seu eixo, rotulos para as duas primeiras
- //   'indice'     — tudo em 0-100 face ao proprio maximo (compara formas)
- const modo=opcoes.escala||'partilhada';
- const lim={};
- vis.forEach(function(s){
-  let a=Infinity,b=-Infinity;
-  dados.forEach(function(d){const v=d[s];if(v==null)return;
-   if(v<a)a=v; if(v>b)b=v;});
-  if(!isFinite(a)){a=0;b=1;}
-  if(a>0&&modo!=='indice')a=0;
-  if(b===a)b=a+1;
-  lim[s]=[a,b];});
-
- let mn=Infinity,mx=-Infinity;
- if(modo==='partilhada'){
-  vis.forEach(function(s){mn=Math.min(mn,lim[s][0]);mx=Math.max(mx,lim[s][1]);});
-  if(!isFinite(mn)){noData(g,W,H);return;}
-  if(mn>0)mn=0; if(mx===mn)mx=mn+1;
- } else if(modo==='indice'){ mn=0; mx=100; }
-
- function Yde(s,v){
-  if(modo==='partilhada')return PT+h-(v-mn)/(mx-mn)*h;
-  if(modo==='indice'){const[a,b]=lim[s];return PT+h-((v-a)/(b-a)*100)/100*h;}
-  const[a,b]=lim[s]; return PT+h-(v-a)/(b-a)*h;
- }
-
- if(modo==='partilhada'&&mn<0){        // linha do zero, para o TSB
-  const y0=PT+h-(0-mn)/(mx-mn)*h;
-  g.strokeStyle='#484f58';g.setLineDash([3,3]);g.beginPath();
-  g.moveTo(PL,y0);g.lineTo(PL+w,y0);g.stroke();g.setLineDash([]);}
-
- vis.forEach(function(s){
-  g.strokeStyle=cores[s]||'#8b949e';g.lineWidth=1.8;g.beginPath();
-  let st=false;
-  dados.forEach(function(d,i){
-   const v=d[s]; if(v==null){st=false;return;}
-   const x=X(i),y=Yde(s,v);
-   if(!st){g.moveTo(x,y);st=true;}else g.lineTo(x,y);});
-  g.stroke();});
-
- function fmtEixo(v){
-  const a=Math.abs(v);
-  if(a>=10000)return (v/1000).toFixed(0)+'k';
-  if(a>=100)return Math.round(v);
-  return v.toFixed(1);}
-
- g.font='10px sans-serif';
- if(modo==='partilhada'){
-  g.fillStyle='#8b949e';g.textAlign='right';
-  for(let i=0;i<=4;i++)g.fillText(fmtEixo(mx-(mx-mn)*i/4),PL-6,PT+h*i/4+3);
- } else if(modo==='indice'){
-  g.fillStyle='#8b949e';g.textAlign='right';
-  for(let i=0;i<=4;i++)g.fillText(Math.round(100-100*i/4)+'%',PL-6,PT+h*i/4+3);
- } else {
-  // eixo esquerdo para a 1a serie, direito para a 2a
-  vis.slice(0,2).forEach(function(s,idx){
-   const[a,b]=lim[s]; const dir=idx===1;
-   g.fillStyle=cores[s]||'#8b949e'; g.textAlign=dir?'left':'right';
-   for(let i=0;i<=4;i++)
-    g.fillText(fmtEixo(b-(b-a)*i/4),dir?PL+w+6:PL-6,PT+h*i/4+3);});
- }
- g.fillStyle='#8b949e';g.textAlign='center';
- const step=Math.ceil(n/8);
- dados.forEach(function(d,i){if(i%step!==0)return;
-  g.fillText((d.date||'').slice(0,7),X(i),H-8);});
- g.textAlign='left';
-
- registarTip(canvasId,function(mxp,myp,rw){
-  const esc=rw/W,x=mxp/esc;
-  if(x<PL||x>PL+w)return '';
-  const i=Math.round((x-PL)/w*(n-1));
-  if(i<0||i>=n)return '';
-  const d=dados[i];
-  let html='<div class="th">'+d.date+'</div>';
-  vis.forEach(function(s){
-   if(d[s]==null)return;
-   html+=linhaTip(cores[s]||'#8b949e',(labels&&labels[s])||s,
-    (Math.abs(d[s])>=100?Math.round(d[s]):d[s].toFixed(1)));});
-  if(opcoes.barras&&d[opcoes.barras])
-   html+=linhaTip('#586574','Carga',Math.round(d[opcoes.barras]));
-  if(opcoes.fases&&d.fase&&D.ftlm){
-   const f=(D.ftlm.fases_legenda||{})[d.fase];
-   if(f)html+='<div class="tr" style="border-top:1px solid #30363d;margin-top:4px;'+
-    'padding-top:4px"><span>Fase</span><b style="color:'+f.cor+'">'+f.label+'</b></div>';
-   if(d.dctlg!=null)html+=linhaTip('#8b949e','ΔCTLγ',d.dctlg.toFixed(4)+'/d');}
-  if(opcoes.estado&&d.tsb!=null){
-   const e=estadoDe(d.tsb);
-   html+='<div class="tr" style="border-top:1px solid #30363d;margin-top:4px;'+
-    'padding-top:4px"><span>Forma</span><b style="color:'+e.cor+'">'+e.label+'</b></div>';}
-  return html;});
-
- // clicar na legenda liga/desliga
- if(legendId)document.querySelectorAll('#'+legendId+' span.tog').forEach(function(sp){
-  sp.onclick=function(){
-   opcoes.off[sp.dataset.k]=!opcoes.off[sp.dataset.k];
-   if(opcoes.redraw)opcoes.redraw();};});
-}
-
-function estadoDe(tsb){
- if(tsb>25)return{label:'Muito fresco',cor:'#5DADE2'};
- if(tsb>5)return{label:'Fresco',cor:'#2ECC71'};
- if(tsb>-10)return{label:'Neutro',cor:'#F4D03F'};
- if(tsb>-30)return{label:'Em carga',cor:'#E67E22'};
- return{label:'Muito carregado',cor:'#E74C3C'};
-}
-
-let OFFP={},OFFM={},OFFF={},OFFG={},OFFK={},OFFH={};
-
-// Reserva de performance: dois periodos lado a lado, cada um com o seu
-// ajuste Savitzky-Golay e banda +/-1 SD, com o pico marcado. As modalidades
-// sobrepoem-se ao global para se ver qual esta a puxar a reserva.
-const CORANT='#27ae60', CORREC='#e67e22';
-
-function periodosHomeo(serie){
- const d=serie.map(x=>x.date);
- function val(id){const v=document.getElementById(id).value;return v||null;}
- let aI=val('haIni'),aF=val('haFim'),rI=val('hrIni'),rF=val('hrFim');
- if(!aI||!aF||!rI||!rF){
-  // por defeito: os ultimos 60 dias contra os 60 anteriores
-  const n=d.length;
-  rF=d[n-1]; rI=d[Math.max(0,n-60)];
-  aF=d[Math.max(0,n-61)]; aI=d[Math.max(0,n-120)];
-  document.getElementById('haIni').value=aI;
-  document.getElementById('haFim').value=aF;
-  document.getElementById('hrIni').value=rI;
-  document.getElementById('hrFim').value=rF;}
- return {ant:[aI,aF],rec:[rI,rF]};
-}
-
-function drawHomeo(){
- const H=D.homeostatico;
- if(!H){const o=ctx('chHomeo',300);if(o)noData(o.g,o.W,o.H);return;}
- const vista=document.getElementById('homeoVista').value;
- const modSel=document.getElementById('homeoMod').value;
- const verMods=document.getElementById('homeoMods').checked;
- const HM=D.homeostatico_mod||{};
- const principal=(modSel&&HM[modSel])?HM[modSel]:H;
- const P=periodosHomeo(principal.serie);
-
- const dentro=(d,r)=>d>=r[0]&&d<=r[1];
- const ant=principal.serie.filter(x=>dentro(x.date,P.ant));
- const rec=principal.serie.filter(x=>dentro(x.date,P.rec));
- if(!ant.length&&!rec.length){
-  const o=ctx('chHomeo',300);if(o)noData(o.g,o.W,o.H,'Periodos sem dados');return;}
-
- const o=ctx('chHomeo',300); if(!o)return;
- const g=o.g,W=o.W,H2=o.H;
- const PL=52,PR=16,PT=16,PB=26,w=W-PL-PR,h=H2-PT-PB;
- const total=ant.length+rec.length;
- const gap=Math.round(w*0.03);
- const wA=ant.length?(w-gap)*ant.length/total:0;
- const wR=rec.length?(w-gap)*rec.length/total:0;
- const XA=i=>PL+wA*(ant.length>1?i/(ant.length-1):0.5);
- const XR=i=>PL+wA+gap+wR*(rec.length>1?i/(rec.length-1):0.5);
-
- // modalidades a sobrepor: sempre que a caixa esteja ligada
- const mods=(verMods&&vista==='todo')?Object.keys(HM):[];
- const idxMod={};
- mods.forEach(function(m){
-  const ix={};(HM[m].serie||[]).forEach(r=>{ix[r.date]=r.p_hat_suave;});
-  idxMod[m]=ix;});
-
- let mn=Infinity,mx=-Infinity;
- [ant,rec].forEach(seg=>seg.forEach(function(d){
-  [d.banda_inf,d.banda_sup,d.p_hat_suave].forEach(function(v){
-   if(v==null)return;if(v<mn)mn=v;if(v>mx)mx=v;});}));
- mods.forEach(m=>[ant,rec].forEach(seg=>seg.forEach(function(d){
-  const v=idxMod[m][d.date];if(v==null)return;
-  if(v<mn)mn=v;if(v>mx)mx=v;})));
- if(!isFinite(mn)){noData(g,W,H2);return;}
- if(mx===mn)mx=mn+1;
- const marg=(mx-mn)*0.08; mn-=marg; mx+=marg;
- const Y=v=>PT+h-(v-mn)/(mx-mn)*h;
-
- g.strokeStyle='#21262d';g.lineWidth=1;
- for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
-
- function desenhar(seg,X,cor,fill){
-  if(!seg.length)return null;
-  if(vista!=='fits'){
-   g.fillStyle=fill;g.beginPath();let ok=false;
-   seg.forEach(function(d,i){const v=d.banda_sup;if(v==null)return;
-    if(!ok){g.moveTo(X(i),Y(v));ok=true;}else g.lineTo(X(i),Y(v));});
-   for(let i=seg.length-1;i>=0;i--){const v=seg[i].banda_inf;if(v==null)continue;
-    g.lineTo(X(i),Y(v));}
-   g.closePath();g.fill();}
-  if(vista==='todo'&&!OFFH.bruto){
-   g.strokeStyle=hexRgba(cor,0.30);g.lineWidth=1;g.beginPath();let st=false;
-   seg.forEach(function(d,i){const v=d.p_hat;if(v==null){st=false;return;}
-    if(!st){g.moveTo(X(i),Y(v));st=true;}else g.lineTo(X(i),Y(v));});
-   g.stroke();}
-  g.strokeStyle=cor;g.lineWidth=2.4;g.beginPath();let st2=false;
-  let pico=null,pi=0;
-  seg.forEach(function(d,i){const v=d.p_hat_suave;if(v==null){st2=false;return;}
-   if(pico===null||v>pico){pico=v;pi=i;}
-   if(!st2){g.moveTo(X(i),Y(v));st2=true;}else g.lineTo(X(i),Y(v));});
-  g.stroke();
-  // marcador do pico
-  if(pico!==null){
-   g.fillStyle=cor;g.beginPath();g.arc(X(pi),Y(pico),4,0,Math.PI*2);g.fill();
-   g.fillStyle=cor;g.font='10px sans-serif';g.textAlign='center';
-   g.fillText('pico '+Math.round(pico),X(pi),Y(pico)-8);g.textAlign='left';}
-  return pico;
- }
-
- // modalidades por tras
- mods.forEach(function(m){
-  if(OFFH[m])return;
-  const cor=(D.cores||{})[m]||'#8b949e';
-  [[ant,XA,[3,3]],[rec,XR,[]]].forEach(function(par){
-   g.strokeStyle=cor;g.lineWidth=1.4;g.globalAlpha=0.8;
-   g.setLineDash(par[2]);g.beginPath();let st=false;
-   par[0].forEach(function(d,i){const v=idxMod[m][d.date];
-    if(v==null){st=false;return;}
-    if(!st){g.moveTo(par[1](i),Y(v));st=true;}else g.lineTo(par[1](i),Y(v));});
-   g.stroke();g.setLineDash([]);g.globalAlpha=1;});});
-
- const picoA=desenhar(ant,XA,CORANT,'rgba(39,174,96,0.13)');
- const picoR=desenhar(rec,XR,CORREC,'rgba(230,126,34,0.13)');
-
- g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
- for(let i=0;i<=4;i++)g.fillText(Math.round(mx-(mx-mn)*i/4),PL-6,PT+h*i/4+3);
- g.textAlign='center';
- [[ant,XA],[rec,XR]].forEach(function(par){
-  const seg=par[0],X=par[1],step=Math.ceil(Math.max(1,seg.length/4));
-  seg.forEach(function(d,i){if(i%step!==0)return;
-   g.fillText(d.date.slice(5),X(i),H2-8);});});
- g.textAlign='left';
-
- const itens=[['__a','Anterior · '+P.ant[0]+' a '+P.ant[1]+' (n='+ant.length+')',CORANT],
-              ['__r','Recente · '+P.rec[0]+' a '+P.rec[1]+' (n='+rec.length+')',CORREC]];
- if(vista==='todo')itens.push(['bruto','p̂ diario','rgba(150,150,150,0.4)']);
- mods.forEach(m=>itens.push([m,m,(D.cores||{})[m]||'#8b949e']));
- document.getElementById('lgHomeo').innerHTML=itens.map(x=>
-  (x[0].indexOf('__')===0
-   ? '<span><i style="background:'+x[2]+'"></i>'+x[1]+'</span>'
-   : '<span class="tog'+(OFFH[x[0]]?' off':'')+'" data-k="'+x[0]+'">'+
-     '<i style="background:'+x[2]+'"></i>'+x[1]+'</span>')).join('');
- document.querySelectorAll('#lgHomeo span.tog').forEach(function(sp){
-  sp.onclick=function(){OFFH[sp.dataset.k]=!OFFH[sp.dataset.k];drawHomeo();};});
-
- // leitura por baixo, como no dashboard
- const el=document.getElementById('homeoAnalise');
- if(picoA!=null&&picoR!=null){
-  const dif=picoR-picoA, pct=(dif/picoA*100);
-  const cor=dif>=0?'#2ECC71':'#E67E22';
-  el.innerHTML='<div style="background:#161b22;border-left:3px solid '+cor+
-   ';padding:9px 13px;border-radius:0 6px 6px 0;font-size:13px;margin:10px 0">'+
-   'O pico de reserva '+(dif>=0?'subiu':'desceu')+' <b>'+Math.abs(Math.round(dif))+
-   ' unidades</b> entre periodos ('+Math.round(picoA)+' → '+Math.round(picoR)+', '+
-   (pct>=0?'+':'')+pct.toFixed(0)+'%). '+
-   (dif>=0?'Melhor adaptacao na fase recente.'
-         :'A reserva caiu — carga sem compensacao, ou fase de acumulacao.')+
-   '</div>';
- } else el.innerHTML='';
-
- [[ant,XA],[rec,XR]].forEach(function(par,k){
-  registarTip('chHomeo',function(mxp,myp,rw){
-   const esc=rw/W,x=mxp/esc;
-   let seg,X,rot;
-   if(x>=PL&&x<=PL+wA){seg=ant;X=XA;rot='Anterior';}
-   else if(x>=PL+wA+gap&&x<=PL+w){seg=rec;X=XR;rot='Recente';}
-   else return '';
-   if(!seg.length)return '';
-   let melhor=0,dist=1e9;
-   seg.forEach(function(d,i){const dd=Math.abs(X(i)-x);if(dd<dist){dist=dd;melhor=i;}});
-   const d=seg[melhor];
-   let html='<div class="th">'+rot+' · '+d.date+'</div>'+
-    linhaTip(rot==='Anterior'?CORANT:CORREC,'p̂ ajustado',d.p_hat_suave);
-   mods.forEach(function(m){
-    if(OFFH[m])return;
-    const v=idxMod[m][d.date];if(v==null)return;
-    html+=linhaTip((D.cores||{})[m]||'#8b949e',m,v);});
-   html+='<div class="tr"><span>Banda</span><b>'+d.banda_inf+' a '+d.banda_sup+'</b></div>';
-   return html;});});
-}
-
-const MOTIVOS={
- ok:'ajustado',
- poucos_pontos_cp:'poucos pontos de CP',
- k_negativo:'K&#8322; sairia negativo',
- r2_nao_positivo:'R&sup2; nao positivo',
- sem_tentativas:'sem tentativas'};
-function motivoHomeo(v){
- if(v.ajustado)return 'ajustado';
- let t=MOTIVOS[v.motivo]||'defeito 42/7';
- if(v.motivo==='poucos_pontos_cp')t+=' ('+v.n_testes+'/20)';
- if(v.motivo==='k_negativo'&&v.melhor_rejeitado)
-  t+=' — o melhor daria K&#8321;='+v.melhor_rejeitado.k1+
-     ' K&#8322;='+v.melhor_rejeitado.k2+' (R&sup2; '+v.melhor_rejeitado.r2+')';
- return t;
-}
-
-function tabelaHomeo(){
- const HM=D.homeostatico_mod||{},H=D.homeostatico;
- document.getElementById('hmHead').innerHTML=
-  ['Modalidade','K₁','K₂','T₁','T₂','R²','p̂ actual','Ajuste']
-   .map((c,i)=>'<th class="'+(i&&i<7?'num':'')+'">'+c+'</th>').join('');
- function linha(nome,v,cor){
-  const s=v.serie||[];
-  const ult=s.length?s[s.length-1].p_hat_suave:'—';
-  return '<tr><td style="color:'+cor+'">'+nome+'</td>'+
-   '<td class="num">'+v.k1+'</td><td class="num">'+v.k2+'</td>'+
-   '<td class="num">'+v.t1+'d</td><td class="num">'+v.t2+'d</td>'+
-   '<td class="num">'+v.r2+'</td><td class="num">'+ult+'</td>'+
-   '<td style="font-size:12px;color:'+(v.ajustado?'#2ECC71':'#E67E22')+'" '+
-   'title="'+(v.nota||'')+'">'+motivoHomeo(v)+'</td></tr>';}
- const l=[];
- if(H)l.push(linha('Global',H,'#e6e6e6'));
- Object.keys(HM).forEach(m=>l.push(linha(m,HM[m],(D.cores||{})[m]||'#e6e6e6')));
- document.getElementById('hmBody').innerHTML=l.join('');
-}
-
-function mostrarHomeo(){
- const H=D.homeostatico;
- if(!H){document.getElementById('subHomeo').innerHTML=
-   '<span class="err">indisponivel</span>';return;}
- document.getElementById('subHomeo').innerHTML=
-  'p̂(t) = p₀ + K₁·EWM(carga,T₁) − K₂·EWM(carga,T₂) · '+H.nota;
- const selM=document.getElementById('homeoMod');
- const HM=D.homeostatico_mod||{};
- if(selM.options.length<=1)
-  selM.innerHTML='<option value="">Global</option>'+
-   Object.keys(HM).map(m=>'<option>'+m+'</option>').join('');
- document.getElementById('homeoKpis').innerHTML=[
-  ['K₁ (ganho fitness)',H.k1],['K₂ (ganho fadiga)',H.k2],
-  ['T₁ (τ fitness)',H.t1+'d'],['T₂ (τ fadiga)',H.t2+'d'],
-  ['R²',H.r2],['Pontos de CP',H.n_testes]
- ].map(k=>'<div class="card"><div class="label">'+k[0]+'</div>'+
-  '<div class="value">'+k[1]+'</div></div>').join('');
- drawHomeo(); tabelaHomeo();
-}
-
-function mostrarAlos(){
- const A=D.alostatico;
- if(!A){document.getElementById('subAlos').innerHTML=
-   '<span class="err">indisponivel</span>';return;}
- const e=A.estado;
- document.getElementById('subAlos').innerHTML=
-  A.n_dims+' de 6 dimensoes · anterior '+A.periodo_anterior.join(' a ')+
-  ' · recente '+A.periodo_recente.join(' a ')+
-  '<br><span style="font-size:12px">'+A.formula+
-  ' · scores: ['+(A.scores||[]).join(', ')+'] → media '+A.total+
-  '</span>';
- const pct=Math.round((A.total+1)/2*100);
- document.getElementById('alosCard').innerHTML=
-  '<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;'+
-  'padding:16px 20px;margin-bottom:12px">'+
-  '<div style="font-size:11px;color:#8b949e;text-transform:uppercase;'+
-  'letter-spacing:.5px;margin-bottom:6px">Adaptacao vs sobrecarga alostatica</div>'+
-  '<div style="font-size:30px;font-weight:600;color:'+e.cor+'">'+
-  (A.total>=0?'+':'')+A.total.toFixed(2)+
-  '<span style="font-size:14px;color:#8b949e"> /±1.00</span></div>'+
-  '<div style="font-size:13px;font-weight:600;color:'+e.cor+';margin:4px 0 12px">'+
-  e.label+'</div>'+
-  '<div style="display:flex;justify-content:space-between;font-size:10px;'+
-  'color:#8b949e;margin-bottom:4px"><span>SOBRECARGA</span><span>ESTAVEL</span>'+
-  '<span>ADAPTACAO</span></div>'+
-  '<div style="position:relative;height:10px;border-radius:5px;'+
-  'background:linear-gradient(to right,#e74c3c,#f39c12 45%,#27ae60)">'+
-  '<div style="position:absolute;left:'+pct+'%;top:-3px;width:16px;height:16px;'+
-  'border-radius:50%;background:'+e.cor+';border:2px solid #0e1117;'+
-  'transform:translateX(-50%)"></div></div>'+
-  '<div style="font-size:12px;color:#8b949e;margin-top:8px">'+e.desc+'</div></div>';
-
- document.getElementById('alosHead').innerHTML=
-  ['Dimensao','Anterior (n dias)','Recente (n dias)','Δ %','Score']
-   .map((c,i)=>'<th class="'+(i?'num':'')+'">'+c+'</th>').join('');
- document.getElementById('alosBody').innerHTML=A.dimensoes.map(function(d){
-  if(d.ant==null)
-   return '<tr><td>'+d.dim+'</td><td class="num" colspan="4" '+
-    'style="color:#484f58">sem dados</td></tr>';
-  const cor=d.score>=0?'#2ECC71':'#E74C3C';
-  return '<tr><td>'+d.dim+'</td>'+
-   '<td class="num">'+d.ant+' '+d.unidade+
-    '<span style="color:#8b949e;font-size:11px"> n='+d.n_ant+'</span></td>'+
-   '<td class="num">'+d.rec+' '+d.unidade+
-    '<span style="color:#8b949e;font-size:11px"> n='+d.n_rec+'</span></td>'+
-   '<td class="num" style="color:'+cor+'">'+(d.delta_pct>=0?'+':'')+
-    d.delta_pct.toFixed(1)+'%'+
-    (d.metodo&&d.metodo.indexOf('absoluta')!==-1?
-     ' <span style="color:#5DADE2" title="'+d.metodo+' — o TSB oscila em torno '+
-     'de zero, a percentagem sobre a base seria instavel">abs</span>':'')+
-    (d.saturado?
-    ' <span style="color:#E67E22" title="acima de 50%: o score satura em ±1">▲</span>':'')+
-    '</td>'+
-   '<td class="num" style="color:'+cor+'">'+(d.score>=0?'+':'')+
-    d.score.toFixed(3)+'</td></tr>';}).join('');
-}
-// Fiabilidade do CP — adaptado da tab eFTP do dashboard Streamlit.
-// Cada bloco de 8 semanas comparado contra o MDC do proprio metodo;
-// quando nao e' REAL, mostra o diagnostico diferencial (dose/kappa/meseta).
-function mostrarCpBlocos(){
- const CB=D.cp_blocos||{};
- const mods=Object.keys(CB);
- const sel=document.getElementById('cpBlocosMod');
- if(!mods.length){
-  document.getElementById('cpBlocosResumo').innerHTML=
-   '<div class="sub">Sem dados suficientes de CP para nenhuma modalidade '+
-   '(precisa de pelo menos 10 medicoes e 8+ semanas de historico).</div>';
-  sel.innerHTML=''; document.getElementById('cpBlocosBody').innerHTML='';
-  document.getElementById('cpBlocosHead').innerHTML='';
-  return;
- }
- if(sel.options.length!==mods.length)
-  sel.innerHTML=mods.map(m=>'<option>'+m+'</option>').join('');
- const mod=sel.value||mods[0];
- const info=CB[mod];
- if(!info) return;
-
- document.getElementById('cpBlocosResumo').innerHTML=
-  '<div class="cards">'+
-  [['MDC (95%)',info.mdc+' W'],
-   ['SEM',info.sem+' W'],
-   ['MDC em % do CP',info.mdc_pct!=null?info.mdc_pct+'%':'—'],
-   ['Medicoes usadas',info.n_medicoes]]
-  .map(k=>'<div class="card"><div class="label">'+k[0]+'</div>'+
-   '<div class="value">'+k[1]+'</div></div>').join('')+
-  '</div>';
-
- document.getElementById('cpBlocosHead').innerHTML=
-  ['Periodo (fim)','CP (W)','Δ 8 sem (W)','Sinal','CTL medio','κ medio','Diagnostico']
-  .map((c,i)=>'<th class="'+(i&&i<6?'num':'')+'">'+c+'</th>').join('');
-
- const CORES={'REAL':'#2ECC71','INCERTO':'#F4D03F','RUÍDO':'#E74C3C'};
- document.getElementById('cpBlocosBody').innerHTML=
-  (info.blocos||[]).slice().reverse().map(function(b){
-   const cor=CORES[b.classificacao]||'#8b949e';
-   const diag=(b.diagnostico||[]).map(function(d){
-    return '<div style="margin-bottom:4px"><b>'+d.causa+'</b><br>'+
-     '<span style="color:#8b949e">'+d.prescricao+' — '+d.fonte+'</span></div>';
-   }).join('');
-   return '<tr><td>'+b.periodo_fim+'</td>'+
-    '<td class="num">'+b.cp_fim+'</td>'+
-    '<td class="num" style="color:'+cor+'">'+
-     (b.delta>=0?'+':'')+b.delta+'</td>'+
-    '<td class="num" style="color:'+cor+'">'+b.classificacao+'</td>'+
-    '<td class="num">'+(b.ctl_medio!=null?b.ctl_medio:'—')+'</td>'+
-    '<td class="num">'+(b.kappa_medio!=null?b.kappa_medio:'—')+'</td>'+
-    '<td style="font-size:12px">'+(diag||'—')+'</td></tr>';
-  }).join('');
-}
-
-// Projeccao de CP a 28 dias — cartoes por modalidade, um beta e um R2 por
-// desporto, com a leitura de fiabilidade.
-function mostrarCpProjecao(){
- const P=D.cp_projecao||{};
- const mods=Object.keys(P);
- const cont=document.getElementById('cpProjCards');
- if(!mods.length){
-  cont.innerHTML='<div class="sub">Sem dados suficientes para nenhuma '+
-   'modalidade (precisa de historico de CTLg e CP com sobreposicao).</div>';
-  return;
- }
- const CORF={true:'#2ECC71',false:'#E67E22'};
- cont.innerHTML='<div class="cards">'+mods.map(function(m){
-  const v=P[m];
-  const cor=v.r2>=0.20?'#2ECC71':(v.r2>=0.08?'#F4D03F':'#E74C3C');
-  return '<div class="card"><div class="label">'+m+
-   ' <span style="color:'+cor+'">('+(v.r2>=0.20?'fiavel':v.r2>=0.08?'incerto':'baixa fiabilidade')+
-   ')</span></div>'+
-   '<div class="value">'+v.cp_proj_28d+' W</div>'+
-   '<div style="font-size:12px;color:#8b949e">'+
-   'actual '+v.cp_actual+'W · Δ '+(v.delta_w>=0?'+':'')+v.delta_w+'W ('+
-   (v.delta_pct>=0?'+':'')+v.delta_pct+'%) · ±'+v.ic90_w+'W (IC90)</div>'+
-   '<div style="font-size:11px;color:#8b949e;margin-top:4px">'+
-   'β='+v.beta+' R²='+v.r2+' n='+v.n+'<br>'+v.leitura+'</div></div>';
- }).join('')+'</div>';
-}
-
-// Modelo 2 (FTLM Polar) — coeficientes alpha por zona, um cartao por
-// modalidade, comparando com o R2 do modelo simples (CTLg total) quando
-// disponivel.
-function mostrarCpPolar(){
- const M=D.modelo_polar||{};
- const mods=Object.keys(M);
- const cont=document.getElementById('cpPolarCards');
- if(!mods.length){
-  cont.innerHTML='<div class="sub">Sem zonas de potencia guardadas para '+
-   'nenhuma modalidade — corre a extraccao de zone_times primeiro.</div>';
-  return;
- }
- cont.innerHTML='<div class="cards">'+mods.map(function(m){
-  const v=M[m];
-  const cor=v.r2>=0.20?'#2ECC71':(v.r2>=0.08?'#F4D03F':'#E74C3C');
-  return '<div class="card"><div class="label">'+m+'</div>'+
-   '<div style="font-size:13px;color:#e6e6e6;margin:4px 0">'+
-   'α_Z3='+v.alpha_z3+' · α_Z2='+v.alpha_z2+' · α_Z1='+v.alpha_z1+'</div>'+
-   '<div style="font-size:12px;color:'+cor+'">R²='+v.r2+' (n='+v.n+')</div>'+
-   '<div style="font-size:11px;color:#8b949e;margin-top:4px">'+
-   'γ modal='+v.gamma_modal+' · kJ Z3 (7d)='+v.kj_z3_ultimos_7d+
-   ' de '+v.kj_total_ultimos_7d+' totais</div></div>';
- }).join('')+'</div>';
-}
-
-function hexRgba(h,a){h=h.replace('#','');
- return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+
-  parseInt(h.slice(4,6),16)+','+a+')';}
-
-// Um painel por modalidade, como no dashboard: CTLgamma no eixo esquerdo
-// (escala propria, porque cada modalidade tem o seu gamma) e CTL/ATL
-// classicos ponteados no direito, so como contexto.
-function drawCTLg(){
- const pm=(D.ftlm||{}).por_modalidade||{};
- const mods=Object.keys(pm);
- const cont=document.getElementById('painelMods');
- if(!mods.length){cont.innerHTML='<div class="sub">Sem dados</div>';return;}
-
- if(cont.dataset.n!==String(mods.length)){
-  cont.dataset.n=String(mods.length);
-  cont.innerHTML=mods.map(m=>
-   '<div class="chartbox" style="margin-bottom:0">'+
-   '<div class="legend" id="lgM'+m+'"></div>'+
-   '<canvas id="chM'+m+'" height="190"></canvas></div>').join('');
- }
-
- // CTL/ATL classicos por modalidade, para o eixo direito
- const clas={};
- (D.sessoes||[]).forEach(function(s){
-  clas[s.type]=clas[s.type]||{};
-  clas[s.type][s.date]=(clas[s.type][s.date]||0)+(s.tl||0);});
-
- mods.forEach(function(m){
-  const serie=janelaPMC(pm[m].serie||[]);
-  const o=ctx('chM'+m,190); if(!o)return;
-  const g=o.g,W=o.W,H=o.H;
-  const PL=44,PR=40,PT=20,PB=20,w=W-PL-PR,h=H-PT-PB,n=serie.length;
-  if(!n){noData(g,W,H);return;}
-  const X=i=>PL+w*(n>1?i/(n-1):0.5);
-  const cor=(D.cores||{})[m]||'#8b949e';
-
-  // CTL e ATL classicos desta modalidade
-  const datas=serie.map(d=>d.date);
-  const cargas=datas.map(d=>(clas[m]||{})[d]||0);
-  function ewmJS(v,span){const a=2/(span+1);let p=null;
-   return v.map(function(x){p=(p===null)?x:a*x+(1-a)*p;return p;});}
-  const ctl=ewmJS(cargas,42),atl=ewmJS(cargas,7);
-
-  let mn=Infinity,mx=-Infinity;
-  serie.forEach(function(d){const v=d.ctlg;if(v==null)return;
-   if(v<mn)mn=v;if(v>mx)mx=v;});
-  if(!isFinite(mn)){noData(g,W,H);return;}
-  if(mn>0)mn=0; if(mx===mn)mx=mn+1;
-  const Y=v=>PT+h-(v-mn)/(mx-mn)*h;
-  const cmx=Math.max.apply(null,ctl.concat(atl,[1]));
-  const Y2=v=>PT+h-v/cmx*h;
-
-  g.strokeStyle='#21262d';g.lineWidth=1;
-  for(let i=0;i<=3;i++){const y=PT+h*i/3;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
-
-  // classicos, ponteados e esbatidos
-  [[ctl,[2,3],0.45],[atl,[5,3],0.30]].forEach(function(par){
-   g.strokeStyle=cor;g.setLineDash(par[1]);g.globalAlpha=par[2];g.lineWidth=1.3;
-   g.beginPath();
-   par[0].forEach(function(v,i){const y=Y2(v);
-    if(i===0)g.moveTo(X(i),y);else g.lineTo(X(i),y);});
-   g.stroke();g.setLineDash([]);g.globalAlpha=1;});
-
-  // CTLgamma
-  g.strokeStyle=cor;g.lineWidth=2.4;g.beginPath();let st=false;
-  serie.forEach(function(d,i){const v=d.ctlg;if(v==null){st=false;return;}
-   if(!st){g.moveTo(X(i),Y(v));st=true;}else g.lineTo(X(i),Y(v));});
-  g.stroke();
-
-  g.fillStyle=cor;g.font='11px sans-serif';g.textAlign='left';
-  g.fillText(m,PL,12);
-  g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
-  for(let i=0;i<=3;i++)g.fillText(Math.round(mx-(mx-mn)*i/3),PL-5,PT+h*i/3+3);
-  g.textAlign='left';
-  for(let i=0;i<=3;i++)g.fillText(Math.round(cmx-cmx*i/3),PL+w+5,PT+h*i/3+3);
-  g.textAlign='center';
-  const step=Math.ceil(n/4);
-  serie.forEach(function(d,i){if(i%step!==0)return;
-   g.fillText(d.date.slice(2,7),X(i),H-6);});
-  g.textAlign='left';
-
-  const v=pm[m];
-  const leg=(D.ftlm||{}).fases_legenda||{};
-  const f=leg[v.fase]||{};
-  document.getElementById('lgM'+m).innerHTML=
-   '<span><i style="background:'+cor+'"></i>CTLγ γ='+v.gamma+' R²='+v.r2+'</span>'+
-   '<span style="opacity:.6"><i style="background:'+cor+'"></i>CTL/ATL</span>'+
-   (f.label?'<span style="color:'+f.cor+'">'+f.label+'</span>':'');
-
-  registarTip('chM'+m,function(mxp,myp,rw){
-   const esc=rw/W,x=mxp/esc;
-   if(x<PL||x>PL+w)return '';
-   const i=Math.round((x-PL)/w*(n-1));
-   if(i<0||i>=n)return '';
-   return '<div class="th">'+m+' · '+serie[i].date+'</div>'+
-    linhaTip(cor,'CTLγ',serie[i].ctlg)+
-    linhaTip(cor,'CTL (42d)',Math.round(ctl[i]))+
-    linhaTip(cor,'ATL (7d)',Math.round(atl[i]));});
- });
-}
-
-// ─── FMT 5x5: matriz, valores proprios e mapa de atencao ────────────────
-function corCel(v,mx){
- // azul (baixo) -> amarelo -> vermelho (alto), como a Figura 1 do paper
- const t=mx>0?Math.max(0,Math.min(1,v/mx)):0;
- if(t<0.5){const u=t/0.5;
-  return 'rgb('+Math.round(59+(234-59)*u)+','+Math.round(130+(179-130)*u)+','+
-   Math.round(246+(8-246)*u)+')';}
- const u=(t-0.5)/0.5;
- return 'rgb('+Math.round(234+(220-234)*u)+','+Math.round(179+(38-179)*u)+','+
-  Math.round(8+(38-8)*u)+')';
-}
-
-function drawMatriz(){
- const F=D.fmt;
- const o=ctx('chMatriz',260); if(!o)return;
- const g=o.g,W=o.W,H=o.H;
- if(!F||F.erro||!F.resumo){noData(g,W,H,(F&&F.erro)||'Sem tensor');return;}
- const R=F.resumo, nomes=R.nomes, M=R.matriz, n=nomes.length;
- const PL=64,PT=26,PR=14,PB=14;
- const cel=Math.min((W-PL-PR)/n,(H-PT-PB)/n);
- let mx=0;
- M.forEach(l=>l.forEach(v=>{if(v!=null&&Math.abs(v)>mx)mx=Math.abs(v);}));
- for(let i=0;i<n;i++)for(let j=0;j<n;j++){
-  const v=M[i][j];
-  g.fillStyle=v==null?'#21262d':corCel(Math.abs(v),mx);
-  g.fillRect(PL+j*cel,PT+i*cel,cel-1,cel-1);
-  if(i===j){g.strokeStyle='#5DADE2';g.lineWidth=2;
-   g.strokeRect(PL+j*cel,PT+i*cel,cel-1,cel-1);}
-  if(cel>26&&v!=null){
-   g.fillStyle=Math.abs(v)/mx>0.55?'#0d1117':'#e6e6e6';
-   g.font='9px sans-serif';g.textAlign='center';
-   g.fillText(v.toFixed(2),PL+j*cel+cel/2,PT+i*cel+cel/2+3);}
- }
- g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
- nomes.forEach((nm,i)=>g.fillText(nm,PL-6,PT+i*cel+cel/2+3));
- g.textAlign='center';
- nomes.forEach((nm,j)=>g.fillText(nm,PL+j*cel+cel/2,PT-8));
- g.textAlign='left';
- g.fillStyle='#5DADE2';g.font='10px sans-serif';
- g.fillText('diagonal = κ = '+R.kappa,PL,H-2);
-
- registarTip('chMatriz',function(mxp,myp,rw){
-  const esc=rw/W,x=mxp/esc,y=myp/esc;
-  const j=Math.floor((x-PL)/cel), i=Math.floor((y-PT)/cel);
-  if(i<0||j<0||i>=n||j>=n)return '';
-  const v=M[i][j]; if(v==null)return '';
-  return '<div class="th">'+nomes[i]+' × '+nomes[j]+'</div>'+
-   '<div class="tr"><span>'+(i===j?'Variancia':'Covariancia')+'</span><b>'+
-   v.toFixed(4)+'</b></div>'+
-   (i===j?'<div class="tr"><span>Contributo para κ</span><b>'+
-    (v/R.kappa*100).toFixed(0)+'%</b></div>':'');});
-}
-
-function drawEigen(){
- const F=D.fmt;
- const o=ctx('chEigen',260); if(!o)return;
- const g=o.g,W=o.W,H=o.H;
- if(!F||F.erro||!F.resumo){noData(g,W,H);return;}
- const ev=F.resumo.eigen.filter(v=>v>0);
- if(!ev.length){noData(g,W,H);return;}
- const PL=44,PT=16,PR=16,PB=30,w=W-PL-PR,h=H-PT-PB;
- const tot=ev.reduce((a,b)=>a+b,0), mx=ev[0];
- const bw=w/ev.length;
- g.strokeStyle='#21262d';
- for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
- ev.forEach(function(v,i){
-  const bh=h*v/mx;
-  g.fillStyle=i===0?'#E67E22':'#5DADE2';g.globalAlpha=0.85;
-  g.fillRect(PL+i*bw+bw*0.2,PT+h-bh,bw*0.6,bh);g.globalAlpha=1;
-  g.fillStyle='#e6e6e6';g.font='10px sans-serif';g.textAlign='center';
-  g.fillText((v/tot*100).toFixed(0)+'%',PL+i*bw+bw/2,PT+h-bh-5);
-  g.fillStyle='#8b949e';
-  g.fillText('λ'+(i+1),PL+i*bw+bw/2,H-8);});
- g.textAlign='right';g.fillStyle='#8b949e';
- for(let i=0;i<=4;i++)g.fillText((mx-mx*i/4).toFixed(2),PL-5,PT+h*i/4+3);
- g.textAlign='left';
-}
-
-function drawAtencao(){
- const F=D.fmt;
- const o=ctx('chAtencao',200); if(!o)return;
- const g=o.g,W=o.W,H=o.H;
- if(!F||F.erro||!F.canais){noData(g,W,H);return;}
- const c=document.getElementById('canalFMT').value;
- const A=F.canais[c];
- if(!A){noData(g,W,H,'Canal indisponivel');return;}
- const p=A.pesos, n=p.length;
- const PL=44,PT=16,PR=14,PB=28,w=W-PL-PR,h=H-PT-PB;
- const mx=Math.max.apply(null,p)||1;
- const bw=w/n;
- g.strokeStyle='#21262d';
- for(let i=0;i<=3;i++){const y=PT+h*i/3;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
- p.forEach(function(v,i){
-  const bh=h*v/mx;
-  g.fillStyle=A.cor;g.globalAlpha=0.35+0.65*(v/mx);
-  g.fillRect(PL+i*bw+1,PT+h-bh,bw-2,bh);g.globalAlpha=1;});
- g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='center';
- const step=Math.ceil(n/8);
- A.lag.forEach(function(l,i){if(i%step!==0)return;
-  g.fillText(l===0?'hoje':'d-'+l,PL+i*bw+bw/2,H-8);});
- g.textAlign='right';
- for(let i=0;i<=3;i++)g.fillText((mx-mx*i/3*100).toFixed(0)+'%',PL-5,PT+h*i/3+3);
- g.textAlign='left';
-
- document.getElementById('lgAtencao').innerHTML=
-  '<span><i style="background:'+A.cor+'"></i>'+A.nome+'</span>'+
-  '<span style="color:#8b949e">'+A.desc+'</span>';
-
- registarTip('chAtencao',function(mxp,myp,rw){
-  const esc=rw/W,x=mxp/esc;
-  const i=Math.floor((x-PL)/bw);
-  if(i<0||i>=n)return '';
-  return '<div class="th">'+A.datas[i]+' · '+(A.lag[i]===0?'hoje':'d-'+A.lag[i])+
-   '</div>'+linhaTip(A.cor,'Peso',(A.pesos[i]*100).toFixed(1)+'%');});
-}
-
-function blocoPoder(){
- const E=(D.teste_eventos||{}).por_modalidade||{};
- const linhas=[];
- Object.keys(E).forEach(function(m){
-  const p=E[m].poder; if(!p||p.poder_actual==null)return;
-  const baixo=p.poder_actual<0.8;
-  linhas.push('<tr><td>'+m+'</td>'+
-   '<td class="num">'+E[m].maior_efeito+'</td>'+
-   '<td class="num">+'+E[m].melhor_lag+'d</td>'+
-   '<td class="num">'+p.n_por_grupo+'</td>'+
-   '<td class="num" style="color:'+(baixo?'#E67E22':'#2ECC71')+'">'+
-    Math.round(p.poder_actual*100)+'%</td>'+
-   '<td class="num">'+(p.n_para_80pct||'—')+'</td></tr>');});
- const el=document.getElementById('poderBox');
- if(!el)return;
- if(!linhas.length){el.innerHTML='';return;}
- el.innerHTML='<h3>Poder estatistico</h3>'+
-  '<div class="sub">Com quantos dias conseguirias detectar o efeito que '+
-  'observas, se ele for real? Poder baixo significa que <b>nao detectar '+
-  'nao e o mesmo que nao existir</b>.</div>'+
-  '<div class="wrap"><table><thead><tr>'+
-  ['Modalidade','d observado','Lag','n/grupo','Poder','n para 80%']
-   .map((c,i)=>'<th class="'+(i?'num':'')+'">'+c+'</th>').join('')+
-  '</tr></thead><tbody>'+linhas.join('')+'</tbody></table></div>';
-}
-
-function tabelaCalibracao(){
- const F=D.fmt, C=(F||{}).calibracao;
- if(!C){document.getElementById('calBody').innerHTML=
-   '<tr><td class="loading">sem calibracao</td></tr>';return;}
- document.getElementById('calHead').innerHTML=
-  ['Parametro','Valor','Fonte','r','r² (var. expl.)','n','Leitura']
-   .map((c,i)=>'<th class="'+(i>0&&i<6?'num':'')+'">'+c+'</th>').join('');
-
- const linhas=[
-  ['canal1_tau','τ do canal 1 (carga)','dias',
-   'Ao fim de quantos dias a carga deixa de pesar no teu HRV?'],
-  ['canal2_lag','lag do canal 2 (HRV)','dias',
-   'Quantos dias depois da carga o teu HRV cai mais?'],
-  ['canal3_lag','lag do canal 3 (supercomp.)','dias',
-   'Quantos dias depois de um bloco a tua CP sobe mais?'],
-  ['canal4_lag','τ do canal 4 (risco)','dias',
-   'Em que horizonte o κ antecipa quedas de CP?'],
- ];
- let html=linhas.map(function(l){
-  const v=C[l[0]]||{};
-  const dados=v.fonte==='dados';
-  const cor=dados?'#2ECC71':'#E67E22';
-  const REJ=(C.parametros_rejeitados||{})[l[0]];
-  const CORF={forte:'#2ECC71',moderada:'#F4D03F',fraca:'#E67E22',residual:'#E74C3C'};
-  const cf=CORF[v.forca]||'#8b949e';
-  let nota=dados?l[3]:(v.motivo||l[3]);
-  if(REJ)
-   nota='<span style="color:#E67E22">Rejeitado: '+REJ.motivo+'. '+
-        'A usar o valor de referencia.</span>';
-  else if(v.aviso_causalidade)
-   nota='<span style="color:#E74C3C">⚠ '+v.aviso_causalidade+'</span>';
-  else if(v.aviso)nota='<span style="color:#E67E22">⚠ '+v.aviso+'</span>';
-  else if(v.interpretacao)nota=v.interpretacao;
-  // Quando o valor foi encontrado mas rejeitado, mostrar os dois: o que os
-  // dados deram e o que esta realmente a ser usado.
-  const mostrado = REJ ? REJ.usado : v.valor;
-  return '<tr><td>'+l[1]+'</td>'+
-   '<td class="num">'+(mostrado!=null?mostrado+' '+l[2]:'—')+
-    (REJ?'<br><span style="font-size:11px;color:#E74C3C">'+
-     'dados deram '+REJ.valor_encontrado+' — nao usado</span>':'')+
-    (v.fronteira?' <span style="color:#E67E22" title="valor no extremo da '+
-     'grelha — nao e um optimo">⚠</span>':'')+'</td>'+
-   '<td class="num" style="color:'+(REJ?'#E67E22':cor)+'" title="'+
-    (REJ?REJ.motivo:(v.motivo||''))+'">'+
-    (REJ?'referencia':(dados?'teus dados':'referencia'))+'</td>'+
-   '<td class="num">'+(v.r!=null?v.r:'—')+'</td>'+
-   '<td class="num" style="color:'+cf+'">'+
-    (v.r2!=null?v.r2+' ('+v.variacao_explicada_pct+'%)':'—')+
-    (v.forca?'<br><span style="font-size:11px">'+v.forca+'</span>':'')+'</td>'+
-   '<td class="num">'+(v.n!=null?v.n:'—')+'</td>'+
-   '<td style="font-size:12px;color:#8b949e">'+nota+
-    (v.destendenciado?'<br><span style="color:#5DADE2">sem tendencia de longo '+
-     'prazo (residuos face a media movel de ±90d)</span>':'')+
-    '</td></tr>';}).join('');
-
- const L=C.limiares_lambda1||{};
- const dl=L.fonte==='dados';
- html+='<tr><td>Limiares λ₁ (focal / multi)</td>'+
-  '<td class="num">'+(L.alto!=null?(L.alto*100).toFixed(0)+'% / '+
-   (L.baixo*100).toFixed(0)+'%':'—')+'</td>'+
-  '<td class="num" style="color:'+(dl?'#2ECC71':'#E67E22')+'">'+
-   (dl?'teus dados':'referencia')+'</td>'+
-  '<td class="num">—</td><td class="num">—</td>'+
-  '<td class="num">'+(L.n||'—')+'</td>'+
-  '<td style="font-size:12px;color:#8b949e">'+
-   (dl?'media ±1 desvio do teu λ₁ (media '+L.media+', desvio '+L.desvio+
-       '; p70/p30 seriam '+L.p70+'/'+L.p30+')'
-     :(L.motivo||''))+'</td></tr>';
- document.getElementById('calBody').innerHTML=html;
-
- // veredicto: ha sinal utilizavel ou os canais sao decorativos?
- const V=C.veredicto;
- const ev=document.getElementById('veredicto');
- if(ev&&V)ev.innerHTML=
-  '<div style="border-left:4px solid '+V.cor+';background:'+hexRgba(V.cor,0.08)+
-  ';padding:11px 15px;border-radius:0 6px 6px 0;margin-bottom:10px;font-size:13px">'+
-  '<b>'+({utilizavel:'Sinal utilizavel',fraco:'Sinal fraco',
-          sem_sinal:'Sem sinal detectavel'}[V.nivel]||V.nivel)+'</b><br>'+
-  V.texto+'</div>';
-
- const R=C.resumo||{};
- const el=document.getElementById('notaCal');
- if(el){
-  let h=R.derivados_dos_dados+' de '+R.total+' parametros vem dos teus dados. '+R.nota;
-  if((C.avisos||[]).length)
-   h+='<div style="margin-top:8px;border-left:3px solid #E67E22;background:#161b22;'+
-      'padding:8px 12px;border-radius:0 6px 6px 0;font-size:12px">'+
-      '<b>A ter em conta:</b><br>'+C.avisos.join('<br>')+'</div>';
-  el.innerHTML=h;}
-}
-
-function mostrarFMT5(){
- const F=D.fmt;
- const sub=document.getElementById('subFMT5');
- if(!F||F.erro){
-  sub.innerHTML='<span class="err">'+((F&&F.erro)||'FMT indisponivel')+'</span>';
-  return;}
- const lim=(F.resumo||{}).limiares||{};
- sub.innerHTML='Tensor '+F.dimensoes.length+'&times;'+F.dimensoes.length+
-  ' sobre janela de '+F.janela+' dias &middot; dimensoes: '+F.dimensoes.join(', ')+
-  ' &middot; dia '+F.dia+
-  (lim.fonte==='dados'||lim.fonte==='historico'
-   ? '<br><span style="font-size:12px">Limiares focal/multissistemico da tua '+
-     'distribuicao de λ₁ ('+(lim.focal_acima*100).toFixed(0)+'% / '+
-     (lim.multi_abaixo*100).toFixed(0)+'%), sobre '+
-     (lim.n_historico||lim.n||0)+' dias</span>'
-   : '<br><span style="font-size:12px;color:#E67E22">Limiares de referencia '+
-     '(0.55/0.35) — so '+(lim.n_historico||lim.n||0)+' dias de historico, '+
-     'precisa de 60 para os derivar dos teus dados</span>');
- const L=(F.resumo||{}).leitura;
- document.getElementById('leituraFMT').innerHTML= L
-  ? '<div style="border-left:3px solid '+L.cor+';background:#161b22;padding:9px 13px;'+
-    'border-radius:0 6px 6px 0;font-size:13px;margin:4px 0 12px">'+L.texto+'</div>' : '';
- const sel=document.getElementById('canalFMT');
- if(!sel.options.length)
-  sel.innerHTML=Object.keys(F.canais).map(k=>
-   '<option value="'+k+'">'+F.canais[k].nome+'</option>').join('');
- document.getElementById('notaAtencao').textContent=F.nota_atencao||'';
- tabelaCalibracao(); blocoPoder();
- drawMatriz();drawEigen();drawAtencao();
-}
-
-function drawFMT(){
- if(!D.ftlm){return;}
- drawLinhas('chFMT','lgFMT',janelaPMC(D.ftlm.serie),['kappa','lambda1'],
-  {kappa:'#E74C3C',lambda1:'#F4D03F'},
-  {kappa:'κ (instabilidade)',lambda1:'λ₁ (dominancia)'},
-  {off:OFFK,redraw:drawFMT,height:220,escala:'propria'});
-}
-function tabelaGammas(){
- const pm=(D.ftlm||{}).por_modalidade||{};
- const mods=Object.keys(pm);
- document.getElementById('gHead').innerHTML=
-  ['Modalidade','γ','R²','n','Sessoes','CTLγ (% do proprio max)','Fase']
-   .map((c,i)=>'<th class="'+(i&&i<6?'num':'')+'">'+c+'</th>').join('');
- const leg=(D.ftlm||{}).fases_legenda||{};
- // O CTLγ absoluto NAO e comparavel entre modalidades: gammas diferentes
- // dao ordens de grandeza diferentes (γ=0.9 chega a dezenas de milhar,
- // γ=0.1 a dezenas). Mostramos a percentagem do proprio maximo, que e
- // comparavel, e o valor bruto em segunda linha.
- document.getElementById('gBody').innerHTML=mods.map(function(m){
-  const v=pm[m], f=leg[v.fase]||{}, gf=v.gamma_fit||{};
-  const suspeito=gf.aceite===false;
-  return '<tr><td style="color:'+(D.cores[m]||'#e6e6e6')+'">'+m+'</td>'+
-   '<td class="num">'+v.gamma+
-    (suspeito?'<br><span style="font-size:11px;color:#E67E22" title="'+
-     (gf.motivo||'')+'">defeito'+(gf.gamma_encontrado!=null?
-     ' (dados deram '+gf.gamma_encontrado+')':'')+'</span>':'')+'</td>'+
-   '<td class="num">'+v.r2+'</td>'+
-   '<td class="num">'+v.n+'</td><td class="num">'+v.n_sessoes+'</td>'+
-   '<td class="num">'+(v.ctlg_pct!=null?v.ctlg_pct+'%':'—')+
-    '<br><span style="font-size:11px;color:#8b949e">'+
-    (v.ctlg_actual>=1000?Math.round(v.ctlg_actual).toLocaleString('pt-PT')
-     :v.ctlg_actual)+' bruto</span></td>'+
-   '<td style="color:'+(f.cor||'#8b949e')+'">'+(f.label||v.fase)+'</td></tr>';
- }).join('');
-}
-// PMC principal: CTL/ATL/TSB a esquerda, CTLgamma a direita com valores
-// reais (nao re-escalados), bandas de fase ao fundo e barras de carga por
-// modalidade num painel proprio — como no dashboard original.
-function drawPMC(){
- const verF=document.getElementById('verFTLM').checked;
- const verB=document.getElementById('verFases').checked;
- const dados=janelaPMC(D.serie);
- const F=D.ftlm;
-
- // juntar as series CTLgamma pela data
- let idxF={};
- if(verF&&F) (F.serie||[]).forEach(function(r){idxF[r.date]=r;});
- const comb=dados.map(function(d){
-  const f=idxF[d.date]||{};
-  return Object.assign({},d,{
-   ctlg_perf:f.ctlg_perf,ctlg_rec:f.ctlg_rec,fase:f.fase,dctlg:f.dctlg});});
-
- const o=ctx('chPMC',330); if(!o)return;
- const g=o.g,W=o.W,H=o.H;
- const PL=52,PR=56,PT=14,PB=22,w=W-PL-PR,h=H-PT-PB;
- const n=comb.length;
- if(!n){noData(g,W,H);return;}
- const X=i=>PL+w*(n>1?i/(n-1):0.5);
-
- // ── bandas de fase ──
- if(verB&&F){
-  const leg=F.fases_legenda||{};
-  let ini=0;
-  for(let i=1;i<=n;i++){
-   const mudou=(i===n)||(comb[i].fase!==comb[ini].fase);
-   if(!mudou)continue;
-   const ph=leg[comb[ini].fase];
-   if(ph&&comb[ini].fase!=='TRANSITION'){
-    g.fillStyle=hexRgba(ph.cor,0.10);
-    g.fillRect(X(ini),PT,Math.max(1,X(i-1)-X(ini)),h);}
-   ini=i;}
- }
-
- // ── eixo esquerdo: CTL, ATL, TSB (mesma unidade) ──
- const esq=['ctl','atl','tsb'].filter(k=>!OFFP[k]);
- let mn=0,mx=1;
- ['ctl','atl','tsb'].forEach(k=>comb.forEach(function(d){
-  if(d[k]==null)return; if(d[k]<mn)mn=d[k]; if(d[k]>mx)mx=d[k];}));
- const YE=v=>PT+h-(v-mn)/(mx-mn)*h;
-
- g.strokeStyle='#21262d';g.lineWidth=1;
- for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
- if(mn<0){g.strokeStyle='#484f58';g.setLineDash([3,3]);g.beginPath();
-  g.moveTo(PL,YE(0));g.lineTo(PL+w,YE(0));g.stroke();g.setLineDash([]);}
-
- // TSB preenchido ate zero, como no original
- if(esq.indexOf('tsb')!==-1){
-  g.fillStyle='rgba(39,174,96,0.15)';g.beginPath();
-  let st=false;
-  comb.forEach(function(d,i){if(d.tsb==null)return;
-   if(!st){g.moveTo(X(i),YE(0));st=true;} g.lineTo(X(i),YE(d.tsb));});
-  if(st){g.lineTo(X(n-1),YE(0));g.closePath();g.fill();}
- }
-
- [['ctl',2.2],['atl',2.2],['tsb',1]].forEach(function(par){
-  const k=par[0]; if(OFFP[k])return;
-  g.strokeStyle=k==='tsb'?'rgba(39,174,96,0.55)':COR[k];
-  g.lineWidth=par[1];g.beginPath();let st=false;
-  comb.forEach(function(d,i){const v=d[k];if(v==null){st=false;return;}
-   const x=X(i),y=YE(v); if(!st){g.moveTo(x,y);st=true;}else g.lineTo(x,y);});
-  g.stroke();});
-
- // ── eixo direito: CTLgamma ──
- // Em indice, cada serie e normalizada ao seu proprio min-max: gamma
- // diferentes dao ordens de grandeza diferentes e sobreporiam-se mal.
- const modoG=document.getElementById('escCTLgPMC').value;
- const serG=['ctlg_perf','ctlg_rec'].filter(k=>verF&&!OFFP[k]);
- const limG={};
- serG.forEach(function(k){
-  let a=Infinity,b=-Infinity;
-  comb.forEach(function(d){const v=d[k];if(v==null)return;
-   if(v<a)a=v;if(v>b)b=v;});
-  if(!isFinite(a)){a=0;b=1;} if(b===a)b=a+1;
-  limG[k]=[a,b];});
- let gmn=Infinity,gmx=-Infinity;
- if(modoG==='real'){
-  serG.forEach(function(k){gmn=Math.min(gmn,limG[k][0]);gmx=Math.max(gmx,limG[k][1]);});
-  if(gmn>0)gmn=0; if(gmx===gmn)gmx=gmn+1;
- } else { gmn=0; gmx=100; }
- const temG=serG.length&&isFinite(gmn);
- function YD(k,v){
-  if(modoG==='real')return PT+h-(v-gmn)/(gmx-gmn)*h;
-  const[a,b]=limG[k]; return PT+h-((v-a)/(b-a))*h;}
- if(temG){
-  serG.forEach(function(k){
-   g.strokeStyle=k==='ctlg_perf'?'#2980b9':'#8e44ad';
-   g.lineWidth=1.6;g.setLineDash(k==='ctlg_perf'?[6,3]:[2,3]);
-   g.globalAlpha=0.85;g.beginPath();let st=false;
-   comb.forEach(function(d,i){const v=d[k];if(v==null){st=false;return;}
-    const x=X(i),y=YD(k,v); if(!st){g.moveTo(x,y);st=true;}else g.lineTo(x,y);});
-   g.stroke();g.setLineDash([]);g.globalAlpha=1;});
-  g.fillStyle='#8e44ad';g.font='10px sans-serif';g.textAlign='left';
-  for(let i=0;i<=4;i++){
-   const txt = modoG==='indice' ? Math.round(100-100*i/4)+'%'
-    : (Math.abs(gmx)>=10000?((gmx-(gmx-gmn)*i/4)/1000).toFixed(0)+'k'
-       :Math.round(gmx-(gmx-gmn)*i/4));
-   g.fillText(txt,PL+w+6,PT+h*i/4+3);}
- }
-
- g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
- for(let i=0;i<=4;i++)g.fillText(Math.round(mx-(mx-mn)*i/4),PL-6,PT+h*i/4+3);
-
- // ── legenda ──
- const it=[['ctl','CTL (fitness)',COR.ctl],['atl','ATL (fadiga)',COR.atl],
-           ['tsb','TSB (forma)','#2ECC71']];
- if(verF&&F){
-  const gg=F.gammas||{};
-  it.push(['ctlg_perf','CTLγ perf (γ='+(gg.perf?gg.perf.gamma:'?')+')','#2980b9']);
-  it.push(['ctlg_rec','CTLγ rec (γ='+(gg.rec?gg.rec.gamma:'?')+')','#8e44ad']);}
- document.getElementById('lgPMC').innerHTML=it.map(x=>
-  '<span class="tog'+(OFFP[x[0]]?' off':'')+'" data-k="'+x[0]+'">'+
-  '<i style="background:'+x[2]+'"></i>'+x[1]+'</span>').join('');
- document.querySelectorAll('#lgPMC span.tog').forEach(function(sp){
-  sp.onclick=function(){OFFP[sp.dataset.k]=!OFFP[sp.dataset.k];drawPMC();};});
-
- // ── tooltip ──
- registarTip('chPMC',function(mxp,myp,rw){
-  const esc=rw/W,x=mxp/esc;
-  if(x<PL||x>PL+w)return '';
-  const i=Math.round((x-PL)/w*(n-1));
-  if(i<0||i>=n)return '';
-  const d=comb[i];
-  let html='<div class="th">'+d.date+'</div>';
-  it.forEach(function(t){
-   if(OFFP[t[0]]||d[t[0]]==null)return;
-   const v=d[t[0]];
-   let txt=Math.abs(v)>=1000?Math.round(v).toLocaleString('pt-PT'):v.toFixed(1);
-   // o eixo pode estar em indice, mas o tooltip mostra sempre o valor real
-   if(modoG==='indice'&&limG[t[0]]){
-    const[a,b]=limG[t[0]];
-    txt+=' <span style="color:#8b949e">('+Math.round((v-a)/(b-a)*100)+'%)</span>';}
-   html+=linhaTip(t[2],t[1].split(' (')[0],txt);});
-  if(d.load)html+=linhaTip('#586574','Carga',Math.round(d.load));
-  if(d.tsb!=null){const e=estadoDe(d.tsb);
-   html+='<div class="tr" style="border-top:1px solid #30363d;margin-top:4px;'+
-    'padding-top:4px"><span>Forma</span><b style="color:'+e.cor+'">'+e.label+'</b></div>';}
-  if(d.fase&&F){const ph=(F.fases_legenda||{})[d.fase];
-   if(ph)html+='<div class="tr"><span>Fase</span><b style="color:'+ph.cor+'">'+
-    ph.label+'</b></div>';}
-  if(d.dctlg!=null)html+=linhaTip('#8b949e','ΔCTLγ',d.dctlg.toFixed(4)+'/d');
-  return html;});
-
- drawLoad(comb,PL,PR,X);
-}
-
-// painel de barras: carga diaria empilhada por modalidade
-function drawLoad(comb,PL,PR,X){
- const o=ctx('chLoad',120); if(!o)return;
- const g=o.g,W=o.W,H=o.H;
- const PT=6,PB=20,h=H-PT-PB,w=W-PL-PR,n=comb.length;
- const mods=(D.ciclicos||[]).concat(['WeightTraining']);
- const porDia={};
- (D.sessoes||[]).forEach(function(s){
-  porDia[s.date]=porDia[s.date]||{};
-  porDia[s.date][s.type]=(porDia[s.date][s.type]||0)+(s.tl||0);});
- let mx=0;
- comb.forEach(function(d){
-  const v=porDia[d.date]||{};
-  const t=mods.reduce((a,m)=>a+(v[m]||0),0); if(t>mx)mx=t;});
- if(!mx){noData(g,W,H,'Sem carga');return;}
- const bw=Math.max(1,w/n*0.8);
- comb.forEach(function(d,i){
-  const v=porDia[d.date]||{}; let acc=0;
-  mods.forEach(function(m){
-   const val=v[m]||0; if(!val)return;
-   const bh=h*val/mx;
-   g.fillStyle=(D.cores||{})[m]||'#7F8C8D';
-   g.fillRect(X(i)-bw/2,PT+h-acc-bh,bw,bh);
-   acc+=bh;});});
- g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
- g.fillText(Math.round(mx),PL-6,PT+8);
- g.fillText('0',PL-6,PT+h);
- g.textAlign='center';
- const step=Math.ceil(n/8);
- comb.forEach(function(d,i){if(i%step!==0)return;
-  g.fillText(d.date.slice(0,7),X(i),H-6);});
- g.textAlign='left';
- g.fillStyle='#8b949e';g.font='10px sans-serif';
- g.fillText('Carga por modalidade',PL+4,PT+10);
-}
-// Sugestoes de teste, por modalidade. Cada uma desaparece sozinha assim que
-// fizeres um esforco perto do maximo nessa duracao — nao ha nada a marcar.
-async function carregarSugestoes(){
- let P;
- try{ P=await fetch('/api/protocolo').then(r=>r.json()); }
- catch(e){ return; }
- const el=document.getElementById('sugestoesTeste');
- if(!el)return;
- const sug=P.sugestoes||[];
- const cov=(P.cobertura||{}).por_modalidade||{};
-
- // uma sugestao por modalidade: a mais atrasada
- const porMod={};
- sug.forEach(function(s){
-  if(!porMod[s.modalidade]||s.atraso_dias>porMod[s.modalidade].atraso_dias)
-   porMod[s.modalidade]=s;});
- const mods=Object.keys(porMod);
-
- if(!mods.length){
-  el.innerHTML='<div style="border-left:3px solid #2ECC71;background:#161b22;'+
-   'padding:10px 14px;border-radius:0 6px 6px 0;margin-bottom:14px;font-size:13px">'+
-   '<b>Testes em dia</b> — todas as modalidades tem esforcos maximos recentes.</div>';
-  return;}
-
- const linhas=mods.map(function(m){
-  const s=porMod[m];
-  const cor=s.urgencia==='alta'?'#E74C3C':'#E67E22';
-  // quantos pontos-ancora ja existem nessa modalidade
-  const c=cov[m]||{};
-  const n=(c[s.nome]||{}).n;
-  return '<tr><td style="color:'+((D&&D.cores||{})[m]||'#e6e6e6')+'">'+m+'</td>'+
-   '<td><b>'+s.nome+'</b><br><span style="font-size:11px;color:#8b949e">'+
-    s.mede+'</span></td>'+
-   '<td class="num" style="color:'+cor+'">'+s.dias_desde_ultimo+'d</td>'+
-   '<td class="num">'+Math.round(s.ultimo_valor)+' W<br>'+
-    '<span style="font-size:11px;color:#8b949e">'+s.ultima_data+'</span></td>'+
-   '<td class="num">'+(n!=null?n:'—')+'</td></tr>';}).join('');
-
- el.innerHTML=
-  '<details class="expl" open style="border-left:3px solid #E67E22">'+
-  '<summary>Testes sugeridos ('+mods.length+' modalidades)</summary>'+
-  '<div class="expl-corpo">'+
-  '<p>Nao e preciso marcar nada nem fazer um teste formal. Uma prova, um bloco '+
-  'de intervalos duro ou uma saida em grupo contam — basta ires perto do '+
-  'maximo nessa duracao. A sugestao desaparece sozinha quando isso acontecer.</p>'+
-  '<p class="nota">Cada esforco maximo acrescenta um ponto-ancora. Sao esses '+
-  'pontos que permitem calibrar o modelo aos teus dados em vez de usar valores '+
-  'de outros atletas — e a coluna da direita mostra quantos ja tens.</p>'+
-  '<div class="wrap"><table><thead><tr>'+
-  ['Modalidade','Teste','Desde o ultimo','Ultimo valor','Pontos-ancora']
-   .map((c,i)=>'<th class="'+(i>1?'num':'')+'">'+c+'</th>').join('')+
-  '</tr></thead><tbody>'+linhas+'</tbody></table></div>'+
-  '</div></details>';
-}
-
-// ─── Testes sugeridos ───────────────────────────────────────────────────
-// O painel sai dos dados: cada esforco maximo e detectado sozinho, por isso
-// a sugestao desaparece quando o teste for feito. Nada para marcar a mao.
-async function carregarSugestoes(){
- let d;
- try{ d=await fetch('/api/protocolo').then(r=>r.json()); }
- catch(e){ return; }
- const sug=d.sugestoes||[];
- const el=document.getElementById('sugestoesTeste');
- if(!el)return;
- if(!sug.length){
-  el.innerHTML='<div style="border-left:3px solid #2ECC71;background:#161b22;'+
-   'padding:9px 13px;border-radius:0 6px 6px 0;font-size:13px;margin:10px 0">'+
-   'Todos os testes em dia. O sistema deteta esforcos maximos sozinho — '+
-   'nao precisas de marcar nada.</div>';
-  return;}
-
- // um por modalidade, o mais atrasado
- const porMod={};
- sug.forEach(function(s){
-  if(!porMod[s.modalidade]||s.atraso_dias>porMod[s.modalidade].atraso_dias)
-   porMod[s.modalidade]=s;});
-
- const cov=(d.cobertura||{}).por_modalidade||{};
- const cartoes=Object.keys(porMod).map(function(m){
-  const s=porMod[m];
-  const cor=(D&&D.cores?D.cores[m]:null)||'#8b949e';
-  const urgente=s.urgencia==='alta';
-  // quantos testes ja existem nessa duracao
-  let n='';
-  const c=(cov[m]||{})[s.nome];
-  if(c)n=c.n+' feitos';
-  return '<div style="flex:1;min-width:190px;background:#161b22;border:1px solid '+
-   (urgente?'#E67E22':'#30363d')+';border-radius:8px;padding:10px 13px">'+
-   '<div style="color:'+cor+';font-weight:600;font-size:13px">'+m+'</div>'+
-   '<div style="font-size:13px;margin:3px 0">'+s.nome+'</div>'+
-   '<div style="font-size:11px;color:#8b949e">'+s.mede+'</div>'+
-   '<div style="font-size:12px;margin-top:6px;color:'+
-    (urgente?'#E67E22':'#8b949e')+'">'+s.dias_desde_ultimo+'d desde o ultimo'+
-    ' ('+Math.round(s.ultimo_valor)+'W)</div>'+
-   (n?'<div style="font-size:11px;color:#8b949e">'+n+'</div>':'')+'</div>';
- }).join('');
-
- el.innerHTML='<details class="expl" open style="margin:10px 0"><summary>'+
-  'Testes sugeridos ('+Object.keys(porMod).length+' modalidades)</summary>'+
-  '<div class="expl-corpo">'+
-  '<p style="font-size:13px">Estes esforcos alimentam a calibracao. Nao sao '+
-  'obrigatorios e nao ha nada para marcar: uma prova, um bloco de intervalos '+
-  'duro ou uma saida forte contam, desde que chegues perto do teu maximo '+
-  'nessa duracao. A sugestao desaparece sozinha quando acontecer.</p>'+
-  '<div style="display:flex;gap:10px;flex-wrap:wrap">'+cartoes+'</div>'+
-  '</div></details>';
-}
-
-async function montarExport(){
- let d;
- try{ d=await fetch('/api/export').then(r=>r.json()); }
- catch(e){ return; }
- const el=document.getElementById('exportBox'); if(!el)return;
- const c=d.ficheiros||d.conjuntos||{};
- el.innerHTML='<div class="wrap"><table><thead><tr>'+
-  ['Conjunto','O que tem','CSV','JSON'].map(x=>'<th>'+x+'</th>').join('')+
-  '</tr></thead><tbody>'+
-  Object.keys(c).map(k=>
-   '<tr><td><b>'+k+'</b></td>'+
-   '<td style="font-size:12px;color:#8b949e">'+c[k]+'</td>'+
-   '<td><a href="/api/export/'+k+'.csv">descarregar</a></td>'+
-   '<td><a href="/api/export/'+k+'.json" target="_blank">ver</a></td></tr>'
-  ).join('')+'</tbody></table></div>'+
-  (d.tudo?'<div class="sub" style="margin-top:8px">'+
-   '<a href="/api/export/tudo.json" target="_blank">tudo num so ficheiro</a> — '+
-   d.tudo.split('—')[1]+'</div>':'');
-}
-
-async function load(){
- let d;
- try{ d=await fetch('/api/pmc').then(r=>r.json()); }
- catch(e){ document.getElementById('sub').innerHTML=
-   '<span class="err">Nao consegui carregar</span>'; return; }
- if(d.error){ document.getElementById('sub').innerHTML=
-   '<span class="err">'+d.error+'</span>'; return; }
- D=d;
-
- const s=d.serie||[];
- document.getElementById('sub').textContent=
-  s.length+' dias, de '+(s[0]||{}).date+' a '+(s[s.length-1]||{}).date;
-
- const a=d.actual||{},e=a.estado||{};
- document.getElementById('kpis').innerHTML=[
-  ['CTL (fitness)',a.ctl,'#5DADE2'],
-  ['ATL (fadiga)',a.atl,'#E74C3C'],
-  ['TSB (forma)',a.tsb,e.cor||'#2ECC71'],
-  ['Estado',e.label||'—',e.cor||'#8b949e'],
-  ['Ramp 7d',a.ramp,(a.ramp>8?'#E67E22':'#5DADE2')],
-  ['Sessoes',(d.sessoes||[]).length,'#5DADE2']
- ].map(k=>'<div class="card"><div class="label">'+k[0]+'</div>'+
-  '<div class="value" style="color:'+k[2]+'">'+(k[1]==null?'—':k[1])+'</div></div>').join('');
-
- document.getElementById('alertas').innerHTML=(d.alertas||[]).map(function(al){
-  const c=al.nivel==='aviso'?'#E67E22':'#5DADE2';
-  return '<div style="border-left:3px solid '+c+';background:#161b22;'+
-   'padding:9px 12px;margin-bottom:8px;border-radius:0 6px 6px 0;font-size:13px">'+
-   al.texto+'</div>';}).join('');
-
- carregarSugestoes();
-montarExport();
- drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos(); mostrarCpBlocos();
- mostrarCpProjecao(); mostrarCpPolar();
-
- // ── fase actual, com ΔCTLγ e HRV em sigma ──
- const F=d.ftlm;
- if(d.erro_ftlm){
-  document.getElementById('faseCard').innerHTML=
-   '<div class="err" style="margin-bottom:10px">FTLM: '+d.erro_ftlm+'</div>';
- } else if(F&&F.fase_actual){
-  const fa=F.fase_actual, fg=F.fase_global;
-  const seta=(fa.dctlg>0?'&uarr;':'&darr;');
-  const dv=fa.dctlg==null?'—':Math.abs(fa.dctlg).toFixed(4)+'/d';
-  const hz=fa.hrv_z==null?'':' | HRV '+(fa.hrv_z>=0?'+':'')+fa.hrv_z.toFixed(2)+'&sigma;';
-  let html='<div style="background:'+hexRgba(fa.cor,0.10)+';border-left:4px solid '+
-   fa.cor+';padding:9px 14px;border-radius:0 5px 5px 0;margin-bottom:8px">'+
-   '<b>Fase actual (carga agregada):</b> '+fa.label+' — '+fa.desc+'<br>'+
-   '<small style="color:#8b949e">'+fa.dias+'d nesta fase | &Delta;CTL&gamma; '+
-   seta+dv+hz+
-   (fa.modalidades_incluidas?' | soma de '+fa.modalidades_incluidas.join(', '):'')+
-   '</small></div>';
-  if(fg&&fg.codigo!==fa.codigo){
-   const ctb=Object.keys(fg.contribuicoes||{})
-     .map(m=>m+' '+Math.round(fg.contribuicoes[m]*100)+'%').join(' · ');
-   const pm=fg.fases_por_modalidade||{};
-   const leg=F.fases_legenda||{};
-   const det=Object.keys(pm).map(m=>m+': '+((leg[pm[m]]||{}).label||pm[m])).join(' · ');
-   html+='<div style="background:'+hexRgba(fg.cor,0.10)+';border-left:4px solid '+
-    fg.cor+';padding:9px 14px;border-radius:0 5px 5px 0;margin-bottom:8px">'+
-    '<b>Fase global ponderada (por CTL&gamma;):</b> '+fg.label+'<br>'+
-    '<small style="color:#8b949e">peso: '+ctb+'<br>'+det+'</small></div>';}
-  else if(fg){
-   const pm=fg.fases_por_modalidade||{};
-   const leg=F.fases_legenda||{};
-   const det=Object.keys(pm).map(m=>m+': '+((leg[pm[m]]||{}).label||pm[m])).join(' · ');
-   if(det)html+='<div style="font-size:12px;color:#8b949e;margin:-4px 0 10px">'+
-    'Por modalidade: '+det+'</div>';}
-  document.getElementById('faseCard').innerHTML=html;
-
-  const g=F.gammas||{};
-  document.getElementById('subPMC').innerHTML=
-   'CTL 42d e ATL 7d no eixo esquerdo &middot; CTL&gamma; no eixo direito &middot; '+
-   'carga diaria empilhada por modalidade em baixo<br>'+
-   '<span style="font-size:12px">Kernel Riemann-Liouville: CTL&gamma;(t) = '+
-   '&Sigma; Load(t&minus;k)&middot;k<sup>&gamma;&minus;1</sup>/&Gamma;(&gamma;) &middot; '+
-   '&gamma;<sub>perf</sub> '+(g.perf?g.perf.gamma+' (R&sup2; '+g.perf.r2+')':'—')+
-   ' &middot; &gamma;<sub>rec</sub> '+(g.rec?g.rec.gamma+' (R&sup2; '+g.rec.r2+')':'—')+
-   (D.cp_fonte&&D.cp_fonte.da_curva
-    ? '<br>CP de '+D.cp_fonte.da_curva+' sessoes ajustado a P(t)=W&prime;/t+CP '+
-      '(2-20min, R&sup2;&ge;0.80)' : '')+'</span>';
-
-  drawCTLg(); tabelaGammas(); drawFMT();
-  const fm=F.fmt||{};
-  document.getElementById('subFMT').innerHTML=
-   '&kappa;(t) = trace(cov(&Delta;x)) em janela de 28d sobre '+
-   (fm.dimensoes||[]).length+' dimensoes: '+(fm.dimensoes||[]).join(', ')+
-   '. &kappa; alto = sistema a oscilar mais.';
- }
-
-}
-['verFTLM','verFases','escCTLgPMC'].forEach(id=>
- document.getElementById(id).onchange=function(){if(D)drawPMC();});
-['homeoMod','homeoVista','homeoMods','haIni','haFim','hrIni','hrFim'].forEach(id=>
- document.getElementById(id).onchange=function(){if(D)drawHomeo();});
-document.getElementById('canalFMT').onchange=function(){if(D&&D.fmt)drawAtencao();};
-function redesenhar(){
- if(!D)return;
- drawPMC();
- if(D.ftlm){drawCTLg();drawFMT();}
- if(D.fmt){drawMatriz();drawEigen();drawAtencao();}
- if(D.homeostatico){drawHomeo();}
- if(D.cp_blocos)mostrarCpBlocos();
- if(D.cp_projecao)mostrarCpProjecao();
- if(D.modelo_polar)mostrarCpPolar();}
-document.getElementById('janelaPMC').onchange=redesenhar;
-document.getElementById('cpBlocosMod').onchange=function(){if(D)mostrarCpBlocos();};
-window.addEventListener('resize',redesenhar);
-load();
-carregarSugestoes();
-"""
-
-
-def render():
-    corpo = BODY
-    for chave, (titulo, texto) in EXPLICACOES.items():
-        corpo = corpo.replace('__EXPL_' + chave + '__', explicacao(titulo, texto))
-    return page('PMC', SLUG, corpo, JS)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Modelo homeostatico e indice alostatico
+# ══════════════════════════════════════════════════════════════════════════
+
+def modelo_homeostatico(serie_classica, sessoes, p0=None,
+                        tau_sugerido=None, lag_hrv_sugerido=None):
+    """Reserva de performance p̂(t) = p₀ + K₁·EWM(carga,T₁) − K₂·EWM(carga,T₂).
+
+    O PMC classico fixa τ em 42 e 7 dias. Aqui T₁ e T₂ sao ajustados aos
+    dados deste atleta: procuramos a combinacao (K₁,K₂,T₁,T₂) que melhor
+    explica a serie de CP observada.
+
+    Sem testes de performance suficientes devolve os valores por defeito e
+    diz que sao insuficientes — em vez de fingir um ajuste.
+    """
+    import numpy as np
+    import ftlm
+
+    if not serie_classica:
+        return None
+
+    datas = [d['date'] for d in serie_classica]
+    cargas = np.array([d['load'] for d in serie_classica], dtype=np.float64)
+    n = len(datas)
+
+    alvo = _serie_por_dia(sessoes, datas, 'cp', 'mean')
+    n_testes = int(np.isfinite(alvo).sum())
+
+    if p0 is None:
+        p0 = float(np.nanmedian(alvo)) if n_testes else 200.0
+
+    melhor = {'k1': 2.0, 'k2': 3.0, 't1': 42.0, 't2': 7.0, 'r2': 0.0}
+    ajustado = False
+    tentativas, rejeitados = 0, 0
+    melhor_rejeitado = {'k1': None, 'k2': None, 't1': None, 't2': None, 'r2': -9e9}
+
+    # Se a calibracao encontrou um tau para a carga, a grelha do T1 e
+    # centrada nele — a mesma constante de tempo que explica o HRV tem de
+    # explicar tambem a componente de fitness.
+    grelha_t1 = (25, 30, 35, 40, 45, 50, 60)
+    grelha_t2 = (4, 5, 6, 7, 9, 11, 14)
+    if tau_sugerido:
+        t = float(tau_sugerido)
+        grelha_t1 = tuple(sorted({max(7, round(t * f))
+                                  for f in (0.6, 0.8, 1.0, 1.3, 1.8, 2.5, 3.5)}))
+    if lag_hrv_sugerido:
+        L = max(2.0, float(lag_hrv_sugerido))
+        grelha_t2 = tuple(sorted({max(2, round(L * f))
+                                  for f in (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)}))
+
+    if n_testes >= 20:
+        m = np.isfinite(alvo)
+        y = alvo[m]
+        for t1 in grelha_t1:
+            e1 = ftlm.ewm(cargas, t1)[m]
+            for t2 in grelha_t2:
+                e2 = ftlm.ewm(cargas, t2)[m]
+                # K1 e K2 por minimos quadrados, dados T1 e T2
+                A = np.column_stack([np.ones(len(y)), e1, -e2])
+                try:
+                    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+                except Exception:
+                    continue
+                tentativas += 1
+                if coef[1] <= 0 or coef[2] <= 0:
+                    # K negativos nao tem sentido fisico (Banister): o fitness
+                    # tem de somar e a fadiga tem de subtrair.
+                    # Guardamos o melhor rejeitado so para diagnostico.
+                    rejeitados += 1
+                    prev_r = A @ coef
+                    sr = float(((y - prev_r) ** 2).sum())
+                    st = float(((y - y.mean()) ** 2).sum())
+                    if st > 0:
+                        r2r = 1 - sr / st
+                        if r2r > melhor_rejeitado['r2']:
+                            melhor_rejeitado = {
+                                'k1': round(float(coef[1]), 3),
+                                'k2': round(float(coef[2]), 3),
+                                't1': float(t1), 't2': float(t2),
+                                'r2': round(r2r, 4)}
+                    continue
+                prev = A @ coef
+                ss_res = float(((y - prev) ** 2).sum())
+                ss_tot = float(((y - y.mean()) ** 2).sum())
+                if ss_tot <= 0:
+                    continue
+                r2 = 1 - ss_res / ss_tot
+                if r2 > melhor['r2']:
+                    melhor = {'k1': float(coef[1]), 'k2': float(coef[2]),
+                              't1': float(t1), 't2': float(t2), 'r2': r2}
+                    p0 = float(coef[0])
+                    ajustado = True
+
+    fit = ftlm.ewm(cargas, melhor['t1'])
+    fad = ftlm.ewm(cargas, melhor['t2'])
+    p_hat = p0 + melhor['k1'] * fit - melhor['k2'] * fad
+    suave = _savgol(p_hat, 21, 3)
+    sd = _banda_sd(p_hat, 14)
+
+    # porque e que falhou, em detalhe — para se poder comparar modalidades
+    if ajustado:
+        motivo = 'ok'
+    elif n_testes < 20:
+        motivo = 'poucos_pontos_cp'
+    elif tentativas == 0:
+        motivo = 'sem_tentativas'
+    elif rejeitados == tentativas:
+        motivo = 'k_negativo'
+    else:
+        motivo = 'r2_nao_positivo'
+
+    return {
+        'ajustado': ajustado,
+        'motivo': motivo,
+        'tentativas': tentativas,
+        'rejeitados_k_negativo': rejeitados,
+        'n_testes': n_testes,
+        'p0': round(p0, 1),
+        'k1': round(melhor['k1'], 3), 'k2': round(melhor['k2'], 3),
+        't1': round(melhor['t1'], 1), 't2': round(melhor['t2'], 1),
+        'grelha_t1': list(grelha_t1), 'grelha_t2': list(grelha_t2),
+        'grelha_calibrada': bool(tau_sugerido or lag_hrv_sugerido),
+        'r2': round(melhor['r2'], 4),
+        'melhor_rejeitado': (melhor_rejeitado
+                             if melhor_rejeitado['k1'] is not None else None),
+        'nota': _nota_homeo(ajustado, n_testes, tentativas, rejeitados,
+                            melhor['r2']),
+        'serie': [{'date': datas[i],
+                   'p_hat': round(float(p_hat[i]), 1),
+                   'p_hat_suave': round(float(suave[i]), 1),
+                   'banda_sup': round(float(suave[i] + sd[i]), 1),
+                   'banda_inf': round(float(suave[i] - sd[i]), 1),
+                   'fitness': round(float(fit[i]), 1),
+                   'fadiga': round(float(fad[i]), 1)} for i in range(n)],
+    }
+
+
+def _nota_homeo(ajustado, n_testes, tentativas, rejeitados, r2):
+    if ajustado:
+        return f'K e tau ajustados aos teus dados de CP (R² {r2:.3f})'
+    if n_testes < 20:
+        return (f'so {n_testes} pontos de CP (precisa de 20) — '
+                'a usar tau 42/7 do PMC classico')
+    if tentativas and rejeitados == tentativas:
+        return ('nenhuma combinacao deu K₁ e K₂ positivos: a CP nao segue o '
+                'padrao fitness-menos-fadiga neste periodo — a usar tau 42/7')
+    return 'sem ajuste com R² positivo — a usar tau 42/7 do PMC classico'
+
+
+def _savgol(y, janela=21, grau=3):
+    """Savitzky-Golay: ajusta um polinomio local por minimos quadrados.
+
+    Ao contrario da media movel, preserva a amplitude dos picos — e por isso
+    que o dashboard o usa para a reserva de performance.
+    """
+    import numpy as np
+    y = np.asarray(y, dtype=np.float64)
+    n = len(y)
+    if n < grau + 2:
+        return y.copy()
+    j = min(janela, n if n % 2 == 1 else n - 1)
+    if j % 2 == 0:
+        j -= 1
+    j = max(j, grau + 2 if (grau + 2) % 2 == 1 else grau + 3)
+    if j > n:
+        return y.copy()
+    meio = j // 2
+
+    # coeficientes do filtro: linha central da pseudo-inversa de Vandermonde
+    x = np.arange(-meio, meio + 1, dtype=np.float64)
+    A = np.vander(x, grau + 1, increasing=True)
+    coef = np.linalg.pinv(A)[0]
+
+    ext = np.concatenate([np.full(meio, y[0]), y, np.full(meio, y[-1])])
+    return np.array([float(np.dot(coef, ext[i:i + j])) for i in range(n)])
+
+
+def _banda_sd(y, janela=14):
+    """Desvio padrao movel centrado, para a banda +/-1 SD."""
+    import numpy as np
+    y = np.asarray(y, dtype=np.float64)
+    n = len(y)
+    out = np.zeros(n)
+    meio = janela // 2
+    for i in range(n):
+        seg = y[max(0, i - meio):min(n, i + meio + 1)]
+        seg = seg[np.isfinite(seg)]
+        if len(seg) >= 3:
+            out[i] = float(seg.std())
+    return out
+
+
+def homeostatico_por_modalidade(serie_classica, sessoes, modalidades):
+    """Reserva de performance calculada por modalidade.
+
+    Cada desporto tem a sua CP e a sua carga, por isso os K e os tau saem
+    diferentes: o Ski absorve e dissipa a outro ritmo que o Bike. Sobrepor
+    as curvas mostra qual das modalidades esta a puxar a reserva global.
+    """
+    out = {}
+    for mod in modalidades:
+        ses = [s for s in sessoes if s.get('type') == mod]
+        if len(ses) < 30:
+            continue
+        # a serie diaria tem de cobrir o mesmo intervalo que a global,
+        # senao as curvas nao alinham no grafico
+        datas = [d['date'] for d in serie_classica]
+        por_dia = {}
+        for s in ses:
+            por_dia[s['date']] = por_dia.get(s['date'], 0.0) + float(s.get('tl') or 0)
+        serie_mod = [{'date': d, 'load': round(por_dia.get(d, 0.0), 1)}
+                     for d in datas]
+        r = modelo_homeostatico(serie_mod, ses)
+        if r:
+            out[mod] = r
+    return out
+
+
+def _media_periodo(linhas, campo, ini, fim, detalhe=None):
+    """Media de um campo num intervalo. Se detalhe for um dict, escreve la
+    quantos dias entraram e de que datas — para se poder auditar diferencas
+    entre implementacoes."""
+    import numpy as np
+    sel = [r for r in linhas
+           if r.get(campo) is not None and ini <= r['date'] <= fim]
+    vals = [r[campo] for r in sel]
+    if detalhe is not None:
+        detalhe['n'] = len(vals)
+        detalhe['primeiro'] = sel[0]['date'] if sel else None
+        detalhe['ultimo'] = sel[-1]['date'] if sel else None
+    return float(np.mean(vals)) if vals else float('nan')
+
+
+def indice_alostatico(serie_classica, homeostatico, wellness,
+                      p_ant=None, p_rec=None):
+    """Adaptacao vs sobrecarga alostatica, em 6 dimensoes.
+
+    Compara dois periodos. Cada dimensao da um score entre -1 e +1:
+      score = sinal · clip(variacao% / 50, -1, +1)
+    onde o sinal e -1 nas dimensoes em que subir e mau (HR de repouso).
+    """
+    import numpy as np
+    from datetime import datetime, timedelta
+
+    if not serie_classica:
+        return None
+
+    datas = [d['date'] for d in serie_classica]
+    fim = datas[-1]
+    if not p_rec:
+        ini_rec = (datetime.strptime(fim, '%Y-%m-%d') - timedelta(days=59)
+                   ).strftime('%Y-%m-%d')
+        p_rec = (ini_rec, fim)
+    if not p_ant:
+        f_ant = (datetime.strptime(p_rec[0], '%Y-%m-%d') - timedelta(days=1)
+                 ).strftime('%Y-%m-%d')
+        i_ant = (datetime.strptime(f_ant, '%Y-%m-%d') - timedelta(days=59)
+                 ).strftime('%Y-%m-%d')
+        p_ant = (i_ant, f_ant)
+
+    ph = ((homeostatico or {}).get('serie')) or []
+    w = wellness or []
+
+    # Escala de referencia do TSB: o desvio-padrao do proprio atleta, em vez
+    # de um numero fixo. Uma variacao de 1 SD passa a valer o mesmo para
+    # qualquer pessoa, seja o TSB dela estavel ou muito oscilante.
+    tsbs = [r['tsb'] for r in serie_classica if r.get('tsb') is not None]
+    ref_tsb = float(np.std(tsbs)) if len(tsbs) >= 30 else 25.0
+    ref_tsb = max(ref_tsb, 1.0)
+    ref_tsb_fonte = 'desvio do atleta' if len(tsbs) >= 30 else 'referencia 25 au'
+
+    dims = []
+    # 'ref' != None -> a dimensao usa diferenca absoluta em vez de percentagem.
+    # O TSB oscila em torno de zero: dividir por uma base proxima de zero faz
+    # a percentagem explodir. Um TSB de 3.4 -> 1.2 e uma variacao de 2 pontos,
+    # mas da -65% e satura o score, enquanto -47 -> -50 (variacao maior) da -6%.
+    # Escala de referencia 25 au: e a largura tipica das bandas de forma.
+    for nome, uni, bom, fonte, campo, ref in [
+            ('Reserva pico', 'u.a.', True, ph, 'p_hat', None),
+            ('CTL fitness', 'au', True, serie_classica, 'ctl', None),
+            ('Recovery TSB', 'au', True, serie_classica, 'tsb', ref_tsb),
+            ('HRV matinal', 'ms', True, w, 'hrv', None),
+            ('HR repouso', 'bpm', False, w, 'rhr', None),
+            ('Sono', '/5', True, w, 'sleep_quality', None)]:
+        da, dr = {}, {}
+        va = _media_periodo(fonte, campo, p_ant[0], p_ant[1], da)
+        vr = _media_periodo(fonte, campo, p_rec[0], p_rec[1], dr)
+        dims.append((nome, uni, bom, va, vr, (da, dr), ref))
+
+    linhas, scores = [], []
+    for nome, uni, bom_positivo, ant, rec, det, ref in dims:
+        if not np.isfinite(ant) or not np.isfinite(rec):
+            linhas.append({'dim': nome, 'unidade': uni, 'ant': None,
+                           'rec': None, 'delta_pct': None, 'score': None,
+                           'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),
+                           'motivo': 'sem dados'})
+            continue
+
+        delta = rec - ant
+        if ref is not None:
+            # diferenca absoluta escalada: imune a base proxima de zero
+            dp = delta / ref * 100
+            base_metodo = f'diferenca absoluta / {ref:.1f}'
+        elif abs(ant) < 0.001:
+            linhas.append({'dim': nome, 'unidade': uni, 'ant': round(ant, 2),
+                           'rec': round(rec, 2), 'delta_pct': None, 'score': None,
+                           'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),
+                           'motivo': 'base proxima de zero'})
+            continue
+        else:
+            dp = delta / abs(ant) * 100
+            base_metodo = 'variacao percentual'
+        sc = (1 if bom_positivo else -1) * float(np.clip(dp / 50.0, -1.0, 1.0))
+        scores.append(sc)
+        linhas.append({'dim': nome, 'unidade': uni,
+                       'ant': round(ant, 2), 'rec': round(rec, 2),
+                       'delta_pct': round(dp, 2), 'score': round(sc, 4),
+                       'bom_positivo': bom_positivo,
+                       'delta_abs': round(delta, 2), 'metodo': base_metodo,
+                       # quantos dias entraram em cada media — a causa mais
+                       # comum de duas implementacoes darem numeros diferentes
+                       'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),
+                       'datas_ant': [det[0].get('primeiro'), det[0].get('ultimo')],
+                       'datas_rec': [det[1].get('primeiro'), det[1].get('ultimo')],
+                       'saturado': abs(dp) >= 50})
+
+    total = float(np.clip(np.mean(scores), -1, 1)) if scores else 0.0
+    if total > 0.20:
+        estado = {'label': 'BOA ADAPTACAO', 'cor': '#27ae60',
+                  'desc': 'O corpo responde positivamente a carga'}
+    elif total > -0.10:
+        estado = {'label': 'ESTAVEL', 'cor': '#f39c12',
+                  'desc': 'Sistema em equilibrio — sem adaptacao clara nem sobrecarga'}
+    else:
+        estado = {'label': 'SOBRECARGA', 'cor': '#e74c3c',
+                  'desc': 'O corpo nao esta a compensar a carga'}
+
+    return {'total': round(total, 4), 'n_dims': len(scores),
+            'estado': estado, 'dimensoes': linhas,
+            'periodo_anterior': list(p_ant), 'periodo_recente': list(p_rec),
+            'formula': 'score = sinal * clip(delta_pct / 50, -1, +1); '
+                       'total = media dos scores com dados',
+            'ref_tsb': round(ref_tsb, 2), 'ref_tsb_fonte': ref_tsb_fonte,
+            'scores': [round(s, 4) for s in scores],
+            'p_hat_disponivel': len(ph),
+            'wellness_disponivel': len(w)}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FMT 5x5 (Della Mattia 2019, §02) — tensor completo e mapa de atencao
+# ══════════════════════════════════════════════════════════════════════════
+
+def calcular_fmt(sessoes, wellness, serie_classica, janela=28, desde_hrv=None):
+    """Sequencia de tensores FMT 5x5 e mapa de atencao sobre 28 dias.
+
+    As cinco dimensoes sao as da Figura 1 do paper: Load, HRV, W', Sleep e
+    WEED. Dimensoes sem dados suficientes ficam de fora e o tensor encolhe —
+    e melhor do que enche-las com zeros, que criariam covariancias falsas.
+    """
+    import numpy as np
+    import fmt as _fmt
+
+    if not serie_classica:
+        return None
+
+    datas = [d['date'] for d in serie_classica]
+    n = len(datas)
+    dims = {'Load': np.array([d['load'] for d in serie_classica], dtype=np.float64)}
+
+    # so o wellness dentro da janela util entra no tensor
+    if desde_hrv:
+        wellness = [w for w in (wellness or []) if w['date'] >= desde_hrv]
+    idx = {w['date']: w for w in (wellness or [])}
+
+    def do_wellness(campo):
+        v = np.array([(idx.get(d) or {}).get(campo) if idx.get(d) else None
+                      for d in datas], dtype=object)
+        return np.array([x if isinstance(x, (int, float)) else np.nan
+                         for x in v], dtype=np.float64)
+
+    hrv = do_wellness('hrv')
+    if np.isfinite(hrv).sum() >= janela + 10:
+        with np.errstate(all='ignore'):
+            dims['HRV'] = np.where(hrv > 0, np.log(hrv), np.nan)
+
+    wp = _serie_por_dia(sessoes, datas, 'w_prime', 'mean')
+    if np.isfinite(wp).sum() >= janela + 10:
+        dims["W'"] = wp
+
+    sono = do_wellness('sleep_quality')
+    if np.isfinite(sono).sum() >= janela + 10:
+        dims['Sleep'] = sono
+
+    partes = []
+    for campo in ('stress', 'soreness', 'fatiga'):
+        v = do_wellness(campo)
+        if np.isfinite(v).sum() >= janela + 10:
+            partes.append(_zscore_rolling_28(v, datas))
+    if partes:
+        arr = np.array(partes)
+        validos = np.isfinite(arr).any(axis=0)
+        weed = np.full(arr.shape[1], np.nan)
+        if validos.any():
+            with np.errstate(all='ignore'):
+                weed[validos] = np.nanmean(arr[:, validos], axis=0)
+        if np.isfinite(weed).sum() >= janela + 10:
+            dims['WEED'] = weed
+
+    if len(dims) < 2:
+        return {'erro': 'sao precisas pelo menos 2 dimensoes com dados',
+                'dimensoes': list(dims)}
+
+    # Interpolar SO buracos curtos. Um dia sem resposta ao formulario nao deve
+    # apagar a janela de 28 dias; mas np.interp sobre a serie toda preenche
+    # tambem lacunas de anos, e extrapola plano antes do primeiro valor.
+    # Se o HRV so comeca em 2024, isso transformava 2021-2023 numa constante
+    # inventada — 56% da serie — e a calibracao corria sobre dados falsos.
+    MAX_LACUNA = 7
+    cobertura = {}
+    for k, v in dims.items():
+        m = np.isfinite(v)
+        cobertura[k] = {
+            'dias_reais': int(m.sum()),
+            'primeiro': datas[int(np.argmax(m))] if m.any() else None,
+            'ultimo': datas[n - 1 - int(np.argmax(m[::-1]))] if m.any() else None,
+        }
+        if m.sum() < 2 or not (~m).any():
+            continue
+        idx = np.flatnonzero(m)
+        preenchido = v.copy()
+        for a, b in zip(idx[:-1], idx[1:]):
+            if 1 < b - a <= MAX_LACUNA + 1:
+                preenchido[a + 1:b] = np.interp(np.arange(a + 1, b), [a, b],
+                                                [v[a], v[b]])
+        dims[k] = preenchido
+        cobertura[k]['apos_interpolacao'] = int(np.isfinite(preenchido).sum())
+
+    # Janela util: onde TODAS as dimensoes tem dados. E aqui que o tensor
+    # e a calibracao podem correr sem inventar nada.
+    todas = np.ones(n, dtype=bool)
+    for v in dims.values():
+        todas &= np.isfinite(v)
+    if todas.sum() < janela + 30:
+        return {'erro': 'sem periodo em que todas as dimensoes tenham dados',
+                'dimensoes': list(dims), 'cobertura': cobertura,
+                'dias_com_todas': int(todas.sum())}
+    ini_util = int(np.argmax(todas))
+    fim_util = n - 1 - int(np.argmax(todas[::-1]))
+
+    tensores, kappa, eig, nomes = _fmt.construir(dims, janela)
+    if tensores is None:
+        return None
+
+    # ── calibracao nos dados deste atleta ────────────────────────────────
+    import calibracao as _cal
+    cp_serie = _serie_por_dia(sessoes, datas, 'cp', 'mean')
+    # Calibrar contra o LnRMSSD directamente, nao contra a tendencia: a
+    # tendencia e ja uma transformacao (nivel + declive em z-score) e destroi
+    # a relacao directa entre carga acumulada e nivel de HRV. Testado: com
+    # tau real de 14 dias, calibrar pela tendencia recupera 3; pelo LnRMSSD
+    # recupera 14.
+    hrv_para_calibrar = dims.get('HRV')
+    if hrv_para_calibrar is not None and np.isfinite(hrv_para_calibrar).sum() < 30:
+        hrv_para_calibrar = None
+    l1_hist = []
+    for linha in eig:
+        v = linha[np.isfinite(linha)]
+        v = v[v > 0]
+        l1_hist.append(float(v[0] / v.sum()) if len(v) >= 2 else None)
+
+    # A calibracao corre so no periodo em que os dados existem mesmo.
+    sl = slice(ini_util, fim_util + 1)
+    cal = _cal.calibrar_tudo(
+        carga=dims['Load'][sl],
+        hrv_trend=(hrv_para_calibrar[sl] if hrv_para_calibrar is not None
+                   else None),
+        cp=(cp_serie[sl] if np.isfinite(cp_serie[sl]).sum() >= 30 else None),
+        kappa=kappa[sl],
+        lambda1=l1_hist[ini_util:fim_util + 1])
+    cal['periodo'] = {
+        'de': datas[ini_util], 'ate': datas[fim_util],
+        'dias': fim_util - ini_util + 1,
+        'nota': 'periodo em que todas as dimensoes tem dados; fora dele nao '
+                'se calibra para nao inventar valores',
+    }
+    cal['cobertura_por_dimensao'] = cobertura
+
+    # Um parametro so e usado se medir o que diz medir.
+    #
+    # O canal 1 e um decaimento de FADIGA: exige que mais carga acumulada
+    # ande com HRV mais baixo. Se a correlacao sai positiva, o que foi
+    # medido e causalidade invertida (treina-se mais quando o HRV esta bom)
+    # — usar esse tau como decaimento de fadiga seria pior do que usar o
+    # valor de referencia, porque parece individualizado e nao e.
+    import calibracao as _c
+    rejeitados = {}
+
+    def _usar(chave, defeito, exigir_negativo=False):
+        v = cal.get(chave) or {}
+        if v.get('fonte') != 'dados' or v.get('valor') is None:
+            return defeito
+        if exigir_negativo and (v.get('r') or 0) > 0:
+            rejeitados[chave] = {
+                'valor_encontrado': v.get('valor'), 'r': v.get('r'),
+                'motivo': 'correlacao positiva — mede causalidade invertida, '
+                          'nao decaimento de fadiga',
+                'usado': defeito}
+            return defeito
+        pp = v.get('p_permutacao')
+        if pp is not None and pp >= 0.05:
+            nu = v.get('distribuicao_nula') or {}
+            rejeitados[chave] = {
+                'valor_encontrado': v.get('valor'), 'p_permutacao': pp,
+                'motivo': f'p corrigido por permutacao = {pp}: o |r| obtido '
+                          f'esta dentro do acaso (mediana nula '
+                          f"{nu.get('nulo_mediana')})",
+                'usado': defeito}
+            return defeito
+        if (v.get('r2') or 0) < 0.02:
+            rejeitados[chave] = {
+                'valor_encontrado': v.get('valor'), 'r2': v.get('r2'),
+                'motivo': f"explica so {(v.get('r2') or 0)*100:.1f}% da "
+                          'variacao — abaixo do minimo utilizavel',
+                'usado': defeito}
+            return defeito
+        return v['valor']
+
+    params = {
+        'tau_carga': _usar('canal1_tau', _c.REFERENCIA['tau_carga'], True),
+        'lag_hrv': _usar('canal2_lag', _c.REFERENCIA['lag_hrv'], True),
+        'lag_super': _usar('canal3_lag', _c.REFERENCIA['lag_super']),
+        'largura_super': (cal['canal3_lag'].get('largura', 3.5)
+                          if cal.get('canal3_lag', {}).get('fonte') == 'dados'
+                          else _c.REFERENCIA['largura_super']),
+        'tau_risco': max(2.0, float(_usar('canal4_lag',
+                                          _c.REFERENCIA['tau_risco']) or 8)),
+    }
+    cal['parametros_rejeitados'] = rejeitados
+
+    ultimo = None
+    for t in range(n - 1, -1, -1):
+        if np.isfinite(kappa[t]):
+            ultimo = t
+            break
+    if ultimo is None:
+        return {'erro': 'sem janelas completas de 28 dias',
+                'dimensoes': nomes}
+
+    fonte_por_canal = {'load': 'canal1_tau', 'hrv': 'canal2_lag',
+                       'super': 'canal3_lag', 'risco': 'canal4_lag'}
+    canais = {}
+    for c in _fmt.CANAIS:
+        a = _fmt.atencao(tensores, kappa, eig, nomes, ultimo, c, janela, params)
+        if a:
+            info = cal.get(fonte_por_canal.get(c, ''), {})
+            canais[c] = {**a, 'datas': [datas[i] for i in a['idx']],
+                         **_fmt.CANAIS[c],
+                         'calibracao': {k: info.get(k) for k in
+                                        ('fonte', 'valor', 'r', 'p', 'n',
+                                         'motivo', 'janela')}
+                         if info else None}
+
+    return {
+        'dimensoes': nomes,
+        'janela': janela,
+        'dia': datas[ultimo],
+        'dia_idx': ultimo,
+        'resumo': _fmt.resumo_dia(tensores, kappa, eig, nomes, ultimo,
+                                  cal.get('limiares_lambda1')),
+        'calibracao': cal,
+        'params_usados': params,
+        'canais': canais,
+        'serie': [{'date': datas[i],
+                   'kappa': (round(float(kappa[i]), 4)
+                             if np.isfinite(kappa[i]) else None),
+                   'lambda1': (round(float(eig[i][0] / eig[i][eig[i] > 0].sum()), 4)
+                               if np.isfinite(eig[i]).all() and (eig[i] > 0).any()
+                               else None)}
+                  for i in range(n)],
+        'nota_atencao': ('Os canais do paper emergem de um Transformer treinado '
+                         'em 30 atletas. Aqui sao kernels explicitos cujos '
+                         'parametros sao estimados por correlacao cruzada nas '
+                         'tuas series — ve a coluna "fonte" de cada canal. '
+                         'Onde diz "referencia", o valor vem do paper e '
+                         'descreve outros atletas, nao ti.'),
+    }
+
+
+def _janela_hrv(datas, wellness, desde=None):
+    """Primeiro e ultimo dia com HRV real, respeitando um limite opcional.
+
+    As analises que dependem de HRV so devem correr onde ha HRV. Sem isto,
+    anos inteiros sem medicoes entram como se tivessem dados.
+    """
+    idx = {w['date']: w for w in (wellness or [])}
+    com = [d for d in datas
+           if isinstance((idx.get(d) or {}).get('hrv'), (int, float))
+           and (not desde or d >= desde)]
+    if not com:
+        return None, None, 0
+    return com[0], com[-1], len(com)
+
+
+def teste_eventos(sessoes, wellness, serie_classica, modalidades, desde=None):
+    """Teste por eventos: HRV depois de dias duros vs dias leves.
+
+    Corre no agregado e por modalidade. E mais sensivel que a correlacao —
+    se nem aqui houver efeito, a limitacao esta nos dados, nao no metodo.
+    """
+    import numpy as np
+    import calibracao as _cal
+
+    if not serie_classica or not wellness:
+        return None
+
+    datas_todas = [d['date'] for d in serie_classica]
+    de, ate, n_hrv = _janela_hrv(datas_todas, wellness, desde)
+    if not de or n_hrv < 100:
+        return {'erro': f'so {n_hrv} dias com HRV (precisa de 100)',
+                'desde_pedido': desde}
+
+    # cortar tudo para o periodo em que ha HRV
+    sel = [i for i, d in enumerate(datas_todas) if de <= d <= ate]
+    datas = [datas_todas[i] for i in sel]
+    idx_w = {w['date']: w for w in wellness}
+    hrv = np.array([(idx_w.get(d) or {}).get('hrv') or np.nan for d in datas],
+                   dtype=np.float64)
+    carga = np.array([serie_classica[i]['load'] for i in sel], dtype=np.float64)
+    out = {'periodo': {'de': de, 'ate': ate, 'dias': len(datas),
+                       'dias_com_hrv': int(np.isfinite(hrv).sum()),
+                       'nota': 'restrito ao periodo com HRV real'},
+           'agregado': _cal.teste_dias_duros(datas, carga, hrv),
+           'por_modalidade': {}}
+
+    for mod in modalidades:
+        ses = [s for s in sessoes if s.get('type') == mod and de <= s['date'] <= ate]
+        if len(ses) < 80:
+            out['por_modalidade'][mod] = {
+                'motivo': f'so {len(ses)} sessoes no periodo com HRV'}
+            continue
+        cm = np.nan_to_num(_serie_por_dia(ses, datas, 'tl', 'sum'))
+        out['por_modalidade'][mod] = _cal.teste_dias_duros(datas, cm, hrv)
+
+    efeitos = [('agregado', out['agregado'].get('maior_efeito'))]
+    for m, v in out['por_modalidade'].items():
+        efeitos.append((m, v.get('maior_efeito')))
+    validos = [(k, v) for k, v in efeitos if v is not None]
+    if validos:
+        k, v = max(validos, key=lambda x: abs(x[1]))
+        out['maior_efeito_global'] = {'onde': k, 'cohen_d': v}
+    return out
+
+
+def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
+                        minimo_testes=25):
+    """Calibra contra os dias de esforco maximo, nao contra a CP de todas as
+    sessoes.
+
+    A CP de uma sessao de Z2 tranquilo e baixa porque escolheste treinar
+    suave, nao porque estas pior — isso e ruido a afogar o sinal. Nos dias
+    de esforco maximo a CP mede capacidade, e o estimulo foi decidido pelo
+    esforco e nao pelo estado, o que reduz a causalidade invertida.
+    """
+    import numpy as np
+    import calibracao as _cal
+    import protocolo as _prot
+    import db
+
+    if not serie_classica:
+        return None
+
+    datas = [d['date'] for d in serie_classica]
+    idx = {d: i for i, d in enumerate(datas)}
+    n = len(datas)
+    carga_total = np.array([d['load'] for d in serie_classica], dtype=np.float64)
+
+    out = {'duracao': secs, 'por_modalidade': {}}
+    for mod in modalidades:
+        curvas = db.load_power_curves(mod)
+        if not curvas:
+            continue
+        det = _prot.detectar_testes(curvas)
+        ancora = _prot.serie_ancora(det, mod, secs)
+        if len(ancora) < minimo_testes:
+            out['por_modalidade'][mod] = {
+                'n_testes': len(ancora),
+                'motivo': f'so {len(ancora)} testes (precisa de {minimo_testes})'}
+            continue
+
+        alvo = np.full(n, np.nan)
+        for t in ancora:
+            i = idx.get(t['date'])
+            if i is not None:
+                alvo[i] = t['valor']
+
+        # carga da propria modalidade
+        r = _cal.calibrar_lag(carga_total, alvo, range(5, 29), None, 'lag_super')
+        primeiro = ancora[0]['date']
+        ultimo = ancora[-1]['date']
+        out['por_modalidade'][mod] = {
+            'n_testes': len(ancora),
+            'de': primeiro, 'ate': ultimo,
+            'lag': r.get('valor'), 'r': r.get('r'), 'r2': r.get('r2'),
+            'forca': r.get('forca'),
+            'p_permutacao': r.get('p_permutacao'),
+            'distribuicao_nula': r.get('distribuicao_nula'),
+            'sobrevive': (r.get('p_permutacao') is not None
+                          and r['p_permutacao'] < 0.05),
+        }
+
+    validos = [(m, v) for m, v in out['por_modalidade'].items()
+               if v.get('sobrevive')]
+    out['sobrevivem'] = [m for m, _ in validos]
+    if validos:
+        m, v = max(validos, key=lambda x: x[1].get('r2') or 0)
+        out['leitura'] = (
+            f"{m}: a CP nos dias de teste responde a carga {v['lag']} dias "
+            f"antes (r={v['r']}, {v['r2']*100:.0f}% da variacao, "
+            f"p permutacao {v['p_permutacao']}, {v['n_testes']} testes).")
+    else:
+        out['leitura'] = (
+            'Nenhuma modalidade sobrevive a correccao por permutacao, mesmo '
+            'usando so os dias de esforco maximo. Com esta ancora — que e a '
+            'melhor disponivel — continua sem haver relacao detectavel entre '
+            'carga e performance.')
+    return out
+
+
+def calibrar_segmentado(sessoes, wellness, serie_classica, modalidades,
+                        desde=None):
+    """Calibracao por modalidade e por ano, para ver onde o sinal existe.
+
+    No agregado de anos e desportos, relacoes reais diluem-se. Isto separa
+    para se poder comparar: se um segmento tiver r2 muito acima do agregado,
+    a relacao existe la e some ao juntar tudo.
+    """
+    import numpy as np
+    import calibracao as _cal
+
+    if not serie_classica:
+        return None
+
+    datas_todas = [d['date'] for d in serie_classica]
+    de, ate, n_hrv = _janela_hrv(datas_todas, wellness, desde)
+    if de:
+        sel = [i for i, d in enumerate(datas_todas) if de <= d <= ate]
+    else:
+        sel = list(range(len(datas_todas)))
+    datas = [datas_todas[i] for i in sel]
+    n = len(datas)
+    carga_total = np.array([serie_classica[i]['load'] for i in sel],
+                           dtype=np.float64)
+
+    idx_w = {w['date']: w for w in (wellness or [])}
+    hrv = np.array([(idx_w.get(d) or {}).get('hrv') or np.nan for d in datas],
+                   dtype=np.float64)
+    with np.errstate(all='ignore'):
+        hrv = np.where(hrv > 0, np.log(hrv), np.nan)
+    cp = _serie_por_dia(sessoes, datas, 'cp', 'mean')
+
+    out = {}
+
+    # ── por modalidade: carga so dessa modalidade, HRV e CP dessa modalidade ─
+    por_mod = {}
+    for mod in modalidades:
+        ses = [s for s in sessoes if s.get('type') == mod]
+        if len(ses) < 60:
+            continue
+        carga_mod = np.nan_to_num(_serie_por_dia(ses, datas, 'tl', 'sum'))
+        cp_mod = _serie_por_dia(ses, datas, 'cp', 'mean')
+        # dias com actividade desta modalidade, mais os 30 dias seguintes
+        activo = carga_mod > 0
+        janela = activo.copy()
+        for k in range(1, 31):
+            janela[k:] |= activo[:-k]
+        seg = _cal.calibrar_por_segmento({mod: janela}, carga_mod, hrv, cp_mod)
+        por_mod[mod] = seg.get(mod)
+    out['por_modalidade'] = por_mod
+
+    # ── por ano civil ────────────────────────────────────────────────────
+    anos = {}
+    for d in datas:
+        anos.setdefault(d[:4], []).append(d)
+    segs = {}
+    for ano, ds in anos.items():
+        if len(ds) < 120:
+            continue
+        mask = np.array([d[:4] == ano for d in datas])
+        segs[ano] = mask
+    out['por_ano'] = (_cal.calibrar_por_segmento(segs, carga_total, hrv, cp)
+                      if segs else {})
+
+    # ── agregado, para comparar ──────────────────────────────────────────
+    tudo = np.ones(n, dtype=bool)
+    ag = _cal.calibrar_por_segmento({'agregado': tudo}, carga_total, hrv, cp)
+    out['agregado'] = ag.get('agregado')
+    # tambem restringimos os segmentos por ano ao periodo com HRV, ja feito
+    # acima ao cortar `datas`
+
+    base = (out['agregado'] or {}).get('melhor_r2') or 0.0
+    melhores = []
+    for grupo, dic in (('modalidade', por_mod), ('ano', out['por_ano'])):
+        for k, v in (dic or {}).items():
+            if k.startswith('_') or not isinstance(v, dict):
+                continue
+            r2 = v.get('melhor_r2')
+            if r2 and r2 > max(base * 2, 0.02):
+                melhores.append({'grupo': grupo, 'nome': k, 'r2': r2,
+                                 'n_dias': v.get('n_dias')})
+    melhores.sort(key=lambda x: -x['r2'])
+    out['destaques'] = melhores[:5]
+    out['r2_agregado'] = round(base, 4)
+    out['periodo'] = {'de': de, 'ate': ate, 'dias': n,
+                      'dias_com_hrv': n_hrv,
+                      'nota': ('restrito ao periodo com HRV real'
+                               if de else 'sem HRV — so as series de carga/CP')}
+    out['leitura'] = (
+        f"Segmentos com sinal claramente acima do agregado ({base*100:.1f}%): "
+        + (', '.join(f"{m['nome']} ({m['r2']*100:.0f}%)" for m in melhores[:3])
+           if melhores else 'nenhum — a ausencia de sinal nao vem da mistura '
+                           'de fases ou modalidades'))
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FIABILIDADE DO CP — adaptado da tab eFTP do dashboard Streamlit
+# (susigan/dashboard, tabs/tab_eftp.py), com duas mudanças deliberadas:
+#
+# 1. Usa o CP da curva ajustada (db.cp_por_sessao, r2>=0.80), que já é a
+#    fonte mais rigorosa deste projecto — não o icu_eftp da Intervals.icu.
+# 2. Os limiares de kappa NÃO são hardcoded (o Streamlit usa p75=5.954,
+#    p87=7.182, valores calibrados para OUTRO atleta) — aqui são
+#    percentis móveis do histórico do PRÓPRIO atleta, a mesma filosofia
+#    já usada em detect_phases() para os limiares de fase.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _sem_mdc_cp(pares_data_valor, janela_dias=14, min_n=10):
+    """SEM (erro-padrão de medição) e MDC (mínima diferença detectável)
+    do CP, a partir da variação real dia-a-dia em janelas curtas.
+
+    Método: std das diferenças entre medições consecutivas em ≤14 dias,
+    dividido por √2 (as diferenças combinam duas medições). MDC 95% =
+    1.96×√2×SEM. Isto NÃO é uma suposição — é o ruído medido do próprio
+    estimador de CP, não um número da literatura.
+    """
+    import numpy as np
+    pares = sorted([(d, v) for d, v in pares_data_valor if v is not None])
+    if len(pares) < min_n:
+        return None
+    difs = []
+    for i in range(1, len(pares)):
+        d0, v0 = pares[i - 1]
+        d1, v1 = pares[i]
+        gap = (datetime.strptime(d1, '%Y-%m-%d')
+               - datetime.strptime(d0, '%Y-%m-%d')).days
+        if 0 < gap <= janela_dias:
+            difs.append(v1 - v0)
+    if len(difs) < min_n:
+        return None
+    sem = float(np.std(difs, ddof=1) / np.sqrt(2))
+    mdc = round(1.96 * np.sqrt(2) * sem, 1)
+    media = float(np.median([v for _, v in pares]))
+    mdc_pct = round(mdc / media * 100, 1) if media > 0 else None
+    return {'sem': round(sem, 2), 'mdc': mdc, 'mdc_pct': mdc_pct,
+            'n': len(difs), 'n_medicoes': len(pares)}
+
+
+def cp_fiabilidade(sessoes, modalidades):
+    """SEM/MDC do CP por modalidade — quanto do que parece progresso é
+    ruído do próprio método de medição."""
+    out = {}
+    for mod in modalidades:
+        pares = [(s['date'], s.get('cp')) for s in sessoes
+                 if s.get('type') == mod and s.get('cp')]
+        r = _sem_mdc_cp(pares)
+        if r:
+            out[mod] = r
+    return out
+
+
+def _diagnostico_cp(ctl_medio, kappa_medio, kappa_hist, ctl_dose_min=45):
+    """Diagnóstico diferencial de porque um bloco não é REAL — mesmo
+    framework do dashboard Streamlit, três causas com fonte:
+
+    1. Dose insuficiente (Montero & Lundby 2017)
+    2. Stress silencioso — kappa do FMT Tensor (Della Mattia 2019)
+    3. Meseta homeostática, se nenhuma das anteriores (Issurin 2010)
+
+    kappa_hist: lista de kappa diários do atleta, para calcular os
+    percentis MÓVEIS — não valores fixos doutro atleta.
+    """
+    import numpy as np
+    causas = []
+    if ctl_medio is not None and ctl_medio < ctl_dose_min:
+        causas.append({
+            'causa': (f'Dose insuficiente (CTL médio={ctl_medio:.0f}, '
+                     f'mínimo sugerido={ctl_dose_min})'),
+            'prescricao': ('Aumentar frequência/volume de sessões antes '
+                          'de mudar qualidade'),
+            'fonte': 'Montero & Lundby 2017'})
+
+    if kappa_medio is not None and kappa_hist:
+        vals = [k for k in kappa_hist if k is not None]
+        if len(vals) >= 30:
+            p75 = float(np.percentile(vals, 75))
+            p87 = float(np.percentile(vals, 87))
+            if kappa_medio > p75:
+                nivel = ('crítico (acima do teu p87)' if kappa_medio > p87
+                         else 'elevado (acima do teu p75)')
+                causas.append({
+                    'causa': (f'Stress silencioso (κ={kappa_medio:.3f}, '
+                             f'{nivel})'),
+                    'prescricao': ('Sistema em modo defensivo — reduzir '
+                                  'κ antes de aumentar o estímulo'),
+                    'fonte': 'Della Mattia 2019 (FMT Tensor)'})
+
+    if not causas:
+        causas.append({
+            'causa': 'Possível meseta homeostática — estímulo familiar',
+            'prescricao': ('Mudar a natureza do estímulo: novo tipo de '
+                          'sessão ou intensidade-alvo'),
+            'fonte': 'Issurin 2010'})
+    return causas
+
+
+def cp_blocos(sessoes, modalidades, serie_classica, fmt_serie=None,
+              janela_semanas=8):
+    """Classifica blocos rolantes de N semanas de CP como REAL / INCERTO
+    / RUÍDO, e junta o diagnóstico diferencial quando não é REAL.
+
+    Cada bloco compara o CP no fim da janela contra o CP no início — se
+    a diferença for >= MDC, é REAL; >= metade do MDC, é INCERTO; senão,
+    é RUÍDO, estatisticamente indistinguível de zero.
+    """
+    from datetime import timedelta
+    import numpy as np
+
+    fiab = cp_fiabilidade(sessoes, modalidades)
+    ctl_por_data = {d['date']: d.get('ctl') for d in (serie_classica or [])}
+    kappa_por_data = {d['date']: d.get('kappa') for d in (fmt_serie or [])}
+    kappa_hist = list(kappa_por_data.values())
+
+    out = {}
+    for mod in modalidades:
+        r = fiab.get(mod)
+        if not r:
+            continue
+        mdc = r['mdc']
+        pares = sorted([(s['date'], s['cp']) for s in sessoes
+                        if s.get('type') == mod and s.get('cp')])
+        if len(pares) < 10:
+            continue
+
+        # agregação semanal: último valor de cada semana ISO
+        semanal = {}
+        for d, v in pares:
+            dt = datetime.strptime(d, '%Y-%m-%d')
+            semana = (dt - timedelta(days=dt.weekday())).strftime('%Y-%m-%d')
+            semanal[semana] = v
+        semanas = sorted(semanal.keys())
+        if len(semanas) <= janela_semanas:
+            continue
+
+        blocos = []
+        for i in range(janela_semanas, len(semanas)):
+            s_ini, s_fim = semanas[i - janela_semanas], semanas[i]
+            cp_ini, cp_fim = semanal[s_ini], semanal[s_fim]
+            delta = cp_fim - cp_ini
+            ad = abs(delta)
+            classif = ('REAL' if ad >= mdc else
+                      'INCERTO' if ad >= mdc * 0.5 else 'RUÍDO')
+
+            ctl_vals = [v for d, v in ctl_por_data.items()
+                       if s_ini <= d <= s_fim and v is not None]
+            ctl_medio = float(np.mean(ctl_vals)) if ctl_vals else None
+            kappa_vals = [v for d, v in kappa_por_data.items()
+                         if s_ini <= d <= s_fim and v is not None]
+            kappa_medio = float(np.mean(kappa_vals)) if kappa_vals else None
+
+            bloco = {
+                'periodo_fim': s_fim, 'cp_fim': round(cp_fim, 1),
+                'delta': round(delta, 1), 'classificacao': classif,
+                'ctl_medio': round(ctl_medio, 1) if ctl_medio else None,
+                'kappa_medio': round(kappa_medio, 3) if kappa_medio else None,
+            }
+            if classif != 'REAL' or delta < 0:
+                bloco['diagnostico'] = _diagnostico_cp(
+                    ctl_medio, kappa_medio, kappa_hist)
+            blocos.append(bloco)
+
+        out[mod] = {'mdc': mdc, 'sem': r['sem'], 'mdc_pct': r['mdc_pct'],
+                    'n_medicoes': r['n_medicoes'], 'blocos': blocos[-10:]}
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PROJECÇÃO 28 DIAS — adaptado do Modelo 1 da tab eFTP (Della Mattia 2025,
+# FTLM Part II): β = OLS(Δln(CP) ~ CTLγ_norm). Reaproveita o ctlg_perf já
+# calculado por calcular_ftlm — não recalcula CTLγ do zero.
+# ══════════════════════════════════════════════════════════════════════════
+
+def cp_projecao_28d(sessoes, ftlm_res, modalidades, dias_proj=28):
+    """Projecção do CP a 28 dias, por regressão Δln(CP) ~ CTLγ_norm.
+
+    x = CTLγ_norm = CTLγ/mediana(CTLγ) − 1 [adimensional, centrado em 0]
+    y = Δln(CP) = ln(CP / CP_ref_90d) [CP_ref = mediana dos 90 dias
+        anteriores a essa medição — sem olhar para o futuro]
+    β = OLS(y ~ x)
+
+    Projecção: CTLγ evolui linearmente ao ritmo do declive dos últimos
+    14 dias. Cap implícito no IC 90%: nunca mais de 25% do CP actual.
+    """
+    import numpy as np
+
+    if not ftlm_res or not ftlm_res.get('por_modalidade'):
+        return {}
+    por_mod_ftlm = ftlm_res['por_modalidade']
+    out = {}
+
+    for mod in modalidades:
+        info = por_mod_ftlm.get(mod)
+        if not info:
+            continue
+        serie_mod = info.get('serie') or []
+        if len(serie_mod) < 40:
+            continue
+        ctlg_por_data = {r['date']: r['ctlg'] for r in serie_mod}
+
+        pares_cp = sorted([(s['date'], s['cp']) for s in sessoes
+                           if s.get('type') == mod and s.get('cp')])
+        if len(pares_cp) < 10:
+            continue
+
+        # CP_ref: mediana dos 90 dias ANTERIORES a cada medição — nunca
+        # olha para a frente, senão o beta "adivinharia" o futuro
+        obs = []
+        for i, (d, cp) in enumerate(pares_cp):
+            dt = datetime.strptime(d, '%Y-%m-%d')
+            janela = [v for dd, v in pares_cp[:i]
+                     if (dt - datetime.strptime(dd, '%Y-%m-%d')).days <= 90]
+            if len(janela) < 5:
+                continue
+            cp_ref = float(np.median(janela))
+            ctlg = ctlg_por_data.get(d)
+            if ctlg is None or cp_ref <= 0:
+                continue
+            obs.append((d, cp, cp_ref, ctlg))
+        if len(obs) < 8:
+            continue
+
+        ctlg_vals = np.array([o[3] for o in obs])
+        ctlg_med = float(np.median(ctlg_vals))
+        if ctlg_med < 0.01:
+            continue
+        x = ctlg_vals / ctlg_med - 1.0
+        ratio = np.clip(np.array([o[1] / o[2] for o in obs]), 0.5, 2.0)
+        y = np.log(ratio)
+
+        n = len(x)
+        xm, ym = x.mean(), y.mean()
+        sxx = float(((x - xm) ** 2).sum())
+        if sxx < 1e-9:
+            continue
+        beta = float(((x - xm) * (y - ym)).sum() / sxx)
+        alpha = ym - beta * xm
+        pred = alpha + beta * x
+        ss_res = float(((y - pred) ** 2).sum())
+        ss_tot = float(((y - ym) ** 2).sum())
+        r2 = max(0.0, 1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+        sigma_ln = float(np.std(y - pred, ddof=2)) if n > 2 else 0.1
+
+        ultimos14 = ctlg_vals[-14:] if len(ctlg_vals) >= 14 else ctlg_vals
+        if len(ultimos14) >= 5:
+            slope = float(np.polyfit(np.arange(len(ultimos14)),
+                                     ultimos14, 1)[0])
+        else:
+            slope = 0.0
+
+        ctlg_now = ctlg_vals[-1]
+        cp_now = obs[-1][1]
+        ctlg_28 = ctlg_now + slope * dias_proj
+        x28 = ctlg_28 / ctlg_med - 1.0
+        cp_28 = float(cp_now * np.exp(beta * (x28 - x[-1])))
+
+        z90 = 1.645
+        ic = float(min(cp_now * (np.exp(sigma_ln * z90) - 1.0),
+                       cp_now * 0.25))
+
+        out[mod] = {
+            'beta': round(beta, 4), 'r2': round(r2, 4), 'n': n,
+            'cp_actual': round(cp_now, 1),
+            'cp_proj_28d': round(cp_28, 1),
+            'delta_w': round(cp_28 - cp_now, 1),
+            'delta_pct': (round((cp_28 - cp_now) / cp_now * 100, 1)
+                         if cp_now else None),
+            'ic90_w': round(ic, 1),
+            'ctlg_slope_14d': round(slope, 4),
+            'fiavel': r2 >= 0.20,
+            'leitura': (('modelo com poder preditivo razoável' if r2 >= 0.20
+                        else 'direcção indicativa, magnitude incerta' if r2 >= 0.08
+                        else 'CTLγ não explica a variação do CP neste período')),
+        }
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# MODELO 2 — FTLM POLAR: CTLγ decomposto por zona de intensidade
+# Extensão do FTLM Part II (Della Mattia 2025), adaptada da tab eFTP do
+# dashboard Streamlit (susigan/dashboard) — mesma lógica, mas usa dados
+# que JÁ existem neste projecto (db.tempo_por_zona), em vez de colunas
+# z1_kj/z2_kj/z3_kj que teriam de vir doutro sítio.
+#
+# A tabela zone_times já guarda segundos por zona E os limites em watts
+# (start_value/end_value) de cada zona — o kJ é aproximado por
+# segundos × watts_representativo_da_zona, não medido directamente
+# (a Intervals.icu não dá kJ por zona, só tempo).
+# ══════════════════════════════════════════════════════════════════════════
+
+def modelo_polar(sessoes, modalidades, gamma_map=None):
+    """eFTP/CP ~ α_Z3·CTLγ_Z3 + α_Z2·CTLγ_Z2 + α_Z1·CTLγ_Z1 (OLS múltipla).
+
+    O mesmo γ modal (já calibrado por modalidade no FTLM) é aplicado
+    separadamente a cada zona de intensidade — não é um parâmetro novo,
+    é a mesma decomposição fraccionária, agora por zona em vez de só
+    por modalidade.
+
+    Usa z1_kj/z2_kj/z3_kj REAIS, já calculados e guardados na tabela
+    activities (integração do stream de potência) — não uma aproximação.
+    """
+    import numpy as np
+    import db
+    from datetime import timedelta
+
+    gamma_map = gamma_map or {}
+    out = {}
+    for mod in modalidades:
+        zonas = db.kj_por_zona_real(mod)
+        if not zonas:
+            continue
+        cp_por_id = {s['id']: s.get('cp') for s in sessoes
+                    if s.get('type') == mod and s.get('cp')}
+        obs = [{'date': z['date'], 'z1': z['z1'], 'z2': z['z2'],
+               'z3': z['z3'], 'cp': cp_por_id[aid]}
+              for aid, z in zonas.items() if cp_por_id.get(aid)]
+        if len(obs) < 10:
+            continue
+        obs.sort(key=lambda o: o['date'])
+
+        gamma = gamma_map.get(mod, 0.5)
+        tau = max(42.0 * (1.0 - gamma) + 7.0 * gamma, 7.0)
+
+        d0 = datetime.strptime(obs[0]['date'], '%Y-%m-%d')
+        d1 = datetime.strptime(obs[-1]['date'], '%Y-%m-%d')
+        todas_datas = []
+        d = d0
+        while d <= d1:
+            todas_datas.append(d.strftime('%Y-%m-%d'))
+            d += timedelta(days=1)
+
+        soma = {dt: {'z1': 0.0, 'z2': 0.0, 'z3': 0.0} for dt in todas_datas}
+        for o in obs:
+            if o['date'] in soma:
+                for k in ('z1', 'z2', 'z3'):
+                    soma[o['date']][k] += o[k]
+
+        z1_d = [soma[dt]['z1'] for dt in todas_datas]
+        z2_d = [soma[dt]['z2'] for dt in todas_datas]
+        z3_d = [soma[dt]['z3'] for dt in todas_datas]
+        ctlg_z1 = _ewm(z1_d, tau)
+        ctlg_z2 = _ewm(z2_d, tau)
+        ctlg_z3 = _ewm(z3_d, tau)
+        idx_data = {dt: i for i, dt in enumerate(todas_datas)}
+
+        X_rows, y_vals = [], []
+        for o in obs:
+            i = idx_data.get(o['date'])
+            if i is None:
+                continue
+            X_rows.append([ctlg_z3[i], ctlg_z2[i], ctlg_z1[i], 1.0])
+            y_vals.append(o['cp'])
+        if len(X_rows) < 10:
+            continue
+
+        X = np.array(X_rows)
+        y = np.array(y_vals)
+        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+        a_z3, a_z2, a_z1, intc = [float(c) for c in coef]
+        y_pred = X @ coef
+        ss_res = float(((y - y_pred) ** 2).sum())
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        r2 = max(0.0, 1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+        out[mod] = {
+            'alpha_z3': round(a_z3, 4), 'alpha_z2': round(a_z2, 4),
+            'alpha_z1': round(a_z1, 4), 'intercepto': round(intc, 1),
+            'r2': round(r2, 4), 'n': len(X_rows),
+            'gamma_modal': round(gamma, 3),
+            'ctlg_z3_actual': round(ctlg_z3[-1], 2),
+            'ctlg_z2_actual': round(ctlg_z2[-1], 2),
+            'ctlg_z1_actual': round(ctlg_z1[-1], 2),
+            'kj_z3_ultimos_7d': round(sum(z3_d[-7:]), 0),
+            'kj_total_ultimos_7d': round(sum(z1_d[-7:]) + sum(z2_d[-7:])
+                                         + sum(z3_d[-7:]), 0),
+        }
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PRESCRIÇÃO — traduz o α do Modelo 2 em "quanto e onde"
+#
+# O CP em si é sempre um número agregado — não distingue de onde veio o
+# estímulo. O que o Modelo 2 decompõe é a CARGA que o explica, não o
+# resultado. Esta função inverte essa relação: dado quanto CP se quer
+# ganhar, calcula quanto CTLγ extra é preciso na zona com o α mais alto,
+# e traduz isso em kJ/semana e numa gama de watts real (das zonas
+# guardadas em zone_times).
+# ══════════════════════════════════════════════════════════════════════════
+
+def prescricao_zona(modalidades, modelo_polar_res, meta_delta_w=5.0):
+    """Quanto tempo, a que watts, para subir meta_delta_w de CP.
+
+    NOTA sobre o que "kJ/semana extra" significa aqui: modelo_polar usa
+    uma EWM simples (não o kernel fraccionário completo do FTLM), então
+    em regime estacionário um input diário constante de X converge para
+    CTLγ≈X. Por isso delta_ctlg_necessario já É directamente o kJ/dia
+    extra, ×7 dá o kJ/semana — não é preciso inverter uma potência de
+    lag fraccionária.
+
+    Isto é uma EXTRAPOLAÇÃO LINEAR de um modelo correlacional, não
+    causal — sobretudo em amostras pequenas com R² alto, vale a pena
+    desconfiar antes de prescrever a sério.
+    """
+    import db
+
+    out = {}
+    for mod in modalidades:
+        info = modelo_polar_res.get(mod)
+        if not info:
+            continue
+        alphas = {'z1': info['alpha_z1'], 'z2': info['alpha_z2'],
+                 'z3': info['alpha_z3']}
+        zona_melhor = max(alphas, key=lambda k: alphas[k])
+        alpha_melhor = alphas[zona_melhor]
+
+        if alpha_melhor <= 0:
+            out[mod] = {
+                'ok': False,
+                'motivo': ('nenhuma zona tem coeficiente positivo — o '
+                          'modelo não encontra uma zona que explique '
+                          'ganhos de CP nesta modalidade')}
+            continue
+
+        delta_ctlg_necessario = meta_delta_w / alpha_melhor
+        kj_extra_dia = delta_ctlg_necessario
+        kj_extra_semana = kj_extra_dia * 7
+
+        # gama de watts real da zona escolhida, das zonas guardadas
+        linhas = db.tempo_por_zona(mod, kind='power')
+        vals_lo, vals_hi = [], []
+        for r in linhas:
+            n = r['n_zonas'] or 1
+            frac = r['zone_idx'] / max(n - 1, 1)
+            grp = ('z1' if frac < 0.35 else ('z2' if frac < 0.65 else 'z3'))
+            if grp == zona_melhor and r['start_value'] is not None:
+                vals_lo.append(r['start_value'])
+                if r['end_value']:
+                    vals_hi.append(r['end_value'])
+
+        watts_lo = round(sum(vals_lo) / len(vals_lo)) if vals_lo else None
+        watts_hi = round(sum(vals_hi) / len(vals_hi)) if vals_hi else None
+        horas_semana = None
+        if watts_lo:
+            watts_medio = (watts_lo + watts_hi) / 2 if watts_hi else watts_lo * 1.15
+            # kJ = W × s / 1000; 1h = 3600s → kJ/h = W × 3.6
+            horas_semana = kj_extra_semana / (watts_medio * 3.6)
+
+        out[mod] = {
+            'ok': True,
+            'zona_melhor': zona_melhor.upper(),
+            'alpha': round(alpha_melhor, 4),
+            'r2_modelo': info.get('r2'),
+            'n_modelo': info.get('n'),
+            'delta_cp_alvo_w': meta_delta_w,
+            'kj_extra_dia': round(kj_extra_dia, 1),
+            'kj_extra_semana': round(kj_extra_semana, 0),
+            'watts_range': ([watts_lo, watts_hi] if watts_lo else None),
+            'horas_extra_semana': (round(horas_semana, 1)
+                                   if horas_semana else None),
+            'aviso': ('extrapolação linear de um modelo correlacional — '
+                     'não é causal. Com poucas medições e R² alto ao '
+                     'mesmo tempo, desconfiar antes de prescrever a '
+                     'sério' if (info.get('n') or 0) < 150 else None),
+        }
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PACE PARA A RUN — os modelos correm em watts, mas quem treina reconhece
+# pace, não watts. Usa a calibração pace↔watts do próprio atleta
+# (perfil_metabolico.regressao_pace_watts) para mostrar os dois lado a
+# lado, só na Run — nas outras modalidades watts já é a unidade natural.
+# ══════════════════════════════════════════════════════════════════════════
+
+def calibracao_pace_run(sessoes):
+    """Recta pace↔watts da Run, e a partir de quando a Run tem potência.
+
+    O aviso da data-limite é importante: se houve um período longo sem
+    correr, ou a correr sem sensor de potência, a série de CP/watts da
+    Run só é válida a partir daí — misturar as duas eras dava uma recta
+    calibrada com dados que não existem.
+    """
+    import perfil_metabolico as pmet
+
+    ses_run = [s for s in sessoes if s.get('type') == 'Run']
+    pontos = [(s.get('watts_medio'), s.get('distancia_m'), s.get('duracao_s'))
+             for s in ses_run
+             if s.get('watts_medio') and s.get('distancia_m')
+             and s.get('duracao_s')]
+    rel = pmet.regressao_pace_watts(pontos)
+
+    com_potencia = sorted(s['date'] for s in ses_run if s.get('watts_medio'))
+    primeira_com_potencia = com_potencia[0] if com_potencia else None
+    todas_datas_run = sorted(s['date'] for s in ses_run)
+    primeira_sessao_run = todas_datas_run[0] if todas_datas_run else None
+
+    return {
+        'relacao': rel,
+        'primeira_sessao_com_potencia': primeira_com_potencia,
+        'primeira_sessao_run': primeira_sessao_run,
+        'n_com_potencia': len(com_potencia),
+        'n_total_run': len(todas_datas_run),
+        'aviso': (
+            f'a Run só tem potência a partir de {primeira_com_potencia} — '
+            f'{len(com_potencia)} de {len(todas_datas_run)} sessões de Run '
+            'têm watts. Os modelos de CP/CTLγ da Run só usam essas '
+            'sessões; um histórico antigo sem potência não entra nem '
+            'distorce a calibração'
+            if primeira_com_potencia else
+            'nenhuma sessão de Run com potência gravada'),
+    }
+
+
+def _watts_para_pace_fmt(rel, watts):
+    """round + formatar, ou None se a recta não for fiável."""
+    import perfil_metabolico as pmet
+    if watts is None:
+        return None
+    seg = pmet.pace_de_watts(rel, watts)
+    return pmet.formatar_pace(seg) if seg is not None else None
+
+
+def aumentar_com_pace(resultado_watts, rel_pace, campos_watts):
+    """Acrescenta o equivalente em pace a um dict que já tem valores em
+    watts — usado para a Run, sobre cp_projecao_28d e prescricao_zona.
+
+    campos_watts: lista de nomes de campo em `resultado_watts` que são
+    valores em watts a converter (ex.: ['cp_actual', 'cp_proj_28d']).
+    Campos que sejam [lo, hi] (como watts_range) viram um par formatado.
+    """
+    if not resultado_watts or not rel_pace or not rel_pace.get('suficiente'):
+        return resultado_watts
+    out = dict(resultado_watts)
+    for campo in campos_watts:
+        v = out.get(campo)
+        if v is None:
+            continue
+        if isinstance(v, (list, tuple)) and len(v) == 2:
+            p_lo = _watts_para_pace_fmt(rel_pace, v[0])
+            p_hi = _watts_para_pace_fmt(rel_pace, v[1])
+            if p_lo and p_hi:
+                out[campo + '_pace'] = [p_hi, p_lo]  # mais watts = pace mais rapido = 1o
+        else:
+            p = _watts_para_pace_fmt(rel_pace, v)
+            if p:
+                out[campo + '_pace'] = p
+    out['pace_r2'] = rel_pace.get('r2')
+    out['pace_n'] = rel_pace.get('n')
+    return out

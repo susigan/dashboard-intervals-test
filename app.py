@@ -1938,8 +1938,8 @@ def api_fisiologia_qualidade():
 
 @app.route('/api/metabol/vo2max_moxy/<modalidade>')
 def api_metabol_vo2max_moxy(modalidade):
-    """VO2max previsto pelo Moxy (SmO2×FC repouso, Peikon/NNOXX) para esta
-    modalidade, com a verificação cruzada contra o VO2max do modelo
+    """VO2max previsto pelo Moxy (SmO2×FC repouso, Peikon/NNOXX) e, para
+    Row/SkiErg, pelo teste de 2000 m — comparados com o VO2max do modelo
     (Hawley/Mader) já calculado no Perfil Metabólico.
 
     ?peso=  ?pvo2max_hawley=  ?w_at=  — vêm do que já está carregado no
@@ -1947,6 +1947,7 @@ def api_metabol_vo2max_moxy(modalidade):
     """
     try:
         import drive_db_perfil as ddp
+        import perfil_metabolico as pmet
         peso = request.args.get('peso', type=float)
         pvo2_hawley = request.args.get('pvo2max_hawley', type=float)
         w_at = request.args.get('w_at', type=float)
@@ -1957,46 +1958,91 @@ def api_metabol_vo2max_moxy(modalidade):
             "FROM moxy_analises "
             "WHERE modalidade=? AND vo2max_previsto IS NOT NULL "
             "ORDER BY data DESC LIMIT 1", (modalidade,)).fetchone()
-        if not r:
+
+        # Teste de 2000 m — só faz sentido para Row/SkiErg. Procura-se
+        # nas actividades normais (não Moxy), pela distância — entre
+        # 1950 e 2050 m, para apanhar variações de GPS/ergómetro.
+        teste_2km = None
+        if modalidade in ('Row', 'SkiErg') and peso:
+            import db as _db
+            l2 = _db._exec(
+                "SELECT id, date, average_watts, distance_m FROM activities "
+                "WHERE type=? AND distance_m BETWEEN 1950 AND 2050 "
+                "AND average_watts IS NOT NULL "
+                "ORDER BY date DESC LIMIT 1",
+                (modalidade,), fetch='all')
+            if l2:
+                aid2, data2, watts2, dist2 = l2[0]
+                v2km = pmet.vo2max_2km_erg(watts2, peso)
+                if v2km:
+                    teste_2km = {
+                        'vo2max_2km': round(v2km, 1),
+                        'watts_medio_2km': round(watts2),
+                        'distancia_m': round(dist2),
+                        'data': str(data2)[:10], 'activity_id': aid2,
+                        'pvo2max_2km_w': round(watts2),
+                        'aviso': ('adaptação da fórmula de Hawley a um '
+                                 'teste de 2 km — não é uma equação '
+                                 'publicada e validada especificamente '
+                                 'para ergómetros'),
+                    }
+
+        if not r and not teste_2km:
             return jsonify({'status': 'sem_dados',
-                            'mensagem': ('nenhuma sessão Moxy desta '
-                                        'modalidade tem VO2max previsto '
-                                        'gravado')})
-        vo2_moxy, plausivel, data, aid = r
-        fora = {'status': 'ok', 'vo2max_moxy': round(vo2_moxy, 1),
-                'plausivel': bool(plausivel), 'data': data,
-                'activity_id': aid}
+                            'mensagem': ('nenhuma sessão Moxy com VO2max '
+                                        'gravado nem teste de 2 km '
+                                        'encontrado para esta modalidade')})
+
+        fora = {'status': 'ok', 'teste_2km': teste_2km}
+
+        if r:
+            vo2_moxy, plausivel, data, aid = r
+            fora['vo2max_moxy'] = round(vo2_moxy, 1)
+            fora['plausivel'] = bool(plausivel)
+            fora['data'] = data
+            fora['activity_id'] = aid
+            if not plausivel:
+                fora['aviso'] = ('o VO2max do Moxy desta sessão foi '
+                                 'marcado como implausível — a comparação '
+                                 'existe mas não é de confiar')
 
         if not peso:
-            fora['aviso'] = 'sem peso — não dá para converter em watts'
+            fora.setdefault('aviso', 'sem peso — não dá para converter em watts')
             return jsonify(fora)
 
-        pvo2_moxy_w = round(vo2_moxy * peso / 12.5)
-        fora['pvo2max_moxy_w'] = pvo2_moxy_w
-        if w_at:
-            fora['fractional_utilization_moxy_pct'] = round(
-                w_at / pvo2_moxy_w * 100, 1)
+        if r:
+            pvo2_moxy_w = round(vo2_moxy * peso / 12.5)
+            fora['pvo2max_moxy_w'] = pvo2_moxy_w
+            if w_at:
+                fora['fractional_utilization_moxy_pct'] = round(
+                    w_at / pvo2_moxy_w * 100, 1)
 
+        # comparações entre os pares que existirem: Hawley×Moxy,
+        # Hawley×2km, Moxy×2km — cada uma só aparece se os dois lados
+        # tiverem valor
+        comparacoes = []
+        candidatos = []
         if pvo2_hawley:
-            delta = pvo2_moxy_w - pvo2_hawley
-            delta_pct = round(delta / pvo2_hawley * 100, 1)
-            fora['pvo2max_hawley_w'] = round(pvo2_hawley)
-            fora['delta_w'] = round(delta)
-            fora['delta_pct'] = delta_pct
-            fora['concordam'] = abs(delta_pct) <= 10
-            fora['leitura'] = (
-                f'{"concordam" if fora["concordam"] else "discordam"} — '
-                f'{abs(delta_pct)}% de diferença entre os dois modelos. '
-                + ('Modelos independentes a apontar para o mesmo sítio é '
-                   'um bom sinal.' if fora['concordam'] else
-                   'Vale a pena olhar para qual dos dois tem os dados de '
-                   'entrada mais fiáveis nesta sessão — o Hawley depende '
-                   'da curva de potência (MMP), o Moxy da FC de repouso '
-                   'da Intervals.icu e do SmO2 mínimo da sessão.'))
-        if not plausivel:
-            fora['aviso'] = ('o VO2max do Moxy desta sessão foi marcado '
-                             'como implausível — a comparação existe mas '
-                             'não é de confiar')
+            candidatos.append(('Hawley (modelo)', pvo2_hawley))
+        if r:
+            candidatos.append(('Moxy (SmO2×FC repouso)', pvo2_moxy_w))
+        if teste_2km:
+            candidatos.append(('Teste de 2 km', teste_2km['pvo2max_2km_w']))
+        for i in range(len(candidatos)):
+            for j in range(i + 1, len(candidatos)):
+                nome_a, w_a = candidatos[i]
+                nome_b, w_b = candidatos[j]
+                delta = w_b - w_a
+                delta_pct = round(delta / w_a * 100, 1) if w_a else None
+                if delta_pct is None:
+                    continue
+                comparacoes.append({
+                    'a': nome_a, 'b': nome_b,
+                    'pvo2max_a_w': round(w_a), 'pvo2max_b_w': round(w_b),
+                    'delta_w': round(delta), 'delta_pct': delta_pct,
+                    'concordam': abs(delta_pct) <= 10,
+                })
+        fora['comparacoes'] = comparacoes
         return jsonify(fora)
     except Exception as e:
         import traceback

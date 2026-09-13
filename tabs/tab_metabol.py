@@ -3331,11 +3331,18 @@ function pmVo2MoxyCarregar(){
  if(m.mlss_at_w) q.push('w_at=' + m.mlss_at_w);
  fetch('/api/metabol/vo2max_moxy/' + encodeURIComponent(mod) + '?' + q.join('&'))
  .then(function(r){
-  if(!r.ok) throw new Error('HTTP ' + r.status
-    + (r.status===404 ? ' — a rota pode ainda não estar no servidor '
-      + '(precisa de um novo deploy) ou "' + mod + '" não é uma '
-      + 'modalidade reconhecida' : ''));
-  return r.json();
+  // Antes: um erro HTTP lançava excepção ANTES de ler o corpo da
+  // resposta — e o backend, quando dá erro 500, devolve JSON com a
+  // mensagem real (d.status='erro', d.mensagem=...). Isso ficava
+  // sempre escondido atrás de um genérico "HTTP 500". Agora tenta-se
+  // sempre ler o JSON primeiro; só se isso falhar (ex.: um 404 a
+  // sério, que devolve HTML, não JSON) é que se usa só o status.
+  return r.json().catch(function(){
+    throw new Error('HTTP ' + r.status + (r.status === 404
+      ? ' — a rota pode ainda não estar no servidor (precisa de um '
+        + 'novo deploy) ou a resposta não é JSON'
+      : ' — resposta não é JSON'));
+  });
  }).then(function(d){
   const cardsEl = document.getElementById('pmVo2MoxyCards');
   const dropEl = document.getElementById('pmVo2CruzDropdown');

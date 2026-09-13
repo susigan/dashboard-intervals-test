@@ -1966,19 +1966,22 @@ def api_metabol_vo2max_moxy(modalidade):
         if modalidade in ('Row', 'SkiErg') and peso:
             import db as _db
             l2 = _db._exec(
-                "SELECT id, date, average_watts, distance_m FROM activities "
+                "SELECT id, date, average_watts, distance_m, moving_time "
+                "FROM activities "
                 "WHERE type=? AND distance_m BETWEEN 1950 AND 2050 "
                 "AND average_watts IS NOT NULL "
                 "ORDER BY date DESC LIMIT 1",
                 (modalidade,), fetch='all')
             if l2:
-                aid2, data2, watts2, dist2 = l2[0]
-                v2km = pmet.vo2max_2km_erg(watts2, peso)
+                aid2, data2, watts2, dist2, dur2 = l2[0]
+                v2km = pmet.vo2max_2km_erg(watts2, peso, duracao_s=dur2)
                 if v2km:
                     teste_2km = {
                         'vo2max_2km': round(v2km, 1),
                         'watts_medio_2km': round(watts2),
                         'distancia_m': round(dist2),
+                        'duracao_s': round(dur2) if dur2 else None,
+                        'corrigido_pela_duracao': bool(dur2),
                         'data': str(data2)[:10], 'activity_id': aid2,
                         'pvo2max_2km_w': round(watts2),
                         'aviso': ('adaptação da fórmula de Hawley a um '

@@ -1097,7 +1097,12 @@ def bp_moxy(blocos, tempo=None, smo2=None, hr=None, n_fino=N_FINO,
         w = b.get('watts_medio')
         if w is None:
             continue
-        s = b.get('smo2_medio')
+        # Prioridade, igual ao script oficial: 1) average_smo2 da API
+        # (fonte primária deles); 2) smo2_medio já calculado por quem
+        # chamou; 3) recalcular do stream local por tempo.
+        s = b.get('average_smo2_da_api')
+        if s is None:
+            s = b.get('smo2_medio')
         if s is None and tempo and smo2:
             vs = [smo2[i] for i in range(min(len(tempo), len(smo2)))
                   if b['t0'] <= tempo[i] <= b['t1'] and smo2[i] is not None]

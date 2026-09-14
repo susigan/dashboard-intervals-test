@@ -2020,15 +2020,23 @@ def dtrimp_dkj(sessoes, modalidades, minimo=8):
     return out
 
 
-def eficiencia_rolling(sessoes, modalidades, janela_semanas=4):
+def eficiencia_rolling(sessoes, modalidades, janela_semanas=4, hoje=None):
     """eff = TRIMP/kJ_trabalho, mediana semanal, rolling de N semanas.
 
     A subir = o mesmo kJ está a custar mais (fadiga acumulada). A
     descer = o mesmo kJ está a custar menos (adaptação).
+
+    IMPORTANTE: a tendência é sempre calculada a partir da ÚLTIMA VEZ
+    que a modalidade foi treinada — se houver um intervalo grande até
+    hoje (parou de treinar essa modalidade), o rótulo "fadiga"/
+    "adaptação" descreve o que aconteceu ANTES de parar, não o estado
+    actual. Sem `hoje`, isto passava despercebido — o cartão dizia
+    "fadiga" sem se perceber que os dados tinham semanas.
     """
     from datetime import timedelta
     import numpy as np
 
+    hoje = hoje or datetime.now()
     dados = _trimp_e_kj(sessoes, modalidades)
     out = {}
     for mod in modalidades:
@@ -2059,6 +2067,10 @@ def eficiencia_rolling(sessoes, modalidades, janela_semanas=4):
             j0 = max(0, i - janela_semanas + 1)
             eff_roll.append(float(np.mean(eff_semanal[j0:i + 1])))
 
+        ultima_data = max(d['date'] for d in dm)
+        dias_desde_ultima = (hoje - datetime.strptime(ultima_data, '%Y-%m-%d')).days
+        desactualizado = dias_desde_ultima > 14
+
         rec = eff_roll[-8:]
         tendencia = 'estável'
         if len(rec) >= 4:
@@ -2072,6 +2084,13 @@ def eficiencia_rolling(sessoes, modalidades, janela_semanas=4):
             'semanas': semanas[-16:], 'eff_semanal': [round(v, 3) for v in eff_semanal[-16:]],
             'eff_roll': [round(v, 3) for v in eff_roll[-16:]],
             'tendencia': tendencia,
+            'ultima_data': ultima_data,
+            'dias_desde_ultima_sessao': dias_desde_ultima,
+            'desactualizado': desactualizado,
+            'aviso': (f'sem sessões há {dias_desde_ultima} dias — esta '
+                     f'tendência é da ÚLTIMA vez que treinaste esta '
+                     f'modalidade, não do estado actual'
+                     if desactualizado else None),
             'eff_actual': round(eff_roll[-1], 3) if eff_roll else None,
             'eff_historica': round(float(np.median(eff_semanal)), 3),
             'n_sessoes': len(dm),

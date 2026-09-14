@@ -188,6 +188,19 @@ MIGRACOES = [
     ('moxy_analises', 'vo2max_plausivel', 'INTEGER'),
 ]
 
+# Escolha do atleta: usar os blocos WORK/RECOVERY da Intervals.icu
+# (icu_intervals) ou a detecção automática nossa, quando a API falha ou
+# dá blocos que o atleta não confia. Por omissão ('automatico' quando
+# não há registo) mantém-se o comportamento actual: tenta icu_intervals,
+# cai para detecção automática só se aquele falhar.
+SCHEMA_MODO_BLOCOS = """
+CREATE TABLE IF NOT EXISTS moxy_modo_blocos (
+    activity_id   TEXT PRIMARY KEY,
+    modo          TEXT NOT NULL,   -- 'automatico' | 'sincronizado'
+    gravado_em    TEXT NOT NULL
+)
+"""
+
 
 def migrar(conn):
     """Acrescenta colunas em falta a tabelas que ja' existem."""
@@ -214,6 +227,7 @@ def migrar(conn):
 
 def aplicar_schema(conn):
     conn.executescript(SCHEMA)
+    conn.execute(SCHEMA_MODO_BLOCOS)
     conn.commit()
     migrar(conn)
     return conn

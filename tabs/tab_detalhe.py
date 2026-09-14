@@ -398,7 +398,19 @@ BODY = r"""<a href="/">&larr; Voltar a lista</a>
 <h2>Streams disponiveis</h2>
 <div id="streamPills"></div>
 
-<h2>Intervalos</h2>
+<h2>Intervalos
+  <span style="font-size:12px;font-weight:normal;margin-left:12px">
+    <button id="btnBlocosAuto" onclick="mudarModoBlocos('automatico')"
+      style="background:#161b22;border:1px solid #30363d;color:#8b949e;
+      padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px">
+      Laps automático</button>
+    <button id="btnBlocosSync" onclick="mudarModoBlocos('sincronizado')"
+      style="background:#161b22;border:1px solid #30363d;color:#8b949e;
+      padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;margin-left:6px">
+      Sincronizar com Intervals.icu</button>
+  </span>
+</h2>
+<div id="modoBlocosInfo" class="sub" style="margin-bottom:6px"></div>
 <div class="wrap" style="max-height:360px"><table>
   <thead><tr id="ivHead"></tr></thead><tbody id="ivBody"></tbody></table></div>
 
@@ -860,6 +872,56 @@ window.addEventListener('resize',function(){
  if(Object.keys(NACTIVE).length)drawNirs();
  drawPvH(DATA.power_vs_hr||{});drawPowerCurve(DATA.power_curve||{});
  drawHist('phist',DATA.power_histogram,'#5DADE2');drawHist('hhist',DATA.hr_histogram,'#E74C3C');});
+
+// Escolha do atleta entre laps automaticos (deteccao do stream de
+// potencia) ou sincronizados com a Intervals.icu (icu_intervals). Fica
+// gravado por actividade ate' o atleta escolher o outro.
+function _pintarBotoesModo(modoActivo){
+ const btns={automatico:'btnBlocosAuto', sincronizado:'btnBlocosSync'};
+ Object.keys(btns).forEach(function(k){
+  const b=document.getElementById(btns[k]);
+  if(!b) return;
+  if(k===modoActivo){
+   b.style.background='#1c2331'; b.style.borderColor='#5DADE2'; b.style.color='#5DADE2';
+  } else {
+   b.style.background='#161b22'; b.style.borderColor='#30363d'; b.style.color='#8b949e';
+  }
+ });
+}
+
+function carregarModoBlocos(){
+ fetch('/api/moxy/modo_blocos/'+AID).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok') return;
+  _pintarBotoesModo(d.modo);
+  const info=document.getElementById('modoBlocosInfo');
+  if(!info) return;
+  info.textContent = d.explicito
+   ? (d.modo==='sincronizado'
+      ? 'A usar os intervalos da Intervals.icu (escolha gravada em '+d.gravado_em+').'
+      : 'A usar deteção automática do stream de potência (escolha gravada em '+d.gravado_em+').')
+   : 'Automático por omissão — tenta os intervalos da Intervals.icu primeiro, só deteta do stream se aqueles falharem.';
+ }).catch(function(){});
+}
+
+function mudarModoBlocos(modo){
+ fetch('/api/moxy/modo_blocos/'+AID, {
+  method:'POST', headers:{'Content-Type':'application/json'},
+  body: JSON.stringify({modo: modo})
+ }).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){
+   alert('Não consegui gravar: '+(d.mensagem||'erro desconhecido'));
+   return;
+  }
+  _pintarBotoesModo(d.modo);
+  const info=document.getElementById('modoBlocosInfo');
+  if(info) info.textContent = 'Escolha gravada — a recarregar os intervalos…';
+  // recarrega a pagina para os intervalos e qualquer analise Moxy
+  // reflectirem a escolha nova
+  setTimeout(function(){ location.reload(); }, 400);
+ }).catch(function(e){ alert('Erro de rede: '+e.message); });
+}
+
+carregarModoBlocos();
 load();
 """
 

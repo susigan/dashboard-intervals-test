@@ -434,23 +434,43 @@ def registar(app):
                              '(FC, DFA-a1, respiracao). O SmO2 e o THb vem '
                              'do Moxy e nao sao afectados')}
 
-            # Blocos: primeiro pelos LAPS, que sao a estrutura marcada pelo
-            # atleta e trazem o tipo WORK/RECOVERY. So' na falta deles se
-            # deduz da potencia -- deduzir e' sempre pior do que ler.
-            laps, err_l = api.icu_get(f'/activity/{aid}/intervals')
-            if isinstance(laps, dict):
-                laps = laps.get('icu_intervals') or laps.get('intervals') or []
-            bl = mn.blocos_de_laps(laps or [],
-                                   watts_stream=res['canais'].get('watts'),
-                                   tempo_stream=res.get('tempo'))
-            if bl.get('ok'):
-                res['blocos'] = bl
-                res['corte_proposto'] = mn.propor_corte_laps(bl)
-            else:
+            # Blocos: por omissao, pelos LAPS (icu_intervals), que sao a
+            # estrutura marcada pelo atleta/pela Intervals.icu. So' na
+            # falta deles se deduz da potencia -- deduzir e' sempre pior
+            # do que ler. O atleta pode forcar 'automatico' explicitamente
+            # (o botao na tab da actividade) quando desconfia dos
+            # icu_intervals para esta sessao em concreto.
+            modo_blocos = 'automatico_por_falta_de_laps'
+            try:
+                import drive_db_perfil as ddp
+                cn_mb = ddp.get_conn()
+                r_mb = cn_mb.execute(
+                    "SELECT modo FROM moxy_modo_blocos WHERE activity_id=?",
+                    (aid,)).fetchone()
+                modo_forcado = r_mb[0] if r_mb else None
+            except Exception:
+                modo_forcado = None
+
+            bl = None
+            if modo_forcado != 'automatico':
+                laps, err_l = api.icu_get(f'/activity/{aid}/intervals')
+                if isinstance(laps, dict):
+                    laps = laps.get('icu_intervals') or laps.get('intervals') or []
+                bl = mn.blocos_de_laps(laps or [],
+                                       watts_stream=res['canais'].get('watts'),
+                                       tempo_stream=res.get('tempo'))
+                if bl.get('ok'):
+                    modo_blocos = 'sincronizado' if modo_forcado == 'sincronizado' else 'icu_intervals'
+
+            if not bl or not bl.get('ok'):
                 wt = res['canais'].get('watts')
                 if wt:
                     bl = mn.detectar_blocos(res['tempo'], wt, hz=1.0)
-                    bl['fonte'] = 'potencia (sem laps)'
+                    bl['fonte'] = ('potencia (automático, escolhido)'
+                                   if modo_forcado == 'automatico'
+                                   else 'potencia (sem laps)')
+                    modo_blocos = ('automatico' if modo_forcado == 'automatico'
+                                   else 'automatico_por_falta_de_laps')
                     res['blocos'] = bl
                     res['corte_proposto'] = mn.propor_corte(bl)
                 else:
@@ -458,6 +478,11 @@ def registar(app):
                                      'motivo': 'sem laps nem potencia'}
                     res['corte_proposto'] = {'ok': False,
                                              'motivo': 'sem laps nem potencia'}
+            else:
+                res['blocos'] = bl
+                res['corte_proposto'] = mn.propor_corte_laps(bl)
+            res['modo_blocos'] = modo_blocos
+            res['modo_blocos_forcado'] = modo_forcado
             if err_l:
                 res['erro_laps'] = err_l
             # laps reduzidos, para o classificador de protocolo: precisa do
@@ -2110,6 +2135,60 @@ def registar(app):
                      b.get('t0_s'), b.get('t1_s'), int(b['rpe']), agora))
             cn.commit()
             return jsonify({'status': 'ok', 'n_gravados': len(blocos),
+                            'gravado_em': agora})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/modo_blocos/<path:activity_id>')
+    def api_moxy_modo_blocos_ler(activity_id):
+        """Modo de blocos gravado para esta actividade — 'automatico' ou
+        'sincronizado' (icu_intervals). Sem registo, devolve 'automatico'
+        (o comportamento actual: tenta icu_intervals, cai para detecção
+        automática só se aquilo falhar)."""
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT modo, gravado_em FROM moxy_modo_blocos "
+                "WHERE activity_id=?", (aid,)).fetchone()
+            if r:
+                return jsonify({'status': 'ok', 'modo': r[0],
+                                'gravado_em': r[1], 'explicito': True})
+            return jsonify({'status': 'ok', 'modo': 'automatico',
+                            'gravado_em': None, 'explicito': False})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/modo_blocos/<path:activity_id>', methods=['POST'])
+    def api_moxy_modo_blocos_gravar(activity_id):
+        """Grava a escolha do atleta: 'automatico' (detecção nossa, do
+        stream de potência) ou 'sincronizado' (força usar icu_intervals
+        da Intervals.icu, mesmo que já houvesse uma análise automática
+        gravada). Fica assim até o atleta clicar no outro botão.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            corpo = request.get_json(force=True, silent=True) or {}
+            modo = corpo.get('modo')
+            if modo not in ('automatico', 'sincronizado'):
+                return jsonify({
+                    'status': 'erro',
+                    'mensagem': f'modo inválido: {modo!r} — '
+                               'tem de ser "automatico" ou "sincronizado"'
+                    }), 200
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            agora = datetime.now().isoformat(timespec='seconds')
+            cn.execute(
+                "INSERT OR REPLACE INTO moxy_modo_blocos "
+                "(activity_id, modo, gravado_em) VALUES (?,?,?)",
+                (aid, modo, agora))
+            cn.commit()
+            return jsonify({'status': 'ok', 'modo': modo,
                             'gravado_em': agora})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

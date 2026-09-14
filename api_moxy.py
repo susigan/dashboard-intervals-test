@@ -2188,8 +2188,22 @@ def registar(app):
                 "(activity_id, modo, gravado_em) VALUES (?,?,?)",
                 (aid, modo, agora))
             cn.commit()
-            return jsonify({'status': 'ok', 'modo': modo,
-                            'gravado_em': agora})
+
+            aviso_cache = None
+            try:
+                # a cache vive no app.py; importado aqui para nao criar
+                # dependencia circular no topo do modulo. Sem isto, a
+                # proxima leitura podia continuar a servir os blocos
+                # antigos, gravados antes da troca de modo.
+                from app import invalidar_cache
+                invalidar_cache()
+            except Exception as e:
+                aviso_cache = f'{type(e).__name__}: {e}'
+
+            fora = {'status': 'ok', 'modo': modo, 'gravado_em': agora}
+            if aviso_cache:
+                fora['aviso_cache'] = aviso_cache
+            return jsonify(fora)
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

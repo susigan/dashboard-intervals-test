@@ -527,6 +527,12 @@ def blocos_de_laps(laps, tempo_inicial=0.0, watts_stream=None,
             'watts_medio_da_api': lp.get('average_watts'),
             'hr_medio': lp.get('average_heartrate'),
             'label': lp.get('label') or lp.get('name'),
+            # average_smo2 e' a fonte PRIMARIA do script oficial da Moxy
+            # (iv.average_smo2) -- nos ate' agora nunca lia'mos isto,
+            # recalculavamos sempre do stream local por tempo. Guardado
+            # aqui para quem monta 'ons' poder preferir este valor,
+            # como o script faz.
+            'average_smo2_da_api': lp.get('average_smo2'),
         })
     fora.sort(key=lambda b: b['t0'])
     return {'ok': bool(fora), 'fonte': 'laps da Intervals.icu',

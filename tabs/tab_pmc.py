@@ -1467,12 +1467,16 @@ function mostrarEficienciaKj(){
  const corT={'fadiga':'#E74C3C','adaptação':'#2ECC71','estável':'#8b949e'};
  cont.innerHTML='<div class="cards">'+mods.map(function(m){
   const v=E[m];
-  const c=corT[v.tendencia]||'#8b949e';
+  const c=v.desactualizado?'#8b949e':(corT[v.tendencia]||'#8b949e');
+  const rotuloTend=v.desactualizado?'desactualizado':v.tendencia;
   return '<div class="card"><div class="label">'+m+
-   ' <span style="color:'+c+'">('+v.tendencia+')</span></div>'+
+   ' <span style="color:'+c+'">('+rotuloTend+')</span></div>'+
    '<div class="value">'+v.eff_actual+'</div>'+
    '<div style="font-size:12px;color:#8b949e">'+
-   'histórico: '+v.eff_historica+' · n='+v.n_sessoes+' sessões</div>'+
+   'histórico: '+v.eff_historica+' · n='+v.n_sessoes+' sessões · '+
+   'última: '+v.ultima_data+'</div>'+
+   (v.aviso?'<div style="font-size:10px;color:#E67E22;margin-top:4px">'+
+    v.aviso+'</div>':'')+
    '</div>';
  }).join('')+'</div>';
 }

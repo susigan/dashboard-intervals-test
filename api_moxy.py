@@ -1176,6 +1176,26 @@ def registar(app):
             for b in blocos:
                 if not b.get('on'):
                     continue
+                # PRIMÁRIO: average_smo2 da própria Intervals.icu — a
+                # mesma fonte que o script oficial usa primeiro
+                # (iv.average_smo2). RECURSO: recalcular do stream local
+                # por tempo, só quando aquele não vem preenchido. Antes
+                # disto, recalculávamos SEMPRE do stream — nunca líamos
+                # o valor da API, ao contrário do script.
+                smo2_api = b.get('average_smo2_da_api')
+                if smo2_api is not None:
+                    bb = dict(b)
+                    bb['smo2_medio'] = float(smo2_api)
+                    bb['smo2_fonte'] = 'average_smo2 da API'
+                    vs = [smo2[i] for i in range(min(len(t), len(smo2)))
+                         if b['t0'] <= t[i] <= b['t1']
+                         and smo2[i] is not None]
+                    bb['smo2_min'] = min(vs) if vs else None
+                    bb['delta_smo2'] = nbk.delta_smo2_do_bloco(
+                        t, smo2, b['t0'], b['t1'])
+                    ons.append(bb)
+                    continue
+
                 vs = [smo2[i] for i in range(min(len(t), len(smo2)))
                       if b['t0'] <= t[i] <= b['t1'] and smo2[i] is not None]
                 if not vs:
@@ -1183,6 +1203,7 @@ def registar(app):
                 bb = dict(b)
                 bb['smo2_min'] = min(vs)
                 bb['smo2_medio'] = sum(vs) / len(vs)
+                bb['smo2_fonte'] = 'stream local (sem average_smo2 na API)'
                 bb['delta_smo2'] = nbk.delta_smo2_do_bloco(
                     t, smo2, b['t0'], b['t1'])
                 ons.append(bb)

@@ -202,6 +202,20 @@ def api_data():
         avg_watts_cp = {}
         avg_watts_eftp_icu = {}
 
+    try:
+        dtrimp_dkj = pmc.dtrimp_dkj(sessoes, CICLICOS)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        dtrimp_dkj = {}
+
+    try:
+        eficiencia = pmc.eficiencia_rolling(sessoes, CICLICOS)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        eficiencia = {}
+
     fim = serie[-1] if serie else {}
     return jsonify({
         'status': 'OK',
@@ -234,6 +248,8 @@ def api_data():
         'prescricao': prescricao,
         'avg_watts_cp': avg_watts_cp,
         'avg_watts_eftp_icu': avg_watts_eftp_icu,
+        'dtrimp_dkj': dtrimp_dkj,
+        'eficiencia_kj': eficiencia,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
     })
 
@@ -710,6 +726,43 @@ __EXPL_alos__
   cartão antes de levar o número à letra.
 </div>
 <div id="cpPrescricaoCards"></div>
+
+<h2>CTL vs KJ — quanto custa cada kJ</h2>
+<div class="sub">
+  Adaptado do dashboard Streamlit (susigan/dashboard, tab_ctl_kj.py).
+  TRIMP aqui é sessão-RPE (duração×RPE), ajustado por IF só quando há
+  watts e CP — este projecto não lê zonas de FC.
+</div>
+<div style="display:flex;gap:8px;margin-bottom:12px">
+  <button id="ctlkjBtnCoef" onclick="ctlkjMostrarSubtab('coef')"
+    style="background:#1c2331;border:1px solid #5DADE2;color:#5DADE2;
+    padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px">
+    Coeficientes</button>
+  <button id="ctlkjBtnEf" onclick="ctlkjMostrarSubtab('ef')"
+    style="background:#161b22;border:1px solid #30363d;color:#8b949e;
+    padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px">
+    Eficiência</button>
+</div>
+
+<div id="ctlkjCoefBox">
+  <div class="sub">
+    dTRIMP/dkJ por modalidade e tipo de sessão (OLS: TRIMP ~
+    kJ_trabalho + densidade). Quanto mais baixo, mais eficiente —
+    menos custo interno por kJ de trabalho externo.
+  </div>
+  <div class="wrap" style="max-height:340px;margin-bottom:14px"><table>
+    <thead><tr id="ctlkjCoefHead"></tr></thead>
+    <tbody id="ctlkjCoefBody"></tbody></table></div>
+</div>
+
+<div id="ctlkjEfBox" style="display:none">
+  <div class="sub">
+    eff = TRIMP/kJ_trabalho, mediana semanal, rolling de 4 semanas. A
+    subir = o mesmo kJ está a custar mais (fadiga acumulada). A descer
+    = o mesmo kJ está a custar menos (adaptação).
+  </div>
+  <div id="ctlkjEfCards"></div>
+</div>
 
 <h2>Exportar dados</h2>
 <div class="sub">Os mesmos dados que o dashboard usa, para analisares por fora.
@@ -1354,6 +1407,73 @@ function mostrarAvgWattsCp(){
  }).join('')+'</div>'+
  '<div class="cards" style="margin-top:6px">'+mods.map(function(m){
   return _cardAvgWatts(m, B[m], 'eFTP (Intervals.icu)');
+ }).join('')+'</div>';
+}
+
+// Comutador de sub-abas dentro de "CTL vs KJ" -- mesmo padrao simples
+// de mostrar/esconder, sem depender de nenhuma biblioteca.
+function ctlkjMostrarSubtab(nome){
+ const boxes={coef:'ctlkjCoefBox', ef:'ctlkjEfBox'};
+ const btns={coef:'ctlkjBtnCoef', ef:'ctlkjBtnEf'};
+ Object.keys(boxes).forEach(function(k){
+  document.getElementById(boxes[k]).style.display=(k===nome)?'':'none';
+  const b=document.getElementById(btns[k]);
+  if(k===nome){
+   b.style.background='#1c2331'; b.style.borderColor='#5DADE2'; b.style.color='#5DADE2';
+  } else {
+   b.style.background='#161b22'; b.style.borderColor='#30363d'; b.style.color='#8b949e';
+  }
+ });
+}
+
+// dTRIMP/dkJ -- tabela por modalidade e tipo de sessao.
+function mostrarDtrimpDkj(){
+ const T=D.dtrimp_dkj||{};
+ const mods=Object.keys(T);
+ document.getElementById('ctlkjCoefHead').innerHTML=
+  ['Modalidade','Tipo','N','dTRIMP/dkJ','coef. densidade','R²','kJ médio','TRIMP médio']
+  .map((c,i)=>'<th class="'+(i>1?'num':'')+'">'+c+'</th>').join('');
+ if(!mods.length){
+  document.getElementById('ctlkjCoefBody').innerHTML=
+   '<tr><td colspan="8" style="color:#8b949e">Sem dados suficientes '+
+   '(precisa de duração, RPE e kJ por sessão).</td></tr>';
+  return;
+ }
+ const cor=v=>v<0.3?'#2ECC71':(v<0.5?'#F4D03F':'#E74C3C');
+ let h='';
+ mods.forEach(function(m){
+  (T[m]||[]).forEach(function(l){
+   h+='<tr><td>'+m+'</td><td>'+l.tipo+'</td>'+
+    '<td class="num">'+l.n+'</td>'+
+    '<td class="num" style="color:'+cor(l.dtrimp_dkj)+'">'+l.dtrimp_dkj+'</td>'+
+    '<td class="num">'+l.coef_densidade+'</td>'+
+    '<td class="num">'+l.r2+'</td>'+
+    '<td class="num">'+l.kj_medio+' kJ</td>'+
+    '<td class="num">'+l.trimp_medio+'</td></tr>';
+  });
+ });
+ document.getElementById('ctlkjCoefBody').innerHTML=h;
+}
+
+// Eficiencia rolling -- um cartao por modalidade, com a tendencia.
+function mostrarEficienciaKj(){
+ const E=D.eficiencia_kj||{};
+ const mods=Object.keys(E);
+ const cont=document.getElementById('ctlkjEfCards');
+ if(!mods.length){
+  cont.innerHTML='<div class="sub">Sem dados suficientes.</div>';
+  return;
+ }
+ const corT={'fadiga':'#E74C3C','adaptação':'#2ECC71','estável':'#8b949e'};
+ cont.innerHTML='<div class="cards">'+mods.map(function(m){
+  const v=E[m];
+  const c=corT[v.tendencia]||'#8b949e';
+  return '<div class="card"><div class="label">'+m+
+   ' <span style="color:'+c+'">('+v.tendencia+')</span></div>'+
+   '<div class="value">'+v.eff_actual+'</div>'+
+   '<div style="font-size:12px;color:#8b949e">'+
+   'histórico: '+v.eff_historica+' · n='+v.n_sessoes+' sessões</div>'+
+   '</div>';
  }).join('')+'</div>';
 }
 
@@ -2143,6 +2263,7 @@ async function load(){
 montarExport();
  drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos(); mostrarCpBlocos();
  mostrarCpProjecao(); mostrarCpPolar(); mostrarAvgWattsCp(); mostrarCpPrescricao();
+ mostrarDtrimpDkj(); mostrarEficienciaKj();
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──
  const F=d.ftlm;

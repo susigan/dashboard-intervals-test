@@ -150,6 +150,10 @@ BODY = """
     <div class="chartbox" style="position:relative;">
       <canvas id="chMxLimiares" height="220"></canvas>
     </div>
+    <h3 style="font-size:13px;color:#8b949e;margin:10px 0 4px;">Dmax (Cheng et al. 1992)</h3>
+    <div class="chartbox" style="position:relative;">
+      <canvas id="chMxDmax" height="220"></canvas>
+    </div>
     <div class="chartbox" style="position:relative;margin-top:6px;">
       <canvas id="chMxDfa1" height="220"></canvas>
     </div>
@@ -260,6 +264,9 @@ BODY = """
 
   <div id="mxSubIntervencoesA">
   <div id="mxIntervencoes"></div>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chMxZonas" height="220"></canvas>
+  </div>
   <div id="mxPlanoZonas" style="margin-top:6px;"></div>
   </div>
 
@@ -1309,6 +1316,169 @@ function mxDesenharDfa1(dfa1){
  });
 }
 
+// Dmax (Cheng et al. 1992): curva SmO2xwatts + a recta de referencia
+// 1o-ultimo ponto + o ponto de maior distancia perpendicular marcado.
+function mxDesenharDmax(d){
+ const o = ctx('chMxDmax', 220); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const bp = d.bp_moxy_sem_restricao || d.bp_moxy || {};
+ const pontos = bp.pontos || [];
+ const dm = d.bp_dmax || {};
+ if(pontos.length < 3){ noData(g,W,H,'Sem pontos suficientes'); return; }
+
+ const PL=52, PR=20, PT=20, PB=36;
+ const w=W-PL-PR, h=H-PT-PB;
+ const xs=pontos.map(p=>p.watts), ys=pontos.map(p=>p.smo2);
+ const xa=Math.min.apply(null,xs), xb=Math.max.apply(null,xs);
+ const ya=Math.min.apply(null,ys)*0.97, yb=Math.max.apply(null,ys)*1.03;
+ const X=v=>PL+(v-xa)/(xb-xa||1)*w;
+ const Y=v=>PT+h-(v-ya)/(yb-ya||1)*h;
+
+ g.clearRect(0,0,W,H);
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='10px sans-serif';
+ g.textAlign='center';
+ xs.forEach(function(xv){ g.fillText(Math.round(xv), X(xv), PT+h+14); });
+
+ // curva
+ g.strokeStyle='#3FB950'; g.lineWidth=2;
+ g.beginPath();
+ pontos.forEach(function(p,i){ const x=X(p.watts),y=Y(p.smo2); i?g.lineTo(x,y):g.moveTo(x,y); });
+ g.stroke();
+ g.fillStyle='#3FB950';
+ pontos.forEach(function(p){ g.beginPath(); g.arc(X(p.watts),Y(p.smo2),3,0,7); g.fill(); });
+ g.lineWidth=1;
+
+ if(!dm.ok){
+  g.fillStyle='#8b949e'; g.font='11px sans-serif'; g.textAlign='left';
+  g.fillText(dm.motivo||'Dmax não calculado', PL+4, PT+14);
+  return;
+ }
+
+ // recta de referencia, 1o ao ultimo ponto
+ const ref=dm.reta_referencia||{};
+ if(ref.x1!=null){
+  g.strokeStyle='#8b949e'; g.setLineDash([4,3]); g.lineWidth=1;
+  g.beginPath(); g.moveTo(X(ref.x1),Y(ref.y1)); g.lineTo(X(ref.x2),Y(ref.y2)); g.stroke();
+  g.setLineDash([]);
+ }
+
+ // o ponto do Dmax, marcado
+ const xdm=X(dm.bp_w), ydm=Y(dm.smo2_no_bp);
+ g.strokeStyle='#E74C3C'; g.lineWidth=1.5;
+ g.beginPath(); g.moveTo(xdm,PT); g.lineTo(xdm,PT+h); g.stroke();
+ g.fillStyle='#E74C3C';
+ g.beginPath(); g.arc(xdm,ydm,6,0,7); g.fill();
+ g.lineWidth=1;
+ g.font='11px sans-serif'; g.textAlign='center';
+ g.fillText('Dmax '+Math.round(dm.bp_w)+'W (dist. '+dm.distancia_perpendicular+')', xdm, PT-4);
+}
+
+// Plano de zonas desta sessao (numeros reais, nao percentagens) --
+// busca o plano por limitador e o RPE gravado, e desenha as tres zonas
+// por cor (verde/amarelo/vermelho), com o RPE observado em cada uma.
+function mxCarregarPlanoZonas(d, id, valores){
+ const rl=d.rede_limitador||{};
+ const sistema=rl.sistema;
+ const box=document.getElementById('mxPlanoZonas');
+ if(!sistema || valores.bp1_w==null){
+  if(box) box.innerHTML='<p class="sub" style="font-size:12px;">'+
+   'sem limitador ou limiares suficientes para propor zonas nesta sessão</p>';
+  mxDesenharZonas(null,null);
+  return;
+ }
+ const q=['plano_limitador='+encodeURIComponent(sistema),
+         'bp1_w='+valores.bp1_w, 'bp2_w='+valores.bp2_w];
+ if(valores.bp1_bpm!=null) q.push('bp1_bpm='+valores.bp1_bpm);
+ if(valores.bp2_bpm!=null) q.push('bp2_bpm='+valores.bp2_bpm);
+ fetch('/api/moxy/intervencoes?'+q.join('&'))
+ .then(r=>r.json()).then(function(plano){
+  if(plano.status!=='ok'){
+   if(box) box.innerHTML='<p class="sub" style="font-size:12px;">'+
+    (plano.motivo||'sem plano para este limitador')+'</p>';
+   mxDesenharZonas(null,null);
+   return;
+  }
+  fetch('/api/moxy/rpe/'+id).then(r=>r.json()).then(function(rpeD){
+   mxDesenharZonas(plano, rpeD);
+   mxMostrarPlanoZonasTexto(plano);
+  }).catch(function(){ mxDesenharZonas(plano,null); mxMostrarPlanoZonasTexto(plano); });
+ }).catch(function(){});
+}
+
+function mxMostrarPlanoZonasTexto(plano){
+ const box=document.getElementById('mxPlanoZonas');
+ if(!box) return;
+ const zonas=plano.zonas||{};
+ const cores={zona1:'#2ECC71', zona2:'#F4D03F', zona3:'#E74C3C'};
+ const nomes={zona1:'Zona 1 — baixa', zona2:'Zona 2 — moderada', zona3:'Zona 3 — alta'};
+ let h='';
+ ['zona1','zona2','zona3'].forEach(function(k){
+  const z=zonas[k]; if(!z) return;
+  const w=z.watts||[null,null];
+  h+='<div style="border-left:3px solid '+cores[k]+';padding:6px 10px;margin-bottom:6px;">'+
+   '<b style="color:'+cores[k]+'">'+nomes[k]+'</b> '+
+   '<span style="color:#8b949e">'+(w[0]||'—')+'–'+(w[1]||'—')+' W</span>'+
+   (z.tem_numeros?'':' <span style="color:#8b949e;font-size:11px">(sem números suficientes)</span>')+
+   '<div style="font-size:11px;color:#8b949e;margin-top:2px">'+
+   (z.protocolos||[]).map(p=>p.nome).join(' · ')+'</div></div>';
+ });
+ box.innerHTML=h;
+}
+
+// RPE por zona: media dos blocos da sessao cujo watts caia dentro da
+// zona -- mesma logica ja usada no Perfil Metabolico (pmRpeDaZona).
+function _rpeDaZona(blocosRpe, lo, hi){
+ const rs=(blocosRpe||[]).filter(function(b){
+  return b.rpe!=null && b.watts_medio!=null &&
+   (lo==null||b.watts_medio>=lo) && (hi==null||b.watts_medio<hi);
+ }).map(b=>b.rpe);
+ if(!rs.length) return null;
+ const mn=Math.min.apply(null,rs), mx=Math.max.apply(null,rs);
+ return mn===mx ? String(mn) : (mn+' a '+mx);
+}
+
+function mxDesenharZonas(plano, rpeD){
+ const o = ctx('chMxZonas', 220); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ g.clearRect(0,0,W,H);
+ if(!plano || !plano.zonas){ noData(g,W,H,'Sem plano de zonas'); return; }
+
+ const zonas=plano.zonas;
+ const cores={zona1:'#2ECC71', zona2:'#F4D03F', zona3:'#E74C3C'};
+ const nomes={zona1:'ZONA 1', zona2:'ZONA 2', zona3:'ZONA 3'};
+ const blocosRpe=(rpeD&&rpeD.blocos)||[];
+
+ // gama total: do 0 (ou o menor watts) ate' 1.15x o maior watts com numero
+ const limites=[];
+ ['zona1','zona2','zona3'].forEach(function(k){
+  const w=(zonas[k]||{}).watts||[]; if(w[0]!=null) limites.push(w[0]); if(w[1]!=null) limites.push(w[1]);
+ });
+ if(!limites.length){ noData(g,W,H,'Sem números de watts nas zonas'); return; }
+ const xa=0, xb=Math.max.apply(null,limites)*1.15;
+ const PL=8, PR=8, PT=28, PB=24;
+ const w=W-PL-PR, h=H-PT-PB;
+ const X=v=>PL+(v-xa)/(xb-xa||1)*w;
+
+ ['zona1','zona2','zona3'].forEach(function(k){
+  const z=zonas[k]; if(!z) return;
+  const wr=z.watts||[null,null];
+  const lo = wr[0]!=null?wr[0]:xa, hi = wr[1]!=null?wr[1]:xb;
+  const x0=X(lo), x1=X(hi);
+  g.fillStyle=cores[k]; g.globalAlpha=0.18;
+  g.fillRect(x0,PT,x1-x0,h);
+  g.globalAlpha=1;
+  g.strokeStyle=cores[k]; g.lineWidth=1;
+  g.strokeRect(x0,PT,x1-x0,h);
+
+  const rpeZ=_rpeDaZona(blocosRpe, wr[0], wr[1]);
+  const rot=nomes[k]+(rpeZ?' (RPE '+rpeZ+')':'');
+  g.fillStyle=cores[k]; g.font='bold 11px sans-serif'; g.textAlign='center';
+  if(x1-x0>60) g.fillText(rot, (x0+x1)/2, PT-8);
+  g.font='10px sans-serif'; g.fillStyle='#8b949e';
+  if(x1-x0>50) g.fillText(Math.round(lo)+'–'+Math.round(hi)+'W', (x0+x1)/2, PT+h+14);
+ });
+}
+
 function mxLimiares(){
  const ids=Object.keys(MX_DADOS);
  const est=document.getElementById('mxLimEstado');
@@ -1329,6 +1499,7 @@ function mxLimiares(){
   // o BP2 nao aparecia no grafico
   const lc=d.limiares_consenso||{};
   mxDesenharLimiaresSmo2(d);
+  mxDesenharDmax(d);
   mxMostrarDfa1(d.dfa1);
   mxDesenharDfa1(d.dfa1);
   mxMostrarCartoesSimples(d);
@@ -1357,6 +1528,7 @@ function mxLimiares(){
    vo2max_previsto: d.vo2max_previsto,
    smo2_derivadas: d.smo2_derivadas,
   };
+  mxCarregarPlanoZonas(d, id, MX_ULT_VALORES);
   MX_ULT_HIPO = MX_ULT_HIPO || false;
   mxDerivadasEVo2(d);
   mxEstilosRecentes();

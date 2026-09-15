@@ -1331,6 +1331,21 @@ def registar(app):
             bp_mx_livre = nbk.bp_moxy(
                 ons, t, smo2, _hr, modalidade=mod,
                 degraus_por_troco=1)
+            bp_dmax = nbk.dmax(ons)
+
+            # DFA-a1 (Rogers 2024, HRVT1c individualizado) -- reaproveita
+            # os mesmos canais ja lidos/filtrados nesta sessao
+            try:
+                import hrv_limiares as hvl
+                dfa1 = hvl.calcular({
+                    'dfa_a1': canais.get('dfa_a1') or [],
+                    'respiration': canais.get('respiration') or [],
+                    'watts': canais.get('watts') or [],
+                    'heartrate': canais.get('heartrate') or [],
+                    'artifacts': canais.get('artifacts') or [],
+                }, hz=1.0)
+            except Exception as _e:
+                dfa1 = {'ok': False, 'motivo': f'{type(_e).__name__}: {_e}'}
             bp = nbk.breakpoints(ons, mod)
             pl = nbk.plato(t, smo2,
                            janela=request.args.get('janela_plato', type=int)
@@ -1615,6 +1630,8 @@ def registar(app):
                 'bp_moxy': bp_mx,
                 'bp_hhb': bp_hhb,
                 'bp_moxy_sem_restricao': bp_mx_livre,
+                'bp_dmax': bp_dmax,
+                'dfa1': dfa1,
                 'limiares_consenso': lim_cons,
                 'limitador_fisiologico': lim_fisio,
                 'smo2_derivadas': deriv,

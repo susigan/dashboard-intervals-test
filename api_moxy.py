@@ -1001,7 +1001,7 @@ def registar(app):
                 # limiares por SmO2, para a comparacao longitudinal
                 try:
                     import nirs_breakpoints as nbk
-                    sm = canais.get('smo2') or []
+                    sm = canais.get('smo2_sem_filtro') or canais.get('smo2') or []
                     hr_s = canais.get('heartrate') or []
                     pf = nbk.perfil_de_resposta(t, sm, bl) if sm else {}
                     mls = nbk.mlss_por_dessaturacao(t, sm, bl) if sm else {}
@@ -1170,7 +1170,14 @@ def registar(app):
                 b = fim if fim is not None else (t[-1] if t else 0)
                 blocos = [x for x in blocos if x['t1'] >= a and x['t0'] <= b]
 
-            smo2 = canais.get('smo2') or []
+            # SmO2 SEM filtro para os blocos que alimentam o bp_moxy --
+            # o script oficial usa o sinal em bruto (average_smo2, ou o
+            # stream sem qualquer suavização). O nosso filtro Butterworth
+            # (fc=0.02Hz) e' bom para os graficos e o SmO2', mas borra a
+            # transicao nas fronteiras dos blocos, o que desloca a media
+            # de cada troco -- e por isso desloca o breakpoint. Usa-se a
+            # versao filtrada só se a sem filtro não vier disponível.
+            smo2 = canais.get('smo2_sem_filtro') or canais.get('smo2') or []
             # min e delta de SmO2 por bloco de trabalho
             ons = []
             for b in blocos:
@@ -2355,7 +2362,7 @@ def registar(app):
             canais = d.get('canais') or {}
             hr = canais.get('heartrate') or []
             wt = canais.get('watts') or []
-            sm = canais.get('smo2') or []
+            sm = canais.get('smo2_sem_filtro') or canais.get('smo2') or []
             blocos = ((d.get('blocos') or {}).get('blocos')) or []
 
             def _stat(serie, a, b):

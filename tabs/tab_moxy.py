@@ -148,14 +148,23 @@ BODY = """
   <div id="mxLimiaresBloco">
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
     <div class="chartbox" style="position:relative;">
-      <canvas id="chMxLimiares" height="220"></canvas>
+      <canvas id="chMxLimiares" height="160"></canvas>
+      <div id="mxTipLimiares" style="display:none;position:absolute;pointer-events:none;
+        background:#161b22;border:1px solid #30363d;border-radius:6px;
+        padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
     </div>
     <h3 style="font-size:13px;color:#8b949e;margin:10px 0 4px;">Dmax (Cheng et al. 1992)</h3>
     <div class="chartbox" style="position:relative;">
-      <canvas id="chMxDmax" height="220"></canvas>
+      <canvas id="chMxDmax" height="160"></canvas>
+      <div id="mxTipDmax" style="display:none;position:absolute;pointer-events:none;
+        background:#161b22;border:1px solid #30363d;border-radius:6px;
+        padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
     </div>
     <div class="chartbox" style="position:relative;margin-top:6px;">
-      <canvas id="chMxDfa1" height="220"></canvas>
+      <canvas id="chMxDfa1" height="160"></canvas>
+      <div id="mxTipDfa1" style="display:none;position:absolute;pointer-events:none;
+        background:#161b22;border:1px solid #30363d;border-radius:6px;
+        padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
     </div>
     <div class="controls"><button onclick="mxLimiares()">Calcular</button>
       <button onclick="mxGuardarAnalise()" title="Grava perfil, breakpoints, 5-1-5 e rede causal. Voltar a gravar substitui, com a versão do método usada.">💾 Gravar análise</button>
@@ -265,7 +274,10 @@ BODY = """
   <div id="mxSubIntervencoesA">
   <div id="mxIntervencoes"></div>
   <div class="chartbox" style="position:relative;">
-    <canvas id="chMxZonas" height="220"></canvas>
+    <canvas id="chMxZonas" height="160"></canvas>
+    <div id="mxTipZonas" style="display:none;position:absolute;pointer-events:none;
+      background:#161b22;border:1px solid #30363d;border-radius:6px;
+      padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
   </div>
   <div id="mxPlanoZonas" style="margin-top:6px;"></div>
   </div>
@@ -1064,6 +1076,10 @@ function mxResumo(){
 }
 
 let MX_BP = null;        // breakpoints para desenhar no gráfico
+// Dados de escala do ultimo desenho de cada grafico pequeno (Limiares,
+// DFA-1, Dmax, Zonas), para o hover encontrar o ponto mais proximo do
+// rato sem ter de recalcular a regressao outra vez.
+let MX_HOVER = {};
 let MX_RESERVAS = null;  // W′ e M′ balance ao longo da sessão
 // resultados dos três métodos, para a síntese os poder cruzar
 let MX_ULT_REDE=null, MX_ULT_US=null, MX_ULT_PC=null,
@@ -1108,7 +1124,7 @@ function mxGuardarAnalise(){
 // Streamlit (susigan/dashboard, tab_fit_analise.py:_grafico_limiares),
 // no nosso proprio canvas em vez de Plotly.
 function mxDesenharLimiaresSmo2(d){
- const o = ctx('chMxLimiares', 360); if(!o) return;
+ const o = ctx('chMxLimiares', 160); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  const bp = d.bp_moxy_sem_restricao || d.bp_moxy || {};
  const pontos = bp.pontos || [];
@@ -1179,6 +1195,8 @@ function mxDesenharLimiaresSmo2(d){
  // legenda pequena, canto superior direito
  g.fillStyle='#8b949e'; g.font='10px sans-serif'; g.textAlign='left';
  g.fillText('cada linha = um método diferente de achar o limiar', PL+4, PT+12);
+ MX_HOVER.chMxLimiares = {pontos:pontos, xa:xa, xb:xb, PL:PL, w:w,
+   campoX:'watts', campoY:'smo2', unidY:'%'};
 }
 
 // DFA-a1: HRVT1c (individualizado, Rogers 2024) ao lado dos classicos
@@ -1253,7 +1271,7 @@ function mxMostrarCartoesSimples(d){
 // grafico do dashboard Streamlit (tab_fit_analise.py:_grafico_dfa1),
 // mas com os NOSSOS alvos (HRVT1c individualizado, nao os 3 fixos).
 function mxDesenharDfa1(dfa1){
- const o = ctx('chMxDfa1', 360); if(!o) return;
+ const o = ctx('chMxDfa1', 160); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  if(!dfa1 || !dfa1.ok || !dfa1.sessao_adequada){ noData(g,W,H,'Sem DFA-\u03b11 utiliz\u00e1vel'); return; }
 
@@ -1314,12 +1332,14 @@ function mxDesenharDfa1(dfa1){
   g.fillText(al.nome+' \u03b1='+yAlvo+(l.watts&&l.watts.ok?' ('+Math.round(l.watts.valor)+'W)':''),
              PL+w+4>W-4?PL+4:PL+w-140, yy-3);
  });
+ MX_HOVER.chMxDfa1 = {pontos:bins.map(b=>({watts:b.centro, valor:b.a1})),
+   xa:xa, xb:xb, PL:PL, w:w, campoX:'watts', campoY:'valor', unidY:''};
 }
 
 // Dmax (Cheng et al. 1992): curva SmO2xwatts + a recta de referencia
 // 1o-ultimo ponto + o ponto de maior distancia perpendicular marcado.
 function mxDesenharDmax(d){
- const o = ctx('chMxDmax', 220); if(!o) return;
+ const o = ctx('chMxDmax', 160); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  const bp = d.bp_moxy_sem_restricao || d.bp_moxy || {};
  const pontos = bp.pontos || [];
@@ -1378,7 +1398,16 @@ function mxDesenharDmax(d){
 // por cor (verde/amarelo/vermelho), com o RPE observado em cada uma.
 function mxCarregarPlanoZonas(d, id, valores){
  const rl=d.rede_limitador||{};
- const sistema=rl.sistema;
+ // A rede causal fala em periferico/cardiaco/respiratorio/autonomico
+ // (SISTEMAS, rede_causal.py); o PLANO_ZONAS fala em
+ // entrega/utilizacao/respiratorio (intervencoes.py). Sem esta ponte,
+ // "cardiaco" nunca batia com nenhuma chave do plano -- era por isso
+ // que nada aparecia: o pedido saia, o backend respondia "sem plano
+ // para 'cardiaco'", e a mensagem ficava escondida.
+ const MAPA_SISTEMA_PLANO = {
+  cardiaco: 'entrega', periferico: 'utilizacao', respiratorio: 'respiratorio',
+ };
+ const sistema=MAPA_SISTEMA_PLANO[rl.sistema] || null;
  const box=document.getElementById('mxPlanoZonas');
  if(!sistema || valores.bp1_w==null){
   if(box) box.innerHTML='<p class="sub" style="font-size:12px;">'+
@@ -1438,7 +1467,7 @@ function _rpeDaZona(blocosRpe, lo, hi){
 }
 
 function mxDesenharZonas(plano, rpeD){
- const o = ctx('chMxZonas', 220); if(!o) return;
+ const o = ctx('chMxZonas', 160); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  g.clearRect(0,0,W,H);
  if(!plano || !plano.zonas){ noData(g,W,H,'Sem plano de zonas'); return; }
@@ -1477,6 +1506,63 @@ function mxDesenharZonas(plano, rpeD){
   g.font='10px sans-serif'; g.fillStyle='#8b949e';
   if(x1-x0>50) g.fillText(Math.round(lo)+'–'+Math.round(hi)+'W', (x0+x1)/2, PT+h+14);
  });
+
+ MX_HOVER.chMxZonas = {xa:xa, xb:xb, PL:PL, w:w,
+  zonas:['zona1','zona2','zona3'].filter(k=>zonas[k]).map(function(k){
+   const wr=zonas[k].watts||[null,null];
+   return {lo:wr[0], hi:wr[1], nome:nomes[k],
+     rpe:_rpeDaZona(blocosRpe, wr[0], wr[1])};
+  })};
+}
+
+// Hover generico para os graficos de pontos (Limiares, DFA-1) --
+// encontra o ponto mais proximo do rato em X e mostra um tooltip.
+function mxLigarHoverPontos(canvasId, tipId){
+ const cv=document.getElementById(canvasId);
+ const tip=document.getElementById(tipId);
+ if(!cv || !tip) return;
+ cv.addEventListener('mousemove', function(ev){
+  const info=MX_HOVER[canvasId];
+  if(!info || !info.pontos || !info.pontos.length){ tip.style.display='none'; return; }
+  const r=cv.getBoundingClientRect();
+  const mx=(ev.clientX-r.left)*(cv.width/r.width);
+  const watts=info.xa+(mx-info.PL)/(info.w||1)*(info.xb-info.xa);
+  let melhor=info.pontos[0], melhorD=Infinity;
+  info.pontos.forEach(function(p){
+   const dd=Math.abs(p[info.campoX]-watts);
+   if(dd<melhorD){ melhorD=dd; melhor=p; }
+  });
+  tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+12, r.width-140)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
+  tip.textContent=Math.round(melhor[info.campoX])+'W · '+
+    melhor[info.campoY].toFixed(2)+(info.unidY||'');
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
+}
+
+// Hover para o grafico de zonas: mostra a zona e o RPE sob o rato.
+function mxLigarHoverZonas(){
+ const cv=document.getElementById('chMxZonas');
+ const tip=document.getElementById('mxTipZonas');
+ if(!cv || !tip) return;
+ cv.addEventListener('mousemove', function(ev){
+  const info=MX_HOVER.chMxZonas;
+  if(!info || !info.zonas){ tip.style.display='none'; return; }
+  const r=cv.getBoundingClientRect();
+  const mx=(ev.clientX-r.left)*(cv.width/r.width);
+  const watts=info.xa+(mx-info.PL)/(info.w||1)*(info.xb-info.xa);
+  const z=info.zonas.find(function(zz){
+   return watts>=(zz.lo==null?-Infinity:zz.lo) && watts<(zz.hi==null?Infinity:zz.hi);
+  });
+  if(!z){ tip.style.display='none'; return; }
+  tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+12, r.width-160)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
+  tip.textContent=z.nome+' · '+Math.round(z.lo||0)+'\u2013'+
+    (z.hi!=null?Math.round(z.hi):'\u221e')+'W'+(z.rpe?' · RPE '+z.rpe:'');
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
 }
 
 function mxLimiares(){
@@ -3633,6 +3719,9 @@ function ivGlossario(){
  });
 }
 
+mxLigarHoverPontos('chMxLimiares','mxTipLimiares');
+mxLigarHoverPontos('chMxDfa1','mxTipDfa1');
+mxLigarHoverZonas();
 mxMudarSubTab('principal');
 mxSessoes();
 ivSessoes();

@@ -131,6 +131,7 @@ BODY = """
   </details>
 
   <div id="mxCartoesSimples" style="margin-top:10px;"></div>
+  <div id="mxRpe" style="margin-top:10px;"></div>
   <div id="mxResumo" style="margin-top:14px;"></div>
   </div>
 
@@ -169,7 +170,6 @@ BODY = """
     <div id="mxDfa1" style="margin-top:4px;"></div>
     <div id="mxDerivadas" style="margin-top:6px;"></div>
     <div id="mxEstilosRecentes" style="margin-top:10px;"></div>
-    <div id="mxRpe" style="margin-top:10px;"></div>
     <details style="margin-top:6px;">
       <summary style="cursor:pointer;font-size:12px;color:#8b949e;">Método e fiabilidade por modalidade</summary>
       <div style="font-size:11px;color:#8b949e;margin-top:6px;">
@@ -1213,12 +1213,15 @@ function mxMostrarCartoesSimples(d){
  const lc=d.limiares_consenso||{};
  const p2=lc.segundo||{};
  const vo2=d.vo2max_previsto||{};
+ // Rede causal primeiro -- e' a mesma fonte que ja se usa ao gravar a
+ // analise. O classificador simples (padrao SmO2/FC por degrau) so'
+ // entra se a rede nao tiver dado resultado, para nao mostrar "vazio".
+ const rl=d.rede_limitador||{};
  const lf=d.limitador_fisiologico||{};
- const cand=(lf.candidatos||[])[0];
+ const limTxt = rl.rotulo || rl.sistema || (lf.candidatos||[])[0] || '\u2014';
 
  const limiarTxt = p2.mediana!=null ? Math.round(p2.mediana)+' W' : '\u2014';
  const vo2Txt = vo2.ok ? vo2.vo2max_estimado+' ml/min/kg' : '\u2014';
- const limTxt = cand || '\u2014';
 
  box.innerHTML = '<div class="cards">'
   + '<div class="card"><div class="label">Limiar</div>'

@@ -129,6 +129,7 @@ BODY = """
     </div>
   </details>
 
+  <div id="mxCartoesSimples" style="margin-top:10px;"></div>
   <div id="mxResumo" style="margin-top:14px;"></div>
 
   <div id="mxAnaliseUnica">
@@ -156,6 +157,11 @@ BODY = """
         </select></label>
       <span id="mxLimEstado" style="color:#8b949e;font-size:12px;"></span></div>
     <div id="mxLimiares" style="margin-top:6px;"></div>
+    <div class="chartbox" style="position:relative;margin-top:10px;">
+      <canvas id="chMxLimiares" height="360"></canvas>
+    </div>
+    <h3 style="font-size:13px;color:#8b949e;margin:14px 0 4px;">DFA-α1 — HRVT1c individualizado</h3>
+    <div id="mxDfa1" style="margin-top:4px;"></div>
     <div id="mxDerivadas" style="margin-top:6px;"></div>
     <div id="mxEstilosRecentes" style="margin-top:10px;"></div>
     <div id="mxRpe" style="margin-top:10px;"></div>
@@ -1080,6 +1086,140 @@ function mxGuardarAnalise(){
  });
 }
 
+// SmO2 x watts, com os limiares de todos os metodos marcados por uma
+// linha vertical -- adaptado do "Limiares de SmO2" do dashboard
+// Streamlit (susigan/dashboard, tab_fit_analise.py:_grafico_limiares),
+// no nosso proprio canvas em vez de Plotly.
+function mxDesenharLimiaresSmo2(d){
+ const o = ctx('chMxLimiares', 360); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const bp = d.bp_moxy_sem_restricao || d.bp_moxy || {};
+ const pontos = bp.pontos || [];
+ if(pontos.length < 3){ noData(g,W,H,'Sem pontos suficientes'); return; }
+
+ const PL=52, PR=20, PT=36, PB=40;
+ const w=W-PL-PR, h=H-PT-PB;
+ const xs=pontos.map(p=>p.watts), ys=pontos.map(p=>p.smo2);
+ const xa=Math.min.apply(null,xs), xb=Math.max.apply(null,xs);
+ const ya=Math.min.apply(null,ys)*0.97, yb=Math.max.apply(null,ys)*1.03;
+ const X=v=>PL+(v-xa)/(xb-xa||1)*w;
+ const Y=v=>PT+h-(v-ya)/(yb-ya||1)*h;
+
+ g.clearRect(0,0,W,H);
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
+ for(let i=0;i<=4;i++){
+  const yv=ya+(yb-ya)*i/4, y=Y(yv);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText(yv.toFixed(0), PL-6, y+4);
+ }
+ g.textAlign='center';
+ xs.forEach(function(xv){
+  const x=X(xv);
+  g.fillText(Math.round(xv), x, PT+h+16);
+ });
+ g.fillText('Potência (W)', PL+w/2, PT+h+32);
+ g.save(); g.translate(14, PT+h/2); g.rotate(-Math.PI/2);
+ g.fillText('SmO₂ (%)', 0, 0); g.restore();
+
+ // curva SmO2 x watts
+ g.strokeStyle='#3FB950'; g.lineWidth=2;
+ g.beginPath();
+ pontos.forEach(function(p,i){
+  const x=X(p.watts), y=Y(p.smo2);
+  i?g.lineTo(x,y):g.moveTo(x,y);
+ });
+ g.stroke();
+ g.fillStyle='#3FB950';
+ pontos.forEach(function(p){
+  g.beginPath(); g.arc(X(p.watts),Y(p.smo2),4,0,7); g.fill();
+ });
+ g.lineWidth=1;
+
+ // limiares de cada metodo, uma linha vertical tracejada por metodo
+ const metodos=[
+  {v:(d.bp_moxy||{}).bp1_w, cor:'#5DADE2', nome:'BP1 (nosso)'},
+  {v:(d.bp_moxy||{}).bp2_w, cor:'#5DADE2', nome:'BP2 (nosso)'},
+  {v:(d.bp_moxy_sem_restricao||{}).bp1_w, cor:'#F0883E', nome:'BP1 (script)'},
+  {v:(d.bp_moxy_sem_restricao||{}).bp2_w, cor:'#F0883E', nome:'BP2 (script)'},
+  {v:(d.bp_dmax||{}).bp_w, cor:'#E74C3C', nome:'Dmax'},
+  {v:((d.mlss_dessaturacao||{}).mlss_estimado), cor:'#A371F7', nome:'MLSS'},
+ ].filter(m=>m.v!=null && m.v>=xa && m.v<=xb);
+
+ // agrupar por watts para nao empilhar rotulos identicos (BP1/BP2 do
+ // mesmo metodo podem coincidir com outro metodo)
+ let ultimoTxtY = PT-4;
+ metodos.forEach(function(m,i){
+  const x=X(m.v);
+  g.strokeStyle=m.cor; g.setLineDash([5,4]); g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
+  g.setLineDash([]); g.lineWidth=1;
+  g.fillStyle=m.cor; g.font='10px sans-serif'; g.textAlign='center';
+  const y = PT - 4 - (i%3)*11;   // desfasa em altura para nao sobrepor
+  g.fillText(m.nome+' '+Math.round(m.v)+'W', x, y);
+ });
+
+ if(!metodos.length) return;
+ // legenda pequena, canto superior direito
+ g.fillStyle='#8b949e'; g.font='10px sans-serif'; g.textAlign='left';
+ g.fillText('cada linha = um método diferente de achar o limiar', PL+4, PT+12);
+}
+
+// DFA-a1: HRVT1c (individualizado, Rogers 2024) ao lado dos classicos
+// HRVT1s/HRVT2 para comparacao -- ver hrv_limiares.py.
+function mxMostrarDfa1(dfa1){
+ const box=document.getElementById('mxDfa1');
+ if(!box) return;
+ if(!dfa1 || !dfa1.ok){
+  box.innerHTML='<p class="sub" style="font-size:12px;">'+
+   ((dfa1&&dfa1.motivo)||'sem stream de DFA-α1 nesta sessão')+'</p>';
+  return;
+ }
+ if(!dfa1.sessao_adequada){
+  box.innerHTML='<p class="sub" style="font-size:12px;color:#F0883E;">'+
+   (dfa1.nota_qualidade||'sessão não adequada para DFA-α1')+'</p>';
+  return;
+ }
+ const lim=dfa1.limiares||{};
+ const nomes={HRVT1c:'HRVT1c (individualizado)', HRVT1s:'HRVT1s (α1=0.75, clássico)',
+             HRVT2:'HRVT2 (α1=0.50)'};
+ let h='<div class="cards">';
+ ['HRVT1c','HRVT1s','HRVT2'].forEach(function(k){
+  const l=lim[k]; if(!l) return;
+  const w=l.watts||{}, fc=l.heartrate||{};
+  h+='<div class="card"><div class="label">'+nomes[k]+'</div>'+
+   '<div class="value">'+(w.ok?w.valor+' W':'—')+'</div>'+
+   '<div style="font-size:12px;color:#8b949e">'+
+   (fc.ok?fc.valor+' bpm':'sem FC')+' · α1 alvo='+l.a1_alvo+'</div></div>';
+ });
+ h+='</div><p class="sub" style="font-size:11px;margin-top:6px;">'+dfa1.nota+'</p>';
+ box.innerHTML=h;
+}
+
+// Cartoes simples na Principal: Limiar (segundo) - VO2max - Limitador.
+// So' os tres numeros, sem explicacoes -- essas ficam nas sub-tabs.
+function mxMostrarCartoesSimples(d){
+ const box=document.getElementById('mxCartoesSimples');
+ if(!box) return;
+ const lc=d.limiares_consenso||{};
+ const p2=lc.segundo||{};
+ const vo2=d.vo2max_previsto||{};
+ const lf=d.limitador_fisiologico||{};
+ const cand=(lf.candidatos||[])[0];
+
+ const limiarTxt = p2.mediana!=null ? Math.round(p2.mediana)+' W' : '\u2014';
+ const vo2Txt = vo2.ok ? vo2.vo2max_estimado+' ml/min/kg' : '\u2014';
+ const limTxt = cand || '\u2014';
+
+ box.innerHTML = '<div class="cards">'
+  + '<div class="card"><div class="label">Limiar</div>'
+  + '<div class="value">'+limiarTxt+'</div></div>'
+  + '<div class="card"><div class="label">VO\u2082max calculado</div>'
+  + '<div class="value">'+vo2Txt+'</div></div>'
+  + '<div class="card"><div class="label">Limitador</div>'
+  + '<div class="value" style="font-size:16px;">'+limTxt+'</div></div>'
+  + '</div>';
+}
+
 function mxLimiares(){
  const ids=Object.keys(MX_DADOS);
  const est=document.getElementById('mxLimEstado');
@@ -1099,6 +1239,9 @@ function mxLimiares(){
   // lia-o na zona morta temporal, ficando sempre nulo -- era por isso que
   // o BP2 nao aparecia no grafico
   const lc=d.limiares_consenso||{};
+  mxDesenharLimiaresSmo2(d);
+  mxMostrarDfa1(d.dfa1);
+  mxMostrarCartoesSimples(d);
   // Valores encontrados NESTE teste, para aparecerem dentro do dropdown
   // de intervenções em vez de só watts/paces genéricos. Sem isto, a
   // sugestão de treino não dizia a que carga a limitação apareceu.

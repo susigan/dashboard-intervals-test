@@ -1349,6 +1349,20 @@ def registar(app):
                 }, hz=1.0)
             except Exception as _e:
                 dfa1 = {'ok': False, 'motivo': f'{type(_e).__name__}: {_e}'}
+
+            # Rede causal, so' para o campo do limitador -- a MESMA fonte
+            # que ja' se usa ao gravar a analise (linha ~1671). Sem isto,
+            # o cartao simples usava classificar_limitador() sozinho, que
+            # e' um metodo DIFERENTE (padrao SmO2/FC por degrau) e podia
+            # discordar do que a rede e a 5-1-5 mostram.
+            try:
+                _rd = api_moxy_rede(aid)
+                _rd = _rd[0].get_json() if isinstance(_rd, tuple) else _rd.get_json()
+                rede_limitador = (_rd or {}).get('limitador') or {}
+            except Exception as _e:
+                rede_limitador = {'ok': False,
+                                  'motivo': f'{type(_e).__name__}: {_e}'}
+
             bp = nbk.breakpoints(ons, mod)
             pl = nbk.plato(t, smo2,
                            janela=request.args.get('janela_plato', type=int)
@@ -1635,6 +1649,7 @@ def registar(app):
                 'bp_moxy_sem_restricao': bp_mx_livre,
                 'bp_dmax': bp_dmax,
                 'dfa1': dfa1,
+                'rede_limitador': rede_limitador,
                 'limiares_consenso': lim_cons,
                 'limitador_fisiologico': lim_fisio,
                 'smo2_derivadas': deriv,

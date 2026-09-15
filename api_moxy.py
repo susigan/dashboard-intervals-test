@@ -1331,7 +1331,10 @@ def registar(app):
             bp_mx_livre = nbk.bp_moxy(
                 ons, t, smo2, _hr, modalidade=mod,
                 degraus_por_troco=1)
-            bp_dmax = nbk.dmax(ons)
+            try:
+                bp_dmax = nbk.dmax(ons)
+            except Exception as _e:
+                bp_dmax = {'ok': False, 'motivo': f'{type(_e).__name__}: {_e}'}
 
             # DFA-a1 (Rogers 2024, HRVT1c individualizado) -- reaproveita
             # os mesmos canais ja lidos/filtrados nesta sessao

@@ -1525,7 +1525,7 @@ function mxLigarHoverPontos(canvasId, tipId){
   const info=MX_HOVER[canvasId];
   if(!info || !info.pontos || !info.pontos.length){ tip.style.display='none'; return; }
   const r=cv.getBoundingClientRect();
-  const mx=(ev.clientX-r.left)*(cv.width/r.width);
+  const mx=(ev.clientX-r.left)*((cv.width/r.width)/(window.devicePixelRatio||1));
   const watts=info.xa+(mx-info.PL)/(info.w||1)*(info.xb-info.xa);
   let melhor=info.pontos[0], melhorD=Infinity;
   info.pontos.forEach(function(p){
@@ -1550,7 +1550,7 @@ function mxLigarHoverZonas(){
   const info=MX_HOVER.chMxZonas;
   if(!info || !info.zonas){ tip.style.display='none'; return; }
   const r=cv.getBoundingClientRect();
-  const mx=(ev.clientX-r.left)*(cv.width/r.width);
+  const mx=(ev.clientX-r.left)*((cv.width/r.width)/(window.devicePixelRatio||1));
   const watts=info.xa+(mx-info.PL)/(info.w||1)*(info.xb-info.xa);
   const z=info.zonas.find(function(zz){
    return watts>=(zz.lo==null?-Infinity:zz.lo) && watts<(zz.hi==null?Infinity:zz.hi);

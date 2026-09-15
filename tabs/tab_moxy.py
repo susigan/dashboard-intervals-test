@@ -162,6 +162,9 @@ BODY = """
     </div>
     <h3 style="font-size:13px;color:#8b949e;margin:14px 0 4px;">DFA-α1 — HRVT1c individualizado</h3>
     <div id="mxDfa1" style="margin-top:4px;"></div>
+    <div class="chartbox" style="position:relative;margin-top:8px;">
+      <canvas id="chMxDfa1" height="360"></canvas>
+    </div>
     <div id="mxDerivadas" style="margin-top:6px;"></div>
     <div id="mxEstilosRecentes" style="margin-top:10px;"></div>
     <div id="mxRpe" style="margin-top:10px;"></div>
@@ -329,6 +332,7 @@ BODY = """
   </details>
   </div>
 
+  <div id="mxSub515A">
   <h2 style="font-size:15px;margin-top:18px;">Interpretação 5-1-5 — limitador</h2>
   <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
     <button onclick="mx515()">Avaliar</button>
@@ -366,6 +370,7 @@ BODY = """
     </div>
   </details>
 
+  </div>
   </div>
 
   <details style="margin-top:10px;">
@@ -411,7 +416,7 @@ let MX_CORTE = null;   // [inicio_s, fim_s]
 // por omissao; a Principal e' so' "o que sobra visivel" quando os
 // outros tres estao escondidos.
 const MX_SUBTAB_IDS = {
- limiares: ['mxLimiaresBloco'],
+ limiares: ['mxLimiaresBloco', 'mxSub515A'],
  intervencoes: ['mxSubIntervencoesA', 'mxSubIntervencoesB'],
  rede: ['mxSubRedeA'],
 };
@@ -1220,6 +1225,73 @@ function mxMostrarCartoesSimples(d){
   + '</div>';
 }
 
+// DFA-a1 x intensidade, com os tres limiares marcados -- adaptado do
+// grafico do dashboard Streamlit (tab_fit_analise.py:_grafico_dfa1),
+// mas com os NOSSOS alvos (HRVT1c individualizado, nao os 3 fixos).
+function mxDesenharDfa1(dfa1){
+ const o = ctx('chMxDfa1', 360); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ if(!dfa1 || !dfa1.ok || !dfa1.sessao_adequada){ noData(g,W,H,'Sem DFA-\u03b11 utiliz\u00e1vel'); return; }
+
+ const lim=dfa1.limiares||{};
+ const base=lim.HRVT1c || lim.HRVT1s || lim.HRVT2 || {};
+ const bins=((base.watts||{}).bins)||[];
+ if(bins.length < 3){ noData(g,W,H,'Poucos pontos de DFA-\u03b11'); return; }
+
+ const PL=52, PR=20, PT=36, PB=40;
+ const w=W-PL-PR, h=H-PT-PB;
+ const xs=bins.map(b=>b.centro), ys=bins.map(b=>b.a1);
+ const xa=Math.min.apply(null,xs), xb=Math.max.apply(null,xs);
+ const ya=0, yb=Math.max(1.3, Math.max.apply(null,ys)*1.05);
+ const X=v=>PL+(v-xa)/(xb-xa||1)*w;
+ const Y=v=>PT+h-(v-ya)/(yb-ya||1)*h;
+
+ g.clearRect(0,0,W,H);
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='11px sans-serif';
+ for(let i=0;i<=4;i++){
+  const yv=ya+(yb-ya)*i/4, y=Y(yv);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText(yv.toFixed(2), PL-6, y+4);
+ }
+ g.textAlign='center';
+ xs.forEach(function(xv){ g.fillText(Math.round(xv), X(xv), PT+h+16); });
+ g.fillText('Potência (W)', PL+w/2, PT+h+32);
+ g.save(); g.translate(14, PT+h/2); g.rotate(-Math.PI/2);
+ g.fillText('DFA-\u03b11', 0, 0); g.restore();
+
+ // pontos + recta ligando os bins (a regressao real ja' e' a base do
+ // proprio calculo; aqui mostra-se a curva suavizada por bin)
+ g.strokeStyle='#CC79A7'; g.lineWidth=2;
+ g.beginPath();
+ bins.forEach(function(b,i){ const x=X(b.centro), y=Y(b.a1); i?g.lineTo(x,y):g.moveTo(x,y); });
+ g.stroke();
+ g.fillStyle='#CC79A7';
+ bins.forEach(function(b){ g.beginPath(); g.arc(X(b.centro),Y(b.a1),3,0,7); g.fill(); });
+ g.lineWidth=1;
+
+ // os nossos tres alvos (HRVT1c individualizado, HRVT1s=0.75, HRVT2=0.50)
+ const alvos=[
+  {k:'HRVT1c', cor:'#5DADE2', nome:'HRVT1c (individual)'},
+  {k:'HRVT1s', cor:'#2ECC71', nome:'HRVT1s (\u03b11=0.75)'},
+  {k:'HRVT2', cor:'#E74C3C', nome:'HRVT2 (\u03b11=0.50)'},
+ ];
+ alvos.forEach(function(al,i){
+  const l=lim[al.k]; if(!l) return;
+  const yAlvo=l.a1_alvo;
+  g.strokeStyle=al.cor; g.setLineDash([5,4]); g.lineWidth=1;
+  const yy=Y(yAlvo);
+  g.beginPath(); g.moveTo(PL,yy); g.lineTo(PL+w,yy); g.stroke();
+  if(l.watts && l.watts.ok && l.watts.valor>=xa && l.watts.valor<=xb){
+   const xx=X(l.watts.valor);
+   g.beginPath(); g.moveTo(xx,PT); g.lineTo(xx,PT+h); g.stroke();
+  }
+  g.setLineDash([]); g.lineWidth=1;
+  g.fillStyle=al.cor; g.font='10px sans-serif'; g.textAlign='left';
+  g.fillText(al.nome+' \u03b1='+yAlvo+(l.watts&&l.watts.ok?' ('+Math.round(l.watts.valor)+'W)':''),
+             PL+w+4>W-4?PL+4:PL+w-140, yy-3);
+ });
+}
+
 function mxLimiares(){
  const ids=Object.keys(MX_DADOS);
  const est=document.getElementById('mxLimEstado');
@@ -1241,6 +1313,7 @@ function mxLimiares(){
   const lc=d.limiares_consenso||{};
   mxDesenharLimiaresSmo2(d);
   mxMostrarDfa1(d.dfa1);
+  mxDesenharDfa1(d.dfa1);
   mxMostrarCartoesSimples(d);
   // Valores encontrados NESTE teste, para aparecerem dentro do dropdown
   // de intervenções em vez de só watts/paces genéricos. Sem isto, a

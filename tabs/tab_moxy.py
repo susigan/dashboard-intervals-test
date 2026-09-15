@@ -79,6 +79,7 @@ BODY = """
     </label>
   </div>
 
+  <div id="mxSubPrincipalA">
   <div class="chartbox" style="position:relative;">
     <canvas id="chMoxy" height="380"></canvas>
     <div id="mxTip" style="display:none;position:absolute;pointer-events:none;
@@ -131,6 +132,7 @@ BODY = """
 
   <div id="mxCartoesSimples" style="margin-top:10px;"></div>
   <div id="mxResumo" style="margin-top:14px;"></div>
+  </div>
 
   <div id="mxAnaliseUnica">
   <div id="mxResumoBloco" style="display:none;">
@@ -144,6 +146,12 @@ BODY = """
 
   <div id="mxLimiaresBloco">
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
+    <div class="chartbox" style="position:relative;">
+      <canvas id="chMxLimiares" height="220"></canvas>
+    </div>
+    <div class="chartbox" style="position:relative;margin-top:6px;">
+      <canvas id="chMxDfa1" height="220"></canvas>
+    </div>
     <div class="controls"><button onclick="mxLimiares()">Calcular</button>
       <button onclick="mxGuardarAnalise()" title="Grava perfil, breakpoints, 5-1-5 e rede causal. Voltar a gravar substitui, com a versão do método usada.">💾 Gravar análise</button>
       <button onclick="mxGravarTodas()" title="Grava todas as sessões com Moxy. Só re-grava as que foram calculadas com uma versão anterior do método.">💾 Gravar todas</button>
@@ -157,14 +165,8 @@ BODY = """
         </select></label>
       <span id="mxLimEstado" style="color:#8b949e;font-size:12px;"></span></div>
     <div id="mxLimiares" style="margin-top:6px;"></div>
-    <div class="chartbox" style="position:relative;margin-top:10px;">
-      <canvas id="chMxLimiares" height="360"></canvas>
-    </div>
     <h3 style="font-size:13px;color:#8b949e;margin:14px 0 4px;">DFA-α1 — HRVT1c individualizado</h3>
     <div id="mxDfa1" style="margin-top:4px;"></div>
-    <div class="chartbox" style="position:relative;margin-top:8px;">
-      <canvas id="chMxDfa1" height="360"></canvas>
-    </div>
     <div id="mxDerivadas" style="margin-top:6px;"></div>
     <div id="mxEstilosRecentes" style="margin-top:10px;"></div>
     <div id="mxRpe" style="margin-top:10px;"></div>
@@ -373,10 +375,12 @@ BODY = """
   </div>
   </div>
 
+  <div id="mxSubPrincipalB">
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Todas as sessões</summary>
     <div id="mxLista" style="overflow-x:auto;margin-top:6px;"></div>
   </details>
+  </div>
 
   <hr style="border:0;border-top:1px solid #21262d;margin:26px 0 12px 0;">
   <div id="mxSubIntervencoesB">
@@ -416,6 +420,7 @@ let MX_CORTE = null;   // [inicio_s, fim_s]
 // por omissao; a Principal e' so' "o que sobra visivel" quando os
 // outros tres estao escondidos.
 const MX_SUBTAB_IDS = {
+ principal: ['mxSubPrincipalA', 'mxSubPrincipalB'],
  limiares: ['mxLimiaresBloco', 'mxSub515A'],
  intervencoes: ['mxSubIntervencoesA', 'mxSubIntervencoesB'],
  rede: ['mxSubRedeA'],

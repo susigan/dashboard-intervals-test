@@ -145,7 +145,7 @@ BODY = """
     <div id="mxResumo" style="margin-top:6px;"></div>
   </div>
 
-  <div id="mxLimiaresBloco">
+  <div id="mxLimiaresBloco" style="display:none;">
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
     <div class="chartbox" style="position:relative;">
       <canvas id="chMxLimiares" height="160"></canvas>
@@ -271,7 +271,7 @@ BODY = """
     </details>
   </div>
 
-  <div id="mxSubIntervencoesA">
+  <div id="mxSubIntervencoesA" style="display:none;">
   <div id="mxIntervencoes"></div>
   <div class="chartbox" style="position:relative;">
     <canvas id="chMxZonas" height="160"></canvas>
@@ -282,7 +282,7 @@ BODY = """
   <div id="mxPlanoZonas" style="margin-top:6px;"></div>
   </div>
 
-  <div id="mxSubRedeA">
+  <div id="mxSubRedeA" style="display:none;">
   <h2 style="font-size:15px;margin-top:18px;">Rede causal entre canais</h2>
   <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
     <button onclick="mxRede()">Calcular</button>
@@ -353,7 +353,7 @@ BODY = """
   </details>
   </div>
 
-  <div id="mxSub515A">
+  <div id="mxSub515A" style="display:none;">
   <h2 style="font-size:15px;margin-top:18px;">Interpretação 5-1-5 — limitador</h2>
   <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
     <button onclick="mx515()">Avaliar</button>
@@ -402,7 +402,7 @@ BODY = """
   </div>
 
   <hr style="border:0;border-top:1px solid #21262d;margin:26px 0 12px 0;">
-  <div id="mxSubIntervencoesB">
+  <div id="mxSubIntervencoesB" style="display:none;">
   <h2 style="font-size:16px;">Intervenções — o que treinar</h2>
   <p style="color:#8b949e;font-size:12px;">Escolhe sessões de qualquer
   modalidade. O sistema procura o que há de comum entre os limitadores
@@ -1412,7 +1412,7 @@ function mxCarregarPlanoZonas(d, id, valores){
  if(!sistema || valores.bp1_w==null){
   if(box) box.innerHTML='<p class="sub" style="font-size:12px;">'+
    'sem limitador ou limiares suficientes para propor zonas nesta sessão</p>';
-  mxDesenharZonas(null,null);
+  mxDesenharZonas(null,null,null);
   return;
  }
  const q=['plano_limitador='+encodeURIComponent(sistema),
@@ -1424,13 +1424,13 @@ function mxCarregarPlanoZonas(d, id, valores){
   if(plano.status!=='ok'){
    if(box) box.innerHTML='<p class="sub" style="font-size:12px;">'+
     (plano.motivo||'sem plano para este limitador')+'</p>';
-   mxDesenharZonas(null,null);
+   mxDesenharZonas(null,null,null);
    return;
   }
   fetch('/api/moxy/rpe/'+id).then(r=>r.json()).then(function(rpeD){
-   mxDesenharZonas(plano, rpeD);
+   mxDesenharZonas(plano, rpeD, d);
    mxMostrarPlanoZonasTexto(plano);
-  }).catch(function(){ mxDesenharZonas(plano,null); mxMostrarPlanoZonasTexto(plano); });
+  }).catch(function(){ mxDesenharZonas(plano,null,d); mxMostrarPlanoZonasTexto(plano); });
  }).catch(function(){});
 }
 
@@ -1466,7 +1466,7 @@ function _rpeDaZona(blocosRpe, lo, hi){
  return mn===mx ? String(mn) : (mn+' a '+mx);
 }
 
-function mxDesenharZonas(plano, rpeD){
+function mxDesenharZonas(plano, rpeD, d){
  const o = ctx('chMxZonas', 160); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  g.clearRect(0,0,W,H);
@@ -1477,14 +1477,20 @@ function mxDesenharZonas(plano, rpeD){
  const nomes={zona1:'ZONA 1', zona2:'ZONA 2', zona3:'ZONA 3'};
  const blocosRpe=(rpeD&&rpeD.blocos)||[];
 
- // gama total: do 0 (ou o menor watts) ate' 1.15x o maior watts com numero
+ // pontos de SmO2 (mesma fonte do grafico de Limiares) -- so' para
+ // decidir a gama de watts tambem por eles, se forem mais larga que as
+ // zonas (uma zona 3 sem tecto nunca da' um limite superior sozinha)
+ const bp=(d&&(d.bp_moxy_sem_restricao||d.bp_moxy))||{};
+ const pontos=bp.pontos||[];
+
  const limites=[];
  ['zona1','zona2','zona3'].forEach(function(k){
   const w=(zonas[k]||{}).watts||[]; if(w[0]!=null) limites.push(w[0]); if(w[1]!=null) limites.push(w[1]);
  });
+ pontos.forEach(function(p){ limites.push(p.watts); });
  if(!limites.length){ noData(g,W,H,'Sem números de watts nas zonas'); return; }
- const xa=0, xb=Math.max.apply(null,limites)*1.15;
- const PL=8, PR=8, PT=28, PB=24;
+ const xa=0, xb=Math.max.apply(null,limites)*1.1;
+ const PL=8, PR=36, PT=28, PB=24;
  const w=W-PL-PR, h=H-PT-PB;
  const X=v=>PL+(v-xa)/(xb-xa||1)*w;
 
@@ -1505,6 +1511,37 @@ function mxDesenharZonas(plano, rpeD){
   if(x1-x0>60) g.fillText(rot, (x0+x1)/2, PT-8);
   g.font='10px sans-serif'; g.fillStyle='#8b949e';
   if(x1-x0>50) g.fillText(Math.round(lo)+'–'+Math.round(hi)+'W', (x0+x1)/2, PT+h+14);
+ });
+
+ // curva de SmO2 sobreposta ao fundo de zonas, com eixo proprio a
+ // direita -- a mesma fonte que ja alimenta o grafico de Limiares.
+ if(pontos.length>=3){
+  const ys=pontos.map(p=>p.smo2);
+  const ya=Math.min.apply(null,ys)*0.97, yb=Math.max.apply(null,ys)*1.03;
+  const Y=v=>PT+h-(v-ya)/(yb-ya||1)*h;
+  g.strokeStyle='#c9d1d9'; g.lineWidth=2; g.globalAlpha=0.9;
+  g.beginPath();
+  pontos.forEach(function(p,i){ const x=X(p.watts),y=Y(p.smo2); i?g.lineTo(x,y):g.moveTo(x,y); });
+  g.stroke();
+  g.globalAlpha=1; g.fillStyle='#c9d1d9';
+  pontos.forEach(function(p){ g.beginPath(); g.arc(X(p.watts),Y(p.smo2),3,0,7); g.fill(); });
+  g.lineWidth=1;
+  g.textAlign='left'; g.font='9px sans-serif'; g.fillStyle='#c9d1d9';
+  g.fillText('SmO₂', PL+w+4, PT+10);
+ }
+
+ // BP1/BP2, verticais, por cima de tudo -- a mesma fonte de sempre
+ const lc=(d&&d.limiares_consenso)||{};
+ [['BP1', (lc.primeiro||{}).mediana, '#5DADE2'],
+  ['BP2', (lc.segundo||{}).mediana, '#F0883E']].forEach(function(bp2){
+  const nome=bp2[0], val=bp2[1], cor=bp2[2];
+  if(val==null || val<xa || val>xb) return;
+  const x=X(val);
+  g.strokeStyle=cor; g.setLineDash([4,3]); g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
+  g.setLineDash([]); g.lineWidth=1;
+  g.fillStyle=cor; g.font='bold 10px sans-serif'; g.textAlign='center';
+  g.fillText(nome, x, PT+h+22);
  });
 
  MX_HOVER.chMxZonas = {xa:xa, xb:xb, PL:PL, w:w,

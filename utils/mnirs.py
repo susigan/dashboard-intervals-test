@@ -235,6 +235,13 @@ def processar(tempo, canais, hz=1.0, acima=None, corte_outlier=3.0,
         t_ref = t_ref or t
         v, d_rep = replace(v, acima=acima, corte_outlier=corte_outlier,
                            largura=largura)
+        # guardado ANTES do Butterworth -- o script oficial da Moxy usa
+        # o SmO2 em bruto (so' com invalidos/outliers tratados, nunca
+        # suavizado). Esta copia serve so' para o smo2, para quem
+        # precisar de bater certo com o script (bp_moxy); o resto do
+        # pipeline (graficos, SmO2', etc.) continua a usar a versao
+        # filtrada como sempre.
+        v_smo2_sem_filtro = list(v) if nome == 'smo2' else None
         v, d_filt = butterworth(v, hz=hz, fc=fc, ordem=ordem)
         d = {'resample_hz': hz, **d_rep, 'filtro': d_filt,
              'n_pontos': len(v)}
@@ -246,6 +253,10 @@ def processar(tempo, canais, hz=1.0, acima=None, corte_outlier=3.0,
             d['escala_original'] = esc
         saida[nome] = [round(x, 2) if x is not None else None for x in v]
         diag[nome] = d
+        if nome == 'smo2' and v_smo2_sem_filtro is not None:
+            saida['smo2_sem_filtro'] = [
+                round(x, 2) if x is not None else None
+                for x in v_smo2_sem_filtro]
     return {'tempo': [round(x, 1) for x in (t_ref or [])],
             'canais': saida, 'diagnostico': diag,
             'nota': ('ordem do pipeline: resample, substituir invalidos e '

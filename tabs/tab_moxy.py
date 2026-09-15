@@ -1211,7 +1211,7 @@ function mxMostrarCartoesSimples(d){
  const box=document.getElementById('mxCartoesSimples');
  if(!box) return;
  const lc=d.limiares_consenso||{};
- const p2=lc.segundo||{};
+ const p1=lc.primeiro||{}, p2=lc.segundo||{};
  const vo2=d.vo2max_previsto||{};
  // Rede causal primeiro -- e' a mesma fonte que ja se usa ao gravar a
  // analise. O classificador simples (padrao SmO2/FC por degrau) so'
@@ -1220,12 +1220,21 @@ function mxMostrarCartoesSimples(d){
  const lf=d.limitador_fisiologico||{};
  const limTxt = rl.rotulo || rl.sistema || (lf.candidatos||[])[0] || '\u2014';
 
- const limiarTxt = p2.mediana!=null ? Math.round(p2.mediana)+' W' : '\u2014';
- const vo2Txt = vo2.ok ? vo2.vo2max_estimado+' ml/min/kg' : '\u2014';
+ const bp1Txt = p1.mediana!=null ? Math.round(p1.mediana)+' W' : '\u2014';
+ const bp2Txt = p2.mediana!=null ? Math.round(p2.mediana)+' W' : '\u2014';
+ // vo2.ok sozinho nao chega -- a formula pode dar um numero
+ // fisiologicamente impossivel (o proprio nirs_breakpoints.py documenta
+ // um caso real de 2.5 ml/kg/min) quando a FC de "repouso" usada nao
+ // era repouso a serio. Sem checar 'plausivel', o cartao mostrava esse
+ // numero como se fosse uma medicao normal.
+ const vo2Txt = (vo2.ok && vo2.plausivel) ? vo2.vo2max_estimado+' ml/min/kg'
+   : (vo2.ok ? '\u2014 (implaus\u00edvel)' : '\u2014');
 
  box.innerHTML = '<div class="cards">'
-  + '<div class="card"><div class="label">Limiar</div>'
-  + '<div class="value">'+limiarTxt+'</div></div>'
+  + '<div class="card"><div class="label">BP1</div>'
+  + '<div class="value">'+bp1Txt+'</div></div>'
+  + '<div class="card"><div class="label">BP2</div>'
+  + '<div class="value">'+bp2Txt+'</div></div>'
   + '<div class="card"><div class="label">VO\u2082max calculado</div>'
   + '<div class="value">'+vo2Txt+'</div></div>'
   + '<div class="card"><div class="label">Limitador</div>'

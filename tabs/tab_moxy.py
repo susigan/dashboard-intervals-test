@@ -14,6 +14,25 @@ BODY = """
 
   <h1>Moxy</h1>
 
+  <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+    <button id="mxSubBtnPrincipal" onclick="mxMudarSubTab('principal')"
+      style="background:#1c2331;border:1px solid #5DADE2;color:#5DADE2;
+      padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px">
+      Principal</button>
+    <button id="mxSubBtnLimiares" onclick="mxMudarSubTab('limiares')"
+      style="background:#161b22;border:1px solid #30363d;color:#8b949e;
+      padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px">
+      Limiares</button>
+    <button id="mxSubBtnIntervencoes" onclick="mxMudarSubTab('intervencoes')"
+      style="background:#161b22;border:1px solid #30363d;color:#8b949e;
+      padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px">
+      Intervenções</button>
+    <button id="mxSubBtnRede" onclick="mxMudarSubTab('rede')"
+      style="background:#161b22;border:1px solid #30363d;color:#8b949e;
+      padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px">
+      Rede causal</button>
+  </div>
+
   <div class="controls">
     <label class="sel">Modalidade
       <select id="mxModalidade" onchange="mxSessoes()">
@@ -228,9 +247,12 @@ BODY = """
     </details>
   </div>
 
+  <div id="mxSubIntervencoesA">
   <div id="mxIntervencoes"></div>
   <div id="mxPlanoZonas" style="margin-top:6px;"></div>
+  </div>
 
+  <div id="mxSubRedeA">
   <h2 style="font-size:15px;margin-top:18px;">Rede causal entre canais</h2>
   <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
     <button onclick="mxRede()">Calcular</button>
@@ -299,6 +321,7 @@ BODY = """
       contagem: uma aresta com F=169 e outra com F=17 não valem o mesmo.</p>
     </div>
   </details>
+  </div>
 
   <h2 style="font-size:15px;margin-top:18px;">Interpretação 5-1-5 — limitador</h2>
   <div class="controls" style="flex-wrap:wrap;gap:6px 12px;">
@@ -345,6 +368,7 @@ BODY = """
   </details>
 
   <hr style="border:0;border-top:1px solid #21262d;margin:26px 0 12px 0;">
+  <div id="mxSubIntervencoesB">
   <h2 style="font-size:16px;">Intervenções — o que treinar</h2>
   <p style="color:#8b949e;font-size:12px;">Escolhe sessões de qualquer
   modalidade. O sistema procura o que há de comum entre os limitadores
@@ -366,6 +390,7 @@ BODY = """
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Os três sistemas — o que cada um significa</summary>
     <div id="ivGlossario" style="margin-top:8px;"></div>
   </details>
+  </div>
 
 </div>
 """
@@ -373,6 +398,36 @@ BODY = """
 JS = """
 let MX = null, MX_SESSOES = [], MX_ESC = null;
 let MX_CORTE = null;   // [inicio_s, fim_s]
+
+// Sub-tabs dentro da tab Moxy: Principal (o que ja' estava, nunca
+// escondido de proposito), Limiares, Intervencoes, Rede causal. Os
+// blocos de Limiares/Intervencoes/Rede tem id's proprios -- escondem-se
+// por omissao; a Principal e' so' "o que sobra visivel" quando os
+// outros tres estao escondidos.
+const MX_SUBTAB_IDS = {
+ limiares: ['mxLimiaresBloco'],
+ intervencoes: ['mxSubIntervencoesA', 'mxSubIntervencoesB'],
+ rede: ['mxSubRedeA'],
+};
+function mxMudarSubTab(nome){
+ Object.keys(MX_SUBTAB_IDS).forEach(function(k){
+  MX_SUBTAB_IDS[k].forEach(function(id){
+   const el=document.getElementById(id);
+   if(el) el.style.display = (k===nome) ? '' : 'none';
+  });
+ });
+ const btns={principal:'mxSubBtnPrincipal', limiares:'mxSubBtnLimiares',
+            intervencoes:'mxSubBtnIntervencoes', rede:'mxSubBtnRede'};
+ Object.keys(btns).forEach(function(k){
+  const b=document.getElementById(btns[k]);
+  if(!b) return;
+  if(k===nome){
+   b.style.background='#1c2331'; b.style.borderColor='#5DADE2'; b.style.color='#5DADE2';
+  } else {
+   b.style.background='#161b22'; b.style.borderColor='#30363d'; b.style.color='#8b949e';
+  }
+ });
+}
 
 const MX_CORES = {smo2:'#F85149', thb:'#58A6FF', o2hb:'#3FB950',
                   hhb:'#A371F7', watts:'#6e7681', heartrate:'#E3B341',
@@ -3173,6 +3228,7 @@ function ivGlossario(){
  });
 }
 
+mxMudarSubTab('principal');
 mxSessoes();
 ivSessoes();
 ivGlossario();

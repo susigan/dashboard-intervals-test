@@ -1935,3 +1935,74 @@ def classificar_limitador(smo2_por_bloco, fc_por_bloco, spo2_por_bloco=None):
             "improve'"),
         'fonte': 'Peikon, NNOXX — Identifying Physiological Limitations',
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# DMAX — Cheng et al. 1992 (o original, não a aproximação por curvatura
+# que o dashboard Streamlit usa). Distância PERPENDICULAR máxima entre a
+# curva SmO2×potência e a recta que liga o primeiro ao último ponto —
+# não a segunda derivada de uma spline.
+# ══════════════════════════════════════════════════════════════════════════
+
+def dmax(blocos):
+    """Dmax verdadeiro: ponto de maior distância perpendicular à recta
+    que liga o primeiro e o último ponto da curva SmO2×potência.
+
+    blocos: lista com watts_medio e smo2_medio, já filtrados a WORK.
+
+    Cheng B, Kuipers H, Snyder AC, Keizer HA, Jeukendrup A, Hesselink M.
+    A new approach for the determination of ventilatory and lactate
+    thresholds. Int J Sports Med. 1992.
+
+    Adaptado aqui ao SmO2 (que desce com o esforço) em vez do lactato
+    (que sobe) — a distância é medida da mesma forma, só o sinal do
+    declive da curva inverte.
+    """
+    pts = [b for b in blocos if b.get('on') and b.get('watts_medio') is not None
+          and b.get('smo2_medio') is not None]
+    if len(pts) < 4:
+        return {'ok': False,
+                'motivo': f'só {len(pts)} intervalos válidos; o Dmax precisa de 4'}
+
+    pts.sort(key=lambda p: p['watts_medio'])
+    xs = [p['watts_medio'] for p in pts]
+    ys = [p['smo2_medio'] for p in pts]
+
+    x1, y1 = xs[0], ys[0]
+    x2, y2 = xs[-1], ys[-1]
+    dx, dy = x2 - x1, y2 - y1
+    norma = (dx ** 2 + dy ** 2) ** 0.5
+    if norma < 1e-9:
+        return {'ok': False, 'motivo': 'primeiro e último ponto coincidem'}
+
+    # distancia perpendicular de cada ponto a' recta (x1,y1)-(x2,y2)
+    distancias = []
+    for x, y in zip(xs, ys):
+        # produto cruzado / norma = distancia com sinal
+        d = ((x2 - x1) * (y1 - y) - (x1 - x) * (y2 - y1)) / norma
+        distancias.append(d)
+
+    # o ponto de maior AFASTAMENTO da recta, em modulo -- mas so' os
+    # pontos INTERIORES contam (excluir extremos, que estao na recta
+    # por definicao e teriam distancia ~0)
+    melhor_i, melhor_d = None, 0.0
+    for i in range(1, len(pts) - 1):
+        if abs(distancias[i]) > abs(melhor_d):
+            melhor_d = distancias[i]
+            melhor_i = i
+
+    if melhor_i is None:
+        return {'ok': False,
+                'motivo': 'nenhum ponto interior se afasta da recta'}
+
+    return {
+        'ok': True,
+        'bp_w': xs[melhor_i],
+        'smo2_no_bp': ys[melhor_i],
+        'distancia_perpendicular': round(abs(melhor_d), 3),
+        'indice': melhor_i,
+        'n_pontos': len(pts),
+        'metodo': 'Dmax (Cheng et al. 1992) — distância perpendicular '
+                  'máxima à recta 1º–último ponto',
+        'reta_referencia': {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2},
+    }

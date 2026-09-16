@@ -149,7 +149,7 @@ BODY = """
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
     <div style="display:flex;flex-wrap:wrap;gap:10px;">
       <div>
-        <div class="chartbox" style="position:relative;width:360px;max-width:100%;">
+        <div class="chartbox" style="position:relative;width:480px;max-width:100%;">
           <canvas id="chMxLimiares" height="220"></canvas>
           <div id="mxTipLimiares" style="display:none;position:absolute;pointer-events:none;
             background:#161b22;border:1px solid #30363d;border-radius:6px;
@@ -158,7 +158,7 @@ BODY = """
       </div>
       <div>
         <h3 style="font-size:13px;color:#8b949e;margin:0 0 4px;">Dmax (Cheng et al. 1992)</h3>
-        <div class="chartbox" style="position:relative;width:360px;max-width:100%;">
+        <div class="chartbox" style="position:relative;width:480px;max-width:100%;">
           <canvas id="chMxDmax" height="220"></canvas>
           <div id="mxTipDmax" style="display:none;position:absolute;pointer-events:none;
             background:#161b22;border:1px solid #30363d;border-radius:6px;
@@ -167,7 +167,7 @@ BODY = """
       </div>
       <div>
         <h3 style="font-size:13px;color:#8b949e;margin:0 0 4px;">DFA-α1 × intensidade</h3>
-        <div class="chartbox" style="position:relative;width:360px;max-width:100%;">
+        <div class="chartbox" style="position:relative;width:480px;max-width:100%;">
           <canvas id="chMxDfa1" height="220"></canvas>
           <div id="mxTipDfa1" style="display:none;position:absolute;pointer-events:none;
             background:#161b22;border:1px solid #30363d;border-radius:6px;
@@ -282,13 +282,15 @@ BODY = """
 
   <div id="mxSubIntervencoesA" style="display:none;">
   <div id="mxIntervencoes"></div>
-  <div class="chartbox" style="position:relative;max-width:520px;">
-    <canvas id="chMxZonas" height="160"></canvas>
-    <div id="mxTipZonas" style="display:none;position:absolute;pointer-events:none;
-      background:#161b22;border:1px solid #30363d;border-radius:6px;
-      padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+  <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;">
+    <div class="chartbox" style="position:relative;width:480px;max-width:100%;">
+      <canvas id="chMxZonas" height="220"></canvas>
+      <div id="mxTipZonas" style="display:none;position:absolute;pointer-events:none;
+        background:#161b22;border:1px solid #30363d;border-radius:6px;
+        padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+    </div>
+    <div id="mxPlanoZonas" style="flex:1;min-width:280px;"></div>
   </div>
-  <div id="mxPlanoZonas" style="margin-top:6px;"></div>
   </div>
 
   <div id="mxSubRedeA" style="display:none;">
@@ -410,31 +412,6 @@ BODY = """
   </details>
   </div>
 
-  <hr style="border:0;border-top:1px solid #21262d;margin:26px 0 12px 0;">
-  <div id="mxSubIntervencoesB" style="display:none;">
-  <h2 style="font-size:16px;">Intervenções — o que treinar</h2>
-  <p style="color:#8b949e;font-size:12px;">Escolhe sessões de qualquer
-  modalidade. O sistema procura o que há de comum entre os limitadores
-  encontrados e propõe o trabalho correspondente.</p>
-  <div class="controls" style="margin:6px 0;">
-    <label class="sel">Modalidade
-      <select id="ivMod" onchange="ivSessoes()">
-        <option value="">todas</option>
-        <option>Bike</option><option>Row</option>
-        <option>Ski</option><option>Run</option>
-      </select></label>
-    <button onclick="ivAnalisar()">Analisar seleccionadas</button>
-    <span id="ivEstado" style="color:#8b949e;font-size:12px;"></span>
-  </div>
-  <div id="ivLista" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;"></div>
-  <div id="ivResultado" style="margin-top:8px;"></div>
-
-  <details style="margin-top:14px;">
-    <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Os três sistemas — o que cada um significa</summary>
-    <div id="ivGlossario" style="margin-top:8px;"></div>
-  </details>
-  </div>
-
 </div>
 """
 
@@ -450,7 +427,7 @@ let MX_CORTE = null;   // [inicio_s, fim_s]
 const MX_SUBTAB_IDS = {
  principal: ['mxSubPrincipalA', 'mxSubPrincipalB'],
  limiares: ['mxLimiaresBloco', 'mxSub515A'],
- intervencoes: ['mxSubIntervencoesA', 'mxSubIntervencoesB'],
+ intervencoes: ['mxSubIntervencoesA'],
  rede: ['mxSubRedeA'],
 };
 function mxMudarSubTab(nome){
@@ -1498,7 +1475,7 @@ function _rpeDaZona(blocosRpe, lo, hi){
 }
 
 function mxDesenharZonas(plano, rpeD, d){
- const o = ctx('chMxZonas', 160); if(!o) return;
+ const o = ctx('chMxZonas', 220); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  g.clearRect(0,0,W,H);
  if(!plano || !plano.zonas){ noData(g,W,H,'Sem plano de zonas'); return; }
@@ -3636,7 +3613,9 @@ function mxEscolher(id){
 let IV_SESSOES = [], IV_SEL = {};
 
 function ivSessoes(){
- const mod=document.getElementById('ivMod').value;
+ const elMod=document.getElementById('ivMod');
+ if(!elMod) return;   // seccao removida -- ver nota no arranque
+ const mod=elMod.value;
  const est=document.getElementById('ivEstado');
  est.textContent='a carregar...';
  fetch('/api/moxy/analises'+(mod?'?modalidade='+mod:''))
@@ -3793,8 +3772,11 @@ mxLigarHoverPontos('chMxDfa1','mxTipDfa1');
 mxLigarHoverZonas();
 mxMudarSubTab('principal');
 mxSessoes();
-ivSessoes();
-ivGlossario();
+// ivSessoes()/ivGlossario() ja nao sao chamadas aqui -- a seccao que
+// as precisava ("Intervenções — o que treinar") foi removida, o fluxo
+// por sessao ja mostra tudo sozinho. As duas funcoes ficam protegidas
+// contra elementos em falta, para o caso de ainda serem chamadas
+// de outro sitio (ex.: depois de gravar uma analise).
 window.addEventListener('resize', function(){ mxDraw(); });
 """
 

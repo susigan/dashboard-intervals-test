@@ -149,8 +149,8 @@ BODY = """
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
     <div style="display:flex;flex-wrap:wrap;gap:10px;">
       <div>
-        <div class="chartbox" style="position:relative;width:640px;max-width:100%;">
-          <canvas id="chMxLimiares" height="200"></canvas>
+        <div class="chartbox" style="position:relative;width:360px;max-width:100%;">
+          <canvas id="chMxLimiares" height="220"></canvas>
           <div id="mxTipLimiares" style="display:none;position:absolute;pointer-events:none;
             background:#161b22;border:1px solid #30363d;border-radius:6px;
             padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
@@ -158,20 +158,22 @@ BODY = """
       </div>
       <div>
         <h3 style="font-size:13px;color:#8b949e;margin:0 0 4px;">Dmax (Cheng et al. 1992)</h3>
-        <div class="chartbox" style="position:relative;width:640px;max-width:100%;">
-          <canvas id="chMxDmax" height="200"></canvas>
+        <div class="chartbox" style="position:relative;width:360px;max-width:100%;">
+          <canvas id="chMxDmax" height="220"></canvas>
           <div id="mxTipDmax" style="display:none;position:absolute;pointer-events:none;
             background:#161b22;border:1px solid #30363d;border-radius:6px;
             padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
         </div>
       </div>
-    </div>
-    <h3 style="font-size:13px;color:#8b949e;margin:10px 0 4px;">DFA-α1 × intensidade</h3>
-    <div class="chartbox" style="position:relative;width:640px;max-width:100%;">
-      <canvas id="chMxDfa1" height="200"></canvas>
-      <div id="mxTipDfa1" style="display:none;position:absolute;pointer-events:none;
-        background:#161b22;border:1px solid #30363d;border-radius:6px;
-        padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+      <div>
+        <h3 style="font-size:13px;color:#8b949e;margin:0 0 4px;">DFA-α1 × intensidade</h3>
+        <div class="chartbox" style="position:relative;width:360px;max-width:100%;">
+          <canvas id="chMxDfa1" height="220"></canvas>
+          <div id="mxTipDfa1" style="display:none;position:absolute;pointer-events:none;
+            background:#161b22;border:1px solid #30363d;border-radius:6px;
+            padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+        </div>
+      </div>
     </div>
     <div class="controls"><button onclick="mxLimiares()">Calcular</button>
       <button onclick="mxGuardarAnalise()" title="Grava perfil, breakpoints, 5-1-5 e rede causal. Voltar a gravar substitui, com a versão do método usada.">💾 Gravar análise</button>
@@ -1150,7 +1152,7 @@ function mxGuardarAnalise(){
 // Streamlit (susigan/dashboard, tab_fit_analise.py:_grafico_limiares),
 // no nosso proprio canvas em vez de Plotly.
 function mxDesenharLimiaresSmo2(d){
- const o = ctx('chMxLimiares', 200); if(!o) return;
+ const o = ctx('chMxLimiares', 220); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  const bp = d.bp_moxy_sem_restricao || d.bp_moxy || {};
  const pontos = bp.pontos || [];
@@ -1299,7 +1301,7 @@ function mxMostrarCartoesSimples(d){
 // grafico do dashboard Streamlit (tab_fit_analise.py:_grafico_dfa1),
 // mas com os NOSSOS alvos (HRVT1c individualizado, nao os 3 fixos).
 function mxDesenharDfa1(dfa1){
- const o = ctx('chMxDfa1', 200); if(!o) return;
+ const o = ctx('chMxDfa1', 220); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  if(!dfa1 || !dfa1.ok || !dfa1.sessao_adequada){ noData(g,W,H,'Sem DFA-\u03b11 utiliz\u00e1vel'); return; }
 
@@ -1367,7 +1369,7 @@ function mxDesenharDfa1(dfa1){
 // Dmax (Cheng et al. 1992): curva SmO2xwatts + a recta de referencia
 // 1o-ultimo ponto + o ponto de maior distancia perpendicular marcado.
 function mxDesenharDmax(d){
- const o = ctx('chMxDmax', 200); if(!o) return;
+ const o = ctx('chMxDmax', 220); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  const bp = d.bp_moxy_sem_restricao || d.bp_moxy || {};
  const pontos = bp.pontos || [];

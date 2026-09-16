@@ -148,26 +148,26 @@ BODY = """
   <div id="mxLimiaresBloco" style="display:none;">
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
     <div style="display:flex;flex-wrap:wrap;gap:10px;">
-      <div>
-        <div class="chartbox" style="position:relative;width:480px;max-width:100%;">
+      <div style="flex:1;min-width:300px;">
+        <div class="chartbox" style="position:relative;width:100%;">
           <canvas id="chMxLimiares" height="220"></canvas>
           <div id="mxTipLimiares" style="display:none;position:absolute;pointer-events:none;
             background:#161b22;border:1px solid #30363d;border-radius:6px;
             padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
         </div>
       </div>
-      <div>
+      <div style="flex:1;min-width:300px;">
         <h3 style="font-size:13px;color:#8b949e;margin:0 0 4px;">Dmax (Cheng et al. 1992)</h3>
-        <div class="chartbox" style="position:relative;width:480px;max-width:100%;">
+        <div class="chartbox" style="position:relative;width:100%;">
           <canvas id="chMxDmax" height="220"></canvas>
           <div id="mxTipDmax" style="display:none;position:absolute;pointer-events:none;
             background:#161b22;border:1px solid #30363d;border-radius:6px;
             padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
         </div>
       </div>
-      <div>
+      <div style="flex:1;min-width:300px;">
         <h3 style="font-size:13px;color:#8b949e;margin:0 0 4px;">DFA-α1 × intensidade</h3>
-        <div class="chartbox" style="position:relative;width:480px;max-width:100%;">
+        <div class="chartbox" style="position:relative;width:100%;">
           <canvas id="chMxDfa1" height="220"></canvas>
           <div id="mxTipDfa1" style="display:none;position:absolute;pointer-events:none;
             background:#161b22;border:1px solid #30363d;border-radius:6px;
@@ -1271,6 +1271,8 @@ function mxMostrarCartoesSimples(d){
   + '<div class="value">'+vo2Txt+'</div></div>'
   + '<div class="card"><div class="label">Limitador</div>'
   + '<div class="value" style="font-size:16px;">'+limTxt+'</div></div>'
+  + '<div class="card"><div class="label">Zona · RPE</div>'
+  + '<div class="value" id="mxCartaoZonaRpe" style="font-size:14px;">\u2014</div></div>'
   + '</div>';
 }
 
@@ -1558,6 +1560,16 @@ function mxDesenharZonas(plano, rpeD, d){
    return {lo:wr[0], hi:wr[1], nome:nomes[k],
      rpe:_rpeDaZona(blocosRpe, wr[0], wr[1])};
   })};
+
+ // resumo compacto no cartao simples da Principal -- so' as zonas com
+ // RPE observado, para nao poluir com "sem RPE" repetido tres vezes
+ const cartao=document.getElementById('mxCartaoZonaRpe');
+ if(cartao){
+  const partes=MX_HOVER.chMxZonas.zonas
+   .filter(function(z){ return z.rpe; })
+   .map(function(z){ return 'Z'+z.nome.slice(-1)+' '+z.rpe; });
+  cartao.textContent = partes.length ? partes.join(' · ') : '\u2014';
+ }
 }
 
 // Hover generico para os graficos de pontos (Limiares, DFA-1) --
@@ -2237,6 +2249,12 @@ function mxRpe(id){
    return;
   }
   MX_RPE_ULTIMOS = d.blocos;
+  // a tabela de degraus (mxBlocosTabelaUnica) le MX_RPE_ULTIMOS, mas e'
+  // desenhada por outro fluxo, sincrono, que corre ANTES deste fetch
+  // terminar. Sem isto, ficava sempre com o RPE da sessao anterior (ou
+  // vazio) ate' se clicar "actualizar sessao" e a corrida acontecer
+  // por sorte na ordem certa.
+  if(typeof mxBlocosTabelaUnica==='function') mxBlocosTabelaUnica(id);
   let h='<div style="border:1px solid #30363d;border-radius:6px;'
    +'padding:8px 10px;">'
    +'<b style="font-size:12px;">RPE por bloco de trabalho</b> '
@@ -3777,7 +3795,15 @@ mxSessoes();
 // por sessao ja mostra tudo sozinho. As duas funcoes ficam protegidas
 // contra elementos em falta, para o caso de ainda serem chamadas
 // de outro sitio (ex.: depois de gravar uma analise).
-window.addEventListener('resize', function(){ mxDraw(); });
+window.addEventListener('resize', function(){
+ mxDraw();
+ if(MX_ULT_LIMIARES_D){
+  mxDesenharLimiaresSmo2(MX_ULT_LIMIARES_D);
+  mxDesenharDmax(MX_ULT_LIMIARES_D);
+  mxDesenharDfa1(MX_ULT_LIMIARES_D.dfa1);
+ }
+ if(MX_ULT_PLANO) mxDesenharZonas(MX_ULT_PLANO, MX_ULT_RPE_D, MX_ULT_ZONAS_D);
+});
 """
 
 

@@ -147,20 +147,20 @@ BODY = """
 
   <div id="mxLimiaresBloco" style="display:none;">
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
-    <div class="chartbox" style="position:relative;">
+    <div class="chartbox" style="position:relative;max-width:520px;">
       <canvas id="chMxLimiares" height="160"></canvas>
       <div id="mxTipLimiares" style="display:none;position:absolute;pointer-events:none;
         background:#161b22;border:1px solid #30363d;border-radius:6px;
         padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
     </div>
     <h3 style="font-size:13px;color:#8b949e;margin:10px 0 4px;">Dmax (Cheng et al. 1992)</h3>
-    <div class="chartbox" style="position:relative;">
+    <div class="chartbox" style="position:relative;max-width:520px;">
       <canvas id="chMxDmax" height="160"></canvas>
       <div id="mxTipDmax" style="display:none;position:absolute;pointer-events:none;
         background:#161b22;border:1px solid #30363d;border-radius:6px;
         padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
     </div>
-    <div class="chartbox" style="position:relative;margin-top:6px;">
+    <div class="chartbox" style="position:relative;max-width:520px;margin-top:6px;">
       <canvas id="chMxDfa1" height="160"></canvas>
       <div id="mxTipDfa1" style="display:none;position:absolute;pointer-events:none;
         background:#161b22;border:1px solid #30363d;border-radius:6px;
@@ -273,7 +273,7 @@ BODY = """
 
   <div id="mxSubIntervencoesA" style="display:none;">
   <div id="mxIntervencoes"></div>
-  <div class="chartbox" style="position:relative;">
+  <div class="chartbox" style="position:relative;max-width:520px;">
     <canvas id="chMxZonas" height="160"></canvas>
     <div id="mxTipZonas" style="display:none;position:absolute;pointer-events:none;
       background:#161b22;border:1px solid #30363d;border-radius:6px;
@@ -462,6 +462,19 @@ function mxMudarSubTab(nome){
    b.style.background='#161b22'; b.style.borderColor='#30363d'; b.style.color='#8b949e';
   }
  });
+ // Redesenhar DEPOIS de o display:none ter sido tirado -- os canvas
+ // so' teem largura real com o contentor ja visivel. Sem isto, o
+ // grafico ficava em branco ate' o utilizador clicar "actualizar
+ // sessao" (que forca um novo mxLimiares() e, de caminho, desenha
+ // com o contentor entretanto visivel).
+ if(nome==='limiares' && MX_ULT_LIMIARES_D){
+  mxDesenharLimiaresSmo2(MX_ULT_LIMIARES_D);
+  mxDesenharDmax(MX_ULT_LIMIARES_D);
+  mxDesenharDfa1(MX_ULT_LIMIARES_D.dfa1);
+ }
+ if(nome==='intervencoes' && MX_ULT_PLANO){
+  mxDesenharZonas(MX_ULT_PLANO, MX_ULT_RPE_D, MX_ULT_ZONAS_D);
+ }
 }
 
 const MX_CORES = {smo2:'#F85149', thb:'#58A6FF', o2hb:'#3FB950',
@@ -1080,6 +1093,12 @@ let MX_BP = null;        // breakpoints para desenhar no gráfico
 // DFA-1, Dmax, Zonas), para o hover encontrar o ponto mais proximo do
 // rato sem ter de recalcular a regressao outra vez.
 let MX_HOVER = {};
+// Ultimo resultado de cada calculo, para redesenhar sem novo pedido
+// quando se troca de sub-tab -- os canvas de uma sub-tab escondida
+// (display:none) ficam com largura zero no momento em que sao
+// desenhados, e o desenho fica em branco ate' se forcar outra vez.
+let MX_ULT_LIMIARES_D = null;
+let MX_ULT_PLANO = null, MX_ULT_RPE_D = null, MX_ULT_ZONAS_D = null;
 let MX_RESERVAS = null;  // W′ e M′ balance ao longo da sessão
 // resultados dos três métodos, para a síntese os poder cruzar
 let MX_ULT_REDE=null, MX_ULT_US=null, MX_ULT_PC=null,
@@ -1428,6 +1447,7 @@ function mxCarregarPlanoZonas(d, id, valores){
    return;
   }
   fetch('/api/moxy/rpe/'+id).then(r=>r.json()).then(function(rpeD){
+   MX_ULT_PLANO = plano; MX_ULT_RPE_D = rpeD; MX_ULT_ZONAS_D = d;
    mxDesenharZonas(plano, rpeD, d);
    mxMostrarPlanoZonasTexto(plano);
   }).catch(function(){ mxDesenharZonas(plano,null,d); mxMostrarPlanoZonasTexto(plano); });
@@ -1489,7 +1509,7 @@ function mxDesenharZonas(plano, rpeD, d){
  });
  pontos.forEach(function(p){ limites.push(p.watts); });
  if(!limites.length){ noData(g,W,H,'Sem números de watts nas zonas'); return; }
- const xa=0, xb=Math.max.apply(null,limites)*1.1;
+ const xa=Math.max(0, Math.min.apply(null,limites)*0.9), xb=Math.max.apply(null,limites)*1.1;
  const PL=8, PR=36, PT=28, PB=24;
  const w=W-PL-PR, h=H-PT-PB;
  const X=v=>PL+(v-xa)/(xb-xa||1)*w;
@@ -1621,6 +1641,7 @@ function mxLimiares(){
   // lia-o na zona morta temporal, ficando sempre nulo -- era por isso que
   // o BP2 nao aparecia no grafico
   const lc=d.limiares_consenso||{};
+  MX_ULT_LIMIARES_D = d;
   mxDesenharLimiaresSmo2(d);
   mxDesenharDmax(d);
   mxMostrarDfa1(d.dfa1);

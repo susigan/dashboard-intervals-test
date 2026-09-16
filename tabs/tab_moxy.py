@@ -147,21 +147,28 @@ BODY = """
 
   <div id="mxLimiaresBloco" style="display:none;">
     <h2 style="font-size:15px;margin-top:18px;">Limiares por SmO2</h2>
-    <div class="chartbox" style="position:relative;max-width:520px;">
-      <canvas id="chMxLimiares" height="160"></canvas>
-      <div id="mxTipLimiares" style="display:none;position:absolute;pointer-events:none;
-        background:#161b22;border:1px solid #30363d;border-radius:6px;
-        padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;">
+      <div>
+        <div class="chartbox" style="position:relative;width:640px;max-width:100%;">
+          <canvas id="chMxLimiares" height="200"></canvas>
+          <div id="mxTipLimiares" style="display:none;position:absolute;pointer-events:none;
+            background:#161b22;border:1px solid #30363d;border-radius:6px;
+            padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+        </div>
+      </div>
+      <div>
+        <h3 style="font-size:13px;color:#8b949e;margin:0 0 4px;">Dmax (Cheng et al. 1992)</h3>
+        <div class="chartbox" style="position:relative;width:640px;max-width:100%;">
+          <canvas id="chMxDmax" height="200"></canvas>
+          <div id="mxTipDmax" style="display:none;position:absolute;pointer-events:none;
+            background:#161b22;border:1px solid #30363d;border-radius:6px;
+            padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+        </div>
+      </div>
     </div>
-    <h3 style="font-size:13px;color:#8b949e;margin:10px 0 4px;">Dmax (Cheng et al. 1992)</h3>
-    <div class="chartbox" style="position:relative;max-width:520px;">
-      <canvas id="chMxDmax" height="160"></canvas>
-      <div id="mxTipDmax" style="display:none;position:absolute;pointer-events:none;
-        background:#161b22;border:1px solid #30363d;border-radius:6px;
-        padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
-    </div>
-    <div class="chartbox" style="position:relative;max-width:520px;margin-top:6px;">
-      <canvas id="chMxDfa1" height="160"></canvas>
+    <h3 style="font-size:13px;color:#8b949e;margin:10px 0 4px;">DFA-α1 × intensidade</h3>
+    <div class="chartbox" style="position:relative;width:640px;max-width:100%;">
+      <canvas id="chMxDfa1" height="200"></canvas>
       <div id="mxTipDfa1" style="display:none;position:absolute;pointer-events:none;
         background:#161b22;border:1px solid #30363d;border-radius:6px;
         padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
@@ -1143,7 +1150,7 @@ function mxGuardarAnalise(){
 // Streamlit (susigan/dashboard, tab_fit_analise.py:_grafico_limiares),
 // no nosso proprio canvas em vez de Plotly.
 function mxDesenharLimiaresSmo2(d){
- const o = ctx('chMxLimiares', 160); if(!o) return;
+ const o = ctx('chMxLimiares', 200); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  const bp = d.bp_moxy_sem_restricao || d.bp_moxy || {};
  const pontos = bp.pontos || [];
@@ -1188,6 +1195,7 @@ function mxDesenharLimiaresSmo2(d){
  g.lineWidth=1;
 
  // limiares de cada metodo, uma linha vertical tracejada por metodo
+ const dfa1lim = (((d.dfa1||{}).limiares||{}).HRVT1c||{}).watts||{};
  const metodos=[
   {v:(d.bp_moxy||{}).bp1_w, cor:'#5DADE2', nome:'BP1 (nosso)'},
   {v:(d.bp_moxy||{}).bp2_w, cor:'#5DADE2', nome:'BP2 (nosso)'},
@@ -1195,6 +1203,7 @@ function mxDesenharLimiaresSmo2(d){
   {v:(d.bp_moxy_sem_restricao||{}).bp2_w, cor:'#F0883E', nome:'BP2 (script)'},
   {v:(d.bp_dmax||{}).bp_w, cor:'#E74C3C', nome:'Dmax'},
   {v:((d.mlss_dessaturacao||{}).mlss_estimado), cor:'#A371F7', nome:'MLSS'},
+  {v:(dfa1lim.ok?dfa1lim.valor:null), cor:'#CC79A7', nome:'DFA-α1'},
  ].filter(m=>m.v!=null && m.v>=xa && m.v<=xb);
 
  // agrupar por watts para nao empilhar rotulos identicos (BP1/BP2 do
@@ -1290,7 +1299,7 @@ function mxMostrarCartoesSimples(d){
 // grafico do dashboard Streamlit (tab_fit_analise.py:_grafico_dfa1),
 // mas com os NOSSOS alvos (HRVT1c individualizado, nao os 3 fixos).
 function mxDesenharDfa1(dfa1){
- const o = ctx('chMxDfa1', 160); if(!o) return;
+ const o = ctx('chMxDfa1', 200); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  if(!dfa1 || !dfa1.ok || !dfa1.sessao_adequada){ noData(g,W,H,'Sem DFA-\u03b11 utiliz\u00e1vel'); return; }
 
@@ -1358,7 +1367,7 @@ function mxDesenharDfa1(dfa1){
 // Dmax (Cheng et al. 1992): curva SmO2xwatts + a recta de referencia
 // 1o-ultimo ponto + o ponto de maior distancia perpendicular marcado.
 function mxDesenharDmax(d){
- const o = ctx('chMxDmax', 160); if(!o) return;
+ const o = ctx('chMxDmax', 200); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  const bp = d.bp_moxy_sem_restricao || d.bp_moxy || {};
  const pontos = bp.pontos || [];

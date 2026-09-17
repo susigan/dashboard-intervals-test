@@ -31,6 +31,10 @@ BODY = """
       style="background:#161b22;border:1px solid #30363d;color:#8b949e;
       padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px">
       Rede causal</button>
+    <button id="mxSubBtnVerificacao" onclick="mxMudarSubTab('verificacao')"
+      style="background:#161b22;border:1px solid #30363d;color:#8b949e;
+      padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px">
+      Verificação</button>
   </div>
 
   <div class="controls">
@@ -85,6 +89,9 @@ BODY = """
     <div id="mxTip" style="display:none;position:absolute;pointer-events:none;
       background:#161b22;border:1px solid #30363d;border-radius:6px;
       padding:6px 9px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+    <div id="mxCartaoBP" style="display:none;position:absolute;top:8px;right:8px;
+      background:rgba(13,17,23,0.9);border:1px solid #30363d;border-radius:6px;
+      padding:6px 10px;font-size:11px;color:#c9d1d9;z-index:4;pointer-events:none;"></div>
   </div>
 
   <div class="controls" id="mxOffsetsWrap" style="margin-top:4px;flex-wrap:wrap;gap:4px 12px;">
@@ -412,6 +419,24 @@ BODY = """
   </details>
   </div>
 
+  <div id="mxSubVerificacao" style="display:none;">
+    <h2 style="font-size:15px;margin-top:18px;">Verificação — protocolo VST</h2>
+    <p class="sub" style="font-size:12px;">Verifica se os intervalos reais
+      de uma sessão com a tag <b>VST</b> mostram uma resposta fisiológica
+      compatível com BP1/BP2 — sempre a partir do que foi realmente feito,
+      nunca de watts ou durações fixas.</p>
+    <div class="controls">
+      <label class="sel">Sessão VST
+        <select id="mxVstSelect" onchange="mxVstCarregar()">
+          <option value="">a carregar…</option>
+        </select></label>
+      <span id="mxVstEstado" style="color:#8b949e;font-size:12px;"></span>
+    </div>
+
+    <div id="mxVstCartoes" style="margin-top:10px;"></div>
+    <div id="mxVstTabela" style="margin-top:14px;overflow-x:auto;"></div>
+  </div>
+
 </div>
 """
 
@@ -429,6 +454,7 @@ const MX_SUBTAB_IDS = {
  limiares: ['mxLimiaresBloco', 'mxSub515A'],
  intervencoes: ['mxSubIntervencoesA'],
  rede: ['mxSubRedeA'],
+ verificacao: ['mxSubVerificacao'],
 };
 function mxMudarSubTab(nome){
  Object.keys(MX_SUBTAB_IDS).forEach(function(k){
@@ -438,7 +464,8 @@ function mxMudarSubTab(nome){
   });
  });
  const btns={principal:'mxSubBtnPrincipal', limiares:'mxSubBtnLimiares',
-            intervencoes:'mxSubBtnIntervencoes', rede:'mxSubBtnRede'};
+            intervencoes:'mxSubBtnIntervencoes', rede:'mxSubBtnRede',
+            verificacao:'mxSubBtnVerificacao'};
  Object.keys(btns).forEach(function(k){
   const b=document.getElementById(btns[k]);
   if(!b) return;
@@ -461,7 +488,13 @@ function mxMudarSubTab(nome){
  if(nome==='intervencoes' && MX_ULT_PLANO){
   mxDesenharZonas(MX_ULT_PLANO, MX_ULT_RPE_D, MX_ULT_ZONAS_D);
  }
+ if(nome==='verificacao' && !MX_VST_LISTA_CARREGADA){
+  MX_VST_LISTA_CARREGADA = true;
+  mxVstCarregarLista();
+ }
 }
+
+let MX_VST_LISTA_CARREGADA = false;
 
 const MX_CORES = {smo2:'#F85149', thb:'#58A6FF', o2hb:'#3FB950',
                   hhb:'#A371F7', watts:'#6e7681', heartrate:'#E3B341',
@@ -1622,6 +1655,165 @@ function mxLigarHoverZonas(){
  cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// VERIFICAÇÃO — protocolo VST. Intervalo 0 = aquecimento (nunca conta
+// para BP1), 1-4 = BP1, 5-7 = BP2 -- tudo pelos intervalos REAIS da
+// sessão, nunca watts/duração fixos.
+// ═══════════════════════════════════════════════════════════════════
+
+let MX_VST_ULT = null;
+
+function mxVstCarregarLista(){
+ const sel=document.getElementById('mxVstSelect');
+ const est=document.getElementById('mxVstEstado');
+ if(!sel) return;
+ fetch('/api/moxy/vst/lista').then(r=>r.json()).then(function(d){
+  if(d.status!=='ok' || !d.actividades || !d.actividades.length){
+   sel.innerHTML='<option value="">nenhuma sessão VST encontrada</option>';
+   if(est) est.textContent=d.mensagem||'nenhuma actividade com a tag VST';
+   return;
+  }
+  sel.innerHTML='<option value="">escolhe uma sessão</option>'+
+   d.actividades.map(function(a){
+    return '<option value="'+a.id+'">'+a.date+' · '+(a.name||a.type||a.id)+'</option>';
+   }).join('');
+  if(est) est.textContent=d.n+' sessão(ões) VST encontrada(s)';
+ }).catch(function(){
+  if(est) est.textContent='erro a carregar a lista de sessões VST';
+ });
+}
+
+function mxVstCarregar(){
+ const sel=document.getElementById('mxVstSelect');
+ const est=document.getElementById('mxVstEstado');
+ const id=sel&&sel.value;
+ if(!id){
+  document.getElementById('mxVstCartoes').innerHTML='';
+  document.getElementById('mxVstTabela').innerHTML='';
+  return;
+ }
+ if(est) est.textContent='a calcular…';
+ fetch('/api/moxy/vst/'+id).then(r=>{
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+ }).then(function(d){
+  if(d.status!=='ok'){
+   if(est) est.textContent=d.mensagem||'sem dados';
+   document.getElementById('mxVstCartoes').innerHTML=
+    '<p class="sub">'+(d.mensagem||'sem dados suficientes')+'</p>';
+   document.getElementById('mxVstTabela').innerHTML='';
+   return;
+  }
+  MX_VST_ULT=d;
+  if(est) est.textContent=(d.aviso_estrutura?'⚠ '+d.aviso_estrutura:
+    d.n_intervalos_encontrados+' intervalos de trabalho encontrados');
+  mxVstCartoes(d);
+  mxVstTabela(d);
+ }).catch(function(e){
+  if(est) est.textContent='erro: '+e.message;
+ });
+}
+
+function _vstStatusCor(status){
+ return {CONFIRMADO:'#3FB950', 'PARCIALMENTE CONFIRMADO':'#F4D03F',
+        'NÃO CONFIRMADO':'#E74C3C', 'DADOS INSUFICIENTES':'#8b949e'}[status]
+        || '#8b949e';
+}
+
+function _vstResumoMetrica(m, unidade){
+ if(!m || !m.ok) return '—';
+ return m.inicial+(unidade||'')+' → '+m.final+(unidade||'')+
+   (m.delta_pct!=null?' ('+(m.delta_pct>=0?'+':'')+m.delta_pct+'%)':'');
+}
+
+function mxVstCartoes(d){
+ const box=document.getElementById('mxVstCartoes');
+ if(!box) return;
+ const aq=d.aquecimento||{};
+ const bp1=d.bp1||{}, bp2=d.bp2||{};
+ const vBp1=bp1.verificacao||{}, vBp2=bp2.verificacao||{};
+
+ function cartaoPotencias(intervalos){
+  const ps=(intervalos||[]).map(function(iv){
+   const p=iv.potencia||{};
+   return p.ok?Math.round(p.media)+'W':'—';
+  });
+  return ps.join(' · ');
+ }
+
+ box.innerHTML = '<div class="cards">'
+  // CARD 1 -- Sessao
+  + '<div class="card"><div class="label">Sessão</div>'
+  + '<div class="value" style="font-size:14px;">'+(d.activity_id||'')+'</div>'
+  + '<div style="font-size:11px;color:#8b949e">'
+  + (d.n_intervalos_encontrados||0)+' intervalos de trabalho'
+  + (d.aviso_estrutura?'<br><span style="color:#F0883E;">'+d.aviso_estrutura+'</span>':'')
+  + '</div></div>'
+  // CARD 2 -- Aquecimento
+  + '<div class="card"><div class="label">Aquecimento</div>'
+  + '<div class="value">'+((aq.potencia&&aq.potencia.ok)?Math.round(aq.potencia.media)+'W':'—')+'</div>'
+  + '<div style="font-size:11px;color:#8b949e">'
+  + 'SmO2 '+_vstResumoMetrica(aq.smo2,'%')+'<br>'
+  + 'HR '+_vstResumoMetrica(aq.hr,'')+' · RF '+_vstResumoMetrica(aq.respiracao,'')
+  + '</div></div>'
+  // CARD 3 -- BP1
+  + '<div class="card"><div class="label">BP1 <span style="color:'
+  + _vstStatusCor(vBp1.status)+';font-size:11px;">'+(vBp1.status||'')+'</span></div>'
+  + '<div class="value" style="font-size:14px;">'+cartaoPotencias(bp1.metricas)+'</div>'
+  + '<div style="font-size:11px;color:#8b949e">'+(vBp1.motivo||'')+'</div></div>'
+  // CARD 4 -- BP2
+  + '<div class="card"><div class="label">BP2 <span style="color:'
+  + _vstStatusCor(vBp2.status)+';font-size:11px;">'+(vBp2.status||'')+'</span></div>'
+  + '<div class="value" style="font-size:14px;">'+cartaoPotencias(bp2.metricas)+'</div>'
+  + '<div style="font-size:11px;color:#8b949e">'+(vBp2.motivo||'')+'</div></div>'
+  + '</div>';
+}
+
+function mxVstTabela(d){
+ const box=document.getElementById('mxVstTabela');
+ if(!box) return;
+ const linhas=[];
+ const aq=d.aquecimento;
+ if(aq) linhas.push({bloco:'Aquecimento', iv:aq});
+ (d.bp1&&d.bp1.metricas||[]).forEach(function(iv,i){
+  linhas.push({bloco:'BP1', n:i+1, iv:iv});
+ });
+ (d.bp2&&d.bp2.metricas||[]).forEach(function(iv,i){
+  linhas.push({bloco:'BP2', n:i+1, iv:iv});
+ });
+
+ function cel(m, unidade){
+  if(!m || !m.ok) return '<td class="sub">—</td>';
+  const delta=m.delta_pct!=null?' ('+(m.delta_pct>=0?'+':'')+m.delta_pct+'%)':'';
+  return '<td>'+m.inicial+(unidade||'')+' → '+m.final+(unidade||'')+delta+'</td>';
+ }
+
+ let h='<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr class="sub" style="text-align:left;">'
+  +'<th style="padding:4px 10px 4px 0;">Bloco</th>'
+  +'<th style="padding:4px 10px;">Potência (W)</th>'
+  +'<th style="padding:4px 10px;">SmO2 (%)</th>'
+  +'<th style="padding:4px 10px;">THb</th>'
+  +'<th style="padding:4px 10px;">RF</th>'
+  +'<th style="padding:4px 10px;">HR</th>'
+  +'<th style="padding:4px 10px;">DFA-α1</th></tr>';
+ linhas.forEach(function(l){
+  const iv=l.iv;
+  const p=iv.potencia||{};
+  h+='<tr style="border-top:1px solid #21262d;">'
+   +'<td style="padding:4px 10px 4px 0;"><b>'+l.bloco+(l.n?' #'+l.n:'')+'</b></td>'
+   +'<td style="padding:4px 10px;">'+(p.ok?Math.round(p.media):'—')+'</td>'
+   +cel(iv.smo2,'%').replace('<td>','<td style="padding:4px 10px;">')
+   +cel(iv.thb,'').replace('<td>','<td style="padding:4px 10px;">')
+   +cel(iv.respiracao,'').replace('<td>','<td style="padding:4px 10px;">')
+   +cel(iv.hr,'').replace('<td>','<td style="padding:4px 10px;">')
+   +cel(iv.dfa1,'').replace('<td>','<td style="padding:4px 10px;">')
+   +'</tr>';
+ });
+ h+='</table>';
+ box.innerHTML=h;
+}
+
 function mxLimiares(){
  const ids=Object.keys(MX_DADOS);
  const est=document.getElementById('mxLimEstado');
@@ -2568,6 +2760,35 @@ function mxRede(){
    h+='<p style="font-size:12px;"><b style="color:#3FB950;">Fontes:</b> '
     +d.fontes.join(', ')+' &nbsp; <b style="color:#F0883E;">Sumidouros:</b> '
     +(d.sumidouros||[]).join(', ')+'</p>';
+  // Centralidade de grau e de intermediacao (Brandes) -- adaptado do
+  // PhysioNexus (Evan Peikon). Out-degree/in-degree ja tinhamos em
+  // d.graus; isto acrescenta as duas metricas que faltavam.
+  if(d.metricas && Object.keys(d.metricas.centralidade_grau||{}).length){
+   const mg=d.metricas.centralidade_grau, mb=d.metricas.centralidade_intermediacao;
+   const nos=Object.keys(mg).sort(function(a,b){ return mg[b]-mg[a]; });
+   h+='<details style="margin-top:8px;"><summary style="cursor:pointer;'
+    +'font-size:12px;color:#8b949e;padding:4px 0;">Centralidade de rede '
+    +'(grau e intermediação)</summary>'
+    +'<table style="font-size:11px;border-collapse:collapse;margin-top:4px;">'
+    +'<tr class="sub" style="text-align:left;"><th style="padding-right:14px;">Canal</th>'
+    +'<th style="padding-right:14px;">Saídas</th><th style="padding-right:14px;">Entradas</th>'
+    +'<th style="padding-right:14px;">Centralidade de grau</th><th>Intermediação</th></tr>'
+    +nos.map(function(k){
+      const gr=(d.graus||{})[k]||{saidas:0,entradas:0};
+      return '<tr><td style="padding-right:14px;"><b>'+k+'</b></td>'
+       +'<td style="padding-right:14px;">'+gr.saidas+'</td>'
+       +'<td style="padding-right:14px;">'+gr.entradas+'</td>'
+       +'<td style="padding-right:14px;">'+mg[k]+'</td>'
+       +'<td>'+(mb[k]!=null?mb[k]:'—')+'</td></tr>';
+    }).join('')
+    +'</table>'
+    +'<p style="font-size:10px;color:#8b949e;margin-top:4px;">Centralidade de '
+    +'grau: quantas ligações tem, no total, sobre o máximo possível. '
+    +'Intermediação: em quantos caminhos mais curtos entre OUTROS dois canais '
+    +'este aparece pelo meio — um valor alto identifica um canal por onde a '
+    +'influência tem de passar, mesmo que não seja a fonte nem o destino '
+    +'final.</p></details>';
+  }
   if(d.mecanicos_excluidos && d.mecanicos_excluidos.length)
    h+='<p style="font-size:11px;color:#8b949e;">Mecânicos usados só como '
     +'controlo, nunca testados como causa: <b>'
@@ -3270,6 +3491,23 @@ function mxDraw(){
    g.fillText(doScript?'script icu':'mediana', x, PT+21);
    g.font='10px sans-serif';
   });
+ }
+
+ // cartao fixo, sempre visivel -- as etiquetas no proprio grafico ficam
+ // por cima da linha vertical e podem sair do enquadramento se o corte
+ // mudar; este cartao no canto nunca se move.
+ const cartaoBP=document.getElementById('mxCartaoBP');
+ if(cartaoBP){
+  if(MX_BP && (MX_BP.bp1!=null || MX_BP.bp2!=null)){
+   cartaoBP.style.display='block';
+   cartaoBP.innerHTML =
+    (MX_BP.bp1!=null ? '<b style="color:#3FB950">BP1</b> '+Math.round(MX_BP.bp1)+'W'
+      +(MX_BP.bp1_bpm?' · '+MX_BP.bp1_bpm+'bpm':'') : '')
+    + (MX_BP.bp2!=null ? '<br><b style="color:#F85149">BP2</b> '+Math.round(MX_BP.bp2)+'W'
+      +(MX_BP.bp2_bpm?' · '+MX_BP.bp2_bpm+'bpm':'') : '');
+  } else {
+   cartaoBP.style.display='none';
+  }
  }
 
  g.textAlign='left'; g.font='10px sans-serif';

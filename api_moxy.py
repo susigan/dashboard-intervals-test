@@ -2203,6 +2203,145 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/vst/lista')
+    def api_moxy_vst_lista():
+        """Actividades com a tag VST — só essas, nunca as sem a tag."""
+        try:
+            import db as _db
+            import vst_verificacao as vst
+            linhas = _db._exec(
+                "SELECT id, date, type, raw FROM activities "
+                "WHERE raw IS NOT NULL ORDER BY date DESC", fetch='all') or []
+            fora = []
+            for aid, data, tipo, raw in linhas:
+                try:
+                    j = raw if isinstance(raw, dict) else json.loads(raw)
+                except Exception:
+                    continue
+                tt = j.get('tags')
+                tags = ([x.strip() for x in tt.split(',') if x.strip()]
+                       if isinstance(tt, str)
+                       else [str(x).strip() for x in (tt or []) if x])
+                if not vst.tem_tag_vst(tags):
+                    continue
+                fora.append({'id': aid, 'date': str(data)[:10], 'type': tipo,
+                            'name': j.get('name')})
+            return jsonify({'status': 'ok', 'actividades': fora,
+                            'n': len(fora),
+                            'mensagem': (None if fora else
+                                        'nenhuma actividade com a tag VST '
+                                        'foi encontrada')})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/<path:activity_id>')
+    def api_moxy_vst_analise(activity_id):
+        """Análise completa do protocolo VST para uma sessão — estrutura
+        (aquecimento/BP1/BP2), métricas por intervalo, recuperações, e a
+        verificação por convergência de cada bloco. Tudo a partir dos
+        intervalos REAIS (WORK/RECOVERY da Intervals.icu, via
+        blocos_de_laps — o mesmo que o resto da tab Moxy já usa)."""
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import mnirs as mn
+            import vst_verificacao as vst
+            import api_client as api
+
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            corpo = api_moxy_dados(aid)
+            d = corpo[0].get_json() if isinstance(corpo, tuple) \
+                else corpo.get_json()
+            if not d or d.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': (d or {}).get('mensagem')}), 200
+
+            raw = j = None
+            try:
+                import db as _db
+                r = _db._exec("SELECT raw FROM activities WHERE id=?",
+                              (aid,), fetch='one')
+                raw = r[0] if r else None
+                j = raw if isinstance(raw, dict) else json.loads(raw or '{}')
+            except Exception:
+                j = {}
+            tt = (j or {}).get('tags')
+            tags = ([x.strip() for x in tt.split(',') if x.strip()]
+                   if isinstance(tt, str)
+                   else [str(x).strip() for x in (tt or []) if x])
+            if not vst.tem_tag_vst(tags):
+                return jsonify({'status': 'erro',
+                                'mensagem': 'esta actividade não tem a '
+                                           'tag VST'}), 200
+
+            t = d.get('tempo') or []
+            canais = d.get('canais') or {}
+            laps, err_l = api.icu_get(f'/activity/{aid}/intervals')
+            if isinstance(laps, dict):
+                laps = laps.get('icu_intervals') or laps.get('intervals') or []
+            bl = mn.blocos_de_laps(laps or [],
+                                   watts_stream=canais.get('watts'),
+                                   tempo_stream=t)
+            if not bl.get('ok'):
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': 'sem intervalos (WORK/RECOVERY) '
+                                           'da Intervals.icu para esta '
+                                           'sessão — o VST precisa deles '
+                                           'para separar aquecimento/BP1/'
+                                           'BP2'}), 200
+
+            estrutura = vst.estruturar_protocolo(bl['blocos'])
+            aquecimento = estrutura['aquecimento']
+
+            def _analisar(bloco):
+                return vst.metricas_intervalo(
+                    canais, t, bloco['t0'], bloco['t1'],
+                    watts_medio_api=bloco.get('watts_medio_da_api'))
+
+            aquecimento_m = _analisar(aquecimento) if aquecimento else None
+            bp1_m = [_analisar(b) for b in estrutura['bp1']]
+            bp2_m = [_analisar(b) for b in estrutura['bp2']]
+
+            # recuperacoes: entre cada par de blocos WORK consecutivos
+            # (aquecimento->bp1[0], bp1[i]->bp1[i+1], ..., bp1[-1]->bp2[0],
+            # bp2[i]->bp2[i+1]) -- usando o TEMPO REAL entre eles, nunca
+            # um numero fixo
+            sequencia = ([aquecimento] if aquecimento else []) \
+                + estrutura['bp1'] + estrutura['bp2']
+            recuperacoes = []
+            for i in range(len(sequencia) - 1):
+                r = vst.metricas_recuperacao(
+                    canais, t, sequencia[i]['t1'], sequencia[i + 1]['t0'])
+                recuperacoes.append(r)
+
+            r_bp1 = vst.verificar_bloco(bp1_m) if bp1_m else \
+                {'status': 'DADOS INSUFICIENTES', 'motivo': 'sem intervalos BP1'}
+            r_bp2 = vst.verificar_bloco(bp2_m) if bp2_m else \
+                {'status': 'DADOS INSUFICIENTES', 'motivo': 'sem intervalos BP2'}
+
+            return jsonify({
+                'status': 'ok', 'activity_id': aid,
+                'nome': (j or {}).get('name'),
+                'data': (j or {}).get('start_date_local', '')[:10],
+                'modalidade': d.get('modalidade'),
+                'tags': tags,
+                'aviso_estrutura': estrutura['aviso'],
+                'n_intervalos_encontrados': estrutura.get('n_total_encontrados'),
+                'aquecimento': {'bloco': aquecimento, 'metricas': aquecimento_m}
+                    if aquecimento else None,
+                'bp1': {'blocos': estrutura['bp1'], 'metricas': bp1_m,
+                       'verificacao': r_bp1},
+                'bp2': {'blocos': estrutura['bp2'], 'metricas': bp2_m,
+                       'verificacao': r_bp2},
+                'recuperacoes': recuperacoes,
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/modo_blocos/<path:activity_id>')
     def api_moxy_modo_blocos_ler(activity_id):
         """Modo de blocos gravado para esta actividade — 'automatico' ou

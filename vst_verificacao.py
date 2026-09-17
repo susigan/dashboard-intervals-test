@@ -199,7 +199,22 @@ def estruturar_protocolo(blocos):
     """
     todos = sorted([b for b in blocos if b.get('t0') is not None],
                    key=lambda b: b['t0'])
-    ons = [b for b in todos if b.get('on')]
+    ons_brutos = [b for b in todos if b.get('on')]
+
+    # filtrar artefactos de duracao quase zero -- confirmado num caso
+    # real: um "WORK" de 1s (t0=5961.0, t1=5962.0), exactamente onde a
+    # gravacao parou, empurrou o BP2 verdadeiro (251W, duracao normal)
+    # para fora das 3 posicoes de BP2. Nenhum intervalo real deste
+    # protocolo dura menos de alguns segundos; um limiar absoluto (15s)
+    # e relativo (10% da mediana das duracoes) apanham isto sem
+    # arriscar cortar um intervalo curto mas genuino.
+    duracoes = [b['t1'] - b['t0'] for b in ons_brutos if b['t1'] > b['t0']]
+    mediana_dur = sorted(duracoes)[len(duracoes) // 2] if duracoes else 0
+    limiar_dur = max(15.0, mediana_dur * 0.10)
+    descartados = [b for b in ons_brutos
+                  if (b['t1'] - b['t0']) < limiar_dur]
+    ons = [b for b in ons_brutos if (b['t1'] - b['t0']) >= limiar_dur]
+
     if not ons:
         return {'aquecimento': None, 'bp1': [], 'bp2': [],
                 'aviso': 'nenhum intervalo de trabalho encontrado nesta '
@@ -246,8 +261,18 @@ def estruturar_protocolo(blocos):
                     f'protocolo VST esperado (aquecimento/RECOVERY/BP1×4/'
                     f'RECOVERY/BP2×3).')
         aviso = (aviso + ' ' + aviso_rec) if aviso else aviso_rec
+    if descartados:
+        aviso_desc = (f'{len(descartados)} intervalo(s) marcado(s) como '
+                     f'WORK pela Intervals.icu foram ignorados por terem '
+                     f'duração implausível (< {limiar_dur:.0f}s, provável '
+                     f'artefacto de gravação — ex.: um lap de 1s exactamente '
+                     f'onde a gravação parou).')
+        aviso = (aviso + ' ' + aviso_desc) if aviso else aviso_desc
 
     return {'aquecimento': aquecimento, 'bp1': bp1, 'bp2': bp2,
+            'descartados': [{'t0': b['t0'], 't1': b['t1'],
+                            'duracao_s': round(b['t1'] - b['t0'], 1)}
+                           for b in descartados],
             'aviso': aviso, 'estrutura_confirmada': not pares_sem_recovery, 'n_total_encontrados': len(ons)}
 
 

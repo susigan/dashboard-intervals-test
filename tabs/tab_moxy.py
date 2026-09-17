@@ -1783,14 +1783,16 @@ function mxVstCartoes(d){
 function mxVstTabela(d){
  const box=document.getElementById('mxVstTabela');
  if(!box) return;
+ const cobertura={};
+ (d.cobertura_stream||[]).forEach(function(c){ cobertura[c.nome]=c; });
  const linhas=[];
  const aq=d.aquecimento;
- if(aq) linhas.push({bloco:'Aquecimento', iv:aq});
+ if(aq) linhas.push({bloco:'Aquecimento', iv:aq, chave:'aquecimento'});
  (d.bp1&&d.bp1.metricas||[]).forEach(function(iv,i){
-  linhas.push({bloco:'BP1', n:i+1, iv:iv});
+  linhas.push({bloco:'BP1', n:i+1, iv:iv, chave:'bp1#'+(i+1)});
  });
  (d.bp2&&d.bp2.metricas||[]).forEach(function(iv,i){
-  linhas.push({bloco:'BP2', n:i+1, iv:iv});
+  linhas.push({bloco:'BP2', n:i+1, iv:iv, chave:'bp2#'+(i+1)});
  });
 
  function cel(m, unidade){
@@ -1811,8 +1813,12 @@ function mxVstTabela(d){
  linhas.forEach(function(l){
   const iv=l.iv;
   const p=iv.potencia||{};
+  const cob=cobertura[l.chave];
+  const avisoCob = (cob && cob.coberto_pelo_stream===false)
+    ? '<br><span style="color:#F0883E;font-size:9px;" title="'+cob.nota+'">'
+      +'⚠ fora do alcance do stream</span>' : '';
   h+='<tr style="border-top:1px solid #21262d;">'
-   +'<td style="padding:4px 10px 4px 0;"><b>'+l.bloco+(l.n?' #'+l.n:'')+'</b></td>'
+   +'<td style="padding:4px 10px 4px 0;"><b>'+l.bloco+(l.n?' #'+l.n:'')+'</b>'+avisoCob+'</td>'
    +'<td style="padding:4px 10px;">'+(p.ok?Math.round(p.media):'—')+'</td>'
    +cel(iv.smo2,'%').replace('<td>','<td style="padding:4px 10px;">')
    +cel(iv.thb,'').replace('<td>','<td style="padding:4px 10px;">')

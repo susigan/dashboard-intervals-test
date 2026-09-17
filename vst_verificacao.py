@@ -271,7 +271,9 @@ def estruturar_protocolo(blocos):
 
     return {'aquecimento': aquecimento, 'bp1': bp1, 'bp2': bp2,
             'descartados': [{'t0': b['t0'], 't1': b['t1'],
-                            'duracao_s': round(b['t1'] - b['t0'], 1)}
+                            'duracao_s': round(b['t1'] - b['t0'], 1),
+                            'watts_medio_da_api': b.get('watts_medio_da_api'),
+                            'watts_medio': b.get('watts_medio')}
                            for b in descartados],
             'aviso': aviso, 'estrutura_confirmada': not pares_sem_recovery, 'n_total_encontrados': len(ons)}
 

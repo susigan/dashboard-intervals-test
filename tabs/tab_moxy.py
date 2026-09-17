@@ -1740,7 +1740,7 @@ function _vstResumoMetrica(m, unidade){
 function mxVstCartoes(d){
  const box=document.getElementById('mxVstCartoes');
  if(!box) return;
- const aq=d.aquecimento||{};
+ const aq=(d.aquecimento&&d.aquecimento.metricas)||{};
  const bp1=d.bp1||{}, bp2=d.bp2||{};
  const vBp1=bp1.verificacao||{}, vBp2=bp2.verificacao||{};
 
@@ -1787,7 +1787,7 @@ function mxVstTabela(d){
  (d.cobertura_stream||[]).forEach(function(c){ cobertura[c.nome]=c; });
  const curtos=(d.duracao_curta||[]).map(function(c){ return c.t0; });
  const linhas=[];
- const aq=d.aquecimento;
+ const aq=d.aquecimento&&d.aquecimento.metricas;
  if(aq) linhas.push({bloco:'Aquecimento', iv:aq, chave:'aquecimento'});
  (d.bp1&&d.bp1.metricas||[]).forEach(function(iv,i){
   linhas.push({bloco:'BP1', n:i+1, iv:iv, chave:'bp1#'+(i+1)});

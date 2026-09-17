@@ -2412,7 +2412,7 @@ def registar(app):
                 'modalidade': d.get('modalidade'),
                 'tags': tags,
                 'aviso_estrutura': estrutura['aviso'],
-                'descartados': estrutura.get('descartados'),
+                'duracao_curta': estrutura.get('duracao_curta'),
                 'cobertura_stream': cobertura_stream,
                 'n_intervalos_encontrados': estrutura.get('n_total_encontrados'),
                 'aquecimento': {'bloco': aquecimento, 'metricas': aquecimento_m}

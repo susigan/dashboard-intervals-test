@@ -201,6 +201,23 @@ CREATE TABLE IF NOT EXISTS moxy_modo_blocos (
 )
 """
 
+# Vinculo persistente entre uma sessao VST e a sessao correspondente da
+# tab Moxy -- um "conjunto de verificacao". Chave primaria e' o proprio
+# id da sessao VST (uma sessao VST pertence no maximo a um conjunto de
+# cada vez; escolher outra Moxy para a mesma VST substitui o vinculo,
+# nunca acumula). moxy_activity_id tem indice proprio para a procura
+# inversa (abrir pela sessao Moxy).
+SCHEMA_VST_CONJUNTO = """
+CREATE TABLE IF NOT EXISTS vst_conjuntos (
+    vst_activity_id    TEXT PRIMARY KEY,
+    moxy_activity_id   TEXT NOT NULL,
+    criado_em          TEXT NOT NULL,
+    actualizado_em     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_vst_conjuntos_moxy
+    ON vst_conjuntos(moxy_activity_id)
+"""
+
 
 def migrar(conn):
     """Acrescenta colunas em falta a tabelas que ja' existem."""
@@ -228,6 +245,7 @@ def migrar(conn):
 def aplicar_schema(conn):
     conn.executescript(SCHEMA)
     conn.execute(SCHEMA_MODO_BLOCOS)
+    conn.executescript(SCHEMA_VST_CONJUNTO)
     conn.commit()
     migrar(conn)
     return conn

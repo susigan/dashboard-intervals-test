@@ -2352,6 +2352,33 @@ def registar(app):
             estrutura = vst.estruturar_protocolo(bl['blocos'])
             aquecimento = estrutura['aquecimento']
 
+            # diagnostico de cobertura: o stream (t) cobre mesmo o
+            # intervalo de cada bloco? Um "—" na aquecimento ou no ultimo
+            # bloco costuma ser isto -- o sensor ainda a estabilizar no
+            # inicio, ou a desligar mesmo antes do fim oficial do lap --
+            # e nao um bug de indexacao dos blocos.
+            cobertura_stream = None
+            if t:
+                t_min, t_max = t[0], t[-1]
+                def _cobertura(bloco, nome):
+                    if not bloco:
+                        return None
+                    dentro = t_min <= bloco['t0'] and bloco['t1'] <= t_max
+                    return {'nome': nome, 't0': bloco['t0'], 't1': bloco['t1'],
+                            'coberto_pelo_stream': dentro,
+                            'nota': (None if dentro else
+                                    f'o stream desta sessão só cobre '
+                                    f'{t_min:.0f}s–{t_max:.0f}s; este bloco '
+                                    f'({bloco["t0"]:.0f}s–{bloco["t1"]:.0f}s) '
+                                    f'fica parcial ou totalmente fora disso '
+                                    f'— por isso a fisiologia sai vazia, '
+                                    f'mesmo com a potência da API a '
+                                    f'aparecer')}
+                cobertura_stream = list(filter(None, [
+                    _cobertura(aquecimento, 'aquecimento')]
+                    + [_cobertura(b, f'bp1#{i+1}') for i, b in enumerate(estrutura['bp1'])]
+                    + [_cobertura(b, f'bp2#{i+1}') for i, b in enumerate(estrutura['bp2'])]))
+
             def _analisar(bloco):
                 return vst.metricas_intervalo(
                     canais, t, bloco['t0'], bloco['t1'],
@@ -2385,6 +2412,7 @@ def registar(app):
                 'modalidade': d.get('modalidade'),
                 'tags': tags,
                 'aviso_estrutura': estrutura['aviso'],
+                'cobertura_stream': cobertura_stream,
                 'n_intervalos_encontrados': estrutura.get('n_total_encontrados'),
                 'aquecimento': {'bloco': aquecimento, 'metricas': aquecimento_m}
                     if aquecimento else None,

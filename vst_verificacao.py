@@ -199,21 +199,23 @@ def estruturar_protocolo(blocos):
     """
     todos = sorted([b for b in blocos if b.get('t0') is not None],
                    key=lambda b: b['t0'])
-    ons_brutos = [b for b in todos if b.get('on')]
+    ons = [b for b in todos if b.get('on')]
 
-    # filtrar artefactos de duracao quase zero -- confirmado num caso
-    # real: um "WORK" de 1s (t0=5961.0, t1=5962.0), exactamente onde a
-    # gravacao parou, empurrou o BP2 verdadeiro (251W, duracao normal)
-    # para fora das 3 posicoes de BP2. Nenhum intervalo real deste
-    # protocolo dura menos de alguns segundos; um limiar absoluto (15s)
-    # e relativo (10% da mediana das duracoes) apanham isto sem
-    # arriscar cortar um intervalo curto mas genuino.
-    duracoes = [b['t1'] - b['t0'] for b in ons_brutos if b['t1'] > b['t0']]
+    # NAO se descarta por duracao curta -- confirmado num caso real: um
+    # "WORK" com t1-t0=1s tinha watts_medio_da_api=251, exactamente o
+    # valor esperado para aquele BP2#3. A duracao registada pela
+    # Intervals.icu estava errada (provavelmente um erro de fronteira do
+    # lap do lado deles), mas o esforco aconteceu e a potencia e' real --
+    # excluir o bloco tirava o BP2#3 verdadeiro da analise. Em vez disso,
+    # cada bloco fica marcado com 'duracao_curta' quando nao ha' tempo
+    # suficiente para uma analise fisiologica fiavel (a funcao de
+    # metricas ja' recusa sozinha com poucos pontos -- isto e' so' para
+    # o aviso ser claro sobre PORQUE a fisiologia veio vazia).
+    duracoes = [b['t1'] - b['t0'] for b in ons if b['t1'] > b['t0']]
     mediana_dur = sorted(duracoes)[len(duracoes) // 2] if duracoes else 0
     limiar_dur = max(15.0, mediana_dur * 0.10)
-    descartados = [b for b in ons_brutos
-                  if (b['t1'] - b['t0']) < limiar_dur]
-    ons = [b for b in ons_brutos if (b['t1'] - b['t0']) >= limiar_dur]
+    for b in ons:
+        b['duracao_curta'] = (b['t1'] - b['t0']) < limiar_dur
 
     if not ons:
         return {'aquecimento': None, 'bp1': [], 'bp2': [],
@@ -261,20 +263,22 @@ def estruturar_protocolo(blocos):
                     f'protocolo VST esperado (aquecimento/RECOVERY/BP1×4/'
                     f'RECOVERY/BP2×3).')
         aviso = (aviso + ' ' + aviso_rec) if aviso else aviso_rec
-    if descartados:
-        aviso_desc = (f'{len(descartados)} intervalo(s) marcado(s) como '
-                     f'WORK pela Intervals.icu foram ignorados por terem '
-                     f'duração implausível (< {limiar_dur:.0f}s, provável '
-                     f'artefacto de gravação — ex.: um lap de 1s exactamente '
-                     f'onde a gravação parou).')
-        aviso = (aviso + ' ' + aviso_desc) if aviso else aviso_desc
+    curtos = [b for b in sequencia if b.get('duracao_curta')]
+    if curtos:
+        aviso_curto = (f'{len(curtos)} intervalo(s) com duração registada '
+                      f'muito abaixo dos restantes (< {limiar_dur:.0f}s) — '
+                      f'a potência é usada na mesma (vem da API, não do '
+                      f'stream), mas a fisiologia (SmO2/HR/RF/DFA-α1) fica '
+                      f'sem dados suficientes para uma análise fiável '
+                      f'nesse intervalo especificamente.')
+        aviso = (aviso + ' ' + aviso_curto) if aviso else aviso_curto
 
     return {'aquecimento': aquecimento, 'bp1': bp1, 'bp2': bp2,
-            'descartados': [{'t0': b['t0'], 't1': b['t1'],
-                            'duracao_s': round(b['t1'] - b['t0'], 1),
-                            'watts_medio_da_api': b.get('watts_medio_da_api'),
-                            'watts_medio': b.get('watts_medio')}
-                           for b in descartados],
+            'duracao_curta': [{'t0': b['t0'], 't1': b['t1'],
+                              'duracao_s': round(b['t1'] - b['t0'], 1),
+                              'watts_medio_da_api': b.get('watts_medio_da_api'),
+                              'watts_medio': b.get('watts_medio')}
+                             for b in curtos],
             'aviso': aviso, 'estrutura_confirmada': not pares_sem_recovery, 'n_total_encontrados': len(ons)}
 
 

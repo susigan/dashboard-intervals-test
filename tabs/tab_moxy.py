@@ -433,6 +433,15 @@ BODY = """
       <span id="mxVstEstado" style="color:#8b949e;font-size:12px;"></span>
     </div>
 
+    <div class="controls" style="margin-top:6px;">
+      <label class="sel">Sessão Moxy correspondente
+        <select id="mxVstMoxySelect">
+          <option value="">escolhe uma sessão VST primeiro</option>
+        </select></label>
+      <button onclick="mxVstSincronizar()">Comparar / Sincronizar</button>
+    </div>
+    <div id="mxVstConjuntoEstado" style="margin-top:6px;"></div>
+
     <div id="mxVstCartoes" style="margin-top:10px;"></div>
     <div id="mxVstTabela" style="margin-top:14px;overflow-x:auto;"></div>
   </div>
@@ -1709,6 +1718,8 @@ function mxVstCarregar(){
     d.n_intervalos_encontrados+' intervalos de trabalho encontrados');
   mxVstCartoes(d);
   mxVstTabela(d);
+  mxVstPopularMoxySelect();
+  mxVstCarregarConjunto(id);
  }).catch(function(e){
   if(est) est.textContent='erro: '+e.message;
  });
@@ -1812,6 +1823,70 @@ function mxVstTabela(d){
  });
  h+='</table>';
  box.innerHTML=h;
+}
+
+// Selector da sessao Moxy correspondente -- reaproveita MX_SESSOES,
+// ja carregada pela Principal, sem pedir outra vez ao servidor.
+function mxVstPopularMoxySelect(){
+ const sel=document.getElementById('mxVstMoxySelect');
+ if(!sel) return;
+ if(!MX_SESSOES.length){
+  sel.innerHTML='<option value="">nenhuma sessão Moxy carregada ainda '
+   +'-- abre a Principal primeiro</option>';
+  return;
+ }
+ const actual=sel.value;
+ sel.innerHTML='<option value="">escolhe a sessão Moxy</option>'+
+  MX_SESSOES.map(function(s){
+   return '<option value="'+s.id+'">'+(s.data||'')+' · '+(s.nome||s.id)+'</option>';
+  }).join('');
+ if(actual) sel.value=actual;
+}
+
+function mxVstCarregarConjunto(vstId){
+ const box=document.getElementById('mxVstConjuntoEstado');
+ const selMoxy=document.getElementById('mxVstMoxySelect');
+ if(!box) return;
+ fetch('/api/moxy/vst/conjunto/'+vstId).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ box.innerHTML=''; return; }
+  if(!d.sincronizado){
+   box.innerHTML='<p class="sub" style="font-size:12px;">ainda não '
+    +'sincronizado com nenhuma sessão Moxy</p>';
+   return;
+  }
+  if(selMoxy) selMoxy.value=d.moxy_activity_id;
+  box.innerHTML='<div style="border-left:3px solid #3FB950;padding:6px 10px;">'
+   +'<b>CONJUNTO DE VERIFICAÇÃO</b><br>'
+   +'MOXY: '+d.moxy_activity_id+'<br>'
+   +'VST: '+d.vst_activity_id+'<br>'
+   +'<span style="color:#3FB950;">STATUS: SINCRONIZADO</span>'
+   +'<div style="font-size:11px;color:#8b949e;margin-top:2px">desde '
+   +d.criado_em+(d.actualizado_em!==d.criado_em?' · actualizado '+d.actualizado_em:'')
+   +'</div></div>';
+ }).catch(function(){ box.innerHTML=''; });
+}
+
+function mxVstSincronizar(){
+ const vstSel=document.getElementById('mxVstSelect');
+ const moxySel=document.getElementById('mxVstMoxySelect');
+ const vstId=vstSel&&vstSel.value, moxyId=moxySel&&moxySel.value;
+ const box=document.getElementById('mxVstConjuntoEstado');
+ if(!vstId){ if(box) box.innerHTML='<p class="sub">escolhe primeiro '
+  +'uma sessão VST</p>'; return; }
+ if(!moxyId){ if(box) box.innerHTML='<p class="sub">escolhe a sessão '
+  +'Moxy correspondente</p>'; return; }
+ fetch('/api/moxy/vst/conjunto', {
+  method:'POST', headers:{'Content-Type':'application/json'},
+  body: JSON.stringify({vst_activity_id:vstId, moxy_activity_id:moxyId})
+ }).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){
+   if(box) box.innerHTML='<p class="sub">erro: '+(d.mensagem||'desconhecido')+'</p>';
+   return;
+  }
+  mxVstCarregarConjunto(vstId);
+ }).catch(function(e){
+  if(box) box.innerHTML='<p class="sub">erro de rede: '+e.message+'</p>';
+ });
 }
 
 function mxLimiares(){

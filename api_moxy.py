@@ -2203,6 +2203,62 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/vst/conjunto/<path:vst_activity_id>')
+    def api_moxy_vst_conjunto_ler(vst_activity_id):
+        """Vínculo já gravado para esta sessão VST, se existir."""
+        try:
+            vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT moxy_activity_id, criado_em, actualizado_em "
+                "FROM vst_conjuntos WHERE vst_activity_id=?", (vid,)).fetchone()
+            if not r:
+                return jsonify({'status': 'ok', 'sincronizado': False})
+            return jsonify({'status': 'ok', 'sincronizado': True,
+                            'vst_activity_id': vid, 'moxy_activity_id': r[0],
+                            'criado_em': r[1], 'actualizado_em': r[2]})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/conjunto', methods=['POST'])
+    def api_moxy_vst_conjunto_gravar():
+        """Grava/substitui o vínculo VST↔Moxy. Corpo: {vst_activity_id,
+        moxy_activity_id}. Uma sessão VST só pertence a um conjunto de
+        cada vez — gravar de novo substitui o vínculo anterior, nunca
+        acumula (RE-SINCRONIZAR / ALTERAR VÍNCULO usam este mesmo
+        endpoint)."""
+        try:
+            corpo = request.get_json(force=True, silent=True) or {}
+            vid = str(corpo.get('vst_activity_id') or '').strip()
+            mid = str(corpo.get('moxy_activity_id') or '').strip()
+            if not vid or not mid:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'vst_activity_id e '
+                                           'moxy_activity_id são '
+                                           'obrigatórios'}), 200
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            agora = datetime.now().isoformat(timespec='seconds')
+            existe = cn.execute(
+                "SELECT criado_em FROM vst_conjuntos WHERE vst_activity_id=?",
+                (vid,)).fetchone()
+            criado_em = existe[0] if existe else agora
+            cn.execute(
+                "INSERT OR REPLACE INTO vst_conjuntos "
+                "(vst_activity_id, moxy_activity_id, criado_em, "
+                "actualizado_em) VALUES (?,?,?,?)",
+                (vid, mid, criado_em, agora))
+            cn.commit()
+            return jsonify({'status': 'ok', 'vst_activity_id': vid,
+                            'moxy_activity_id': mid,
+                            'criado_em': criado_em, 'actualizado_em': agora})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/vst/lista')
     def api_moxy_vst_lista():
         """Actividades com a tag VST — só essas, nunca as sem a tag."""

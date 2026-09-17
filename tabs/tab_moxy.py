@@ -1785,6 +1785,7 @@ function mxVstTabela(d){
  if(!box) return;
  const cobertura={};
  (d.cobertura_stream||[]).forEach(function(c){ cobertura[c.nome]=c; });
+ const curtos=(d.duracao_curta||[]).map(function(c){ return c.t0; });
  const linhas=[];
  const aq=d.aquecimento;
  if(aq) linhas.push({bloco:'Aquecimento', iv:aq, chave:'aquecimento'});
@@ -1814,9 +1815,16 @@ function mxVstTabela(d){
   const iv=l.iv;
   const p=iv.potencia||{};
   const cob=cobertura[l.chave];
+  const ehCurto = curtos.indexOf(iv.t0)>=0;
   const avisoCob = (cob && cob.coberto_pelo_stream===false)
     ? '<br><span style="color:#F0883E;font-size:9px;" title="'+cob.nota+'">'
-      +'⚠ fora do alcance do stream</span>' : '';
+      +'⚠ fora do alcance do stream</span>'
+    : (ehCurto
+      ? '<br><span style="color:#F0883E;font-size:9px;" '
+        +'title="duração registada muito curta — a potência vem da API, '
+        +'mas não há tempo suficiente para calcular a fisiologia">'
+        +'⚠ duração curta (só potência)</span>'
+      : '');
   h+='<tr style="border-top:1px solid #21262d;">'
    +'<td style="padding:4px 10px 4px 0;"><b>'+l.bloco+(l.n?' #'+l.n:'')+'</b>'+avisoCob+'</td>'
    +'<td style="padding:4px 10px;">'+(p.ok?Math.round(p.media):'—')+'</td>'

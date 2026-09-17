@@ -187,22 +187,46 @@ def metricas_recuperacao(canais, tempo, t_fim_anterior, t_inicio_seguinte):
 # ─────────────────────────────────────────────────────────────────────────
 
 def estruturar_protocolo(blocos):
-    """blocos: lista de blocos já filtrados a WORK (b['on']==True),
-    ordenados por t0 — o mesmo formato que blocos_de_laps já produz.
+    """blocos: lista COMPLETA (WORK + RECOVERY), no formato que
+    blocos_de_laps já produz — a função filtra os WORK aqui dentro, mas
+    também usa os RECOVERY para confirmar a estrutura.
 
     Devolve {'aquecimento': bloco|None, 'bp1': [blocos], 'bp2': [blocos],
-    'aviso': str|None} -- nunca inventa um bloco que não existe.
+    'aviso': str|None, 'estrutura_confirmada': bool} -- nunca inventa um
+    bloco que não existe, e avisa quando dois WORK aparecem consecutivos
+    sem nenhum RECOVERY genuíno entre eles (a estrutura do protocolo diz
+    que devia haver sempre um).
     """
-    ons = sorted([b for b in blocos if b.get('on')], key=lambda b: b['t0'])
+    todos = sorted([b for b in blocos if b.get('t0') is not None],
+                   key=lambda b: b['t0'])
+    ons = [b for b in todos if b.get('on')]
     if not ons:
         return {'aquecimento': None, 'bp1': [], 'bp2': [],
                 'aviso': 'nenhum intervalo de trabalho encontrado nesta '
-                        'sessão'}
+                        'sessão', 'estrutura_confirmada': False}
 
     aquecimento = ons[0]
     resto = ons[1:]
     bp1 = resto[:4]
     bp2 = resto[4:7]
+
+    # confirmar que ha' RECOVERY genuino entre cada par consecutivo --
+    # nao basta a posicao na lista filtrada a WORK. Um "buraco" (RECOVERY
+    # entre t1 de um e t0 do seguinte) tem de existir de facto; dois WORK
+    # colados sem nada entre eles nao deviam acontecer neste protocolo, e
+    # se acontecer e' sinal de que a estrutura real e' diferente da
+    # esperada -- vale mais avisar do que assumir calado.
+    sequencia = [aquecimento] + bp1 + bp2
+    pares_sem_recovery = []
+    for i in range(len(sequencia) - 1):
+        fim_anterior = sequencia[i]['t1']
+        inicio_seguinte = sequencia[i + 1]['t0']
+        tem_recovery = any(
+            not b.get('on') and b['t0'] >= fim_anterior - 1e-6
+            and b['t1'] <= inicio_seguinte + 1e-6
+            for b in todos)
+        if not tem_recovery and (inicio_seguinte - fim_anterior) < 1.0:
+            pares_sem_recovery.append(i)
 
     aviso = None
     if len(ons) < 8:
@@ -215,9 +239,16 @@ def estruturar_protocolo(blocos):
                  f'que os 8 esperados — a usar os primeiros 4 depois do '
                  f'aquecimento como BP1 e os 3 seguintes como BP2; os '
                  f'restantes {len(ons) - 8} não entram na análise.')
+    if pares_sem_recovery:
+        aviso_rec = (f'{len(pares_sem_recovery)} par(es) de intervalos de '
+                    f'trabalho consecutivos sem um RECOVERY genuíno entre '
+                    f'eles — a estrutura desta sessão pode diferir do '
+                    f'protocolo VST esperado (aquecimento/RECOVERY/BP1×4/'
+                    f'RECOVERY/BP2×3).')
+        aviso = (aviso + ' ' + aviso_rec) if aviso else aviso_rec
 
     return {'aquecimento': aquecimento, 'bp1': bp1, 'bp2': bp2,
-            'aviso': aviso, 'n_total_encontrados': len(ons)}
+            'aviso': aviso, 'estrutura_confirmada': not pares_sem_recovery, 'n_total_encontrados': len(ons)}
 
 
 # ─────────────────────────────────────────────────────────────────────────

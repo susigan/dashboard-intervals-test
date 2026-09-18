@@ -446,7 +446,15 @@ BODY = """
     <div id="mxVstTabela" style="margin-top:14px;overflow-x:auto;"></div>
 
     <h3 style="font-size:14px;margin-top:20px;">Comparação — Dia 1 × Dia 2</h3>
+    <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
     <div id="mxVstComparacao" style="margin-top:8px;"></div>
+
+    <h3 style="font-size:14px;margin-top:20px;">Recovery</h3>
+    <div id="mxVstRecoveryCartoes" style="margin-top:8px;"></div>
+    <div id="mxVstRecoveryTabela" style="margin-top:14px;overflow-x:auto;"></div>
+    <div id="mxVstRecoveryFinal" style="margin-top:10px;"></div>
+
+    <div id="mxVstRevisaoCritica" style="margin-top:16px;"></div>
   </div>
 
 </div>
@@ -1924,6 +1932,11 @@ function mxVstCarregarComparacao(vstId){
   }
   box.innerHTML=_vstTabelaComparacao('BP1', d.comparacao_bp1)
    + _vstTabelaComparacao('BP2', d.comparacao_bp2);
+  mxVstResumoCartoes(d);
+  mxVstRecoveryCartoes(d);
+  mxVstRecoveryTabela(d);
+  mxVstRecoveryFinalMostrar(d.recuperacao_final_dia2);
+  mxVstRevisaoCritica(d);
  }).catch(function(e){
   box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
  });
@@ -1991,6 +2004,202 @@ function _vstTabelaComparacao(titulo, comp){
  if(rob.nota) h+='<p class="sub" style="font-size:10px;margin-top:4px;">'+rob.nota+'</p>';
  h+='</div>';
  return h;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Camada VISUAL de recovery -- consome comparar_recovery() tal como
+// vem do backend, nunca recalcula. Nada aqui e' matematica nova.
+// ═══════════════════════════════════════════════════════════════════
+
+function _vstCorGeral(s){
+ return {'CONSISTENTE':'#3FB950','CONVERGENTE':'#3FB950',
+        'PARCIALMENTE CONSISTENTE':'#F4D03F','PARCIALMENTE CONVERGENTE':'#F4D03F',
+        'DIVERGENTE':'#E74C3C','DADOS INSUFICIENTES':'#8b949e',
+        'INDETERMINADA':'#8b949e'}[s] || '#8b949e';
+}
+
+function _vstCartaoSimples(titulo, valor, sub){
+ return '<div class="card"><div class="label">'+titulo+'</div>'
+  +'<div class="value" style="font-size:15px;color:'+_vstCorGeral(valor)+';">'+(valor||'—')+'</div>'
+  +(sub?'<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+sub+'</div>':'')
+  +'</div>';
+}
+
+function mxVstResumoCartoes(d){
+ const box=document.getElementById('mxVstResumoCartoes');
+ if(!box) return;
+ const bp1=d.comparacao_bp1||{}, bp2=d.comparacao_bp2||{};
+ const rec1=d.comparacao_recovery_bp1||{}, rec2=d.comparacao_recovery_bp2||{};
+ // "resultado geral" e' so' uma apresentacao lado a lado do pior dos
+ // dois BP -- nao e' um score novo, e diz-se isso explicitamente
+ const ordem={'DIVERGENTE':0,'PARCIALMENTE CONSISTENTE':1,'DADOS INSUFICIENTES':1,'CONSISTENTE':2};
+ const pior = (ordem[bp1.status]??1) <= (ordem[bp2.status]??1) ? bp1.status : bp2.status;
+ const nRec = (rec1.n_validas||0)+(rec2.n_validas||0);
+ box.innerHTML = '<div class="cards">'
+  + _vstCartaoSimples('Resultado geral', pior, 'o mais cauteloso entre BP1 e BP2 — não é um score novo')
+  + _vstCartaoSimples('BP1', bp1.status, bp1.motivo)
+  + _vstCartaoSimples('BP2', bp2.status, bp2.motivo)
+  + _vstCartaoSimples('Recovery', (ordem[rec1.status]??1)<=(ordem[rec2.status]??1)?rec1.status:rec2.status,
+      'BP1: '+(rec1.status||'—')+' · BP2: '+(rec2.status||'—'))
+  + '<div class="card"><div class="label">Robustez</div>'
+  + '<div class="value" style="font-size:13px;">'+nRec+' observações de recovery</div>'
+  + '<div style="font-size:10px;color:#8b949e;margin-top:2px;">p-permutação por métrica na secção de recovery abaixo — nunca um score único</div></div>'
+  + '</div>';
+}
+
+function _vstFraseTiming(padraoInfo){
+ if(!padraoInfo || padraoInfo.padrao==='DADOS INSUFICIENTES')
+  return 'Poucos recoveries disponíveis para determinar timing.';
+ if(padraoInfo.padrao==='PROGRESSIVAMENTE PIOR')
+  return 'Recovery apresenta deterioração progressiva nos WORKs de maior potência.';
+ if(padraoInfo.padrao==='PROGRESSIVAMENTE MELHOR')
+  return 'Recovery melhora ao longo dos WORKs — sem sinal de deterioração com a carga.';
+ if(padraoInfo.padrao==='INCONSISTENTE')
+  return 'Recovery varia sem um padrão contínuo claro entre os WORKs.';
+ return 'Não foi identificada alteração temporal consistente (recovery estável).';
+}
+
+function _vstCartaoRecoveryBloco(titulo, comp){
+ if(!comp || !comp.metricas) return '<div class="card"><div class="label">'+titulo+'</div>'
+  +'<div class="value" style="font-size:13px;">DADOS INSUFICIENTES</div></div>';
+ // usa HR como referencia principal para o padrao do bloco mostrado no
+ // cartao (a tabela completa, abaixo, mostra todas as metricas)
+ const ref = comp.metricas.hr || comp.metricas.respiracao || Object.values(comp.metricas)[0];
+ const pb = (ref||{}).dia2_padrao_bloco;
+ let h = '<div class="card"><div class="label">'+titulo+'</div>'
+  +'<div class="value" style="font-size:14px;color:'+_vstCorGeral(comp.status)+';">'+(comp.status||'—')+'</div>';
+ if(pb && pb.padrao){
+  h += '<div style="font-size:11px;margin-top:4px;">Padrão ('+((ref||{}).nome||'')+'): <b>'+pb.padrao+'</b></div>';
+  if(pb.fracoes && pb.fracoes.length)
+   h += '<div style="font-size:10px;color:#8b949e;">Frações: '+pb.fracoes.map(f=>f.toFixed(2)).join(' → ')+'</div>';
+  if(pb.p_permutacao!=null)
+   h += '<div style="font-size:10px;color:#8b949e;">p-permutação: '+pb.p_permutacao+(pb.significativo?'':' (não significativo)')+'</div>';
+  h += '<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+_vstFraseTiming(pb)+'</div>';
+ }
+ h += '</div>';
+ return h;
+}
+
+function mxVstRecoveryCartoes(d){
+ const box=document.getElementById('mxVstRecoveryCartoes');
+ if(!box) return;
+ box.innerHTML = '<div class="cards">'
+  + _vstCartaoRecoveryBloco('Recovery BP1', d.comparacao_recovery_bp1)
+  + _vstCartaoRecoveryBloco('Recovery BP2', d.comparacao_recovery_bp2)
+  + '</div>'
+  + _vstCartaoDia1Dia2Recovery('BP1', d.comparacao_recovery_bp1)
+  + _vstCartaoDia1Dia2Recovery('BP2', d.comparacao_recovery_bp2);
+}
+
+function _vstCartaoDia1Dia2Recovery(titulo, comp){
+ if(!comp) return '';
+ const nota = comp.status==='CONVERGENTE'
+  ? 'Este resultado indica reprodutibilidade do padrão observado, não uma confirmação estatística do breakpoint em si.'
+  : (comp.motivo||'');
+ return '<div style="margin:8px 0;padding:8px 10px;border-left:3px solid '+_vstCorGeral(comp.status)+';">'
+  +'<b style="font-size:12px;">Recovery — Dia 1 × Dia 2 ('+titulo+'): '
+  +'<span style="color:'+_vstCorGeral(comp.status)+';">'+(comp.status||'—')+'</span></b>'
+  +'<div style="font-size:11px;color:#8b949e;margin-top:3px;">'+nota+'</div></div>';
+}
+
+function mxVstRecoveryTabela(d){
+ const box=document.getElementById('mxVstRecoveryTabela');
+ if(!box) return;
+ let h='<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr class="sub" style="text-align:left;">'
+  +'<th style="padding:3px 10px 3px 0;">Bloco</th>'
+  +'<th style="padding:3px 10px;">Recovery #</th>'
+  +'<th style="padding:3px 10px;">Métrica</th>'
+  +'<th style="padding:3px 10px;">Inicial → Final</th>'
+  +'<th style="padding:3px 10px;">Δ</th>'
+  +'<th style="padding:3px 10px;">Fracção</th>'
+  +'<th style="padding:3px 10px;">Completude</th></tr>';
+ let linhas = 0;
+ [['BP1', d.comparacao_recovery_bp1], ['BP2', d.comparacao_recovery_bp2]].forEach(function(par){
+  const bloco=par[0], comp=par[1];
+  if(!comp || !comp.metricas) return;
+  Object.keys(comp.metricas).forEach(function(k){
+   const m=comp.metricas[k];
+   const individuais=m.dia2_recuperacoes_individuais||[];
+   const fracoes=m.dia2_fracoes||[];
+   individuais.forEach(function(c2, i){
+    if(!c2) return;
+    const frac=fracoes[i];
+    const completude = (typeof _vstCompletudeTexto==='function') ? '' : '';
+    linhas++;
+    h+='<tr style="border-top:1px solid #21262d;'+(m.peso==='complementar'?'opacity:0.7;':'')+'">'
+     +'<td style="padding:3px 10px 3px 0;">'+bloco+'</td>'
+     +'<td style="padding:3px 10px;">'+(i+1)+'</td>'
+     +'<td style="padding:3px 10px;">'+m.nome+(m.peso==='complementar'?' <span class="sub" style="font-size:9px;">(complementar)</span>':'')+'</td>'
+     +'<td style="padding:3px 10px;">'+c2.inicial+' → '+c2.final+'</td>'
+     +'<td style="padding:3px 10px;">'+c2.delta+'</td>'
+     +'<td style="padding:3px 10px;">'+(frac!=null?frac.toFixed(3):'—')+'</td>'
+     +'<td style="padding:3px 10px;">'+(frac!=null?_vstClassificacaoFraccaoTexto(frac):'DADOS INSUFICIENTES')+'</td>'
+     +'</tr>';
+   });
+  });
+ });
+ h+='</table>';
+ if(!linhas) h = '<p class="sub" style="font-size:12px;">sem recuperações individuais disponíveis</p>';
+ else h += '<p class="sub" style="font-size:10px;margin-top:4px;">Classificação operacional baseada na fração de recuperação utilizada pela metodologia atual — não são limiares fisiológicos validados.</p>';
+ box.innerHTML = h;
+}
+
+// mesma classificacao de classificar_recovery_completeness (Python),
+// replicada aqui so' para nao ter de ir ao servidor por cada celula da
+// tabela -- os LIMIARES sao os mesmos, nao uma segunda metodologia
+function _vstClassificacaoFraccaoTexto(f){
+ if(f==null) return 'DADOS INSUFICIENTES';
+ if(f>1) return 'OVERSHOOT';
+ if(f<0) return 'SEM RECUPERAÇÃO / CONTINUAÇÃO';
+ if(f>=0.75) return 'RECUPERAÇÃO COMPLETA';
+ if(f>=0.4) return 'RECUPERAÇÃO PARCIAL';
+ return 'RECUPERAÇÃO MÍNIMA';
+}
+
+function mxVstRecoveryFinalMostrar(rf){
+ const box=document.getElementById('mxVstRecoveryFinal');
+ if(!box) return;
+ if(!rf || !rf.ok){
+  box.innerHTML='';
+  return;
+ }
+ let h='<div style="border-left:3px solid #8b949e;padding:6px 10px;">'
+  +'<b style="font-size:12px;">RECOVERY FINAL</b>'
+  +'<div style="font-size:11px;color:#8b949e;margin:3px 0;">Não há WORK subsequente; portanto '
+  +'este recovery descreve apenas a trajectória disponível após o último esforço — '
+  +'não é comparável à "completude" das recuperações intermédias.</div>';
+ const pc = rf.por_canal||{};
+ Object.keys(pc).forEach(function(k){
+  const c=pc[k];
+  if(c.estado==='sem_dados') return;
+  h+='<div style="font-size:11px;">'+k+': '+c.inicial+' → '+c.final+' ('+c.estado+')</div>';
+ });
+ h+='</div>';
+ box.innerHTML=h;
+}
+
+function mxVstRevisaoCritica(d){
+ const box=document.getElementById('mxVstRevisaoCritica');
+ if(!box) return;
+ const rec1=d.comparacao_recovery_bp1||{}, rec2=d.comparacao_recovery_bp2||{};
+ const pb1=(rec1.metricas&&(rec1.metricas.hr||rec1.metricas.respiracao)||{}).dia2_padrao_bloco;
+ const pb2=(rec2.metricas&&(rec2.metricas.hr||rec2.metricas.respiracao)||{}).dia2_padrao_bloco;
+ const temDados = (rec1.n_validas||0)+(rec2.n_validas||0) > 0;
+
+ function resp(txt){ return '<li style="margin-bottom:4px;">'+txt+'</li>'; }
+ let h = '<h4 style="font-size:13px;">Revisão crítica — Recovery</h4><ol style="font-size:11px;color:#c9d1d9;padding-left:18px;">';
+ h += resp('Existem dados suficientes? '+(temDados?'Sim, pelo menos parcialmente.':'Não — dados insuficientes na maior parte das métricas.'));
+ h += resp('O recovery é mensurável? '+(temDados?'Sim, através das recuperações reais entre WORKs.':'Não foi possível medir de forma fiável.'));
+ h += resp('Padrão dentro do BP1: '+(pb1?pb1.padrao:'DADOS INSUFICIENTES')+'.');
+ h += resp('Padrão dentro do BP2: '+(pb2?pb2.padrao:'DADOS INSUFICIENTES')+'.');
+ h += resp('Deterioração progressiva? '+(([pb1,pb2].some(p=>p&&p.padrao==='PROGRESSIVAMENTE PIOR'))?'Sim, em pelo menos um bloco.':'Não identificada.'));
+ h += resp('Melhora progressiva? '+(([pb1,pb2].some(p=>p&&p.padrao==='PROGRESSIVAMENTE MELHOR'))?'Sim, em pelo menos um bloco.':'Não identificada.'));
+ h += resp('Recovery Dia 1 × Dia 2 é convergente? BP1: '+(rec1.status||'—')+' · BP2: '+(rec2.status||'—')+'.');
+ h += resp('Timing compatível? '+_vstFraseTiming(pb1)+' (BP1) / '+_vstFraseTiming(pb2)+' (BP2)');
+ h += resp('Existem limitações estatísticas relevantes? Sim — com poucos WORKs por bloco, a robustez do teste de permutação é necessariamente limitada (ver p-permutação nos cartões acima).');
+ h += '</ol><p class="sub" style="font-size:10px;">Esta revisão é descritiva. Não constitui diagnóstico, não afirma causalidade, e não afirma que o breakpoint foi validado.</p>';
+ box.innerHTML = h;
 }
 
 function mxLimiares(){

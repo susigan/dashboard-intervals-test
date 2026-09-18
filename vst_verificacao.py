@@ -232,23 +232,24 @@ def classificar_recovery_completeness(fraccao):
     validado — não é. É só onde a metodologia actual traça a linha
     entre "recuperou bastante" e "recuperou pouco".
 
-    Quatro faixas, nenhuma delas escondida ou achatada:
-      fraccao < 0        -> a variável continuou a mudar na mesma
-                            direcção do work, em vez de reverter
-                            (ex.: HR continuou a subir no recovery)
-      0 <= fraccao < 0.4  -> RECUPERAÇÃO MÍNIMA
+    Cinco faixas, verificadas nesta ordem exacta (overshoot e "sem
+    recuperação" primeiro, para nunca caírem por engano nas faixas
+    intermédias):
+      fraccao > 1          -> OVERSHOOT — passou do que tinha antes do
+                              work, também informação real, não um erro
+      fraccao < 0          -> SEM RECUPERAÇÃO / CONTINUAÇÃO — a variável
+                              continuou a mudar na mesma direcção do
+                              work, em vez de reverter
+      0 <= fraccao < 0.4   -> RECUPERAÇÃO MÍNIMA
       0.4 <= fraccao < 0.75 -> RECUPERAÇÃO PARCIAL
-      fraccao >= 0.75     -> RECUPERAÇÃO (quase) COMPLETA
-      fraccao > 1         -> passou do que tinha antes do work
-                            (overshoot) -- tambem informação real,
-                            não um erro de cálculo
+      0.75 <= fraccao <= 1  -> RECUPERAÇÃO (quase) COMPLETA
     """
     if fraccao is None:
         return 'DADOS INSUFICIENTES'
-    if fraccao < 0:
-        return 'SEM RECUPERAÇÃO / CONTINUAÇÃO'
     if fraccao > 1:
         return 'OVERSHOOT'
+    if fraccao < 0:
+        return 'SEM RECUPERAÇÃO / CONTINUAÇÃO'
     if fraccao >= 0.75:
         return 'RECUPERAÇÃO COMPLETA'
     if fraccao >= 0.4:

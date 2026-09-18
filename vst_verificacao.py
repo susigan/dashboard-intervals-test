@@ -224,14 +224,31 @@ def recovery_fraction(metricas_work, metricas_recovery_canal):
 
 
 def classificar_recovery_completeness(fraccao):
-    """COMPLETA/PARCIAL/MÍNIMA/DADOS INSUFICIENTES -- os mesmos dois
-    limiares (0.75 / 0.4) ja' usados em verificar_bloco para decidir
-    CONFIRMADO/PARCIALMENTE/NAO CONFIRMADO. Nao e' um numero novo
-    inventado para esta funcao -- e' o mesmo criterio ja' estabelecido
-    no projecto, aplicado aqui por consistencia (pedido explicito:
-    reutilizar se ja existir metodologia equivalente)."""
+    """CLASSIFICAÇÃO OPERACIONAL da fracção de recovery — não é uma
+    validação fisiológica. Os limiares 0.75/0.4 são os mesmos já usados
+    em verificar_bloco (CONFIRMADO/PARCIALMENTE/NÃO CONFIRMADO),
+    reutilizados aqui por consistência com o resto do projecto, não
+    porque "75% de recuperação" seja um valor fisiologicamente
+    validado — não é. É só onde a metodologia actual traça a linha
+    entre "recuperou bastante" e "recuperou pouco".
+
+    Quatro faixas, nenhuma delas escondida ou achatada:
+      fraccao < 0        -> a variável continuou a mudar na mesma
+                            direcção do work, em vez de reverter
+                            (ex.: HR continuou a subir no recovery)
+      0 <= fraccao < 0.4  -> RECUPERAÇÃO MÍNIMA
+      0.4 <= fraccao < 0.75 -> RECUPERAÇÃO PARCIAL
+      fraccao >= 0.75     -> RECUPERAÇÃO (quase) COMPLETA
+      fraccao > 1         -> passou do que tinha antes do work
+                            (overshoot) -- tambem informação real,
+                            não um erro de cálculo
+    """
     if fraccao is None:
         return 'DADOS INSUFICIENTES'
+    if fraccao < 0:
+        return 'SEM RECUPERAÇÃO / CONTINUAÇÃO'
+    if fraccao > 1:
+        return 'OVERSHOOT'
     if fraccao >= 0.75:
         return 'RECUPERAÇÃO COMPLETA'
     if fraccao >= 0.4:
@@ -752,48 +769,115 @@ def comparar_bp(dia1_metricas, dia2_metricas_lista, dia1_vizinhos=None,
     }
 
 
-def comparar_recovery(dia1_recovery, dia2_recuperacoes_lista):
+def recovery_padrao_bloco(fracoes):
+    """Padrao do bloco INTEIRO (todas as recuperacoes de BP1, ou todas
+    as de BP2) -- nunca reduzido a' ultima sozinha. Usa as FRACCOES
+    (recovery_fraction), ja normalizadas por direccao, por isso um so
+    _tendencia serve para qualquer metrica sem precisar saber se e' HR
+    ou SmO2: fraccao a subir ao longo do bloco = recovery a melhorar;
+    a descer = recovery a piorar. Mesmo teste de permutacao de sempre,
+    aplicado a esta serie.
+    """
+    validas = [f for f in fracoes if f is not None]
+    if len(validas) < 2:
+        return {'padrao': 'DADOS INSUFICIENTES',
+               'motivo': f'só {len(validas)} fracção(ões) válida(s) — '
+                        'precisa de pelo menos 2 para ver tendência',
+               'fracoes': validas}
+
+    tend, slope, p = _tendencia(validas)
+    significativo = p is not None and p <= 0.34
+    if not significativo:
+        amplitude = max(validas) - min(validas)
+        # sem tendencia detectavel: "estavel" se as fraccoes andam
+        # proximas umas das outras, "inconsistente" se saltam (ex.:
+        # boa, minima, boa) sem um padrao continuo
+        padrao = 'ESTÁVEL' if amplitude < 0.3 else 'INCONSISTENTE'
+    elif tend > 0:
+        padrao = 'PROGRESSIVAMENTE MELHOR'
+    else:
+        padrao = 'PROGRESSIVAMENTE PIOR'
+
+    return {'padrao': padrao, 'tendencia': tend, 'slope': slope,
+           'p_permutacao': p, 'significativo': significativo,
+           'fracoes': validas}
+
+
+def comparar_recovery(dia1_recovery, dia2_works_metricas, dia2_recuperacoes_bloco):
     """Compara o padrao de recuperacao entre os dois dias -- rotulos
     proprios (CONVERGENTE/DIVERGENTE/INDETERMINADA), diferentes dos
-    usados para BP (CONSISTENTE/DIVERGENTE), porque a pergunta e'
-    diferente: nao e' "o BP reproduziu-se", e' "o comportamento de
-    recuperacao e' compativel".
+    usados para BP (CONSISTENTE/DIVERGENTE).
 
-    dia1_recovery: por_canal de UM metricas_recuperacao() do Dia 1 (a
-    transicao mais proxima do breakpoint).
-    dia2_recuperacoes_lista: lista de metricas_recuperacao() do Dia 2,
-    as recuperacoes DENTRO do bloco (BP1 ou BP2) -- resumido pela
-    ULTIMA, a mesma convencao ja usada em comparar_bp.
+    dia1_recovery: por_canal de UM metricas_recuperacao() do Dia 1.
+    dia2_works_metricas: lista de metricas_intervalo() dos WORKS deste
+    bloco no Dia 2 (bp1_m ou bp2_m) -- para calcular a fraccao de cada
+    recovery em relacao ao work que a precedeu.
+    dia2_recuperacoes_bloco: lista de metricas_recuperacao() das
+    recuperacoes DENTRO do bloco -- len(works)-1 itens.
+
+    Preserva TODAS as recuperacoes individuais (nao resume so' a
+    ultima); o padrao do bloco (ESTAVEL/PIOR/MELHOR/INCONSISTENTE) vem
+    de recovery_padrao_bloco sobre a sequencia inteira de fraccoes. A
+    comparacao Dia1xDia2 usa esse padrao, nao um valor isolado.
     """
-    validas_dia2 = [r for r in dia2_recuperacoes_lista if r and r.get('ok')]
+    validas_dia2 = [r for r in dia2_recuperacoes_bloco if r and r.get('ok')]
     if not dia1_recovery or not validas_dia2:
         return {'status': 'DADOS INSUFICIENTES',
                'motivo': 'sem recuperação válida num dos dois dias',
                'metricas': {}}
 
-    dia2_final = (validas_dia2[-1].get('por_canal') or {})
     metricas = {}
     for canal, nome, unidade in _METRICAS_COMPARACAO:
         if canal == 'potencia':
             continue
         c1 = (dia1_recovery or {}).get(canal)
-        c2 = dia2_final.get(canal)
-        if not c1 or c1.get('estado') == 'sem_dados' or \
-           not c2 or c2.get('estado') == 'sem_dados':
-            metricas[canal] = {'nome': nome, 'unidade': unidade,
-                               'peso': 'complementar' if canal in _METRICAS_PESO_COMPLEMENTAR else 'principal',
-                               'consistencia': 'INDETERMINADA',
-                               'dia1': None, 'dia2': None}
+
+        # todas as recuperacoes individuais deste canal, preservadas
+        individuais = []
+        fracoes = []
+        for i, r in enumerate(dia2_recuperacoes_bloco):
+            if not r or not r.get('ok'):
+                individuais.append(None)
+                fracoes.append(None)
+                continue
+            c2 = (r.get('por_canal') or {}).get(canal)
+            individuais.append(c2)
+            work_antes = dia2_works_metricas[i] if i < len(dia2_works_metricas) else None
+            fracao = recovery_fraction(
+                (work_antes or {}).get(canal), c2) if work_antes else None
+            fracoes.append(fracao)
+
+        padrao_bloco = recovery_padrao_bloco(fracoes)
+
+        c2_ultima = next((c for c in reversed(individuais) if c), None)
+        if not c1 or c1.get('estado') == 'sem_dados' or not c2_ultima or \
+           c2_ultima.get('estado') == 'sem_dados':
+            metricas[canal] = {
+                'nome': nome, 'unidade': unidade,
+                'peso': 'complementar' if canal in _METRICAS_PESO_COMPLEMENTAR else 'principal',
+                'consistencia': 'INDETERMINADA',
+                'dia1': None, 'dia2_recuperacoes_individuais': individuais,
+                'dia2_fracoes': fracoes, 'dia2_padrao_bloco': padrao_bloco,
+            }
             continue
-        igual = c1.get('estado') == c2.get('estado')
+
+        # a comparacao de estado usa a ULTIMA recuperacao valida (o
+        # estado final do bloco), mas agora ao lado do padrao inteiro,
+        # nunca no lugar dele
+        igual = c1.get('estado') == c2_ultima.get('estado')
         metricas[canal] = {
             'nome': nome, 'unidade': unidade,
             'peso': 'complementar' if canal in _METRICAS_PESO_COMPLEMENTAR else 'principal',
             'consistencia': 'CONVERGENTE' if igual else 'DIVERGENTE',
             'dia1': {'estado': c1.get('estado'), 'inicial': c1.get('inicial'),
                     'final': c1.get('final'), 'delta': c1.get('delta')},
-            'dia2': {'estado': c2.get('estado'), 'inicial': c2.get('inicial'),
-                    'final': c2.get('final'), 'delta': c2.get('delta')},
+            'dia2_recuperacoes_individuais': individuais,
+            'dia2_fracoes': fracoes,
+            'dia2_padrao_bloco': padrao_bloco,
+            'dia2_ultima': {'estado': c2_ultima.get('estado'),
+                           'inicial': c2_ultima.get('inicial'),
+                           'final': c2_ultima.get('final'),
+                           'delta': c2_ultima.get('delta')},
         }
 
     principais = {k: m for k, m in metricas.items() if m['peso'] == 'principal'}

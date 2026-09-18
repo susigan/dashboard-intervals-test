@@ -2427,6 +2427,93 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/vst/comparar/<path:vst_activity_id>')
+    def api_moxy_vst_comparar(vst_activity_id):
+        """Comparação Dia1×Dia2 — Dia 1 é a sessão Moxy vinculada
+        (limiar por SmO2, um valor de watts por BP); Dia 2 é a própria
+        sessão VST (estruturada, WORK sustentados). Nunca exige
+        igualdade de valores — compara direcção e convergência entre
+        várias respostas fisiológicas, não um número só.
+        """
+        try:
+            import vst_verificacao as vst
+            vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT moxy_activity_id FROM vst_conjuntos "
+                "WHERE vst_activity_id=?", (vid,)).fetchone()
+            if not r:
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': 'esta sessão VST ainda não '
+                                           'está sincronizada com nenhuma '
+                                           'sessão Moxy — usa "Comparar / '
+                                           'Sincronizar" primeiro'}), 200
+            mid = r[0]
+
+            # Dia 2: a analise VST completa, ja' pronta
+            dia2 = api_moxy_vst_analise(vid)
+            dia2 = dia2[0].get_json() if isinstance(dia2, tuple) else dia2.get_json()
+            if dia2.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': 'Dia 2 (VST): ' +
+                                           (dia2.get('mensagem') or
+                                            'sem dados suficientes')}), 200
+
+            # Dia 1: os limiares Moxy (watts do BP1/BP2), e depois o
+            # bloco REAL dessa sessao mais proximo de cada um, para lhe
+            # calcular a mesma riqueza de metricas que o Dia 2 tem.
+            dia1_lim = api_moxy_limiares(mid)
+            dia1_lim = dia1_lim[0].get_json() if isinstance(dia1_lim, tuple) \
+                else dia1_lim.get_json()
+            if dia1_lim.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': 'Dia 1 (Moxy): ' +
+                                           (dia1_lim.get('mensagem') or
+                                            'sem dados suficientes')}), 200
+
+            corpo1 = api_moxy_dados(mid)
+            d1 = corpo1[0].get_json() if isinstance(corpo1, tuple) else corpo1.get_json()
+            t1 = d1.get('tempo') or []
+            canais1 = d1.get('canais') or {}
+            blocos1 = ((d1.get('blocos') or {}).get('blocos')) or []
+            ons1 = [b for b in blocos1 if b.get('on')]
+
+            lc = dia1_lim.get('limiares_consenso') or {}
+            bp1_alvo = (lc.get('primeiro') or {}).get('mediana')
+            bp2_alvo = (lc.get('segundo') or {}).get('mediana')
+
+            def _bloco_mais_proximo(alvo):
+                if alvo is None or not ons1:
+                    return None
+                return min(ons1, key=lambda b: abs(
+                    (b.get('watts_medio_da_api') or b.get('watts_medio') or 1e9)
+                    - alvo))
+
+            b1_bp1 = _bloco_mais_proximo(bp1_alvo)
+            b1_bp2 = _bloco_mais_proximo(bp2_alvo)
+            m_dia1_bp1 = (vst.metricas_intervalo(
+                canais1, t1, b1_bp1['t0'], b1_bp1['t1'],
+                watts_medio_api=b1_bp1.get('watts_medio_da_api'))
+                if b1_bp1 else None)
+            m_dia1_bp2 = (vst.metricas_intervalo(
+                canais1, t1, b1_bp2['t0'], b1_bp2['t1'],
+                watts_medio_api=b1_bp2.get('watts_medio_da_api'))
+                if b1_bp2 else None)
+
+            comp_bp1 = vst.comparar_bp(m_dia1_bp1, (dia2.get('bp1') or {}).get('metricas') or [])
+            comp_bp2 = vst.comparar_bp(m_dia1_bp2, (dia2.get('bp2') or {}).get('metricas') or [])
+
+            return jsonify({
+                'status': 'ok',
+                'dia1_activity_id': mid, 'dia2_activity_id': vid,
+                'comparacao_bp1': comp_bp1, 'comparacao_bp2': comp_bp2,
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/modo_blocos/<path:activity_id>')
     def api_moxy_modo_blocos_ler(activity_id):
         """Modo de blocos gravado para esta actividade — 'automatico' ou

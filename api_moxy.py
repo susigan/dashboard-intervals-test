@@ -2559,10 +2559,41 @@ def registar(app):
                     for b in ons1 if b is not b1_bp2],
                 verificacao_dia2=(dia2.get('bp2') or {}).get('verificacao'))
 
+            # recovery: Dia 1 = a recuperacao logo a seguir ao bloco
+            # escolhido (resposta imediata a' mudanca de carga, secao 13
+            # do pedido); Dia 2 = as recuperacoes JA' etiquetadas 'bp1'/
+            # 'bp2' dentro de 'recuperacoes' (nao recalculadas aqui)
+            def _recovery_dia1_apos(bloco1):
+                if not bloco1:
+                    return None
+                seguinte = next(
+                    (b for b in sorted(blocos1, key=lambda x: x.get('t0', 0))
+                    if not b.get('on') and b.get('t0') is not None
+                    and b['t0'] >= bloco1['t1'] - 1e-6), None)
+                if not seguinte:
+                    return None
+                r = vst.metricas_recuperacao(
+                    canais1, t1, bloco1['t1'], seguinte['t0'])
+                return (r or {}).get('por_canal') if (r or {}).get('ok') else None
+
+            recs_dia2 = dia2.get('recuperacoes') or []
+            recs_bp1_dia2 = [r for r in recs_dia2 if r and r.get('bloco') == 'bp1']
+            recs_bp2_dia2 = [r for r in recs_dia2 if r and r.get('bloco') == 'bp2']
+
+            comp_recovery_bp1 = vst.comparar_recovery(
+                _recovery_dia1_apos(b1_bp1),
+                (dia2.get('bp1') or {}).get('metricas') or [], recs_bp1_dia2)
+            comp_recovery_bp2 = vst.comparar_recovery(
+                _recovery_dia1_apos(b1_bp2),
+                (dia2.get('bp2') or {}).get('metricas') or [], recs_bp2_dia2)
+
             return jsonify({
                 'status': 'ok',
                 'dia1_activity_id': mid, 'dia2_activity_id': vid,
                 'comparacao_bp1': comp_bp1, 'comparacao_bp2': comp_bp2,
+                'comparacao_recovery_bp1': comp_recovery_bp1,
+                'comparacao_recovery_bp2': comp_recovery_bp2,
+                'recuperacao_final_dia2': dia2.get('recuperacao_final'),
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

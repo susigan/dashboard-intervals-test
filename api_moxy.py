@@ -2502,8 +2502,20 @@ def registar(app):
                 watts_medio_api=b1_bp2.get('watts_medio_da_api'))
                 if b1_bp2 else None)
 
-            comp_bp1 = vst.comparar_bp(m_dia1_bp1, (dia2.get('bp1') or {}).get('metricas') or [])
-            comp_bp2 = vst.comparar_bp(m_dia1_bp2, (dia2.get('bp2') or {}).get('metricas') or [])
+            comp_bp1 = vst.comparar_bp(
+                m_dia1_bp1, (dia2.get('bp1') or {}).get('metricas') or [],
+                dia1_vizinhos=[vst.metricas_intervalo(
+                    canais1, t1, b['t0'], b['t1'],
+                    watts_medio_api=b.get('watts_medio_da_api'))
+                    for b in ons1 if b is not b1_bp1],
+                verificacao_dia2=(dia2.get('bp1') or {}).get('verificacao'))
+            comp_bp2 = vst.comparar_bp(
+                m_dia1_bp2, (dia2.get('bp2') or {}).get('metricas') or [],
+                dia1_vizinhos=[vst.metricas_intervalo(
+                    canais1, t1, b['t0'], b['t1'],
+                    watts_medio_api=b.get('watts_medio_da_api'))
+                    for b in ons1 if b is not b1_bp2],
+                verificacao_dia2=(dia2.get('bp2') or {}).get('verificacao'))
 
             return jsonify({
                 'status': 'ok',

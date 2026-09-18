@@ -2400,6 +2400,47 @@ def registar(app):
                     canais, t, sequencia[i]['t1'], sequencia[i + 1]['t0'])
                 recuperacoes.append(r)
 
+            # RECOVERY FINAL: depois do ultimo bloco de BP2 nao ha' um
+            # proximo WORK para testar se a recuperacao terminou antes de
+            # nova carga -- mas o periodo pode existir na sessao (ex.:
+            # arrefecimento) e vale a pena analisa-lo à parte, marcado,
+            # nunca comparado directamente com as recuperacoes normais.
+            recuperacao_final = None
+            if sequencia:
+                fim_ultimo = sequencia[-1]['t1']
+                seguinte_off = next(
+                    (b for b in sorted(bl['blocos'], key=lambda x: x.get('t0', 0))
+                    if not b.get('on') and b.get('t0') is not None
+                    and b['t0'] >= fim_ultimo - 1e-6), None)
+                if seguinte_off:
+                    recuperacao_final = vst.metricas_recuperacao(
+                        canais, t, fim_ultimo, seguinte_off['t1'])
+                    if recuperacao_final:
+                        recuperacao_final['tipo'] = 'RECOVERY FINAL'
+                        recuperacao_final['nota'] = (
+                            'depois do último WORK — não há próximo '
+                            'esforço para testar se a recuperação '
+                            'terminou antes de nova carga')
+
+            # etiquetar cada recuperacao pelo bloco a que pertence, para
+            # nao misturar BP1 e BP2 (pedido explicito) -- as internas de
+            # BP1 sao as que ligam dois blocos de BP1 entre si, e o mesmo
+            # para BP2; a que liga aquecimento->bp1 e bp1->bp2 fica
+            # marcada como transicao, nao pertence a nenhum dos dois
+            n_bp1 = len(estrutura['bp1'])
+            i_aq = 1 if aquecimento else 0
+            for i, r in enumerate(recuperacoes):
+                if r is None:
+                    continue
+                if aquecimento and i == 0:
+                    r['bloco'] = 'transicao_aquecimento_bp1'
+                elif i_aq <= i < i_aq + n_bp1 - 1:
+                    r['bloco'] = 'bp1'
+                elif i == i_aq + n_bp1 - 1:
+                    r['bloco'] = 'transicao_bp1_bp2'
+                else:
+                    r['bloco'] = 'bp2'
+
             r_bp1 = vst.verificar_bloco(bp1_m) if bp1_m else \
                 {'status': 'DADOS INSUFICIENTES', 'motivo': 'sem intervalos BP1'}
             r_bp2 = vst.verificar_bloco(bp2_m) if bp2_m else \
@@ -2422,6 +2463,7 @@ def registar(app):
                 'bp2': {'blocos': estrutura['bp2'], 'metricas': bp2_m,
                        'verificacao': r_bp2},
                 'recuperacoes': recuperacoes,
+                'recuperacao_final': recuperacao_final,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

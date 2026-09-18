@@ -2580,6 +2580,19 @@ def registar(app):
             recs_bp1_dia2 = [r for r in recs_dia2 if r and r.get('bloco') == 'bp1']
             recs_bp2_dia2 = [r for r in recs_dia2 if r and r.get('bloco') == 'bp2']
 
+            # DIAGNOSTICO TEMPORARIO -- para descobrir exactamente onde a
+            # cadeia perde os recoveries intermedios. Remover depois de
+            # confirmado.
+            _diag_recovery = {
+                'n_recuperacoes_dia2_total': len(recs_dia2),
+                'blocos_presentes': [r.get('bloco') for r in recs_dia2],
+                'ok_por_recuperacao': [r.get('ok') for r in recs_dia2],
+                'n_bp1_apos_filtro': len(recs_bp1_dia2),
+                'n_bp2_apos_filtro': len(recs_bp2_dia2),
+                'tem_recuperacao_final': bool(dia2.get('recuperacao_final')),
+                'chaves_dia2': sorted(dia2.keys()),
+            }
+
             comp_recovery_bp1 = vst.comparar_recovery(
                 _recovery_dia1_apos(b1_bp1),
                 (dia2.get('bp1') or {}).get('metricas') or [], recs_bp1_dia2)
@@ -2594,6 +2607,7 @@ def registar(app):
                 'comparacao_recovery_bp1': comp_recovery_bp1,
                 'comparacao_recovery_bp2': comp_recovery_bp2,
                 'recuperacao_final_dia2': dia2.get('recuperacao_final'),
+                '_diagnostico_recovery': _diag_recovery,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

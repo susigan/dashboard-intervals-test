@@ -444,6 +444,9 @@ BODY = """
 
     <div id="mxVstCartoes" style="margin-top:10px;"></div>
     <div id="mxVstTabela" style="margin-top:14px;overflow-x:auto;"></div>
+
+    <h3 style="font-size:14px;margin-top:20px;">Comparação — Dia 1 × Dia 2</h3>
+    <div id="mxVstComparacao" style="margin-top:8px;"></div>
   </div>
 
 </div>
@@ -1877,6 +1880,7 @@ function mxVstCarregarConjunto(vstId){
    +'<div style="font-size:11px;color:#8b949e;margin-top:2px">desde '
    +d.criado_em+(d.actualizado_em!==d.criado_em?' · actualizado '+d.actualizado_em:'')
    +'</div></div>';
+  mxVstCarregarComparacao(vstId);
  }).catch(function(){ box.innerHTML=''; });
 }
 
@@ -1898,9 +1902,78 @@ function mxVstSincronizar(){
    return;
   }
   mxVstCarregarConjunto(vstId);
+  mxVstCarregarComparacao(vstId);
  }).catch(function(e){
   if(box) box.innerHTML='<p class="sub">erro de rede: '+e.message+'</p>';
  });
+}
+
+// Comparacao Dia1 x Dia2: Dia1 = a sessao Moxy vinculada, Dia2 = a
+// propria sessao VST. Reaproveita tudo o que ja' esta calculado -- nao
+// refaz deteccao de blocos nem limiares, so' pede ao endpoint que ja'
+// junta os dois.
+function mxVstCarregarComparacao(vstId){
+ const box=document.getElementById('mxVstComparacao');
+ if(!box) return;
+ box.innerHTML='<p class="sub" style="font-size:12px;">a comparar…</p>';
+ fetch('/api/moxy/vst/comparar/'+vstId).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){
+   box.innerHTML='<p class="sub" style="font-size:12px;">'+
+    (d.mensagem||'sem dados suficientes para comparar')+'</p>';
+   return;
+  }
+  box.innerHTML=_vstTabelaComparacao('BP1', d.comparacao_bp1)
+   + _vstTabelaComparacao('BP2', d.comparacao_bp2);
+ }).catch(function(e){
+  box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
+ });
+}
+
+function _vstCorConsistencia(c){
+ return {'CONSISTENTE':'#3FB950', 'PARCIAL':'#F4D03F', 'DIVERGENTE':'#E74C3C',
+        'SEM DADOS':'#8b949e'}[c] || '#8b949e';
+}
+
+function _vstCorStatus(s){
+ return {'CONSISTENTE ENTRE DIA 1 E DIA 2':'#3FB950',
+        'PARCIALMENTE CONSISTENTE':'#F4D03F', 'NÃO CONSISTENTE':'#E74C3C',
+        'DADOS INSUFICIENTES':'#8b949e'}[s] || '#8b949e';
+}
+
+function _vstTabelaComparacao(titulo, comp){
+ if(!comp) return '';
+ const pot=comp.potencia;
+ let h='<div style="margin-bottom:16px;">'
+  +'<h4 style="font-size:13px;margin:10px 0 4px;">'+titulo+' — <span style="color:'
+  +_vstCorStatus(comp.status)+'">'+(comp.status||'')+'</span></h4>'
+  +'<p class="sub" style="font-size:11px;margin:0 0 6px;">'+(comp.motivo||'')+'</p>';
+ if(pot){
+  h+='<p style="font-size:11px;color:#8b949e;margin:0 0 6px;">Potência — '
+   +'Dia 1: '+pot.dia1_w+'W · Dia 2: '+pot.dia2_w+'W · diferença: '
+   +(pot.diferenca_w>=0?'+':'')+pot.diferenca_w+'W ('
+   +(pot.diferenca_pct>=0?'+':'')+pot.diferenca_pct+'%)</p>';
+ }
+ const metricas=comp.metricas||{};
+ h+='<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr class="sub" style="text-align:left;">'
+  +'<th style="padding:3px 10px 3px 0;">Métrica</th>'
+  +'<th style="padding:3px 10px;">Dia 1</th>'
+  +'<th style="padding:3px 10px;">Dia 2</th>'
+  +'<th style="padding:3px 10px;">Direcção</th>'
+  +'<th style="padding:3px 10px;">Consistência</th></tr>';
+ Object.keys(metricas).forEach(function(k){
+  const m=metricas[k];
+  const d1=m.dia1, d2=m.dia2;
+  h+='<tr style="border-top:1px solid #21262d;">'
+   +'<td style="padding:3px 10px 3px 0;">'+m.nome+'</td>'
+   +'<td style="padding:3px 10px;">'+(d1?d1.inicial+m.unidade+' → '+d1.final+m.unidade:'—')+'</td>'
+   +'<td style="padding:3px 10px;">'+(d2?d2.inicial+m.unidade+' → '+d2.final+m.unidade:'—')+'</td>'
+   +'<td style="padding:3px 10px;">'+(m.direccao_dia1||'—')+' / '+(m.direccao_dia2||'—')+'</td>'
+   +'<td style="padding:3px 10px;color:'+_vstCorConsistencia(m.consistencia)+';">'
+   +m.consistencia+'</td></tr>';
+ });
+ h+='</table></div>';
+ return h;
 }
 
 function mxLimiares(){

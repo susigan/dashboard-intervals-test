@@ -2565,16 +2565,18 @@ def registar(app):
             # 'bp2' dentro de 'recuperacoes' (nao recalculadas aqui)
             def _recovery_dia1_apos(bloco1):
                 if not bloco1:
-                    return None
+                    return None, 'sem bloco1 (b1_bp1/b1_bp2 é None)'
                 seguinte = next(
                     (b for b in sorted(blocos1, key=lambda x: x.get('t0', 0))
                     if not b.get('on') and b.get('t0') is not None
                     and b['t0'] >= bloco1['t1'] - 1e-6), None)
                 if not seguinte:
-                    return None
+                    return None, 'sem bloco RECOVERY a seguir a este WORK do Dia 1'
                 r = vst.metricas_recuperacao(
                     canais1, t1, bloco1['t1'], seguinte['t0'])
-                return (r or {}).get('por_canal') if (r or {}).get('ok') else None
+                if not (r or {}).get('ok'):
+                    return None, f"metricas_recuperacao ok=False: {(r or {}).get('motivo')}"
+                return (r or {}).get('por_canal'), 'ok'
 
             recs_dia2 = dia2.get('recuperacoes') or []
             recs_bp1_dia2 = [r for r in recs_dia2 if r and r.get('bloco') == 'bp1']

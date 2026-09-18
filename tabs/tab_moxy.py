@@ -1935,16 +1935,17 @@ function _vstCorConsistencia(c){
 }
 
 function _vstCorStatus(s){
- return {'CONSISTENTE ENTRE DIA 1 E DIA 2':'#3FB950',
-        'PARCIALMENTE CONSISTENTE':'#F4D03F', 'NÃO CONSISTENTE':'#E74C3C',
-        'DADOS INSUFICIENTES':'#8b949e'}[s] || '#8b949e';
+ return {'CONSISTENTE':'#3FB950', 'PARCIALMENTE CONSISTENTE':'#F4D03F',
+        'DIVERGENTE':'#E74C3C', 'DADOS INSUFICIENTES':'#8b949e'}[s] || '#8b949e';
 }
 
 function _vstTabelaComparacao(titulo, comp){
  if(!comp) return '';
  const pot=comp.potencia;
+ const rob=comp.robustez||{};
  let h='<div style="margin-bottom:16px;">'
-  +'<h4 style="font-size:13px;margin:10px 0 4px;">'+titulo+' — <span style="color:'
+  +'<h4 style="font-size:13px;margin:10px 0 4px;">'+titulo
+  +' — reprodutibilidade fisiológica: <span style="color:'
   +_vstCorStatus(comp.status)+'">'+(comp.status||'')+'</span></h4>'
   +'<p class="sub" style="font-size:11px;margin:0 0 6px;">'+(comp.motivo||'')+'</p>';
  if(pot){
@@ -1953,6 +1954,10 @@ function _vstTabelaComparacao(titulo, comp){
    +(pot.diferenca_w>=0?'+':'')+pot.diferenca_w+'W ('
    +(pot.diferenca_pct>=0?'+':'')+pot.diferenca_pct+'%)</p>';
  }
+ if(rob.aviso_poucos_pontos){
+  h+='<p style="font-size:11px;color:#F0883E;margin:0 0 6px;">⚠ '
+   +rob.aviso_poucos_pontos+'</p>';
+ }
  const metricas=comp.metricas||{};
  h+='<table style="border-collapse:collapse;font-size:11px;">'
   +'<tr class="sub" style="text-align:left;">'
@@ -1960,19 +1965,31 @@ function _vstTabelaComparacao(titulo, comp){
   +'<th style="padding:3px 10px;">Dia 1</th>'
   +'<th style="padding:3px 10px;">Dia 2</th>'
   +'<th style="padding:3px 10px;">Direcção</th>'
+  +'<th style="padding:3px 10px;">Timing</th>'
   +'<th style="padding:3px 10px;">Consistência</th></tr>';
  Object.keys(metricas).forEach(function(k){
   const m=metricas[k];
   const d1=m.dia1, d2=m.dia2;
-  h+='<tr style="border-top:1px solid #21262d;">'
-   +'<td style="padding:3px 10px 3px 0;">'+m.nome+'</td>'
+  const t1=m.timing_dia1, t2=m.timing_dia2;
+  const timingTxt = (t1&&t2)
+   ? ((t1.concentrado_no_alvo?'✓':'✗')+'D1 / '+(t2.concentrado_no_fim?'✓':'✗')+'D2')
+   : '—';
+  const nomeComPeso = m.nome + (m.peso==='complementar'
+   ? ' <span class="sub" style="font-size:9px;" title="evidência autonómica complementar — não decide sozinha">(complementar)</span>' : '');
+  h+='<tr style="border-top:1px solid #21262d;'
+   +(m.peso==='complementar'?'opacity:0.75;':'')+'">'
+   +'<td style="padding:3px 10px 3px 0;">'+nomeComPeso+'</td>'
    +'<td style="padding:3px 10px;">'+(d1?d1.inicial+m.unidade+' → '+d1.final+m.unidade:'—')+'</td>'
    +'<td style="padding:3px 10px;">'+(d2?d2.inicial+m.unidade+' → '+d2.final+m.unidade:'—')+'</td>'
    +'<td style="padding:3px 10px;">'+(m.direccao_dia1||'—')+' / '+(m.direccao_dia2||'—')+'</td>'
+   +'<td style="padding:3px 10px;font-size:10px;" title="✓D1: mudança concentrada no bloco-alvo, não nos vizinhos · ✓D2: tendência significativa dentro do bloco (mesmo teste de permutação do Dia 2)">'
+   +timingTxt+'</td>'
    +'<td style="padding:3px 10px;color:'+_vstCorConsistencia(m.consistencia)+';">'
    +m.consistencia+'</td></tr>';
  });
- h+='</table></div>';
+ h+='</table>';
+ if(rob.nota) h+='<p class="sub" style="font-size:10px;margin-top:4px;">'+rob.nota+'</p>';
+ h+='</div>';
  return h;
 }
 

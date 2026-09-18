@@ -458,6 +458,19 @@ _METRICAS_COMPARACAO = [
     ('dfa1', 'DFA1-α1', ''),
 ]
 
+# ponte para os sinais que verificar_bloco ja' testa por permutacao no
+# Dia 2 -- reaproveitado aqui, nao duplicado (pedido explicito: nao
+# reimplementar uma segunda vez o mesmo principio estatistico)
+_CHAVE_PARA_SINAL = {
+    'respiracao': 'rf_drift', 'hr': 'hr_drift', 'smo2': 'smo2_queda',
+    'thb': 'thb_mudanca', 'dfa1': 'dfa1_queda',
+}
+
+# DFA1 fica com peso reduzido -- evidencia autonomica complementar, nao
+# ao mesmo nivel de RF/HR/SmO2 (a estacionariedade que o metodo exige
+# e' questionavel numa janela onde a potencia ainda esta a subir).
+_METRICAS_PESO_COMPLEMENTAR = {'dfa1'}
+
 
 def _direccao(delta_pct, limiar=2.0):
     """↑/↓/→ a partir do delta percentual -- limiar de 2% para nao
@@ -502,18 +515,78 @@ def _consistencia_metrica(m1, m2):
            'direccao_dia1': dir1, 'direccao_dia2': dir2}
 
 
-def comparar_bp(dia1_metricas, dia2_metricas_lista):
+def _timing_dia1(dia1_metricas, dia1_vizinhos):
+    """Timing no Dia 1: o bloco escolhido (mais proximo do BP) mostra
+    MAIS mudanca do que os blocos vizinhos que nao sao o BP? Se sim, a
+    mudanca esta mesmo concentrada ali -- se os vizinhos mudam tanto ou
+    mais, o "breakpoint" pode nao estar localizado onde se pensa.
+    dia1_vizinhos: lista de dicts de metricas_intervalo() dos OUTROS
+    blocos WORK desta sessao (antes/depois do escolhido), para servir
+    de referencia -- nunca usados para nada alem desta comparacao.
+    """
+    if not dia1_metricas or not dia1_vizinhos:
+        return None
+    fora = {}
+    for chave, _, _ in _METRICAS_COMPARACAO:
+        if chave == 'potencia':
+            continue
+        alvo = (dia1_metricas.get(chave) or {})
+        if not alvo.get('ok') or alvo.get('delta_pct') is None:
+            continue
+        viz_deltas = [abs((v.get(chave) or {}).get('delta_pct'))
+                     for v in dia1_vizinhos
+                     if (v.get(chave) or {}).get('ok')
+                     and (v.get(chave) or {}).get('delta_pct') is not None]
+        if not viz_deltas:
+            continue
+        media_viz = sum(viz_deltas) / len(viz_deltas)
+        fora[chave] = {
+            'delta_no_alvo': abs(alvo['delta_pct']),
+            'media_delta_vizinhos': round(media_viz, 1),
+            'concentrado_no_alvo': abs(alvo['delta_pct']) > media_viz,
+        }
+    return fora or None
+
+
+def _timing_dia2(chave, verificacao_dia2):
+    """Timing no Dia 2: reaproveita o proprio resultado de
+    verificar_bloco (evidencias[].tendencia) -- se o sinal sobe/desce ao
+    longo do bloco (tendencia != 0) com significancia (p_permutacao
+    baixo), a mudanca esta concentrada no FIM do bloco, que e' onde o
+    BP se espera. Nao se recalcula nada, so' se le o que ja existe.
+    """
+    sinal = _CHAVE_PARA_SINAL.get(chave)
+    if not sinal or not verificacao_dia2:
+        return None
+    ev = next((e for e in (verificacao_dia2.get('evidencias') or [])
+              if e['sinal'] == sinal), None)
+    if not ev:
+        return None
+    return {'tendencia_no_bloco': ev['tendencia'],
+           'p_permutacao': ev.get('p_permutacao'),
+           'concentrado_no_fim': ev.get('tendencia', 0) != 0
+                                and (ev.get('p_permutacao') or 1) <= 0.34}
+
+
+def comparar_bp(dia1_metricas, dia2_metricas_lista, dia1_vizinhos=None,
+                verificacao_dia2=None):
     """dia1_metricas: dict de metricas_intervalo() para O bloco do Dia 1
     mais proximo do BP em causa (BP1 ou BP2).
     dia2_metricas_lista: lista de dicts de metricas_intervalo(), os
     intervalos do Dia 2 que compoem esse mesmo BP (bp1 ou bp2 do VST).
+    dia1_vizinhos: outros blocos WORK do Dia 1 (para o timing).
+    verificacao_dia2: o resultado de verificar_bloco() sobre este mesmo
+    bloco do Dia 2 -- reaproveitado para robustez e timing, nunca
+    recalculado aqui.
+
+    IMPORTANTE (pedido explicito, seccao 1 do pedido): "CONSISTENTE" NAO
+    significa "BP confirmado com certeza estatistica". Significa que o
+    PADRAO FISIOLOGICO observado no Dia 1 foi reproduzido de forma
+    semelhante no Dia 2 -- direccao, timing e robustez sao tres pistas,
+    nunca uma prova.
 
     O Dia 2 e' resumido pelo SEU ULTIMO intervalo -- e' onde a carga
-    sustentada ja teve tempo de produzir o efeito fisiologico completo,
-    a mesma logica de "final do bloco" que ja se usa dentro de cada
-    intervalo isolado. Os intervalos individuais continuam disponiveis
-    à parte, para quem quiser ver a evolucao inteira do bloco, nao so'
-    o resumo.
+    sustentada ja teve tempo de produzir o efeito fisiologico completo.
     """
     if not dia2_metricas_lista:
         return {'status': 'DADOS INSUFICIENTES',
@@ -521,6 +594,7 @@ def comparar_bp(dia1_metricas, dia2_metricas_lista):
                'metricas': {}, 'potencia': None}
 
     dia2_final = dia2_metricas_lista[-1]
+    timing1 = _timing_dia1(dia1_metricas, dia1_vizinhos)
 
     pot1 = (dia1_metricas or {}).get('potencia') or {}
     pot2 = dia2_final.get('potencia') or {}
@@ -535,38 +609,68 @@ def comparar_bp(dia1_metricas, dia2_metricas_lista):
     for chave, nome, unidade in _METRICAS_COMPARACAO:
         if chave == 'potencia':
             continue
-        metricas[chave] = _consistencia_metrica(
+        m = _consistencia_metrica(
             (dia1_metricas or {}).get(chave), dia2_final.get(chave))
-        metricas[chave]['nome'] = nome
-        metricas[chave]['unidade'] = unidade
+        m['nome'] = nome
+        m['unidade'] = unidade
+        m['peso'] = 'complementar' if chave in _METRICAS_PESO_COMPLEMENTAR else 'principal'
+        m['timing_dia1'] = (timing1 or {}).get(chave)
+        m['timing_dia2'] = _timing_dia2(chave, verificacao_dia2)
+        metricas[chave] = m
 
-    # convergencia: quantas das 5 metricas fisiologicas (fora potencia)
-    # deram CONSISTENTE -- a mesma logica de "convergencia de
-    # evidencias" ja usada em verificar_bloco, nao um score novo
-    validas = [m for m in metricas.values() if m['consistencia'] != 'SEM DADOS']
+    # convergencia: so' as metricas de peso PRINCIPAL entram na fraccao
+    # que decide o status -- DFA1 fica visivel mas nao pesa a decisao,
+    # tal como pedido (evidencia complementar, nunca prova isolada)
+    principais = {k: m for k, m in metricas.items()
+                 if m['peso'] == 'principal'}
+    validas = [m for m in principais.values() if m['consistencia'] != 'SEM DADOS']
     convergentes = [m for m in validas if m['consistencia'] == 'CONSISTENTE']
-    divergentes = [k for k, m in metricas.items() if m['consistencia'] == 'DIVERGENTE']
+    divergentes = [k for k, m in principais.items() if m['consistencia'] == 'DIVERGENTE']
     sem_dados_lista = [k for k, m in metricas.items() if m['consistencia'] == 'SEM DADOS']
+
+    # robustez: quantos dos sinais principais tem tendencia significativa
+    # no proprio Dia 2 (reaproveitado de verificar_bloco, nao recalculado)
+    robustos = [k for k, m in principais.items()
+               if (m['timing_dia2'] or {}).get('concentrado_no_fim')]
+    n_com_p = sum(1 for m in principais.values()
+                 if (m['timing_dia2'] or {}).get('p_permutacao') is not None)
 
     if not validas:
         status = 'DADOS INSUFICIENTES'
     else:
         frac = len(convergentes) / len(validas)
         if frac >= 0.75:
-            status = 'CONSISTENTE ENTRE DIA 1 E DIA 2'
+            status = 'CONSISTENTE'
         elif frac >= 0.4:
             status = 'PARCIALMENTE CONSISTENTE'
         else:
-            status = 'NÃO CONSISTENTE'
+            status = 'DIVERGENTE'
+
+    aviso_n = None
+    if len(dia2_metricas_lista) < 3:
+        aviso_n = (f'apenas {len(dia2_metricas_lista)} intervalo(s) no '
+                  f'Dia 2 para este bloco — dados insuficientes para um '
+                  f'teste estatístico robusto; a robustez abaixo deve '
+                  f'ser lida com essa reserva.')
 
     return {
         'status': status,
+        'motivo': (f'{len(convergentes)} de {len(validas)} respostas '
+                  f'fisiológicas principais mostram a mesma direcção '
+                  f'nos dois dias — isto indica REPRODUTIBILIDADE do '
+                  f'padrão observado, não uma confirmação estatística '
+                  f'do breakpoint em si'
+                  if validas else 'sem métricas com dados nos dois dias '
+                  'para comparar'),
         'potencia': potencia,
         'metricas': metricas,
         'n_convergentes': len(convergentes), 'n_validas': len(validas),
         'divergentes': divergentes, 'sem_dados': sem_dados_lista,
-        'motivo': (f'{len(convergentes)} de {len(validas)} respostas '
-                  f'fisiológicas mostram a mesma direcção nos dois dias'
-                  if validas else 'sem métricas com dados nos dois dias '
-                  'para comparar'),
+        'robustez': {'n_sinais_com_permutacao': n_com_p,
+                    'n_sinais_concentrados_no_fim': len(robustos),
+                    'aviso_poucos_pontos': aviso_n,
+                    'nota': 'a robustez usa o mesmo teste de permutação '
+                    'já aplicado dentro do Dia 2 (verificar_bloco) — '
+                    'avalia se a concordância observada é maior do que '
+                    'seria esperada por acaso, nunca "prova" o BP'},
     }

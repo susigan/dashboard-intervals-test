@@ -438,3 +438,135 @@ def verificar_bloco(intervalos_metricas):
                   f'tendência esperada de uma transição de limiar ao '
                   f'longo do bloco'),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# COMPARAÇÃO DIA 1 × DIA 2 — reproduz o BP1/BP2 identificado no Dia 1
+# (sessão Moxy comum, threshold por SmO2) através dos esforços
+# sustentados do Dia 2 (protocolo VST, estruturado). Nunca exige
+# igualdade de valores -- compara DIRECÇÃO, MAGNITUDE e se o padrão
+# converge entre varias metricas, nao um numero so'.
+# ═══════════════════════════════════════════════════════════════════════
+
+_METRICAS_COMPARACAO = [
+    # (chave, nome para mostrar, unidade)
+    ('potencia', 'Potência', 'W'),
+    ('respiracao', 'Respiração (RF)', ''),
+    ('smo2', 'SmO2', '%'),
+    ('thb', 'THb', ''),
+    ('hr', 'HR', 'bpm'),
+    ('dfa1', 'DFA1-α1', ''),
+]
+
+
+def _direccao(delta_pct, limiar=2.0):
+    """↑/↓/→ a partir do delta percentual -- limiar de 2% para nao
+    chamar "estavel" ruido de medicao de direccao nenhuma, nem chamar
+    "mudanca" a uma oscilacao de 0.3%."""
+    if delta_pct is None:
+        return None
+    if delta_pct > limiar:
+        return '↑'
+    if delta_pct < -limiar:
+        return '↓'
+    return '→'
+
+
+def _consistencia_metrica(m1, m2):
+    """Compara UMA metrica entre os dois dias -- direccao primeiro
+    (o que a spec pede: nao exigir igualdade), so' depois olha para a
+    magnitude como informacao extra, nunca como criterio unico."""
+    if not m1 or not m1.get('ok') or not m2 or not m2.get('ok'):
+        return {'consistencia': 'SEM DADOS', 'dia1': None, 'dia2': None,
+               'direccao_dia1': None, 'direccao_dia2': None}
+
+    d1, d2 = m1.get('delta_pct'), m2.get('delta_pct')
+    dir1, dir2 = _direccao(d1), _direccao(d2)
+
+    if dir1 is None or dir2 is None:
+        consist = 'SEM DADOS'
+    elif dir1 == dir2:
+        consist = 'CONSISTENTE'
+    elif dir1 == '→' or dir2 == '→':
+        # um dos dois "estavel" e o outro claramente subiu/desceu --
+        # nem concorda nem discorda de vez, fica parcial
+        consist = 'PARCIAL'
+    else:
+        consist = 'DIVERGENTE'  # um sobe, o outro desce
+
+    return {'consistencia': consist,
+           'dia1': {'inicial': m1.get('inicial'), 'final': m1.get('final'),
+                    'delta_pct': d1},
+           'dia2': {'inicial': m2.get('inicial'), 'final': m2.get('final'),
+                    'delta_pct': d2},
+           'direccao_dia1': dir1, 'direccao_dia2': dir2}
+
+
+def comparar_bp(dia1_metricas, dia2_metricas_lista):
+    """dia1_metricas: dict de metricas_intervalo() para O bloco do Dia 1
+    mais proximo do BP em causa (BP1 ou BP2).
+    dia2_metricas_lista: lista de dicts de metricas_intervalo(), os
+    intervalos do Dia 2 que compoem esse mesmo BP (bp1 ou bp2 do VST).
+
+    O Dia 2 e' resumido pelo SEU ULTIMO intervalo -- e' onde a carga
+    sustentada ja teve tempo de produzir o efeito fisiologico completo,
+    a mesma logica de "final do bloco" que ja se usa dentro de cada
+    intervalo isolado. Os intervalos individuais continuam disponiveis
+    à parte, para quem quiser ver a evolucao inteira do bloco, nao so'
+    o resumo.
+    """
+    if not dia2_metricas_lista:
+        return {'status': 'DADOS INSUFICIENTES',
+               'motivo': 'sem intervalos do Dia 2 para este BP',
+               'metricas': {}, 'potencia': None}
+
+    dia2_final = dia2_metricas_lista[-1]
+
+    pot1 = (dia1_metricas or {}).get('potencia') or {}
+    pot2 = dia2_final.get('potencia') or {}
+    potencia = None
+    if pot1.get('ok') and pot2.get('ok'):
+        p1, p2 = pot1['media'], pot2['media']
+        potencia = {'dia1_w': p1, 'dia2_w': p2,
+                   'diferenca_w': round(p2 - p1, 1),
+                   'diferenca_pct': round((p2 - p1) / p1 * 100, 1) if p1 else None}
+
+    metricas = {}
+    for chave, nome, unidade in _METRICAS_COMPARACAO:
+        if chave == 'potencia':
+            continue
+        metricas[chave] = _consistencia_metrica(
+            (dia1_metricas or {}).get(chave), dia2_final.get(chave))
+        metricas[chave]['nome'] = nome
+        metricas[chave]['unidade'] = unidade
+
+    # convergencia: quantas das 5 metricas fisiologicas (fora potencia)
+    # deram CONSISTENTE -- a mesma logica de "convergencia de
+    # evidencias" ja usada em verificar_bloco, nao um score novo
+    validas = [m for m in metricas.values() if m['consistencia'] != 'SEM DADOS']
+    convergentes = [m for m in validas if m['consistencia'] == 'CONSISTENTE']
+    divergentes = [k for k, m in metricas.items() if m['consistencia'] == 'DIVERGENTE']
+    sem_dados_lista = [k for k, m in metricas.items() if m['consistencia'] == 'SEM DADOS']
+
+    if not validas:
+        status = 'DADOS INSUFICIENTES'
+    else:
+        frac = len(convergentes) / len(validas)
+        if frac >= 0.75:
+            status = 'CONSISTENTE ENTRE DIA 1 E DIA 2'
+        elif frac >= 0.4:
+            status = 'PARCIALMENTE CONSISTENTE'
+        else:
+            status = 'NÃO CONSISTENTE'
+
+    return {
+        'status': status,
+        'potencia': potencia,
+        'metricas': metricas,
+        'n_convergentes': len(convergentes), 'n_validas': len(validas),
+        'divergentes': divergentes, 'sem_dados': sem_dados_lista,
+        'motivo': (f'{len(convergentes)} de {len(validas)} respostas '
+                  f'fisiológicas mostram a mesma direcção nos dois dias'
+                  if validas else 'sem métricas com dados nos dois dias '
+                  'para comparar'),
+    }

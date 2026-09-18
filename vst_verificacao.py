@@ -182,9 +182,85 @@ def metricas_recuperacao(canais, tempo, t_fim_anterior, t_inicio_seguinte):
     return fora
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Estrutura do protocolo — separar os blocos WORK em aquecimento/BP1/BP2
-# ─────────────────────────────────────────────────────────────────────────
+def recovery_fraction(metricas_work, metricas_recovery_canal):
+    """Fracção do que mudou durante o WORK que foi revertido no
+    RECOVERY -- uma so' formula para todas as metricas, porque a
+    direccao esperada ja' vem embutida no PROPRIO sinal do delta do
+    WORK (nao e' preciso saber se e' HR ou SmO2 para a formula
+    funcionar, so' para a interpretar):
+
+        fraccao = -delta_recovery / delta_work
+
+    Se o recovery se moveu na direccao OPOSTA ao work (o esperado --
+    ex.: HR subiu no work, desceu no recovery), a fraccao sai positiva:
+    1.0 = reverteu tudo, 0.5 = reverteu metade, 0.0 = nao reverteu nada.
+    Se o recovery continuou na MESMA direccao do work (piorou em vez de
+    recuperar), a fraccao sai negativa -- e isso e' informacao real, nao
+    um erro a esconder.
+
+    Devolve None (nao um numero fabricado) se o work nao teve uma
+    mudanca real para reverter (delta_work perto de zero), porque a
+    fraccao nao faz sentido matematico nesse caso -- dividir por
+    "quase nada" so' amplificaria ruido.
+    """
+    if not metricas_work or not metricas_work.get('ok'):
+        return None
+    if not metricas_recovery_canal or metricas_recovery_canal.get('estado') == 'sem_dados':
+        return None
+    delta_work = metricas_work.get('delta')
+    delta_rec = metricas_recovery_canal.get('delta')
+    if delta_work is None or delta_rec is None:
+        return None
+    # limiar RELATIVO à propria escala da metrica, nao absoluto -- 1e-6
+    # bpm de mudanca no HR e' "nada" na pratica, mas 1e-6 em DFA1 (que
+    # anda a' volta de 1.0) tambem seria "nada" -- um limiar absoluto so'
+    # funciona bem para uma das escalas. Exige que o work tenha mudado
+    # pelo menos 2% do seu proprio valor inicial antes de dividir por ele.
+    inicial_work = metricas_work.get('inicial')
+    limiar = max(1e-6, abs(inicial_work) * 0.02) if inicial_work else 1e-6
+    if abs(delta_work) < limiar:
+        return None
+    return round(-delta_rec / delta_work, 3)
+
+
+def classificar_recovery_completeness(fraccao):
+    """COMPLETA/PARCIAL/MÍNIMA/DADOS INSUFICIENTES -- os mesmos dois
+    limiares (0.75 / 0.4) ja' usados em verificar_bloco para decidir
+    CONFIRMADO/PARCIALMENTE/NAO CONFIRMADO. Nao e' um numero novo
+    inventado para esta funcao -- e' o mesmo criterio ja' estabelecido
+    no projecto, aplicado aqui por consistencia (pedido explicito:
+    reutilizar se ja existir metodologia equivalente)."""
+    if fraccao is None:
+        return 'DADOS INSUFICIENTES'
+    if fraccao >= 0.75:
+        return 'RECUPERAÇÃO COMPLETA'
+    if fraccao >= 0.4:
+        return 'RECUPERAÇÃO PARCIAL'
+    return 'RECUPERAÇÃO MÍNIMA'
+
+
+def recovery_progressivo(lista_recuperacoes, canal):
+    """A recuperacao muda conforme os WORKs se sucedem dentro de um
+    bloco (BP1 ou BP2)? Reutiliza _tendencia (o MESMO teste de
+    permutacao exacto de verificar_bloco), agora sobre os deltas de
+    recovery em vez dos deltas de work -- nao e' uma segunda
+    implementacao estatistica, e' a mesma funcao aplicada a outra
+    serie."""
+    deltas = []
+    for r in lista_recuperacoes:
+        if not r or not r.get('ok'):
+            continue
+        c = (r.get('por_canal') or {}).get(canal)
+        if c and c.get('estado') != 'sem_dados' and c.get('delta') is not None:
+            deltas.append(c['delta'])
+    if len(deltas) < 2:
+        return {'ok': False, 'motivo': f'só {len(deltas)} recovery(s) com '
+               f'dados válidos para {canal} -- precisa de pelo menos 2 '
+               'para ver tendência'}
+    tend, slope, p = _tendencia(deltas)
+    return {'ok': True, 'tendencia': tend, 'slope': slope, 'p_permutacao': p,
+           'significativo': p is not None and p <= 0.34, 'valores': deltas}
+
 
 def estruturar_protocolo(blocos):
     """blocos: lista COMPLETA (WORK + RECOVERY), no formato que
@@ -673,4 +749,70 @@ def comparar_bp(dia1_metricas, dia2_metricas_lista, dia1_vizinhos=None,
                     'já aplicado dentro do Dia 2 (verificar_bloco) — '
                     'avalia se a concordância observada é maior do que '
                     'seria esperada por acaso, nunca "prova" o BP'},
+    }
+
+
+def comparar_recovery(dia1_recovery, dia2_recuperacoes_lista):
+    """Compara o padrao de recuperacao entre os dois dias -- rotulos
+    proprios (CONVERGENTE/DIVERGENTE/INDETERMINADA), diferentes dos
+    usados para BP (CONSISTENTE/DIVERGENTE), porque a pergunta e'
+    diferente: nao e' "o BP reproduziu-se", e' "o comportamento de
+    recuperacao e' compativel".
+
+    dia1_recovery: por_canal de UM metricas_recuperacao() do Dia 1 (a
+    transicao mais proxima do breakpoint).
+    dia2_recuperacoes_lista: lista de metricas_recuperacao() do Dia 2,
+    as recuperacoes DENTRO do bloco (BP1 ou BP2) -- resumido pela
+    ULTIMA, a mesma convencao ja usada em comparar_bp.
+    """
+    validas_dia2 = [r for r in dia2_recuperacoes_lista if r and r.get('ok')]
+    if not dia1_recovery or not validas_dia2:
+        return {'status': 'DADOS INSUFICIENTES',
+               'motivo': 'sem recuperação válida num dos dois dias',
+               'metricas': {}}
+
+    dia2_final = (validas_dia2[-1].get('por_canal') or {})
+    metricas = {}
+    for canal, nome, unidade in _METRICAS_COMPARACAO:
+        if canal == 'potencia':
+            continue
+        c1 = (dia1_recovery or {}).get(canal)
+        c2 = dia2_final.get(canal)
+        if not c1 or c1.get('estado') == 'sem_dados' or \
+           not c2 or c2.get('estado') == 'sem_dados':
+            metricas[canal] = {'nome': nome, 'unidade': unidade,
+                               'peso': 'complementar' if canal in _METRICAS_PESO_COMPLEMENTAR else 'principal',
+                               'consistencia': 'INDETERMINADA',
+                               'dia1': None, 'dia2': None}
+            continue
+        igual = c1.get('estado') == c2.get('estado')
+        metricas[canal] = {
+            'nome': nome, 'unidade': unidade,
+            'peso': 'complementar' if canal in _METRICAS_PESO_COMPLEMENTAR else 'principal',
+            'consistencia': 'CONVERGENTE' if igual else 'DIVERGENTE',
+            'dia1': {'estado': c1.get('estado'), 'inicial': c1.get('inicial'),
+                    'final': c1.get('final'), 'delta': c1.get('delta')},
+            'dia2': {'estado': c2.get('estado'), 'inicial': c2.get('inicial'),
+                    'final': c2.get('final'), 'delta': c2.get('delta')},
+        }
+
+    principais = {k: m for k, m in metricas.items() if m['peso'] == 'principal'}
+    validas = [m for m in principais.values() if m['consistencia'] != 'INDETERMINADA']
+    convergentes = [m for m in validas if m['consistencia'] == 'CONVERGENTE']
+
+    if not validas:
+        status = 'DADOS INSUFICIENTES'
+    else:
+        frac = len(convergentes) / len(validas)
+        status = 'CONVERGENTE' if frac >= 0.75 else (
+            'PARCIALMENTE CONVERGENTE' if frac >= 0.4 else 'DIVERGENTE')
+
+    return {
+        'status': status, 'metricas': metricas,
+        'n_convergentes': len(convergentes), 'n_validas': len(validas),
+        'motivo': (f'{len(convergentes)} de {len(validas)} respostas de '
+                  f'recuperação principais têm o mesmo sentido '
+                  f'(recuperou/não recuperou) nos dois dias'
+                  if validas else 'sem métricas de recuperação com dados '
+                  'nos dois dias'),
     }

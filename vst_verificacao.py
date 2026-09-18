@@ -188,52 +188,77 @@ def metricas_recuperacao(canais, tempo, t_fim_anterior, t_inicio_seguinte):
 
 def estruturar_protocolo(blocos):
     """blocos: lista COMPLETA (WORK + RECOVERY), no formato que
-    blocos_de_laps já produz — a função filtra os WORK aqui dentro, mas
-    também usa os RECOVERY para confirmar a estrutura.
+    blocos_de_laps já produz.
 
     Devolve {'aquecimento': bloco|None, 'bp1': [blocos], 'bp2': [blocos],
-    'aviso': str|None, 'estrutura_confirmada': bool} -- nunca inventa um
-    bloco que não existe, e avisa quando dois WORK aparecem consecutivos
-    sem nenhum RECOVERY genuíno entre eles (a estrutura do protocolo diz
-    que devia haver sempre um).
+    'duracao_curta': [...], 'aviso': str|None, 'estrutura_confirmada': bool}.
+
+    Duas coisas que só apareceram ao testar com sessões reais:
+
+    1. O aquecimento pode NÃO vir tipado como WORK. Num caso real, a
+       Intervals.icu tipou o aquecimento (17min, ~114W) como RECOVERY —
+       provavelmente por ser uma rampa gradual, não um degrau constante.
+       Se se assumisse sempre "o primeiro bloco WORK é o aquecimento",
+       o primeiro esforço real do BP1 era roubado ao bloco errado.
+       Por isso: primeiro procura-se um bloco ANTES do primeiro WORK —
+       seja ele WORK ou não — cuja duração seja claramente maior do que
+       as recuperações normais da sessão (>=180s e >=1.5x a mediana das
+       recuperações); só se não existir esse candidato é que se cai
+       para trás no comportamento antigo (primeiro WORK = aquecimento).
+
+    2. Um WORK com duração muito abaixo dos restantes (ex.: 1 segundo,
+       exactamente onde a gravação parou) NÃO é excluído — fica na
+       contagem (a potência da API continua válida), só marcado em
+       'duracao_curta' para quem for mostrar a fisiologia saber que ali
+       não há dados suficientes para uma análise fiável. Excluir por
+       duração já causou o erro oposto: um caso real tinha o BP2#3
+       verdadeiro (251W) com duração de 1s por um problema de fronteira
+       do lap do lado da Intervals.icu — exclui-lo tirava-o da análise.
     """
     todos = sorted([b for b in blocos if b.get('t0') is not None],
                    key=lambda b: b['t0'])
     ons = [b for b in todos if b.get('on')]
+    if not ons:
+        return {'aquecimento': None, 'bp1': [], 'bp2': [],
+                'duracao_curta': [], 'aviso': 'nenhum intervalo de '
+                'trabalho encontrado nesta sessão',
+                'estrutura_confirmada': False, 'n_total_encontrados': 0}
 
-    # NAO se descarta por duracao curta -- confirmado num caso real: um
-    # "WORK" com t1-t0=1s tinha watts_medio_da_api=251, exactamente o
-    # valor esperado para aquele BP2#3. A duracao registada pela
-    # Intervals.icu estava errada (provavelmente um erro de fronteira do
-    # lap do lado deles), mas o esforco aconteceu e a potencia e' real --
-    # excluir o bloco tirava o BP2#3 verdadeiro da analise. Em vez disso,
-    # cada bloco fica marcado com 'duracao_curta' quando nao ha' tempo
-    # suficiente para uma analise fisiologica fiavel (a funcao de
-    # metricas ja' recusa sozinha com poucos pontos -- isto e' so' para
-    # o aviso ser claro sobre PORQUE a fisiologia veio vazia).
+    # marcar duracao curta, sem excluir -- ver ponto 2 do docstring
     duracoes = [b['t1'] - b['t0'] for b in ons if b['t1'] > b['t0']]
     mediana_dur = sorted(duracoes)[len(duracoes) // 2] if duracoes else 0
     limiar_dur = max(15.0, mediana_dur * 0.10)
     for b in ons:
         b['duracao_curta'] = (b['t1'] - b['t0']) < limiar_dur
 
-    if not ons:
-        return {'aquecimento': None, 'bp1': [], 'bp2': [],
-                'aviso': 'nenhum intervalo de trabalho encontrado nesta '
-                        'sessão', 'estrutura_confirmada': False}
+    # candidato a aquecimento: o bloco imediatamente antes do primeiro
+    # WORK, na lista COMPLETA (pode ser RECOVERY) -- ver ponto 1 do
+    # docstring. So' conta como aquecimento separado se durar claramente
+    # mais do que as recuperacoes normais da sessao.
+    idx_primeiro_on = todos.index(ons[0])
+    aquecimento = None
+    veio_de_ons = False
+    if idx_primeiro_on > 0:
+        candidato = todos[idx_primeiro_on - 1]
+        recs = [b['t1'] - b['t0'] for b in todos
+               if not b.get('on') and b is not candidato]
+        mediana_rec = sorted(recs)[len(recs) // 2] if recs else 0
+        dur_candidato = candidato['t1'] - candidato['t0']
+        if dur_candidato >= max(180.0, mediana_rec * 1.5):
+            aquecimento = candidato
+    if aquecimento is None:
+        aquecimento = ons[0]
+        resto = ons[1:]
+        veio_de_ons = True
+    else:
+        resto = ons
 
-    aquecimento = ons[0]
-    resto = ons[1:]
     bp1 = resto[:4]
     bp2 = resto[4:7]
 
     # confirmar que ha' RECOVERY genuino entre cada par consecutivo --
-    # nao basta a posicao na lista filtrada a WORK. Um "buraco" (RECOVERY
-    # entre t1 de um e t0 do seguinte) tem de existir de facto; dois WORK
-    # colados sem nada entre eles nao deviam acontecer neste protocolo, e
-    # se acontecer e' sinal de que a estrutura real e' diferente da
-    # esperada -- vale mais avisar do que assumir calado.
-    sequencia = [aquecimento] + bp1 + bp2
+    # nao basta a posicao na lista filtrada a WORK.
+    sequencia = ([aquecimento] if veio_de_ons else []) + bp1 + bp2
     pares_sem_recovery = []
     for i in range(len(sequencia) - 1):
         fim_anterior = sequencia[i]['t1']
@@ -246,28 +271,28 @@ def estruturar_protocolo(blocos):
             pares_sem_recovery.append(i)
 
     aviso = None
-    if len(ons) < 8:
+    if len(resto) < 7:
         aviso = (f'DADOS INSUFICIENTES PARA A ESTRUTURA COMPLETA DO VST — '
-                 f'{len(ons)} intervalos de trabalho encontrados (esperados '
-                 f'8: 1 aquecimento + 4 BP1 + 3 BP2). A analisar só o que '
-                 f'existe: {len(bp1)} para BP1, {len(bp2)} para BP2.')
-    elif len(ons) > 8:
-        aviso = (f'{len(ons)} intervalos de trabalho encontrados, mais do '
-                 f'que os 8 esperados — a usar os primeiros 4 depois do '
-                 f'aquecimento como BP1 e os 3 seguintes como BP2; os '
-                 f'restantes {len(ons) - 8} não entram na análise.')
+                 f'{len(resto)} intervalos de trabalho encontrados depois '
+                 f'do aquecimento (esperados 7: 4 BP1 + 3 BP2). A analisar '
+                 f'só o que existe: {len(bp1)} para BP1, {len(bp2)} para '
+                 f'BP2.')
+    elif len(resto) > 7:
+        aviso = (f'{len(resto)} intervalos de trabalho encontrados depois '
+                 f'do aquecimento, mais do que os 7 esperados — a usar os '
+                 f'primeiros 4 como BP1 e os 3 seguintes como BP2; os '
+                 f'restantes {len(resto) - 7} não entram na análise.')
     if pares_sem_recovery:
         aviso_rec = (f'{len(pares_sem_recovery)} par(es) de intervalos de '
                     f'trabalho consecutivos sem um RECOVERY genuíno entre '
                     f'eles — a estrutura desta sessão pode diferir do '
-                    f'protocolo VST esperado (aquecimento/RECOVERY/BP1×4/'
-                    f'RECOVERY/BP2×3).')
+                    f'protocolo VST esperado.')
         aviso = (aviso + ' ' + aviso_rec) if aviso else aviso_rec
     curtos = [b for b in sequencia if b.get('duracao_curta')]
     if curtos:
-        aviso_curto = (f'{len(curtos)} intervalo(s) com duração registada '
-                      f'muito abaixo dos restantes (< {limiar_dur:.0f}s) — '
-                      f'a potência é usada na mesma (vem da API, não do '
+        aviso_curto = (f'{len(curtos)} intervalo(s) com duração muito '
+                      f'abaixo dos restantes (< {limiar_dur:.0f}s) — a '
+                      f'potência é usada na mesma (vem da API, não do '
                       f'stream), mas a fisiologia (SmO2/HR/RF/DFA-α1) fica '
                       f'sem dados suficientes para uma análise fiável '
                       f'nesse intervalo especificamente.')
@@ -279,12 +304,9 @@ def estruturar_protocolo(blocos):
                               'watts_medio_da_api': b.get('watts_medio_da_api'),
                               'watts_medio': b.get('watts_medio')}
                              for b in curtos],
-            'aviso': aviso, 'estrutura_confirmada': not pares_sem_recovery, 'n_total_encontrados': len(ons)}
+            'aviso': aviso, 'estrutura_confirmada': not pares_sem_recovery,
+            'n_total_encontrados': len(ons) + (0 if veio_de_ons else 1)}
 
-
-# ─────────────────────────────────────────────────────────────────────────
-# Convergência de evidências — NUNCA um threshold único numa métrica só
-# ─────────────────────────────────────────────────────────────────────────
 
 _SINAIS_ESPERADOS = {
     # nome do sinal: (canal, campo, direccao_do_aumento_de_carga)

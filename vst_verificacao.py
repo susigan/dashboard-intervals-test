@@ -804,7 +804,8 @@ def recovery_padrao_bloco(fracoes):
            'fracoes': validas}
 
 
-def comparar_recovery(dia1_recovery, dia2_works_metricas, dia2_recuperacoes_bloco):
+def comparar_recovery(dia1_recovery, dia2_works_metricas, dia2_recuperacoes_bloco,
+                      dia2_recuperacoes_1min=None):
     """Compara o padrao de recuperacao entre os dois dias -- rotulos
     proprios (CONVERGENTE/DIVERGENTE/INDETERMINADA), diferentes dos
     usados para BP (CONSISTENTE/DIVERGENTE).
@@ -814,13 +815,22 @@ def comparar_recovery(dia1_recovery, dia2_works_metricas, dia2_recuperacoes_bloc
     bloco no Dia 2 (bp1_m ou bp2_m) -- para calcular a fraccao de cada
     recovery em relacao ao work que a precedeu.
     dia2_recuperacoes_bloco: lista de metricas_recuperacao() das
-    recuperacoes DENTRO do bloco -- len(works)-1 itens.
+    recuperacoes DENTRO do bloco -- len(works)-1 itens. Usada para a
+    TRAJECTORIA inteira (fraccoes, padrao do bloco) -- nunca cortada.
+    dia2_recuperacoes_1min: opcional -- a MESMA lista, mas cada item
+    calculado so' sobre os primeiros ~60s de cada recovery (o Dia 1
+    e' uma rampa de transicoes de ~1min; comparar o recovery inteiro
+    do Dia 2, que pode durar varios minutos, contra uma transicao de
+    1min do Dia 1 nao seria uma janela temporal comparavel). Se dado,
+    e' esta lista que decide CONVERGENTE/DIVERGENTE por metrica -- a
+    trajectoria continua a usar sempre o recovery completo.
 
     Preserva TODAS as recuperacoes individuais (nao resume so' a
     ultima); o padrao do bloco (ESTAVEL/PIOR/MELHOR/INCONSISTENTE) vem
     de recovery_padrao_bloco sobre a sequencia inteira de fraccoes. A
     comparacao Dia1xDia2 usa esse padrao, nao um valor isolado.
     """
+    lista_para_comparacao = dia2_recuperacoes_1min or dia2_recuperacoes_bloco
     validas_dia2 = [r for r in dia2_recuperacoes_bloco if r and r.get('ok')]
     if not dia1_recovery or not validas_dia2:
         return {'status': 'DADOS INSUFICIENTES',
@@ -850,7 +860,13 @@ def comparar_recovery(dia1_recovery, dia2_works_metricas, dia2_recuperacoes_bloc
 
         padrao_bloco = recovery_padrao_bloco(fracoes)
 
-        c2_ultima = next((c for c in reversed(individuais) if c), None)
+        # o ESTADO usado na comparacao Dia1xDia2 ve' da janela
+        # comparavel (1min, se dada) -- a trajectoria acima (fracoes,
+        # padrao_bloco) usa sempre o recovery completo, nunca cortado
+        individuais_1min = [
+            (r.get('por_canal') or {}).get(canal) if r and r.get('ok') else None
+            for r in lista_para_comparacao]
+        c2_ultima = next((c for c in reversed(individuais_1min) if c), None)
         if not c1 or c1.get('estado') == 'sem_dados' or not c2_ultima or \
            c2_ultima.get('estado') == 'sem_dados':
             metricas[canal] = {
@@ -879,6 +895,7 @@ def comparar_recovery(dia1_recovery, dia2_works_metricas, dia2_recuperacoes_bloc
                            'inicial': c2_ultima.get('inicial'),
                            'final': c2_ultima.get('final'),
                            'delta': c2_ultima.get('delta')},
+            'janela_comparacao': '1min' if dia2_recuperacoes_1min else 'completa',
         }
 
     principais = {k: m for k, m in metricas.items() if m['peso'] == 'principal'}

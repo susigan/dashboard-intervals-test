@@ -421,7 +421,11 @@ BODY = """
 
   <div id="mxSubVerificacao" style="display:none;">
     <h2 style="font-size:15px;margin-top:18px;">Verificação — protocolo VST</h2>
-    <p class="sub" style="font-size:12px;">Verifica se os intervalos reais
+
+    <h3 style="font-size:13px;margin-top:6px;">Verificações salvas</h3>
+    <div id="mxVstConjuntosSalvos" style="margin-top:6px;"></div>
+
+    <p class="sub" style="font-size:12px;margin-top:14px;">Verifica se os intervalos reais
       de uma sessão com a tag <b>VST</b> mostram uma resposta fisiológica
       compatível com BP1/BP2 — sempre a partir do que foi realmente feito,
       nunca de watts ou durações fixas.</p>
@@ -446,7 +450,7 @@ BODY = """
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
 
     <div class="chartbox" style="position:relative;width:100%;margin-top:14px;">
-      <canvas id="chMxVstTemporal" height="220"></canvas>
+      <canvas id="chMxVstTemporal" height="240"></canvas>
       <div id="mxTipVstTemporal" style="display:none;position:absolute;pointer-events:none;
         background:#161b22;border:1px solid #30363d;border-radius:6px;
         padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
@@ -585,6 +589,7 @@ function mxMudarSubTab(nome){
  if(nome==='verificacao' && !MX_VST_LISTA_CARREGADA){
   MX_VST_LISTA_CARREGADA = true;
   mxVstCarregarLista();
+  mxVstCarregarConjuntosSalvos();
  }
 }
 
@@ -1757,7 +1762,49 @@ function mxLigarHoverZonas(){
 
 let MX_VST_ULT = null;
 let MX_VST_ULT_COMP = null;  // ultima resposta do /comparar, para o selector de metrica do recovery
+let MX_VST_STREAMS = null;  // tempo+canais completos do Dia 2, de /api/moxy/dados/<id> (endpoint ja existente)
+let MX_VST_CONJUNTOS_SALVOS = [];  // ultima lista de /api/moxy/vst/conjuntos_salvos, para o botao ABRIR por indice
 const DEBUG_VST_VERIFICACAO = false;  // true mostra a revisao completa (so' para desenvolvimento)
+
+function mxVstCarregarConjuntosSalvos(){
+ const box=document.getElementById('mxVstConjuntosSalvos');
+ if(!box) return;
+ box.innerHTML='<p class="sub" style="font-size:12px;">a carregar…</p>';
+ fetch('/api/moxy/vst/conjuntos_salvos').then(r=>r.json()).then(function(d){
+  if(d.status!=='ok' || !d.conjuntos || !d.conjuntos.length){
+   box.innerHTML='<p class="sub" style="font-size:12px;">NENHUM CONJUNTO DE VERIFICAÇÃO ENCONTRADO</p>';
+   return;
+  }
+  MX_VST_CONJUNTOS_SALVOS = d.conjuntos;
+  box.innerHTML = '<div class="cards">' + d.conjuntos.map(function(c,ix){
+   const data = (c.analisado_em||c.actualizado_em||'').slice(0,10).split('-').reverse().join('/');
+   return '<div class="card" style="min-width:220px;">'
+    +'<div class="label">Conjunto de verificação</div>'
+    +'<div style="font-size:10px;color:#8b949e;margin-top:2px;">MOXY: '+c.moxy_activity_id+'<br>VST: '+c.vst_activity_id
+    +(data?'<br>Data: '+data:'')+'</div>'
+    +'<div style="font-size:11px;margin-top:4px;">'
+    +(c.bp1_status?'BP1 <span style="color:'+_vstCorGeral(c.bp1_status)+';">'+c.bp1_status+'</span><br>':'')
+    +(c.bp2_status?'BP2 <span style="color:'+_vstCorGeral(c.bp2_status)+';">'+c.bp2_status+'</span><br>':'')
+    +((c.recovery_bp1_status||c.recovery_bp2_status)?'Recovery <span style="color:'+_vstCorGeral(c.recovery_bp1_status||c.recovery_bp2_status)+';">'
+      +(c.recovery_bp1_status||c.recovery_bp2_status)+'</span>':'')
+    +'</div>'
+    +'<button style="margin-top:6px;font-size:11px;" onclick="mxVstAbrirVerificacao('+ix+')">ABRIR VERIFICAÇÃO</button>'
+    +'</div>';
+  }).join('') + '</div>';
+ }).catch(function(e){
+  box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
+ });
+}
+
+function mxVstAbrirVerificacao(ix){
+ // usa o vinculo ja' salvo -- carrega o VST (que ja' auto-carrega a
+ // Moxy vinculada, comportamento existente), sem recalcular nada
+ const c = MX_VST_CONJUNTOS_SALVOS[ix];
+ if(!c) return;
+ const selVst=document.getElementById('mxVstSelect');
+ if(selVst){ selVst.value=c.vst_activity_id; }
+ mxVstCarregar();
+}
 
 function mxVstCarregarLista(){
  const sel=document.getElementById('mxVstSelect');
@@ -1811,6 +1858,16 @@ function mxVstCarregar(){
   mxDesenharVstTiming(d);
   mxVstPopularMoxySelect();
   mxVstCarregarConjunto(id);
+
+  // streams completos (tempo+canais) para HR/RF/SmO2 no grafico
+  // temporal -- endpoint ja' existente, nenhum novo criado
+  MX_VST_STREAMS = null;
+  fetch('/api/moxy/dados/'+id).then(r=>r.json()).then(function(sd){
+   if(sd && sd.status==='ok' && sd.tempo && sd.canais){
+    MX_VST_STREAMS = sd;
+   }
+   mxDesenharVstTemporal(d);  // redesenha, agora com os streams se vieram
+  }).catch(function(){ mxDesenharVstTemporal(d); });
  }).catch(function(e){
   if(est) est.textContent='erro: '+e.message;
  });
@@ -2463,7 +2520,7 @@ function mxVstRevisaoCritica(d){
 // tempo real da sessao, com WORK/RECOVERY/aquecimento/BP1/BP2
 // identificados por cor, e hover com os detalhes de cada bloco.
 function mxDesenharVstTemporal(d){
- const o = ctx('chMxVstTemporal', 220); if(!o) return;
+ const o = ctx('chMxVstTemporal', 240); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  const aq = d.aquecimento && d.aquecimento.bloco;
  const bp1blocos = (d.bp1 && d.bp1.blocos) || [];
@@ -2475,7 +2532,7 @@ function mxDesenharVstTemporal(d){
  if(!todos.length){ noData(g,W,H,'Sem blocos para desenhar'); return; }
 
  const cores={aquecimento:'#8b949e', bp1:'#5DADE2', bp2:'#F0883E'};
- const PL=48, PR=16, PT=16, PB=28;
+ const PL=48, PR=16, PT=16, PB=42;
  const w=W-PL-PR, h=H-PT-PB;
  const tMin=Math.min.apply(null, todos.map(b=>b.t0));
  const tMax=Math.max.apply(null, todos.map(b=>b.t1));
@@ -2499,13 +2556,16 @@ function mxDesenharVstTemporal(d){
  // faixa de fundo por grupo (aquecimento/bp1/bp2), para se ver a
  // ESTRUTURA do protocolo de relance, nao so' a potencia
  const rects=[];
+ const contagem={};
  todos.forEach(function(b){
   const pot=b.watts_medio_da_api||b.watts_medio||0;
   const x0=X(b.t0), x1=X(b.t1);
   g.fillStyle=cores[b.grupo]; g.globalAlpha=0.12;
   g.fillRect(x0,PT,Math.max(1,x1-x0),h);
   g.globalAlpha=1;
-  rects.push({x0:x0,x1:x1,t0:b.t0,t1:b.t1,pot:pot,grupo:b.grupo,tipo:'WORK'});
+  contagem[b.grupo]=(contagem[b.grupo]||0)+1;
+  rects.push({x0:x0,x1:x1,t0:b.t0,t1:b.t1,pot:pot,grupo:b.grupo,tipo:'WORK',
+    numero:contagem[b.grupo]});
  });
  // faixa das RECOVERY, entre cada par de blocos consecutivos -- e' o
  // espaco que sobra, mostrado a potencia baixa (nao temos o stream
@@ -2517,7 +2577,8 @@ function mxDesenharVstTemporal(d){
   g.fillStyle='#30363d'; g.globalAlpha=0.5;
   g.fillRect(x0,PT,Math.max(1,x1-x0),h);
   g.globalAlpha=1;
-  rects.push({x0:x0,x1:x1,t0:fimA,t1:inicioB,pot:null,grupo:'recovery',tipo:'RECOVERY'});
+  rects.push({x0:x0,x1:x1,t0:fimA,t1:inicioB,pot:null,
+    grupo:todos[i].grupo,tipo:'RECOVERY',numero:contagem[todos[i].grupo]});
  }
 
  // LINHA de potencia -- sobe no WORK (do inicio ao fim do bloco, no
@@ -2536,14 +2597,58 @@ function mxDesenharVstTemporal(d){
  });
  g.stroke(); g.lineWidth=1;
 
- g.font='10px sans-serif'; g.textAlign='left';
- Object.keys(cores).forEach(function(k,i){
-  g.fillStyle=cores[k];
-  g.fillRect(PL+i*90, 2, 8, 8);
-  g.fillText(k, PL+i*90+11, 10);
- });
+ // HR/RF/SmO2 -- so' se os streams completos (Dia 2) ja' chegaram.
+ // Normalizados para 0-100% da AMPLITUDE DA PROPRIA VARIAVEL (opcao B
+ // do pedido) -- nunca na mesma escala numerica da potencia, e a
+ // legenda diz explicitamente que estao normalizados.
+ const fisioCores={heartrate:'#E3B341', respiration:'#79C0FF', smo2:'#F85149'};
+ const fisioNomes={heartrate:'HR', respiration:'RF', smo2:'SmO2'};
+ let temFisio=false;
+ if(MX_VST_STREAMS && MX_VST_STREAMS.tempo && MX_VST_STREAMS.canais){
+  const tempo=MX_VST_STREAMS.tempo;
+  const passo=Math.max(1, Math.floor(tempo.length/600));  // amostragem para performance, nao invencao
+  Object.keys(fisioCores).forEach(function(canal){
+   const serie=MX_VST_STREAMS.canais[canal];
+   if(!serie || !serie.length) return;
+   const validos=[]; for(let i=0;i<serie.length;i+=passo){ if(serie[i]!=null) validos.push(serie[i]); }
+   if(validos.length<2) return;
+   temFisio=true;
+   const vMin=Math.min.apply(null,validos), vMax=Math.max.apply(null,validos);
+   const Yn=v=>PT+h-((v-vMin)/((vMax-vMin)||1))*h;
+   g.strokeStyle=fisioCores[canal]; g.lineWidth=1; g.globalAlpha=0.85; g.beginPath();
+   let comecou=false;
+   for(let i=0;i<serie.length;i+=passo){
+    const tv=tempo[i], val=serie[i];
+    if(val==null){ comecou=false; continue; }
+    const x=X(tv), y=Yn(val);
+    if(!comecou){ g.moveTo(x,y); comecou=true; } else g.lineTo(x,y);
+   }
+   g.stroke(); g.globalAlpha=1;
+  });
+ }
 
- MX_HOVER.chMxVstTemporal = {rects:rects, PL:PL, w:w, xa:tMin, xb:tMax};
+ g.font='10px sans-serif'; g.textAlign='left';
+ let lx=PL;
+ g.fillStyle=cores.aquecimento; g.fillRect(lx,2,8,8); g.fillText('Aquecimento',lx+11,10); lx+=82;
+ g.fillStyle=cores.bp1; g.fillRect(lx,2,8,8); g.fillText('BP1',lx+11,10); lx+=48;
+ g.fillStyle=cores.bp2; g.fillRect(lx,2,8,8); g.fillText('BP2',lx+11,10); lx+=48;
+ g.fillStyle='#c9d1d9'; g.fillRect(lx,2,8,8); g.fillText('Power (W)',lx+11,10); lx+=70;
+ if(temFisio){
+  Object.keys(fisioCores).forEach(function(canal){
+   g.fillStyle=fisioCores[canal]; g.fillRect(lx,2,8,8);
+   g.fillText(fisioNomes[canal],lx+11,10); lx+=52;
+  });
+ }
+ if(temFisio){
+  g.fillStyle='#8b949e'; g.font='9px sans-serif';
+  g.fillText('HR/RF/SmO2 normalizados para 0–100% da própria amplitude — só a potência é em W reais', PL, PT+h+26);
+ } else {
+  g.fillStyle='#8b949e'; g.font='9px sans-serif';
+  g.fillText('DADOS TEMPORAIS FISIOLÓGICOS NÃO DISPONÍVEIS PARA ESTA SESSÃO', PL, PT+h+26);
+ }
+
+ MX_HOVER.chMxVstTemporal = {rects:rects, PL:PL, w:w, xa:tMin, xb:tMax,
+   streams: MX_VST_STREAMS, X:X};
 }
 
 function mxVstLimitacoes(d){
@@ -2564,6 +2669,11 @@ function mxVstLimitacoes(d){
   + itens.map(t=>'<li style="margin-bottom:3px;">'+t+'</li>').join('') + '</ul>';
 }
 
+function _vstFormatarMin(seg){
+ const m=Math.floor(seg/60), s=Math.round(seg%60);
+ return (m<10?'0':'')+m+':'+(s<10?'0':'')+s;
+}
+
 function mxLigarHoverVstTemporal(){
  const cv=document.getElementById('chMxVstTemporal');
  const tip=document.getElementById('mxTipVstTemporal');
@@ -2576,11 +2686,36 @@ function mxLigarHoverVstTemporal(){
   const mx=(ev.clientX-r.left)*esc;
   const bloco=info.rects.find(function(rr){ return mx>=rr.x0 && mx<=rr.x1; });
   if(!bloco){ tip.style.display='none'; return; }
+  const tempoHover = bloco.t0 + (bloco.t1-bloco.t0) * Math.max(0,Math.min(1,(mx-bloco.x0)/((bloco.x1-bloco.x0)||1)));
+
+  let linhas = ['TIME&nbsp;&nbsp;'+_vstFormatarMin(tempoHover)];
+  // valores reais dos streams, no ponto mais proximo do tempo do hover
+  // (indice mais proximo, nunca interpolado/inventado)
+  const st=info.streams;
+  let potTxt = bloco.pot!=null ? Math.round(bloco.pot)+' W' : '—';
+  if(st && st.tempo && st.tempo.length){
+   let melhorI=0, melhorD=Infinity;
+   for(let i=0;i<st.tempo.length;i+=Math.max(1,Math.floor(st.tempo.length/2000))){
+    const dd=Math.abs(st.tempo[i]-tempoHover);
+    if(dd<melhorD){ melhorD=dd; melhorI=i; }
+   }
+   const c=st.canais||{};
+   if(c.watts && c.watts[melhorI]!=null) potTxt=Math.round(c.watts[melhorI])+' W';
+   linhas.push('POWER&nbsp;&nbsp;'+potTxt);
+   if(c.heartrate && c.heartrate[melhorI]!=null) linhas.push('HR&nbsp;&nbsp;'+c.heartrate[melhorI].toFixed(1)+' bpm');
+   if(c.respiration && c.respiration[melhorI]!=null) linhas.push('RF&nbsp;&nbsp;'+c.respiration[melhorI].toFixed(1)+' resp/min');
+   if(c.smo2 && c.smo2[melhorI]!=null) linhas.push('SmO2&nbsp;&nbsp;'+c.smo2[melhorI].toFixed(1)+' %');
+  } else {
+   linhas.push('POWER&nbsp;&nbsp;'+potTxt);
+  }
+  const nomeGrupo={aquecimento:'Aquecimento',bp1:'BP1',bp2:'BP2'}[bloco.grupo]||bloco.grupo;
+  linhas.push('BLOCO&nbsp;&nbsp;'+nomeGrupo+(bloco.tipo==='RECOVERY'?' Recovery #'+bloco.numero:(bloco.numero?' #'+bloco.numero:'')));
+  linhas.push('TIPO&nbsp;&nbsp;'+bloco.tipo);
+
   tip.style.display='block';
-  tip.style.left=Math.min(ev.clientX-r.left+12, r.width-160)+'px';
-  tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
-  tip.textContent=bloco.grupo+' · '+Math.round(bloco.pot)+'W · '
-    +Math.round(bloco.t0/60)+'–'+Math.round(bloco.t1/60)+'min';
+  tip.style.left=Math.min(ev.clientX-r.left+12, r.width-175)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-70)+'px';
+  tip.innerHTML=linhas.join('<br>');
  });
  cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
 }

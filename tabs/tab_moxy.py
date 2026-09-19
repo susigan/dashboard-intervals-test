@@ -2982,6 +2982,53 @@ function mxDesenharVstRecoveryTempo(compData){
  g.fillText('janela de comparação directa (0–60s)', PL+4, PT+10);
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Integração VST na tab Limiares -- so' LE' o snapshot ja' gravado por
+// /api/moxy/vst/comparar (via /verificacao_ativa), nunca recalcula
+// BP1/BP2 nem reanalisa nada. "VERIFICADO" segue o status ja' produzido
+// pela Verificacao, nunca "confirmado".
+// ═══════════════════════════════════════════════════════════════════
+
+function _vstSimboloVerificacao(status){
+ if(!status) return {simbolo:'?', texto:'DADOS INSUFICIENTES', cor:'#8b949e'};
+ if(status==='CONSISTENTE') return {simbolo:'✓', texto:'VERIFICADO', cor:'#3FB950'};
+ if(status==='PARCIALMENTE CONSISTENTE') return {simbolo:'~', texto:'PARCIALMENTE VERIFICADO', cor:'#F4D03F'};
+ if(status==='DADOS INSUFICIENTES') return {simbolo:'?', texto:'DADOS INSUFICIENTES', cor:'#8b949e'};
+ return {simbolo:'✗', texto:'NÃO VERIFICADO', cor:'#E74C3C'};
+}
+
+function mxLimVerificacaoMostrar(moxyId, lc, valores){
+ const box=document.getElementById('mxLimVstBox');
+ if(!box || !moxyId) return;
+ box.innerHTML='';
+ fetch('/api/moxy/vst/verificacao_ativa/'+moxyId).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok' || !d.sincronizado){
+   box.innerHTML='<p class="sub" style="font-size:10px;color:#8b949e;">Nenhuma verificação VST associada a esta sessão.</p>';
+   return;
+  }
+  if(!d.analisado){
+   box.innerHTML='<p class="sub" style="font-size:10px;color:#8b949e;">'+(d.mensagem||'Conjunto sincronizado, ainda sem análise')+'</p>';
+   return;
+  }
+  const p1=(lc&&lc.primeiro)||{}, p2=(lc&&lc.segundo)||{};
+  function linha(nome, consenso, vst){
+   const s=_vstSimboloVerificacao(vst.status);
+   const rangeMetodos = consenso.n>1 ? Math.round(consenso.de)+'–'+Math.round(consenso.ate)+' W' :
+    (consenso.mediana!=null ? Math.round(consenso.mediana)+' W' : '—');
+   const rangeVst = vst.range_verificado ? Math.round(vst.range_verificado[0])+'–'+Math.round(vst.range_verificado[1])+' W' : '—';
+   return '<div style="border:1px solid '+s.cor+';border-radius:6px;padding:6px 10px;margin-bottom:8px;">'
+    +'<b style="font-size:12px;">'+nome+'</b><br>'
+    +'<span style="font-size:11px;color:#8b949e;">Range dos métodos: '+rangeMetodos+'</span><br>'
+    +'<span style="font-size:11px;color:'+s.cor+';">'+s.simbolo+' '+s.texto
+    +(vst.range_verificado?' — '+rangeVst:'')+'</span>'
+    +'<div style="font-size:9px;color:#8b949e;margin-top:2px;">Status Dia 1 × Dia 2: '+(vst.status||'—')+'</div>'
+    +'</div>';
+  }
+  box.innerHTML = '<div style="font-size:11px;color:#8b949e;margin-bottom:4px;">Verificação VST</div>'
+   + linha('BP1', p1, d.bp1||{}) + linha('BP2', p2, d.bp2||{});
+ }).catch(function(){ box.innerHTML=''; });
+}
+
 function mxLimiares(){
  const ids=Object.keys(MX_DADOS);
  const est=document.getElementById('mxLimEstado');
@@ -3210,6 +3257,8 @@ function mxLimiares(){
    h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '+a
     +'</p>'; });
   if(lc.nota) h+='<p style="color:#8b949e;font-size:11px;">'+lc.nota+'</p>';
+
+  h+='<div id="mxLimVstBox" style="margin:4px 0 10px;"></div>';
 
   // tudo o resto vai para dentro de um dropdown
   h+='<details style="margin-top:10px;"><summary style="cursor:pointer;'
@@ -3539,6 +3588,7 @@ function mxLimiares(){
   if(fecharDetalhe) h+='</div></details>';
   box.innerHTML=h;
   mxDraw();
+  mxLimVerificacaoMostrar(id, lc, MX_ULT_VALORES);
  }).catch(e=>{ est.textContent='erro: '+e.message; });
 }
 

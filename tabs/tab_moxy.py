@@ -435,7 +435,7 @@ BODY = """
 
     <div class="controls" style="margin-top:6px;">
       <label class="sel">Sessão Moxy correspondente
-        <select id="mxVstMoxySelect">
+        <select id="mxVstMoxySelect" onchange="mxVstMoxySelecionado()">
           <option value="">escolhe uma sessão VST primeiro</option>
         </select></label>
       <button onclick="mxVstSincronizar()">Comparar / Sincronizar</button>
@@ -1948,6 +1948,23 @@ function mxVstPopularMoxySelect(){
  if(actual) sel.value=actual;
 }
 
+function mxVstMoxySelecionado(){
+ // item 3.4: ao escolher a Moxy, procurar automaticamente o VST ja'
+ // vinculado a ela (procura inversa) -- se existir, carrega os dois
+ // sem pedir para escolher o VST outra vez.
+ const selMoxy=document.getElementById('mxVstMoxySelect');
+ const mid=selMoxy && selMoxy.value;
+ if(!mid) return;
+ fetch('/api/moxy/vst/conjunto_por_moxy/'+mid).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok' || !d.sincronizado) return;  // nada vinculado ainda, deixa o utilizador escolher/sincronizar
+  const selVst=document.getElementById('mxVstSelect');
+  if(selVst && selVst.value!==d.vst_activity_id){
+   selVst.value=d.vst_activity_id;
+   mxVstCarregar();
+  }
+ }).catch(function(){});
+}
+
 function mxVstCarregarConjunto(vstId){
  const box=document.getElementById('mxVstConjuntoEstado');
  const selMoxy=document.getElementById('mxVstMoxySelect');
@@ -2108,6 +2125,20 @@ function _vstCartaoSimples(titulo, valor, sub){
   +'</div>';
 }
 
+function _vstCartaoBP(titulo, comp){
+ const pot = comp.potencia;
+ const linhaPot = pot
+  ? 'Dia 1: '+pot.dia1_w+'W · Dia 2: '+pot.dia2_w+'W · Δ: '
+    +(pot.diferenca_w>=0?'+':'')+pot.diferenca_w+'W ('
+    +(pot.diferenca_pct>=0?'+':'')+pot.diferenca_pct+'%)'
+  : '';
+ return '<div class="card"><div class="label">'+titulo+'</div>'
+  +'<div class="value" style="font-size:15px;color:'+_vstCorGeral(comp.status)+';">'+(comp.status||'—')+'</div>'
+  +(linhaPot?'<div style="font-size:10px;color:#c9d1d9;margin-top:2px;">'+linhaPot+'</div>':'')
+  +(comp.motivo?'<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+comp.motivo+'</div>':'')
+  +'</div>';
+}
+
 function mxVstResumoCartoes(d){
  const box=document.getElementById('mxVstResumoCartoes');
  if(!box) return;
@@ -2120,8 +2151,8 @@ function mxVstResumoCartoes(d){
  const nRec = (rec1.n_validas||0)+(rec2.n_validas||0);
  box.innerHTML = '<div class="cards">'
   + _vstCartaoSimples('Resultado geral', pior, 'o mais cauteloso entre BP1 e BP2 — não é um score novo')
-  + _vstCartaoSimples('BP1', bp1.status, bp1.motivo)
-  + _vstCartaoSimples('BP2', bp2.status, bp2.motivo)
+  + _vstCartaoBP('BP1', bp1)
+  + _vstCartaoBP('BP2', bp2)
   + _vstCartaoSimples('Recovery', (ordem[rec1.status]??1)<=(ordem[rec2.status]??1)?rec1.status:rec2.status,
       'BP1: '+(rec1.status||'—')+' · BP2: '+(rec2.status||'—'))
   + '<div class="card"><div class="label">Robustez</div>'

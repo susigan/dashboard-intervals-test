@@ -2560,13 +2560,15 @@ function mxDesenharVstFisiologico(canal, canvasId, unidade, cor, d){
  const g=o.g, W=o.W, H=o.H;
  const bp1=(d.bp1&&d.bp1.metricas)||[], bp2=(d.bp2&&d.bp2.metricas)||[];
  const pontos=[];
- bp1.forEach(function(iv){
+ bp1.forEach(function(iv,i){
   const p=iv.potencia, m=iv[canal];
-  if(p&&p.ok&&m&&m.ok) pontos.push({pot:p.media, inicial:m.inicial, final:m.final, grupo:'bp1'});
+  if(p&&p.ok&&m&&m.ok) pontos.push({pot:p.media, inicial:m.inicial, final:m.final,
+    delta_pct:m.delta_pct, grupo:'bp1', numero:i+1});
  });
- bp2.forEach(function(iv){
+ bp2.forEach(function(iv,i){
   const p=iv.potencia, m=iv[canal];
-  if(p&&p.ok&&m&&m.ok) pontos.push({pot:p.media, inicial:m.inicial, final:m.final, grupo:'bp2'});
+  if(p&&p.ok&&m&&m.ok) pontos.push({pot:p.media, inicial:m.inicial, final:m.final,
+    delta_pct:m.delta_pct, grupo:'bp2', numero:i+1});
  });
  if(!pontos.length){ noData(g,W,H,'DADOS INSUFICIENTES'); return; }
 
@@ -2594,7 +2596,8 @@ function mxDesenharVstFisiologico(canal, canvasId, unidade, cor, d){
   g.beginPath(); g.arc(x,Y(p.inicial),2.5,0,7); g.fill();
   g.beginPath(); g.arc(x,Y(p.final),4,0,7); g.fill();
   g.lineWidth=1;
-  rects.push({x0:x-6,x1:x+6,pot:p.pot,inicial:p.inicial,final:p.final,grupo:p.grupo,unidade:unidade});
+  rects.push({x0:x-6,x1:x+6,pot:p.pot,inicial:p.inicial,final:p.final,
+    delta_pct:p.delta_pct,grupo:p.grupo,numero:p.numero,unidade:unidade});
  });
  MX_HOVER[canvasId] = {rects:rects};
 }
@@ -2618,10 +2621,11 @@ function mxLigarHoverVstFisiologico(){
    const p=info.rects.find(function(rr){ return mx>=rr.x0&&mx<=rr.x1; });
    if(!p){ tip.style.display='none'; return; }
    tip.style.display='block';
-   tip.style.left=Math.min(ev.clientX-r.left+12, r.width-160)+'px';
-   tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
-   tip.textContent=p.grupo.toUpperCase()+' · '+Math.round(p.pot)+'W · '
-     +p.inicial+p.unidade+' → '+p.final+p.unidade;
+   tip.style.left=Math.min(ev.clientX-r.left+12, r.width-170)+'px';
+   tip.style.top=Math.max(4, ev.clientY-r.top-38)+'px';
+   tip.innerHTML=p.grupo.toUpperCase()+' #'+p.numero+'<br>Power: '+Math.round(p.pot)+' W<br>'
+     +p.inicial+' → '+p.final+p.unidade
+     +(p.delta_pct!=null?'<br>Δ: '+(p.delta_pct>=0?'+':'')+p.delta_pct+'%':'');
   });
   cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
  });

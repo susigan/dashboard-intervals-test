@@ -449,7 +449,21 @@ BODY = """
     <h3 style="font-size:14px;margin-top:16px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
 
-    <div class="chartbox" style="position:relative;width:100%;margin-top:14px;">
+    <div id="mxVstTemporalToggles" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;font-size:11px;">
+      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+        <input type="checkbox" checked onchange="mxVstToggleTemporal('power',this.checked)">
+        <span style="color:#c9d1d9;">Power (W)</span></label>
+      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+        <input type="checkbox" checked onchange="mxVstToggleTemporal('heartrate',this.checked)">
+        <span style="color:#E3B341;">HR (bpm)</span></label>
+      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+        <input type="checkbox" checked onchange="mxVstToggleTemporal('respiration',this.checked)">
+        <span style="color:#79C0FF;">RF (resp/min)</span></label>
+      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+        <input type="checkbox" checked onchange="mxVstToggleTemporal('smo2',this.checked)">
+        <span style="color:#F85149;">SmO2 (%)</span></label>
+    </div>
+    <div class="chartbox" style="position:relative;width:100%;margin-top:6px;">
       <canvas id="chMxVstTemporal" height="240"></canvas>
       <div id="mxTipVstTemporal" style="display:none;position:absolute;pointer-events:none;
         background:#161b22;border:1px solid #30363d;border-radius:6px;
@@ -1763,6 +1777,12 @@ function mxLigarHoverZonas(){
 let MX_VST_ULT = null;
 let MX_VST_ULT_COMP = null;  // ultima resposta do /comparar, para o selector de metrica do recovery
 let MX_VST_STREAMS = null;  // tempo+canais completos do Dia 2, de /api/moxy/dados/<id> (endpoint ja existente)
+let MX_VST_TEMPORAL_VISIVEL = {power:true, heartrate:true, respiration:true, smo2:true};
+
+function mxVstToggleTemporal(chave, visivel){
+ MX_VST_TEMPORAL_VISIVEL[chave] = visivel;
+ if(MX_VST_ULT) mxDesenharVstTemporal(MX_VST_ULT);
+}
 let MX_VST_CONJUNTOS_SALVOS = [];  // ultima lista de /api/moxy/vst/conjuntos_salvos, para o botao ABRIR por indice
 const DEBUG_VST_VERIFICACAO = false;  // true mostra a revisao completa (so' para desenvolvimento)
 
@@ -2612,17 +2632,19 @@ function mxDesenharVstTemporal(d){
  // mesmo nivel, ja que usamos a media), desce para perto de zero na
  // RECOVERY e volta a subir no proximo WORK. E' isto que da' a leitura
  // de "estrutura da sessao", nao barras soltas.
- g.strokeStyle='#c9d1d9'; g.lineWidth=2; g.beginPath();
- let primeiro=true;
- todos.forEach(function(b,i){
-  const pot=b.watts_medio_da_api||b.watts_medio||0;
-  const x0=X(b.t0), x1=X(b.t1), y=Y(pot);
-  if(primeiro){ g.moveTo(x0,Y(0)); primeiro=false; }
-  g.lineTo(x0,y); g.lineTo(x1,y);
-  const proximo=todos[i+1];
-  if(proximo && proximo.t0>b.t1) g.lineTo(X(proximo.t0), Y(0));
- });
- g.stroke(); g.lineWidth=1;
+ if(MX_VST_TEMPORAL_VISIVEL.power){
+  g.strokeStyle='#c9d1d9'; g.lineWidth=2; g.beginPath();
+  let primeiro=true;
+  todos.forEach(function(b,i){
+   const pot=b.watts_medio_da_api||b.watts_medio||0;
+   const x0=X(b.t0), x1=X(b.t1), y=Y(pot);
+   if(primeiro){ g.moveTo(x0,Y(0)); primeiro=false; }
+   g.lineTo(x0,y); g.lineTo(x1,y);
+   const proximo=todos[i+1];
+   if(proximo && proximo.t0>b.t1) g.lineTo(X(proximo.t0), Y(0));
+  });
+  g.stroke(); g.lineWidth=1;
+ }
 
  // HR/RF/SmO2 -- so' se os streams completos (Dia 2) ja' chegaram.
  // Normalizados para 0-100% da AMPLITUDE DA PROPRIA VARIAVEL (opcao B
@@ -2640,6 +2662,7 @@ function mxDesenharVstTemporal(d){
    const validos=[]; for(let i=0;i<serie.length;i+=passo){ if(serie[i]!=null) validos.push(serie[i]); }
    if(validos.length<2) return;
    temFisio=true;
+   if(!MX_VST_TEMPORAL_VISIVEL[canal]) return;
    const vMin=Math.min.apply(null,validos), vMax=Math.max.apply(null,validos);
    const Yn=v=>PT+h-((v-vMin)/((vMax-vMin)||1))*h;
    g.strokeStyle=fisioCores[canal]; g.lineWidth=1; g.globalAlpha=0.85; g.beginPath();

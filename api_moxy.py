@@ -2395,10 +2395,21 @@ def registar(app):
             sequencia = ([aquecimento] if aquecimento else []) \
                 + estrutura['bp1'] + estrutura['bp2']
             recuperacoes = []
+            recuperacoes_1min = []
             for i in range(len(sequencia) - 1):
-                r = vst.metricas_recuperacao(
-                    canais, t, sequencia[i]['t1'], sequencia[i + 1]['t0'])
+                inicio_rec = sequencia[i]['t1']
+                fim_rec = sequencia[i + 1]['t0']
+                r = vst.metricas_recuperacao(canais, t, inicio_rec, fim_rec)
                 recuperacoes.append(r)
+                # a mesma funcao, a MESMA metodologia -- so' com a janela
+                # cortada aos primeiros ~60s (ou menos, se o recovery
+                # real for mais curto do que isso). O Dia 1 e' uma rampa
+                # com transicoes de ~1min; comparar o recovery inteiro do
+                # Dia 2 (que pode durar 5-8min) contra uma transicao de
+                # 1min do Dia 1 nao seria uma janela temporal comparavel.
+                fim_1min = min(fim_rec, inicio_rec + 60.0)
+                r_1min = vst.metricas_recuperacao(canais, t, inicio_rec, fim_1min)
+                recuperacoes_1min.append(r_1min)
 
             # RECOVERY FINAL: depois do ultimo bloco de BP2 nao ha' um
             # proximo WORK para testar se a recuperacao terminou antes de
@@ -2440,6 +2451,8 @@ def registar(app):
                     r['bloco'] = 'transicao_bp1_bp2'
                 else:
                     r['bloco'] = 'bp2'
+                if i < len(recuperacoes_1min) and recuperacoes_1min[i] is not None:
+                    recuperacoes_1min[i]['bloco'] = r['bloco']
 
             r_bp1 = vst.verificar_bloco(bp1_m) if bp1_m else \
                 {'status': 'DADOS INSUFICIENTES', 'motivo': 'sem intervalos BP1'}
@@ -2463,6 +2476,7 @@ def registar(app):
                 'bp2': {'blocos': estrutura['bp2'], 'metricas': bp2_m,
                        'verificacao': r_bp2},
                 'recuperacoes': recuperacoes,
+                'recuperacoes_1min': recuperacoes_1min,
                 'recuperacao_final': recuperacao_final,
             })
         except Exception as e:
@@ -2582,32 +2596,21 @@ def registar(app):
             recs_bp1_dia2 = [r for r in recs_dia2 if r and r.get('bloco') == 'bp1']
             recs_bp2_dia2 = [r for r in recs_dia2 if r and r.get('bloco') == 'bp2']
 
-            # DIAGNOSTICO TEMPORARIO -- para descobrir exactamente onde a
-            # cadeia perde os recoveries intermedios. Remover depois de
-            # confirmado.
-            _diag_recovery = {
-                'n_recuperacoes_dia2_total': len(recs_dia2),
-                'blocos_presentes': [r.get('bloco') for r in recs_dia2],
-                'ok_por_recuperacao': [r.get('ok') for r in recs_dia2],
-                'n_bp1_apos_filtro': len(recs_bp1_dia2),
-                'n_bp2_apos_filtro': len(recs_bp2_dia2),
-                'tem_recuperacao_final': bool(dia2.get('recuperacao_final')),
-                'chaves_dia2': sorted(dia2.keys()),
-            }
+            recs_1min_dia2 = dia2.get('recuperacoes_1min') or []
+            recs_bp1_1min = [r for r in recs_1min_dia2 if r and r.get('bloco') == 'bp1']
+            recs_bp2_1min = [r for r in recs_1min_dia2 if r and r.get('bloco') == 'bp2']
 
             dia1_rec_bp1, motivo_dia1_rec_bp1 = _recovery_dia1_apos(b1_bp1)
             dia1_rec_bp2, motivo_dia1_rec_bp2 = _recovery_dia1_apos(b1_bp2)
-            _diag_recovery['dia1_recovery_bp1'] = motivo_dia1_rec_bp1
-            _diag_recovery['dia1_recovery_bp2'] = motivo_dia1_rec_bp2
-            _diag_recovery['dia1_blocos_on'] = sum(1 for b in blocos1 if b.get('on'))
-            _diag_recovery['dia1_blocos_off'] = sum(1 for b in blocos1 if not b.get('on'))
 
             comp_recovery_bp1 = vst.comparar_recovery(
                 dia1_rec_bp1,
-                (dia2.get('bp1') or {}).get('metricas') or [], recs_bp1_dia2)
+                (dia2.get('bp1') or {}).get('metricas') or [], recs_bp1_dia2,
+                dia2_recuperacoes_1min=recs_bp1_1min)
             comp_recovery_bp2 = vst.comparar_recovery(
                 dia1_rec_bp2,
-                (dia2.get('bp2') or {}).get('metricas') or [], recs_bp2_dia2)
+                (dia2.get('bp2') or {}).get('metricas') or [], recs_bp2_dia2,
+                dia2_recuperacoes_1min=recs_bp2_1min)
 
             return jsonify({
                 'status': 'ok',
@@ -2616,7 +2619,6 @@ def registar(app):
                 'comparacao_recovery_bp1': comp_recovery_bp1,
                 'comparacao_recovery_bp2': comp_recovery_bp2,
                 'recuperacao_final_dia2': dia2.get('recuperacao_final'),
-                '_diagnostico_recovery': _diag_recovery,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

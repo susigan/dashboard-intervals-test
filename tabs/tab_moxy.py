@@ -1231,6 +1231,7 @@ let MX_HOVER = {};
 // desenhados, e o desenho fica em branco ate' se forcar outra vez.
 let MX_ULT_LIMIARES_D = null;
 let MX_ULT_PLANO = null, MX_ULT_RPE_D = null, MX_ULT_ZONAS_D = null;
+let MX_ULT_ORIGEM_BP = {bp1:'métodos existentes', bp2:'métodos existentes'};
 let MX_RESERVAS = null;  // W′ e M′ balance ao longo da sessão
 // resultados dos três métodos, para a síntese os poder cruzar
 let MX_ULT_REDE=null, MX_ULT_US=null, MX_ULT_PC=null,
@@ -1570,24 +1571,64 @@ function mxCarregarPlanoZonas(d, id, valores){
   mxDesenharZonas(null,null,null);
   return;
  }
- const q=['plano_limitador='+encodeURIComponent(sistema),
-         'bp1_w='+valores.bp1_w, 'bp2_w='+valores.bp2_w];
- if(valores.bp1_bpm!=null) q.push('bp1_bpm='+valores.bp1_bpm);
- if(valores.bp2_bpm!=null) q.push('bp2_bpm='+valores.bp2_bpm);
- fetch('/api/moxy/intervencoes?'+q.join('&'))
- .then(r=>r.json()).then(function(plano){
-  if(plano.status!=='ok'){
-   if(box) box.innerHTML='<p class="sub" style="font-size:12px;">'+
-    (plano.motivo||'sem plano para este limitador')+'</p>';
-   mxDesenharZonas(null,null,null);
-   return;
-  }
-  fetch('/api/moxy/rpe/'+id).then(r=>r.json()).then(function(rpeD){
-   MX_ULT_PLANO = plano; MX_ULT_RPE_D = rpeD; MX_ULT_ZONAS_D = d;
-   mxDesenharZonas(plano, rpeD, d);
-   mxMostrarPlanoZonasTexto(plano);
-  }).catch(function(){ mxDesenharZonas(plano,null,d); mxMostrarPlanoZonasTexto(plano); });
- }).catch(function(){});
+
+ // se houver verificacao VST consistente/parcial para este BP, usar o
+ // valor observado no Dia 2 (esforco sustentado) como referencia
+ // OPERACIONAL para as zonas -- NAO recalcula zonas, so' troca qual
+ // watts entra no MESMO endpoint /api/moxy/intervencoes; se nao houver
+ // verificacao valida, usa exactamente o valor original (comportamento
+ // actual, sem alteracao)
+ function _prosseguirComOperacionais(v1w, v1_origem, v2w, v2_origem){
+  MX_ULT_ORIGEM_BP = {bp1: v1_origem, bp2: v2_origem};
+  const vOp = Object.assign({}, valores, {bp1_w: v1w, bp2_w: v2w});
+  const q=['plano_limitador='+encodeURIComponent(sistema),
+          'bp1_w='+vOp.bp1_w, 'bp2_w='+vOp.bp2_w];
+  if(vOp.bp1_bpm!=null) q.push('bp1_bpm='+vOp.bp1_bpm);
+  if(vOp.bp2_bpm!=null) q.push('bp2_bpm='+vOp.bp2_bpm);
+  fetch('/api/moxy/intervencoes?'+q.join('&'))
+  .then(r=>r.json()).then(function(plano){
+   if(plano.status!=='ok'){
+    if(box) box.innerHTML='<p class="sub" style="font-size:12px;">'+
+     (plano.motivo||'sem plano para este limitador')+'</p>';
+    mxDesenharZonas(null,null,null);
+    return;
+   }
+   fetch('/api/moxy/rpe/'+id).then(r=>r.json()).then(function(rpeD){
+    MX_ULT_PLANO = plano; MX_ULT_RPE_D = rpeD; MX_ULT_ZONAS_D = d;
+    mxDesenharZonas(plano, rpeD, d);
+    mxMostrarPlanoZonasTexto(plano);
+   }).catch(function(){ mxDesenharZonas(plano,null,d); mxMostrarPlanoZonasTexto(plano); });
+  }).catch(function(){});
+ }
+
+ const idsMoxy=Object.keys(MX_DADOS||{});
+ const moxyId=idsMoxy[0];
+ function usaOperacional(status, verificadoW, origW){
+  // so' passa a usar o verificado se CONSISTENTE ou PARCIALMENTE
+  // CONSISTENTE (item 8/caso 3/caso 5) -- DIVERGENTE ou DADOS
+  // INSUFICIENTES mantem o original, sem excepcao
+  if((status==='CONSISTENTE' || status==='PARCIALMENTE CONSISTENTE') && verificadoW!=null)
+   return [verificadoW, status==='CONSISTENTE'?'VST verificado':'VST parcial'];
+  return [origW, 'métodos existentes'];
+ }
+
+ if(moxyId && MX_VST_VERIF_CACHE[moxyId] !== undefined){
+  const dvst=MX_VST_VERIF_CACHE[moxyId];
+  const ok = dvst && dvst.status==='ok' && dvst.sincronizado && dvst.analisado;
+  const [b1w,b1o]=usaOperacional(ok&&dvst.bp1&&dvst.bp1.status, ok&&dvst.bp1?dvst.bp1.dia2_w:null, valores.bp1_w);
+  const [b2w,b2o]=usaOperacional(ok&&dvst.bp2&&dvst.bp2.status, ok&&dvst.bp2?dvst.bp2.dia2_w:null, valores.bp2_w);
+  _prosseguirComOperacionais(b1w,b1o,b2w,b2o);
+ } else if(moxyId){
+  fetch('/api/moxy/vst/verificacao_ativa/'+moxyId).then(r=>r.json()).then(function(dvst){
+   MX_VST_VERIF_CACHE[moxyId]=dvst;
+   const ok = dvst && dvst.status==='ok' && dvst.sincronizado && dvst.analisado;
+   const [b1w,b1o]=usaOperacional(ok&&dvst.bp1&&dvst.bp1.status, ok&&dvst.bp1?dvst.bp1.dia2_w:null, valores.bp1_w);
+   const [b2w,b2o]=usaOperacional(ok&&dvst.bp2&&dvst.bp2.status, ok&&dvst.bp2?dvst.bp2.dia2_w:null, valores.bp2_w);
+   _prosseguirComOperacionais(b1w,b1o,b2w,b2o);
+  }).catch(function(){ _prosseguirComOperacionais(valores.bp1_w,'métodos existentes',valores.bp2_w,'métodos existentes'); });
+ } else {
+  _prosseguirComOperacionais(valores.bp1_w,'métodos existentes',valores.bp2_w,'métodos existentes');
+ }
 }
 
 function mxMostrarPlanoZonasTexto(plano){
@@ -1596,6 +1637,12 @@ function mxMostrarPlanoZonasTexto(plano){
  const zonas=plano.zonas||{};
  const cores={zona1:'#2ECC71', zona2:'#F4D03F', zona3:'#E74C3C'};
  const nomes={zona1:'Zona 1 — baixa', zona2:'Zona 2 — moderada', zona3:'Zona 3 — alta'};
+ const orig=MX_ULT_ORIGEM_BP||{};
+ const origemTxt={
+  zona1: 'BP1: '+(orig.bp1||'métodos existentes'),
+  zona2: 'BP1/BP2: '+(orig.bp1||'—')+' / '+(orig.bp2||'—'),
+  zona3: 'BP2: '+(orig.bp2||'métodos existentes'),
+ };
  let h='';
  ['zona1','zona2','zona3'].forEach(function(k){
   const z=zonas[k]; if(!z) return;
@@ -1604,6 +1651,7 @@ function mxMostrarPlanoZonasTexto(plano){
    '<b style="color:'+cores[k]+'">'+nomes[k]+'</b> '+
    '<span style="color:#8b949e">'+(w[0]||'—')+'–'+(w[1]||'—')+' W</span>'+
    (z.tem_numeros?'':' <span style="color:#8b949e;font-size:11px">(sem números suficientes)</span>')+
+   '<div style="font-size:9px;color:#8b949e;margin-top:1px">'+origemTxt[k]+'</div>'+
    '<div style="font-size:11px;color:#8b949e;margin-top:2px">'+
    (z.protocolos||[]).map(p=>p.nome).join(' · ')+'</div></div>';
  });
@@ -2995,6 +3043,31 @@ function _vstSimboloVerificacao(status){
  if(status==='PARCIALMENTE CONSISTENTE') return {simbolo:'~', texto:'PARCIALMENTE VERIFICADO', cor:'#F4D03F'};
  if(status==='DADOS INSUFICIENTES') return {simbolo:'?', texto:'DADOS INSUFICIENTES', cor:'#8b949e'};
  return {simbolo:'✗', texto:'NÃO VERIFICADO', cor:'#E74C3C'};
+}
+
+let MX_VST_VERIF_CACHE = {};  // {moxyId: resposta de /verificacao_ativa} -- evita repetir o pedido a cada mxDraw()
+
+function mxPrincipalVerificacaoMostrar(){
+ const ids=Object.keys(MX_DADOS||{});
+ const spanBP1=document.getElementById('mxCartaoBP1Vst'), spanBP2=document.getElementById('mxCartaoBP2Vst');
+ if(!ids.length || !spanBP1 || !spanBP2) return;
+ const moxyId=ids[0];
+
+ function pintar(d){
+  if(!d || d.status!=='ok' || !d.sincronizado || !d.analisado){ spanBP1.textContent=''; spanBP2.textContent=''; return; }
+  function pinta(span, vst){
+   if(!vst || !vst.status){ span.textContent=''; return; }
+   const s=_vstSimboloVerificacao(vst.status);
+   span.innerHTML=' <span style="font-size:11px;color:'+s.cor+';">'+s.simbolo+' VST'
+     +(s.texto==='PARCIALMENTE VERIFICADO'?' parcial':s.texto==='NÃO VERIFICADO'?' não verificado':s.texto==='DADOS INSUFICIENTES'?' insuficiente':'')+'</span>';
+  }
+  pinta(spanBP1, d.bp1); pinta(spanBP2, d.bp2);
+ }
+
+ if(MX_VST_VERIF_CACHE[moxyId] !== undefined){ pintar(MX_VST_VERIF_CACHE[moxyId]); return; }
+ fetch('/api/moxy/vst/verificacao_ativa/'+moxyId).then(r=>r.json()).then(function(d){
+  MX_VST_VERIF_CACHE[moxyId]=d; pintar(d);
+ }).catch(function(){ MX_VST_VERIF_CACHE[moxyId]=null; });
 }
 
 function mxLimVerificacaoMostrar(moxyId, lc, valores){
@@ -4721,8 +4794,11 @@ function mxDraw(){
    cartaoBP.innerHTML =
     (MX_BP.bp1!=null ? '<b style="color:#3FB950">BP1</b> '+Math.round(MX_BP.bp1)+'W'
       +(MX_BP.bp1_bpm?' · '+MX_BP.bp1_bpm+'bpm':'') : '')
+    + '<span id="mxCartaoBP1Vst"></span>'
     + (MX_BP.bp2!=null ? '<br><b style="color:#F85149">BP2</b> '+Math.round(MX_BP.bp2)+'W'
-      +(MX_BP.bp2_bpm?' · '+MX_BP.bp2_bpm+'bpm':'') : '');
+      +(MX_BP.bp2_bpm?' · '+MX_BP.bp2_bpm+'bpm':'') : '')
+    + '<span id="mxCartaoBP2Vst"></span>';
+   mxPrincipalVerificacaoMostrar();
   } else {
    cartaoBP.style.display='none';
   }

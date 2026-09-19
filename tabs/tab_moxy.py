@@ -2091,15 +2091,103 @@ function mxVstRecoveryCartoes(d){
   + _vstCartaoDia1Dia2Recovery('BP2', d.comparacao_recovery_bp2);
 }
 
-function _vstCartaoDia1Dia2Recovery(titulo, comp){
+function _vstSetaDireccao(estado){
+ // so' apresentacao -- deriva de 'estado' (recuperou/nao_recuperou) ja
+ // calculado por metricas_recuperacao, nao e' um criterio novo
+ if(estado==='recuperou') return '↓/↑ (na direcção esperada)';
+ if(estado==='nao_recuperou') return '↔ (não recuperou)';
+ return '—';
+}
+
+function _vstFraccaoTexto(fracoes){
+ const validas=(fracoes||[]).filter(f=>f!=null);
+ if(!validas.length) return 'não disponível';
+ return validas.map(f=>f.toFixed(2)).join(' → ');
+}
+
+function _vstAuditoriaLinha(canal, m){
+ const d1=m.dia1;
+ const dia1Texto = d1
+  ? (d1.inicial+' → '+d1.final+m.unidade+' (Δ='+d1.delta+', '+_vstSetaDireccao(d1.estado)+')')
+  : 'DIA 1 — sem recuperação/transição válida disponível';
+ const individuais = m.dia2_recuperacoes_individuais||[];
+ const dia2Linhas = individuais.map(function(c2,i){
+  if(!c2) return 'REC'+(i+1)+': sem dados';
+  return 'REC'+(i+1)+': '+c2.inicial+' → '+c2.final+m.unidade;
+ }).join('<br>');
+ const pb = m.dia2_padrao_bloco;
+ const padraoTxt = pb ? pb.padrao : 'DADOS INSUFICIENTES';
+ const fraccoesTxt = _vstFraccaoTexto(m.dia2_fracoes);
+
+ let obs = '';
+ if(m.peso==='complementar') obs = 'DFA1 (complementar) — evidência autonómica, não decide sozinha.';
+ else if(canal==='thb') obs = 'THb (contextual) — interpretado junto com SmO2, não é prova independente.';
+ else if(m.consistencia==='DIVERGENTE') obs = 'Discordante — mostrado, não escondido.';
+ else if(m.consistencia==='INDETERMINADA') obs = 'Sem dados suficientes para comparar.';
+
+ return '<tr style="border-top:1px solid #21262d;'+(m.peso!=='principal'?'opacity:0.75;':'')+'">'
+  +'<td style="padding:4px 10px 4px 0;"><b>'+m.nome+'</b></td>'
+  +'<td style="padding:4px 10px;font-size:10px;">'+dia1Texto+'</td>'
+  +'<td style="padding:4px 10px;font-size:10px;">'+(dia2Linhas||'sem dados')+'</td>'
+  +'<td style="padding:4px 10px;font-size:10px;">Padrão: <b>'+padraoTxt+'</b><br>Frações: '+fraccoesTxt+'</td>'
+  +'<td style="padding:4px 10px;color:'+_vstCorConsistencia(m.consistencia)+';">'+m.consistencia+'</td>'
+  +'<td style="padding:4px 10px;font-size:10px;">'+(m.peso==='principal'?'principal':m.peso)+'</td>'
+  +'<td style="padding:4px 10px;font-size:10px;color:#8b949e;">'+obs+'</td>'
+  +'</tr>';
+}
+
+function mxVstAuditoriaRecovery(titulo, comp){
  if(!comp) return '';
+ if(comp.status==='DADOS INSUFICIENTES' && !Object.keys(comp.metricas||{}).length){
+  return '<div style="margin:10px 0;"><h4 style="font-size:13px;">Recovery — Dia 1 × Dia 2 ('+titulo+')</h4>'
+   +'<p class="sub" style="font-size:12px;">DADOS INSUFICIENTES — '+(comp.motivo||
+     'não existe recuperação válida num dos dois dias para comparação.')+'</p></div>';
+ }
+
+ const metricas = comp.metricas||{};
+ const chaves = Object.keys(metricas);
+ const convergentes = chaves.filter(k=>metricas[k].consistencia==='CONVERGENTE');
+ const divergentes = chaves.filter(k=>metricas[k].consistencia==='DIVERGENTE');
+ const indeterminadas = chaves.filter(k=>metricas[k].consistencia==='INDETERMINADA');
+
  const nota = comp.status==='CONVERGENTE'
   ? 'Este resultado indica reprodutibilidade do padrão observado, não uma confirmação estatística do breakpoint em si.'
   : (comp.motivo||'');
- return '<div style="margin:8px 0;padding:8px 10px;border-left:3px solid '+_vstCorGeral(comp.status)+';">'
-  +'<b style="font-size:12px;">Recovery — Dia 1 × Dia 2 ('+titulo+'): '
-  +'<span style="color:'+_vstCorGeral(comp.status)+';">'+(comp.status||'—')+'</span></b>'
-  +'<div style="font-size:11px;color:#8b949e;margin-top:3px;">'+nota+'</div></div>';
+
+ let h = '<div style="margin:10px 0;">';
+ h += '<h4 style="font-size:13px;">Recovery — Dia 1 × Dia 2 ('+titulo+'): '
+   +'<span style="color:'+_vstCorGeral(comp.status)+';">'+(comp.status||'—')+'</span></h4>';
+ h += '<p style="font-size:11px;color:#8b949e;margin:2px 0 8px;">'+nota+'</p>';
+
+ // tabela de auditoria, uma linha por metrica -- nada escondido
+ h += '<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr class="sub" style="text-align:left;">'
+  +'<th style="padding:4px 10px 4px 0;">Métrica</th>'
+  +'<th style="padding:4px 10px;">Dia 1</th>'
+  +'<th style="padding:4px 10px;">Dia 2 (recoveries individuais)</th>'
+  +'<th style="padding:4px 10px;">Padrão D2 (dentro do bloco)</th>'
+  +'<th style="padding:4px 10px;">Comparação</th>'
+  +'<th style="padding:4px 10px;">Peso</th>'
+  +'<th style="padding:4px 10px;">Observação</th></tr>';
+ chaves.forEach(function(k){ h += _vstAuditoriaLinha(k, metricas[k]); });
+ h += '</table>';
+
+ // "Porque?" -- explicacao objectiva, so' lendo o que ja calculamos
+ h += '<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:#8b949e;">Porquê?</summary>'
+  +'<div style="font-size:11px;margin-top:6px;padding-left:4px;">';
+ chaves.forEach(function(k){
+  const m=metricas[k];
+  h += '<div>'+m.nome+(m.peso!=='principal'?' ('+m.peso+')':'')+': <b style="color:'
+    +_vstCorConsistencia(m.consistencia)+';">'+m.consistencia.toLowerCase()+'</b></div>';
+ });
+ h += '</div></details>';
+ h += '</div>';
+ return h;
+}
+
+function _vstCartaoDia1Dia2Recovery(titulo, comp){
+ // mantida por compatibilidade -- a versao completa e' mxVstAuditoriaRecovery
+ return mxVstAuditoriaRecovery(titulo, comp);
 }
 
 function mxVstRecoveryTabela(d){
@@ -2179,6 +2267,31 @@ function mxVstRecoveryFinalMostrar(rf){
  box.innerHTML=h;
 }
 
+function mxVstBlocoAuditoria(titulo, comp){
+ // item 18: "COMO O RECOVERY FOI CLASSIFICADO?" -- so' organiza o que
+ // ja esta em comp, nao calcula nada de novo
+ if(!comp) return '';
+ const metricas = comp.metricas||{};
+ const chaves = Object.keys(metricas);
+ const convergentes = chaves.filter(k=>metricas[k].consistencia==='CONVERGENTE'&&metricas[k].peso==='principal');
+ const divergentes = chaves.filter(k=>metricas[k].consistencia==='DIVERGENTE'&&metricas[k].peso==='principal');
+ const ref = metricas.hr||metricas.respiracao||Object.values(metricas)[0]||{};
+ const pb = ref.dia2_padrao_bloco;
+ const n1 = chaves.filter(k=>metricas[k].dia1).length;
+ const n2 = chaves.length ? (metricas[chaves[0]].dia2_recuperacoes_individuais||[]).length : 0;
+
+ return '<details style="margin:8px 0;"><summary style="cursor:pointer;font-size:12px;color:#8b949e;">'
+  +'Como o recovery foi classificado? ('+titulo+')</summary>'
+  +'<div style="font-size:11px;margin-top:6px;padding-left:6px;">'
+  +'<div><b>1. Evidência Dia 1</b>: '+n1+' métrica(s) com dados de recuperação/transição válidos.</div>'
+  +'<div><b>2. Evidência Dia 2</b>: '+n2+' recovery(s) intermediário(s) por métrica.</div>'
+  +'<div><b>3. Comparação por métrica</b>: '+convergentes.length+' convergente(s), '+divergentes.length+' divergente(s) (só métricas principais contam para o resultado).</div>'
+  +'<div><b>4. Timing</b>: '+_vstFraseTiming(pb)+'</div>'
+  +'<div><b>5. Recovery progressivo (Dia 2)</b>: '+(pb?pb.padrao:'DADOS INSUFICIENTES')+'.</div>'
+  +'<div><b>6. Limitações</b>: DFA1 é complementar e THb é contextual — nenhum dos dois decide sozinho; com poucos WORKs, a robustez estatística é necessariamente limitada.</div>'
+  +'</div></details>';
+}
+
 function mxVstRevisaoCritica(d){
  const box=document.getElementById('mxVstRevisaoCritica');
  if(!box) return;
@@ -2187,17 +2300,32 @@ function mxVstRevisaoCritica(d){
  const pb2=(rec2.metricas&&(rec2.metricas.hr||rec2.metricas.respiracao)||{}).dia2_padrao_bloco;
  const temDados = (rec1.n_validas||0)+(rec2.n_validas||0) > 0;
 
+ function n2Recoveries(rec){
+  const m=rec.metricas||{}; const k=Object.keys(m)[0];
+  return k ? (m[k].dia2_recuperacoes_individuais||[]).length : 0;
+ }
+ function convDiv(rec){
+  const m=rec.metricas||{};
+  const conv=Object.keys(m).filter(k=>m[k].consistencia==='CONVERGENTE');
+  const div=Object.keys(m).filter(k=>m[k].consistencia==='DIVERGENTE');
+  return {conv:conv, div:div};
+ }
+ const cd1=convDiv(rec1), cd2=convDiv(rec2);
+
  function resp(txt){ return '<li style="margin-bottom:4px;">'+txt+'</li>'; }
- let h = '<h4 style="font-size:13px;">Revisão crítica — Recovery</h4><ol style="font-size:11px;color:#c9d1d9;padding-left:18px;">';
- h += resp('Existem dados suficientes? '+(temDados?'Sim, pelo menos parcialmente.':'Não — dados insuficientes na maior parte das métricas.'));
- h += resp('O recovery é mensurável? '+(temDados?'Sim, através das recuperações reais entre WORKs.':'Não foi possível medir de forma fiável.'));
- h += resp('Padrão dentro do BP1: '+(pb1?pb1.padrao:'DADOS INSUFICIENTES')+'.');
- h += resp('Padrão dentro do BP2: '+(pb2?pb2.padrao:'DADOS INSUFICIENTES')+'.');
- h += resp('Deterioração progressiva? '+(([pb1,pb2].some(p=>p&&p.padrao==='PROGRESSIVAMENTE PIOR'))?'Sim, em pelo menos um bloco.':'Não identificada.'));
- h += resp('Melhora progressiva? '+(([pb1,pb2].some(p=>p&&p.padrao==='PROGRESSIVAMENTE MELHOR'))?'Sim, em pelo menos um bloco.':'Não identificada.'));
- h += resp('Recovery Dia 1 × Dia 2 é convergente? BP1: '+(rec1.status||'—')+' · BP2: '+(rec2.status||'—')+'.');
- h += resp('Timing compatível? '+_vstFraseTiming(pb1)+' (BP1) / '+_vstFraseTiming(pb2)+' (BP2)');
- h += resp('Existem limitações estatísticas relevantes? Sim — com poucos WORKs por bloco, a robustez do teste de permutação é necessariamente limitada (ver p-permutação nos cartões acima).');
+ let h = '<h4 style="font-size:13px;">Revisão crítica — Recovery</h4>';
+ h += mxVstBlocoAuditoria('BP1', rec1) + mxVstBlocoAuditoria('BP2', rec2);
+ h += '<ol style="font-size:11px;color:#c9d1d9;padding-left:18px;margin-top:10px;">';
+ h += resp('Qual recovery existe no Dia 1? '+(rec1.metricas&&Object.values(rec1.metricas).some(m=>m.dia1)?'Uma transição/recovery válida, logo a seguir ao bloco escolhido como BP.':'Nenhum disponível ou insuficiente.'));
+ h += resp('Quantos recoveries existem no Dia 2? BP1: '+n2Recoveries(rec1)+' · BP2: '+n2Recoveries(rec2)+'.');
+ h += resp('Quais métricas têm dados válidos em ambos? BP1: '+(cd1.conv.concat(cd1.div).join(', ')||'nenhuma')+' · BP2: '+(cd2.conv.concat(cd2.div).join(', ')||'nenhuma')+'.');
+ h += resp('Quais convergem? BP1: '+(cd1.conv.join(', ')||'—')+' · BP2: '+(cd2.conv.join(', ')||'—')+'.');
+ h += resp('Quais divergem? BP1: '+(cd1.div.join(', ')||'nenhuma')+' · BP2: '+(cd2.div.join(', ')||'nenhuma')+'.');
+ h += resp('Padrão do Dia 2: BP1 = '+(pb1?pb1.padrao:'DADOS INSUFICIENTES')+' · BP2 = '+(pb2?pb2.padrao:'DADOS INSUFICIENTES')+'.');
+ h += resp('Padrão do Dia 1: uma resposta pontual (transição), não um bloco — direcção mostrada na tabela de auditoria acima, não uma tendência ao longo de vários WORKs.');
+ h += resp('O timing é comparável? '+_vstFraseTiming(pb1)+' (BP1) / '+_vstFraseTiming(pb2)+' (BP2) — nota: Dia 1 é uma transição pontual, Dia 2 é um bloco sustentado; não são a mesma coisa, só compatíveis em padrão.');
+ h += resp('Porque o resultado final foi '+(rec1.status||'—')+' (BP1) / '+(rec2.status||'—')+' (BP2)? Ver "Como o recovery foi classificado?" acima, e o "Porquê?" em cada tabela de auditoria.');
+ h += resp('Limitações: DFA1 complementar, THb contextual, poucos WORKs por bloco limitam a robustez estatística — ver p-permutação nos cartões.');
  h += '</ol><p class="sub" style="font-size:10px;">Esta revisão é descritiva. Não constitui diagnóstico, não afirma causalidade, e não afirma que o breakpoint foi validado.</p>';
  box.innerHTML = h;
 }

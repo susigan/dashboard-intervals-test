@@ -2259,6 +2259,58 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/vst/conjunto_por_moxy/<path:moxy_activity_id>')
+    def api_moxy_vst_conjunto_por_moxy(moxy_activity_id):
+        """Procura inversa: dada uma sessão Moxy, encontra a sessão VST
+        vinculada — usa o índice já existente (ix_vst_conjuntos_moxy),
+        não uma tabela nova. Uma Moxy pode, em teoria, estar vinculada a
+        mais de um VST ao longo do tempo (cada VST só aponta para UMA
+        Moxy, mas o inverso não é garantido) — devolve o vínculo mais
+        recente por actualizado_em.
+        """
+        try:
+            mid = str(moxy_activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT vst_activity_id, criado_em, actualizado_em "
+                "FROM vst_conjuntos WHERE moxy_activity_id=? "
+                "ORDER BY actualizado_em DESC LIMIT 1", (mid,)).fetchone()
+            if not r:
+                return jsonify({'status': 'ok', 'sincronizado': False})
+            return jsonify({'status': 'ok', 'sincronizado': True,
+                            'moxy_activity_id': mid, 'vst_activity_id': r[0],
+                            'criado_em': r[1], 'actualizado_em': r[2]})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/conjuntos_salvos')
+    def api_moxy_vst_conjuntos_salvos():
+        """Lista de "VERIFICAÇÕES SALVAS" -- le' so' o que ja' esta'
+        gravado (snapshot da ultima analise), nunca recalcula."""
+        try:
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            rows = cn.execute(
+                "SELECT vst_activity_id, moxy_activity_id, bp1_status, "
+                "bp2_status, recovery_bp1_status, recovery_bp2_status, "
+                "dia1_bp1_w, dia2_bp1_w, dia1_bp2_w, dia2_bp2_w, "
+                "analisado_em, actualizado_em FROM vst_conjuntos "
+                "ORDER BY actualizado_em DESC").fetchall()
+            conjuntos = [{
+                'vst_activity_id': r[0], 'moxy_activity_id': r[1],
+                'bp1_status': r[2], 'bp2_status': r[3],
+                'recovery_bp1_status': r[4], 'recovery_bp2_status': r[5],
+                'dia1_bp1_w': r[6], 'dia2_bp1_w': r[7],
+                'dia1_bp2_w': r[8], 'dia2_bp2_w': r[9],
+                'analisado_em': r[10], 'actualizado_em': r[11],
+            } for r in rows]
+            return jsonify({'status': 'ok', 'conjuntos': conjuntos})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/vst/lista')
     def api_moxy_vst_lista():
         """Actividades com a tag VST — só essas, nunca as sem a tag."""
@@ -2611,6 +2663,32 @@ def registar(app):
                 dia1_rec_bp2,
                 (dia2.get('bp2') or {}).get('metricas') or [], recs_bp2_dia2,
                 dia2_recuperacoes_1min=recs_bp2_1min)
+
+            # snapshot do resultado -- so' os campos ja' calculados
+            # acima, nada recalculado; falha aqui nao deve derrubar a
+            # resposta (melhor esforco, como o resto da persistencia
+            # deste projecto)
+            try:
+                pot1 = comp_bp1.get('potencia') or {}
+                pot2 = comp_bp2.get('potencia') or {}
+                agora = datetime.now().isoformat(timespec='seconds')
+                cn.execute(
+                    "UPDATE vst_conjuntos SET bp1_status=?, bp2_status=?, "
+                    "recovery_bp1_status=?, recovery_bp2_status=?, "
+                    "dia1_bp1_w=?, dia2_bp1_w=?, dia1_bp2_w=?, dia2_bp2_w=?, "
+                    "resultado_json=?, analisado_em=? WHERE vst_activity_id=?",
+                    (comp_bp1.get('status'), comp_bp2.get('status'),
+                     comp_recovery_bp1.get('status'), comp_recovery_bp2.get('status'),
+                     pot1.get('dia1_w'), pot1.get('dia2_w'),
+                     pot2.get('dia1_w'), pot2.get('dia2_w'),
+                     json.dumps({'comparacao_bp1': comp_bp1, 'comparacao_bp2': comp_bp2,
+                                'comparacao_recovery_bp1': comp_recovery_bp1,
+                                'comparacao_recovery_bp2': comp_recovery_bp2},
+                               ensure_ascii=False),
+                     agora, vid))
+                cn.commit()
+            except Exception:
+                pass
 
             return jsonify({
                 'status': 'ok',

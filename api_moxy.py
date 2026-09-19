@@ -2573,7 +2573,7 @@ def registar(app):
                 if not seguinte:
                     return None, 'sem bloco RECOVERY a seguir a este WORK do Dia 1'
                 r = vst.metricas_recuperacao(
-                    canais1, t1, bloco1['t1'], seguinte['t0'])
+                    canais1, t1, bloco1['t1'], seguinte['t1'])
                 if not (r or {}).get('ok'):
                     return None, f"metricas_recuperacao ok=False: {(r or {}).get('motivo')}"
                 return (r or {}).get('por_canal'), 'ok'
@@ -2595,11 +2595,18 @@ def registar(app):
                 'chaves_dia2': sorted(dia2.keys()),
             }
 
+            dia1_rec_bp1, motivo_dia1_rec_bp1 = _recovery_dia1_apos(b1_bp1)
+            dia1_rec_bp2, motivo_dia1_rec_bp2 = _recovery_dia1_apos(b1_bp2)
+            _diag_recovery['dia1_recovery_bp1'] = motivo_dia1_rec_bp1
+            _diag_recovery['dia1_recovery_bp2'] = motivo_dia1_rec_bp2
+            _diag_recovery['dia1_blocos_on'] = sum(1 for b in blocos1 if b.get('on'))
+            _diag_recovery['dia1_blocos_off'] = sum(1 for b in blocos1 if not b.get('on'))
+
             comp_recovery_bp1 = vst.comparar_recovery(
-                _recovery_dia1_apos(b1_bp1),
+                dia1_rec_bp1,
                 (dia2.get('bp1') or {}).get('metricas') or [], recs_bp1_dia2)
             comp_recovery_bp2 = vst.comparar_recovery(
-                _recovery_dia1_apos(b1_bp2),
+                dia1_rec_bp2,
                 (dia2.get('bp2') or {}).get('metricas') or [], recs_bp2_dia2)
 
             return jsonify({

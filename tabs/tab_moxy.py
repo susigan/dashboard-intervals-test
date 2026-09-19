@@ -2169,8 +2169,9 @@ function _vstTabelaComparacao(titulo, comp){
 // ═══════════════════════════════════════════════════════════════════
 
 function _vstCorGeral(s){
- return {'CONSISTENTE':'#3FB950','CONVERGENTE':'#3FB950','RECUPEROU':'#3FB950',
+ return {'CONSISTENTE':'#3FB950','CONVERGENTE':'#3FB950','RECUPEROU':'#3FB950','ESTÁVEL':'#3FB950',
         'PARCIALMENTE CONSISTENTE':'#F4D03F','PARCIALMENTE CONVERGENTE':'#F4D03F','PARCIAL':'#F4D03F',
+        'INCONSISTENTE':'#F4D03F','PROGRESSIVAMENTE PIOR':'#F4D03F','PROGRESSIVAMENTE MELHOR':'#F4D03F',
         'DIVERGENTE':'#E74C3C','NÃO RECUPEROU':'#E74C3C','DADOS INSUFICIENTES':'#8b949e',
         'INDETERMINADA':'#8b949e'}[s] || '#8b949e';
 }
@@ -2230,6 +2231,27 @@ function _vstFraseTiming(padraoInfo){
  return 'Não foi identificada alteração temporal consistente (recovery estável).';
 }
 
+function _vstFraseInterpretacaoRecovery(statusComp, padraoTxt, nomeMetrica){
+ // frase curta, so' junta o que ja' esta calculado -- nenhum calculo novo
+ const dirTxt = statusComp==='CONVERGENTE'
+  ? 'A direção da resposta de recuperação observada no Dia 1 é compatível com a observada no Dia 2'
+  : statusComp==='PARCIALMENTE CONVERGENTE'
+  ? 'A direção da resposta de recuperação observada no Dia 1 é parcialmente compatível com a observada no Dia 2'
+  : statusComp==='DADOS INSUFICIENTES'
+  ? 'Não há dados suficientes para comparar a direção da resposta entre os dois dias'
+  : 'A direção da resposta de recuperação observada no Dia 1 não é compatível com a observada no Dia 2';
+ const padTxt = !padraoTxt || padraoTxt==='DADOS INSUFICIENTES'
+  ? 'não há dados suficientes para avaliar progressão temporal dentro do bloco'
+  : padraoTxt==='ESTÁVEL'
+  ? 'não foi identificada alteração temporal consistente entre os recoveries'
+  : padraoTxt==='INCONSISTENTE'
+  ? 'os recoveries individuais não apresentam progressão temporal consistente entre os WORKs'
+  : padraoTxt==='PROGRESSIVAMENTE PIOR'
+  ? 'os recoveries pioram progressivamente ao longo dos WORKs'
+  : 'os recoveries melhoram progressivamente ao longo dos WORKs';
+ return dirTxt + ', mas ' + padTxt + '.';
+}
+
 function _vstCartaoRecoveryBloco(titulo, comp){
  if(!comp || !comp.metricas) return '<div class="card"><div class="label">'+titulo+'</div>'
   +'<div class="value" style="font-size:13px;">DADOS INSUFICIENTES</div></div>';
@@ -2237,16 +2259,21 @@ function _vstCartaoRecoveryBloco(titulo, comp){
  // cartao (a tabela completa, abaixo, mostra todas as metricas)
  const ref = comp.metricas.hr || comp.metricas.respiracao || Object.values(comp.metricas)[0];
  const pb = (ref||{}).dia2_padrao_bloco;
+ const padraoTxt = pb && pb.padrao;
+ // DUAS perguntas diferentes, nunca misturadas na mesma linha:
+ // A) Dia1 x Dia2 -- direccao compativel? (comp.status)
+ // B) dentro do Dia2 -- ha' progressao temporal entre os recoveries? (padraoTxt)
  let h = '<div class="card"><div class="label">'+titulo+'</div>'
-  +'<div class="value" style="font-size:14px;color:'+_vstCorGeral(comp.status)+';">'+(comp.status||'—')+'</div>';
- if(pb && pb.padrao){
-  h += '<div style="font-size:11px;margin-top:4px;">Padrão ('+((ref||{}).nome||'')+'): <b>'+pb.padrao+'</b></div>';
-  if(pb.fracoes && pb.fracoes.length)
-   h += '<div style="font-size:10px;color:#8b949e;">Frações: '+pb.fracoes.map(f=>f.toFixed(2)).join(' → ')+'</div>';
-  if(pb.p_permutacao!=null)
-   h += '<div style="font-size:10px;color:#8b949e;">p-permutação: '+pb.p_permutacao+(pb.significativo?'':' (não significativo)')+'</div>';
-  h += '<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+_vstFraseTiming(pb)+'</div>';
- }
+  +'<div style="font-size:10px;color:#8b949e;margin-top:4px;">Dia 1 × Dia 2</div>'
+  +'<div class="value" style="font-size:14px;color:'+_vstCorGeral(comp.status)+';">'+(comp.status||'—')+'</div>'
+  +'<div style="font-size:10px;color:#8b949e;margin-top:6px;">Padrão temporal Dia 2</div>'
+  +'<div style="font-size:13px;color:'+_vstCorGeral(padraoTxt)+';">'+(padraoTxt||'DADOS INSUFICIENTES')+'</div>';
+ if(pb && pb.fracoes && pb.fracoes.length)
+  h += '<div style="font-size:10px;color:#8b949e;margin-top:2px;">Frações ('+((ref||{}).nome||'')+'): '+pb.fracoes.map(f=>f.toFixed(2)).join(' → ')+'</div>';
+ if(pb && pb.p_permutacao!=null)
+  h += '<div style="font-size:10px;color:#8b949e;">p-permutação: '+pb.p_permutacao+(pb.significativo?'':' (não significativo)')+'</div>';
+ h += '<div style="font-size:10px;color:#c9d1d9;margin-top:6px;">'
+  +_vstFraseInterpretacaoRecovery(comp.status, padraoTxt, (ref||{}).nome)+'</div>';
  h += '</div>';
  return h;
 }

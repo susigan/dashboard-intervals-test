@@ -452,8 +452,68 @@ BODY = """
         padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
     </div>
 
-    <div id="mxVstRecoveryCartoes" style="margin-top:14px;"></div>
-    <div id="mxVstRecoveryFinal" style="margin-top:10px;"></div>
+    <h3 style="font-size:14px;margin-top:20px;">Resposta fisiológica</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;">
+      <div style="flex:1;min-width:280px;">
+        <h4 style="font-size:12px;color:#8b949e;margin:0 0 2px;">Power × HR</h4>
+        <div class="chartbox" style="position:relative;width:100%;">
+          <canvas id="chMxVstHR" height="170"></canvas>
+          <div id="mxTipVstHR" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+        </div>
+      </div>
+      <div style="flex:1;min-width:280px;">
+        <h4 style="font-size:12px;color:#8b949e;margin:0 0 2px;">Power × RF</h4>
+        <div class="chartbox" style="position:relative;width:100%;">
+          <canvas id="chMxVstRF" height="170"></canvas>
+          <div id="mxTipVstRF" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+        </div>
+      </div>
+      <div style="flex:1;min-width:280px;">
+        <h4 style="font-size:12px;color:#8b949e;margin:0 0 2px;">Power × SmO2</h4>
+        <div class="chartbox" style="position:relative;width:100%;">
+          <canvas id="chMxVstSmO2" height="170"></canvas>
+          <div id="mxTipVstSmO2" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+        </div>
+        <p class="sub" style="font-size:9px;margin:2px 0 0;">SmO2 é indicador periférico — a queda pode reflectir extracção e/ou fluxo sanguíneo.</p>
+      </div>
+      <div style="flex:1;min-width:280px;">
+        <h4 style="font-size:12px;color:#8b949e;margin:0 0 2px;">Power × THb <span class="sub" style="font-size:9px;">(contextual)</span></h4>
+        <div class="chartbox" style="position:relative;width:100%;">
+          <canvas id="chMxVstTHb" height="170"></canvas>
+          <div id="mxTipVstTHb" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+        </div>
+      </div>
+      <div style="flex:1;min-width:280px;">
+        <h4 style="font-size:12px;color:#8b949e;margin:0 0 2px;">Power × DFA1 <span class="sub" style="font-size:9px;">(complementar)</span></h4>
+        <div class="chartbox" style="position:relative;width:100%;">
+          <canvas id="chMxVstDFA1" height="170"></canvas>
+          <div id="mxTipVstDFA1" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+        </div>
+        <p class="sub" style="font-size:9px;margin:2px 0 0;">Depende da qualidade/estacionariedade dos RR durante carga crescente.</p>
+      </div>
+    </div>
+
+    <h3 style="font-size:14px;margin-top:20px;">Recovery</h3>
+    <div id="mxVstRecoveryCartoes" style="margin-top:8px;"></div>
+    <div class="controls" style="margin-top:6px;">
+      <label class="sel">Métrica
+        <select id="mxVstRecMetrica" onchange="mxDesenharVstRecoveryTempo(MX_VST_ULT_COMP)">
+          <option value="hr">HR</option><option value="respiracao">RF</option>
+          <option value="smo2">SmO2</option><option value="thb">THb</option>
+          <option value="dfa1">DFA1</option>
+        </select></label>
+    </div>
+    <div class="chartbox" style="position:relative;width:100%;margin-top:6px;">
+      <canvas id="chMxVstRecoveryTempo" height="180"></canvas>
+      <div id="mxTipVstRecTempo" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+    </div>
+    <p class="sub" style="font-size:10px;margin-top:2px;">A janela sombreada (0–60s) é usada na comparação directa Dia 1 × Dia 2 — o recovery completo fica sempre visível.</p>
+
+    <h3 style="font-size:14px;margin-top:20px;">Timing</h3>
+    <div id="mxVstTiming" style="margin-top:8px;overflow-x:auto;"></div>
+
+    <h3 style="font-size:14px;margin-top:20px;">Heatmap</h3>
+    <div id="mxVstHeatmap" style="margin-top:8px;overflow-x:auto;"></div>
 
     <details style="margin-top:16px;">
       <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Detalhes da comparação</summary>
@@ -468,10 +528,7 @@ BODY = """
       <div id="mxVstLimitacoes" style="margin-top:8px;"></div>
     </details>
 
-    <details style="margin-top:10px;">
-      <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;">Revisão completa (auditoria)</summary>
-      <div id="mxVstRevisaoCritica" style="margin-top:16px;"></div>
-    </details>
+    <div id="mxVstRecoveryFinal" style="margin-top:12px;"></div>
   </div>
 
 </div>
@@ -1699,6 +1756,8 @@ function mxLigarHoverZonas(){
 // ═══════════════════════════════════════════════════════════════════
 
 let MX_VST_ULT = null;
+let MX_VST_ULT_COMP = null;  // ultima resposta do /comparar, para o selector de metrica do recovery
+const DEBUG_VST_VERIFICACAO = false;  // true mostra a revisao completa (so' para desenvolvimento)
 
 function mxVstCarregarLista(){
  const sel=document.getElementById('mxVstSelect');
@@ -1747,6 +1806,9 @@ function mxVstCarregar(){
   mxVstCartoes(d);
   mxVstTabela(d);
   mxDesenharVstTemporal(d);
+  mxDesenharVstFisiologicoTodos(d);
+  mxDesenharVstHeatmap(d);
+  mxDesenharVstTiming(d);
   mxVstPopularMoxySelect();
   mxVstCarregarConjunto(id);
  }).catch(function(e){
@@ -1950,11 +2012,13 @@ function mxVstCarregarComparacao(vstId){
   }
   box.innerHTML=_vstTabelaComparacao('BP1', d.comparacao_bp1)
    + _vstTabelaComparacao('BP2', d.comparacao_bp2);
+  MX_VST_ULT_COMP = d;
   mxVstResumoCartoes(d);
   mxVstRecoveryCartoes(d);
   mxVstRecoveryTabela(d);
   mxVstRecoveryFinalMostrar(d.recuperacao_final_dia2);
-  mxVstRevisaoCritica(d);
+  mxDesenharVstRecoveryTempo(d);
+  if(typeof DEBUG_VST_VERIFICACAO!=='undefined' && DEBUG_VST_VERIFICACAO) mxVstRevisaoCritica(d);
   mxVstLimitacoes(d);
  }).catch(function(e){
   box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
@@ -2362,7 +2426,8 @@ function mxDesenharVstTemporal(d){
  const bp2blocos = (d.bp2 && d.bp2.blocos) || [];
  const todos = (aq?[Object.assign({},aq,{grupo:'aquecimento'})]:[])
   .concat(bp1blocos.map(b=>Object.assign({},b,{grupo:'bp1'})))
-  .concat(bp2blocos.map(b=>Object.assign({},b,{grupo:'bp2'})));
+  .concat(bp2blocos.map(b=>Object.assign({},b,{grupo:'bp2'})))
+  .sort((a,b)=>a.t0-b.t0);
  if(!todos.length){ noData(g,W,H,'Sem blocos para desenhar'); return; }
 
  const cores={aquecimento:'#8b949e', bp1:'#5DADE2', bp2:'#F0883E'};
@@ -2387,18 +2452,45 @@ function mxDesenharVstTemporal(d){
   g.fillText(Math.round(tv/60)+'min', X(tv), PT+h+16);
  });
 
- // um rectangulo por bloco WORK, colorido pelo grupo -- e' a potencia
- // media desse bloco (nao o stream segundo a segundo, que exigiria
- // outro pedido ao servidor)
+ // faixa de fundo por grupo (aquecimento/bp1/bp2), para se ver a
+ // ESTRUTURA do protocolo de relance, nao so' a potencia
  const rects=[];
  todos.forEach(function(b){
   const pot=b.watts_medio_da_api||b.watts_medio||0;
-  const x0=X(b.t0), x1=X(b.t1), y0=Y(pot);
-  g.fillStyle=cores[b.grupo]; g.globalAlpha=0.75;
-  g.fillRect(x0,y0,Math.max(1,x1-x0),PT+h-y0);
+  const x0=X(b.t0), x1=X(b.t1);
+  g.fillStyle=cores[b.grupo]; g.globalAlpha=0.12;
+  g.fillRect(x0,PT,Math.max(1,x1-x0),h);
   g.globalAlpha=1;
-  rects.push({x0:x0,x1:x1,t0:b.t0,t1:b.t1,pot:pot,grupo:b.grupo});
+  rects.push({x0:x0,x1:x1,t0:b.t0,t1:b.t1,pot:pot,grupo:b.grupo,tipo:'WORK'});
  });
+ // faixa das RECOVERY, entre cada par de blocos consecutivos -- e' o
+ // espaco que sobra, mostrado a potencia baixa (nao temos o stream
+ // segundo a segundo aqui, mas a ESTRUTURA fica visivel)
+ for(let i=0;i<todos.length-1;i++){
+  const fimA=todos[i].t1, inicioB=todos[i+1].t0;
+  if(inicioB<=fimA) continue;
+  const x0=X(fimA), x1=X(inicioB);
+  g.fillStyle='#30363d'; g.globalAlpha=0.5;
+  g.fillRect(x0,PT,Math.max(1,x1-x0),h);
+  g.globalAlpha=1;
+  rects.push({x0:x0,x1:x1,t0:fimA,t1:inicioB,pot:null,grupo:'recovery',tipo:'RECOVERY'});
+ }
+
+ // LINHA de potencia -- sobe no WORK (do inicio ao fim do bloco, no
+ // mesmo nivel, ja que usamos a media), desce para perto de zero na
+ // RECOVERY e volta a subir no proximo WORK. E' isto que da' a leitura
+ // de "estrutura da sessao", nao barras soltas.
+ g.strokeStyle='#c9d1d9'; g.lineWidth=2; g.beginPath();
+ let primeiro=true;
+ todos.forEach(function(b,i){
+  const pot=b.watts_medio_da_api||b.watts_medio||0;
+  const x0=X(b.t0), x1=X(b.t1), y=Y(pot);
+  if(primeiro){ g.moveTo(x0,Y(0)); primeiro=false; }
+  g.lineTo(x0,y); g.lineTo(x1,y);
+  const proximo=todos[i+1];
+  if(proximo && proximo.t0>b.t1) g.lineTo(X(proximo.t0), Y(0));
+ });
+ g.stroke(); g.lineWidth=1;
 
  g.font='10px sans-serif'; g.textAlign='left';
  Object.keys(cores).forEach(function(k,i){
@@ -2447,6 +2539,209 @@ function mxLigarHoverVstTemporal(){
     +Math.round(bloco.t0/60)+'–'+Math.round(bloco.t1/60)+'min';
  });
  cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Graficos fisiologicos (Power x metrica), heatmap, timing, recovery
+// x tempo -- tudo a partir de d.bp1.metricas[i]/d.bp2.metricas[i], ja'
+// calculados por metricas_intervalo(). Nao recalcula nada.
+// ═══════════════════════════════════════════════════════════════════
+
+const MX_VST_CANAIS = [
+ {chave:'hr', canvas:'chMxVstHR', tip:'mxTipVstHR', unidade:'bpm', cor:'#E3B341'},
+ {chave:'respiracao', canvas:'chMxVstRF', tip:'mxTipVstRF', unidade:'', cor:'#79C0FF'},
+ {chave:'smo2', canvas:'chMxVstSmO2', tip:'mxTipVstSmO2', unidade:'%', cor:'#F85149'},
+ {chave:'thb', canvas:'chMxVstTHb', tip:'mxTipVstTHb', unidade:'', cor:'#58A6FF'},
+ {chave:'dfa1', canvas:'chMxVstDFA1', tip:'mxTipVstDFA1', unidade:'', cor:'#D2A8FF'},
+];
+
+function mxDesenharVstFisiologico(canal, canvasId, unidade, cor, d){
+ const o = ctx(canvasId, 170); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const bp1=(d.bp1&&d.bp1.metricas)||[], bp2=(d.bp2&&d.bp2.metricas)||[];
+ const pontos=[];
+ bp1.forEach(function(iv){
+  const p=iv.potencia, m=iv[canal];
+  if(p&&p.ok&&m&&m.ok) pontos.push({pot:p.media, inicial:m.inicial, final:m.final, grupo:'bp1'});
+ });
+ bp2.forEach(function(iv){
+  const p=iv.potencia, m=iv[canal];
+  if(p&&p.ok&&m&&m.ok) pontos.push({pot:p.media, inicial:m.inicial, final:m.final, grupo:'bp2'});
+ });
+ if(!pontos.length){ noData(g,W,H,'DADOS INSUFICIENTES'); return; }
+
+ const cores={bp1:'#5DADE2', bp2:'#F0883E'};
+ const PL=42, PR=12, PT=10, PB=24;
+ const w=W-PL-PR, h=H-PT-PB;
+ const xs=pontos.map(p=>p.pot);
+ const ys=pontos.map(p=>p.inicial).concat(pontos.map(p=>p.final));
+ const xa=Math.min.apply(null,xs)*0.95, xb=Math.max.apply(null,xs)*1.05;
+ const ya=Math.min.apply(null,ys)*0.95, yb=Math.max.apply(null,ys)*1.05;
+ const X=v=>PL+(v-xa)/((xb-xa)||1)*w;
+ const Y=v=>PT+h-(v-ya)/((yb-ya)||1)*h;
+
+ g.clearRect(0,0,W,H);
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='9px sans-serif';
+ g.textAlign='center';
+ xs.forEach(function(xv){ g.fillText(Math.round(xv), X(xv), PT+h+12); });
+
+ const rects=[];
+ pontos.forEach(function(p){
+  const x=X(p.pot);
+  g.strokeStyle=cores[p.grupo]; g.lineWidth=2;
+  g.beginPath(); g.moveTo(x,Y(p.inicial)); g.lineTo(x,Y(p.final)); g.stroke();
+  g.fillStyle=cores[p.grupo];
+  g.beginPath(); g.arc(x,Y(p.inicial),2.5,0,7); g.fill();
+  g.beginPath(); g.arc(x,Y(p.final),4,0,7); g.fill();
+  g.lineWidth=1;
+  rects.push({x0:x-6,x1:x+6,pot:p.pot,inicial:p.inicial,final:p.final,grupo:p.grupo,unidade:unidade});
+ });
+ MX_HOVER[canvasId] = {rects:rects};
+}
+
+function mxDesenharVstFisiologicoTodos(d){
+ MX_VST_CANAIS.forEach(function(c){
+  mxDesenharVstFisiologico(c.chave, c.canvas, c.unidade, c.cor, d);
+ });
+}
+
+function mxLigarHoverVstFisiologico(){
+ MX_VST_CANAIS.forEach(function(c){
+  const cv=document.getElementById(c.canvas), tip=document.getElementById(c.tip);
+  if(!cv||!tip) return;
+  cv.addEventListener('mousemove', function(ev){
+   const info=MX_HOVER[c.canvas];
+   if(!info||!info.rects.length){ tip.style.display='none'; return; }
+   const r=cv.getBoundingClientRect();
+   const esc=(cv.width/r.width)/(window.devicePixelRatio||1);
+   const mx=(ev.clientX-r.left)*esc;
+   const p=info.rects.find(function(rr){ return mx>=rr.x0&&mx<=rr.x1; });
+   if(!p){ tip.style.display='none'; return; }
+   tip.style.display='block';
+   tip.style.left=Math.min(ev.clientX-r.left+12, r.width-160)+'px';
+   tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
+   tip.textContent=p.grupo.toUpperCase()+' · '+Math.round(p.pot)+'W · '
+     +p.inicial+p.unidade+' → '+p.final+p.unidade;
+  });
+  cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
+ });
+}
+
+// Heatmap: linhas=metricas, colunas=WORK 1..N, valor=delta_pct ja'
+// calculado por metricas_intervalo(). Cor por intensidade do delta.
+function mxDesenharVstHeatmap(d){
+ const box=document.getElementById('mxVstHeatmap');
+ if(!box) return;
+ const canais=[['hr','HR','principal'],['respiracao','RF','principal'],
+              ['smo2','SmO2','principal'],['thb','THb','contextual'],
+              ['dfa1','DFA1','complementar']];
+ function tabela(titulo, metricas){
+  if(!metricas || !metricas.length) return '<p class="sub" style="font-size:11px;">'+titulo+': DADOS INSUFICIENTES</p>';
+  let h='<div style="margin-bottom:10px;"><b style="font-size:12px;">'+titulo+'</b>'
+   +'<table style="border-collapse:collapse;font-size:10px;margin-top:4px;">'
+   +'<tr><th style="padding:2px 8px;text-align:left;"></th>'
+   +metricas.map((_,i)=>'<th style="padding:2px 8px;">W'+(i+1)+'</th>').join('')+'</tr>';
+  canais.forEach(function(c){
+   h+='<tr><td style="padding:2px 8px;color:#8b949e;">'+c[1]+(c[2]!=='principal'?' <span style="font-size:8px;">('+c[2]+')</span>':'')+'</td>';
+   metricas.forEach(function(iv){
+    const m=iv[c[0]];
+    if(!m||!m.ok){ h+='<td style="padding:2px 8px;text-align:center;color:#8b949e;">—</td>'; return; }
+    const dp=m.delta_pct;
+    const intensidade=Math.min(1,Math.abs(dp||0)/60);
+    const cor = dp>=0 ? 'rgba(88,166,255,'+(0.15+intensidade*0.6)+')' : 'rgba(248,81,73,'+(0.15+intensidade*0.6)+')';
+    h+='<td style="padding:2px 8px;text-align:center;background:'+cor+';">'+(dp!=null?dp.toFixed(0)+'%':'—')+'</td>';
+   });
+   h+='</tr>';
+  });
+  h+='</table></div>';
+  return h;
+ }
+ box.innerHTML = tabela('BP1', (d.bp1&&d.bp1.metricas)||[])
+  + tabela('BP2', (d.bp2&&d.bp2.metricas)||[]);
+}
+
+// Timing: para cada metrica principal, mostra em qual WORK a mudanca
+// (delta_pct) foi maior -- reaproveita os mesmos deltas do heatmap,
+// so' destaca a coluna com maior |delta_pct|.
+function mxDesenharVstTiming(d){
+ const box=document.getElementById('mxVstTiming');
+ if(!box) return;
+ const canais=[['hr','HR'],['respiracao','RF'],['smo2','SmO2'],['dfa1','DFA1']];
+ function linha(titulo, metricas){
+  if(!metricas || metricas.length<2) return '<p class="sub" style="font-size:11px;">'+titulo+': DADOS INSUFICIENTES</p>';
+  let h='<div style="margin-bottom:8px;"><b style="font-size:12px;">'+titulo+'</b><table style="border-collapse:collapse;font-size:10px;margin-top:4px;">';
+  canais.forEach(function(c){
+   const deltas=metricas.map(iv=>(iv[c[0]]&&iv[c[0]].ok)?Math.abs(iv[c[0]].delta_pct||0):null);
+   const validos=deltas.filter(v=>v!=null);
+   if(!validos.length){ h+='<tr><td style="padding:2px 8px;color:#8b949e;">'+c[1]+'</td><td class="sub" style="padding:2px 8px;">DADOS INSUFICIENTES</td></tr>'; return; }
+   const maxV=Math.max.apply(null,validos);
+   const idxMax=deltas.indexOf(maxV);
+   h+='<tr><td style="padding:2px 8px;color:#8b949e;">'+c[1]+'</td>'
+    +deltas.map(function(v,i){
+     if(v==null) return '<td style="padding:2px 8px;text-align:center;">—</td>';
+     const destaque = i===idxMax;
+     return '<td style="padding:2px 8px;text-align:center;'+(destaque?'background:rgba(243,156,18,0.35);font-weight:bold;':'')+'">'+v.toFixed(0)+'%</td>';
+    }).join('')+'</tr>';
+  });
+  h+='</table></div>';
+  return h;
+ }
+ box.innerHTML = linha('BP1 — em que WORK a mudança foi maior', (d.bp1&&d.bp1.metricas)||[])
+  + linha('BP2 — em que WORK a mudança foi maior', (d.bp2&&d.bp2.metricas)||[]);
+}
+
+// Recovery x tempo: cada recovery mostrado como dois pontos (inicial em
+// t=0, final em t=duracao_s), com a janela 0-60s sombreada -- e' a
+// resolucao que os dados ja calculados permitem (metricas_recuperacao
+// nao guarda a serie completa segundo a segundo, so' inicial/final).
+function mxDesenharVstRecoveryTempo(compData){
+ const o = ctx('chMxVstRecoveryTempo', 180); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ if(!compData){ noData(g,W,H,'Sincroniza uma sessão VST primeiro'); return; }
+ const sel=document.getElementById('mxVstRecMetrica');
+ const canal = sel ? sel.value : 'hr';
+ const unidadeMap={hr:'bpm',respiracao:'',smo2:'%',thb:'',dfa1:''};
+
+ const series=[];
+ [['bp1',compData.comparacao_recovery_bp1,'#5DADE2'],
+  ['bp2',compData.comparacao_recovery_bp2,'#F0883E']].forEach(function(par){
+  const bloco=par[0], comp=par[1], cor=par[2];
+  const m = comp && comp.metricas && comp.metricas[canal];
+  if(!m) return;
+  (m.dia2_recuperacoes_individuais||[]).forEach(function(c,i){
+   if(!c) return;
+   series.push({bloco:bloco, rec:i+1, inicial:c.inicial, final:c.final, cor:cor});
+  });
+ });
+ if(!series.length){ noData(g,W,H,'DADOS INSUFICIENTES para '+canal); return; }
+
+ const PL=42, PR=12, PT=14, PB=24;
+ const w=W-PL-PR, h=H-PT-PB;
+ const durMax=60*3;  // assume-se ate 3min para desenhar; ajusta-se se precisar
+ const ys=series.map(s=>s.inicial).concat(series.map(s=>s.final));
+ const ya=Math.min.apply(null,ys)*0.95, yb=Math.max.apply(null,ys)*1.05;
+ const X=t=>PL+Math.min(t,durMax)/durMax*w;
+ const Y=v=>PT+h-(v-ya)/((yb-ya)||1)*h;
+
+ g.clearRect(0,0,W,H);
+ // janela 0-60s sombreada -- a janela de comparacao directa Dia1xDia2
+ g.fillStyle='#F4D03F'; g.globalAlpha=0.1;
+ g.fillRect(X(0),PT,X(60)-X(0),h);
+ g.globalAlpha=1;
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='center';
+ [0,60,120,180].forEach(function(tv){ g.fillText(tv+'s', X(tv), PT+h+12); });
+
+ series.forEach(function(s){
+  const x0=X(0), x1=X(60);
+  g.strokeStyle=s.cor; g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(x0,Y(s.inicial)); g.lineTo(x1,Y(s.final)); g.stroke();
+  g.fillStyle=s.cor;
+  g.beginPath(); g.arc(x0,Y(s.inicial),3,0,7); g.fill();
+  g.beginPath(); g.arc(x1,Y(s.final),3,0,7); g.fill();
+  g.lineWidth=1;
+ });
+ g.textAlign='left'; g.font='9px sans-serif'; g.fillStyle='#8b949e';
+ g.fillText('janela de comparação directa (0–60s)', PL+4, PT+10);
 }
 
 function mxLimiares(){
@@ -4662,6 +4957,7 @@ mxLigarHoverPontos('chMxLimiares','mxTipLimiares');
 mxLigarHoverPontos('chMxDfa1','mxTipDfa1');
 mxLigarHoverZonas();
 mxLigarHoverVstTemporal();
+mxLigarHoverVstFisiologico();
 mxMudarSubTab('principal');
 mxSessoes();
 // ivSessoes()/ivGlossario() ja nao sao chamadas aqui -- a seccao que

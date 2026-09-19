@@ -1935,15 +1935,17 @@ function mxVstCartoes(d){
   + 'SmO2 '+_vstResumoMetrica(aq.smo2,'%')+'<br>'
   + 'HR '+_vstResumoMetrica(aq.hr,'')+' · RF '+_vstResumoMetrica(aq.respiracao,'')
   + '</div></div>'
-  // CARD 3 -- BP1
-  + '<div class="card"><div class="label">BP1 <span style="color:'
-  + _vstStatusCor(vBp1.status)+';font-size:11px;">'+(vBp1.status||'')+'</span></div>'
-  + '<div class="value" style="font-size:14px;">'+cartaoPotencias(bp1.metricas)+'</div>'
+  // CARD 3 -- BP1 (padrao FISIOLOGICO dentro do proprio Dia 2 --
+  // verificar_bloco -- NAO e' a reprodutibilidade Dia1xDia2, que fica
+  // nos cartoes do topo/mxVstResumoCartoes)
+  + '<div class="card"><div class="label">BP1 — padrão fisiológico (Dia 2)</div>'
+  + '<div class="value" style="font-size:13px;color:'+_vstStatusCor(vBp1.status)+';">'+(vBp1.status||'')+'</div>'
+  + '<div style="font-size:11px;color:#8b949e;margin-top:2px;">'+cartaoPotencias(bp1.metricas)+'</div>'
   + '<div style="font-size:11px;color:#8b949e">'+(vBp1.motivo||'')+'</div></div>'
   // CARD 4 -- BP2
-  + '<div class="card"><div class="label">BP2 <span style="color:'
-  + _vstStatusCor(vBp2.status)+';font-size:11px;">'+(vBp2.status||'')+'</span></div>'
-  + '<div class="value" style="font-size:14px;">'+cartaoPotencias(bp2.metricas)+'</div>'
+  + '<div class="card"><div class="label">BP2 — padrão fisiológico (Dia 2)</div>'
+  + '<div class="value" style="font-size:13px;color:'+_vstStatusCor(vBp2.status)+';">'+(vBp2.status||'')+'</div>'
+  + '<div style="font-size:11px;color:#8b949e;margin-top:2px;">'+cartaoPotencias(bp2.metricas)+'</div>'
   + '<div style="font-size:11px;color:#8b949e">'+(vBp2.motivo||'')+'</div></div>'
   + '</div>';
 }
@@ -2135,7 +2137,7 @@ function _vstTabelaComparacao(titulo, comp){
  const rob=comp.robustez||{};
  let h='<div style="margin-bottom:16px;">'
   +'<h4 style="font-size:13px;margin:10px 0 4px;">'+titulo
-  +' — reprodutibilidade fisiológica: <span style="color:'
+  +' — reprodutibilidade Dia 1 × Dia 2: <span style="color:'
   +_vstCorStatus(comp.status)+'">'+(comp.status||'')+'</span></h4>'
   +'<p class="sub" style="font-size:11px;margin:0 0 6px;">'+(comp.motivo||'')+'</p>';
  if(pot){
@@ -2210,10 +2212,11 @@ function _vstCartaoBP(titulo, comp){
     +(pot.diferenca_w>=0?'+':'')+pot.diferenca_w+'W ('
     +(pot.diferenca_pct>=0?'+':'')+pot.diferenca_pct+'%)'
   : '';
- return '<div class="card"><div class="label">'+titulo+'</div>'
+ return '<div class="card"><div class="label">'+titulo+' — Reprodutibilidade Dia 1 × Dia 2</div>'
   +'<div class="value" style="font-size:15px;color:'+_vstCorGeral(comp.status)+';">'+(comp.status||'—')+'</div>'
   +(linhaPot?'<div style="font-size:10px;color:#c9d1d9;margin-top:2px;">'+linhaPot+'</div>':'')
   +(comp.motivo?'<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+comp.motivo+'</div>':'')
+  +'<div style="font-size:9px;color:#8b949e;margin-top:4px;">Indica reprodutibilidade do padrão fisiológico observado entre as sessões; não constitui confirmação estatística isolada do breakpoint.</div>'
   +'</div>';
 }
 
@@ -2252,24 +2255,26 @@ function _vstFraseTiming(padraoInfo){
 }
 
 function _vstFraseInterpretacaoRecovery(statusComp, padraoTxt, nomeMetrica){
- // frase curta, so' junta o que ja' esta calculado -- nenhum calculo novo
+ // duas frases, cada uma respondendo so' a UMA das perguntas -- nenhum
+ // calculo novo, so' o texto fixo pedido em torno dos valores ja'
+ // calculados (statusComp e padraoTxt)
  const dirTxt = statusComp==='CONVERGENTE'
-  ? 'A direção da resposta de recuperação observada no Dia 1 é compatível com a observada no Dia 2'
+  ? 'a direção da resposta de recuperação é compatível entre as sessões.'
   : statusComp==='PARCIALMENTE CONVERGENTE'
-  ? 'A direção da resposta de recuperação observada no Dia 1 é parcialmente compatível com a observada no Dia 2'
+  ? 'a direção da resposta de recuperação é parcialmente compatível entre as sessões.'
   : statusComp==='DADOS INSUFICIENTES'
-  ? 'Não há dados suficientes para comparar a direção da resposta entre os dois dias'
-  : 'A direção da resposta de recuperação observada no Dia 1 não é compatível com a observada no Dia 2';
+  ? 'não há dados suficientes para comparar a direção da resposta entre as sessões.'
+  : 'a direção da resposta de recuperação não é compatível entre as sessões.';
  const padTxt = !padraoTxt || padraoTxt==='DADOS INSUFICIENTES'
-  ? 'não há dados suficientes para avaliar progressão temporal dentro do bloco'
+  ? 'não há dados suficientes para avaliar progressão temporal dentro do bloco.'
   : padraoTxt==='ESTÁVEL'
-  ? 'não foi identificada alteração temporal consistente entre os recoveries'
+  ? 'não foi identificada alteração temporal consistente entre os recoveries.'
   : padraoTxt==='INCONSISTENTE'
-  ? 'os recoveries individuais não apresentam progressão temporal consistente entre os WORKs'
+  ? 'os recoveries individuais não apresentam progressão temporal consistente entre os WORKs.'
   : padraoTxt==='PROGRESSIVAMENTE PIOR'
-  ? 'os recoveries pioram progressivamente ao longo dos WORKs'
-  : 'os recoveries melhoram progressivamente ao longo dos WORKs';
- return dirTxt + ', mas ' + padTxt + '.';
+  ? 'os recoveries pioram progressivamente ao longo dos WORKs.'
+  : 'os recoveries melhoram progressivamente ao longo dos WORKs.';
+ return 'Dia 1 × Dia 2: '+dirTxt+' Dentro do Dia 2, '+padTxt;
 }
 
 function _vstCartaoRecoveryBloco(titulo, comp){
@@ -2286,7 +2291,7 @@ function _vstCartaoRecoveryBloco(titulo, comp){
  let h = '<div class="card"><div class="label">'+titulo+'</div>'
   +'<div style="font-size:10px;color:#8b949e;margin-top:4px;">Dia 1 × Dia 2</div>'
   +'<div class="value" style="font-size:14px;color:'+_vstCorGeral(comp.status)+';">'+(comp.status||'—')+'</div>'
-  +'<div style="font-size:10px;color:#8b949e;margin-top:6px;">Padrão temporal Dia 2</div>'
+  +'<div style="font-size:10px;color:#8b949e;margin-top:6px;">Padrão temporal dentro do Dia 2</div>'
   +'<div style="font-size:13px;color:'+_vstCorGeral(padraoTxt)+';">'+(padraoTxt||'DADOS INSUFICIENTES')+'</div>';
  if(pb && pb.fracoes && pb.fracoes.length)
   h += '<div style="font-size:10px;color:#8b949e;margin-top:2px;">Frações ('+((ref||{}).nome||'')+'): '+pb.fracoes.map(f=>f.toFixed(2)).join(' → ')+'</div>';

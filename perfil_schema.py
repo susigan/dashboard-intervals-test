@@ -186,6 +186,20 @@ MIGRACOES = [
     # cruzar no Perfil Metabólico com o VO2max do modelo de Hawley.
     ('moxy_analises', 'vo2max_previsto', 'REAL'),
     ('moxy_analises', 'vo2max_plausivel', 'INTEGER'),
+    # Snapshot do ultimo resultado da comparacao Dia1xDia2, para nao
+    # ter de recalcular so' para mostrar a lista "verificacoes salvas".
+    # Os valores estruturados sao os que ja vem de comparar_bp/
+    # comparar_recovery -- nunca recalculados aqui, so' guardados.
+    ('vst_conjuntos', 'bp1_status', 'TEXT'),
+    ('vst_conjuntos', 'bp2_status', 'TEXT'),
+    ('vst_conjuntos', 'recovery_bp1_status', 'TEXT'),
+    ('vst_conjuntos', 'recovery_bp2_status', 'TEXT'),
+    ('vst_conjuntos', 'dia1_bp1_w', 'REAL'),
+    ('vst_conjuntos', 'dia2_bp1_w', 'REAL'),
+    ('vst_conjuntos', 'dia1_bp2_w', 'REAL'),
+    ('vst_conjuntos', 'dia2_bp2_w', 'REAL'),
+    ('vst_conjuntos', 'resultado_json', 'TEXT'),
+    ('vst_conjuntos', 'analisado_em', 'TEXT'),
 ]
 
 # Escolha do atleta: usar os blocos WORK/RECOVERY da Intervals.icu

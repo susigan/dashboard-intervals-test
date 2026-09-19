@@ -3046,27 +3046,41 @@ function _vstSimboloVerificacao(status){
 }
 
 let MX_VST_VERIF_CACHE = {};  // {moxyId: resposta de /verificacao_ativa} -- evita repetir o pedido a cada mxDraw()
+let MX_HOVER_BP_FAIXAS = [];  // faixas de BP1/BP2 desenhadas no grafico principal, para hover
 
 function mxPrincipalVerificacaoMostrar(){
  const ids=Object.keys(MX_DADOS||{});
- const spanBP1=document.getElementById('mxCartaoBP1Vst'), spanBP2=document.getElementById('mxCartaoBP2Vst');
- if(!ids.length || !spanBP1 || !spanBP2) return;
+ const linhaBP1=document.getElementById('mxCartaoBP1Linha'), linhaBP2=document.getElementById('mxCartaoBP2Linha');
+ if(!ids.length || !linhaBP1 || !linhaBP2) return;
  const moxyId=ids[0];
 
  function pintar(d){
-  if(!d || d.status!=='ok' || !d.sincronizado || !d.analisado){ spanBP1.textContent=''; spanBP2.textContent=''; return; }
-  function pinta(span, vst){
-   if(!vst || !vst.status){ span.textContent=''; return; }
+  if(!d || d.status!=='ok' || !d.sincronizado || !d.analisado) return;  // mantem a linha original (ponto), como ja' esta
+  function pinta(linha, mxbpVal, cor, nome, vst){
+   if(!vst || !vst.status) return;
    const s=_vstSimboloVerificacao(vst.status);
-   span.innerHTML=' <span style="font-size:11px;color:'+s.cor+';">'+s.simbolo+' VST'
-     +(s.texto==='PARCIALMENTE VERIFICADO'?' parcial':s.texto==='NÃO VERIFICADO'?' não verificado':s.texto==='DADOS INSUFICIENTES'?' insuficiente':'')+'</span>';
+   // so' troca a linha por um RANGE se for CONSISTENTE ou PARCIALMENTE
+   // CONSISTENTE e houver range_verificado -- caso contrario mantem a
+   // linha original (ponto), ja renderizada por mxDraw
+   if((vst.status==='CONSISTENTE' || vst.status==='PARCIALMENTE CONSISTENTE') && vst.range_verificado){
+    const rv=vst.range_verificado;
+    linha.innerHTML='<b style="color:'+cor+';">'+nome+'</b> '+Math.round(rv[0])+'–'+Math.round(rv[1])+'W'
+      +' <span style="font-size:11px;color:'+s.cor+';">'+s.simbolo+' VST'+(s.texto==='PARCIALMENTE VERIFICADO'?' verificado (parcial)':' verificado')+'</span>';
+   } else if(mxbpVal!=null){
+    // sem range utilizavel: mantem o ponto, so' acrescenta o selo de status
+    linha.innerHTML='<b style="color:'+cor+';">'+nome+'</b> '+Math.round(mxbpVal)+'W'
+      +' <span style="font-size:11px;color:'+s.cor+';">'+s.simbolo+' VST'
+      +(s.texto==='NÃO VERIFICADO'?' não verificado':s.texto==='DADOS INSUFICIENTES'?' insuficiente':'')+'</span>';
+   }
   }
-  pinta(spanBP1, d.bp1); pinta(spanBP2, d.bp2);
+  pinta(linhaBP1, MX_BP&&MX_BP.bp1, '#3FB950', 'BP1', d.bp1);
+  pinta(linhaBP2, MX_BP&&MX_BP.bp2, '#F85149', 'BP2', d.bp2);
  }
 
  if(MX_VST_VERIF_CACHE[moxyId] !== undefined){ pintar(MX_VST_VERIF_CACHE[moxyId]); return; }
  fetch('/api/moxy/vst/verificacao_ativa/'+moxyId).then(r=>r.json()).then(function(d){
   MX_VST_VERIF_CACHE[moxyId]=d; pintar(d);
+  mxDraw();  // a faixa de BP1/BP2 no grafico so' aparece depois da cache existir
  }).catch(function(){ MX_VST_VERIF_CACHE[moxyId]=null; });
 }
 
@@ -4479,6 +4493,7 @@ function mxJanela(){
 function mxDraw(){
  const o = ctx('chMoxy', 380); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
+ MX_HOVER_BP_FAIXAS = [];
  const ids=Object.keys(MX_DADOS);
  if(!ids.length){ noData(g,W,H,'Escolhe uma sessão na lista'); return; }
  const activos=Object.keys(MX_ON).filter(k=>MX_ON[k]===true);
@@ -4746,6 +4761,54 @@ function mxDraw(){
     && b.watts_medio!=null);
   [[MX_BP.bp1,'#3FB950','BP1'],[MX_BP.bp2,'#F85149','BP2']].forEach(function(b){
    if(b[0]==null) return;
+
+   // se houver VST consistente/parcial para este BP, na CACHE ja'
+   // preenchida pela Principal/Limiares (mesma fonte, nao recalculada
+   // aqui), desenhar uma FAIXA translucida entre o min e o max
+   // verificados, em vez de uma linha unica -- nunca o ponto medio.
+   const dvst = MX_VST_VERIF_CACHE[idBP];
+   const chaveVst = b[2]==='BP1' ? 'bp1' : 'bp2';
+   const vstOk = dvst && dvst.status==='ok' && dvst.sincronizado && dvst.analisado
+     && dvst[chaveVst] && dvst[chaveVst].range_verificado
+     && (dvst[chaveVst].status==='CONSISTENTE' || dvst[chaveVst].status==='PARCIALMENTE CONSISTENTE');
+
+   function _xDoWatts(alvo){
+    if(blocosOn.length){
+     const bloco=blocosOn.reduce(function(a,c){
+       return Math.abs(c.watts_medio-alvo)<=Math.abs(a.watts_medio-alvo)?c:a;
+     });
+     if(Math.abs(bloco.watts_medio-alvo)<=25) return X((bloco.t0+bloco.t1)/2 - refBP);
+    }
+    let melhor=null, dmin=1e18;
+    wserBP.pts.forEach(function(p){
+     const dd=Math.abs(p[1]-alvo);
+     if(dd<dmin){ dmin=dd; melhor=p[0]; }
+    });
+    return (melhor==null || dmin>25) ? null : X(melhor);
+   }
+
+   if(vstOk){
+    const rv=dvst[chaveVst].range_verificado;
+    const xMin=_xDoWatts(rv[0]), xMax=_xDoWatts(rv[1]);
+    if(xMin==null || xMax==null) return;  // sem correspondencia de blocos -- nao inventa faixa
+    const x0=Math.min(xMin,xMax), x1=Math.max(xMin,xMax);
+    const parcial = dvst[chaveVst].status==='PARCIALMENTE CONSISTENTE';
+    g.fillStyle=b[1]; g.globalAlpha=parcial?0.08:0.16;
+    g.fillRect(x0,PT,Math.max(2,x1-x0),h);
+    g.globalAlpha=1;
+    g.strokeStyle=b[1]; g.setLineDash(parcial?[2,3]:[]); g.lineWidth=1;
+    g.strokeRect(x0,PT,Math.max(2,x1-x0),h);
+    g.setLineDash([]);
+    g.fillStyle=b[1]; g.font='10px sans-serif'; g.textAlign='center';
+    const simb = parcial ? '~' : '✓';
+    g.fillText(simb+' '+b[2]+' VST'+(parcial?' parcial':'')+': '+Math.round(rv[0])+'–'+Math.round(rv[1])+'W',
+      (x0+x1)/2, PT+10);
+    MX_HOVER_BP_FAIXAS = MX_HOVER_BP_FAIXAS || [];
+    MX_HOVER_BP_FAIXAS.push({x0:x0,x1:x1,bp:b[2],range:rv,parcial:parcial});
+    return;
+   }
+
+   // CASO A -- sem VST valido: comportamento original, linha pontual
    let x=null;
    if(blocosOn.length){
     const bloco=blocosOn.reduce(function(a,c){
@@ -4792,12 +4855,13 @@ function mxDraw(){
   if(MX_BP && (MX_BP.bp1!=null || MX_BP.bp2!=null)){
    cartaoBP.style.display='block';
    cartaoBP.innerHTML =
-    (MX_BP.bp1!=null ? '<b style="color:#3FB950">BP1</b> '+Math.round(MX_BP.bp1)+'W'
+    '<div id="mxCartaoBP1Linha">'
+    + (MX_BP.bp1!=null ? '<b style="color:#3FB950">BP1</b> '+Math.round(MX_BP.bp1)+'W'
       +(MX_BP.bp1_bpm?' · '+MX_BP.bp1_bpm+'bpm':'') : '')
-    + '<span id="mxCartaoBP1Vst"></span>'
-    + (MX_BP.bp2!=null ? '<br><b style="color:#F85149">BP2</b> '+Math.round(MX_BP.bp2)+'W'
+    + '</div><div id="mxCartaoBP2Linha">'
+    + (MX_BP.bp2!=null ? '<b style="color:#F85149">BP2</b> '+Math.round(MX_BP.bp2)+'W'
       +(MX_BP.bp2_bpm?' · '+MX_BP.bp2_bpm+'bpm':'') : '')
-    + '<span id="mxCartaoBP2Vst"></span>';
+    + '</div>';
    mxPrincipalVerificacaoMostrar();
   } else {
    cartaoBP.style.display='none';

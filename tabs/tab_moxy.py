@@ -442,19 +442,36 @@ BODY = """
     </div>
     <div id="mxVstConjuntoEstado" style="margin-top:6px;"></div>
 
-    <div id="mxVstCartoes" style="margin-top:10px;"></div>
-    <div id="mxVstTabela" style="margin-top:14px;overflow-x:auto;"></div>
-
-    <h3 style="font-size:14px;margin-top:20px;">Comparação — Dia 1 × Dia 2</h3>
+    <h3 style="font-size:14px;margin-top:16px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
-    <div id="mxVstComparacao" style="margin-top:8px;"></div>
 
-    <h3 style="font-size:14px;margin-top:20px;">Recovery</h3>
-    <div id="mxVstRecoveryCartoes" style="margin-top:8px;"></div>
-    <div id="mxVstRecoveryTabela" style="margin-top:14px;overflow-x:auto;"></div>
+    <div class="chartbox" style="position:relative;width:100%;margin-top:14px;">
+      <canvas id="chMxVstTemporal" height="220"></canvas>
+      <div id="mxTipVstTemporal" style="display:none;position:absolute;pointer-events:none;
+        background:#161b22;border:1px solid #30363d;border-radius:6px;
+        padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+    </div>
+
+    <div id="mxVstRecoveryCartoes" style="margin-top:14px;"></div>
     <div id="mxVstRecoveryFinal" style="margin-top:10px;"></div>
 
-    <div id="mxVstRevisaoCritica" style="margin-top:16px;"></div>
+    <details style="margin-top:16px;">
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Detalhes da comparação</summary>
+      <div id="mxVstCartoes" style="margin-top:10px;"></div>
+      <div id="mxVstTabela" style="margin-top:14px;overflow-x:auto;"></div>
+      <div id="mxVstComparacao" style="margin-top:8px;"></div>
+      <div id="mxVstRecoveryTabela" style="margin-top:14px;overflow-x:auto;"></div>
+    </details>
+
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Limitações</summary>
+      <div id="mxVstLimitacoes" style="margin-top:8px;"></div>
+    </details>
+
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;">Revisão completa (auditoria)</summary>
+      <div id="mxVstRevisaoCritica" style="margin-top:16px;"></div>
+    </details>
   </div>
 
 </div>
@@ -1729,6 +1746,7 @@ function mxVstCarregar(){
     d.n_intervalos_encontrados+' intervalos de trabalho encontrados');
   mxVstCartoes(d);
   mxVstTabela(d);
+  mxDesenharVstTemporal(d);
   mxVstPopularMoxySelect();
   mxVstCarregarConjunto(id);
  }).catch(function(e){
@@ -1937,6 +1955,7 @@ function mxVstCarregarComparacao(vstId){
   mxVstRecoveryTabela(d);
   mxVstRecoveryFinalMostrar(d.recuperacao_final_dia2);
   mxVstRevisaoCritica(d);
+  mxVstLimitacoes(d);
  }).catch(function(e){
   box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
  });
@@ -2328,6 +2347,106 @@ function mxVstRevisaoCritica(d){
  h += resp('Limitações: DFA1 complementar, THb contextual, poucos WORKs por bloco limitam a robustez estatística — ver p-permutação nos cartões.');
  h += '</ol><p class="sub" style="font-size:10px;">Esta revisão é descritiva. Não constitui diagnóstico, não afirma causalidade, e não afirma que o breakpoint foi validado.</p>';
  box.innerHTML = h;
+}
+
+// Grafico temporal principal do Dia 2 -- desenhado a partir dos
+// blocos ja calculados (t0/t1/watts_medio por WORK/RECOVERY), sem
+// pedir o stream completo outra vez. Mostra potencia ao longo do
+// tempo real da sessao, com WORK/RECOVERY/aquecimento/BP1/BP2
+// identificados por cor, e hover com os detalhes de cada bloco.
+function mxDesenharVstTemporal(d){
+ const o = ctx('chMxVstTemporal', 220); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const aq = d.aquecimento && d.aquecimento.bloco;
+ const bp1blocos = (d.bp1 && d.bp1.blocos) || [];
+ const bp2blocos = (d.bp2 && d.bp2.blocos) || [];
+ const todos = (aq?[Object.assign({},aq,{grupo:'aquecimento'})]:[])
+  .concat(bp1blocos.map(b=>Object.assign({},b,{grupo:'bp1'})))
+  .concat(bp2blocos.map(b=>Object.assign({},b,{grupo:'bp2'})));
+ if(!todos.length){ noData(g,W,H,'Sem blocos para desenhar'); return; }
+
+ const cores={aquecimento:'#8b949e', bp1:'#5DADE2', bp2:'#F0883E'};
+ const PL=48, PR=16, PT=16, PB=28;
+ const w=W-PL-PR, h=H-PT-PB;
+ const tMin=Math.min.apply(null, todos.map(b=>b.t0));
+ const tMax=Math.max.apply(null, todos.map(b=>b.t1));
+ const potMax=Math.max.apply(null, todos.map(b=>b.watts_medio_da_api||b.watts_medio||0))*1.15;
+ const X=t=>PL+(t-tMin)/((tMax-tMin)||1)*w;
+ const Y=p=>PT+h-(p/(potMax||1))*h;
+
+ g.clearRect(0,0,W,H);
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='10px sans-serif';
+ for(let i=0;i<=4;i++){
+  const pv=potMax*i/4, y=Y(pv);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+  g.textAlign='right'; g.fillText(Math.round(pv), PL-6, y+3);
+ }
+ g.textAlign='center';
+ [0,0.25,0.5,0.75,1].forEach(function(f){
+  const tv=tMin+(tMax-tMin)*f;
+  g.fillText(Math.round(tv/60)+'min', X(tv), PT+h+16);
+ });
+
+ // um rectangulo por bloco WORK, colorido pelo grupo -- e' a potencia
+ // media desse bloco (nao o stream segundo a segundo, que exigiria
+ // outro pedido ao servidor)
+ const rects=[];
+ todos.forEach(function(b){
+  const pot=b.watts_medio_da_api||b.watts_medio||0;
+  const x0=X(b.t0), x1=X(b.t1), y0=Y(pot);
+  g.fillStyle=cores[b.grupo]; g.globalAlpha=0.75;
+  g.fillRect(x0,y0,Math.max(1,x1-x0),PT+h-y0);
+  g.globalAlpha=1;
+  rects.push({x0:x0,x1:x1,t0:b.t0,t1:b.t1,pot:pot,grupo:b.grupo});
+ });
+
+ g.font='10px sans-serif'; g.textAlign='left';
+ Object.keys(cores).forEach(function(k,i){
+  g.fillStyle=cores[k];
+  g.fillRect(PL+i*90, 2, 8, 8);
+  g.fillText(k, PL+i*90+11, 10);
+ });
+
+ MX_HOVER.chMxVstTemporal = {rects:rects, PL:PL, w:w, xa:tMin, xb:tMax};
+}
+
+function mxVstLimitacoes(d){
+ const box=document.getElementById('mxVstLimitacoes');
+ if(!box) return;
+ const rec1=d.comparacao_recovery_bp1||{}, rec2=d.comparacao_recovery_bp2||{};
+ const bp1=d.comparacao_bp1||{}, bp2=d.comparacao_bp2||{};
+ const pontosCurtos = (bp1.n_validas||0)<3 || (bp2.n_validas||0)<3
+  || (rec1.n_validas||0)<3 || (rec2.n_validas||0)<3;
+ const itens = [
+  'Timing do Dia 1 é pontual (transição na rampa); o Dia 2 é um bloco sustentado — compatibilidade de padrão, não igualdade.',
+  'DFA1-α1 é evidência complementar — nunca decide sozinho CONSISTENTE/DIVERGENTE.',
+  'THb é contextual — interpretado junto com SmO2, nunca como prova independente.',
+  'A comparação directa de recovery usa o primeiro minuto do Dia 2 (janela comparável à transição de ~1min do Dia 1); o recovery completo continua disponível em "Detalhes".',
+ ];
+ if(pontosCurtos) itens.push('Poucos pontos nalgum bloco — a robustez do teste de permutação é necessariamente limitada.');
+ box.innerHTML = '<ul style="font-size:11px;color:#c9d1d9;padding-left:18px;margin:4px 0;">'
+  + itens.map(t=>'<li style="margin-bottom:3px;">'+t+'</li>').join('') + '</ul>';
+}
+
+function mxLigarHoverVstTemporal(){
+ const cv=document.getElementById('chMxVstTemporal');
+ const tip=document.getElementById('mxTipVstTemporal');
+ if(!cv || !tip) return;
+ cv.addEventListener('mousemove', function(ev){
+  const info=MX_HOVER.chMxVstTemporal;
+  if(!info || !info.rects.length){ tip.style.display='none'; return; }
+  const r=cv.getBoundingClientRect();
+  const esc=(cv.width/r.width)/(window.devicePixelRatio||1);
+  const mx=(ev.clientX-r.left)*esc;
+  const bloco=info.rects.find(function(rr){ return mx>=rr.x0 && mx<=rr.x1; });
+  if(!bloco){ tip.style.display='none'; return; }
+  tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+12, r.width-160)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
+  tip.textContent=bloco.grupo+' · '+Math.round(bloco.pot)+'W · '
+    +Math.round(bloco.t0/60)+'–'+Math.round(bloco.t1/60)+'min';
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
 }
 
 function mxLimiares(){
@@ -4542,6 +4661,7 @@ function ivGlossario(){
 mxLigarHoverPontos('chMxLimiares','mxTipLimiares');
 mxLigarHoverPontos('chMxDfa1','mxTipDfa1');
 mxLigarHoverZonas();
+mxLigarHoverVstTemporal();
 mxMudarSubTab('principal');
 mxSessoes();
 // ivSessoes()/ivGlossario() ja nao sao chamadas aqui -- a seccao que

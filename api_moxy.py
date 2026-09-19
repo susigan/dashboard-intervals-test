@@ -2285,6 +2285,63 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/vst/verificacao_ativa/<path:moxy_activity_id>')
+    def api_moxy_vst_verificacao_ativa(moxy_activity_id):
+        """Fonte ÚNICA que Limiares/Principal/Intervenções consultam para
+        saber se esta sessão Moxy tem uma verificação VST associada — lê
+        directamente o snapshot já gravado em vst_conjuntos (pelo
+        endpoint /comparar), NUNCA recalcula nada. Se não houver
+        conjunto, ou o conjunto ainda não foi analisado (sem
+        analisado_em), devolve 'sincronizado': False / 'analisado':
+        False, para as tabs caírem no comportamento actual sem
+        verificação.
+
+        range_verificado, por BP: [min(dia1_w, dia2_w), max(dia1_w,
+        dia2_w)] -- nao e' um novo calculo, e' so' ordenar os DOIS
+        numeros que ja' estao gravados (a potencia encontrada no Dia 1 e
+        a potencia realmente executada no Dia 2 para aquele BP).
+        """
+        try:
+            mid = str(moxy_activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT vst_activity_id, bp1_status, bp2_status, "
+                "recovery_bp1_status, recovery_bp2_status, "
+                "dia1_bp1_w, dia2_bp1_w, dia1_bp2_w, dia2_bp2_w, "
+                "analisado_em FROM vst_conjuntos WHERE moxy_activity_id=? "
+                "ORDER BY actualizado_em DESC LIMIT 1", (mid,)).fetchone()
+            if not r:
+                return jsonify({'status': 'ok', 'sincronizado': False,
+                                'analisado': False,
+                                'mensagem': 'Nenhuma verificação VST associada'})
+            if not r[9]:
+                return jsonify({'status': 'ok', 'sincronizado': True,
+                                'analisado': False,
+                                'vst_activity_id': r[0],
+                                'mensagem': 'Conjunto sincronizado, mas ainda '
+                                           'sem análise — abre a Verificação '
+                                           'para calcular'})
+
+            def _range(v1, v2):
+                if v1 is None or v2 is None:
+                    return None
+                return [round(min(v1, v2), 1), round(max(v1, v2), 1)]
+
+            return jsonify({
+                'status': 'ok', 'sincronizado': True, 'analisado': True,
+                'vst_activity_id': r[0],
+                'bp1': {'status': r[1], 'dia1_w': r[5], 'dia2_w': r[6],
+                        'range_verificado': _range(r[5], r[6])},
+                'bp2': {'status': r[2], 'dia1_w': r[7], 'dia2_w': r[8],
+                        'range_verificado': _range(r[7], r[8])},
+                'recovery_bp1_status': r[3], 'recovery_bp2_status': r[4],
+                'analisado_em': r[9],
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/vst/conjuntos_salvos')
     def api_moxy_vst_conjuntos_salvos():
         """Lista de "VERIFICAÇÕES SALVAS" -- le' so' o que ja' esta'

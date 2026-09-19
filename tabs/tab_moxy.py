@@ -2095,9 +2095,9 @@ function _vstTabelaComparacao(titulo, comp){
 // ═══════════════════════════════════════════════════════════════════
 
 function _vstCorGeral(s){
- return {'CONSISTENTE':'#3FB950','CONVERGENTE':'#3FB950',
-        'PARCIALMENTE CONSISTENTE':'#F4D03F','PARCIALMENTE CONVERGENTE':'#F4D03F',
-        'DIVERGENTE':'#E74C3C','DADOS INSUFICIENTES':'#8b949e',
+ return {'CONSISTENTE':'#3FB950','CONVERGENTE':'#3FB950','RECUPEROU':'#3FB950',
+        'PARCIALMENTE CONSISTENTE':'#F4D03F','PARCIALMENTE CONVERGENTE':'#F4D03F','PARCIAL':'#F4D03F',
+        'DIVERGENTE':'#E74C3C','NÃO RECUPEROU':'#E74C3C','DADOS INSUFICIENTES':'#8b949e',
         'INDETERMINADA':'#8b949e'}[s] || '#8b949e';
 }
 
@@ -2335,19 +2335,32 @@ function mxVstRecoveryFinalMostrar(rf){
   box.innerHTML='';
   return;
  }
- let h='<div style="border-left:3px solid #8b949e;padding:6px 10px;">'
-  +'<b style="font-size:12px;">RECOVERY FINAL</b>'
-  +'<div style="font-size:11px;color:#8b949e;margin:3px 0;">Não há WORK subsequente; portanto '
-  +'este recovery descreve apenas a trajectória disponível após o último esforço — '
-  +'não é comparável à "completude" das recuperações intermédias.</div>';
  const pc = rf.por_canal||{};
- Object.keys(pc).forEach(function(k){
+ const nomes={hr:'HR', respiracao:'RF', smo2:'SmO2', thb:'THb', dfa1:'DFA1'};
+ const ordem=['hr','respiracao','smo2','thb','dfa1'];
+ const validos = ordem.filter(k=>pc[k] && pc[k].estado!=='sem_dados');
+ // "Status" e' so' um resumo de apresentacao dos estados por-canal
+ // ja calculados (recuperou/nao_recuperou) -- nao e' um valor novo
+ const recuperaram = validos.filter(k=>pc[k].estado==='recuperou');
+ const status = !validos.length ? 'DADOS INSUFICIENTES'
+  : recuperaram.length===validos.length ? 'RECUPEROU'
+  : recuperaram.length===0 ? 'NÃO RECUPEROU' : 'PARCIAL';
+
+ let linhas = '';
+ ordem.forEach(function(k){
   const c=pc[k];
-  if(c.estado==='sem_dados') return;
-  h+='<div style="font-size:11px;">'+k+': '+c.inicial+' → '+c.final+' ('+c.estado+')</div>';
+  if(!c || c.estado==='sem_dados') return;
+  linhas += '<div style="display:flex;justify-content:space-between;font-size:11px;padding:1px 0;">'
+   +'<span style="color:#8b949e;">'+nomes[k]+'</span>'
+   +'<span>'+c.inicial+' → '+c.final+'</span></div>';
  });
- h+='</div>';
- box.innerHTML=h;
+
+ box.innerHTML = '<div class="card" style="max-width:260px;">'
+  +'<div class="label">RECOVERY FINAL</div>'
+  + linhas
+  +'<div style="font-size:11px;margin-top:4px;color:'+_vstCorGeral(status)+';"><b>Status: '+status+'</b></div>'
+  +'<div style="font-size:9px;color:#8b949e;margin-top:4px;">Após o último WORK; não comparável à completude dos recoveries intermediários.</div>'
+  +'</div>';
 }
 
 function mxVstBlocoAuditoria(titulo, comp){

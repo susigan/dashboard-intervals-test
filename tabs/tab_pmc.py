@@ -526,7 +526,11 @@ __EXPL_fases__
 
 <h2>FMT — tensor 5&times;5 e mapa de atencao</h2>
 <div class="sub" id="subFMT5"></div>
-<div class="grid2">
+<div style="display:grid;grid-template-columns:1fr 1.4fr 1fr;gap:14px;">
+  <div class="chartbox">
+    <div class="legend"><span>Regime do dia (&kappa; vs TSB)</span></div>
+    <div id="regimeHojeCard"></div>
+  </div>
   <div class="chartbox">
     <div class="legend"><span>Matriz de covariacoes F(d)</span></div>
     <canvas id="chMatriz" height="260"></canvas>
@@ -1304,6 +1308,14 @@ function drawEigen(){
  g.textAlign='right';g.fillStyle='#8b949e';
  for(let i=0;i<=4;i++)g.fillText((mx-mx*i/4).toFixed(2),PL-5,PT+h*i/4+3);
  g.textAlign='left';
+
+ registarTip('chEigen',function(mxp,myp,rw){
+  const esc=rw/W,x=mxp/esc;
+  const i=Math.floor((x-PL)/bw);
+  if(i<0||i>=ev.length)return '';
+  return '<div class="th">λ'+(i+1)+'</div>'+
+   linhaTip(i===0?'#E67E22':'#5DADE2','Valor próprio',ev[i].toFixed(3))+
+   linhaTip('#8b949e','% da variância total',(ev[i]/tot*100).toFixed(1)+'%');});
 }
 
 function drawAtencao(){

@@ -2390,6 +2390,23 @@ function _vstAuditoriaLinha(canal, m){
  const padraoTxt = pb ? pb.padrao : 'DADOS INSUFICIENTES';
  const fraccoesTxt = _vstFraccaoTexto(m.dia2_fracoes);
 
+ // as DUAS janelas, lado a lado, nunca uma escondendo a outra -- e' a
+ // unica forma de ver directamente se um OVERSHOOT vem so' da janela
+ // completa ou ja' aparece nos primeiros 60s (pedido explicito)
+ const j60=m.dia2_ultima, jComp=m.dia2_ultima_completa;
+ let janelaTxt = '—';
+ if(j60 || jComp){
+  const t60 = j60 && j60.fracao!=null
+   ? '0–60s: '+j60.fracao.toFixed(2)+' → <b>'+j60.completude+'</b>'+(j60.duracao_s!=null&&j60.duracao_s<60?' <span style="color:#F0883E;">(janela &lt; 60s)</span>':'')
+   : '0–60s: sem dados suficientes';
+  const tComp = jComp && jComp.fracao!=null
+   ? 'Completo: '+jComp.fracao.toFixed(2)+' → <b>'+jComp.completude+'</b>'+(jComp.duracao_s!=null?' ('+Math.round(jComp.duracao_s)+'s)':'')
+   : 'Completo: sem dados suficientes';
+  janelaTxt = t60+'<br>'+tComp;
+  if(j60 && jComp && j60.completude!==jComp.completude)
+   janelaTxt += '<br><span style="color:#F4D03F;font-size:9px;">⚠ classificação difere entre janelas</span>';
+ }
+
  let obs = '';
  if(m.peso==='complementar') obs = 'DFA1 (complementar) — evidência autonómica, não decide sozinha.';
  else if(canal==='thb') obs = 'THb (contextual) — interpretado junto com SmO2, não é prova independente.';
@@ -2401,6 +2418,7 @@ function _vstAuditoriaLinha(canal, m){
   +'<td style="padding:4px 10px;font-size:10px;">'+dia1Texto+'</td>'
   +'<td style="padding:4px 10px;font-size:10px;">'+(dia2Linhas||'sem dados')+'</td>'
   +'<td style="padding:4px 10px;font-size:10px;">Padrão: <b>'+padraoTxt+'</b><br>Frações: '+fraccoesTxt+'</td>'
+  +'<td style="padding:4px 10px;font-size:10px;">'+janelaTxt+'</td>'
   +'<td style="padding:4px 10px;color:'+_vstCorConsistencia(m.consistencia)+';">'+m.consistencia+'</td>'
   +'<td style="padding:4px 10px;font-size:10px;">'+(m.peso==='principal'?'principal':m.peso)+'</td>'
   +'<td style="padding:4px 10px;font-size:10px;color:#8b949e;">'+obs+'</td>'
@@ -2437,6 +2455,7 @@ function mxVstAuditoriaRecovery(titulo, comp){
   +'<th style="padding:4px 10px;">Dia 1</th>'
   +'<th style="padding:4px 10px;">Dia 2 (recoveries individuais)</th>'
   +'<th style="padding:4px 10px;">Padrão D2 (dentro do bloco)</th>'
+  +'<th style="padding:4px 10px;">Janela (comparação vs completo)</th>'
   +'<th style="padding:4px 10px;">Comparação</th>'
   +'<th style="padding:4px 10px;">Peso</th>'
   +'<th style="padding:4px 10px;">Observação</th></tr>';

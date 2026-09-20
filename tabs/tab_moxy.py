@@ -529,10 +529,20 @@ BODY = """
     <p class="sub" style="font-size:10px;margin-top:2px;">A janela sombreada (0–60s) é usada na comparação directa Dia 1 × Dia 2 — o recovery completo fica sempre visível.</p>
 
     <h3 style="font-size:14px;margin-top:20px;">Timing</h3>
-    <div id="mxVstTiming" style="margin-top:8px;overflow-x:auto;"></div>
+    <div class="grid2">
+      <div class="chartbox"><div class="legend"><span>BP1 — Δ% por WORK</span></div>
+        <canvas id="chVstTimingBP1" height="200"></canvas></div>
+      <div class="chartbox"><div class="legend"><span>BP2 — Δ% por WORK</span></div>
+        <canvas id="chVstTimingBP2" height="200"></canvas></div>
+    </div>
 
     <h3 style="font-size:14px;margin-top:20px;">Heatmap</h3>
-    <div id="mxVstHeatmap" style="margin-top:8px;overflow-x:auto;"></div>
+    <div class="grid2">
+      <div class="chartbox"><div class="legend"><span>BP1</span></div>
+        <canvas id="chVstHeatBP1" height="200"></canvas></div>
+      <div class="chartbox"><div class="legend"><span>BP2</span></div>
+        <canvas id="chVstHeatBP2" height="200"></canvas></div>
+    </div>
 
     <details style="margin-top:16px;">
       <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Detalhes da comparação</summary>
@@ -2952,77 +2962,97 @@ function mxLigarHoverVstFisiologico(){
 
 // Heatmap: linhas=metricas, colunas=WORK 1..N, valor=delta_pct ja'
 // calculado por metricas_intervalo(). Cor por intensidade do delta.
-function mxDesenharVstHeatmap(d){
- const box=document.getElementById('mxVstHeatmap');
- if(!box) return;
- const canais=[['hr','HR','principal'],['respiracao','RF','principal'],
-              ['smo2','SmO2','principal'],['thb','THb','contextual'],
-              ['dfa1','DFA1','complementar']];
- function tabela(titulo, metricas, rpeValores){
-  if(!metricas || !metricas.length) return '<p class="sub" style="font-size:11px;">'+titulo+': DADOS INSUFICIENTES</p>';
-  let h='<div style="margin-bottom:10px;"><b style="font-size:12px;">'+titulo+'</b>'
-   +'<table style="border-collapse:collapse;font-size:10px;margin-top:4px;">'
-   +'<tr><th style="padding:2px 8px;text-align:left;"></th>'
-   +metricas.map((_,i)=>'<th style="padding:2px 8px;">W'+(i+1)+'</th>').join('')+'</tr>';
-  canais.forEach(function(c){
-   h+='<tr><td style="padding:2px 8px;color:#8b949e;">'+c[1]+(c[2]!=='principal'?' <span style="font-size:8px;">('+c[2]+')</span>':'')+'</td>';
-   metricas.forEach(function(iv){
-    const m=iv[c[0]];
-    if(!m||!m.ok){ h+='<td style="padding:2px 8px;text-align:center;color:#8b949e;">—</td>'; return; }
-    const dp=m.delta_pct;
-    const intensidade=Math.min(1,Math.abs(dp||0)/60);
-    const cor = dp>=0 ? 'rgba(88,166,255,'+(0.15+intensidade*0.6)+')' : 'rgba(248,81,73,'+(0.15+intensidade*0.6)+')';
-    h+='<td style="padding:2px 8px;text-align:center;background:'+cor+';">'+(dp!=null?dp.toFixed(0)+'%':'—')+'</td>';
-   });
-   h+='</tr>';
+function _vstCorCelula(frac){
+ // mesmo espirito de corCel (tab PMC): amarelo (baixo) -> vermelho (alto)
+ const u=Math.max(0,Math.min(1,frac));
+ return 'rgb('+Math.round(234+(220-234)*u)+','+Math.round(179+(38-179)*u)+','+
+  Math.round(8+(38-8)*u)+')';
+}
+
+// Tensor unico para Heatmap e Timing -- MESMA grelha de dados (canais x
+// WORKs), so' muda a enfase: heatmap usa so' a cor continua (como
+// drawMatriz), timing acrescenta um contorno a celula de maior
+// |delta_pct| por linha (onde a mudanca foi maior). RPE entra como mais
+// uma linha, em escala propria (1-10), nunca misturada com os delta_pct
+// das outras metricas.
+function _vstDesenharTensor(canvasId, metricas, rpeValores, destacarMaximo){
+ const o=ctx(canvasId,200); if(!o) return;
+ const g=o.g,W=o.W,H=o.H;
+ if(!metricas || !metricas.length){ noData(g,W,H,'DADOS INSUFICIENTES'); return; }
+ const canais=[['hr','HR'],['respiracao','RF'],['smo2','SmO2'],['thb','THb'],['dfa1','DFA1']];
+ const nLinhas=canais.length+(rpeValores?1:0);
+ const nCols=metricas.length;
+ const PL=52,PT=18,PR=10,PB=20;
+ const celW=(W-PL-PR)/nCols, celH=(H-PT-PB)/nLinhas;
+
+ g.clearRect(0,0,W,H);
+ const linhasVals=canais.map(function(c){
+  return metricas.map(iv=>(iv[c[0]]&&iv[c[0]].ok)?iv[c[0]].delta_pct:null);
+ });
+ let mx=0;
+ linhasVals.forEach(l=>l.forEach(v=>{ if(v!=null && Math.abs(v)>mx) mx=Math.abs(v); }));
+ mx = mx||1;
+
+ function celula(i, valores, corDeFn, textoDeFn, destacar){
+  const validos=valores.map((v,j)=>v!=null?Math.abs(v):null).filter(v=>v!=null);
+  const maxIdx = validos.length ? valores.map(v=>v==null?-1:Math.abs(v)).indexOf(Math.max.apply(null,valores.map(v=>v==null?-1:Math.abs(v)))) : -1;
+  valores.forEach(function(v,j){
+   const x=PL+j*celW, y=PT+i*celH;
+   g.fillStyle = v==null ? '#21262d' : corDeFn(v);
+   g.fillRect(x,y,celW-1,celH-1);
+   if(destacar && j===maxIdx && v!=null){
+    g.strokeStyle='#F4D03F'; g.lineWidth=2;
+    g.strokeRect(x,y,celW-1,celH-1);
+   }
+   if(v!=null && celW>28){
+    g.fillStyle='#0d1117'; g.font='9px sans-serif'; g.textAlign='center';
+    g.fillText(textoDeFn(v), x+celW/2, y+celH/2+3);
+   }
   });
-  // RPE -- valor absoluto (1-10), nao delta_pct; lido de
-  // comparacao_rpe_bpX.dia2.valores (ja calculado em /comparar), nunca
-  // recalculado aqui. Se /comparar ainda nao respondeu, mostra "—".
-  h+='<tr><td style="padding:2px 8px;color:#8b949e;">RPE <span style="font-size:8px;">(complementar)</span></td>';
-  metricas.forEach(function(_,i){
-   const v = rpeValores && rpeValores[i]!=null ? rpeValores[i] : null;
-   h+='<td style="padding:2px 8px;text-align:center;color:#8b949e;">'+(v!=null?v:'—')+'</td>';
-  });
-  h+='</tr>';
-  h+='</table></div>';
-  return h;
  }
+
+ canais.forEach(function(c,i){
+  celula(i, linhasVals[i], v=>_vstCorCelula(Math.abs(v)/mx), v=>Math.round(v)+'%', destacarMaximo);
+ });
+ if(rpeValores){
+  const rpeMax=Math.max.apply(null, rpeValores.filter(v=>v!=null).concat([10]));
+  celula(canais.length, rpeValores, v=>_vstCorCelula(v/rpeMax), v=>String(v), destacarMaximo);
+ }
+
+ g.fillStyle='#8b949e'; g.font='10px sans-serif'; g.textAlign='right';
+ canais.forEach((c,i)=>g.fillText(c[1], PL-6, PT+i*celH+celH/2+3));
+ if(rpeValores) g.fillText('RPE', PL-6, PT+canais.length*celH+celH/2+3);
+ g.textAlign='center';
+ metricas.forEach((_,j)=>g.fillText('W'+(j+1), PL+j*celW+celW/2, PT-6));
+ g.textAlign='left';
+
+ registarTip(canvasId, function(mxp,myp,rw){
+  const esc=rw/W, x=mxp/esc, y=myp/esc;
+  const j=Math.floor((x-PL)/celW), i=Math.floor((y-PT)/celH);
+  if(j<0||j>=nCols||i<0||i>=nLinhas) return '';
+  const nome = i<canais.length ? canais[i][1] : 'RPE';
+  const v = i<canais.length ? linhasVals[i][j] : (rpeValores?rpeValores[j]:null);
+  if(v==null) return '';
+  return '<div class="th">'+nome+' · W'+(j+1)+'</div>'
+   +'<div class="tr"><span>'+(i<canais.length?'Δ%':'RPE')+'</span><b>'+
+   (i<canais.length?(v>=0?'+':'')+v.toFixed(1)+'%':v)+'</b></div>';
+ });
+}
+
+function mxDesenharVstHeatmap(d){
  const comp = MX_VST_ULT_COMP;
  const rpe1 = comp && comp.comparacao_rpe_bp1 && comp.comparacao_rpe_bp1.dia2 ? comp.comparacao_rpe_bp1.dia2.valores : null;
  const rpe2 = comp && comp.comparacao_rpe_bp2 && comp.comparacao_rpe_bp2.dia2 ? comp.comparacao_rpe_bp2.dia2.valores : null;
- box.innerHTML = tabela('BP1', (d.bp1&&d.bp1.metricas)||[], rpe1)
-  + tabela('BP2', (d.bp2&&d.bp2.metricas)||[], rpe2);
+ _vstDesenharTensor('chVstHeatBP1', (d.bp1&&d.bp1.metricas)||[], rpe1, false);
+ _vstDesenharTensor('chVstHeatBP2', (d.bp2&&d.bp2.metricas)||[], rpe2, false);
 }
 
-// Timing: para cada metrica principal, mostra em qual WORK a mudanca
-// (delta_pct) foi maior -- reaproveita os mesmos deltas do heatmap,
-// so' destaca a coluna com maior |delta_pct|.
 function mxDesenharVstTiming(d){
- const box=document.getElementById('mxVstTiming');
- if(!box) return;
- const canais=[['hr','HR'],['respiracao','RF'],['smo2','SmO2'],['dfa1','DFA1']];
- function linha(titulo, metricas){
-  if(!metricas || metricas.length<2) return '<p class="sub" style="font-size:11px;">'+titulo+': DADOS INSUFICIENTES</p>';
-  let h='<div style="margin-bottom:8px;"><b style="font-size:12px;">'+titulo+'</b><table style="border-collapse:collapse;font-size:10px;margin-top:4px;">';
-  canais.forEach(function(c){
-   const deltas=metricas.map(iv=>(iv[c[0]]&&iv[c[0]].ok)?Math.abs(iv[c[0]].delta_pct||0):null);
-   const validos=deltas.filter(v=>v!=null);
-   if(!validos.length){ h+='<tr><td style="padding:2px 8px;color:#8b949e;">'+c[1]+'</td><td class="sub" style="padding:2px 8px;">DADOS INSUFICIENTES</td></tr>'; return; }
-   const maxV=Math.max.apply(null,validos);
-   const idxMax=deltas.indexOf(maxV);
-   h+='<tr><td style="padding:2px 8px;color:#8b949e;">'+c[1]+'</td>'
-    +deltas.map(function(v,i){
-     if(v==null) return '<td style="padding:2px 8px;text-align:center;">—</td>';
-     const destaque = i===idxMax;
-     return '<td style="padding:2px 8px;text-align:center;'+(destaque?'background:rgba(243,156,18,0.35);font-weight:bold;':'')+'">'+v.toFixed(0)+'%</td>';
-    }).join('')+'</tr>';
-  });
-  h+='</table></div>';
-  return h;
- }
- box.innerHTML = linha('BP1 — em que WORK a mudança foi maior', (d.bp1&&d.bp1.metricas)||[])
-  + linha('BP2 — em que WORK a mudança foi maior', (d.bp2&&d.bp2.metricas)||[]);
+ const comp = MX_VST_ULT_COMP;
+ const rpe1 = comp && comp.comparacao_rpe_bp1 && comp.comparacao_rpe_bp1.dia2 ? comp.comparacao_rpe_bp1.dia2.valores : null;
+ const rpe2 = comp && comp.comparacao_rpe_bp2 && comp.comparacao_rpe_bp2.dia2 ? comp.comparacao_rpe_bp2.dia2.valores : null;
+ _vstDesenharTensor('chVstTimingBP1', (d.bp1&&d.bp1.metricas)||[], rpe1, true);
+ _vstDesenharTensor('chVstTimingBP2', (d.bp2&&d.bp2.metricas)||[], rpe2, true);
 }
 
 // Recovery x tempo: cada recovery mostrado como dois pontos (inicial em
@@ -3873,18 +3903,11 @@ function mxVstRpe(vid){
    +'<span class="sub" style="font-size:10px;">(1 fácil — 10 esforço máximo, só WORKs de BP1/BP2 — aquecimento e recovery não recebem RPE)</span>';
 
   if(d.todos_gravados && !MX_VST_RPE_EDITAR){
-   h+='<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
-    +'<tr class="sub" style="text-align:left;"><th style="padding-right:12px;">WORK</th>'
-    +'<th style="padding-right:12px;">Potência média</th><th>RPE</th></tr>'
+   h+='<br><span class="sub" style="font-size:11px;">'
     +d.blocos.map(function(b){
-      return '<tr><td style="padding-right:12px;">'+rotulo(b)+'</td>'
-       +'<td style="padding-right:12px;"><b>'+b.watts_medio+' W</b></td>'
-       +'<td>'+b.rpe+'</td></tr>';
-     }).join('')
-    +'</table>'
-    +'<p class="sub" style="font-size:10px;margin:4px 0 0;">RPE gravado para esta atividade.</p>'
-    +'<button id="mxVstRpeBtnRegravar" data-id="'+vid+'" '
-    +'style="margin-top:4px;font-size:11px;padding:3px 10px;'
+      return rotulo(b)+' '+b.watts_medio+'W → RPE '+b.rpe; }).join(' · ')+'</span>'
+    +'<br><button id="mxVstRpeBtnRegravar" data-id="'+vid+'" '
+    +'style="margin-top:6px;font-size:11px;padding:3px 10px;'
     +'border-radius:6px;border:1px solid #58A6FF;background:transparent;'
     +'color:#58A6FF;cursor:pointer;">↻ Re-gravar RPE</button>';
    box.innerHTML=h+'</div>';

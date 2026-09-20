@@ -448,6 +448,7 @@ BODY = """
 
     <h3 style="font-size:14px;margin-top:16px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
+    <div id="mxVstRpe" style="margin-top:10px;"></div>
 
     <div id="mxVstTemporalToggles" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;font-size:11px;">
       <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
@@ -1924,6 +1925,7 @@ function mxVstCarregar(){
   mxDesenharVstFisiologicoTodos(d);
   mxDesenharVstHeatmap(d);
   mxDesenharVstTiming(d);
+  mxVstRpe(id);
   mxVstPopularMoxySelect();
   mxVstCarregarConjunto(id);
 
@@ -3821,6 +3823,104 @@ function mxRpe(id){
 }
 
 let MX_RPE_ULTIMOS = [];
+let MX_VST_RPE_ULTIMOS = [];
+let MX_VST_RPE_EDITAR = false;  // flag propria, independente da da Principal
+
+function mxVstRpe(vid){
+ const box=document.getElementById('mxVstRpe');
+ if(!box || !vid) return;
+ fetch('/api/moxy/vst/rpe/'+vid).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ box.innerHTML=''; return; }
+  if(!(d.blocos||[]).length){
+   box.innerHTML='<p class="sub" style="font-size:11px;">sem WORKs de BP1/BP2 '
+    +'identificados nesta sessão para pedir RPE.</p>';
+   return;
+  }
+  MX_VST_RPE_ULTIMOS = d.blocos;
+  const rotulo=b=>b.grupo.toUpperCase()+' #'+b.numero;
+
+  let h='<div style="border:1px solid #30363d;border-radius:6px;'
+   +'padding:8px 10px;">'
+   +'<b style="font-size:12px;">RPE — Dia 2 / VST</b> '
+   +'<span class="sub" style="font-size:10px;">(1 fácil — 10 esforço máximo, só WORKs de BP1/BP2 — aquecimento e recovery não recebem RPE)</span>';
+
+  if(d.todos_gravados && !MX_VST_RPE_EDITAR){
+   h+='<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+    +'<tr class="sub" style="text-align:left;"><th style="padding-right:12px;">WORK</th>'
+    +'<th style="padding-right:12px;">Potência média</th><th>RPE</th></tr>'
+    +d.blocos.map(function(b){
+      return '<tr><td style="padding-right:12px;">'+rotulo(b)+'</td>'
+       +'<td style="padding-right:12px;"><b>'+b.watts_medio+' W</b></td>'
+       +'<td>'+b.rpe+'</td></tr>';
+     }).join('')
+    +'</table>'
+    +'<p class="sub" style="font-size:10px;margin:4px 0 0;">RPE gravado para esta atividade.</p>'
+    +'<button id="mxVstRpeBtnRegravar" data-id="'+vid+'" '
+    +'style="margin-top:4px;font-size:11px;padding:3px 10px;'
+    +'border-radius:6px;border:1px solid #58A6FF;background:transparent;'
+    +'color:#58A6FF;cursor:pointer;">↻ Re-gravar RPE</button>';
+   box.innerHTML=h+'</div>';
+   const btnR=document.getElementById('mxVstRpeBtnRegravar');
+   if(btnR) btnR.addEventListener('click', function(){
+    MX_VST_RPE_EDITAR=true; mxVstRpe(btnR.getAttribute('data-id'));
+   });
+   return;
+  }
+
+  h+='<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+   +'<tr class="sub" style="text-align:left;">'
+   +'<th style="padding-right:12px;">WORK</th>'
+   +'<th style="padding-right:12px;">Potência média (W)</th><th>RPE</th></tr>'
+   +d.blocos.map(function(b,i){
+     return '<tr><td style="padding-right:12px;">'+rotulo(b)+'</td>'
+      +'<td style="padding-right:12px;"><b>'+b.watts_medio+' W</b></td>'
+      +'<td><input type="number" min="1" max="10" step="1" '
+      +'id="mxVstRpeInput'+i+'" value="'+(b.rpe!=null?b.rpe:'')+'" '
+      +'style="width:44px;background:#0d1117;border:1px solid #30363d;'
+      +'color:#c9d1d9;border-radius:4px;padding:2px 4px;"></td></tr>';
+    }).join('')
+   +'</table>'
+   +'<button id="mxVstRpeBtnGravar" data-id="'+vid+'" style="margin-top:8px;'
+   +'font-size:11px;padding:4px 12px;border-radius:6px;'
+   +'border:1px solid #3FB950;background:transparent;color:#3FB950;'
+   +'cursor:pointer;">💾 Gravar RPE</button>'
+   +' <span id="mxVstRpeEstado" class="sub" style="font-size:11px;"></span>';
+  box.innerHTML=h+'</div>';
+  const btnG=document.getElementById('mxVstRpeBtnGravar');
+  if(btnG) btnG.addEventListener('click', function(){
+   mxVstRpeGravar(btnG.getAttribute('data-id'));
+  });
+ }).catch(function(){ box.innerHTML=''; });
+}
+
+function mxVstRpeGravar(vid){
+ const est=document.getElementById('mxVstRpeEstado');
+ const blocos=[];
+ for(let i=0;i<MX_VST_RPE_ULTIMOS.length;i++){
+  const el=document.getElementById('mxVstRpeInput'+i);
+  const v=el?parseInt(el.value,10):NaN;
+  if(isNaN(v) || v<1 || v>10){
+   if(est) est.textContent='WORK '+(i+1)+' precisa de um RPE entre 1 e 10';
+   return;
+  }
+  const b=MX_VST_RPE_ULTIMOS[i];
+  blocos.push({bloco_indice:i, watts_medio:b.watts_medio,
+              t0_s:b.t0_s, t1_s:b.t1_s, rpe:v});
+ }
+ if(est) est.textContent='a gravar...';
+ fetch('/api/moxy/vst/rpe/'+vid, {method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({blocos:blocos})})
+ .then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){
+   if(est) est.textContent=d.mensagem||'erro';
+   return;
+  }
+  MX_VST_RPE_EDITAR=false;
+  mxVstRpe(vid);
+ }).catch(function(e){ if(est) est.textContent='erro: '+e.message; });
+}
+
 
 function mxRpeGravar(id){
  const est=document.getElementById('mxRpeEstado');

@@ -549,6 +549,7 @@ __EXPL_fases__
   <canvas id="chAtencao" height="200"></canvas>
 </div>
 <div class="sub" id="notaAtencao" style="font-style:italic"></div>
+<div id="explicacaoCanalFMT" style="margin-top:6px;"></div>
 <div id="poderBox"></div>
 <h3>Calibracao dos parametros</h3>
 <div id="veredicto"></div>
@@ -557,7 +558,10 @@ __EXPL_fases__
   <thead><tr id="calHead"></tr></thead><tbody id="calBody"></tbody></table></div>
 
 <h2>Curvatura &kappa; ao longo do tempo</h2>
+<details style="margin-bottom:10px;">
+  <summary class="sub" style="cursor:pointer;">Sobre a metodologia dos canais (paper vs dados) — abrir para ler</summary>
 __EXPL_fmt__
+</details>
 <div class="sub" id="subFMT"></div>
 <div class="chartbox">
   <div class="legend" id="lgFMT"></div>
@@ -1473,6 +1477,56 @@ function tabelaCalibracao(){
   el.innerHTML=h;}
 }
 
+// Regime do dia -- kappa (instabilidade do FMT) vs TSB (forma), classificado
+// pelos MESMOS percentis p75/p25 ja' usados no diagnostico de blocos de CP
+// (pmc.py, _diagnostico_cp) -- nao inventa um segundo criterio de limiar.
+// Nao existia nenhuma versao ligada desta classificacao no app (so' um
+// ficheiro fmt_graficos.py orfao, nunca importado) -- construida de raiz
+// com a mesma logica de percentis ja usada no resto do projecto.
+const REGIME_CFG = {
+ fadiga:{label:'Fadiga silenciosa', cor:'#E74C3C',
+   desc:'TSB positivo mas κ elevado — o corpo parece descansado nos números clássicos, mas a instabilidade autonómica está alta.'},
+ acumulacao:{label:'Acumulação intensa', cor:'#F39C12',
+   desc:'TSB negativo e κ elevado — carga alta e instabilidade alta ao mesmo tempo; bloco de trabalho pesado, sem ainda mostrar sinais de quebra.'},
+ supercompensacao:{label:'Supercompensação', cor:'#27AE60',
+   desc:'TSB positivo e κ baixo — forma alta com estabilidade autonómica alta; janela típica de melhor desempenho.'},
+ recovery:{label:'Recovery', cor:'#2ECC71',
+   desc:'TSB negativo mas κ baixo — ainda em défice de forma, porém o sistema autonómico já está estável; a recuperar sem sinais de stress.'},
+ normal:{label:'Normal', cor:'#8b949e',
+   desc:'κ dentro da faixa habitual (entre o teu p25 e p75 histórico) — sem sinal forte em nenhuma direcção.'},
+};
+
+function mostrarRegimeHoje(){
+ const box=document.getElementById('regimeHojeCard');
+ if(!box) return;
+ const serieK=(D.ftlm&&D.ftlm.serie)||[];
+ const vals=serieK.map(d=>d.kappa).filter(v=>v!=null);
+ const tsbHoje=(D.actual||{}).tsb;
+ const kappaHoje=vals.length?vals[vals.length-1]:null;
+ if(vals.length<10 || tsbHoje==null || kappaHoje==null){
+  box.innerHTML='<span class="sub">dados insuficientes para classificar o regime de hoje</span>';
+  return;
+ }
+ const ord=vals.slice().sort((a,b)=>a-b);
+ function percentil(p){ const i=Math.min(ord.length-1,Math.floor(p*ord.length)); return ord[i]; }
+ const p75=percentil(0.75), p25=percentil(0.25);
+ const kAlto=kappaHoje>p75, kBaixo=kappaHoje<p25;
+
+ let chave='normal';
+ if(tsbHoje>0 && kAlto) chave='fadiga';
+ else if(tsbHoje<0 && kAlto) chave='acumulacao';
+ else if(tsbHoje>0 && kBaixo) chave='supercompensacao';
+ else if(tsbHoje<0 && kBaixo) chave='recovery';
+ const cfg=REGIME_CFG[chave];
+
+ box.innerHTML=
+  '<div style="font-size:15px;font-weight:600;color:'+cfg.cor+';">'+cfg.label+'</div>'+
+  '<div style="font-size:11px;color:#8b949e;margin-top:4px;">TSB hoje: '+tsbHoje.toFixed(1)+
+  ' &middot; κ hoje: '+kappaHoje.toFixed(3)+
+  '<br>κ histórico: p25='+p25.toFixed(3)+' &middot; p75='+p75.toFixed(3)+'</div>'+
+  '<div style="font-size:12px;margin-top:8px;">'+cfg.desc+'</div>';
+}
+
 function mostrarFMT5(){
  const F=D.fmt;
  const sub=document.getElementById('subFMT5');
@@ -1885,7 +1939,7 @@ async function load(){
 
  carregarSugestoes();
 montarExport();
- drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos();
+ drawPMC(); mostrarFMT5(); mostrarRegimeHoje(); mostrarHomeo(); mostrarAlos();
  mostrarDtrimpDkj(); mostrarEficienciaKj();
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──

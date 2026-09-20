@@ -2203,6 +2203,94 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/vst/rpe/<path:vst_activity_id>')
+    def api_moxy_vst_rpe_ver(vst_activity_id):
+        """RPE do Dia 2 (VST) -- MESMA tabela moxy_rpe, MESMA lógica de
+        persistência (activity_id, bloco_indice) já usada pela Principal;
+        a única diferença é a lista de blocos: aqui só os WORKs de BP1 e
+        BP2 já identificados por api_moxy_vst_analise (sem aquecimento,
+        sem RECOVERY) -- nada reanalisado, só filtrado.
+        """
+        try:
+            vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
+            dd = api_moxy_vst_analise(vid)
+            d = (dd[0].get_json() if isinstance(dd, tuple) else dd.get_json()) or {}
+            if d.get('status') != 'ok':
+                return jsonify({'status': 'erro',
+                                'mensagem': d.get('mensagem') or 'sem análise VST'}), 200
+
+            trabalho = []
+            for grupo in ('bp1', 'bp2'):
+                for b in ((d.get(grupo) or {}).get('blocos') or []):
+                    trabalho.append({'grupo': grupo, 'bloco': b})
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            linhas = cn.execute(
+                "SELECT bloco_indice, rpe FROM moxy_rpe "
+                "WHERE activity_id=?", (vid,)).fetchall()
+            rpe_por_indice = {int(r[0]): r[1] for r in linhas}
+
+            fora = []
+            contagem = {'bp1': 0, 'bp2': 0}
+            for i, item in enumerate(trabalho):
+                b, grupo = item['bloco'], item['grupo']
+                contagem[grupo] += 1
+                fora.append({
+                    'bloco_indice': i, 'grupo': grupo, 'numero': contagem[grupo],
+                    'watts_medio': round(b.get('watts_medio_da_api') or b.get('watts_medio') or 0),
+                    't0_s': round(b['t0']), 't1_s': round(b['t1']),
+                    'rpe': rpe_por_indice.get(i),
+                })
+            return jsonify({
+                'status': 'ok', 'activity_id': vid,
+                'blocos': fora,
+                'todos_gravados': bool(fora) and all(
+                    b['rpe'] is not None for b in fora),
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/rpe/<path:vst_activity_id>', methods=['POST'])
+    def api_moxy_vst_rpe_gravar(vst_activity_id):
+        """Grava (ou substitui) o RPE de cada WORK do VST -- MESMA tabela
+        e MESMO INSERT OR REPLACE por (activity_id, bloco_indice) já
+        usados pela Principal; gravar outra vez sobrepõe, nunca duplica.
+        """
+        try:
+            vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
+            corpo = request.get_json(force=True, silent=True) or {}
+            blocos = corpo.get('blocos') or []
+            if not blocos:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'sem blocos para gravar'}), 200
+            for b in blocos:
+                rpe = b.get('rpe')
+                if not isinstance(rpe, (int, float)) or not (1 <= rpe <= 10):
+                    return jsonify({
+                        'status': 'erro',
+                        'mensagem': (f'RPE inválido no bloco '
+                                     f'{b.get("bloco_indice")}: {rpe!r} — '
+                                     'tem de ser 1 a 10')}), 200
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            agora = datetime.now().isoformat(timespec='seconds')
+            for b in blocos:
+                cn.execute(
+                    "INSERT OR REPLACE INTO moxy_rpe "
+                    "(activity_id, bloco_indice, watts_medio, t0_s, t1_s, "
+                    "rpe, gravado_em) VALUES (?,?,?,?,?,?,?)",
+                    (vid, int(b['bloco_indice']), b.get('watts_medio'),
+                     b.get('t0_s'), b.get('t1_s'), int(b['rpe']), agora))
+            cn.commit()
+            return jsonify({'status': 'ok', 'n_gravados': len(blocos),
+                            'gravado_em': agora})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/vst/conjunto/<path:vst_activity_id>')
     def api_moxy_vst_conjunto_ler(vst_activity_id):
         """Vínculo já gravado para esta sessão VST, se existir."""

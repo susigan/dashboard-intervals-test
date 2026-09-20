@@ -510,6 +510,14 @@ BODY = """
         </div>
         <p class="sub" style="font-size:9px;margin:2px 0 0;">Depende da qualidade/estacionariedade dos RR durante carga crescente.</p>
       </div>
+      <div style="flex:1;min-width:280px;">
+        <h4 style="font-size:12px;color:#8b949e;margin:0 0 2px;">Power × RPE <span class="sub" style="font-size:9px;">(complementar)</span></h4>
+        <div class="chartbox" style="position:relative;width:100%;">
+          <canvas id="chMxVstRPE" height="170"></canvas>
+          <div id="mxTipVstRPE" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+        </div>
+        <p class="sub" style="font-size:9px;margin:2px 0 0;">Percepção subjectiva de esforço (1–10) por WORK — evidência complementar, não determina BP sozinha.</p>
+      </div>
     </div>
 
     <h3 style="font-size:14px;margin-top:20px;">Recovery</h3>
@@ -549,6 +557,7 @@ BODY = """
       <div id="mxVstCartoes" style="margin-top:10px;"></div>
       <div id="mxVstTabela" style="margin-top:14px;overflow-x:auto;"></div>
       <div id="mxVstComparacao" style="margin-top:8px;"></div>
+      <div id="mxVstRpeTabela" style="margin-top:14px;overflow-x:auto;"></div>
       <div id="mxVstRecoveryTabela" style="margin-top:14px;overflow-x:auto;"></div>
     </details>
 
@@ -2166,8 +2175,9 @@ function mxVstCarregarComparacao(vstId){
     (d.mensagem||'sem dados suficientes para comparar')+'</p>';
    return;
   }
-  box.innerHTML=_vstTabelaComparacao('BP1', d.comparacao_bp1)
-   + _vstTabelaComparacao('BP2', d.comparacao_bp2);
+  box.innerHTML=_vstTabelaComparacao('BP1', d.comparacao_bp1, d.comparacao_rpe_bp1)
+   + _vstTabelaComparacao('BP2', d.comparacao_bp2, d.comparacao_rpe_bp2);
+  mxVstRpeTabela(d);
   MX_VST_ULT_COMP = d;
   if(MX_VST_ULT) mxDesenharVstHeatmap(MX_VST_ULT);
   mxVstResumoCartoes(d);
@@ -2192,7 +2202,7 @@ function _vstCorStatus(s){
         'DIVERGENTE':'#E74C3C', 'DADOS INSUFICIENTES':'#8b949e'}[s] || '#8b949e';
 }
 
-function _vstTabelaComparacao(titulo, comp){
+function _vstTabelaComparacao(titulo, comp, compRpe){
  if(!comp) return '';
  const pot=comp.potencia;
  const rob=comp.robustez||{};
@@ -2240,6 +2250,18 @@ function _vstTabelaComparacao(titulo, comp){
    +'<td style="padding:3px 10px;color:'+_vstCorConsistencia(m.consistencia)+';">'
    +m.consistencia+'</td></tr>';
  });
+ // RPE -- mesma tabela, ultima linha, sempre marcada complementar; nao
+ // vem de comp.metricas (fisiologia), vem de comparar_rpe() a parte
+ if(compRpe){
+  const semDados = !compRpe.dia1 || !compRpe.dia2;
+  h+='<tr style="border-top:1px solid #21262d;opacity:0.75;">'
+   +'<td style="padding:3px 10px 3px 0;">RPE <span class="sub" style="font-size:9px;" title="evidência perceptiva complementar — não decide sozinha">(complementar)</span></td>'
+   +'<td style="padding:3px 10px;">'+(compRpe.dia1?compRpe.dia1.inicial+' → '+compRpe.dia1.final:'—')+'</td>'
+   +'<td style="padding:3px 10px;">'+(compRpe.dia2?compRpe.dia2.inicial+' → '+compRpe.dia2.final:'—')+'</td>'
+   +'<td style="padding:3px 10px;">'+(compRpe.dia1?compRpe.dia1.direccao:'—')+' / '+(compRpe.dia2?compRpe.dia2.direccao:'—')+'</td>'
+   +'<td style="padding:3px 10px;font-size:10px;">'+(compRpe.dia2&&compRpe.dia2.maior_salto?'W'+compRpe.dia2.maior_salto.de_work+'→W'+compRpe.dia2.maior_salto.para_work:'—')+'</td>'
+   +'<td style="padding:3px 10px;color:'+(semDados?'#8b949e':_vstCorGeral(compRpe.status))+';">'+(compRpe.status||'DADOS INSUFICIENTES')+'</td></tr>';
+ }
  h+='</table>';
  if(rob.nota) h+='<p class="sub" style="font-size:10px;margin-top:4px;">'+rob.nota+'</p>';
  h+='</div>';
@@ -2283,16 +2305,17 @@ function _vstCartaoBP(titulo, comp){
 
 function _vstCartaoRpe(d){
  const r1=d.comparacao_rpe_bp1, r2=d.comparacao_rpe_bp2;
- function linha(nome, r){
+ function linha(nome, r, compBp){
   if(!r || r.status==='DADOS INSUFICIENTES')
    return '<div style="margin-top:4px;"><b>'+nome+'</b><br><span class="sub" style="font-size:11px;">DADOS INSUFICIENTES</span></div>';
   return '<div style="margin-top:4px;"><b>'+nome+'</b><br>'
    +'<span style="font-size:11px;">D1: '+r.dia1.inicial+' → '+r.dia1.final+' (Δ'+(r.dia1.delta>=0?'+':'')+r.dia1.delta+')</span><br>'
    +'<span style="font-size:11px;">D2: '+r.dia2.inicial+' → '+r.dia2.final+' (Δ'+(r.dia2.delta>=0?'+':'')+r.dia2.delta+')</span><br>'
-   +'<span style="font-size:11px;color:'+_vstCorGeral(r.status)+';">'+r.dia2.direccao+' '+r.status.toLowerCase()+'</span></div>';
+   +'<span style="font-size:11px;color:'+_vstCorGeral(r.status)+';">'+r.dia2.direccao+' '+r.status.toLowerCase()+'</span>'
+   +'<div style="font-size:9px;color:#8b949e;margin-top:2px;">'+_vstFraseRpeFisiologia(compBp, r)+'</div></div>';
  }
  return '<div class="card"><div class="label">RPE — Dia 1 × Dia 2 <span class="sub" style="font-size:9px;">(complementar)</span></div>'
-  + linha('BP1', r1) + linha('BP2', r2) + '</div>';
+  + linha('BP1', r1, d.comparacao_bp1) + linha('BP2', r2, d.comparacao_bp2) + '</div>';
 }
 
 function mxVstResumoCartoes(d){
@@ -2506,6 +2529,71 @@ function mxVstAuditoriaRecovery(titulo, comp){
 function _vstCartaoDia1Dia2Recovery(titulo, comp){
  // mantida por compatibilidade -- a versao completa e' mxVstAuditoriaRecovery
  return mxVstAuditoriaRecovery(titulo, comp);
+}
+
+// Tabela detalhada RPE -- Bloco/WORK/Potencia D1/RPE D1/Potencia D2/
+// RPE D2/DeltaRPE. Dia1 so' tem UM par (base->alvo) por BP -- mostra-se
+// so' na primeira linha desse bloco, "—" nas restantes (nunca inventar
+// uma correspondencia por-WORK que nao existe).
+function mxVstRpeTabela(d){
+ const box=document.getElementById('mxVstRpeTabela');
+ if(!box) return;
+ const linhas=[];
+ [['BP1', (d.bp1&&d.bp1.metricas)||[], d.comparacao_rpe_bp1],
+  ['BP2', (d.bp2&&d.bp2.metricas)||[], d.comparacao_rpe_bp2]]
+ .forEach(function(t){
+  const bloco=t[0], metricas=t[1], compRpe=t[2];
+  const valores = compRpe && compRpe.dia2 ? compRpe.dia2.valores : null;
+  metricas.forEach(function(iv,i){
+   const pot2 = iv.potencia && iv.potencia.ok ? Math.round(iv.potencia.media) : null;
+   const rpe2 = valores ? valores[i] : null;
+   const primeira = i===0;
+   const pot1 = primeira && compRpe && compRpe.dia1 ? null : null;  // Dia1 nao tem potencia propria aqui, so' RPE
+   const rpe1 = primeira && compRpe && compRpe.dia1 ? compRpe.dia1.final : null;
+   const deltaRpe = (rpe1!=null && rpe2!=null) ? rpe2-rpe1 : null;
+   linhas.push({bloco:bloco, work:'W'+(i+1), pot1:pot1, rpe1:rpe1, pot2:pot2, rpe2:rpe2, deltaRpe:deltaRpe});
+  });
+ });
+ if(!linhas.length){ box.innerHTML=''; return; }
+ let h='<h4 style="font-size:13px;">RPE — Dia 1 × Dia 2</h4>'
+  +'<table style="border-collapse:collapse;font-size:11px;">'
+  +'<tr class="sub" style="text-align:left;">'
+  +'<th style="padding:3px 10px 3px 0;">Bloco</th><th style="padding:3px 10px;">WORK</th>'
+  +'<th style="padding:3px 10px;">RPE D1</th>'
+  +'<th style="padding:3px 10px;">Potência D2</th><th style="padding:3px 10px;">RPE D2</th>'
+  +'<th style="padding:3px 10px;">ΔRPE</th></tr>';
+ linhas.forEach(function(l){
+  h+='<tr style="border-top:1px solid #21262d;">'
+   +'<td style="padding:3px 10px 3px 0;">'+l.bloco+'</td><td style="padding:3px 10px;">'+l.work+'</td>'
+   +'<td style="padding:3px 10px;">'+(l.rpe1!=null?l.rpe1:'—')+'</td>'
+   +'<td style="padding:3px 10px;">'+(l.pot2!=null?l.pot2+'W':'—')+'</td>'
+   +'<td style="padding:3px 10px;">'+(l.rpe2!=null?l.rpe2:'—')+'</td>'
+   +'<td style="padding:3px 10px;">'+(l.deltaRpe!=null?(l.deltaRpe>=0?'+':'')+l.deltaRpe:'—')+'</td></tr>';
+ });
+ h+='</table>'
+  +'<p class="sub" style="font-size:9px;margin-top:4px;">RPE D1 mostrado só na primeira linha de cada bloco — o Dia 1 fornece um único par base→alvo por BP, não um valor por WORK; não se inventa correspondência que não existe.</p>';
+ box.innerHTML=h;
+}
+
+// RPE x fisiologia -- interpretacao automatica, so' quando ha dados
+// suficientes. Compara a direccao do RPE (Dia2) com a direccao
+// predominante de HR/RF/SmO2 (Dia2, ja calculada em comparar_bp) --
+// nunca decide BP, so' descreve o que ja esta calculado.
+function _vstFraseRpeFisiologia(compBp, compRpe){
+ if(!compRpe || compRpe.status==='DADOS INSUFICIENTES' || !compRpe.dia2)
+  return 'RPE: DADOS INSUFICIENTES.';
+ const metricas=(compBp&&compBp.metricas)||{};
+ const chaves=['hr','respiracao','smo2'];
+ const direccoes=chaves.map(k=>metricas[k]&&metricas[k].direccao_dia2).filter(Boolean);
+ if(!direccoes.length) return 'RPE: dados fisiológicos insuficientes para comparar.';
+ const nSubindo=direccoes.filter(d=>d==='↑').length;
+ const predominante = nSubindo>direccoes.length/2 ? '↑' : (direccoes.every(d=>d==='→')?'→':'misto');
+ const rpeDir=compRpe.dia2.direccao;
+ if(predominante==='↑' && rpeDir==='↑')
+  return 'RPE compatível com a resposta fisiológica: o aumento da percepção de esforço acompanha a mudança observada nos principais indicadores fisiológicos.';
+ if(predominante==='↑' && rpeDir!=='↑')
+  return 'RPE divergente dos indicadores fisiológicos: a percepção subjectiva permaneceu relativamente estável apesar das alterações observadas nos indicadores fisiológicos.';
+ return 'RPE: padrão sem convergência clara com os indicadores fisiológicos nesta janela.';
 }
 
 function mxVstRecoveryTabela(d){
@@ -2935,6 +3023,54 @@ function mxDesenharVstFisiologicoTodos(d){
  MX_VST_CANAIS.forEach(function(c){
   mxDesenharVstFisiologico(c.chave, c.canvas, c.unidade, c.cor, d);
  });
+ mxDesenharVstPowerRPE(d);
+}
+
+// Power x RPE -- um ponto por WORK (RPE ja e' um so' valor por WORK,
+// nao inicial/final dentro do bloco como as fisiologicas), lido de
+// comparacao_rpe_bpX.dia2.valores (ja calculado em /comparar). Sem
+// normalizacao -- RPE fica em 1-10, como pedido.
+function mxDesenharVstPowerRPE(d){
+ const o = ctx('chMxVstRPE', 170); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const comp = MX_VST_ULT_COMP;
+ const cores={bp1:'#5DADE2', bp2:'#F0883E'};
+ const pontos=[];
+ [['bp1', (d.bp1&&d.bp1.metricas)||[], comp&&comp.comparacao_rpe_bp1],
+  ['bp2', (d.bp2&&d.bp2.metricas)||[], comp&&comp.comparacao_rpe_bp2]]
+ .forEach(function(t){
+  const grupo=t[0], metricas=t[1], compRpe=t[2];
+  const valores = compRpe && compRpe.dia2 ? compRpe.dia2.valores : null;
+  if(!valores) return;
+  metricas.forEach(function(iv,i){
+   const p=iv.potencia;
+   if(p && p.ok && valores[i]!=null) pontos.push({pot:p.media, rpe:valores[i], grupo:grupo, numero:i+1});
+  });
+ });
+ if(!pontos.length){ noData(g,W,H,'RPE — DADOS INSUFICIENTES'); return; }
+
+ const PL=30, PR=12, PT=10, PB=24;
+ const w=W-PL-PR, h=H-PT-PB;
+ const xs=pontos.map(p=>p.pot);
+ const xa=Math.min.apply(null,xs)*0.95, xb=Math.max.apply(null,xs)*1.05;
+ const X=v=>PL+(v-xa)/((xb-xa)||1)*w;
+ const Y=v=>PT+h-(v-1)/9*h;  // RPE 1-10, escala fixa, valor real
+
+ g.clearRect(0,0,W,H);
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='9px sans-serif';
+ g.textAlign='right';
+ [1,4,7,10].forEach(function(v){ g.fillText(v, PL-4, Y(v)+3); });
+ g.textAlign='center';
+ xs.forEach(function(xv){ g.fillText(Math.round(xv), X(xv), PT+h+12); });
+
+ const rects=[];
+ pontos.forEach(function(p){
+  const x=X(p.pot), y=Y(p.rpe);
+  g.fillStyle=cores[p.grupo];
+  g.beginPath(); g.arc(x,y,4,0,7); g.fill();
+  rects.push({x0:x-6,x1:x+6,pot:p.pot,rpe:p.rpe,grupo:p.grupo,numero:p.numero});
+ });
+ MX_HOVER.chMxVstRPE = {rects:rects};
 }
 
 function mxLigarHoverVstFisiologico(){
@@ -2958,6 +3094,25 @@ function mxLigarHoverVstFisiologico(){
   });
   cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
  });
+ // RPE tem forma diferente (um valor por WORK, nao inicial/final) --
+ // hover proprio, mesma mecanica
+ const cvR=document.getElementById('chMxVstRPE'), tipR=document.getElementById('mxTipVstRPE');
+ if(cvR && tipR){
+  cvR.addEventListener('mousemove', function(ev){
+   const info=MX_HOVER.chMxVstRPE;
+   if(!info||!info.rects.length){ tipR.style.display='none'; return; }
+   const r=cvR.getBoundingClientRect();
+   const esc=(cvR.width/r.width)/(window.devicePixelRatio||1);
+   const mx=(ev.clientX-r.left)*esc;
+   const p=info.rects.find(function(rr){ return mx>=rr.x0&&mx<=rr.x1; });
+   if(!p){ tipR.style.display='none'; return; }
+   tipR.style.display='block';
+   tipR.style.left=Math.min(ev.clientX-r.left+12, r.width-170)+'px';
+   tipR.style.top=Math.max(4, ev.clientY-r.top-38)+'px';
+   tipR.innerHTML=p.grupo.toUpperCase()+' #'+p.numero+'<br>Power: '+Math.round(p.pot)+' W<br>RPE: '+p.rpe;
+  });
+  cvR.addEventListener('mouseleave', function(){ tipR.style.display='none'; });
+ }
 }
 
 // Heatmap: linhas=metricas, colunas=WORK 1..N, valor=delta_pct ja'

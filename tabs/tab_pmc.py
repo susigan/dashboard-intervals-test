@@ -138,71 +138,6 @@ def api_data():
         homeo, homeo_mod, alos = None, {}, None
 
     try:
-        cp_blocos = pmc.cp_blocos(sessoes, CICLICOS, serie,
-                                  fmt_serie=(ftlm_res or {}).get('serie'))
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        cp_blocos = {}
-
-    try:
-        cp_proj = pmc.cp_projecao_28d(sessoes, ftlm_res, CICLICOS)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        cp_proj = {}
-
-    try:
-        gamma_map = {m: (v or {}).get('gamma', 0.5)
-                    for m, v in ((ftlm_res or {}).get('por_modalidade') or {}).items()}
-        modelo_polar = pmc.modelo_polar(sessoes, CICLICOS, gamma_map)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        modelo_polar = {}
-
-    # A Run corre em watts internamente (o modelo nao muda), mas quem
-    # treina reconhece pace -- mostra-se o equivalente ao lado, calibrado
-    # aos DADOS DO PROPRIO atleta, so' a partir de quando a Run passou a
-    # ter potencia gravada.
-    try:
-        cal_pace_run = pmc.calibracao_pace_run(sessoes)
-        if 'Run' in cp_proj:
-            cp_proj['Run'] = pmc.aumentar_com_pace(
-                cp_proj['Run'], cal_pace_run.get('relacao'),
-                ['cp_actual', 'cp_proj_28d'])
-            cp_proj['Run']['calibracao_pace'] = {
-                k: cal_pace_run[k] for k in
-                ('primeira_sessao_com_potencia', 'n_com_potencia',
-                 'n_total_run', 'aviso')}
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        cal_pace_run = {}
-
-    try:
-        prescricao = pmc.prescricao_zona(CICLICOS, modelo_polar,
-                                         meta_delta_w=5.0)
-        if 'Run' in prescricao and prescricao['Run'].get('ok'):
-            prescricao['Run'] = pmc.aumentar_com_pace(
-                prescricao['Run'], (cal_pace_run or {}).get('relacao'),
-                ['watts_range'])
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        prescricao = {}
-
-    try:
-        avg_watts_cp = pmc.avg_watts_vs_cp(sessoes, CICLICOS, campo_alvo='cp')
-        avg_watts_eftp_icu = pmc.avg_watts_vs_cp(sessoes, CICLICOS,
-                                                 campo_alvo='eftp_icu')
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        avg_watts_cp = {}
-        avg_watts_eftp_icu = {}
-
-    try:
         dtrimp_dkj = pmc.dtrimp_dkj(sessoes, CICLICOS)
     except Exception as e:
         import traceback
@@ -242,12 +177,6 @@ def api_data():
         'fmt': fmt_res,
         'homeostatico': homeo, 'homeostatico_mod': homeo_mod,
         'alostatico': alos,
-        'cp_blocos': cp_blocos,
-        'cp_projecao': cp_proj,
-        'modelo_polar': modelo_polar,
-        'prescricao': prescricao,
-        'avg_watts_cp': avg_watts_cp,
-        'avg_watts_eftp_icu': avg_watts_eftp_icu,
         'dtrimp_dkj': dtrimp_dkj,
         'eficiencia_kj': eficiencia,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
@@ -670,62 +599,6 @@ __EXPL_alos__
 <div id="alosCard"></div>
 <div class="wrap" style="max-height:320px;margin-bottom:14px"><table>
   <thead><tr id="alosHead"></tr></thead><tbody id="alosBody"></tbody></table></div>
-
-<h2>Fiabilidade do CP — o que é ganho real</h2>
-<div class="sub">
-  Adaptado da tab eFTP do dashboard Streamlit (susigan/dashboard) — usa o
-  CP da curva ajustada, não o icu_eftp. Cada mudança de 8 semanas é
-  comparada contra o MDC (mínima diferença detectável), calculado do
-  ruído real de medição do próprio CP — não um número da literatura.
-  Quando não é REAL, o diagnóstico usa o κ do FMT Tensor acima, já
-  calculado nesta mesma tab.
-</div>
-<div class="controls">
-  <label class="sel">Modalidade
-    <select id="cpBlocosMod"></select></label>
-</div>
-<div id="cpBlocosResumo"></div>
-<div class="wrap" style="max-height:320px;margin-bottom:14px"><table>
-  <thead><tr id="cpBlocosHead"></tr></thead><tbody id="cpBlocosBody"></tbody></table></div>
-
-<h2>Projecção de CP — 28 dias</h2>
-<div class="sub">
-  β = OLS(Δln(CP) ~ CTLγ_norm) — reaproveita o CTLγ já calculado acima,
-  não recalcula do zero. Projecção assume que o CTLγ evolui ao ritmo do
-  declive dos últimos 14 dias. R² baixo (&lt;0.08) significa que o CTLγ
-  não explica a variação do CP neste período — a projecção existe mas
-  não é de confiar.
-</div>
-<div id="cpProjCards"></div>
-
-<h2>Modelo 2 — FTLM Polar (CTLγ por zona de intensidade)</h2>
-<div class="sub">
-  Extensão do FTLM: o mesmo γ modal aplicado separadamente a cada zona
-  de potência (Z1 baixa, Z2 moderada, Z3 alta), em vez de só à carga
-  total. kJ por zona vem das colunas z1_kj/z2_kj/z3_kj já guardadas na
-  base (integração real do stream de potência) — não é aproximado.
-</div>
-<div id="cpPolarCards"></div>
-
-<h2>Média de watts → CP, com desfasamento</h2>
-<div class="sub">
-  Alternativa ao Modelo 2 que evita a colinearidade entre zonas: em vez
-  de decompor a carga por Z1/Z2/Z3 (que sobem e descem juntas), usa um
-  único preditor — a média de watts do treino recente — e testa a que
-  desfasamento (0 a 60 dias) essa média melhor prevê o CP. A correcção
-  por permutação já é a mesma usada no resto desta tab.
-</div>
-<div id="avgWattsCpCards"></div>
-
-<h2>O que fazer com isto — prescrição por zona</h2>
-<div class="sub">
-  Inverte o α do Modelo 2: para uma meta de +5 W de CP, qual a zona com
-  maior efeito, e quanto kJ extra por semana isso implica. Na Run, a
-  gama de watts vem também em pace. Isto é uma extrapolação linear de um
-  modelo correlacional, não uma relação causal — ver o aviso em cada
-  cartão antes de levar o número à letra.
-</div>
-<div id="cpPrescricaoCards"></div>
 
 <h2>CTL vs KJ — quanto custa cada kJ</h2>
 <div class="sub">
@@ -1251,271 +1124,6 @@ function mostrarAlos(){
     '</td>'+
    '<td class="num" style="color:'+cor+'">'+(d.score>=0?'+':'')+
     d.score.toFixed(3)+'</td></tr>';}).join('');
-}
-// Fiabilidade do CP — adaptado da tab eFTP do dashboard Streamlit.
-// Cada bloco de 8 semanas comparado contra o MDC do proprio metodo;
-// quando nao e' REAL, mostra o diagnostico diferencial (dose/kappa/meseta).
-function mostrarCpBlocos(){
- const CB=D.cp_blocos||{};
- const mods=Object.keys(CB);
- const sel=document.getElementById('cpBlocosMod');
- if(!mods.length){
-  document.getElementById('cpBlocosResumo').innerHTML=
-   '<div class="sub">Sem dados suficientes de CP para nenhuma modalidade '+
-   '(precisa de pelo menos 10 medicoes e 8+ semanas de historico).</div>';
-  sel.innerHTML=''; document.getElementById('cpBlocosBody').innerHTML='';
-  document.getElementById('cpBlocosHead').innerHTML='';
-  return;
- }
- if(sel.options.length!==mods.length)
-  sel.innerHTML=mods.map(m=>'<option>'+m+'</option>').join('');
- const mod=sel.value||mods[0];
- const info=CB[mod];
- if(!info) return;
-
- document.getElementById('cpBlocosResumo').innerHTML=
-  '<div class="cards">'+
-  [['MDC (95%)',info.mdc+' W'],
-   ['SEM',info.sem+' W'],
-   ['MDC em % do CP',info.mdc_pct!=null?info.mdc_pct+'%':'—'],
-   ['Medicoes usadas',info.n_medicoes]]
-  .map(k=>'<div class="card"><div class="label">'+k[0]+'</div>'+
-   '<div class="value">'+k[1]+'</div></div>').join('')+
-  '</div>';
-
- document.getElementById('cpBlocosHead').innerHTML=
-  ['Periodo (fim)','CP (W)','Δ 8 sem (W)','Sinal','CTL medio','κ medio','Diagnostico']
-  .map((c,i)=>'<th class="'+(i&&i<6?'num':'')+'">'+c+'</th>').join('');
-
- const CORES={'REAL':'#2ECC71','INCERTO':'#F4D03F','RUÍDO':'#E74C3C'};
- document.getElementById('cpBlocosBody').innerHTML=
-  (info.blocos||[]).slice().reverse().map(function(b){
-   const cor=CORES[b.classificacao]||'#8b949e';
-   const diag=(b.diagnostico||[]).map(function(d){
-    return '<div style="margin-bottom:4px"><b>'+d.causa+'</b><br>'+
-     '<span style="color:#8b949e">'+d.prescricao+' — '+d.fonte+'</span></div>';
-   }).join('');
-   return '<tr><td>'+b.periodo_fim+'</td>'+
-    '<td class="num">'+b.cp_fim+'</td>'+
-    '<td class="num" style="color:'+cor+'">'+
-     (b.delta>=0?'+':'')+b.delta+'</td>'+
-    '<td class="num" style="color:'+cor+'">'+b.classificacao+'</td>'+
-    '<td class="num">'+(b.ctl_medio!=null?b.ctl_medio:'—')+'</td>'+
-    '<td class="num">'+(b.kappa_medio!=null?b.kappa_medio:'—')+'</td>'+
-    '<td style="font-size:12px">'+(diag||'—')+'</td></tr>';
-  }).join('');
-}
-
-// Projeccao de CP a 28 dias — cartoes por modalidade, um beta e um R2 por
-// desporto, com a leitura de fiabilidade.
-function mostrarCpProjecao(){
- const P=D.cp_projecao||{};
- const mods=Object.keys(P);
- const cont=document.getElementById('cpProjCards');
- if(!mods.length){
-  cont.innerHTML='<div class="sub">Sem dados suficientes para nenhuma '+
-   'modalidade (precisa de historico de CTLg e CP com sobreposicao).</div>';
-  return;
- }
- const CORF={true:'#2ECC71',false:'#E67E22'};
- cont.innerHTML='<div class="cards">'+mods.map(function(m){
-  const v=P[m];
-  const cor=v.r2>=0.20?'#2ECC71':(v.r2>=0.08?'#F4D03F':'#E74C3C');
-  const paceTxt=v.cp_proj_28d_pace?' ('+v.cp_proj_28d_pace+')':'';
-  const paceActualTxt=v.cp_actual_pace?' ('+v.cp_actual_pace+')':'';
-  const avisoPace=(v.calibracao_pace && v.calibracao_pace.aviso)
-   ? '<div style="font-size:10px;color:#8b949e;margin-top:4px">'+
-     v.calibracao_pace.aviso+'</div>' : '';
-  return '<div class="card"><div class="label">'+m+
-   ' <span style="color:'+cor+'">('+(v.r2>=0.20?'fiavel':v.r2>=0.08?'incerto':'baixa fiabilidade')+
-   ')</span></div>'+
-   '<div class="value">'+v.cp_proj_28d+' W'+paceTxt+'</div>'+
-   '<div style="font-size:12px;color:#8b949e">'+
-   'actual '+v.cp_actual+'W'+paceActualTxt+' · Δ '+(v.delta_w>=0?'+':'')+v.delta_w+'W ('+
-   (v.delta_pct>=0?'+':'')+v.delta_pct+'%) · ±'+v.ic90_w+'W (IC90)</div>'+
-   avisoPace+
-   '<div style="font-size:11px;color:#8b949e;margin-top:4px">'+
-   'β='+v.beta+' R²='+v.r2+' n='+v.n+'<br>'+v.leitura+'</div></div>';
- }).join('')+'</div>';
-}
-
-// Modelo 2 (FTLM Polar) — coeficientes alpha por zona, um cartao por
-// modalidade, comparando com o R2 do modelo simples (CTLg total) quando
-// disponivel.
-function mostrarCpPolar(){
- const M=D.modelo_polar||{};
- const mods=Object.keys(M);
- const cont=document.getElementById('cpPolarCards');
- if(!mods.length){
-  cont.innerHTML='<div class="sub">Sem zonas de potencia guardadas para '+
-   'nenhuma modalidade — corre a extraccao de zone_times primeiro.</div>';
-  return;
- }
- cont.innerHTML='<div class="cards">'+mods.map(function(m){
-  const v=M[m];
-  const cor=v.r2>=0.20?'#2ECC71':(v.r2>=0.08?'#F4D03F':'#E74C3C');
-  return '<div class="card"><div class="label">'+m+'</div>'+
-   '<div style="font-size:13px;color:#e6e6e6;margin:4px 0">'+
-   'α_Z3='+v.alpha_z3+' · α_Z2='+v.alpha_z2+' · α_Z1='+v.alpha_z1+'</div>'+
-   '<div style="font-size:12px;color:'+cor+'">R²='+v.r2+' (n='+v.n+')</div>'+
-   '<div style="font-size:11px;color:#8b949e;margin-top:4px">'+
-   'γ modal='+v.gamma_modal+' · kJ Z3 (7d)='+v.kj_z3_ultimos_7d+
-   ' de '+v.kj_total_ultimos_7d+' totais</div></div>';
- }).join('')+'</div>';
-}
-// Prescricao: inverte o alpha do Modelo 2 -- para a meta de CP, qual a
-// zona com maior efeito, quanto kJ extra por semana, e a gama de watts
-// (com pace ao lado, so' na Run).
-// Media de watts -> CP com desfasamento -- alternativa ao Modelo 2 que
-// nao sofre de colinearidade, porque so' tem UM preditor.
-function _cardAvgWatts(m, v, rotulo){
- if(!v || v.fonte!=='dados'){
-  return '<div class="card"><div class="label">'+m+' · '+rotulo+'</div>'+
-   '<div style="font-size:12px;color:#8b949e">'+
-   ((v&&v.motivo)||'sem relacao detectada')+'</div></div>';
- }
- const cor=v.forca==='forte'?'#2ECC71':(v.forca==='moderada'?'#F4D03F':'#E67E22');
- const sig=v.p_permutacao!=null&&v.p_permutacao<0.05;
- return '<div class="card"><div class="label">'+m+' · '+rotulo+
-  ' <span style="color:'+cor+'">('+(v.forca||'?')+
-  (sig?', significativo':', nao sobrevive a permutacao')+')</span></div>'+
-  '<div class="value">'+v.lag_dias+' dias</div>'+
-  '<div style="font-size:12px;color:#8b949e">'+
-  'r='+v.r+' · R²='+v.r2+' · n='+v.n+' · p(perm)='+v.p_permutacao+'<br>'+
-  'media de watts em janelas de '+v.janela_media_dias+' dias</div>'+
-  (v.aviso?'<div style="font-size:10px;color:#E67E22;margin-top:4px">'+
-   v.aviso+'</div>':'')+
-  '</div>';
-}
-
-// Duas fontes lado a lado: CP da curva ajustada (sofre de circularidade
-// dentro da mesma sessao) vs eFTP da propria Intervals.icu (pode ser
-// uma estimativa mais lenta, nao presa a uma sessao so). Comparar as
-// duas ajuda a perceber se um sinal e' real ou um artefacto da fonte.
-function mostrarAvgWattsCp(){
- const A=D.avg_watts_cp||{};
- const B=D.avg_watts_eftp_icu||{};
- const mods=Array.from(new Set(Object.keys(A).concat(Object.keys(B))));
- const cont=document.getElementById('avgWattsCpCards');
- if(!mods.length){
-  cont.innerHTML='<div class="sub">Sem dados suficientes de watts com '+
-   'CP ou eFTP com sobreposicao, em nenhuma modalidade.</div>';
-  return;
- }
- cont.innerHTML='<div class="cards">'+mods.map(function(m){
-  return _cardAvgWatts(m, A[m], 'CP (curva ajustada)');
- }).join('')+'</div>'+
- '<div class="cards" style="margin-top:6px">'+mods.map(function(m){
-  return _cardAvgWatts(m, B[m], 'eFTP (Intervals.icu)');
- }).join('')+'</div>';
-}
-
-// Comutador de sub-abas dentro de "CTL vs KJ" -- mesmo padrao simples
-// de mostrar/esconder, sem depender de nenhuma biblioteca.
-function ctlkjMostrarSubtab(nome){
- const boxes={coef:'ctlkjCoefBox', ef:'ctlkjEfBox'};
- const btns={coef:'ctlkjBtnCoef', ef:'ctlkjBtnEf'};
- Object.keys(boxes).forEach(function(k){
-  document.getElementById(boxes[k]).style.display=(k===nome)?'':'none';
-  const b=document.getElementById(btns[k]);
-  if(k===nome){
-   b.style.background='#1c2331'; b.style.borderColor='#5DADE2'; b.style.color='#5DADE2';
-  } else {
-   b.style.background='#161b22'; b.style.borderColor='#30363d'; b.style.color='#8b949e';
-  }
- });
-}
-
-// dTRIMP/dkJ -- tabela por modalidade e tipo de sessao.
-function mostrarDtrimpDkj(){
- const T=D.dtrimp_dkj||{};
- const mods=Object.keys(T);
- document.getElementById('ctlkjCoefHead').innerHTML=
-  ['Modalidade','Tipo','N','dTRIMP/dkJ','coef. densidade','R²','kJ médio','TRIMP médio']
-  .map((c,i)=>'<th class="'+(i>1?'num':'')+'">'+c+'</th>').join('');
- if(!mods.length){
-  document.getElementById('ctlkjCoefBody').innerHTML=
-   '<tr><td colspan="8" style="color:#8b949e">Sem dados suficientes '+
-   '(precisa de duração, RPE e kJ por sessão).</td></tr>';
-  return;
- }
- const cor=v=>v<0.3?'#2ECC71':(v<0.5?'#F4D03F':'#E74C3C');
- let h='';
- mods.forEach(function(m){
-  (T[m]||[]).forEach(function(l){
-   h+='<tr><td>'+m+'</td><td>'+l.tipo+'</td>'+
-    '<td class="num">'+l.n+'</td>'+
-    '<td class="num" style="color:'+cor(l.dtrimp_dkj)+'">'+l.dtrimp_dkj+'</td>'+
-    '<td class="num">'+l.coef_densidade+'</td>'+
-    '<td class="num">'+l.r2+'</td>'+
-    '<td class="num">'+l.kj_medio+' kJ</td>'+
-    '<td class="num">'+l.trimp_medio+'</td></tr>';
-  });
- });
- document.getElementById('ctlkjCoefBody').innerHTML=h;
-}
-
-// Eficiencia rolling -- um cartao por modalidade, com a tendencia.
-function mostrarEficienciaKj(){
- const E=D.eficiencia_kj||{};
- const mods=Object.keys(E);
- const cont=document.getElementById('ctlkjEfCards');
- if(!mods.length){
-  cont.innerHTML='<div class="sub">Sem dados suficientes.</div>';
-  return;
- }
- const corT={'fadiga':'#E74C3C','adaptação':'#2ECC71','estável':'#8b949e'};
- cont.innerHTML='<div class="cards">'+mods.map(function(m){
-  const v=E[m];
-  const c=v.desactualizado?'#8b949e':(corT[v.tendencia]||'#8b949e');
-  const rotuloTend=v.desactualizado?'desactualizado':v.tendencia;
-  return '<div class="card"><div class="label">'+m+
-   ' <span style="color:'+c+'">('+rotuloTend+')</span></div>'+
-   '<div class="value">'+v.eff_actual+'</div>'+
-   '<div style="font-size:12px;color:#8b949e">'+
-   'histórico: '+v.eff_historica+' · n='+v.n_sessoes+' sessões · '+
-   'última: '+v.ultima_data+'</div>'+
-   (v.aviso?'<div style="font-size:10px;color:#E67E22;margin-top:4px">'+
-    v.aviso+'</div>':'')+
-   '</div>';
- }).join('')+'</div>';
-}
-
-function mostrarCpPrescricao(){
- const P=D.prescricao||{};
- const mods=Object.keys(P);
- const cont=document.getElementById('cpPrescricaoCards');
- if(!mods.length){
-  cont.innerHTML='<div class="sub">Sem dados suficientes -- precisa do '+
-   'Modelo 2 (FTLM Polar) calculado primeiro.</div>';
-  return;
- }
- cont.innerHTML='<div class="cards">'+mods.map(function(m){
-  const v=P[m];
-  if(!v || v.ok===false){
-   return '<div class="card"><div class="label">'+m+'</div>'+
-    '<div style="font-size:12px;color:#8b949e">'+
-    (v&&v.motivo?v.motivo:'sem dados')+'</div></div>';
-  }
-  const wr=v.watts_range;
-  const wrTxt=wr?(wr[0]+'–'+wr[1]+' W'):'—';
-  const paceTxt=v.watts_range_pace?
-   ' <span style="color:#8b949e">('+v.watts_range_pace[0]+'–'+
-   v.watts_range_pace[1]+')</span>':'';
-  const horasTxt=(v.horas_extra_semana!=null)?
-   v.horas_extra_semana+' h/semana extra':'—';
-  return '<div class="card"><div class="label">'+m+
-   ' <span style="color:#58A6FF">zona '+v.zona_melhor+'</span></div>'+
-   '<div class="value">+'+v.delta_cp_alvo_w+' W de CP</div>'+
-   '<div style="font-size:12px;color:#8b949e">'+
-   'gama: '+wrTxt+paceTxt+'<br>'+
-   horasTxt+' · '+v.kj_extra_semana+' kJ/semana extra</div>'+
-   '<div style="font-size:11px;color:#8b949e;margin-top:4px">'+
-   'α='+v.alpha+' · R² do modelo='+v.r2_modelo+' (n='+v.n_modelo+')</div>'+
-   (v.aviso?'<div style="font-size:10px;color:#E67E22;margin-top:4px">'+
-    v.aviso+'</div>':'')+
-   '</div>';
- }).join('')+'</div>';
 }
 
 
@@ -2265,8 +1873,7 @@ async function load(){
 
  carregarSugestoes();
 montarExport();
- drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos(); mostrarCpBlocos();
- mostrarCpProjecao(); mostrarCpPolar(); mostrarAvgWattsCp(); mostrarCpPrescricao();
+ drawPMC(); mostrarFMT5(); mostrarHomeo(); mostrarAlos();
  mostrarDtrimpDkj(); mostrarEficienciaKj();
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──
@@ -2335,14 +1942,8 @@ function redesenhar(){
  drawPMC();
  if(D.ftlm){drawCTLg();drawFMT();}
  if(D.fmt){drawMatriz();drawEigen();drawAtencao();}
- if(D.homeostatico){drawHomeo();}
- if(D.cp_blocos)mostrarCpBlocos();
- if(D.cp_projecao)mostrarCpProjecao();
- if(D.modelo_polar)mostrarCpPolar();
- if(D.avg_watts_cp)mostrarAvgWattsCp();
- if(D.prescricao)mostrarCpPrescricao();}
+ if(D.homeostatico){drawHomeo();}}
 document.getElementById('janelaPMC').onchange=redesenhar;
-document.getElementById('cpBlocosMod').onchange=function(){if(D)mostrarCpBlocos();};
 window.addEventListener('resize',redesenhar);
 load();
 carregarSugestoes();

@@ -2159,6 +2159,7 @@ function mxVstCarregarComparacao(vstId){
   box.innerHTML=_vstTabelaComparacao('BP1', d.comparacao_bp1)
    + _vstTabelaComparacao('BP2', d.comparacao_bp2);
   MX_VST_ULT_COMP = d;
+  if(MX_VST_ULT) mxDesenharVstHeatmap(MX_VST_ULT);
   mxVstResumoCartoes(d);
   mxVstRecoveryCartoes(d);
   mxVstRecoveryTabela(d);
@@ -2270,6 +2271,20 @@ function _vstCartaoBP(titulo, comp){
   +'</div>';
 }
 
+function _vstCartaoRpe(d){
+ const r1=d.comparacao_rpe_bp1, r2=d.comparacao_rpe_bp2;
+ function linha(nome, r){
+  if(!r || r.status==='DADOS INSUFICIENTES')
+   return '<div style="margin-top:4px;"><b>'+nome+'</b><br><span class="sub" style="font-size:11px;">DADOS INSUFICIENTES</span></div>';
+  return '<div style="margin-top:4px;"><b>'+nome+'</b><br>'
+   +'<span style="font-size:11px;">D1: '+r.dia1.inicial+' → '+r.dia1.final+' (Δ'+(r.dia1.delta>=0?'+':'')+r.dia1.delta+')</span><br>'
+   +'<span style="font-size:11px;">D2: '+r.dia2.inicial+' → '+r.dia2.final+' (Δ'+(r.dia2.delta>=0?'+':'')+r.dia2.delta+')</span><br>'
+   +'<span style="font-size:11px;color:'+_vstCorGeral(r.status)+';">'+r.dia2.direccao+' '+r.status.toLowerCase()+'</span></div>';
+ }
+ return '<div class="card"><div class="label">RPE — Dia 1 × Dia 2 <span class="sub" style="font-size:9px;">(complementar)</span></div>'
+  + linha('BP1', r1) + linha('BP2', r2) + '</div>';
+}
+
 function mxVstResumoCartoes(d){
  const box=document.getElementById('mxVstResumoCartoes');
  if(!box) return;
@@ -2289,7 +2304,8 @@ function mxVstResumoCartoes(d){
   + '<div class="card"><div class="label">Robustez</div>'
   + '<div class="value" style="font-size:13px;">'+nRec+' observações de recovery</div>'
   + '<div style="font-size:10px;color:#8b949e;margin-top:2px;">p-permutação por métrica na secção de recovery abaixo — nunca um score único</div></div>'
-  + '</div>';
+  + '</div>'
+  + _vstCartaoRpe(d);
 }
 
 function _vstFraseTiming(padraoInfo){
@@ -2942,7 +2958,7 @@ function mxDesenharVstHeatmap(d){
  const canais=[['hr','HR','principal'],['respiracao','RF','principal'],
               ['smo2','SmO2','principal'],['thb','THb','contextual'],
               ['dfa1','DFA1','complementar']];
- function tabela(titulo, metricas){
+ function tabela(titulo, metricas, rpeValores){
   if(!metricas || !metricas.length) return '<p class="sub" style="font-size:11px;">'+titulo+': DADOS INSUFICIENTES</p>';
   let h='<div style="margin-bottom:10px;"><b style="font-size:12px;">'+titulo+'</b>'
    +'<table style="border-collapse:collapse;font-size:10px;margin-top:4px;">'
@@ -2960,11 +2976,23 @@ function mxDesenharVstHeatmap(d){
    });
    h+='</tr>';
   });
+  // RPE -- valor absoluto (1-10), nao delta_pct; lido de
+  // comparacao_rpe_bpX.dia2.valores (ja calculado em /comparar), nunca
+  // recalculado aqui. Se /comparar ainda nao respondeu, mostra "—".
+  h+='<tr><td style="padding:2px 8px;color:#8b949e;">RPE <span style="font-size:8px;">(complementar)</span></td>';
+  metricas.forEach(function(_,i){
+   const v = rpeValores && rpeValores[i]!=null ? rpeValores[i] : null;
+   h+='<td style="padding:2px 8px;text-align:center;color:#8b949e;">'+(v!=null?v:'—')+'</td>';
+  });
+  h+='</tr>';
   h+='</table></div>';
   return h;
  }
- box.innerHTML = tabela('BP1', (d.bp1&&d.bp1.metricas)||[])
-  + tabela('BP2', (d.bp2&&d.bp2.metricas)||[]);
+ const comp = MX_VST_ULT_COMP;
+ const rpe1 = comp && comp.comparacao_rpe_bp1 && comp.comparacao_rpe_bp1.dia2 ? comp.comparacao_rpe_bp1.dia2.valores : null;
+ const rpe2 = comp && comp.comparacao_rpe_bp2 && comp.comparacao_rpe_bp2.dia2 ? comp.comparacao_rpe_bp2.dia2.valores : null;
+ box.innerHTML = tabela('BP1', (d.bp1&&d.bp1.metricas)||[], rpe1)
+  + tabela('BP2', (d.bp2&&d.bp2.metricas)||[], rpe2);
 }
 
 // Timing: para cada metrica principal, mostra em qual WORK a mudanca

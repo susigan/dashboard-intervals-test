@@ -867,6 +867,22 @@ def comparar_recovery(dia1_recovery, dia2_works_metricas, dia2_recuperacoes_bloc
             (r.get('por_canal') or {}).get(canal) if r and r.get('ok') else None
             for r in lista_para_comparacao]
         c2_ultima = next((c for c in reversed(individuais_1min) if c), None)
+
+        # fracção calculada NA MESMA janela usada para a comparação
+        # (0-60s quando dia2_recuperacoes_1min é dado) -- ao lado da
+        # fracção do recovery completo (fracoes[-1]), nunca no lugar
+        # dela, para se poder ver directamente se um OVERSHOOT aparece
+        # numa janela e nao na outra (pedido explícito)
+        idx_ultima = len(lista_para_comparacao) - 1
+        work_ultima = dia2_works_metricas[idx_ultima] if 0 <= idx_ultima < len(dia2_works_metricas) else None
+        fracao_comparavel = recovery_fraction(
+            (work_ultima or {}).get(canal), c2_ultima) if (work_ultima and c2_ultima) else None
+        completude_comparavel = classificar_recovery_completeness(fracao_comparavel)
+        duracao_comparavel = (lista_para_comparacao[idx_ultima] or {}).get('duracao_s') \
+            if 0 <= idx_ultima < len(lista_para_comparacao) else None
+        duracao_completa = (dia2_recuperacoes_bloco[idx_ultima] or {}).get('duracao_s') \
+            if 0 <= idx_ultima < len(dia2_recuperacoes_bloco) else None
+
         if not c1 or c1.get('estado') == 'sem_dados' or not c2_ultima or \
            c2_ultima.get('estado') == 'sem_dados':
             metricas[canal] = {
@@ -894,7 +910,14 @@ def comparar_recovery(dia1_recovery, dia2_works_metricas, dia2_recuperacoes_bloc
             'dia2_ultima': {'estado': c2_ultima.get('estado'),
                            'inicial': c2_ultima.get('inicial'),
                            'final': c2_ultima.get('final'),
-                           'delta': c2_ultima.get('delta')},
+                           'delta': c2_ultima.get('delta'),
+                           'fracao': fracao_comparavel,
+                           'completude': completude_comparavel,
+                           'duracao_s': duracao_comparavel},
+            'dia2_ultima_completa': {'fracao': fracoes[idx_ultima] if 0 <= idx_ultima < len(fracoes) else None,
+                                     'completude': classificar_recovery_completeness(
+                                         fracoes[idx_ultima] if 0 <= idx_ultima < len(fracoes) else None),
+                                     'duracao_s': duracao_completa},
             'janela_comparacao': '1min' if dia2_recuperacoes_1min else 'completa',
         }
 

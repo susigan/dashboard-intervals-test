@@ -2197,8 +2197,10 @@ def registar(app):
                     (aid, int(b['bloco_indice']), b.get('watts_medio'),
                      b.get('t0_s'), b.get('t1_s'), int(b['rpe']), agora))
             cn.commit()
-            return jsonify({'status': 'ok', 'n_gravados': len(blocos),
-                            'gravado_em': agora})
+            ok_up, det_up = ddp.upload()
+            return jsonify({'status': 'ok' if ok_up else 'gravado_sem_upload',
+                            'n_gravados': len(blocos), 'gravado_em': agora,
+                            'upload_detalhe': None if ok_up else det_up})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
@@ -2285,8 +2287,10 @@ def registar(app):
                     (vid, int(b['bloco_indice']), b.get('watts_medio'),
                      b.get('t0_s'), b.get('t1_s'), int(b['rpe']), agora))
             cn.commit()
-            return jsonify({'status': 'ok', 'n_gravados': len(blocos),
-                            'gravado_em': agora})
+            ok_up, det_up = ddp.upload()
+            return jsonify({'status': 'ok' if ok_up else 'gravado_sem_upload',
+                            'n_gravados': len(blocos), 'gravado_em': agora,
+                            'upload_detalhe': None if ok_up else det_up})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
@@ -2340,9 +2344,11 @@ def registar(app):
                 "actualizado_em) VALUES (?,?,?,?)",
                 (vid, mid, criado_em, agora))
             cn.commit()
-            return jsonify({'status': 'ok', 'vst_activity_id': vid,
-                            'moxy_activity_id': mid,
-                            'criado_em': criado_em, 'actualizado_em': agora})
+            ok_up, det_up = ddp.upload()
+            return jsonify({'status': 'ok' if ok_up else 'gravado_sem_upload',
+                            'vst_activity_id': vid, 'moxy_activity_id': mid,
+                            'criado_em': criado_em, 'actualizado_em': agora,
+                            'upload_detalhe': None if ok_up else det_up})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
@@ -2868,6 +2874,7 @@ def registar(app):
                                ensure_ascii=False),
                      agora, vid))
                 cn.commit()
+                ddp.upload()
             except Exception:
                 pass
 
@@ -2932,6 +2939,7 @@ def registar(app):
                 "(activity_id, modo, gravado_em) VALUES (?,?,?)",
                 (aid, modo, agora))
             cn.commit()
+            ok_up, det_up = ddp.upload()
 
             aviso_cache = None
             try:
@@ -2944,7 +2952,10 @@ def registar(app):
             except Exception as e:
                 aviso_cache = f'{type(e).__name__}: {e}'
 
-            fora = {'status': 'ok', 'modo': modo, 'gravado_em': agora}
+            fora = {'status': 'ok' if ok_up else 'gravado_sem_upload',
+                   'modo': modo, 'gravado_em': agora}
+            if not ok_up:
+                fora['upload_detalhe'] = det_up
             if aviso_cache:
                 fora['aviso_cache'] = aviso_cache
             return jsonify(fora)

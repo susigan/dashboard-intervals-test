@@ -83,7 +83,18 @@ def _find_db_id(svc):
 
 
 def download():
-    """(ok, detalhe). Traz o .db do Drive para /tmp."""
+    """(ok, detalhe). Traz o .db do Drive para /tmp.
+
+    Descarrega para um ficheiro TEMPORÁRIO e só o promove a _LOCAL_DB
+    depois de confirmar (PRAGMA integrity_check) que veio inteiro e
+    legível. Isto existe porque, sem isto, uma falha a meio do
+    download (rede, timeout) deixava um .db PARCIAL exactamente no
+    sítio onde get_conn() vai procurar — e como get_conn() só chama
+    download() quando o ficheiro local NÃO existe, esse ficheiro
+    parcial ficava preso ali para o resto da vida do container,
+    dando "database disk image is malformed" em todos os pedidos
+    seguintes, sem nunca se voltar a tentar descarregar.
+    """
     try:
         from googleapiclient.http import MediaIoBaseDownload
         svc = _drive_svc()
@@ -93,16 +104,41 @@ def download():
         if not file_id:
             return False, "ficheiro nao existe ainda no Drive (normal na 1a vez)"
         req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
-        with open(_LOCAL_DB, "wb") as f:
+        tmp_path = _LOCAL_DB + ".partial"
+        with open(tmp_path, "wb") as f:
             dl = MediaIoBaseDownload(f, req)
             done = False
             while not done:
                 _, done = dl.next_chunk()
+
+        ok_integ, detalhe_integ = _verificar_integridade(tmp_path)
+        if not ok_integ:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            return False, f"download terminou mas o ficheiro está corrompido " \
+                          f"({detalhe_integ}) — não promovido, nada foi tocado " \
+                          f"no .db anterior (se existir)"
+        os.replace(tmp_path, _LOCAL_DB)
         return True, f"descarregado (file_id={file_id})"
     except Exception as e:
         detalhe = f"{type(e).__name__}: {e}"
         print(f"[drive_db_perfil] download falhou: {detalhe}")
         return False, detalhe
+
+
+def _verificar_integridade(caminho):
+    """(ok, detalhe). PRAGMA integrity_check — nunca escreve nada."""
+    try:
+        cn = sqlite3.connect(caminho)
+        r = cn.execute("PRAGMA integrity_check").fetchone()
+        cn.close()
+        if r and r[0] == "ok":
+            return True, "ok"
+        return False, str(r[0]) if r else "integrity_check sem resposta"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 
 def upload():
@@ -118,6 +154,14 @@ def upload():
     """
     if not os.path.exists(_LOCAL_DB):
         return False, "sem ficheiro local para subir"
+    ok_integ, detalhe_integ = _verificar_integridade(_LOCAL_DB)
+    if not ok_integ:
+        detalhe = (f"ficheiro local corrompido ({detalhe_integ}) — upload "
+                   f"recusado para não substituir a cópia boa no Drive por "
+                   f"uma corrompida; corre get_conn() outra vez para forçar "
+                   f"um novo download antes de tentar de novo")
+        print(f"[drive_db_perfil] upload recusado: {detalhe}")
+        return False, detalhe
     try:
         from googleapiclient.http import MediaFileUpload
         svc = _drive_svc()
@@ -153,7 +197,23 @@ def upload():
 def get_conn():
     """Conexao sqlite3 pronta a usar. Faz download na primeira chamada do
     processo (container) — chamadas seguintes reaproveitam o /tmp local,
-    sem voltar a descarregar."""
+    sem voltar a descarregar.
+
+    Auto-recuperação: se o ficheiro local já existir mas estiver
+    corrompido (ex.: de um download antigo que falhou a meio, antes
+    desta protecção existir), apaga-o e força um novo download em vez
+    de continuar a devolver "database disk image is malformed" para
+    sempre nesta vida do container.
+    """
+    if os.path.exists(_LOCAL_DB):
+        ok_integ, _ = _verificar_integridade(_LOCAL_DB)
+        if not ok_integ:
+            print(f"[drive_db_perfil] {_LOCAL_DB} corrompido — a apagar e "
+                  f"voltar a descarregar")
+            try:
+                os.remove(_LOCAL_DB)
+            except OSError:
+                pass
     if not os.path.exists(_LOCAL_DB):
         download()
     conn = sqlite3.connect(_LOCAL_DB)

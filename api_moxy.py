@@ -2809,6 +2809,42 @@ def registar(app):
                 (dia2.get('bp2') or {}).get('metricas') or [], recs_bp2_dia2,
                 dia2_recuperacoes_1min=recs_bp2_1min)
 
+            # RPE -- evidencia perceptiva complementar, lida directamente
+            # de moxy_rpe (mesma tabela da Parte 1, nada recalculado).
+            # Dia1: usa o MESMO bloco (b1_bp1/b1_bp2) ja escolhido para a
+            # fisiologia -- nao um novo emparelhamento. Dia2: os RPEs dos
+            # WORKs de cada BP, na mesma ordem/indexacao ja usada por
+            # /api/moxy/vst/rpe (bp1 primeiro, depois bp2).
+            try:
+                rpe_rows_d1 = cn.execute(
+                    "SELECT bloco_indice, rpe FROM moxy_rpe WHERE activity_id=? "
+                    "ORDER BY bloco_indice", (mid,)).fetchall()
+                rpe_d1_por_indice = {int(r[0]): r[1] for r in rpe_rows_d1}
+                rpe_d1_base = rpe_d1_por_indice.get(0)
+
+                def _rpe_d1_no_bloco(bloco_alvo):
+                    if not bloco_alvo or bloco_alvo not in ons1:
+                        return None
+                    return rpe_d1_por_indice.get(ons1.index(bloco_alvo))
+
+                rpe_rows_d2 = cn.execute(
+                    "SELECT bloco_indice, rpe FROM moxy_rpe WHERE activity_id=? "
+                    "ORDER BY bloco_indice", (vid,)).fetchall()
+                rpe_d2_por_indice = {int(r[0]): r[1] for r in rpe_rows_d2}
+                n_bp1_works = len((dia2.get('bp1') or {}).get('blocos') or [])
+                n_bp2_works = len((dia2.get('bp2') or {}).get('blocos') or [])
+                rpe_d2_bp1 = [rpe_d2_por_indice.get(i) for i in range(n_bp1_works)]
+                rpe_d2_bp2 = [rpe_d2_por_indice.get(i)
+                             for i in range(n_bp1_works, n_bp1_works + n_bp2_works)]
+
+                comp_rpe_bp1 = vst.comparar_rpe(
+                    rpe_d1_base, _rpe_d1_no_bloco(b1_bp1), rpe_d2_bp1)
+                comp_rpe_bp2 = vst.comparar_rpe(
+                    rpe_d1_base, _rpe_d1_no_bloco(b1_bp2), rpe_d2_bp2)
+            except Exception:
+                comp_rpe_bp1 = {'status': 'DADOS INSUFICIENTES', 'motivo': 'erro a ler RPE'}
+                comp_rpe_bp2 = {'status': 'DADOS INSUFICIENTES', 'motivo': 'erro a ler RPE'}
+
             # snapshot do resultado -- so' os campos ja' calculados
             # acima, nada recalculado; falha aqui nao deve derrubar a
             # resposta (melhor esforco, como o resto da persistencia
@@ -2841,6 +2877,7 @@ def registar(app):
                 'comparacao_bp1': comp_bp1, 'comparacao_bp2': comp_bp2,
                 'comparacao_recovery_bp1': comp_recovery_bp1,
                 'comparacao_recovery_bp2': comp_recovery_bp2,
+                'comparacao_rpe_bp1': comp_rpe_bp1, 'comparacao_rpe_bp2': comp_rpe_bp2,
                 'recuperacao_final_dia2': dia2.get('recuperacao_final'),
             })
         except Exception as e:

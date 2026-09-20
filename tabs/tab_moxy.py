@@ -339,7 +339,16 @@ BODY = """
       combinações são as que valem.</p>
     </div>
   </details>
-  <div id="mxRedeDetalhe"><div id="mxRede" style="overflow-x:auto;margin-top:6px;"></div></div>
+  <div id="mxRedeDetalhe">
+    <div class="chartbox" style="position:relative;width:100%;">
+      <canvas id="chMxRedeGrafo" height="360"></canvas>
+      <div id="mxTipRedeGrafo" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+    </div>
+    <div class="chartbox" style="position:relative;width:100%;">
+      <canvas id="chMxRedePCR" height="140"></canvas>
+    </div>
+    <div id="mxRede" style="overflow-x:auto;margin-top:6px;"></div>
+  </div>
 
   <details style="margin-top:10px;">
     <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">O que a rede diz e o que não diz</summary>
@@ -4346,6 +4355,166 @@ function mxSintese(){
  }).catch(function(){ box.innerHTML=''; });
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Grafo da rede causal -- consome directamente d.arestas/d.graus/
+// d.canais_usados ja devolvidos por /api/moxy/rede (rede_causal.py),
+// sem recalcular nada. Layout de forcas simples (repulsao entre todos
+// os pares + atraccao pelas arestas), cor por sinal, espessura por F,
+// nos de grau maior em tamanho maior.
+// ═══════════════════════════════════════════════════════════════════
+function mxDesenharRedeGrafo(d){
+ const o = ctx('chMxRedeGrafo', 360); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const nos = d.canais_usados||[];
+ const dirigidas = d.arestas||[];
+ const ambiguas = (d.indecisas||[]).filter(e=>e.direccao==='ambigua');
+ if(!nos.length){ noData(g,W,H,'Sem canais suficientes para desenhar a rede'); return; }
+
+ const graus = d.graus||{};
+ // layout de forcas -- mesma tecnica ja usada no PhysioNexus, adaptada
+ // ao canvas 2D directo (sem paper coords)
+ let seed=42;
+ function rnd(){ seed=(seed*9301+49297)%233280; return seed/233280; }
+ const PAD=50;
+ const pos={};
+ nos.forEach(function(n,i){
+  const ang=(i/nos.length)*2*Math.PI;
+  pos[n]={x:W/2+Math.min(W,H)/3*Math.cos(ang), y:H/2+Math.min(W,H)/3*Math.sin(ang)};
+ });
+ const K = 60*Math.sqrt(1/(nos.length||1))*10;
+ const todasArestas = dirigidas.concat(ambiguas);
+ for(let iter=0; iter<120; iter++){
+  const disp={}; nos.forEach(n=>disp[n]={x:0,y:0});
+  for(let i=0;i<nos.length;i++) for(let j=i+1;j<nos.length;j++){
+   const n1=nos[i], n2=nos[j];
+   let dx=pos[n1].x-pos[n2].x, dy=pos[n1].y-pos[n2].y;
+   let dist=Math.sqrt(dx*dx+dy*dy)||0.01;
+   const force=(K*K)/dist;
+   dx/=dist; dy/=dist;
+   disp[n1].x+=dx*force; disp[n1].y+=dy*force;
+   disp[n2].x-=dx*force; disp[n2].y-=dy*force;
+  }
+  todasArestas.forEach(function(e){
+   if(!pos[e.de]||!pos[e.para]) return;
+   let dx=pos[e.de].x-pos[e.para].x, dy=pos[e.de].y-pos[e.para].y;
+   let dist=Math.sqrt(dx*dx+dy*dy)||0.01;
+   const force=(dist*dist)/(K*8);
+   dx/=dist; dy/=dist;
+   disp[e.de].x-=dx*force; disp[e.de].y-=dy*force;
+   disp[e.para].x+=dx*force; disp[e.para].y+=dy*force;
+  });
+  const temp=8*(1-iter/120);
+  nos.forEach(function(n){
+   const dd=disp[n]; const dl=Math.sqrt(dd.x*dd.x+dd.y*dd.y)||0.01;
+   pos[n].x += (dd.x/dl)*Math.min(dl,temp);
+   pos[n].y += (dd.y/dl)*Math.min(dl,temp);
+   pos[n].x = Math.max(PAD, Math.min(W-PAD, pos[n].x));
+   pos[n].y = Math.max(PAD, Math.min(H-PAD, pos[n].y));
+  });
+ }
+
+ g.clearRect(0,0,W,H);
+ const maxF = Math.max(1, ...todasArestas.map(e=>e.f||0));
+ const hoverAlvo=[];
+
+ // arestas ambiguas primeiro (por baixo), tracejadas e cinzentas
+ ambiguas.forEach(function(e){
+  if(!pos[e.de]||!pos[e.para]) return;
+  const p1=pos[e.de], p2=pos[e.para];
+  g.strokeStyle='#484f58'; g.setLineDash([3,4]); g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(p1.x,p1.y); g.lineTo(p2.x,p2.y); g.stroke();
+  g.setLineDash([]);
+ });
+ // arestas dirigidas: cor pelo sinal, espessura pelo F, seta na ponta
+ dirigidas.forEach(function(e){
+  if(!pos[e.de]||!pos[e.para]) return;
+  const p1=pos[e.de], p2=pos[e.para];
+  const cor = e.sinal==='-' ? '#F0883E' : '#3FB950';
+  const largura = Math.max(1, Math.min(7, (e.f/maxF)*6+1));
+  g.strokeStyle=cor; g.lineWidth=largura; g.globalAlpha=0.8;
+  g.beginPath(); g.moveTo(p1.x,p1.y); g.lineTo(p2.x,p2.y); g.stroke();
+  g.globalAlpha=1;
+  // seta: triangulo perto do destino, encostado ao raio do no
+  const ang=Math.atan2(p2.y-p1.y, p2.x-p1.x);
+  const raio=14;
+  const ax=p2.x-Math.cos(ang)*raio, ay=p2.y-Math.sin(ang)*raio;
+  g.fillStyle=cor;
+  g.beginPath();
+  g.moveTo(ax,ay);
+  g.lineTo(ax-8*Math.cos(ang-0.4), ay-8*Math.sin(ang-0.4));
+  g.lineTo(ax-8*Math.cos(ang+0.4), ay-8*Math.sin(ang+0.4));
+  g.closePath(); g.fill();
+  hoverAlvo.push({x0:Math.min(p1.x,p2.x)-4,x1:Math.max(p1.x,p2.x)+4,
+                  y0:Math.min(p1.y,p2.y)-4,y1:Math.max(p1.y,p2.y)+4,
+                  de:e.de,para:e.para,f:e.f,p:e.p,lag:e.lag,sinal:e.sinal});
+ });
+ // nos por cima -- tamanho por grau total, cor cinza neutro (o sistema
+ // ja aparece no rotulo por baixo do nome)
+ nos.forEach(function(n){
+  const gr=graus[n]||{saidas:0,entradas:0};
+  const raio=Math.max(12, Math.min(26, 12+(gr.saidas+gr.entradas)*2.5));
+  const p=pos[n];
+  g.fillStyle = gr.saidas>gr.entradas ? '#3FB950' : (gr.entradas>gr.saidas ? '#F0883E' : '#8b949e');
+  g.beginPath(); g.arc(p.x,p.y,raio,0,7); g.fill();
+  g.strokeStyle='#0d1117'; g.lineWidth=2; g.stroke();
+  g.fillStyle='#0d1117'; g.font='bold 10px sans-serif'; g.textAlign='center';
+  g.fillText(n, p.x, p.y+3);
+ });
+
+ g.font='10px sans-serif'; g.textAlign='left'; g.fillStyle='#8b949e';
+ g.fillText('● verde = fonte (mais saídas) · ● laranja = sumidouro (mais entradas)', 8, H-28);
+ g.fillText('linha verde = correlação +, laranja = correlação − · tracejado cinza = ambíguo (direcção não decidida)', 8, H-14);
+
+ MX_HOVER.chMxRedeGrafo = {rects:hoverAlvo};
+}
+
+function mxLigarHoverRedeGrafo(){
+ const cv=document.getElementById('chMxRedeGrafo'), tip=document.getElementById('mxTipRedeGrafo');
+ if(!cv||!tip) return;
+ cv.addEventListener('mousemove', function(ev){
+  const info=MX_HOVER.chMxRedeGrafo;
+  if(!info||!info.rects.length){ tip.style.display='none'; return; }
+  const r=cv.getBoundingClientRect();
+  const esc=(cv.width/r.width)/(window.devicePixelRatio||1);
+  const mx=(ev.clientX-r.left)*esc, my=(ev.clientY-r.top)*esc;
+  const e=info.rects.find(function(rr){ return mx>=rr.x0&&mx<=rr.x1&&my>=rr.y0&&my<=rr.y1; });
+  if(!e){ tip.style.display='none'; return; }
+  tip.style.display='block';
+  tip.style.left=Math.min(ev.clientX-r.left+12, r.width-190)+'px';
+  tip.style.top=Math.max(4, ev.clientY-r.top-30)+'px';
+  tip.innerHTML=e.de+' → '+e.para+'<br>F='+e.f+' · p='+e.p+' · lag='+e.lag+'s'
+    +'<br>correlação: '+(e.sinal==='-'?'negativa':'positiva');
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
+}
+
+// PCR -- percentagem de F de saida por sistema (ja calculado por
+// rede_causal.rede(), campo d.pcr), como barras horizontais simples
+function mxDesenharRedePCR(d){
+ const o = ctx('chMxRedePCR', 140); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ const pcr = d.pcr||{};
+ const sistemas=['periferico','cardiaco','respiratorio','autonomico'];
+ const cores={periferico:'#F85149',cardiaco:'#58A6FF',respiratorio:'#3FB950',autonomico:'#A371F7'};
+ const presentes = sistemas.filter(s=>pcr[s] && pcr[s].canais_presentes);
+ if(!presentes.length){ noData(g,W,H,'Sem sistemas suficientes'); return; }
+ g.clearRect(0,0,W,H);
+ const PL=90, PR=50, PT=8, barH=(H-PT*2)/presentes.length;
+ const maxPct = Math.max(10, ...presentes.map(s=>pcr[s].pct));
+ presentes.forEach(function(s,i){
+  const y=PT+i*barH;
+  const val=pcr[s].pct;
+  const w=(val/maxPct)*(W-PL-PR);
+  g.fillStyle=cores[s]; g.fillRect(PL, y+barH*0.15, w, barH*0.7);
+  g.fillStyle='#8b949e'; g.font='10px sans-serif'; g.textAlign='right';
+  g.fillText(s, PL-6, y+barH/2+3);
+  g.fillStyle='#c9d1d9'; g.textAlign='left';
+  g.fillText(val+'%', PL+w+6, y+barH/2+3);
+ });
+ g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='left';
+ g.fillText('% do F total que SAI de cada sistema (peso pelo F das arestas, não contagem)', PL, H-2);
+}
+
 function mxRede(){
  const ids=Object.keys(MX_DADOS);
  const est=document.getElementById('mxRdEstado');
@@ -4472,6 +4641,8 @@ function mxRede(){
    +(exc.length?' · excluídas: '+exc.map(k=>k+' ('+dg[k].excluido+')').join(', '):'')
    +'</p>';
   box.innerHTML=h;
+  mxDesenharRedeGrafo(d);
+  mxDesenharRedePCR(d);
  }).catch(e=>{ est.textContent='erro: '+e.message; });
 }
 
@@ -5711,6 +5882,7 @@ mxLigarHoverPontos('chMxDfa1','mxTipDfa1');
 mxLigarHoverZonas();
 mxLigarHoverVstTemporal();
 mxLigarHoverVstFisiologico();
+mxLigarHoverRedeGrafo();
 mxMudarSubTab('principal');
 mxSessoes();
 // ivSessoes()/ivGlossario() ja nao sao chamadas aqui -- a seccao que

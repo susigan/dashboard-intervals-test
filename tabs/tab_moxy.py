@@ -340,12 +340,14 @@ BODY = """
     </div>
   </details>
   <div id="mxRedeDetalhe">
-    <div class="chartbox" style="position:relative;width:100%;">
-      <canvas id="chMxRedeGrafo" height="360"></canvas>
-      <div id="mxTipRedeGrafo" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
-    </div>
-    <div class="chartbox" style="position:relative;width:100%;">
-      <canvas id="chMxRedePCR" height="140"></canvas>
+    <div class="grid2">
+      <div class="chartbox" style="position:relative;width:100%;">
+        <canvas id="chMxRedeGrafo" height="240"></canvas>
+        <div id="mxTipRedeGrafo" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+      </div>
+      <div class="chartbox" style="position:relative;width:100%;">
+        <canvas id="chMxRedePCR" height="240"></canvas>
+      </div>
     </div>
     <div id="mxRede" style="overflow-x:auto;margin-top:6px;"></div>
   </div>
@@ -4363,7 +4365,7 @@ function mxSintese(){
 // nos de grau maior em tamanho maior.
 // ═══════════════════════════════════════════════════════════════════
 function mxDesenharRedeGrafo(d){
- const o = ctx('chMxRedeGrafo', 360); if(!o) return;
+ const o = ctx('chMxRedeGrafo', 240); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  const nos = d.canais_usados||[];
  const dirigidas = d.arestas||[];
@@ -4491,7 +4493,7 @@ function mxLigarHoverRedeGrafo(){
 // PCR -- percentagem de F de saida por sistema (ja calculado por
 // rede_causal.rede(), campo d.pcr), como barras horizontais simples
 function mxDesenharRedePCR(d){
- const o = ctx('chMxRedePCR', 140); if(!o) return;
+ const o = ctx('chMxRedePCR', 240); if(!o) return;
  const g=o.g, W=o.W, H=o.H;
  const pcr = d.pcr||{};
  const sistemas=['periferico','cardiaco','respiratorio','autonomico'];

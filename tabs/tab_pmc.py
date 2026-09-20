@@ -1352,6 +1352,28 @@ function drawAtencao(){
   '<span><i style="background:'+A.cor+'"></i>'+A.nome+'</span>'+
   '<span style="color:#8b949e">'+A.desc+'</span>';
 
+ // explicacao do canal escolhido, no lugar do texto fixo generico --
+ // reaproveita A.desc (ja calculado) e a fonte do proprio parametro
+ // deste canal (D.fmt.calibracao), sem calcular nada de novo
+ const chaveCal={load:'canal1_tau', hrv:'canal2_lag', super:'canal3_lag',
+                risco:'canal4_lag'}[c];
+ const cal=(D.fmt.calibracao||{})[chaveCal];
+ const boxExpl=document.getElementById('explicacaoCanalFMT');
+ if(boxExpl){
+  let fonteTxt='';
+  if(cal){
+   fonteTxt = cal.fonte==='dados'
+    ? ' <span style="color:#3FB950;">✓ calibrado com os teus dados</span> (n='+cal.n+', r²='+((cal.r2||0)*100).toFixed(0)+'%)'
+    : ' <span style="color:#E67E22;">⚠ valor de referência do paper</span> — descreve outros atletas, não ti (dados insuficientes para calibrar este parâmetro)';
+  } else if(c==='similar'){
+   fonteTxt = ' <span style="color:#48C9B0;">geometria dos próprios tensores</span> — sem parâmetro a calibrar, é a similaridade real entre os dias.';
+  }
+  boxExpl.innerHTML='<div style="border-left:3px solid '+A.cor+';padding:6px 10px;">'+
+   '<b style="color:'+A.cor+';">'+A.nome+'</b><br>'+
+   '<span style="font-size:12px;">'+A.desc+'</span><br>'+
+   '<span style="font-size:11px;">'+fonteTxt+'</span></div>';
+ }
+
  registarTip('chAtencao',function(mxp,myp,rw){
   const esc=rw/W,x=mxp/esc;
   const i=Math.floor((x-PL)/bw);
@@ -1564,6 +1586,34 @@ function drawFMT(){
   {kappa:'#E74C3C',lambda1:'#F4D03F'},
   {kappa:'κ (instabilidade)',lambda1:'λ₁ (dominancia)'},
   {off:OFFK,redraw:drawFMT,height:220,escala:'propria'});
+
+ // legenda: que dimensao esta a puxar o kappa de hoje, e se o nivel
+ // actual e' alto/baixo/normal -- reaproveita a MESMA matriz ja
+ // desenhada em chMatriz (a diagonal) e os MESMOS percentis ja usados
+ // no regime do dia, nada recalculado de raiz
+ const box=document.getElementById('subFMT');
+ if(!box) return;
+ const R=(D.fmt||{}).resumo;
+ const serieK=(D.ftlm.serie||[]).map(d=>d.kappa).filter(v=>v!=null);
+ if(!R || !R.matriz || serieK.length<10){ box.innerHTML=''; return; }
+
+ const nomes=R.nomes, M=R.matriz, kappaHoje=R.kappa;
+ const contrib=nomes.map((nm,i)=>({nome:nm, valor:M[i][i], pct:kappaHoje?M[i][i]/kappaHoje*100:0}))
+  .sort((a,b)=>b.valor-a.valor);
+
+ const ord=serieK.slice().sort((a,b)=>a-b);
+ function pct(p){ return ord[Math.min(ord.length-1,Math.floor(p*ord.length))]; }
+ const p75=pct(0.75), p25=pct(0.25);
+ let sinal, corSinal;
+ if(kappaHoje>p75){ sinal='atenção — acima do teu p75 histórico'; corSinal='#E74C3C'; }
+ else if(kappaHoje<p25){ sinal='estável — abaixo do teu p25 histórico'; corSinal='#3FB950'; }
+ else { sinal='normal — dentro da faixa habitual (p25–p75)'; corSinal='#8b949e'; }
+
+ box.innerHTML='<div style="font-size:12px;">'+
+  '<b style="color:'+corSinal+';">κ hoje: '+sinal+'</b><br>'+
+  '<span style="color:#8b949e;">O que está a puxar mais (contribuição para κ):</span> '+
+  contrib.map(c=>c.nome+' <b>'+c.pct.toFixed(0)+'%</b>').join(' · ')+
+  '</div>';
 }
 function tabelaGammas(){
  const pm=(D.ftlm||{}).por_modalidade||{};
@@ -1941,6 +1991,10 @@ async function load(){
 montarExport();
  drawPMC(); mostrarFMT5(); mostrarRegimeHoje(); mostrarHomeo(); mostrarAlos();
  mostrarDtrimpDkj(); mostrarEficienciaKj();
+ redesenhar();  // drawCTLg/drawFMT so' correm daqui -- sem isto, o
+                 // grafico de Curvatura ficava em branco ate' o
+                 // primeiro resize (ex.: abrir o F12) disparar
+                 // window.addEventListener('resize',redesenhar)
 
  // ── fase actual, com ΔCTLγ e HRV em sigma ──
  const F=d.ftlm;

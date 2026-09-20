@@ -941,3 +941,70 @@ def comparar_recovery(dia1_recovery, dia2_works_metricas, dia2_recuperacoes_bloc
                   if validas else 'sem métricas de recuperação com dados '
                   'nos dois dias'),
     }
+
+
+def comparar_rpe(dia1_rpe_base, dia1_rpe_alvo, dia2_rpes_bloco):
+    """RPE — evidência PERCEPTIVA complementar, nunca decide BP sozinha
+    (nunca entra nos pesos 'principal'/'complementar' de comparar_bp,
+    nunca entra na fracção de convergência que decide o status global).
+
+    dia1_rpe_base: RPE do primeiro bloco gravado no Dia 1 (referência de
+    "antes"), já existente em moxy_rpe.
+    dia1_rpe_alvo: RPE do bloco do Dia 1 mais próximo do alvo de watts
+    deste BP -- o MESMO bloco (b1_bp1/b1_bp2) já usado para a
+    comparação fisiológica, não um novo emparelhamento.
+    dia2_rpes_bloco: lista ordenada de RPEs dos WORKs do Dia 2 que
+    compõem este BP (ex.: os 4 WORKs de BP1) -- já gravados em
+    moxy_rpe para a sessão VST.
+
+    Direcção: mesma lógica conceptual já usada (↑/↓/→ pelo sinal do
+    delta, limiar de 2% adaptado aqui para RPE inteiro: qualquer
+    mudança >=1 ponto conta como direcção real, 0 é estável).
+    """
+    tem_d1 = dia1_rpe_base is not None and dia1_rpe_alvo is not None
+    validos_d2 = [r for r in (dia2_rpes_bloco or []) if r is not None]
+    tem_d2 = len(validos_d2) >= 1
+
+    if not tem_d1 or not tem_d2:
+        return {'status': 'DADOS INSUFICIENTES',
+               'motivo': 'RPE ausente no Dia 1 ou no Dia 2 para este BP',
+               'dia1': None, 'dia2': None}
+
+    d1_inicial, d1_final = dia1_rpe_base, dia1_rpe_alvo
+    d2_inicial, d2_final = validos_d2[0], validos_d2[-1]
+    delta1, delta2 = d1_final - d1_inicial, d2_final - d2_inicial
+
+    def _dir(delta):
+        if delta >= 1:
+            return '↑'
+        if delta <= -1:
+            return '↓'
+        return '→'
+    dir1, dir2 = _dir(delta1), _dir(delta2)
+
+    if dir1 == dir2:
+        status = 'CONSISTENTE'
+        motivo = (f'A percepção de esforço mudou na mesma direcção nos '
+                  f'dois dias (RPE {dir1}).')
+    elif dir1 == '→' or dir2 == '→':
+        status = 'PARCIAL'
+        motivo = 'A percepção de esforço mudou claramente só num dos dias.'
+    else:
+        status = 'DIVERGENTE'
+        motivo = 'A percepção de esforço mudou em direcções opostas nos dois dias.'
+
+    # timing dentro do Dia 2: em que WORK (indice, 1-based) ocorre o
+    # maior salto de RPE entre WORKs consecutivos -- so' informativo,
+    # nao um novo teste estatistico
+    maior_salto = None
+    if len(validos_d2) >= 2:
+        saltos = [abs(validos_d2[i+1]-validos_d2[i]) for i in range(len(validos_d2)-1)]
+        idx = saltos.index(max(saltos))
+        maior_salto = {'de_work': idx+1, 'para_work': idx+2, 'delta': saltos[idx]}
+
+    return {
+        'status': status, 'motivo': motivo,
+        'dia1': {'inicial': d1_inicial, 'final': d1_final, 'delta': delta1, 'direccao': dir1},
+        'dia2': {'inicial': d2_inicial, 'final': d2_final, 'delta': delta2, 'direccao': dir2,
+                'valores': validos_d2, 'maior_salto': maior_salto},
+    }

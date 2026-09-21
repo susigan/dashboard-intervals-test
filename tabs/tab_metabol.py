@@ -2630,6 +2630,12 @@ function pmExtTabela(){
    +(o.lt2_w!=null?' · LT2 <b>'+Math.round(o.lt2_w)+' W</b>'
      +(o.lt2_entre?' (entre '+o.lt2_entre.map(Math.round).join(' e ')+')':'')
      :'')
+   +(o.lt1_range_verificado?'<br><span style="color:#3FB950;">Range verificado (Dia1×Dia2): '
+     +'LT1 '+o.lt1_range_verificado.map(Math.round).join('–')+' W'
+     +' <span style="font-size:10px;">('+o.lt1_range_status+')</span></span>':'')
+   +(o.lt2_range_verificado?'<br><span style="color:#3FB950;">Range verificado (Dia1×Dia2): '
+     +'LT2 '+o.lt2_range_verificado.map(Math.round).join('–')+' W'
+     +' <span style="font-size:10px;">('+o.lt2_range_status+')</span></span>':'')
    +'<br><span style="color:#8b949e;">'+o.porque_tem_prioridade+'</span>'
    +'</div>';
  }
@@ -2928,6 +2934,24 @@ function pmExtDraw(){
                            (x0+x1)/2, PT+h+14);
   });
  }
+
+ // Range verificado Dia1×Dia2 (Verificação VST, tab Moxy) -- ja' lido do
+ // backend em anc.optico, nada recalculado aqui. Cor roxa (a mesma da
+ // "medição óptica" no texto), opacidade por estado -- so' para se ver
+ // onde o range verificado cai em relacao as zonas, nunca substitui-as.
+ const opt = anc.optico || {};
+ [['lt1_range_verificado','lt1_range_status'],
+  ['lt2_range_verificado','lt2_range_status']].forEach(function(par){
+  const rng = opt[par[0]], status = opt[par[1]];
+  if(!rng) return;
+  const x0=X(Math.max(rng[0],xa)), x1=X(Math.min(rng[1],xb));
+  if(x1<=x0) return;
+  const op = status==='CONSISTENTE' ? 0.20 : 0.10;
+  g.fillStyle='rgba(163,113,247,'+op+')'; g.fillRect(x0, PT, x1-x0, h);
+  g.strokeStyle='#A371F7'; g.lineWidth=1.5; g.setLineDash([2,3]);
+  g.strokeRect(x0, PT, x1-x0, h);
+  g.setLineDash([]); g.lineWidth=1;
+ });
 
  // Curva de lactato sobreposta, mesma fonte que a tab da Curva de
  // Lactato (PM.mader.curva) — para ver, no mesmo gráfico onde se

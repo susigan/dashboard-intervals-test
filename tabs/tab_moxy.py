@@ -1363,6 +1363,22 @@ function mxDesenharLimiaresSmo2(d){
   {v:(dfa1lim.ok?dfa1lim.valor:null), cor:'#CC79A7', nome:'DFA-α1'},
  ].filter(m=>m.v!=null && m.v>=xa && m.v<=xb);
 
+ // CP Model -- NAO e' mais um "metodo de achar limiar", e' uma referencia
+ // externa (vem da tab CP-Model, /api/cp/actual/<modalidade>, nunca
+ // recalculado aqui); por isso desenha-se a parte, linha SOLIDA (nao
+ // tracejada) para nao se confundir visualmente com BP1/BP2/Dmax/MLSS/DFA
+ const cpModel = MX_CP_MODEL_CACHE[d.modalidade];
+ if(cpModel!=null && cpModel>=xa && cpModel<=xb){
+  const x=X(cpModel);
+  g.strokeStyle='#E3B341'; g.lineWidth=2;
+  g.beginPath(); g.moveTo(x,PT); g.lineTo(x,PT+h); g.stroke();
+  g.lineWidth=1;
+  g.fillStyle='#E3B341'; g.font='bold 10px sans-serif'; g.textAlign='center';
+  const nomeModelo=(MX_CP_MODEL_NOME||{})[d.modalidade];
+  g.fillText('CP Model '+Math.round(cpModel)+'W'+(nomeModelo?' ('+nomeModelo+')':''), x, PT-30);
+  MX_HOVER.chMxLimiares = MX_HOVER.chMxLimiares || {};
+ }
+
  // agrupar por watts para nao empilhar rotulos identicos (BP1/BP2 do
  // mesmo metodo podem coincidir com outro metodo)
  let ultimoTxtY = PT-4;
@@ -3291,6 +3307,22 @@ function _vstSimboloVerificacao(status){
 }
 
 let MX_VST_VERIF_CACHE = {};  // {moxyId: resposta de /verificacao_ativa} -- evita repetir o pedido a cada mxDraw()
+let MX_CP_MODEL_CACHE = {};  // {modalidade: cp_w ou null} -- de /api/cp/actual/<modalidade>, mesma fonte já usada na tab Metabol
+
+function mxCarregarCpModel(modalidade){
+ if(!modalidade || MX_CP_MODEL_CACHE[modalidade]!==undefined){
+  mxDraw();
+  if(MX_ULT_LIMIARES_D) mxDesenharLimiaresSmo2(MX_ULT_LIMIARES_D);
+  return;
+ }
+ fetch('/api/cp/actual/'+encodeURIComponent(modalidade)).then(r=>r.json()).then(function(d){
+  MX_CP_MODEL_CACHE[modalidade] = (d && d.status==='ok' && typeof d.cp_w==='number') ? d.cp_w : null;
+  MX_CP_MODEL_NOME = MX_CP_MODEL_NOME||{}; MX_CP_MODEL_NOME[modalidade] = d.modelo;
+  mxDraw();
+  if(MX_ULT_LIMIARES_D) mxDesenharLimiaresSmo2(MX_ULT_LIMIARES_D);
+ }).catch(function(){ MX_CP_MODEL_CACHE[modalidade]=null; });
+}
+let MX_CP_MODEL_NOME = {};
 let MX_HOVER_BP_FAIXAS = [];  // faixas de BP1/BP2 desenhadas no grafico principal, para hover
 
 function mxPrincipalVerificacaoMostrar(){
@@ -3412,6 +3444,7 @@ function mxLimiares(){
    smo2_derivadas: d.smo2_derivadas,
   };
   mxCarregarPlanoZonas(d, id, MX_ULT_VALORES);
+  mxCarregarCpModel(d.modalidade);
   MX_ULT_HIPO = MX_ULT_HIPO || false;
   mxDerivadasEVo2(d);
   mxEstilosRecentes();

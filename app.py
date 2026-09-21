@@ -2216,9 +2216,41 @@ def _ultima_analise_moxy(modalidade):
                                       if len(r) > 14 and r[13] else None),
                 'nota': ('última sessão com Moxy desta modalidade. Não é '
                          'média de várias: é a mais recente, porque o '
-                         'breakpoint muda com a forma')}
+                         'breakpoint muda com a forma'),
+                **_range_verificado_vst(r[8])}
     except Exception as e:
         return {'erro': f'{type(e).__name__}: {e}'}
+
+
+def _range_verificado_vst(moxy_activity_id):
+    """Range Dia1×Dia2 ja' persistido em vst_conjuntos (Verificação VST),
+    pelo mesmo moxy_activity_id -- nada recalculado, so' lido.
+    """
+    if not moxy_activity_id:
+        return {}
+    try:
+        import drive_db_perfil as ddp
+        cn = ddp.get_conn()
+        r = cn.execute(
+            "SELECT bp1_status, bp2_status, dia1_bp1_w, dia2_bp1_w, "
+            "dia1_bp2_w, dia2_bp2_w FROM vst_conjuntos "
+            "WHERE moxy_activity_id = ? ORDER BY analisado_em DESC LIMIT 1",
+            (moxy_activity_id,)).fetchone()
+        cn.close()
+        if not r or r[0] is None:
+            return {}
+        fora = {}
+        if r[2] is not None and r[3] is not None:
+            fora['lt1_range_verificado'] = [round(min(r[2], r[3]), 1),
+                                            round(max(r[2], r[3]), 1)]
+            fora['lt1_range_status'] = r[0]
+        if r[4] is not None and r[5] is not None:
+            fora['lt2_range_verificado'] = [round(min(r[4], r[5]), 1),
+                                            round(max(r[4], r[5]), 1)]
+            fora['lt2_range_status'] = r[1]
+        return fora
+    except Exception:
+        return {}
 
 
 # Campos que precisam de intensidades que o aquecimento em escada NUNCA
@@ -3300,6 +3332,10 @@ def _perfil_metabolico_dados(modalidade, args, com_ancoras=True):
                     'data': _mx.get('data'),
                     'lt1_entre': _mx.get('lt1_reox_entre'),
                     'lt2_entre': _mx.get('mlss_dessat_entre'),
+                    'lt1_range_verificado': _mx.get('lt1_range_verificado'),
+                    'lt1_range_status': _mx.get('lt1_range_status'),
+                    'lt2_range_verificado': _mx.get('lt2_range_verificado'),
+                    'lt2_range_status': _mx.get('lt2_range_status'),
                     'porque_tem_prioridade': (
                         'vem de um sensor no músculo. O modelo parte dos '
                         'MMP e o AeT parte da curva de potência, que são os '

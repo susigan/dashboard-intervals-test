@@ -3657,6 +3657,7 @@ function pmZonas3(){
   + ' — origem: <b>' + (a.origem||'?') + '</b>. '
   + 'A FC só é convertida entre o LT1 e o LT2, onde a recta foi medida; '
   + 'fora disso fica vazia em vez de extrapolada.</p>';
+ h += _cpModelZonaHTML(zs);
  box.innerHTML = h;
 }
 
@@ -3788,6 +3789,24 @@ function pmCurvaTip(){
  cv.addEventListener('mouseleave', function(){ tip.style.display='none'; });
 }
 
+// Indicacao do CP Model dentro das tabelas de zona (nao sao graficos com
+// eixo, por isso nao se desenha linha -- so' se acrescenta uma linha na
+// propria tabela). Reaproveita PM_CP/PM_CP_NOME/PM_CP_INFO, ja' geridos
+// por pmCarregarCP() -- nao busca nem calcula nada de novo aqui. Mesma
+// convencao de limites ja usada em pmRpeDaZona: de <= watts < ate.
+function _cpModelZonaHTML(zonas){
+ if(PM_CP==null || typeof PM_CP!=='number' || isNaN(PM_CP)) return '';
+ const z = (zonas||[]).find(function(x){
+  return x.de_w!=null && x.ate_w!=null && PM_CP>=x.de_w && PM_CP<x.ate_w; });
+ const zonaTxt = z ? z.zona : 'fora da faixa exibida';
+ const corBorda = z ? z.cor : '#8b949e';
+ return '<div style="border-left:3px solid '+corBorda+';padding:5px 10px;'
+  +'margin:8px 0;font-size:12px;">'
+  +'<b>CP Model</b>: '+Math.round(PM_CP)+' W'
+  +(PM_CP_NOME?' <span style="color:#8b949e;font-size:11px;">(modelo '+PM_CP_NOME+')</span>':'')
+  +' &rarr; <b>Zona</b>: '+zonaTxt+'</div>';
+}
+
 function pmSemaforo(){
  const box = document.getElementById('pmSemaforo');
  const fb = document.getElementById('pmForma');
@@ -3814,6 +3833,7 @@ function pmSemaforo(){
   + 'FTP. Z1+Z2 é a base anabólica; Z3 constrói se estiveres fresco e '
   + 'quebra se estiveres cansado; Z4+Z5 é catabólico e só adapta com '
   + 'nutrição e recuperação.</p>';
+ h += _cpModelZonaHTML(zs);
  box.innerHTML = h;
 
  const d = (PM && PM.diagnostico_curva) || {};
@@ -3863,6 +3883,7 @@ function pmZonas(){
       + 'superior de watts da zona.'
     : 'Sem pace: ' + (rp.nota || rp.erro || 'dados insuficientes'))
   +'</p>';
+ h += _cpModelZonaHTML(z);
  document.getElementById('pmZonas').innerHTML=h;
 }
 

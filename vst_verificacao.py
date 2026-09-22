@@ -1844,6 +1844,16 @@ def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
         'modalidade não reconhecida — sem contexto específico disponível; '
         'interpretação genérica, com cautela adicional.')
 
+    # estados internos de cada canal (já calculados pelo LIMITER) --
+    # usados pelos ramos para escolher a métrica primária correcta
+    _ev = evidencia
+    estados_ev = {
+        'HR':    ((_ev.get('cardiorrespiratorio') or {}).get('hr') or {}).get('estado','ausente'),
+        'RF':    ((_ev.get('cardiorrespiratorio') or {}).get('rf') or {}).get('estado','ausente'),
+        'SmO2':  ((_ev.get('periferico') or {}).get('smo2') or {}).get('estado','ausente'),
+        'DFA-α1':((_ev.get('autonomico') or {}).get('dfa1') or {}).get('estado','ausente'),
+    }
+
     base = {
         'bp': bp_nome, 'modalidade': modalidade, 'padrao_observado': padrao,
         'evidencias': limiter_result.get('motivo') if limiter_result else None,
@@ -1858,11 +1868,17 @@ def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
     if padrao == 'PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE':
         metricas_alvo = [m for m in _metricas_alteradas(evidencia) if m in ('HR', 'RF')]
         timings = _timings_do_bloco(divergencia_bloco, ['HR', 'RF'])
+        metrica_prim = 'RF' if estados_ev.get('RF','ausente') in ('consistente','parcial') else 'HR'
+        secundarias = ([m for m in ['HR','RF'] if m != metrica_prim]
+                       + [] + (['RPE'] if comp_rpe else []) + ['Recovery', 'DFA-α1 (complementar)'])
+        secundarias = [s for s in secundarias if s]
         base.update({
             'hipotese': ('A principal resposta progressiva observada neste WORK foi '
                         'cardiorrespiratória, com resposta periférica mais tardia ou ausente.'),
             'alvo_potencial': 'estabilidade cardiorrespiratória durante esforço sustentado nesta intensidade.',
             'metricas_alvo': metricas_alvo, 'timings_referencia': timings,
+            'metrica_primaria': metrica_prim,
+            'metricas_secundarias': secundarias,
             'estimulo_candidato': {
                 'tipo': 'estímulo cujo objectivo seja testar a tolerância cardiorrespiratória '
                        'sustentada próxima desta intensidade',
@@ -1877,6 +1893,14 @@ def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
             },
             'resposta_esperada': ['menor progressão de RF', 'menor drift de HR/RF',
                                   'divergência mais tardia', 'ou recuperação mais rápida'],
+            'estrutura_futura': {
+                'atividade_baseline': None, 'bp': bp_nome, 'modalidade': modalidade,
+                'padrao': padrao, 'metrica_primaria': metrica_prim,
+                'metricas_secundarias': secundarias,
+                'estimulo': 'tolerância cardiorrespiratória sustentada',
+                'criterio': 'menor drift HR/RF, divergência mais tardia ou recovery igual/melhor',
+                'resultado_nova_vst': None,
+            },
         })
     elif padrao == 'PADRÃO PERIFÉRICO PREDOMINANTE':
         timings = _timings_do_bloco(divergencia_bloco, ['SmO2'])
@@ -1886,6 +1910,8 @@ def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
             'alvo_potencial': 'comportamento da SmO2 (oxigenação muscular monitorizada) '
                               'durante esforço sustentado — sem afirmar mecanismo específico.',
             'metricas_alvo': ['SmO2'], 'timings_referencia': timings,
+            'metrica_primaria': 'SmO2',
+            'metricas_secundarias': ['HR', 'RF'] + (['RPE'] if comp_rpe else []) + ['Recovery'],
             'estimulo_candidato': {
                 'tipo': 'estímulo cujo objectivo seja testar a tolerância periférica ao '
                        'esforço sustentado nesta intensidade',
@@ -1899,15 +1925,26 @@ def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
             },
             'resposta_esperada': ['menor drift de SmO2', 'divergência mais tardia',
                                   'ou recuperação periférica mais rápida'],
+            'estrutura_futura': {
+                'atividade_baseline': None, 'bp': bp_nome, 'modalidade': modalidade,
+                'padrao': padrao, 'metrica_primaria': 'SmO2',
+                'metricas_secundarias': ['HR', 'RF', 'Recovery'],
+                'estimulo': 'tolerância periférica sustentada',
+                'criterio': 'menor drift SmO2, divergência mais tardia ou recovery igual/melhor',
+                'resultado_nova_vst': None,
+            },
         })
     elif padrao == 'RESPOSTA MULTISSISTÊMICA':
         timings = _timings_do_bloco(divergencia_bloco, ['HR', 'RF', 'SmO2'])
+        met_alt = _metricas_alteradas(evidencia)
         base.update({
             'hipotese': 'Resposta multissistêmica durante o WORK — cardiorrespiratório e '
                        'periférico apresentam respostas temporalmente relacionadas.',
             'alvo_potencial': 'capacidade de sustentar a carga sem progressão excessiva '
                               'simultânea de múltiplos sinais.',
-            'metricas_alvo': _metricas_alteradas(evidencia), 'timings_referencia': timings,
+            'metricas_alvo': met_alt, 'timings_referencia': timings,
+            'metrica_primaria': 'HR/RF/SmO2',
+            'metricas_secundarias': [] + (['RPE'] if comp_rpe else []) + ['Recovery', 'DFA-α1 (complementar)'],
             'estimulo_candidato': {
                 'tipo': 'estímulo cujo objectivo seja testar a tolerância combinada a esta '
                        'intensidade, acompanhando vários sinais ao mesmo tempo',
@@ -1921,6 +1958,14 @@ def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
             },
             'resposta_esperada': ['maior estabilidade entre ENTRY e EXIT', 'divergências mais '
                                   'tardias em conjunto', 'ou recovery mais coerente'],
+            'estrutura_futura': {
+                'atividade_baseline': None, 'bp': bp_nome, 'modalidade': modalidade,
+                'padrao': padrao, 'metrica_primaria': 'HR/RF/SmO2',
+                'metricas_secundarias': ['Recovery', 'RPE'],
+                'estimulo': 'tolerância combinada sustentada (múltiplos sistemas)',
+                'criterio': 'menor progressão conjunta HR/RF/SmO2 ou recovery igual/melhor',
+                'resultado_nova_vst': None,
+            },
         })
     elif padrao == 'RESPOSTAS DISSOCIADAS':
         primeira = None
@@ -1941,6 +1986,8 @@ def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
                            'aparecem temporalmente separados, sem um agrupamento predominante.',
                 'alvo_potencial': None,
                 'metricas_alvo': [], 'timings_referencia': {},
+                'metrica_primaria': primeira,
+                'metricas_secundarias': [],
                 'estimulo_candidato': None,
                 'resposta_esperada': None,
                 'nota_dissociacao': ('primeira métrica a divergir nesta sessão: ' + primeira
@@ -1949,6 +1996,14 @@ def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
                                         'intervenção — a dissociação não se mostrou consistente '
                                         'entre sessões comparáveis (ou não há histórico '
                                         'suficiente para avaliar isso ainda).'),
+                'estrutura_futura': {
+                    'atividade_baseline': None, 'bp': bp_nome, 'modalidade': modalidade,
+                    'padrao': padrao, 'metrica_primaria': primeira,
+                    'metricas_secundarias': [],
+                    'estimulo': None,
+                    'criterio': 'verificar se a dissociação se repete e se emerge um agrupamento',
+                    'resultado_nova_vst': None,
+                },
             })
         else:
             base.update({
@@ -1959,6 +2014,8 @@ def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
                                   'divergindo primeiro.'),
                 'metricas_alvo': [primeira] if primeira else [],
                 'timings_referencia': _timings_do_bloco(divergencia_bloco, [primeira] if primeira else []),
+                'metrica_primaria': primeira,
+                'metricas_secundarias': [],
                 'estimulo_candidato': {
                     'tipo': 'estímulo cujo objectivo seja investigar por que a dissociação se '
                            'repete — não um treino fechado, apenas uma verificação dirigida',
@@ -1972,13 +2029,28 @@ def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
                                           'convergência temporal',
                 },
                 'resposta_esperada': ['maior agrupamento temporal entre os sinais em sessão futura'],
+                'estrutura_futura': {
+                    'atividade_baseline': None, 'bp': bp_nome, 'modalidade': modalidade,
+                    'padrao': padrao, 'metrica_primaria': primeira,
+                    'metricas_secundarias': [],
+                    'estimulo': 'investigação dirigida (dissociação recorrente)',
+                    'criterio': 'verificar se emerge agrupamento temporal em sessão futura',
+                    'resultado_nova_vst': None,
+                },
             })
     else:  # EVIDÊNCIA INSUFICIENTE
         base.update({
             'hipotese': None, 'alvo_potencial': None, 'metricas_alvo': [],
             'timings_referencia': {}, 'estimulo_candidato': None, 'resposta_esperada': None,
+            'metrica_primaria': None, 'metricas_secundarias': [],
             'motivo_sem_estimulo': ('Os dados disponíveis não permitem selecionar uma hipótese '
                                     'de intervenção fisiológica com segurança.'),
+            'estrutura_futura': {
+                'atividade_baseline': None, 'bp': bp_nome, 'modalidade': modalidade,
+                'padrao': padrao, 'metrica_primaria': None, 'metricas_secundarias': [],
+                'estimulo': None, 'criterio': 'repetir sessão com melhor qualidade de dados',
+                'resultado_nova_vst': None,
+            },
         })
 
     # recorrencia -- so' informativa, nunca um score

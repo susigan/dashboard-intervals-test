@@ -1037,12 +1037,13 @@ def profilage_estrutura_works(estrutura, canais, tempo):
         m = metricas_intervalo(canais, tempo, bloco['t0'], bloco['t1'],
                                bloco.get('watts_medio_da_api'))
         canais_fis = ('hr', 'respiracao', 'smo2', 'thb', 'dfa1')
-        entry, exit_, delta = {}, {}, {}
+        entry, exit_, delta, delta_pct = {}, {}, {}, {}
         for c in canais_fis:
             v = m.get(c) or {}
             entry[c] = v.get('inicial') if v.get('ok') else None
             exit_[c] = v.get('final') if v.get('ok') else None
             delta[c] = v.get('delta') if v.get('ok') else None
+            delta_pct[c] = v.get('delta_pct') if v.get('ok') else None
         linha = {
             'ordem': ordem, 'tipo': tipo, 'bp': bp,
             't0': bloco['t0'], 't1': bloco['t1'],
@@ -1051,6 +1052,7 @@ def profilage_estrutura_works(estrutura, canais, tempo):
             'potencia_media': (m.get('potencia') or {}).get('media')
                               if (m.get('potencia') or {}).get('ok') else None,
             'entry': entry, 'exit': exit_, 'delta': delta,
+            'delta_pct': delta_pct,
         }
         linhas.append(linha)
         ordem += 1
@@ -1067,3 +1069,69 @@ def profilage_estrutura_works(estrutura, canais, tempo):
 
     return {'linhas': linhas, 'aviso_estrutura': estrutura.get('aviso'),
            'n_excluidos': len(estrutura.get('excluidos') or [])}
+
+
+def profilage_drift_intra_work(linhas):
+    """DRIFT INTRA-WORK — direcção (↑/↓/→) da resposta dentro de cada WORK
+    já classificado, a partir das linhas já produzidas por
+    profilage_estrutura_works() -- NÃO recalcula ENTRY/EXIT/Δ, só lê
+    'delta_pct' (já calculado por metricas_intervalo via
+    _metricas_variavel) e classifica com _direccao(), a MESMA função e
+    o MESMO limiar de 2% já usados em comparar_bp() para estes mesmos
+    canais.
+
+    Cada canal fica separado -- nunca combinado num score ou índice.
+    Só WORKs reais (tipo='WORK') entram aqui; aquecimento fica de fora
+    (não é um WORK sustentado do protocolo).
+    """
+    canais_fis = (('hr', 'HR'), ('respiracao', 'RF'), ('smo2', 'SmO2'),
+                 ('thb', 'THb'), ('dfa1', 'DFA-α1'))
+    works = [l for l in linhas if l.get('tipo') == 'WORK']
+
+    linhas_drift = []
+    for l in works:
+        direccoes = {}
+        for chave, _nome in canais_fis:
+            dp = (l.get('delta_pct') or {}).get(chave)
+            direccoes[chave] = _direccao(dp) if dp is not None else \
+                ('dados insuficientes' if l.get('entry', {}).get(chave) is None
+                 or l.get('exit', {}).get(chave) is None else '→')
+        linhas_drift.append({
+            'ordem': l['ordem'], 'bp': l.get('bp'),
+            'potencia_media': l.get('potencia_media'),
+            'entry': l.get('entry'), 'exit': l.get('exit'),
+            'delta': l.get('delta'), 'delta_pct': l.get('delta_pct'),
+            'direccao': direccoes,
+        })
+
+    # sintese descritiva por bloco -- so' descreve o que se ve nas
+    # direccoes de cada canal ao longo dos WORKs desse bloco, NUNCA um
+    # score. "predominante" = a direccao que aparece em mais WORKs
+    # desse bloco para aquele canal; empate fica "misto".
+    def _sintese_bloco(bp_nome):
+        do_bloco = [l for l in linhas_drift if l['bp'] == bp_nome]
+        if not do_bloco:
+            return None
+        fora = {'bp': bp_nome, 'n_works': len(do_bloco), 'por_canal': {}}
+        for chave, nome in canais_fis:
+            dirs = [l['direccao'][chave] for l in do_bloco]
+            validas = [d for d in dirs if d in ('↑', '↓', '→')]
+            if not validas:
+                fora['por_canal'][chave] = {'nome': nome,
+                                            'predominante': 'dados insuficientes'}
+                continue
+            contagem = {d: validas.count(d) for d in set(validas)}
+            maxc = max(contagem.values())
+            empatados = [d for d, n in contagem.items() if n == maxc]
+            predominante = empatados[0] if len(empatados) == 1 else 'misto'
+            fora['por_canal'][chave] = {
+                'nome': nome, 'predominante': predominante,
+                'contagem': contagem, 'n_dados_insuficientes':
+                    sum(1 for d in dirs if d not in ('↑', '↓', '→'))}
+        return fora
+
+    return {
+        'linhas': linhas_drift,
+        'sintese_bp1': _sintese_bloco('BP1'),
+        'sintese_bp2': _sintese_bloco('BP2'),
+    }

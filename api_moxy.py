@@ -2439,9 +2439,15 @@ def registar(app):
     @app.route('/api/moxy/vst/conjuntos_salvos')
     def api_moxy_vst_conjuntos_salvos():
         """Lista de "VERIFICAÇÕES SALVAS" -- le' so' o que ja' esta'
-        gravado (snapshot da ultima analise), nunca recalcula."""
+        gravado (snapshot da ultima analise), nunca recalcula.
+        A modalidade vem do campo 'type' da sessao Moxy vinculada
+        (tabela activities) atraves de um LEFT JOIN -- sem nova coluna
+        em vst_conjuntos, so' o TYPE_MAP ja' existente em config.
+        """
         try:
             import drive_db_perfil as ddp
+            import db as _db
+            from config import TYPE_MAP
             cn = ddp.get_conn()
             rows = cn.execute(
                 "SELECT vst_activity_id, moxy_activity_id, bp1_status, "
@@ -2449,8 +2455,21 @@ def registar(app):
                 "dia1_bp1_w, dia2_bp1_w, dia1_bp2_w, dia2_bp2_w, "
                 "analisado_em, actualizado_em FROM vst_conjuntos "
                 "ORDER BY actualizado_em DESC").fetchall()
+            # buscar modalidade de cada sessao Moxy da tabela activities
+            # (campo type, ja' mapeado por TYPE_MAP) -- so' uma query
+            # em lote, nao N queries
+            moxy_ids = [r[1] for r in rows if r[1]]
+            tipo_por_id = {}
+            if moxy_ids:
+                placeholders = ','.join('?' * len(moxy_ids))
+                act_rows = _db._exec(
+                    f"SELECT id, type FROM activities WHERE id IN ({placeholders})",
+                    moxy_ids, fetch='all') or []
+                tipo_por_id = {str(r[0]): TYPE_MAP.get(r[1]) or r[1]
+                               for r in act_rows if r[1]}
             conjuntos = [{
                 'vst_activity_id': r[0], 'moxy_activity_id': r[1],
+                'modalidade': tipo_por_id.get(str(r[1])),
                 'bp1_status': r[2], 'bp2_status': r[3],
                 'recovery_bp1_status': r[4], 'recovery_bp2_status': r[5],
                 'dia1_bp1_w': r[6], 'dia2_bp1_w': r[7],

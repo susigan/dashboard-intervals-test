@@ -1332,8 +1332,17 @@ def profilage_primeira_divergencia(estrutura, canais, tempo):
                 continue
             baseline = info['inicial']
             serie = _serie_na_janela(tempo, canais.get(chave_canal) or [], t0, t1)
+            # excluir a JANELA de baseline da busca -- a mesma fatia
+            # exacta que _metricas_variavel usa para calcular 'inicial'
+            # (primeiro quarto de pontos). Sem isto, um ponto DENTRO do
+            # proprio baseline podia "divergir" da media desse baseline
+            # e aparecer como t=0s -- que e' o bug reportado: primeira
+            # divergencia tem de ser DEPOIS do periodo usado para
+            # estabelecer o estado inicial, nunca dentro dele.
+            n_baseline = max(1, len(serie) // 4)
+            serie_apos_baseline = serie[n_baseline:]
             limiar = LIMIAR_ABSOLUTO_ACCUMULATION[chave]
-            div = _primeira_divergencia_canal(serie, baseline, limiar)
+            div = _primeira_divergencia_canal(serie_apos_baseline, baseline, limiar)
             if div['status'] == 'ok':
                 resultados.append({'metrica': nome, 'status': 'ok',
                                    't_relativo': round(div['t'] - t0, 1),

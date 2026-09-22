@@ -2481,6 +2481,60 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/vst/historico_estilos')
+    def api_moxy_vst_historico_estilos():
+        """Le' todas as verificacoes salvas (resultado_json) e devolve:
+        - padroes recorrentes por BP e por modalidade;
+        - biblioteca de estilos coerentes com esses padroes.
+        Nunca recalcula dados fisiologicos -- so' le' o que ja' foi
+        persistido em vst_conjuntos.resultado_json.
+        """
+        try:
+            import drive_db_perfil as ddp
+            import vst_verificacao as vst
+            from config import TYPE_MAP
+            import db as _db
+            cn = ddp.get_conn()
+            rows = cn.execute(
+                "SELECT vst_activity_id, moxy_activity_id, "
+                "analisado_em, resultado_json FROM vst_conjuntos "
+                "ORDER BY analisado_em DESC").fetchall()
+            # modalidade de cada sessao Moxy, em lote
+            mids = [r[1] for r in rows if r[1]]
+            tipo_por_id = {}
+            if mids:
+                ph = ','.join('?' * len(mids))
+                ars = _db._exec(
+                    f"SELECT id, type FROM activities WHERE id IN ({ph})",
+                    mids, fetch='all') or []
+                tipo_por_id = {str(r[0]): TYPE_MAP.get(r[1]) or r[1] for r in ars if r[1]}
+            entradas = []
+            for vst_id, moxy_id, analisado_em, rjson in rows:
+                if not rjson:
+                    continue
+                try:
+                    rdata = json.loads(rjson)
+                except Exception:
+                    continue
+                modalidade = tipo_por_id.get(str(moxy_id))
+                lbp1 = rdata.get('limiter_bp1') or {}
+                lbp2 = rdata.get('limiter_bp2') or {}
+                entradas.append({
+                    'vst_activity_id': vst_id,
+                    'moxy_activity_id': moxy_id,
+                    'modalidade': modalidade,
+                    'analisado_em': (analisado_em or '')[:10],
+                    'padrao_bp1': lbp1.get('padrao'),
+                    'padrao_bp2': lbp2.get('padrao'),
+                    'recovery_bp1': lbp1.get('recovery_coerencia'),
+                    'recovery_bp2': lbp2.get('recovery_coerencia'),
+                })
+            resultado = vst.profilage_historico_estilos(entradas)
+            return jsonify({'status': 'ok', **resultado})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/vst/lista')
     def api_moxy_vst_lista():
         """Actividades com a tag VST — só essas, nunca as sem a tag."""
@@ -2974,7 +3028,9 @@ def registar(app):
                      pot2.get('dia1_w'), pot2.get('dia2_w'),
                      json.dumps({'comparacao_bp1': comp_bp1, 'comparacao_bp2': comp_bp2,
                                 'comparacao_recovery_bp1': comp_recovery_bp1,
-                                'comparacao_recovery_bp2': comp_recovery_bp2},
+                                'comparacao_recovery_bp2': comp_recovery_bp2,
+                                'limiter_bp1': limiter_bp1, 'limiter_bp2': limiter_bp2,
+                                'hipotese_bp1': hipotese_bp1, 'hipotese_bp2': hipotese_bp2},
                                ensure_ascii=False),
                      agora, vid))
                 cn.commit()

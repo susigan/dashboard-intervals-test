@@ -1640,6 +1640,7 @@ def profilage_limiter(bp_nome, divergencia_bloco, convergencia_works, convergenc
     # THb nunca decide sozinho -- so' contextual, mesmo que o estado interno seja forte
     thb_contexto = ('presente como contexto' if estados['THb']['estado'] in
                     ('consistente', 'parcial', 'tardio') else 'sem divergência sustentada')
+    conv_predominante = (convergencia_sintese or {}).get('padrao_predominante')
 
     # recovery como evidencia complementar -- so' aumenta/reduz a
     # COERENCIA descritiva, nunca decide a classificacao sozinho
@@ -1653,72 +1654,85 @@ def profilage_limiter(bp_nome, divergencia_bloco, convergencia_works, convergenc
     rpe_nota = ('RPE: não disponível' if not comp_rpe or rpe_estado == 'DADOS INSUFICIENTES'
                else f'RPE: {rpe_estado.lower()}')
 
-    grupos_com_evidencia = []
-    if cardio['nivel'] in ('forte', 'parcial'):
-        grupos_com_evidencia.append('cardiorrespiratorio')
-    if perif['nivel'] in ('forte', 'parcial'):
-        grupos_com_evidencia.append('periferico')
-    if auton['nivel'] in ('forte', 'parcial'):
-        grupos_com_evidencia.append('autonomico')
+    # Só cardiorrespiratório e periférico contam como EIXOS PRIMÁRIOS
+    # para decidir MISTO/MULTISSISTÊMICA/DISSOCIADAS. DFA-α1 é sempre
+    # complementar (item 3/12) -- mesmo quando forte e temporalmente
+    # agrupado com o eixo principal, entra só como nota, nunca eleva a
+    # classificação sozinho nem conta para "quantos grupos responderam".
+    def _grupo_so_tardio(nivel_info, estados_grupo):
+        return nivel_info['nivel'] == 'parcial' and \
+            all(e['estado'] in ('tardio', 'parcial') for e in estados_grupo) and \
+            not any(e['estado'] == 'consistente' for e in estados_grupo)
 
-    conv_predominante = (convergencia_sintese or {}).get('padrao_predominante')
+    avaliacoes = {'cardiorrespiratorio': (cardio, [estados['HR'], estados['RF']]),
+                 'periferico': (perif, [estados['SmO2']]),
+                 'autonomico': (auton, [estados['DFA-α1']])}
+    primarios = ('cardiorrespiratorio', 'periferico')
+    primarios_fortes = [g for g in primarios if avaliacoes[g][0]['nivel'] == 'forte']
+    primarios_com_evidencia = [g for g in primarios if avaliacoes[g][0]['nivel'] in ('forte', 'parcial')]
+    # quantos dos TRÊS grupos (incluindo autonómico) ficam isolados no
+    # tempo -- um único grupo tardio ao lado de um eixo forte não basta
+    # para dissociação; dois ou mais grupos dispersos, sim
+    n_tardio_isolado = sum(1 for g in ('cardiorrespiratorio', 'periferico', 'autonomico')
+                           if _grupo_so_tardio(*avaliacoes[g]))
+    nomes_grupos = {'cardiorrespiratorio': 'cardiorrespiratório',
+                    'periferico': 'periférico', 'autonomico': 'autonômico'}
+
+    def _nota_complementar(grupo_principal=None):
+        partes = []
+        if auton['nivel'] != 'ausente':
+            partes.append('participação autonômica ' +
+                          ('complementar' if auton['nivel'] == 'forte' else 'parcial'))
+        if (perif['nivel'] != 'ausente' and 'periferico' not in primarios_fortes
+                and grupo_principal != 'periferico'):
+            partes.append('resposta periférica ' +
+                          ('tardia' if avaliacoes['periferico'][0]['nivel'] == 'parcial'
+                           and _grupo_so_tardio(*avaliacoes['periferico']) else 'parcial'))
+        return (', com ' + ' e '.join(partes) + '.') if partes else '.'
 
     # ---- decisao (arvore descritiva, sem score) ----
-    if not grupos_com_evidencia:
+    if not primarios_com_evidencia and auton['nivel'] == 'ausente':
         padrao = 'EVIDÊNCIA INSUFICIENTE'
         motivo = 'nenhum grupo fisiológico apresenta evidência consistente ou parcial.'
-    elif len(grupos_com_evidencia) == 1:
-        grupo = grupos_com_evidencia[0]
-        if grupo == 'autonomico':
-            # DFA-α1 sozinho NUNCA decide (item 12/teste G) -- mesmo
-            # sendo o unico grupo com evidencia, fica insuficiente
-            padrao = 'EVIDÊNCIA INSUFICIENTE'
-            motivo = ('apenas DFA-α1 (autonômico, complementar) apresenta evidência — '
-                      'isoladamente não é suficiente para um padrão predominante.')
-        elif grupo == 'cardiorrespiratorio':
-            padrao = 'PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE'
-            motivo = cardio['nota'] + '.'
-        else:
-            padrao = 'PADRÃO PERIFÉRICO PREDOMINANTE'
-            motivo = perif['nota'] + f' (THb: {thb_contexto}, contextual).'
-    else:
-        # 2+ grupos com evidencia -- usa a convergencia temporal JA
-        # calculada (nunca recalculada aqui) para distinguir MISTO/
-        # MULTISSISTEMICA de DISSOCIADAS. Alem do predominante do bloco,
-        # verifica-se tambem se algum grupo e' INTEIRAMENTE 'tardio'
-        # (nenhuma metrica consistente nele) enquanto outro grupo e'
-        # 'forte' -- isso e' o mesmo sinal que "tardia" ja' descreve por
-        # WORK, so' agora ao nivel do grupo: se um grupo so' aparece
-        # tarde, ele esta' temporalmente separado do outro, mesmo que a
-        # classificacao do WORK isolado tenha ficado "parcial".
-        def _grupo_so_tardio(nivel_info, estados_grupo):
-            return nivel_info['nivel'] == 'parcial' and \
-                all(e['estado'] in ('tardio', 'parcial') for e in estados_grupo) and \
-                not any(e['estado'] == 'consistente' for e in estados_grupo)
-
-        avaliacoes = {'cardiorrespiratorio': (cardio, [estados['HR'], estados['RF']]),
-                     'periferico': (perif, [estados['SmO2']]),
-                     'autonomico': (auton, [estados['DFA-α1']])}
-        tem_forte = any(avaliacoes[g][0]['nivel'] == 'forte' for g in grupos_com_evidencia)
-        tem_so_tardio = any(_grupo_so_tardio(*avaliacoes[g]) for g in grupos_com_evidencia)
-
-        if conv_predominante == 'RESPOSTAS DISPERSAS' or (tem_forte and tem_so_tardio):
+    elif not primarios_com_evidencia:
+        # so' DFA-α1 tem evidencia -- sozinho nunca decide (item 12/teste G)
+        padrao = 'EVIDÊNCIA INSUFICIENTE'
+        motivo = ('apenas DFA-α1 (autonômico, complementar) apresenta evidência — '
+                  'isoladamente não é suficiente para um padrão predominante.')
+    elif len(primarios_fortes) == 2:
+        padrao = 'RESPOSTA MULTISSISTÊMICA'
+        motivo = ('componentes cardiorrespiratório e periférico apresentam respostas '
+                  'temporalmente relacionadas' + _nota_complementar())
+    elif len(primarios_fortes) == 1:
+        grupo = primarios_fortes[0]
+        if n_tardio_isolado >= 2:
             padrao = 'RESPOSTAS DISSOCIADAS'
-            motivo = ('múltiplos grupos apresentam evidência, mas sem agrupamento '
-                      'temporal relevante entre eles — pelo menos um grupo responde '
-                      'consistentemente tarde em relação aos demais.')
-        elif conv_predominante in ('CONVERGÊNCIA TEMPORAL', 'CONVERGÊNCIA PARCIAL'):
-            if len(grupos_com_evidencia) >= 3:
-                padrao = 'RESPOSTA MULTISSISTÊMICA'
-            else:
-                padrao = 'PADRÃO MISTO'
-            nomes_grupos = {'cardiorrespiratorio': 'cardiorrespiratório',
-                            'periferico': 'periférico', 'autonomico': 'autonômico'}
-            motivo = ('componentes ' + ', '.join(nomes_grupos[g] for g in grupos_com_evidencia)
-                      + ' apresentam respostas temporalmente relacionadas.')
+            motivo = ('existe um eixo com resposta consistente ('
+                      + nomes_grupos[grupo] + '), mas os demais grupos aparecem '
+                      'dispersos no tempo, sem formar um segundo agrupamento claro.')
         else:
-            padrao = 'EVIDÊNCIA INSUFICIENTE'
-            motivo = 'múltiplos grupos com evidência, mas convergência temporal insuficiente para diferenciar.'
+            padrao = ('PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE' if grupo == 'cardiorrespiratorio'
+                      else 'PADRÃO PERIFÉRICO PREDOMINANTE')
+            base_nota = cardio['nota'] if grupo == 'cardiorrespiratorio' else perif['nota']
+            motivo = base_nota + _nota_complementar(grupo)
+    else:
+        # nenhum eixo primario "forte", mas ha' evidencia parcial em
+        # 1 ou 2 -- olha para a convergencia do bloco ja' calculada
+        if n_tardio_isolado >= 2 or conv_predominante == 'RESPOSTAS DISPERSAS':
+            padrao = 'RESPOSTAS DISSOCIADAS'
+            motivo = ('os grupos com evidência aparecem dispersos no tempo, sem um '
+                      'agrupamento temporal predominante.')
+        elif len(primarios_com_evidencia) == 1:
+            grupo = primarios_com_evidencia[0]
+            padrao = ('PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE' if grupo == 'cardiorrespiratorio'
+                      else 'PADRÃO PERIFÉRICO PREDOMINANTE')
+            base_nota = cardio['nota'] if grupo == 'cardiorrespiratorio' else perif['nota']
+            motivo = base_nota + _nota_complementar(grupo) + ' (evidência parcial, não consistente).'
+        else:
+            padrao = 'PADRÃO MISTO'
+            motivo = ('componentes cardiorrespiratório e periférico apresentam evidência, '
+                      'mas nenhum de forma consistente o suficiente para predominar'
+                      + _nota_complementar())
 
     return {
         'bp': bp_nome, 'padrao': padrao, 'motivo': motivo,

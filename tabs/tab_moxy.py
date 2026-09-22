@@ -457,6 +457,11 @@ BODY = """
     </div>
     <div id="mxVstConjuntoEstado" style="margin-top:6px;"></div>
 
+    <h3 style="font-size:14px;margin-top:20px;">PROFILAGE — Estado dos WORKs</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Auditoria da estrutura de intervalos e resposta fisiológica dentro de cada WORK (entrada → saída) — etapa fundacional, separada da comparação Dia 1 × Dia 2 abaixo.</p>
+    <div id="mxProfilageEstrutura" style="overflow-x:auto;"></div>
+    <div id="mxProfilageEntryExit" style="overflow-x:auto;margin-top:10px;"></div>
+
     <h3 style="font-size:14px;margin-top:16px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
     <div id="mxVstRpe" style="margin-top:10px;"></div>
@@ -1972,6 +1977,7 @@ function mxVstCarregar(){
   mxDesenharVstHeatmap(d);
   mxDesenharVstTiming(d);
   mxVstRpe(id);
+  mxProfilageMostrar(d);
   mxVstPopularMoxySelect();
   mxVstCarregarConjunto(id);
 
@@ -2501,6 +2507,78 @@ function _vstAuditoriaLinha(canal, m){
   +'<td style="padding:4px 10px;font-size:10px;">'+(m.peso==='principal'?'principal':m.peso)+'</td>'
   +'<td style="padding:4px 10px;font-size:10px;color:#8b949e;">'+obs+'</td>'
   +'</tr>';
+}
+
+// PROFILAGE — auditoria da estrutura dos WORKs + ENTRY/EXIT. Le' so'
+// d.profilage (ja' calculado no backend por profilage_estrutura_works,
+// que reaproveita metricas_intervalo() ja' usada no resto da tab) --
+// nao recalcula nada, nao toca em bp1/bp2/recovery/RPE.
+function mxProfilageMostrar(d){
+ const boxEst=document.getElementById('mxProfilageEstrutura');
+ const boxEE=document.getElementById('mxProfilageEntryExit');
+ if(!boxEst || !boxEE) return;
+ const prof=d.profilage||{};
+ const linhas=prof.linhas||[];
+ if(!linhas.length){
+  boxEst.innerHTML='<p class="sub" style="font-size:11px;">sem WORKs identificados nesta sessão.</p>';
+  boxEE.innerHTML=''; return;
+ }
+
+ function fmtT(s){
+  const m=Math.floor(s/60), sec=Math.round(s%60);
+  return m+':'+String(sec).padStart(2,'0');
+ }
+ function corBP(bp){ return bp==='BP1'?'#5DADE2':(bp==='BP2'?'#F0883E':'#8b949e'); }
+
+ // 1) auditoria da estrutura
+ let h1='<b style="font-size:12px;">Estrutura dos WORKs</b>';
+ if(prof.aviso_estrutura)
+  h1+='<p class="sub" style="font-size:11px;color:#F4D03F;margin:4px 0;">'+prof.aviso_estrutura+'</p>';
+ h1+='<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
+  +'<tr class="sub" style="text-align:left;"><th style="padding:3px 10px 3px 0;">Ordem</th>'
+  +'<th style="padding:3px 10px;">Tipo</th><th style="padding:3px 10px;">BP</th>'
+  +'<th style="padding:3px 10px;">Início</th><th style="padding:3px 10px;">Fim</th>'
+  +'<th style="padding:3px 10px;">Duração</th><th style="padding:3px 10px;">Power média</th></tr>';
+ linhas.forEach(function(l){
+  const semClassificacao = l.tipo==='WORK' && !l.bp;
+  h1+='<tr style="border-top:1px solid #21262d;'+(semClassificacao?'background:rgba(244,208,79,0.08);':'')+'">'
+   +'<td style="padding:3px 10px 3px 0;">'+l.ordem+'</td>'
+   +'<td style="padding:3px 10px;">'+l.tipo+'</td>'
+   +'<td style="padding:3px 10px;color:'+corBP(l.bp)+';">'+(l.bp||(semClassificacao?'— não classificado':'—'))+'</td>'
+   +'<td style="padding:3px 10px;">'+fmtT(l.t0)+'</td>'
+   +'<td style="padding:3px 10px;">'+fmtT(l.t1)+'</td>'
+   +'<td style="padding:3px 10px;">'+l.duracao_s+'s'+(l.duracao_curta?' <span style="color:#F0883E;" title="duração muito curta — fisiologia sem dados suficientes">⚠</span>':'')+'</td>'
+   +'<td style="padding:3px 10px;"><b>'+(l.potencia_media!=null?Math.round(l.potencia_media)+'W':'—')+'</b></td></tr>';
+ });
+ h1+='</table>';
+ if(prof.n_excluidos>0)
+  h1+='<p class="sub" style="font-size:10px;margin-top:4px;">'+prof.n_excluidos+' WORK(s) marcado(s) "não classificado" acima — não entram em BP1 nem BP2 na análise actual; mostrados aqui só para auditoria, nada foi decidido automaticamente sobre eles.</p>';
+ boxEst.innerHTML=h1;
+
+ // 2) ENTRY -> EXIT (so' os WORKs reais, nao o aquecimento)
+ const works=linhas.filter(l=>l.tipo==='WORK');
+ const canais=[['hr','HR','bpm'],['respiracao','RF','rpm'],['smo2','SmO2','%'],
+              ['thb','THb','g/dL'],['dfa1','DFA-α1','']];
+ let h2='<b style="font-size:12px;">Resposta fisiológica dentro do WORK (entrada → saída)</b>'
+  +'<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
+  +'<tr class="sub" style="text-align:left;"><th style="padding:3px 10px 3px 0;">WORK</th>'
+  +'<th style="padding:3px 10px;">BP</th><th style="padding:3px 10px;">Power</th>'
+  +canais.map(c=>'<th style="padding:3px 10px;">Δ'+c[1]+'</th>').join('')+'</tr>';
+ works.forEach(function(l){
+  h2+='<tr style="border-top:1px solid #21262d;">'
+   +'<td style="padding:3px 10px 3px 0;">#'+l.ordem+'</td>'
+   +'<td style="padding:3px 10px;color:'+corBP(l.bp)+';">'+(l.bp||'—')+'</td>'
+   +'<td style="padding:3px 10px;">'+(l.potencia_media!=null?Math.round(l.potencia_media)+'W':'—')+'</td>'
+   +canais.map(function(c){
+     const v=l.delta[c[0]];
+     if(v==null) return '<td style="padding:3px 10px;color:#8b949e;">—</td>';
+     return '<td style="padding:3px 10px;">'+(v>=0?'+':'')+v.toFixed(2)+' '+c[2]+'</td>';
+    }).join('')
+   +'</tr>';
+ });
+ h2+='</table>'
+  +'<p class="sub" style="font-size:10px;margin-top:4px;">ENTRY = valor inicial do WORK, EXIT = valor final — mesma janela terminal já usada no resto da comparação Dia1×Dia2. Isto é só a mudança dentro de cada WORK, não uma tendência entre WORKs (isso é uma etapa futura).</p>';
+ boxEE.innerHTML=h2;
 }
 
 function mxVstAuditoriaRecovery(titulo, comp){

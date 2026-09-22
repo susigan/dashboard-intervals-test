@@ -1949,6 +1949,7 @@ function mxVstCarregarConjuntosSalvos(){
    return '<div class="card" style="min-width:220px;">'
     +'<div class="label">Conjunto de verificação</div>'
     +'<div style="font-size:10px;color:#8b949e;margin-top:2px;">MOXY: '+c.moxy_activity_id+'<br>VST: '+c.vst_activity_id
+    +(c.modalidade?'<br>Modalidade: <b style="color:#ccc;">'+c.modalidade+'</b>':'')
     +(data?'<br>Data: '+data:'')+'</div>'
     +'<div style="font-size:11px;margin-top:4px;">'
     +(c.bp1_status?'BP1 <span style="color:'+_vstCorGeral(c.bp1_status)+';">'+c.bp1_status+'</span><br>':'')

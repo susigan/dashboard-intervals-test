@@ -2921,10 +2921,20 @@ def registar(app):
                     accumulation_completa.get('bp2'),
                     comp_recovery_bp2, comp_rpe_bp2)
                 limiter_sintese = vst.profilage_limiter_sintese(limiter_bp1, limiter_bp2)
+                modalidade = dia2.get('modalidade') or ''
+                hipotese_bp1 = vst.profilage_hipotese_intervencao(
+                    'BP1', modalidade, limiter_bp1,
+                    divergencia_completa.get('bp1'),
+                    comp_recovery_bp1, comp_rpe_bp1)
+                hipotese_bp2 = vst.profilage_hipotese_intervencao(
+                    'BP2', modalidade, limiter_bp2,
+                    divergencia_completa.get('bp2'),
+                    comp_recovery_bp2, comp_rpe_bp2)
             except Exception as e:
                 limiter_bp1 = limiter_bp2 = {'padrao': 'EVIDÊNCIA INSUFICIENTE',
                                              'motivo': f'{type(e).__name__}: {e}'}
                 limiter_sintese = None
+                hipotese_bp1 = hipotese_bp2 = None
 
             # snapshot do resultado -- so' os campos ja' calculados
             # acima, nada recalculado; falha aqui nao deve derrubar a
@@ -2962,6 +2972,7 @@ def registar(app):
                 'comparacao_rpe_bp1': comp_rpe_bp1, 'comparacao_rpe_bp2': comp_rpe_bp2,
                 'limiter_bp1': limiter_bp1, 'limiter_bp2': limiter_bp2,
                 'limiter_sintese': limiter_sintese,
+                'hipotese_bp1': hipotese_bp1, 'hipotese_bp2': hipotese_bp2,
                 'recuperacao_final_dia2': dia2.get('recuperacao_final'),
             })
         except Exception as e:

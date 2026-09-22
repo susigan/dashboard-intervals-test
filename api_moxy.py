@@ -2581,6 +2581,15 @@ def registar(app):
                 accumulation = {'bp1': None, 'bp2': None,
                                 'erro': f'{type(e).__name__}: {e}'}
 
+            # PRIMEIRA DIVERGENCIA TEMPORAL -- usa os MESMOS canais/t ja
+            # carregados para esta sessao (os mesmos dos graficos
+            # Power x metrica); nao toca em drift/accumulation/estrutura.
+            try:
+                divergencia = vst.profilage_primeira_divergencia(estrutura, canais, t)
+            except Exception as e:
+                divergencia = {'bp1': None, 'bp2': None,
+                               'erro': f'{type(e).__name__}: {e}'}
+
             # diagnostico de cobertura: o stream (t) cobre mesmo o
             # intervalo de cada bloco? Um "—" na aquecimento ou no ultimo
             # bloco costuma ser isto -- o sensor ainda a estabilizar no
@@ -2707,6 +2716,7 @@ def registar(app):
                 'profilage': profilage,
                 'profilage_drift': drift,
                 'profilage_accumulation': accumulation,
+                'profilage_divergencia': divergencia,
                 'recuperacoes': recuperacoes,
                 'recuperacoes_1min': recuperacoes_1min,
                 'recuperacao_final': recuperacao_final,

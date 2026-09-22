@@ -2067,3 +2067,275 @@ def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
     base['recorrencia'] = {'estado': recorrencia, 'n_sessoes_comparadas': n_hist,
                            'n_com_mesmo_padrao': n_igual}
     return base
+
+
+# ============================================================
+# BIBLIOTECA DE ESTILOS DE TREINO
+# Cada entrada: nome, objetivo, estrutura conceptual, o que observar,
+# resposta esperada por padrao (chave = padrao do LIMITER).
+# NÃO contem watts, duracao, series, recuperacao -- esses parametros
+# sao uma camada posterior. Apenas o ESTILO/FAMILIA e a logica de uso.
+# ============================================================
+ESTILOS_DE_TREINO = {
+    'continuo_sustentado': {
+        'nome': 'Contínuo sustentado',
+        'objetivo': ('Avaliar estabilidade fisiológica durante esforço contínuo na '
+                     'mesma faixa de intensidade do protocolo VST.'),
+        'estrutura': 'entrada progressiva → bloco sustentado → recuperação passiva',
+        'o_que_observar': ['HR', 'RF', 'SmO2', 'DFA-α1', 'RPE', 'Recovery'],
+        'resposta_esperada': ('menor drift de HR/RF no final do bloco; '
+                              'menor progressão de SmO2 se comparado à VST de referência.'),
+        'padroes_indicados': ['PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE',
+                              'PADRÃO PERIFÉRICO PREDOMINANTE'],
+    },
+    'intervalado_recuperacao_completa': {
+        'nome': 'Intervalado com recuperação completa',
+        'objetivo': ('Separar a capacidade de sustentar a intensidade da capacidade '
+                     'de recuperar completamente entre esforços.'),
+        'estrutura': 'WORK → recuperação suficiente → WORK → recuperação → WORK',
+        'o_que_observar': ['entrada de cada WORK', 'drift intra-WORK',
+                           'primeira divergência', 'recovery', 'RPE'],
+        'resposta_esperada': ('ENTRY semelhante entre WORKs; menor drift ao longo de '
+                              'cada WORK; divergência mais tardia.'),
+        'padroes_indicados': ['PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE',
+                              'RESPOSTA MULTISSISTÊMICA'],
+    },
+    'intervalado_recuperacao_incompleta': {
+        'nome': 'Intervalado com recuperação incompleta',
+        'objetivo': ('Testar tolerância à acumulação fisiológica — observar se o '
+                     'ENTRY de cada WORK progressivamente se altera.'),
+        'estrutura': 'WORK → recuperação curta → WORK → recuperação curta → ...',
+        'o_que_observar': ['ENTRY de cada WORK', 'ACCUMULATION HR/RF/SmO2',
+                           'Recovery', 'RPE'],
+        'resposta_esperada': ('menor elevação do ENTRY entre WORKs consecutivos; '
+                              'recovery mais coerente; RPE não aumentando desproporcionalmente.'),
+        'padroes_indicados': ['PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE',
+                              'RESPOSTA MULTISSISTÊMICA'],
+    },
+    'over_under': {
+        'nome': 'Over/Under',
+        'objetivo': ('Testar capacidade de alternar entre intensidades próximas, '
+                     'observando recuperação parcial e estabilidade fisiológica.'),
+        'estrutura': 'over (intensidade superior) → under (intensidade inferior) → repetição',
+        'o_que_observar': ['HR', 'RF', 'SmO2', 'RPE', 'recuperação entre fases',
+                           'acumulação entre repetições'],
+        'resposta_esperada': ('menor progressão de HR/RF durante os blocos over; '
+                              'recuperação parcial mais completa durante os blocos under.'),
+        'padroes_indicados': ['PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE',
+                              'RESPOSTA MULTISSISTÊMICA'],
+    },
+    'bloco_progressivo': {
+        'nome': 'Bloco progressivo',
+        'objetivo': ('Observar o ponto em que ocorre a primeira divergência fisiológica '
+                     'e verificar se ele pode ser deslocado.'),
+        'estrutura': 'intensidade crescente em blocos, monitorando a primeira divergência '
+                     'de cada sinal',
+        'o_que_observar': ['primeira divergência', 'convergência temporal',
+                           'DRIFT', 'RPE'],
+        'resposta_esperada': ('divergência ocorrendo a uma intensidade maior ou mais tarde '
+                              'dentro de cada bloco, em comparação com a VST de referência.'),
+        'padroes_indicados': ['PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE',
+                              'PADRÃO PERIFÉRICO PREDOMINANTE',
+                              'RESPOSTA MULTISSISTÊMICA'],
+    },
+    'foco_periferico': {
+        'nome': 'Intervalado com foco periférico',
+        'objetivo': ('Testar estabilidade de SmO2 sob esforço repetido — '
+                     'sugerido somente quando houver evidência recorrente de padrão periférico.'),
+        'estrutura': 'WORKs com recuperação suficiente para SmO2 recuperar parcialmente, '
+                     'monitorizando a progressão entre WORKs',
+        'o_que_observar': ['SmO2', 'THb (contextual)', 'HR/RF como secundários',
+                           'Recovery periférico', 'RPE'],
+        'resposta_esperada': ('SmO2 mais estável dentro de cada WORK; '
+                              'menor deterioração entre WORKs consecutivos; '
+                              'recovery periférico mais consistente.'),
+        'padroes_indicados': ['PADRÃO PERIFÉRICO PREDOMINANTE'],
+    },
+    'estimulo_multissistemico': {
+        'nome': 'Estímulo multissistêmico',
+        'objetivo': ('Testar tolerância integrada quando múltiplos sistemas respondem '
+                     'temporalmente juntos — sugerido somente com padrão multissistêmico '
+                     'recorrente.'),
+        'estrutura': 'WORKs na intensidade do protocolo VST, monitorizando HR, RF e SmO2 '
+                     'em conjunto (não separadamente)',
+        'o_que_observar': ['HR', 'RF', 'SmO2', 'DFA-α1 (complementar)',
+                           'convergência temporal', 'Recovery', 'RPE'],
+        'resposta_esperada': ('maior estabilidade conjunta dos sinais; divergências mais tardias; '
+                              'menor acumulação entre WORKs; recovery igual ou melhor.'),
+        'padroes_indicados': ['RESPOSTA MULTISSISTÊMICA'],
+    },
+}
+
+# Mapeamento padrao → estilos primários e secundários.
+# Primários: mais directamente coerentes com a hipótese.
+# Secundários: também compatíveis, mas não os primeiros a testar.
+_ESTILOS_POR_PADRAO = {
+    'PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE': {
+        'primarios': ['continuo_sustentado', 'intervalado_recuperacao_completa'],
+        'secundarios': ['over_under', 'bloco_progressivo',
+                        'intervalado_recuperacao_incompleta'],
+    },
+    'PADRÃO PERIFÉRICO PREDOMINANTE': {
+        'primarios': ['foco_periferico', 'continuo_sustentado'],
+        'secundarios': ['bloco_progressivo', 'intervalado_recuperacao_completa'],
+    },
+    'RESPOSTA MULTISSISTÊMICA': {
+        'primarios': ['estimulo_multissistemico', 'intervalado_recuperacao_completa'],
+        'secundarios': ['over_under', 'continuo_sustentado',
+                        'intervalado_recuperacao_incompleta'],
+    },
+    'RESPOSTAS DISSOCIADAS': {
+        'primarios': [],  # nao prescrever automaticamente sem recorrencia
+        'secundarios': [],
+    },
+    'EVIDÊNCIA INSUFICIENTE': {
+        'primarios': [],
+        'secundarios': [],
+    },
+}
+
+
+def _estilos_para_padrao(padrao, recorrencia_estado, n_modalidades):
+    """Selecciona os estilos coerentes com o padrao, ajustando pela
+    recorrencia -- estilos secundarios so' sao incluidos quando ha'
+    evidencia recorrente em pelo menos 1 modalidade. Para DISSOCIADAS
+    sem recorrencia, nao devolve nenhum estilo (item 9 do pedido).
+    """
+    conf = _ESTILOS_POR_PADRAO.get(padrao) or {'primarios': [], 'secundarios': []}
+    resultado = []
+    for chave in conf['primarios']:
+        e = ESTILOS_DE_TREINO[chave]
+        resultado.append({'chave': chave, 'prioridade': 'primário', **e})
+    if recorrencia_estado in ('RECORRENTE NA MESMA MODALIDADE',
+                              'RECORRENTE EM MÚLTIPLAS MODALIDADES',
+                              'OBSERVADO EM MÚLTIPLAS SESSÕES'):
+        for chave in conf['secundarios']:
+            e = ESTILOS_DE_TREINO[chave]
+            resultado.append({'chave': chave, 'prioridade': 'secundário', **e})
+    return resultado
+
+
+def profilage_historico_estilos(entradas):
+    """Consome a lista de verificacoes salvas (ja' lidas do DB com
+    padrao_bp1/padrao_bp2/modalidade/analisado_em) e devolve:
+    - padroes recorrentes globais e por modalidade;
+    - biblioteca de estilos para a sessao actual e para o historico.
+    Nunca recalcula dados fisiologicos -- so' agrega o que ja' foi
+    persistido. 'entradas' e' a lista montada pelo endpoint.
+    """
+    from collections import Counter
+
+    n_total = len(entradas)
+    if n_total == 0:
+        return {
+            'n_verificacoes': 0,
+            'recorrencia_global': [], 'recorrencia_por_modalidade': {},
+            'estilos_historico': [],
+            'nota': 'sem verificações salvas disponíveis.',
+        }
+
+    # -------- padroes globais (BP1 e BP2 separados) --------
+    def _acumular(bp_chave):
+        contador = Counter()
+        por_modal = {}
+        datas_por_padrao = {}
+        for e in entradas:
+            p = e.get(bp_chave)
+            if not p or p == 'EVIDÊNCIA INSUFICIENTE':
+                continue
+            mod = e.get('modalidade') or 'desconhecida'
+            data = e.get('analisado_em') or ''
+            contador[p] += 1
+            por_modal.setdefault(mod, Counter())[p] += 1
+            datas_por_padrao.setdefault(p, []).append(data)
+        return contador, por_modal, datas_por_padrao
+
+    cnt1, mod1, datas1 = _acumular('padrao_bp1')
+    cnt2, mod2, datas2 = _acumular('padrao_bp2')
+
+    def _recorrencia(padrao, contagem, n_modal, datas):
+        n = contagem.get(padrao, 0)
+        datasP = sorted(datas.get(padrao) or [])
+        primeira = datasP[0] if datasP else None
+        ultima = datasP[-1] if datasP else None
+        if n == 0:
+            return 'OBSERVADO UMA VEZ', 0, n_modal, primeira, ultima
+        if n >= 3 and n_modal >= 2:
+            estado = 'RECORRENTE EM MÚLTIPLAS MODALIDADES'
+        elif n >= 3:
+            estado = 'RECORRENTE NA MESMA MODALIDADE'
+        elif n >= 2:
+            estado = 'OBSERVADO EM MÚLTIPLAS SESSÕES'
+        else:
+            estado = 'OBSERVADO UMA VEZ'
+        return estado, n, n_modal, primeira, ultima
+
+    rec_global = []
+    todos_padroes = set(list(cnt1.keys()) + list(cnt2.keys()))
+    for p in todos_padroes:
+        n1 = cnt1.get(p, 0)
+        n2 = cnt2.get(p, 0)
+        n_total_p = n1 + n2
+        mods_p = set(list(mod1.keys() if n1 else []) + list(mod2.keys() if n2 else []))
+        datas_p = (datas1.get(p) or []) + (datas2.get(p) or [])
+        datas_p = sorted(datas_p)
+        est, _, _, prim, ult = _recorrencia(p, Counter({p: n_total_p}), len(mods_p),
+                                             {p: datas_p})
+        rec_global.append({
+            'padrao': p, 'n_total': n_total_p, 'n_bp1': n1, 'n_bp2': n2,
+            'n_modalidades': len(mods_p), 'modalidades': sorted(mods_p),
+            'recorrencia': est, 'primeira_ocorrencia': prim, 'ultima_ocorrencia': ult,
+        })
+    rec_global.sort(key=lambda x: -x['n_total'])
+
+    # -------- padroes por modalidade --------
+    rec_por_modal = {}
+    todas_mods = set(list(mod1.keys()) + list(mod2.keys()))
+    for mod in todas_mods:
+        c1 = mod1.get(mod, Counter())
+        c2 = mod2.get(mod, Counter())
+        n_sess_modal = sum(1 for e in entradas if e.get('modalidade') == mod)
+        padroes_modal = []
+        for p in set(list(c1.keys()) + list(c2.keys())):
+            padroes_modal.append({
+                'padrao': p, 'n_bp1': c1.get(p, 0), 'n_bp2': c2.get(p, 0),
+                'n_total': c1.get(p, 0) + c2.get(p, 0),
+                'n_sessoes_modalidade': n_sess_modal,
+            })
+        padroes_modal.sort(key=lambda x: -x['n_total'])
+        rec_por_modal[mod] = padroes_modal
+
+    # -------- estilos coerentes com o historico --------
+    estilos_hist = []
+    vistos = set()
+    for r in rec_global:
+        p = r['padrao']
+        estilos_p = _estilos_para_padrao(p, r['recorrencia'], r['n_modalidades'])
+        for e in estilos_p:
+            chave = e['chave']
+            if chave not in vistos:
+                vistos.add(chave)
+                estilos_hist.append({
+                    **e,
+                    'motivado_por': p,
+                    'recorrencia': r['recorrencia'],
+                    'n_sessoes': r['n_total'],
+                    'n_modalidades': r['n_modalidades'],
+                })
+
+    return {
+        'n_verificacoes': n_total,
+        'recorrencia_global': rec_global,
+        'recorrencia_por_modalidade': rec_por_modal,
+        'estilos_historico': estilos_hist,
+        'nota_metodologica': ('Frequência de padrão não demonstra causalidade. '
+                              'Padrão recorrente aumenta a justificativa para testar '
+                              'a hipótese — nunca comprova o mecanismo fisiológico.'),
+    }
+
+
+def estilos_para_hipotese(padrao, recorrencia_estado, n_modalidades):
+    """Ponto de entrada público: dado um padrão do LIMITER e o estado
+    de recorrência, devolve os estilos coerentes (sem histórico global).
+    """
+    return _estilos_para_padrao(padrao, recorrencia_estado, n_modalidades)

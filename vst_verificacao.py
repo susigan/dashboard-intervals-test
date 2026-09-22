@@ -1135,3 +1135,127 @@ def profilage_drift_intra_work(linhas):
         'sintese_bp1': _sintese_bloco('BP1'),
         'sintese_bp2': _sintese_bloco('BP2'),
     }
+
+
+# ACCUMULATION -- limiar ABSOLUTO por canal, NAO percentual. Motivo
+# (explicito no pedido): a mesma alteracao absoluta produz percentuais
+# diferentes consoante o valor de entrada, o que fazia BP2 (que parte
+# de valores mais altos) parecer "estavel" quando na verdade mudou tanto
+# quanto BP1. Valores escolhidos ao nivel do ruido tipico de cada canal
+# -- nao vem de nenhum artigo, e' um criterio novo, proprio desta etapa,
+# documentado aqui para poder ser revisto.
+LIMIAR_ABSOLUTO_ACCUMULATION = {
+    'hr': 2.0,          # bpm
+    'respiracao': 1.0,  # respiracoes/min
+    'smo2': 1.0,        # % (unidades do proprio sinal)
+    'thb': 0.1,         # g/dL
+    'dfa1': 0.05,       # unidade DFA-alfa1
+}
+
+
+def _classificar_progressao(valores, limiar_absoluto):
+    """valores: lista ORDENADA por WORK (ex.: ENTRY de W1..W4 de um BP).
+
+    Classifica por CONSISTENCIA DE SINAL dos deltas consecutivos, usando
+    um limiar ABSOLUTO (nunca percentual -- ver nota acima de
+    LIMIAR_ABSOLUTO_ACCUMULATION). Um delta so' conta como "com sinal"
+    se |delta| >= limiar; deltas abaixo disso sao tratados como parte
+    do ruido de medicao, nem a favor nem contra uma progressao.
+    """
+    validos = [v for v in valores if v is not None]
+    if len(validos) < 2 or len(validos) != len(valores):
+        return {'classificacao': 'dados insuficientes', 'deltas_consecutivos': [],
+               'delta_total': None, 'valores': valores}
+
+    deltas = [round(validos[i + 1] - validos[i], 3) for i in range(len(validos) - 1)]
+    delta_total = round(validos[-1] - validos[0], 3)
+    sinais = [1 if d >= limiar_absoluto else (-1 if d <= -limiar_absoluto else 0)
+             for d in deltas]
+    com_sinal = [s for s in sinais if s != 0]
+
+    if not com_sinal:
+        classificacao = 'estável'
+    elif all(s == com_sinal[0] for s in com_sinal) and len(com_sinal) == len(deltas):
+        classificacao = 'progressão consistente'
+    elif all(s == com_sinal[0] for s in com_sinal):
+        # todos os passos COM sinal concordam, mas ha' passos "planos"
+        # misturados -- ainda e' consistente na direccao, so' nao em
+        # todos os passos
+        classificacao = 'progressão consistente' if len(com_sinal) >= len(deltas) - 1 \
+            else 'progressão parcial'
+    else:
+        maioria = max(com_sinal.count(1), com_sinal.count(-1))
+        classificacao = 'progressão parcial' if maioria > len(com_sinal) / 2 \
+            else 'sem progressão consistente'
+
+    return {'classificacao': classificacao, 'deltas_consecutivos': deltas,
+           'delta_total': delta_total, 'valores': validos}
+
+
+def profilage_accumulation(linhas):
+    """ACCUMULATION / DRIFT ENTRE WORKs -- progressao de ENTRY e EXIT ao
+    longo dos WORKs de cada bloco (BP1 e BP2 SEPARADOS -- nunca comparados
+    directamente entre si, cargas diferentes). So' le' as linhas ja
+    produzidas por profilage_estrutura_works() (entry/exit/potencia_media
+    por WORK); nao recalcula nada disso, nao toca em bp1/bp2/drift.
+    """
+    canais_fis = (('hr', 'HR'), ('respiracao', 'RF'), ('smo2', 'SmO2'),
+                 ('thb', 'THb'), ('dfa1', 'DFA-α1'))
+
+    def _bloco(bp_nome):
+        works = sorted([l for l in linhas if l.get('tipo') == 'WORK'
+                       and l.get('bp') == bp_nome], key=lambda l: l['ordem'])
+        if not works:
+            return None
+        fora = {'bp': bp_nome, 'n_works': len(works),
+               'works': [{'ordem': w['ordem'], 'potencia_media': w.get('potencia_media')}
+                        for w in works],
+               'por_canal': {}}
+        for chave, nome in canais_fis:
+            limiar = LIMIAR_ABSOLUTO_ACCUMULATION[chave]
+            entry_vals = [w['entry'].get(chave) for w in works]
+            exit_vals = [w['exit'].get(chave) for w in works]
+            fora['por_canal'][chave] = {
+                'nome': nome, 'limiar_absoluto': limiar,
+                'entry': _classificar_progressao(entry_vals, limiar),
+                'exit': _classificar_progressao(exit_vals, limiar),
+            }
+        return fora
+
+    bp1 = _bloco('BP1')
+    bp2 = _bloco('BP2')
+
+    # convergencia -- so' descreve quantos canais mostram progressao na
+    # MESMA direccao (nunca um score); usa o EXIT (estado de saida de
+    # cada WORK) como referencia, por ser o que mais se aproxima do
+    # "estado acumulado" ao fim de cada WORK
+    def _convergencia(bloco):
+        if not bloco:
+            return None
+        em_progressao = []
+        for chave, info in bloco['por_canal'].items():
+            c = info['exit']['classificacao']
+            if c in ('progressão consistente', 'progressão parcial'):
+                sinal = None
+                dts = info['exit']['deltas_consecutivos']
+                if dts:
+                    positivos = sum(1 for d in dts if d > 0)
+                    negativos = sum(1 for d in dts if d < 0)
+                    sinal = '↑' if positivos >= negativos else '↓'
+                em_progressao.append({'canal': info['nome'], 'direccao': sinal,
+                                      'classificacao': c})
+        return {
+            'n_canais_em_progressao': len(em_progressao),
+            'canais': em_progressao,
+            'nota': ('múltiplas métricas apresentam alteração progressiva'
+                     if len(em_progressao) >= 2 else
+                     ('uma métrica apresenta alteração progressiva'
+                      if len(em_progressao) == 1 else
+                      'nenhuma métrica com progressão consistente detectada')),
+        }
+
+    return {
+        'bp1': bp1, 'bp2': bp2,
+        'convergencia_bp1': _convergencia(bp1),
+        'convergencia_bp2': _convergencia(bp2),
+    }

@@ -502,6 +502,10 @@ BODY = """
       <canvas id="chMxConvTimeline" height="130"></canvas></div>
     <div id="mxProfilageConvergencia" style="overflow-x:auto;margin-top:10px;"></div>
 
+    <h3 style="font-size:14px;margin-top:20px;">LIMITER / Padrão fisiológico</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta análise identifica padrões de resposta fisiológica associados ao WORK. Ela não demonstra causalmente qual sistema limita o desempenho. HR, RF, SmO2, THb e DFA-α1 são marcadores complementares; a convergência entre eles aumenta a coerência do padrão, mas não estabelece causalidade.</p>
+    <div id="mxLimiter" style="overflow-x:auto;"></div>
+
     <h3 style="font-size:14px;margin-top:16px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
     <div id="mxVstRpe" style="margin-top:10px;"></div>
@@ -2264,6 +2268,7 @@ function mxVstCarregarComparacao(vstId){
   mxDesenharVstRecoveryTempo(d);
   if(typeof DEBUG_VST_VERIFICACAO!=='undefined' && DEBUG_VST_VERIFICACAO) mxVstRevisaoCritica(d);
   mxVstLimitacoes(d);
+  mxLimiterMostrar(d);
  }).catch(function(e){
   box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
  });
@@ -3450,6 +3455,78 @@ function mxDesenharVstTemporal(d){
 
  MX_HOVER.chMxVstTemporal = {rects:rects, PL:PL, w:w, xa:tMin, xb:tMax,
    streams: MX_VST_STREAMS, X:X};
+}
+
+// LIMITER / PADRÃO FISIOLÓGICO -- le' so' d.limiter_bp1/limiter_bp2/
+// limiter_sintese, ja calculados no backend por profilage_limiter()
+// (que so' consome DRIFT/ACCUMULATION/DIVERGÊNCIA/CONVERGÊNCIA/RECOVERY/
+// RPE já existentes -- nada fisiológico é recalculado aqui).
+function mxLimiterMostrar(d){
+ const box=document.getElementById('mxLimiter');
+ if(!box) return;
+ const bp1=d.limiter_bp1, bp2=d.limiter_bp2, sintese=d.limiter_sintese;
+ if(!bp1 && !bp2){ box.innerHTML=''; return; }
+
+ function corPadrao(p){
+  if(!p) return '#8b949e';
+  if(p.includes('CARDIORRESPIRATÓRIO') || p.includes('PERIFÉRICO')) return '#5DADE2';
+  if(p.includes('MULTISSISTÊMICA') || p.includes('MISTO')) return '#A371F7';
+  if(p.includes('DISSOCIADAS')) return '#F0883E';
+  return '#8b949e';
+ }
+ function estadoTxt(info){
+  if(!info) return '—';
+  const map={consistente:'consistente', parcial:'parcial', tardio:'tardio',
+            ausente:'ausente', insuficiente:'insuficiente'};
+  return map[info.estado] || info.estado;
+ }
+ function corEstado(e){
+  return {consistente:'#3FB950', parcial:'#F4D03F', tardio:'#F0883E',
+         ausente:'#8b949e', insuficiente:'#6e7681', contextual:'#8b949e'}[e] || '#8b949e';
+ }
+
+ function blocoHTML(r){
+  if(!r) return '<p class="sub" style="font-size:11px;">sem dados.</p>';
+  const ev=r.evidencia||{};
+  const hr=ev.cardiorrespiratorio&&ev.cardiorrespiratorio.hr, rf=ev.cardiorrespiratorio&&ev.cardiorrespiratorio.rf;
+  const smo2=ev.periferico&&ev.periferico.smo2, thbCtx=ev.periferico&&ev.periferico.thb_contexto;
+  const dfa1=ev.autonomico&&ev.autonomico.dfa1;
+
+  let h='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;">'
+   +'<div style="font-size:14px;font-weight:600;color:'+corPadrao(r.padrao)+';">'+r.bp+' — '+r.padrao+'</div>'
+   +'<div style="font-size:11px;color:#8b949e;margin-top:2px;">'+r.motivo+'</div>'
+   +'<table style="border-collapse:collapse;font-size:11px;margin-top:8px;">'
+   +'<tr class="sub" style="text-align:left;"><th style="padding:3px 10px 3px 0;">Sistema</th>'
+   +'<th style="padding:3px 10px;">HR</th><th style="padding:3px 10px;">RF</th>'
+   +'<th style="padding:3px 10px;">SmO2</th><th style="padding:3px 10px;">THb</th>'
+   +'<th style="padding:3px 10px;">DFA-α1</th><th style="padding:3px 10px;">RPE</th>'
+   +'<th style="padding:3px 10px;">Recovery</th></tr>'
+   +'<tr style="border-top:1px solid #21262d;">'
+   +'<td style="padding:3px 10px 3px 0;color:#8b949e;">estado</td>'
+   +'<td style="padding:3px 10px;color:'+corEstado(hr?hr.estado:null)+';">'+estadoTxt(hr)+'</td>'
+   +'<td style="padding:3px 10px;color:'+corEstado(rf?rf.estado:null)+';">'+estadoTxt(rf)+'</td>'
+   +'<td style="padding:3px 10px;color:'+corEstado(smo2?smo2.estado:null)+';">'+estadoTxt(smo2)+'</td>'
+   +'<td style="padding:3px 10px;color:#8b949e;">contextual</td>'
+   +'<td style="padding:3px 10px;color:'+corEstado(dfa1?dfa1.estado:null)+';">'+estadoTxt(dfa1)+'</td>'
+   +'<td style="padding:3px 10px;font-size:10px;">'+(r.rpe_nota||'—')+'</td>'
+   +'<td style="padding:3px 10px;">'+(r.recovery_coerencia||'—')+'</td></tr>'
+   +'</table>'
+   +'<div style="font-size:10px;color:#8b949e;margin-top:6px;">'
+   +'Convergência temporal do bloco: '+(r.convergencia_predominante||'—')
+   +' · THb: '+(thbCtx||'—')+' (sempre contextual)</div>'
+   +'</div>';
+  return h;
+ }
+
+ let h=blocoHTML(bp1)+blocoHTML(bp2);
+ if(sintese){
+  h+='<div style="border-top:1px solid #30363d;padding-top:8px;margin-top:4px;">'
+   +'<b style="font-size:12px;">Síntese da sessão</b><br>'
+   +'<span style="font-size:11px;">'+(sintese.bp1||'—')+'.</span><br>'
+   +'<span style="font-size:11px;">'+(sintese.bp2||'—')+'.</span>'
+   +'</div>';
+ }
+ box.innerHTML=h;
 }
 
 function mxVstLimitacoes(d){

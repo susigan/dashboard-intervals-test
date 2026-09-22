@@ -506,6 +506,10 @@ BODY = """
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta análise identifica padrões de resposta fisiológica associados ao WORK. Ela não demonstra causalmente qual sistema limita o desempenho. HR, RF, SmO2, THb e DFA-α1 são marcadores complementares; a convergência entre eles aumenta a coerência do padrão, mas não estabelece causalidade.</p>
     <div id="mxLimiter" style="overflow-x:auto;"></div>
 
+    <h3 style="font-size:14px;margin-top:20px;">HIPÓTESE DE INTERVENÇÃO / TREINO</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta é uma hipótese para teste. O padrão observado não demonstra causalidade nem identifica isoladamente um limitante de desempenho.</p>
+    <div id="mxHipotese" style="overflow-x:auto;"></div>
+
     <h3 style="font-size:14px;margin-top:16px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
     <div id="mxVstRpe" style="margin-top:10px;"></div>
@@ -2269,6 +2273,7 @@ function mxVstCarregarComparacao(vstId){
   if(typeof DEBUG_VST_VERIFICACAO!=='undefined' && DEBUG_VST_VERIFICACAO) mxVstRevisaoCritica(d);
   mxVstLimitacoes(d);
   mxLimiterMostrar(d);
+  mxHipoteseMostrar(d);
  }).catch(function(e){
   box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
  });
@@ -3527,6 +3532,60 @@ function mxLimiterMostrar(d){
    +'</div>';
  }
  box.innerHTML=h;
+}
+
+// HIPÓTESE DE INTERVENÇÃO / TREINO -- le' hipotese_bp1/hipotese_bp2
+// calculados por profilage_hipotese_intervencao() no backend; nenhum
+// cálculo fisiológico aqui, só apresentação descritiva.
+function mxHipoteseMostrar(d){
+ const box=document.getElementById('mxHipotese');
+ if(!box) return;
+ const bp1=d.hipotese_bp1, bp2=d.hipotese_bp2;
+ if(!bp1 && !bp2){ box.innerHTML=''; return; }
+
+ function blocoHip(h){
+  if(!h) return '';
+  const est=h.estimulo_candidato;
+  const rec=h.recorrencia||{};
+  let html='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;">'
+   +'<b style="font-size:13px;">'+h.bp+' — '+h.modalidade+'</b>'
+   +' <span class="sub" style="font-size:10px;">'+rec.estado+(rec.n_sessoes_comparadas>0?' ('+rec.n_sessoes_comparadas+' sessões comparadas)':'')+'</span>'
+   +'<br><span style="font-size:11px;color:#8b949e;">Padrão: '+h.padrao_observado+'</span>';
+  if(h.hipotese){
+   html+='<p style="font-size:11px;margin:6px 0 2px;"><b>Hipótese:</b> '+h.hipotese+'</p>';
+  }
+  if(h.alvo_potencial){
+   html+='<p style="font-size:11px;margin:2px 0;"><b>Alvo potencial:</b> '+h.alvo_potencial+'</p>';
+  }
+  if(h.metricas_alvo && h.metricas_alvo.length){
+   html+='<p style="font-size:11px;margin:2px 0;"><b>Métricas-alvo:</b> '+h.metricas_alvo.join(', ')+'</p>';
+  }
+  if(h.nota_modalidade){
+   html+='<div style="font-size:10px;color:#8b949e;border-left:2px solid #30363d;padding-left:8px;margin:6px 0;">Contexto da modalidade: '+h.nota_modalidade+'</div>';
+  }
+  if(est){
+   html+='<div style="background:#161b22;border-radius:6px;padding:8px 10px;margin-top:6px;font-size:11px;">'
+    +'<b>Estímulo candidato</b><br>'
+    +'Tipo: '+est.tipo+'<br>'
+    +'Objetivo: '+(est.objetivo||'—')+'<br>'
+    +'Por que: '+(est.porque||'—')+'<br>'
+    +'Métrica-alvo: '+(est.metrica_alvo||'—')+'<br>'
+    +'Critério de resposta: '+(est.criterio_resposta||'—')+'<br>'
+    +'Próxima verificação: '+(est.proxima_verificacao||'—')+
+    '</div>';
+  } else if(h.motivo_sem_estimulo){
+   html+='<p style="font-size:11px;color:#8b949e;margin-top:6px;">'+h.motivo_sem_estimulo+'</p>';
+  }
+  if(h.resposta_esperada && h.resposta_esperada.length){
+   html+='<p style="font-size:10px;color:#8b949e;margin-top:4px;"><b>Resposta esperada:</b> '
+    +h.resposta_esperada.join(' · ')+'</p>';
+  }
+  html+='<p style="font-size:10px;color:#484f58;margin-top:6px;font-style:italic;">'+h.aviso+'</p>'
+   +'<div style="font-size:10px;color:#8b949e;margin-top:2px;">Status: <b>'+h.status+'</b></div>'
+   +'</div>';
+  return html;
+ }
+ box.innerHTML=blocoHip(bp1)+blocoHip(bp2);
 }
 
 function mxVstLimitacoes(d){

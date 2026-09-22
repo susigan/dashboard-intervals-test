@@ -2555,6 +2555,15 @@ def registar(app):
             estrutura = vst.estruturar_protocolo(bl['blocos'])
             aquecimento = estrutura['aquecimento']
 
+            # PROFILAGE — auditoria + ENTRY/EXIT por WORK (nova secao,
+            # nao toca em bp1/bp2 nem em nada do que ja existia acima;
+            # so' reaproveita a mesma 'estrutura' e os mesmos canais/t
+            # ja carregados para esta sessao)
+            try:
+                profilage = vst.profilage_estrutura_works(estrutura, canais, t)
+            except Exception as e:
+                profilage = {'linhas': [], 'erro': f'{type(e).__name__}: {e}'}
+
             # diagnostico de cobertura: o stream (t) cobre mesmo o
             # intervalo de cada bloco? Um "—" na aquecimento ou no ultimo
             # bloco costuma ser isto -- o sensor ainda a estabilizar no
@@ -2678,6 +2687,7 @@ def registar(app):
                        'verificacao': r_bp1},
                 'bp2': {'blocos': estrutura['bp2'], 'metricas': bp2_m,
                        'verificacao': r_bp2},
+                'profilage': profilage,
                 'recuperacoes': recuperacoes,
                 'recuperacoes_1min': recuperacoes_1min,
                 'recuperacao_final': recuperacao_final,

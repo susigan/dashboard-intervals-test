@@ -2898,6 +2898,34 @@ def registar(app):
                 comp_rpe_bp1 = {'status': 'DADOS INSUFICIENTES', 'motivo': 'erro a ler RPE'}
                 comp_rpe_bp2 = {'status': 'DADOS INSUFICIENTES', 'motivo': 'erro a ler RPE'}
 
+            # LIMITER / PADRAO FISIOLOGICO -- camada de integracao pura,
+            # so' LE resultados ja' calculados: divergencia/convergencia/
+            # accumulation ja' vem dentro de 'dia2' (api_moxy_vst_analise
+            # ja' os calcula), recovery/rpe ja' foram calculados acima
+            # nesta mesma funcao. Nada fisiologico e' recalculado aqui.
+            try:
+                divergencia_completa = dia2.get('profilage_divergencia') or {}
+                convergencia_completa = dia2.get('profilage_convergencia') or {}
+                accumulation_completa = dia2.get('profilage_accumulation') or {}
+                conv_works = convergencia_completa.get('works') or []
+                limiter_bp1 = vst.profilage_limiter(
+                    'BP1', divergencia_completa.get('bp1'),
+                    [w for w in conv_works if w.get('bp') == 'BP1'],
+                    convergencia_completa.get('sintese_bp1'),
+                    accumulation_completa.get('bp1'),
+                    comp_recovery_bp1, comp_rpe_bp1)
+                limiter_bp2 = vst.profilage_limiter(
+                    'BP2', divergencia_completa.get('bp2'),
+                    [w for w in conv_works if w.get('bp') == 'BP2'],
+                    convergencia_completa.get('sintese_bp2'),
+                    accumulation_completa.get('bp2'),
+                    comp_recovery_bp2, comp_rpe_bp2)
+                limiter_sintese = vst.profilage_limiter_sintese(limiter_bp1, limiter_bp2)
+            except Exception as e:
+                limiter_bp1 = limiter_bp2 = {'padrao': 'EVIDÊNCIA INSUFICIENTE',
+                                             'motivo': f'{type(e).__name__}: {e}'}
+                limiter_sintese = None
+
             # snapshot do resultado -- so' os campos ja' calculados
             # acima, nada recalculado; falha aqui nao deve derrubar a
             # resposta (melhor esforco, como o resto da persistencia
@@ -2932,6 +2960,8 @@ def registar(app):
                 'comparacao_recovery_bp1': comp_recovery_bp1,
                 'comparacao_recovery_bp2': comp_recovery_bp2,
                 'comparacao_rpe_bp1': comp_rpe_bp1, 'comparacao_rpe_bp2': comp_rpe_bp2,
+                'limiter_bp1': limiter_bp1, 'limiter_bp2': limiter_bp2,
+                'limiter_sintese': limiter_sintese,
                 'recuperacao_final_dia2': dia2.get('recuperacao_final'),
             })
         except Exception as e:

@@ -2590,6 +2590,13 @@ def registar(app):
                 divergencia = {'bp1': None, 'bp2': None,
                                'erro': f'{type(e).__name__}: {e}'}
 
+            # CONVERGENCIA TEMPORAL -- so' le' 'divergencia' ja calculada
+            # acima; nao recalcula primeira divergencia com outra logica.
+            try:
+                convergencia = vst.profilage_convergencia_temporal(divergencia)
+            except Exception as e:
+                convergencia = {'works': [], 'erro': f'{type(e).__name__}: {e}'}
+
             # diagnostico de cobertura: o stream (t) cobre mesmo o
             # intervalo de cada bloco? Um "—" na aquecimento ou no ultimo
             # bloco costuma ser isto -- o sensor ainda a estabilizar no
@@ -2717,6 +2724,7 @@ def registar(app):
                 'profilage_drift': drift,
                 'profilage_accumulation': accumulation,
                 'profilage_divergencia': divergencia,
+                'profilage_convergencia': convergencia,
                 'recuperacoes': recuperacoes,
                 'recuperacoes_1min': recuperacoes_1min,
                 'recuperacao_final': recuperacao_final,

@@ -463,6 +463,23 @@ BODY = """
     <div id="mxProfilageEntryExit" style="overflow-x:auto;margin-top:10px;"></div>
     <div id="mxProfilageDrift" style="overflow-x:auto;margin-top:14px;"></div>
 
+    <div id="mxProfilageAccumulation" style="overflow-x:auto;margin-top:14px;"></div>
+    <div class="controls" style="margin-top:8px;">
+      <label class="sel">Métrica
+        <select id="mxAccMetrica" onchange="mxProfilageAccGraficos()">
+          <option value="hr">HR</option><option value="respiracao">RF</option>
+          <option value="smo2">SmO2</option><option value="thb">THb</option>
+          <option value="dfa1">DFA-α1</option>
+        </select>
+      </label>
+    </div>
+    <div class="grid2">
+      <div class="chartbox"><div class="legend"><span>ENTRY por WORK</span></div>
+        <canvas id="chMxAccEntry" height="200"></canvas></div>
+      <div class="chartbox"><div class="legend"><span>EXIT por WORK</span></div>
+        <canvas id="chMxAccExit" height="200"></canvas></div>
+    </div>
+
     <h3 style="font-size:14px;margin-top:16px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
     <div id="mxVstRpe" style="margin-top:10px;"></div>
@@ -1980,6 +1997,7 @@ function mxVstCarregar(){
   mxVstRpe(id);
   mxProfilageMostrar(d);
   mxProfilageDriftMostrar(d);
+  mxProfilageAccMostrar(d);
   mxVstPopularMoxySelect();
   mxVstCarregarConjunto(id);
 
@@ -2638,6 +2656,111 @@ function mxProfilageDriftMostrar(d){
   +'<p class="sub" style="font-size:10px;">direcção predominante = a que aparece em mais WORKs desse bloco para aquele canal; "misto" = empate entre direcções. Isto é descritivo — não é um score de BP1 vs BP2.</p></div>';
 
  box.innerHTML=h;
+}
+
+let MX_ACC_ULT = null;  // ultima resposta de profilage_accumulation, para o selector de metrica redesenhar sem novo pedido
+
+// ACCUMULATION / DRIFT ENTRE WORKs -- le' so' d.profilage_accumulation
+// (ja calculado por profilage_accumulation, com limiar ABSOLUTO por
+// canal -- nao o limiar de 2% usado no DRIFT intra-WORK). BP1 e BP2
+// tratados sempre em separado, nunca comparados linha a linha.
+function mxProfilageAccMostrar(d){
+ const box=document.getElementById('mxProfilageAccumulation');
+ if(!box) return;
+ MX_ACC_ULT = d.profilage_accumulation || null;
+ const acc=MX_ACC_ULT;
+ if(!acc || (!acc.bp1 && !acc.bp2)){ box.innerHTML=''; return; }
+
+ const canais=[['hr','HR'],['respiracao','RF'],['smo2','SmO2'],
+              ['thb','THb'],['dfa1','DFA-α1']];
+ function corClass(c){
+  if(c==='progressão consistente') return '#3FB950';
+  if(c==='progressão parcial') return '#F4D03F';
+  if(c==='sem progressão consistente') return '#F0883E';
+  if(c==='estável') return '#8b949e';
+  return '#6e7681';
+ }
+ function tabelaBloco(bloco){
+  if(!bloco) return '<p class="sub" style="font-size:11px;">sem WORKs neste bloco.</p>';
+  let h='<b style="font-size:12px;">'+bloco.bp+'</b> ('+bloco.n_works+' WORKs — '
+   +bloco.works.map(w=>'#'+w.ordem+' '+(w.potencia_media!=null?Math.round(w.potencia_media)+'W':'—')).join(', ')+')'
+   +'<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
+   +'<tr class="sub" style="text-align:left;"><th style="padding:3px 10px 3px 0;">Métrica</th>'
+   +'<th style="padding:3px 10px;">ENTRY (W1→Wn)</th><th style="padding:3px 10px;">Classificação ENTRY</th>'
+   +'<th style="padding:3px 10px;">EXIT (W1→Wn)</th><th style="padding:3px 10px;">Classificação EXIT</th></tr>';
+  canais.forEach(function(c){
+   const info=bloco.por_canal[c[0]];
+   if(!info) return;
+   const en=info.entry, ex=info.exit;
+   h+='<tr style="border-top:1px solid #21262d;">'
+    +'<td style="padding:3px 10px 3px 0;">'+c[1]+'</td>'
+    +'<td style="padding:3px 10px;">'+(en.valores&&en.valores.length?en.valores.map(v=>v.toFixed(1)).join('→'):'—')+'</td>'
+    +'<td style="padding:3px 10px;color:'+corClass(en.classificacao)+';">'+en.classificacao+'</td>'
+    +'<td style="padding:3px 10px;">'+(ex.valores&&ex.valores.length?ex.valores.map(v=>v.toFixed(1)).join('→'):'—')+'</td>'
+    +'<td style="padding:3px 10px;color:'+corClass(ex.classificacao)+';">'+ex.classificacao+'</td></tr>';
+  });
+  h+='</table>';
+  return h;
+ }
+ function convergenciaTxt(conv){
+  if(!conv) return '';
+  return '<p style="font-size:11px;margin-top:4px;"><b>Convergência:</b> '+conv.nota
+   +(conv.canais.length?' ('+conv.canais.map(c=>c.canal+' '+(c.direccao||'')).join(', ')+')':'')+'</p>';
+ }
+
+ let h='<b style="font-size:13px;">ACCUMULATION — progressão entre WORKs</b>'
+  +'<p class="sub" style="font-size:10px;margin:2px 0 8px;">Limiar absoluto por canal (não percentual — o mesmo limiar em BP1 e BP2, independente do valor de entrada): '
+  +'HR≥2bpm · RF≥1rpm · SmO2≥1% · THb≥0,1g/dL · DFA-α1≥0,05. BP1 e BP2 nunca comparados directamente entre si (cargas diferentes).</p>'
+  +tabelaBloco(acc.bp1) + convergenciaTxt(acc.convergencia_bp1)
+  +'<div style="margin-top:10px;"></div>'
+  +tabelaBloco(acc.bp2) + convergenciaTxt(acc.convergencia_bp2);
+ box.innerHTML=h;
+ mxProfilageAccGraficos();
+}
+
+// os dois graficos: ENTRY por WORK e EXIT por WORK, metrica escolhida
+// no selector, BP1/BP2 em cores diferentes
+function mxProfilageAccGraficos(){
+ const metrica=(document.getElementById('mxAccMetrica')||{}).value||'hr';
+ const acc=MX_ACC_ULT;
+ [['chMxAccEntry','entry'],['chMxAccExit','exit']].forEach(function(par){
+  const o=ctx(par[0],200); if(!o) return;
+  const g=o.g, W=o.W, H=o.H;
+  g.clearRect(0,0,W,H);
+  if(!acc){ noData(g,W,H,'sem dados de accumulation'); return; }
+  const series=[];
+  if(acc.bp1 && acc.bp1.por_canal[metrica]){
+   const vals=acc.bp1.por_canal[metrica][par[1]].valores;
+   if(vals && vals.length) series.push({bp:'BP1', cor:'#5DADE2', vals:vals});
+  }
+  if(acc.bp2 && acc.bp2.por_canal[metrica]){
+   const vals=acc.bp2.por_canal[metrica][par[1]].valores;
+   if(vals && vals.length) series.push({bp:'BP2', cor:'#F0883E', vals:vals});
+  }
+  if(!series.length){ noData(g,W,H,'dados insuficientes'); return; }
+  const PL=40,PR=70,PT=14,PB=26,w=W-PL-PR,h=H-PT-PB;
+  const todos=series.flatMap(s=>s.vals);
+  const ya=Math.min.apply(null,todos)*0.97, yb=Math.max.apply(null,todos)*1.03;
+  const maxN=Math.max.apply(null,series.map(s=>s.vals.length));
+  const X=i=>PL+(maxN<=1?0:(i/(maxN-1))*w);
+  const Y=v=>PT+h-(v-ya)/((yb-ya)||1)*h;
+  g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='10px sans-serif'; g.textAlign='right';
+  for(let i=0;i<=3;i++){ const yv=ya+(yb-ya)*i/3; const y=Y(yv);
+   g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+w,y); g.stroke();
+   g.fillText(yv.toFixed(1),PL-5,y+3); }
+  g.textAlign='center';
+  for(let i=0;i<maxN;i++) g.fillText('W'+(i+1), X(i), PT+h+14);
+  series.forEach(function(s){
+   g.strokeStyle=s.cor; g.fillStyle=s.cor; g.lineWidth=2;
+   g.beginPath();
+   s.vals.forEach(function(v,i){ const x=X(i),y=Y(v); i?g.lineTo(x,y):g.moveTo(x,y); });
+   g.stroke();
+   s.vals.forEach(function(v,i){ g.beginPath(); g.arc(X(i),Y(v),3,0,7); g.fill(); });
+   g.font='10px sans-serif'; g.textAlign='left';
+   g.fillText(s.bp, PL+w+6, Y(s.vals[s.vals.length-1])+3);
+  });
+  g.lineWidth=1;
+ });
 }
 
 function mxVstAuditoriaRecovery(titulo, comp){

@@ -1763,3 +1763,235 @@ def profilage_limiter_sintese(resultado_bp1, resultado_bp2):
                  'complementares; a convergência entre eles aumenta a coerência '
                  'do padrão, mas não estabelece causalidade.'),
     }
+
+
+# ============================================================
+# HIPÓTESE DE INTERVENÇÃO / TREINO -- camada de integração pura.
+# Consome LIMITER, PRIMEIRA DIVERGÊNCIA, DRIFT, ACCUMULATION, RECOVERY
+# e RPE já calculados; não recalcula nenhum sinal fisiológico, não
+# prescreve protocolo fechado, não afirma causalidade.
+# ============================================================
+
+CONTEXTO_MODALIDADE = {
+    'Bike': ('carga externa predominantemente ciclística; a musculatura '
+            'monitorizada pode representar apenas parte da demanda periférica '
+            'total do gesto.'),
+    'Row': ('padrão mecânico diferente da Bike, com maior participação de '
+           'massa muscular e ciclo respiratório/mecânico próprio; a '
+           'recuperação pode envolver parada completa. Não transportar '
+           'automaticamente a interpretação de outra modalidade.'),
+    'Ski': ('padrão de recrutamento e demanda periférica próprios; a SmO2 '
+           'deve ser interpretada no contexto da musculatura efectivamente '
+           'monitorizada, sem assumir equivalência com Bike ou Row.'),
+    'Run': ('impacto e mecânica próprios da corrida; a resposta '
+           'cardiorrespiratória e periférica deve ser interpretada dentro '
+           'do padrão específico deste gesto, não transposta de outra '
+           'modalidade.'),
+}
+
+
+def _metricas_alteradas(evidencia):
+    """So' as metricas que REALMENTE mostraram alteracao nesta sessao
+    (estado != ausente/insuficiente) entram como alvo -- nunca a lista
+    inteira por omissao."""
+    hr = (evidencia.get('cardiorrespiratorio') or {}).get('hr') or {}
+    rf = (evidencia.get('cardiorrespiratorio') or {}).get('rf') or {}
+    smo2 = (evidencia.get('periferico') or {}).get('smo2') or {}
+    dfa1 = (evidencia.get('autonomico') or {}).get('dfa1') or {}
+    fora = []
+    if hr.get('estado') in ('consistente', 'parcial', 'tardio'):
+        fora.append('HR')
+    if rf.get('estado') in ('consistente', 'parcial', 'tardio'):
+        fora.append('RF')
+    if smo2.get('estado') in ('consistente', 'parcial', 'tardio'):
+        fora.append('SmO2')
+    if dfa1.get('estado') in ('consistente', 'parcial', 'tardio'):
+        fora.append('DFA-α1 (complementar)')
+    return fora
+
+
+def _timings_do_bloco(divergencia_bloco, metricas_interesse):
+    """Timing real da primeira divergência (já calculado), so' para as
+    métricas de interesse desta hipótese -- nunca recalculado."""
+    works = (divergencia_bloco or {}).get('works') or []
+    fora = {}
+    for chave in metricas_interesse:
+        tempos = []
+        for w in works:
+            m = next((x for x in w['metricas_ordenadas'] if x['metrica'] == chave), None)
+            if m and m['status'] == 'ok':
+                tempos.append(m['t_relativo'])
+        if tempos:
+            fora[chave] = {'tempos': tempos, 'media_s': round(sum(tempos) / len(tempos), 1)}
+    return fora
+
+
+def profilage_hipotese_intervencao(bp_nome, modalidade, limiter_result,
+                                   divergencia_bloco, comp_recovery, comp_rpe,
+                                   historico_padroes=None):
+    """Camada de integração -- so' LÊ resultados já calculados.
+    limiter_result: saída de profilage_limiter() para este BP.
+    divergencia_bloco: divergencia['bp1'] ou ['bp2'] (para timing/potência).
+    comp_recovery / comp_rpe: os mesmos já usados no LIMITER.
+    historico_padroes: lista opcional de padrões (strings) de sessões
+    anteriores comparáveis (mesma modalidade+BP); None/[] = sem histórico.
+    """
+    padrao = (limiter_result or {}).get('padrao') or 'EVIDÊNCIA INSUFICIENTE'
+    evidencia = (limiter_result or {}).get('evidencia') or {}
+    works = (divergencia_bloco or {}).get('works') or []
+    potencias = [w.get('potencia_media') for w in works if w.get('potencia_media') is not None]
+    nota_modalidade = CONTEXTO_MODALIDADE.get(modalidade,
+        'modalidade não reconhecida — sem contexto específico disponível; '
+        'interpretação genérica, com cautela adicional.')
+
+    base = {
+        'bp': bp_nome, 'modalidade': modalidade, 'padrao_observado': padrao,
+        'evidencias': limiter_result.get('motivo') if limiter_result else None,
+        'potencia_w': potencias, 'nota_modalidade': nota_modalidade,
+        'recovery_coerencia': (limiter_result or {}).get('recovery_coerencia'),
+        'rpe_nota': (limiter_result or {}).get('rpe_nota'),
+        'status': 'HIPÓTESE — REQUER NOVA VERIFICAÇÃO',
+        'aviso': ('Esta é uma hipótese para teste. O padrão observado não demonstra '
+                 'causalidade nem identifica isoladamente um limitante de desempenho.'),
+    }
+
+    if padrao == 'PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE':
+        metricas_alvo = [m for m in _metricas_alteradas(evidencia) if m in ('HR', 'RF')]
+        timings = _timings_do_bloco(divergencia_bloco, ['HR', 'RF'])
+        base.update({
+            'hipotese': ('A principal resposta progressiva observada neste WORK foi '
+                        'cardiorrespiratória, com resposta periférica mais tardia ou ausente.'),
+            'alvo_potencial': 'estabilidade cardiorrespiratória durante esforço sustentado nesta intensidade.',
+            'metricas_alvo': metricas_alvo, 'timings_referencia': timings,
+            'estimulo_candidato': {
+                'tipo': 'estímulo cujo objectivo seja testar a tolerância cardiorrespiratória '
+                       'sustentada próxima desta intensidade',
+                'objetivo': 'reduzir a progressão de HR/RF dentro do WORK, ou adiar o momento '
+                           'da primeira divergência sustentada',
+                'porque': 'HR e/ou RF mostraram resposta progressiva consistente nesta sessão',
+                'metrica_alvo': '/'.join(metricas_alvo) if metricas_alvo else 'HR/RF',
+                'criterio_resposta': 'menor drift intra-WORK, divergência mais tardia, ou '
+                                    'recuperação mais rápida em sessão de verificação futura',
+                'proxima_verificacao': 'repetir sessão comparável (mesma modalidade, BP e '
+                                      'potência semelhante) e comparar DRIFT/timing/recovery',
+            },
+            'resposta_esperada': ['menor progressão de RF', 'menor drift de HR/RF',
+                                  'divergência mais tardia', 'ou recuperação mais rápida'],
+        })
+    elif padrao == 'PADRÃO PERIFÉRICO PREDOMINANTE':
+        timings = _timings_do_bloco(divergencia_bloco, ['SmO2'])
+        base.update({
+            'hipotese': 'Resposta periférica predominante durante o WORK, sem resposta '
+                       'cardiorrespiratória equivalente.',
+            'alvo_potencial': 'comportamento da SmO2 (oxigenação muscular monitorizada) '
+                              'durante esforço sustentado — sem afirmar mecanismo específico.',
+            'metricas_alvo': ['SmO2'], 'timings_referencia': timings,
+            'estimulo_candidato': {
+                'tipo': 'estímulo cujo objectivo seja testar a tolerância periférica ao '
+                       'esforço sustentado nesta intensidade',
+                'objetivo': 'reduzir a magnitude ou adiar o momento da divergência de SmO2',
+                'porque': 'SmO2 mostrou resposta consistente e temporalmente relevante nesta sessão',
+                'metrica_alvo': 'SmO2',
+                'criterio_resposta': 'menor drift de SmO2, divergência mais tardia, ou '
+                                    'recuperação de SmO2 mais rápida em sessão futura',
+                'proxima_verificacao': 'repetir sessão comparável e comparar timing/magnitude '
+                                      'de SmO2 e a recuperação periférica',
+            },
+            'resposta_esperada': ['menor drift de SmO2', 'divergência mais tardia',
+                                  'ou recuperação periférica mais rápida'],
+        })
+    elif padrao == 'RESPOSTA MULTISSISTÊMICA':
+        timings = _timings_do_bloco(divergencia_bloco, ['HR', 'RF', 'SmO2'])
+        base.update({
+            'hipotese': 'Resposta multissistêmica durante o WORK — cardiorrespiratório e '
+                       'periférico apresentam respostas temporalmente relacionadas.',
+            'alvo_potencial': 'capacidade de sustentar a carga sem progressão excessiva '
+                              'simultânea de múltiplos sinais.',
+            'metricas_alvo': _metricas_alteradas(evidencia), 'timings_referencia': timings,
+            'estimulo_candidato': {
+                'tipo': 'estímulo cujo objectivo seja testar a tolerância combinada a esta '
+                       'intensidade, acompanhando vários sinais ao mesmo tempo',
+                'objetivo': 'reduzir a progressão conjunta de HR/RF/SmO2 dentro do WORK',
+                'porque': 'múltiplos sistemas mostraram respostas temporalmente relacionadas nesta sessão',
+                'metrica_alvo': 'HR, RF e SmO2 em conjunto',
+                'criterio_resposta': 'estabilidade maior entre ENTRY e EXIT nos vários sinais, '
+                                    'ou recovery mais coerente, em sessão futura',
+                'proxima_verificacao': 'repetir sessão comparável e comparar DRIFT/timing/'
+                                      'recovery dos três sinais em conjunto',
+            },
+            'resposta_esperada': ['maior estabilidade entre ENTRY e EXIT', 'divergências mais '
+                                  'tardias em conjunto', 'ou recovery mais coerente'],
+        })
+    elif padrao == 'RESPOSTAS DISSOCIADAS':
+        primeira = None
+        if works:
+            todos = []
+            for w in works:
+                for mtc in w['metricas_ordenadas']:
+                    if mtc['status'] == 'ok':
+                        todos.append(mtc)
+            if todos:
+                primeira = min(todos, key=lambda x: x['t_relativo'])['metrica']
+        # recorrencia decide se ha' consistencia suficiente para uma hipotese
+        n_hist = len(historico_padroes or [])
+        n_igual = sum(1 for p in (historico_padroes or []) if p == padrao)
+        if n_hist == 0 or n_igual < n_hist:
+            base.update({
+                'hipotese': 'Respostas fisiológicas dissociadas durante o WORK — os sinais '
+                           'aparecem temporalmente separados, sem um agrupamento predominante.',
+                'alvo_potencial': None,
+                'metricas_alvo': [], 'timings_referencia': {},
+                'estimulo_candidato': None,
+                'resposta_esperada': None,
+                'nota_dissociacao': ('primeira métrica a divergir nesta sessão: ' + primeira
+                                     if primeira else 'sem divergência clara'),
+                'motivo_sem_estimulo': ('Evidência insuficiente para selecionar um alvo de '
+                                        'intervenção — a dissociação não se mostrou consistente '
+                                        'entre sessões comparáveis (ou não há histórico '
+                                        'suficiente para avaliar isso ainda).'),
+            })
+        else:
+            base.update({
+                'hipotese': 'Respostas fisiológicas dissociadas, de forma recorrente entre '
+                           'sessões comparáveis.',
+                'alvo_potencial': ('padrão de dissociação recorrente, com '
+                                  + (primeira or 'a primeira métrica') + ' tipicamente '
+                                  'divergindo primeiro.'),
+                'metricas_alvo': [primeira] if primeira else [],
+                'timings_referencia': _timings_do_bloco(divergencia_bloco, [primeira] if primeira else []),
+                'estimulo_candidato': {
+                    'tipo': 'estímulo cujo objectivo seja investigar por que a dissociação se '
+                           'repete — não um treino fechado, apenas uma verificação dirigida',
+                    'objetivo': f'observar se {primeira or "a métrica inicial"} continua a '
+                               'divergir sistematicamente antes das demais',
+                    'porque': 'o padrão de dissociação repetiu-se em sessões comparáveis',
+                    'metrica_alvo': primeira or '—',
+                    'criterio_resposta': 'verificar se o agrupamento temporal muda com a '
+                                        'repetição do estímulo',
+                    'proxima_verificacao': 'repetir sessão comparável e reavaliar a '
+                                          'convergência temporal',
+                },
+                'resposta_esperada': ['maior agrupamento temporal entre os sinais em sessão futura'],
+            })
+    else:  # EVIDÊNCIA INSUFICIENTE
+        base.update({
+            'hipotese': None, 'alvo_potencial': None, 'metricas_alvo': [],
+            'timings_referencia': {}, 'estimulo_candidato': None, 'resposta_esperada': None,
+            'motivo_sem_estimulo': ('Os dados disponíveis não permitem selecionar uma hipótese '
+                                    'de intervenção fisiológica com segurança.'),
+        })
+
+    # recorrencia -- so' informativa, nunca um score
+    n_hist = len(historico_padroes or [])
+    n_igual = sum(1 for p in (historico_padroes or []) if p == padrao)
+    if n_hist == 0:
+        recorrencia = 'OBSERVADO UMA VEZ'
+    elif n_igual >= 3:
+        recorrencia = 'PADRÃO RECORRENTE'
+    elif n_igual >= 2:
+        recorrencia = 'OBSERVADO EM MÚLTIPLAS SESSÕES'
+    else:
+        recorrencia = 'OBSERVADO UMA VEZ'
+    base['recorrencia'] = {'estado': recorrencia, 'n_sessoes_comparadas': n_hist,
+                           'n_com_mesmo_padrao': n_igual}
+    return base

@@ -510,6 +510,13 @@ BODY = """
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta é uma hipótese para teste. O padrão observado não demonstra causalidade nem identifica isoladamente um limitante de desempenho.</p>
     <div id="mxHipotese" style="overflow-x:auto;"></div>
 
+    <h3 style="font-size:14px;margin-top:20px;">Padrões recorrentes — histórico</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Frequência de padrão não demonstra causalidade. Padrão recorrente aumenta a justificativa para testar a hipótese.</p>
+    <div id="mxHistoricoPatterns" style="overflow-x:auto;margin-top:6px;"></div>
+
+    <h3 style="font-size:14px;margin-top:16px;">Estilos de treino candidatos — histórico</h3>
+    <div id="mxHistoricoEstilos" style="overflow-x:auto;margin-top:6px;"></div>
+
     <h3 style="font-size:14px;margin-top:16px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
     <div id="mxVstRpe" style="margin-top:10px;"></div>
@@ -2275,6 +2282,7 @@ function mxVstCarregarComparacao(vstId){
   mxVstLimitacoes(d);
   mxLimiterMostrar(d);
   mxHipoteseMostrar(d);
+  mxHistoricoEstilosMostrar();
  }).catch(function(e){
   box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
  });
@@ -3594,6 +3602,97 @@ function mxHipoteseMostrar(d){
   return html;
  }
  box.innerHTML=blocoHip(bp1)+blocoHip(bp2);
+}
+
+// ESTILOS DE TREINO / HISTÓRICO -- le' /api/moxy/vst/historico_estilos
+// (que agrega todas as verificacoes salvas no DB sem recalcular nada);
+// so' mostra, nunca prescreve, nunca inventa watts/duracao/series.
+function mxHistoricoEstilosMostrar(){
+ const boxP=document.getElementById('mxHistoricoPatterns');
+ const boxE=document.getElementById('mxHistoricoEstilos');
+ if(!boxP || !boxE) return;
+ boxP.innerHTML='<p class="sub" style="font-size:11px;">a carregar...</p>';
+ boxE.innerHTML='';
+ fetch('/api/moxy/vst/historico_estilos').then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ boxP.innerHTML='<p class="sub">erro: '+(d.mensagem||'?')+'</p>'; return; }
+  const rec=d.recorrencia_global||[];
+  const porMod=d.recorrencia_por_modalidade||{};
+  const estilos=d.estilos_historico||[];
+
+  if(!rec.length){
+   boxP.innerHTML='<p class="sub" style="font-size:11px;">sem verificações salvas com padrões registados.</p>';
+   boxE.innerHTML=''; return;
+  }
+
+  // --- tabela de padroes globais ---
+  function corRec(r){
+   if(r==='RECORRENTE EM MÚLTIPLAS MODALIDADES') return '#A371F7';
+   if(r==='RECORRENTE NA MESMA MODALIDADE') return '#5DADE2';
+   if(r==='OBSERVADO EM MÚLTIPLAS SESSÕES') return '#F4D03F';
+   return '#8b949e';
+  }
+  let hP='<b style="font-size:12px;">Padrão global (todas as verificações)</b>'
+   +'<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
+   +'<tr class="sub" style="text-align:left;"><th style="padding:3px 10px 3px 0;">Padrão</th>'
+   +'<th style="padding:3px 8px;">Sessões</th><th style="padding:3px 8px;">BP1</th>'
+   +'<th style="padding:3px 8px;">BP2</th><th style="padding:3px 8px;">Modalidades</th>'
+   +'<th style="padding:3px 8px;">Recorrência</th><th style="padding:3px 8px;">Última</th></tr>';
+  rec.forEach(function(r){
+   hP+='<tr style="border-top:1px solid #21262d;">'
+    +'<td style="padding:3px 10px 3px 0;font-size:10px;">'+r.padrao+'</td>'
+    +'<td style="padding:3px 8px;text-align:center;">'+r.n_total+'</td>'
+    +'<td style="padding:3px 8px;text-align:center;">'+r.n_bp1+'</td>'
+    +'<td style="padding:3px 8px;text-align:center;">'+r.n_bp2+'</td>'
+    +'<td style="padding:3px 8px;font-size:10px;">'+(r.modalidades||[]).join(', ')+'</td>'
+    +'<td style="padding:3px 8px;color:'+corRec(r.recorrencia)+';font-size:10px;">'+r.recorrencia+'</td>'
+    +'<td style="padding:3px 8px;font-size:10px;">'+(r.ultima_ocorrencia||'—')+'</td></tr>';
+  });
+  hP+='</table>';
+  // padroes por modalidade (sub-tabela compacta)
+  const mods=Object.keys(porMod);
+  if(mods.length>1){
+   hP+='<b style="font-size:12px;margin-top:10px;display:block;">Por modalidade</b>'
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
+    +'<tr class="sub" style="text-align:left;"><th style="padding:3px 10px 3px 0;">Modalidade</th>'
+    +'<th style="padding:3px 8px;">Padrão</th><th style="padding:3px 8px;">BP1</th>'
+    +'<th style="padding:3px 8px;">BP2</th><th style="padding:3px 8px;">Total</th></tr>';
+   mods.forEach(function(mod){
+    (porMod[mod]||[]).forEach(function(p,i){
+     hP+='<tr style="border-top:1px solid #21262d;">'
+      +'<td style="padding:3px 10px 3px 0;font-size:10px;">'+(i===0?mod:'')+'</td>'
+      +'<td style="padding:3px 8px;font-size:10px;">'+p.padrao+'</td>'
+      +'<td style="padding:3px 8px;text-align:center;">'+p.n_bp1+'</td>'
+      +'<td style="padding:3px 8px;text-align:center;">'+p.n_bp2+'</td>'
+      +'<td style="padding:3px 8px;text-align:center;">'+p.n_total+'/'+p.n_sessoes_modalidade+'</td></tr>';
+    });
+   });
+   hP+='</table>';
+  }
+  hP+='<p class="sub" style="font-size:10px;margin-top:4px;">'+d.nota_metodologica+'</p>';
+  boxP.innerHTML=hP;
+
+  // --- cards de estilos ---
+  if(!estilos.length){ boxE.innerHTML='<p class="sub" style="font-size:11px;">sem estilos candidatos com o histórico disponível.</p>'; return; }
+  let hE='<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));">';
+  estilos.forEach(function(e){
+   const corPrio=e.prioridade==='primário'?'#3FB950':'#8b949e';
+   hE+='<div class="card" style="min-width:240px;">'
+    +'<div class="label" style="color:'+corPrio+';">'+e.nome
+    +' <span style="font-size:9px;background:#21262d;padding:1px 5px;border-radius:3px;">'+e.prioridade+'</span></div>'
+    +'<div style="font-size:10px;color:#8b949e;margin-top:3px;">Motivado por: '+e.motivado_por+'<br>'
+    +'Recorrência: '+e.recorrencia+' · '+e.n_sessoes+' sessão(ões) · '+e.n_modalidades+' modalidade(s)</div>'
+    +'<div style="font-size:11px;margin-top:5px;"><b>Objectivo:</b> '+e.objetivo+'</div>'
+    +'<div style="font-size:11px;margin-top:3px;"><b>Estrutura:</b> '+e.estrutura+'</div>'
+    +'<div style="font-size:10px;color:#8b949e;margin-top:3px;"><b>Observar:</b> '+(e.o_que_observar||[]).join(' · ')+'</div>'
+    +'<div style="font-size:10px;margin-top:3px;"><b>Resp. esperada:</b> '+e.resposta_esperada+'</div>'
+    +'<p style="font-size:9px;color:#484f58;margin-top:5px;font-style:italic;">HIPÓTESE — REQUER NOVA VERIFICAÇÃO. Não inclui watts, duração ou séries.</p>'
+    +'</div>';
+  });
+  hE+='</div>';
+  boxE.innerHTML=hE;
+ }).catch(function(e){
+  boxP.innerHTML='<p class="sub" style="font-size:11px;">erro ao carregar histórico: '+e.message+'</p>';
+ });
 }
 
 function mxVstLimitacoes(d){

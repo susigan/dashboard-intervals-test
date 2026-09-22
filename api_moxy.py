@@ -2572,6 +2572,15 @@ def registar(app):
             except Exception as e:
                 drift = {'linhas': [], 'erro': f'{type(e).__name__}: {e}'}
 
+            # ACCUMULATION -- progressao de ENTRY/EXIT entre WORKs, dentro
+            # de cada bloco (BP1 e BP2 separados). So' le' profilage['linhas'];
+            # nao toca em drift, estrutura, bp1/bp2.
+            try:
+                accumulation = vst.profilage_accumulation(profilage['linhas'])
+            except Exception as e:
+                accumulation = {'bp1': None, 'bp2': None,
+                                'erro': f'{type(e).__name__}: {e}'}
+
             # diagnostico de cobertura: o stream (t) cobre mesmo o
             # intervalo de cada bloco? Um "—" na aquecimento ou no ultimo
             # bloco costuma ser isto -- o sensor ainda a estabilizar no
@@ -2697,6 +2706,7 @@ def registar(app):
                        'verificacao': r_bp2},
                 'profilage': profilage,
                 'profilage_drift': drift,
+                'profilage_accumulation': accumulation,
                 'recuperacoes': recuperacoes,
                 'recuperacoes_1min': recuperacoes_1min,
                 'recuperacao_final': recuperacao_final,

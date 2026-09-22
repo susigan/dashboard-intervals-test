@@ -480,6 +480,22 @@ BODY = """
         <canvas id="chMxAccExit" height="200"></canvas></div>
     </div>
 
+    <div id="mxProfilageDivergencia" style="overflow-x:auto;margin-top:14px;"></div>
+    <div class="controls" style="margin-top:8px;">
+      <label class="sel">WORK
+        <select id="mxDivWork" onchange="mxProfilageDivGrafico()"></select>
+      </label>
+      <label class="sel">Métrica
+        <select id="mxDivMetrica" onchange="mxProfilageDivGrafico()">
+          <option value="HR">HR</option><option value="RF">RF</option>
+          <option value="SmO2">SmO2</option><option value="THb">THb</option>
+          <option value="DFA-α1">DFA-α1</option>
+        </select>
+      </label>
+    </div>
+    <div class="chartbox"><div class="legend"><span>Primeira divergência dentro do WORK</span></div>
+      <canvas id="chMxDivergencia" height="180"></canvas></div>
+
     <h3 style="font-size:14px;margin-top:16px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
     <div id="mxVstRpe" style="margin-top:10px;"></div>
@@ -1998,6 +2014,7 @@ function mxVstCarregar(){
   mxProfilageMostrar(d);
   mxProfilageDriftMostrar(d);
   mxProfilageAccMostrar(d);
+  mxProfilageDivMostrar(d);
   mxVstPopularMoxySelect();
   mxVstCarregarConjunto(id);
 
@@ -2761,6 +2778,129 @@ function mxProfilageAccGraficos(){
   });
   g.lineWidth=1;
  });
+}
+
+let MX_DIV_ULT = null;  // ultima resposta de profilage_primeira_divergencia
+
+// PRIMEIRA DIVERGÊNCIA TEMPORAL -- le' so' d.profilage_divergencia (ja
+// calculado no backend por profilage_primeira_divergencia, que
+// reaproveita os mesmos canais/tempo dos gráficos Power x métrica).
+function mxProfilageDivMostrar(d){
+ const box=document.getElementById('mxProfilageDivergencia');
+ const selWork=document.getElementById('mxDivWork');
+ if(!box) return;
+ MX_DIV_ULT = d.profilage_divergencia || null;
+ const div=MX_DIV_ULT;
+ if(!div || (!div.bp1 && !div.bp2)){ box.innerHTML=''; if(selWork) selWork.innerHTML=''; return; }
+
+ function corDir(dir){ return dir==='↑'?'#3FB950':(dir==='↓'?'#F0883E':'#8b949e'); }
+ function tabelaBloco(bloco){
+  if(!bloco) return '';
+  let h='<b style="font-size:12px;">'+bloco.bp+'</b>';
+  bloco.works.forEach(function(w){
+   h+='<table style="border-collapse:collapse;font-size:11px;margin:6px 0;">'
+    +'<tr class="sub" style="text-align:left;"><th colspan="5" style="padding:3px 10px 3px 0;">'
+    +'WORK '+w.numero+' — '+(w.potencia_media!=null?Math.round(w.potencia_media)+'W':'—')
+    +' ('+w.duracao_s+'s)</th></tr>'
+    +'<tr class="sub" style="text-align:left;"><th style="padding:3px 10px 3px 0;">#</th>'
+    +'<th style="padding:3px 10px;">Métrica</th><th style="padding:3px 10px;">1º momento</th>'
+    +'<th style="padding:3px 10px;">Inicial → No momento</th><th style="padding:3px 10px;">Direcção</th></tr>';
+   w.metricas_ordenadas.forEach(function(m,i){
+    if(m.status!=='ok'){
+     h+='<tr style="border-top:1px solid #21262d;"><td style="padding:3px 10px 3px 0;">'+(i+1)+'</td>'
+      +'<td style="padding:3px 10px;">'+m.metrica+'</td>'
+      +'<td colspan="3" style="padding:3px 10px;color:#8b949e;">'+m.status+'</td></tr>';
+     return;
+    }
+    h+='<tr style="border-top:1px solid #21262d;"><td style="padding:3px 10px 3px 0;">'+(i+1)+'</td>'
+     +'<td style="padding:3px 10px;">'+m.metrica+'</td>'
+     +'<td style="padding:3px 10px;">t='+m.t_relativo+'s</td>'
+     +'<td style="padding:3px 10px;">'+m.valor_inicial+' → '+m.valor_no_momento+'</td>'
+     +'<td style="padding:3px 10px;color:'+corDir(m.direccao)+';">'+m.direccao+'</td></tr>';
+   });
+   h+='</table>';
+  });
+  h+='<p class="sub" style="font-size:11px;">'+bloco.sintese+'</p>'
+   +'<p class="sub" style="font-size:10px;">'+((bloco.works[0]||{}).nota_power||'')+'</p>';
+  return h;
+ }
+
+ box.innerHTML=tabelaBloco(div.bp1)+tabelaBloco(div.bp2);
+
+ // popular o selector de WORK para o grafico
+ if(selWork){
+  let opts='';
+  [div.bp1, div.bp2].forEach(function(bloco){
+   if(!bloco) return;
+   bloco.works.forEach(function(w){
+    opts+='<option value="'+bloco.bp+'|'+w.numero+'">'+bloco.bp+' W'+w.numero+'</option>';
+   });
+  });
+  selWork.innerHTML=opts;
+ }
+ mxProfilageDivGrafico();
+}
+
+// visualizacao simples: 3 pontos (ENTRY, momento da divergencia se
+// houver, EXIT) para o WORK+metrica escolhidos, com marcador vertical
+// tracejado no ponto de divergencia. Nao usa a serie bruta completa
+// (o backend nao a envia -- so' o resultado agregado), por isso a
+// linha entre os pontos e' so' indicativa, nao a curva real.
+function mxProfilageDivGrafico(){
+ const o=ctx('chMxDivergencia',180); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ g.clearRect(0,0,W,H);
+ const div=MX_DIV_ULT;
+ const sel=(document.getElementById('mxDivWork')||{}).value;
+ const metrica=(document.getElementById('mxDivMetrica')||{}).value||'HR';
+ if(!div || !sel){ noData(g,W,H,'sem dados'); return; }
+ const [bpNome, numeroStr]=sel.split('|');
+ const numero=parseInt(numeroStr,10);
+ const bloco=bpNome==='BP1'?div.bp1:div.bp2;
+ const w=(bloco.works||[]).find(x=>x.numero===numero);
+ if(!w){ noData(g,W,H,'WORK não encontrado'); return; }
+ const m=(w.metricas_ordenadas||[]).find(x=>x.metrica===metrica);
+ if(!m || m.status!=='ok'){
+  noData(g,W,H,metrica+': '+(m?m.status:'sem dados')); return;
+ }
+
+ const PL=50,PR=20,PT=16,PB=26,ww=W-PL-PR,hh=H-PT-PB;
+ const pontos=[{t:0, v:m.valor_inicial, rotulo:'ENTRY'}];
+ if(m.t_relativo>0 && m.t_relativo<w.duracao_s)
+  pontos.push({t:m.t_relativo, v:m.valor_no_momento, rotulo:'divergência'});
+ pontos.push({t:w.duracao_s, v:m.valor_no_momento, rotulo:'...EXIT'});
+ const vals=pontos.map(p=>p.v);
+ const ya=Math.min.apply(null,vals)*0.95, yb=Math.max.apply(null,vals)*1.05;
+ const X=t=>PL+(t/w.duracao_s)*ww;
+ const Y=v=>PT+hh-(v-ya)/((yb-ya)||1)*hh;
+
+ g.strokeStyle='#21262d'; g.fillStyle='#8b949e'; g.font='10px sans-serif'; g.textAlign='right';
+ for(let i=0;i<=3;i++){ const yv=ya+(yb-ya)*i/3, y=Y(yv);
+  g.beginPath(); g.moveTo(PL,y); g.lineTo(PL+ww,y); g.stroke();
+  g.fillText(yv.toFixed(1),PL-5,y+3); }
+ g.textAlign='center';
+ g.fillText('0s', X(0), PT+hh+14);
+ g.fillText(w.duracao_s+'s', X(w.duracao_s), PT+hh+14);
+
+ // marcador vertical no ponto de divergencia
+ if(pontos.length===3){
+  const xd=X(pontos[1].t);
+  g.strokeStyle='#F4D03F'; g.setLineDash([3,3]); g.lineWidth=1.5;
+  g.beginPath(); g.moveTo(xd,PT); g.lineTo(xd,PT+hh); g.stroke();
+  g.setLineDash([]); g.lineWidth=1;
+  g.fillStyle='#F4D03F'; g.font='9px sans-serif';
+  g.fillText('t='+pontos[1].t+'s', xd, PT-4);
+ }
+
+ g.strokeStyle='#58A6FF'; g.fillStyle='#58A6FF'; g.lineWidth=2;
+ g.beginPath();
+ pontos.forEach(function(p,i){ const x=X(p.t),y=Y(p.v); i?g.lineTo(x,y):g.moveTo(x,y); });
+ g.stroke();
+ pontos.forEach(function(p){ g.beginPath(); g.arc(X(p.t),Y(p.v),4,0,7); g.fill(); });
+ g.lineWidth=1;
+
+ g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='left';
+ g.fillText('linha indicativa entre ENTRY/divergência/EXIT (não a curva bruta — o backend não a envia)', 8, H-4);
 }
 
 function mxVstAuditoriaRecovery(titulo, comp){

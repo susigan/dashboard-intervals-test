@@ -1525,3 +1525,227 @@ def profilage_convergencia_temporal(divergencia):
                              'métrica; janela = 15% da duração do WORK (mínimo 5s, '
                              'máximo 45s).'),
     }
+
+
+# ============================================================
+# LIMITER / PADRÃO FISIOLÓGICO -- camada de integração pura.
+# Consome DRIFT, ACCUMULATION, PRIMEIRA DIVERGÊNCIA, CONVERGÊNCIA
+# TEMPORAL, RECOVERY e RPE já calculados; não recalcula nenhum sinal
+# fisiológico, não introduz score, não escolhe "vencedor".
+# ============================================================
+
+GRUPOS_FISIOLOGICOS = {
+    'cardiorrespiratorio': ('HR', 'RF'),
+    'periferico': ('SmO2',),        # THb entra so' como contexto, nunca sozinho
+    'autonomico': ('DFA-α1',),      # complementar -- nunca sozinho decide
+}
+
+
+def _estado_metrica_no_bloco(metrica_nome, works_bloco_divergencia, works_bloco_convergencia):
+    """Estado textual de UMA metrica ao longo de todos os WORKs de um
+    bloco (BP1 ou BP2), combinando:
+    - repeticao (quantos WORKs tiveram divergencia sustentada);
+    - participacao no grupo proximo da convergencia temporal (vs tardia).
+    Devolve um dos 6 estados do item 18: consistente/parcial/tardio/
+    ausente/insuficiente. ('contextual' e' aplicado por fora, so' para
+    THb, nao aqui.)
+    """
+    n = len(works_bloco_divergencia)
+    if n == 0:
+        return {'estado': 'insuficiente', 'n_com_divergencia': 0, 'n_total': 0,
+               'n_no_grupo': 0, 'fraccao_divergencia': None}
+
+    resultados = []
+    for wd in works_bloco_divergencia:
+        m = next((x for x in wd['metricas_ordenadas'] if x['metrica'] == metrica_nome), None)
+        resultados.append(m)
+
+    n_dados_insuf = sum(1 for m in resultados if m and m['status'] == 'DADOS INSUFICIENTES')
+    com_div = [m for m in resultados if m and m['status'] == 'ok']
+    n_com_div = len(com_div)
+
+    if n_com_div == 0:
+        estado = 'insuficiente' if n_dados_insuf > n / 2 else 'ausente'
+        return {'estado': estado, 'n_com_divergencia': 0, 'n_total': n,
+               'n_no_grupo': 0, 'fraccao_divergencia': round(n_com_div / n, 2)}
+
+    # participacao no grupo proximo (convergencia temporal), por WORK
+    n_no_grupo = 0
+    for wc in works_bloco_convergencia:
+        if any(g['metrica'] == metrica_nome for g in (wc.get('grupo_proximo') or [])):
+            n_no_grupo += 1
+
+    fraccao_div = n_com_div / n
+    fraccao_grupo = n_no_grupo / n_com_div if n_com_div else 0
+
+    if fraccao_div >= 0.66 and fraccao_grupo >= 0.66:
+        estado = 'consistente'
+    elif fraccao_div < 0.34:
+        estado = 'parcial'
+    elif fraccao_grupo < 0.34:
+        estado = 'tardio'
+    else:
+        estado = 'parcial'
+
+    return {'estado': estado, 'n_com_divergencia': n_com_div, 'n_total': n,
+           'n_no_grupo': n_no_grupo, 'fraccao_divergencia': round(fraccao_div, 2)}
+
+
+def _avaliar_grupo_cardiorrespiratorio(estado_hr, estado_rf):
+    fortes = {'consistente'}
+    hr_forte, rf_forte = estado_hr['estado'] in fortes, estado_rf['estado'] in fortes
+    hr_algo = estado_hr['estado'] in ('consistente', 'parcial', 'tardio')
+    rf_algo = estado_rf['estado'] in ('consistente', 'parcial', 'tardio')
+    if hr_forte and rf_forte:
+        return {'nivel': 'forte', 'nota': 'HR e RF respondem conjuntamente'}
+    if hr_algo and rf_algo:
+        return {'nivel': 'parcial', 'nota': 'HR e RF respondem, mas não ambos de forma consistente'}
+    if hr_algo and not rf_algo:
+        return {'nivel': 'isolado', 'nota': 'evidência cardíaca isolada (HR sem RF correspondente)'}
+    if rf_algo and not hr_algo:
+        return {'nivel': 'isolado', 'nota': 'evidência ventilatória isolada (RF sem HR correspondente)'}
+    return {'nivel': 'ausente', 'nota': 'sem evidência cardiorrespiratória'}
+
+
+def _avaliar_grupo_simples(estado, nome_metrica):
+    if estado['estado'] == 'consistente':
+        return {'nivel': 'forte', 'nota': f'{nome_metrica} consistente ao longo dos WORKs'}
+    if estado['estado'] in ('parcial', 'tardio'):
+        return {'nivel': 'parcial', 'nota': f'{nome_metrica} presente, mas parcial/tardio'}
+    return {'nivel': 'ausente', 'nota': f'sem evidência de {nome_metrica}'}
+
+
+def profilage_limiter(bp_nome, divergencia_bloco, convergencia_works, convergencia_sintese,
+                      accumulation_bloco, comp_recovery, comp_rpe):
+    """Camada de integração -- so' LÊ resultados já calculados:
+    divergencia_bloco: divergencia['bp1'] ou ['bp2'] (profilage_primeira_divergencia)
+    convergencia_works: [w for w in convergencia['works'] if w['bp']==bp_nome]
+    convergencia_sintese: convergencia['sintese_bp1'] ou ['sintese_bp2']
+    accumulation_bloco: accumulation['bp1'] ou ['bp2'] (profilage_accumulation)
+    comp_recovery: comparacao_recovery_bp1/bp2 (comparar_recovery, já existente)
+    comp_rpe: comparacao_rpe_bp1/bp2 (comparar_rpe, já existente) ou None
+    """
+    works_div = (divergencia_bloco or {}).get('works') or []
+    if not works_div:
+        return {'bp': bp_nome, 'padrao': 'EVIDÊNCIA INSUFICIENTE',
+               'motivo': 'sem WORKs analisados neste bloco', 'evidencia': {},
+               'recovery_coerencia': None, 'rpe_nota': 'RPE: não disponível'}
+
+    canais_tabela = ('HR', 'RF', 'SmO2', 'THb', 'DFA-α1')
+    estados = {c: _estado_metrica_no_bloco(c, works_div, convergencia_works) for c in canais_tabela}
+
+    cardio = _avaliar_grupo_cardiorrespiratorio(estados['HR'], estados['RF'])
+    perif = _avaliar_grupo_simples(estados['SmO2'], 'SmO2')
+    auton = _avaliar_grupo_simples(estados['DFA-α1'], 'DFA-α1')
+    # THb nunca decide sozinho -- so' contextual, mesmo que o estado interno seja forte
+    thb_contexto = ('presente como contexto' if estados['THb']['estado'] in
+                    ('consistente', 'parcial', 'tardio') else 'sem divergência sustentada')
+
+    # recovery como evidencia complementar -- so' aumenta/reduz a
+    # COERENCIA descritiva, nunca decide a classificacao sozinho
+    recovery_estado = (comp_recovery or {}).get('status') if comp_recovery else None
+    recovery_coerencia = {
+        'CONVERGENTE': 'compatível', 'PARCIAL': 'parcial',
+        'DIVERGENTE': 'divergente',
+    }.get(recovery_estado, 'insuficiente')
+
+    rpe_estado = (comp_rpe or {}).get('status') if comp_rpe else None
+    rpe_nota = ('RPE: não disponível' if not comp_rpe or rpe_estado == 'DADOS INSUFICIENTES'
+               else f'RPE: {rpe_estado.lower()}')
+
+    grupos_com_evidencia = []
+    if cardio['nivel'] in ('forte', 'parcial'):
+        grupos_com_evidencia.append('cardiorrespiratorio')
+    if perif['nivel'] in ('forte', 'parcial'):
+        grupos_com_evidencia.append('periferico')
+    if auton['nivel'] in ('forte', 'parcial'):
+        grupos_com_evidencia.append('autonomico')
+
+    conv_predominante = (convergencia_sintese or {}).get('padrao_predominante')
+
+    # ---- decisao (arvore descritiva, sem score) ----
+    if not grupos_com_evidencia:
+        padrao = 'EVIDÊNCIA INSUFICIENTE'
+        motivo = 'nenhum grupo fisiológico apresenta evidência consistente ou parcial.'
+    elif len(grupos_com_evidencia) == 1:
+        grupo = grupos_com_evidencia[0]
+        if grupo == 'autonomico':
+            # DFA-α1 sozinho NUNCA decide (item 12/teste G) -- mesmo
+            # sendo o unico grupo com evidencia, fica insuficiente
+            padrao = 'EVIDÊNCIA INSUFICIENTE'
+            motivo = ('apenas DFA-α1 (autonômico, complementar) apresenta evidência — '
+                      'isoladamente não é suficiente para um padrão predominante.')
+        elif grupo == 'cardiorrespiratorio':
+            padrao = 'PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE'
+            motivo = cardio['nota'] + '.'
+        else:
+            padrao = 'PADRÃO PERIFÉRICO PREDOMINANTE'
+            motivo = perif['nota'] + f' (THb: {thb_contexto}, contextual).'
+    else:
+        # 2+ grupos com evidencia -- usa a convergencia temporal JA
+        # calculada (nunca recalculada aqui) para distinguir MISTO/
+        # MULTISSISTEMICA de DISSOCIADAS. Alem do predominante do bloco,
+        # verifica-se tambem se algum grupo e' INTEIRAMENTE 'tardio'
+        # (nenhuma metrica consistente nele) enquanto outro grupo e'
+        # 'forte' -- isso e' o mesmo sinal que "tardia" ja' descreve por
+        # WORK, so' agora ao nivel do grupo: se um grupo so' aparece
+        # tarde, ele esta' temporalmente separado do outro, mesmo que a
+        # classificacao do WORK isolado tenha ficado "parcial".
+        def _grupo_so_tardio(nivel_info, estados_grupo):
+            return nivel_info['nivel'] == 'parcial' and \
+                all(e['estado'] in ('tardio', 'parcial') for e in estados_grupo) and \
+                not any(e['estado'] == 'consistente' for e in estados_grupo)
+
+        avaliacoes = {'cardiorrespiratorio': (cardio, [estados['HR'], estados['RF']]),
+                     'periferico': (perif, [estados['SmO2']]),
+                     'autonomico': (auton, [estados['DFA-α1']])}
+        tem_forte = any(avaliacoes[g][0]['nivel'] == 'forte' for g in grupos_com_evidencia)
+        tem_so_tardio = any(_grupo_so_tardio(*avaliacoes[g]) for g in grupos_com_evidencia)
+
+        if conv_predominante == 'RESPOSTAS DISPERSAS' or (tem_forte and tem_so_tardio):
+            padrao = 'RESPOSTAS DISSOCIADAS'
+            motivo = ('múltiplos grupos apresentam evidência, mas sem agrupamento '
+                      'temporal relevante entre eles — pelo menos um grupo responde '
+                      'consistentemente tarde em relação aos demais.')
+        elif conv_predominante in ('CONVERGÊNCIA TEMPORAL', 'CONVERGÊNCIA PARCIAL'):
+            if len(grupos_com_evidencia) >= 3:
+                padrao = 'RESPOSTA MULTISSISTÊMICA'
+            else:
+                padrao = 'PADRÃO MISTO'
+            nomes_grupos = {'cardiorrespiratorio': 'cardiorrespiratório',
+                            'periferico': 'periférico', 'autonomico': 'autonômico'}
+            motivo = ('componentes ' + ', '.join(nomes_grupos[g] for g in grupos_com_evidencia)
+                      + ' apresentam respostas temporalmente relacionadas.')
+        else:
+            padrao = 'EVIDÊNCIA INSUFICIENTE'
+            motivo = 'múltiplos grupos com evidência, mas convergência temporal insuficiente para diferenciar.'
+
+    return {
+        'bp': bp_nome, 'padrao': padrao, 'motivo': motivo,
+        'evidencia': {
+            'cardiorrespiratorio': {'hr': estados['HR'], 'rf': estados['RF'], **cardio},
+            'periferico': {'smo2': estados['SmO2'], 'thb_contexto': thb_contexto, **perif},
+            'autonomico': {'dfa1': estados['DFA-α1'], **auton},
+        },
+        'convergencia_predominante': conv_predominante,
+        'recovery_coerencia': recovery_coerencia,
+        'rpe_nota': rpe_nota,
+    }
+
+
+def profilage_limiter_sintese(resultado_bp1, resultado_bp2):
+    """Síntese descritiva da sessão -- so' concatena os dois resultados
+    já produzidos por profilage_limiter(), nunca compara BP1 e BP2 numa
+    escala nem atribui causa à transição."""
+    def _frase(r):
+        if not r:
+            return None
+        return f"{r['bp']} apresenta {r['padrao'].lower()}"
+    return {
+        'bp1': _frase(resultado_bp1), 'bp2': _frase(resultado_bp2),
+        'nota': ('Esta análise identifica padrões de resposta fisiológica associados '
+                 'ao WORK. Ela não demonstra causalmente qual sistema limita o '
+                 'desempenho. HR, RF, SmO2, THb e DFA-α1 são marcadores '
+                 'complementares; a convergência entre eles aumenta a coerência '
+                 'do padrão, mas não estabelece causalidade.'),
+    }

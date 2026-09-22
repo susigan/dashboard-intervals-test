@@ -1387,3 +1387,141 @@ def profilage_primeira_divergencia(estrutura, canais, tempo):
                           'primeira divergência: ' + sintese)}
 
     return {'bp1': _bloco_completo('BP1'), 'bp2': _bloco_completo('BP2')}
+
+
+# CONVERGÊNCIA TEMPORAL -- so' le' os resultados JA calculados por
+# profilage_primeira_divergencia() (cada WORK ja tem, por metrica,
+# t_relativo/direccao/status, ja ordenados por tempo); nao recalcula
+# divergencia com outra metodologia.
+#
+# Janela de proximidade: proporcional a duracao do WORK, mesmo estilo
+# ja usado em _terminal() (janela = fracao da duracao, com piso e tecto
+# absolutos, nunca um numero fixo arbitrario de segundos cravado). Nao
+# existia nenhuma convencao de "proximidade temporal" no codigo antes
+# desta etapa -- este e' o criterio novo, documentado aqui.
+def _janela_proximidade(duracao_work_s, fracao=0.15, minimo_s=5, maximo_s=45):
+    return max(minimo_s, min(maximo_s, duracao_work_s * fracao))
+
+
+def profilage_convergencia_temporal(divergencia):
+    """divergencia: o dict ja devolvido por profilage_primeira_divergencia()
+    (com 'bp1'/'bp2', cada um com 'works', cada WORK com
+    'metricas_ordenadas' ja calculadas e ja ordenadas por tempo).
+    """
+    def _analisar_work(w):
+        janela = _janela_proximidade(w['duracao_s'])
+        com_div = [m for m in w['metricas_ordenadas'] if m['status'] == 'ok']
+        sem_div = [m for m in w['metricas_ordenadas'] if m['status'] != 'ok']
+
+        if len(com_div) < 2:
+            return {'numero': w['numero'], 'bp': w['bp'],
+                   'potencia_media': w.get('potencia_media'),
+                   'duracao_s': w['duracao_s'], 'janela_proximidade_s': round(janela, 1),
+                   'classificacao': 'DADOS INSUFICIENTES',
+                   'primeira': com_div[0] if com_div else None,
+                   'grupo_proximo': [], 'tardias': com_div[1:] if com_div else [],
+                   'sem_divergencia': [m['metrica'] for m in sem_div],
+                   'resumo': ('menos de duas métricas com divergência sustentada — '
+                             'não é possível avaliar agrupamento temporal.')}
+
+        primeira = com_div[0]  # ja' vem ordenado por t_relativo (profilage_primeira_divergencia)
+        grupo, tardias = [primeira], []
+        for m in com_div[1:]:
+            if abs(m['t_relativo'] - primeira['t_relativo']) <= janela:
+                grupo.append(m)
+            else:
+                tardias.append(m)
+
+        # matriz temporal simetrica (so' entre as que TEM divergencia)
+        nomes = [m['metrica'] for m in com_div]
+        tempos = {m['metrica']: m['t_relativo'] for m in com_div}
+        matriz = {a: {b: (abs(tempos[a] - tempos[b]) <= janela if a != b else None)
+                     for b in nomes} for a in nomes}
+
+        if len(grupo) == len(com_div) or (len(com_div) >= 3 and len(tardias) <= 1):
+            classificacao = 'CONVERGÊNCIA TEMPORAL'
+        elif len(grupo) >= 2:
+            classificacao = 'CONVERGÊNCIA PARCIAL'
+        else:
+            classificacao = 'RESPOSTAS DISPERSAS'
+
+        partes = []
+        if len(grupo) > 1:
+            partes.append(classificacao.replace('_', ' ').title() + ' entre '
+                         + '/'.join(m['metrica'] for m in grupo))
+        else:
+            partes.append('sem agrupamento temporal claro')
+        if tardias:
+            partes.append((tardias[0]['metrica'] if len(tardias) == 1 else
+                          '/'.join(m['metrica'] for m in tardias))
+                         + ' apresentou resposta tardia')
+        if sem_div:
+            sem_div_txt = []
+            for grupo_status in set(m['status'] for m in sem_div):
+                nomes_grupo = [m['metrica'] for m in sem_div if m['status'] == grupo_status]
+                rotulo = ('sem divergência sustentada' if grupo_status ==
+                         'sem divergência sustentada detectada' else grupo_status.lower())
+                sem_div_txt.append('/'.join(nomes_grupo) + ' — ' + rotulo)
+            partes.append('; '.join(sem_div_txt))
+
+        return {'numero': w['numero'], 'bp': w['bp'],
+               'potencia_media': w.get('potencia_media'), 'duracao_s': w['duracao_s'],
+               'janela_proximidade_s': round(janela, 1), 'classificacao': classificacao,
+               'primeira': primeira, 'grupo_proximo': grupo, 'tardias': tardias,
+               'sem_divergencia': [m['metrica'] for m in sem_div],
+               'matriz': matriz, 'resumo': '; '.join(partes) + '.'}
+
+    def _sintese_bloco(bp_nome, works_analisados):
+        do_bloco = [w for w in works_analisados if w['bp'] == bp_nome]
+        if not do_bloco:
+            return None
+        contagem_class = {}
+        for w in do_bloco:
+            contagem_class[w['classificacao']] = contagem_class.get(w['classificacao'], 0) + 1
+        # frequencia de participacao no grupo proximo, por metrica
+        freq = {}
+        for w in do_bloco:
+            for m in w.get('grupo_proximo') or []:
+                freq[m['metrica']] = freq.get(m['metrica'], 0) + 1
+        n = len(do_bloco)
+        participacao = {nome: f'{cont}/{n}' for nome, cont in freq.items()}
+        predominante = max(contagem_class.items(), key=lambda kv: kv[1])[0] \
+            if contagem_class else 'DADOS INSUFICIENTES'
+        return {'bp': bp_nome, 'n_works': n, 'contagem_classificacao': contagem_class,
+               'padrao_predominante': predominante, 'participacao_por_metrica': participacao}
+
+    works_analisados = []
+    for w in (divergencia.get('bp1') or {}).get('works') or []:
+        works_analisados.append(_analisar_work(w))
+    for w in (divergencia.get('bp2') or {}).get('works') or []:
+        works_analisados.append(_analisar_work(w))
+
+    sintese_bp1 = _sintese_bloco('BP1', works_analisados)
+    sintese_bp2 = _sintese_bloco('BP2', works_analisados)
+
+    # comparacao BP1 x BP2 -- so' descreve se o padrao PREDOMINANTE (a
+    # classificacao mais frequente em cada bloco) e' igual, parcial ou
+    # diferente; nunca atribui causa
+    comparacao = 'dados insuficientes'
+    if sintese_bp1 and sintese_bp2:
+        p1, p2 = sintese_bp1['padrao_predominante'], sintese_bp2['padrao_predominante']
+        ordem = ['CONVERGÊNCIA TEMPORAL', 'CONVERGÊNCIA PARCIAL',
+                'RESPOSTAS DISPERSAS', 'DADOS INSUFICIENTES']
+        if 'DADOS INSUFICIENTES' in (p1, p2):
+            comparacao = 'dados insuficientes'
+        elif p1 == p2:
+            comparacao = 'semelhante'
+        elif abs(ordem.index(p1) - ordem.index(p2)) == 1:
+            comparacao = 'parcialmente semelhante'
+        else:
+            comparacao = 'diferente'
+
+    return {
+        'works': works_analisados,
+        'sintese_bp1': sintese_bp1, 'sintese_bp2': sintese_bp2,
+        'comparacao_bp1_bp2': comparacao,
+        'nota_metodologia': ('proximidade avalia so' + "'" + ' o TEMPO entre as '
+                             'primeiras divergências, nunca o valor ou magnitude da '
+                             'métrica; janela = 15% da duração do WORK (mínimo 5s, '
+                             'máximo 45s).'),
+    }

@@ -2564,6 +2564,14 @@ def registar(app):
             except Exception as e:
                 profilage = {'linhas': [], 'erro': f'{type(e).__name__}: {e}'}
 
+            # DRIFT INTRA-WORK -- so' classifica a direccao das linhas ja
+            # calculadas acima (profilage['linhas']); nao recalcula
+            # ENTRY/EXIT/delta, nao toca em bp1/bp2/estrutura.
+            try:
+                drift = vst.profilage_drift_intra_work(profilage['linhas'])
+            except Exception as e:
+                drift = {'linhas': [], 'erro': f'{type(e).__name__}: {e}'}
+
             # diagnostico de cobertura: o stream (t) cobre mesmo o
             # intervalo de cada bloco? Um "—" na aquecimento ou no ultimo
             # bloco costuma ser isto -- o sensor ainda a estabilizar no
@@ -2688,6 +2696,7 @@ def registar(app):
                 'bp2': {'blocos': estrutura['bp2'], 'metricas': bp2_m,
                        'verificacao': r_bp2},
                 'profilage': profilage,
+                'profilage_drift': drift,
                 'recuperacoes': recuperacoes,
                 'recuperacoes_1min': recuperacoes_1min,
                 'recuperacao_final': recuperacao_final,

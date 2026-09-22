@@ -1259,3 +1259,122 @@ def profilage_accumulation(linhas):
         'convergencia_bp1': _convergencia(bp1),
         'convergencia_bp2': _convergencia(bp2),
     }
+
+
+# PRIMEIRA DIVERGÊNCIA TEMPORAL -- usa os MESMOS dados temporais ja
+# usados pelos graficos Power x HR/RF/SmO2/THb/DFA1 (canais/tempo, os
+# streams reais da sessao, ja passados a metricas_intervalo em toda a
+# tab). Reaproveita _serie_na_janela() para extrair a serie real dentro
+# de cada WORK, e a MESMA metodologia de baseline de _metricas_variavel
+# (media do primeiro quarto de pontos -- nao o primeiro ponto isolado).
+#
+# Sustentacao: uma divergencia so' conta se, a partir do ponto onde o
+# desvio ultrapassa o limiar (os MESMOS limiares absolutos ja definidos
+# em LIMIAR_ABSOLUTO_ACCUMULATION -- nao um criterio novo), pelo menos
+# 70% dos pontos restantes do WORK ficam do mesmo lado. Isto e' o
+# criterio que evita um pico isolado: um unico ponto fora nunca basta,
+# porque teria de "arrastar" a maioria dos pontos seguintes consigo.
+
+FRACAO_SUSTENTACAO_DIVERGENCIA = 0.70
+MIN_PONTOS_DIVERGENCIA = 6  # abaixo disto nao ha' dados para provar sustentacao
+
+
+def _primeira_divergencia_canal(serie, baseline, limiar_absoluto):
+    """serie: [(t,v), ...] real, ja sem None (de _serie_na_janela).
+    baseline: valor de referencia (mesma janela inicial de
+    _metricas_variavel -- passada por fora, nao recalculada aqui).
+    Devolve o primeiro (t, v) cujo desvio sustenta-se por >=70% dos
+    pontos seguintes, ou None se nao houver.
+    """
+    if len(serie) < MIN_PONTOS_DIVERGENCIA:
+        return {'status': 'DADOS INSUFICIENTES'}
+    for i, (t_i, v_i) in enumerate(serie):
+        desvio = v_i - baseline
+        if abs(desvio) < limiar_absoluto:
+            continue
+        sinal = 1 if desvio > 0 else -1
+        resto = serie[i:]
+        if len(resto) < 3:
+            continue
+        concordam = sum(1 for _, v in resto if (v - baseline) * sinal > 0)
+        if concordam / len(resto) >= FRACAO_SUSTENTACAO_DIVERGENCIA:
+            return {'status': 'ok', 't': round(t_i, 1), 'valor': round(v_i, 2),
+                   'baseline': round(baseline, 2),
+                   'direccao': '↑' if sinal > 0 else '↓',
+                   'n_pontos_apos': len(resto)}
+    return {'status': 'sem divergência sustentada detectada'}
+
+
+def profilage_primeira_divergencia(estrutura, canais, tempo):
+    """Para cada WORK de BP1/BP2 (nunca o residual), para cada canal
+    fisiologico, encontra o primeiro momento de divergencia sustentada
+    dentro do proprio WORK, ordenado por tempo. Reaproveita
+    metricas_intervalo() so' para obter o 'inicial' (baseline), e
+    _serie_na_janela() para a serie real -- nenhuma nova aquisicao de
+    dados, nenhum novo calculo de baseline.
+    """
+    canais_fis = (('hr', 'HR', 'heartrate'), ('respiracao', 'RF', 'respiration'),
+                 ('smo2', 'SmO2', 'smo2'), ('thb', 'THb', 'thb'),
+                 ('dfa1', 'DFA-α1', 'dfa_a1'))
+
+    def _works_do_bloco(bp_nome):
+        return sorted([b for b in (estrutura.get(bp_nome.lower()) or [])],
+                     key=lambda b: b['t0'])
+
+    def _analisar_work(bloco, numero, bp_nome):
+        t0, t1 = bloco['t0'], bloco['t1']
+        m = metricas_intervalo(canais, tempo, t0, t1, bloco.get('watts_medio_da_api'))
+        resultados = []
+        for chave, nome, chave_canal in canais_fis:
+            info = m.get(chave) or {}
+            if not info.get('ok'):
+                resultados.append({'metrica': nome, 'status': 'DADOS INSUFICIENTES'})
+                continue
+            baseline = info['inicial']
+            serie = _serie_na_janela(tempo, canais.get(chave_canal) or [], t0, t1)
+            limiar = LIMIAR_ABSOLUTO_ACCUMULATION[chave]
+            div = _primeira_divergencia_canal(serie, baseline, limiar)
+            if div['status'] == 'ok':
+                resultados.append({'metrica': nome, 'status': 'ok',
+                                   't_relativo': round(div['t'] - t0, 1),
+                                   'valor_inicial': baseline, 'valor_no_momento': div['valor'],
+                                   'direccao': div['direccao']})
+            else:
+                resultados.append({'metrica': nome, 'status': div['status']})
+        # ordenar: as que tem 'ok' primeiro, por t_relativo crescente;
+        # as sem divergencia/insuficientes vao depois, nessa ordem
+        resultados.sort(key=lambda r: (r['status'] != 'ok',
+                                       r.get('t_relativo', float('inf'))))
+        return {
+            'numero': numero, 'bp': bp_nome,
+            'potencia_media': (m.get('potencia') or {}).get('media')
+                              if (m.get('potencia') or {}).get('ok') else None,
+            'duracao_s': round(t1 - t0, 1),
+            'metricas_ordenadas': resultados,
+            'nota_power': ('WORK a potência sustentada (não em rampa) — a '
+                          'divergência encontrada não é explicada por uma '
+                          'mudança de carga dentro do próprio WORK; se a '
+                          'potência real não for constante, este contexto '
+                          'não permite separar isso automaticamente.'),
+        }
+
+    def _bloco_completo(bp_nome):
+        works = _works_do_bloco(bp_nome)
+        if not works:
+            return None
+        analisados = [_analisar_work(b, i + 1, bp_nome) for i, b in enumerate(works)]
+        # sintese: qual metrica aparece mais vezes em 1o lugar (com status 'ok')
+        primeiras = [w['metricas_ordenadas'][0]['metrica'] for w in analisados
+                    if w['metricas_ordenadas'] and w['metricas_ordenadas'][0]['status'] == 'ok']
+        sintese = 'dados insuficientes'
+        if primeiras:
+            contagem = {m: primeiras.count(m) for m in set(primeiras)}
+            maxc = max(contagem.values())
+            top = [m for m, n in contagem.items() if n == maxc]
+            sintese = (f'{top[0]} apareceu primeiro em {maxc} de {len(analisados)} WORKs'
+                      if len(top) == 1 else 'empate / padrão misto')
+        return {'bp': bp_nome, 'works': analisados,
+               'sintese': ('métrica que mais frequentemente apresentou '
+                          'primeira divergência: ' + sintese)}
+
+    return {'bp1': _bloco_completo('BP1'), 'bp2': _bloco_completo('BP2')}

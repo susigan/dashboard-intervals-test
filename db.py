@@ -12,6 +12,7 @@ Tabelas
 import os
 import json
 import zlib
+import threading
 from datetime import datetime, date
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -20,6 +21,13 @@ SQLITE_PATH = os.getenv("SQLITE_PATH", "/tmp/intervals.db").strip()
 DRIVER = None      # 'postgres' | 'sqlite' | None
 ENABLED = False
 _conn = None
+_lock = threading.RLock()  # a ligacao (Postgres ou SQLite) e' UMA so, partilhada
+# por todos os pedidos Flask; psycopg nao e seguro para dois cursores
+# executarem ao mesmo tempo na mesma ligacao -- sem isto, dois pedidos
+# simultaneos batem um no outro e o segundo apanha
+# "another command is already in progress" (ou, do lado do servidor,
+# "SSL error: unexpected eof" / "connection reset by peer", porque o
+# protocolo fica com o estado trocado a meio de uma query).
 
 # Colunas da tabela activities pela ordem do INSERT
 COLS = ['id', 'athlete_id', 'date', 'start_local', 'type_raw', 'type', 'name',
@@ -32,30 +40,31 @@ COLS = ['id', 'athlete_id', 'date', 'start_local', 'type_raw', 'type', 'name',
 
 def _connect():
     global _conn, DRIVER, ENABLED
-    if _conn is not None:
-        return _conn
+    with _lock:
+        if _conn is not None:
+            return _conn
 
-    if DATABASE_URL:
+        if DATABASE_URL:
+            try:
+                import psycopg
+                url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+                _conn = psycopg.connect(url, autocommit=True)
+                DRIVER, ENABLED = 'postgres', True
+                print("DB: Postgres ligado")
+                return _conn
+            except Exception as e:
+                print(f"DB: Postgres indisponivel ({e})")
+
         try:
-            import psycopg
-            url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-            _conn = psycopg.connect(url, autocommit=True)
-            DRIVER, ENABLED = 'postgres', True
-            print("DB: Postgres ligado")
+            import sqlite3
+            _conn = sqlite3.connect(SQLITE_PATH, check_same_thread=False)
+            _conn.execute("PRAGMA journal_mode=WAL")
+            DRIVER, ENABLED = 'sqlite', True
+            print(f"DB: SQLite em {SQLITE_PATH}")
             return _conn
         except Exception as e:
-            print(f"DB: Postgres indisponivel ({e})")
-
-    try:
-        import sqlite3
-        _conn = sqlite3.connect(SQLITE_PATH, check_same_thread=False)
-        _conn.execute("PRAGMA journal_mode=WAL")
-        DRIVER, ENABLED = 'sqlite', True
-        print(f"DB: SQLite em {SQLITE_PATH}")
-        return _conn
-    except Exception as e:
-        print(f"DB: sem persistencia ({e}) — a usar a API directamente")
-        DRIVER, ENABLED = None, False
+            print(f"DB: sem persistencia ({e}) — a usar a API directamente")
+            DRIVER, ENABLED = None, False
         return None
 
 
@@ -68,9 +77,30 @@ def _q(sql):
 
 
 def _exec(sql, params=None, fetch=None, many=None):
-    conn = _connect()
-    if conn is None:
-        return None
+    with _lock:
+        conn = _connect()
+        if conn is None:
+            return None
+        try:
+            return _exec_uma_vez(conn, sql, params, fetch, many)
+        except Exception as e:
+            # a ligacao pode ter morrido entretanto (idle timeout do
+            # lado do servidor, "connection reset by peer" visto nos
+            # logs do Postgres) -- sem isto, _conn ficava em cache para
+            # sempre e TODOS os pedidos seguintes falhavam ate' a app
+            # reiniciar. Tenta-se UMA reconexao; se falhar outra vez,
+            # o erro sobe normalmente.
+            global _conn
+            print(f"DB: query falhou ({type(e).__name__}: {e}) — "
+                  f"a tentar reconectar")
+            _conn = None
+            conn = _connect()
+            if conn is None:
+                raise
+            return _exec_uma_vez(conn, sql, params, fetch, many)
+
+
+def _exec_uma_vez(conn, sql, params, fetch, many):
     cur = conn.cursor()
     try:
         if many is not None:

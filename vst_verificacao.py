@@ -393,6 +393,9 @@ def estruturar_protocolo(blocos):
         aviso = (aviso + ' ' + aviso_curto) if aviso else aviso_curto
 
     return {'aquecimento': aquecimento, 'bp1': bp1, 'bp2': bp2,
+            'excluidos': resto[7:],  # nao classificados em nenhum BP --
+            # so' exposto para auditoria (secao 5 do pedido); a regra de
+            # corte em si (resto[:4]/resto[4:7]) nao foi tocada aqui
             'duracao_curta': [{'t0': b['t0'], 't1': b['t1'],
                               'duracao_s': round(b['t1'] - b['t0'], 1),
                               'watts_medio_da_api': b.get('watts_medio_da_api'),
@@ -1008,3 +1011,59 @@ def comparar_rpe(dia1_rpe_base, dia1_rpe_alvo, dia2_rpes_bloco):
         'dia2': {'inicial': d2_inicial, 'final': d2_final, 'delta': delta2, 'direccao': dir2,
                 'valores': validos_d2, 'maior_salto': maior_salto},
     }
+
+
+def profilage_estrutura_works(estrutura, canais, tempo):
+    """PROFILAGE — auditoria + ENTRY/EXIT por WORK, a partir da estrutura
+    já classificada por estruturar_protocolo() -- NÃO reclassifica nada,
+    só percorre aquecimento/bp1/bp2/excluidos (nesta ordem temporal) e
+    reaproveita metricas_intervalo() (já existente, usada em toda a
+    comparação Dia1×Dia2) para cada bloco.
+
+    ENTRY = 'inicial' de cada canal (já calculado por metricas_intervalo,
+    via _metricas_variavel — janela terminal no INÍCIO do intervalo).
+    EXIT  = 'final' do mesmo canal (janela terminal no FIM).
+    Δ (EXIT-ENTRY) = 'delta', também já calculado ali — não recalculado
+    aqui, só relido do mesmo dict.
+
+    Devolve {'linhas': [...]}, uma linha por WORK/aquecimento, cada uma
+    já com auditoria + entry + exit + delta prontos para tabela.
+    """
+    linhas = []
+    ordem = 1
+
+    def _linha(bloco, tipo, bp):
+        nonlocal ordem
+        m = metricas_intervalo(canais, tempo, bloco['t0'], bloco['t1'],
+                               bloco.get('watts_medio_da_api'))
+        canais_fis = ('hr', 'respiracao', 'smo2', 'thb', 'dfa1')
+        entry, exit_, delta = {}, {}, {}
+        for c in canais_fis:
+            v = m.get(c) or {}
+            entry[c] = v.get('inicial') if v.get('ok') else None
+            exit_[c] = v.get('final') if v.get('ok') else None
+            delta[c] = v.get('delta') if v.get('ok') else None
+        linha = {
+            'ordem': ordem, 'tipo': tipo, 'bp': bp,
+            't0': bloco['t0'], 't1': bloco['t1'],
+            'duracao_s': round(bloco['t1'] - bloco['t0'], 1),
+            'duracao_curta': bool(bloco.get('duracao_curta')),
+            'potencia_media': (m.get('potencia') or {}).get('media')
+                              if (m.get('potencia') or {}).get('ok') else None,
+            'entry': entry, 'exit': exit_, 'delta': delta,
+        }
+        linhas.append(linha)
+        ordem += 1
+        return linha
+
+    if estrutura.get('aquecimento'):
+        _linha(estrutura['aquecimento'], 'AQUECIMENTO', None)
+    for b in estrutura.get('bp1') or []:
+        _linha(b, 'WORK', 'BP1')
+    for b in estrutura.get('bp2') or []:
+        _linha(b, 'WORK', 'BP2')
+    for b in estrutura.get('excluidos') or []:
+        _linha(b, 'WORK', None)  # nao classificado -- ver aviso da estrutura
+
+    return {'linhas': linhas, 'aviso_estrutura': estrutura.get('aviso'),
+           'n_excluidos': len(estrutura.get('excluidos') or [])}

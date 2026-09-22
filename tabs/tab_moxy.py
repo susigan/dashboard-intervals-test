@@ -483,7 +483,7 @@ BODY = """
     <div id="mxProfilageDivergencia" style="overflow-x:auto;margin-top:14px;"></div>
     <div class="controls" style="margin-top:8px;">
       <label class="sel">WORK
-        <select id="mxDivWork" onchange="mxProfilageDivGrafico()"></select>
+        <select id="mxDivWork" onchange="mxProfilageDivGrafico();mxProfilageConvTimeline();"></select>
       </label>
       <label class="sel">Métrica
         <select id="mxDivMetrica" onchange="mxProfilageDivGrafico()">
@@ -495,6 +495,12 @@ BODY = """
     </div>
     <div class="chartbox"><div class="legend"><span>Primeira divergência dentro do WORK</span></div>
       <canvas id="chMxDivergencia" height="180"></canvas></div>
+
+    <h3 style="font-size:14px;margin-top:20px;">PROFILAGE — Convergência temporal</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Quando uma métrica diverge primeiro, as outras divergem numa janela temporal próxima? Isto é descritivo — não identifica causa nem "limitador".</p>
+    <div class="chartbox"><div class="legend"><span>Linha temporal — WORK seleccionado acima</span></div>
+      <canvas id="chMxConvTimeline" height="130"></canvas></div>
+    <div id="mxProfilageConvergencia" style="overflow-x:auto;margin-top:10px;"></div>
 
     <h3 style="font-size:14px;margin-top:16px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
@@ -2015,6 +2021,7 @@ function mxVstCarregar(){
   mxProfilageDriftMostrar(d);
   mxProfilageAccMostrar(d);
   mxProfilageDivMostrar(d);
+  mxProfilageConvMostrar(d);
   mxVstPopularMoxySelect();
   mxVstCarregarConjunto(id);
 
@@ -2901,6 +2908,135 @@ function mxProfilageDivGrafico(){
 
  g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='left';
  g.fillText('linha esquemática — série temporal bruta não exibida (ENTRY/divergência/EXIT apenas)', 8, H-4);
+}
+
+let MX_CONV_ULT = null;
+
+// CONVERGÊNCIA TEMPORAL -- le' so' d.profilage_convergencia (ja
+// calculado por profilage_convergencia_temporal, que so' relê a
+// primeira divergência já calculada; nada recalculado aqui).
+function mxProfilageConvMostrar(d){
+ const box=document.getElementById('mxProfilageConvergencia');
+ if(!box) return;
+ MX_CONV_ULT = d.profilage_convergencia || null;
+ const conv=MX_CONV_ULT;
+ if(!conv || !conv.works || !conv.works.length){ box.innerHTML=''; return; }
+
+ function corClass(c){
+  if(c==='CONVERGÊNCIA TEMPORAL') return '#3FB950';
+  if(c==='CONVERGÊNCIA PARCIAL') return '#F4D03F';
+  if(c==='RESPOSTAS DISPERSAS') return '#F0883E';
+  return '#8b949e';
+ }
+ function corBP(bp){ return bp==='BP1'?'#5DADE2':'#F0883E'; }
+
+ let h='<b style="font-size:12px;">Convergência por WORK</b>'
+  +'<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
+  +'<tr class="sub" style="text-align:left;"><th style="padding:3px 10px 3px 0;">WORK</th>'
+  +'<th style="padding:3px 10px;">Power</th><th style="padding:3px 10px;">Janela prox.</th>'
+  +'<th style="padding:3px 10px;">Classificação</th><th style="padding:3px 10px;">Resumo</th></tr>';
+ conv.works.forEach(function(w){
+  h+='<tr style="border-top:1px solid #21262d;">'
+   +'<td style="padding:3px 10px 3px 0;color:'+corBP(w.bp)+';">'+w.bp+' W'+w.numero+'</td>'
+   +'<td style="padding:3px 10px;">'+(w.potencia_media!=null?Math.round(w.potencia_media)+'W':'—')+'</td>'
+   +'<td style="padding:3px 10px;">'+w.janela_proximidade_s+'s</td>'
+   +'<td style="padding:3px 10px;color:'+corClass(w.classificacao)+';"><b>'+w.classificacao+'</b></td>'
+   +'<td style="padding:3px 10px;font-size:10px;">'+w.resumo+'</td></tr>';
+ });
+ h+='</table>';
+
+ // matriz temporal do WORK actualmente seleccionado no selector partilhado
+ const selWork=document.getElementById('mxDivWork');
+ const sel=selWork?selWork.value:null;
+ if(sel){
+  const [bpNome, numeroStr]=sel.split('|');
+  const numero=parseInt(numeroStr,10);
+  const w=conv.works.find(x=>x.bp===bpNome && x.numero===numero);
+  if(w && w.matriz){
+   const nomes=Object.keys(w.matriz);
+   h+='<div style="margin-top:10px;"><b style="font-size:12px;">Matriz temporal — '+bpNome+' W'+numero+'</b>'
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
+    +'<tr><th style="padding:3px 8px;"></th>'+nomes.map(n=>'<th style="padding:3px 8px;">'+n+'</th>').join('')+'</tr>';
+   nomes.forEach(function(a){
+    h+='<tr><td style="padding:3px 8px;color:#8b949e;">'+a+'</td>'
+     +nomes.map(function(b){
+       const v=w.matriz[a][b];
+       if(v===null) return '<td style="padding:3px 8px;text-align:center;color:#484f58;">—</td>';
+       return '<td style="padding:3px 8px;text-align:center;color:'+(v?'#3FB950':'#8b949e')+';">'+(v?'✓':'-')+'</td>';
+      }).join('')
+     +'</tr>';
+   });
+   h+='</table></div>';
+  }
+ }
+
+ function sinteseBloco(s){
+  if(!s) return '<p class="sub" style="font-size:11px;">sem WORKs neste bloco.</p>';
+  const dist=Object.entries(s.contagem_classificacao).map(([k,v])=>k+': '+v).join(' · ');
+  const partic=Object.entries(s.participacao_por_metrica).map(([k,v])=>k+' '+v).join(' · ')||'—';
+  return '<p style="font-size:11px;margin:2px 0;"><b>'+s.bp+'</b> ('+s.n_works+' WORKs) — padrão predominante: '
+   +'<b style="color:'+corClass(s.padrao_predominante)+';">'+s.padrao_predominante+'</b><br>'
+   +'<span class="sub" style="font-size:10px;">'+dist+'</span><br>'
+   +'<span class="sub" style="font-size:10px;">participação no grupo próximo: '+partic+'</span></p>';
+ }
+ h+='<div style="margin-top:10px;"><b style="font-size:12px;">Síntese por bloco</b>'
+  +sinteseBloco(conv.sintese_bp1)+sinteseBloco(conv.sintese_bp2)
+  +'<p style="font-size:11px;margin-top:4px;"><b>BP1 × BP2:</b> padrão temporal '+conv.comparacao_bp1_bp2+'.</p>'
+  +'<p class="sub" style="font-size:10px;">'+conv.nota_metodologia+'</p></div>';
+
+ box.innerHTML=h;
+ mxProfilageConvTimeline();
+}
+
+// linha temporal com TODAS as metricas do WORK seleccionado (reaproveita
+// o mesmo selector mxDivWork da Primeira Divergência) -- substitui
+// visualmente o antigo grafico de 1 metrica por uma visao completa;
+// a tabela de Primeira Divergência (mxProfilageDivergencia) e o grafico
+// ENTRY->divergência->EXIT de 1 métrica continuam intactos ao lado.
+function mxProfilageConvTimeline(){
+ const o=ctx('chMxConvTimeline',130); if(!o) return;
+ const g=o.g, W=o.W, H=o.H;
+ g.clearRect(0,0,W,H);
+ const conv=MX_CONV_ULT;
+ const sel=(document.getElementById('mxDivWork')||{}).value;
+ if(!conv || !sel){ noData(g,W,H,'sem dados'); return; }
+ const [bpNome, numeroStr]=sel.split('|');
+ const numero=parseInt(numeroStr,10);
+ const w=conv.works.find(x=>x.bp===bpNome && x.numero===numero);
+ if(!w){ noData(g,W,H,'WORK não encontrado'); return; }
+ const comDiv=(w.grupo_proximo||[]).concat(w.tardias||[]);
+ if(!comDiv.length){ noData(g,W,H,'nenhuma métrica com divergência sustentada'); return; }
+
+ const PL=16,PR=16,PT=26,PB=16,ww=W-PL-PR;
+ const tMax=Math.max.apply(null,comDiv.map(m=>m.t_relativo))*1.15;
+ const X=t=>PL+(t/tMax)*ww;
+ const yLinha=PT+(H-PT-PB)/2;
+
+ g.strokeStyle='#30363d'; g.lineWidth=1;
+ g.beginPath(); g.moveTo(PL,yLinha); g.lineTo(PL+ww,yLinha); g.stroke();
+ g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='left';
+ g.fillText('0s', PL, yLinha+18);
+ g.textAlign='right';
+ g.fillText(Math.round(tMax)+'s', PL+ww, yLinha+18);
+
+ const ordenados=comDiv.slice().sort((a,b)=>a.t_relativo-b.t_relativo);
+ ordenados.forEach(function(m,i){
+  const x=X(m.t_relativo);
+  const noGrupo=(w.grupo_proximo||[]).some(g2=>g2.metrica===m.metrica);
+  const cor = noGrupo?'#3FB950':'#F0883E';
+  g.strokeStyle=cor; g.lineWidth=2;
+  g.beginPath(); g.moveTo(x,yLinha-6); g.lineTo(x,yLinha+6); g.stroke();
+  g.fillStyle=cor;
+  g.beginPath(); g.arc(x,yLinha,3,0,7); g.fill();
+  g.font='10px sans-serif'; g.textAlign='center';
+  const acima = i%2===0;
+  g.fillText(m.metrica+' '+m.direccao, x, acima?yLinha-14:yLinha+28);
+  g.font='9px sans-serif'; g.fillStyle='#8b949e';
+  g.fillText(m.t_relativo+'s', x, acima?yLinha-26:yLinha+40);
+ });
+ g.lineWidth=1;
+ g.textAlign='left'; g.fillStyle='#8b949e'; g.font='9px sans-serif';
+ g.fillText('verde = no grupo próximo · laranja = resposta tardia', PL, PT-12);
 }
 
 function mxVstAuditoriaRecovery(titulo, comp){

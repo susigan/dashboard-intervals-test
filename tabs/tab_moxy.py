@@ -2900,7 +2900,7 @@ function mxProfilageDivGrafico(){
  g.lineWidth=1;
 
  g.fillStyle='#8b949e'; g.font='9px sans-serif'; g.textAlign='left';
- g.fillText('linha indicativa entre ENTRY/divergência/EXIT (não a curva bruta — o backend não a envia)', 8, H-4);
+ g.fillText('linha esquemática — série temporal bruta não exibida (ENTRY/divergência/EXIT apenas)', 8, H-4);
 }
 
 function mxVstAuditoriaRecovery(titulo, comp){

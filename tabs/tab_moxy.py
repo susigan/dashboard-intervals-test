@@ -3555,6 +3555,13 @@ function mxHipoteseMostrar(d){
   if(h.hipotese){
    html+='<p style="font-size:11px;margin:6px 0 2px;"><b>Hipótese:</b> '+h.hipotese+'</p>';
   }
+  if(h.metrica_primaria){
+   html+='<p style="font-size:11px;margin:2px 0;"><b>Métrica primária:</b> <b style="color:#5DADE2;">'+h.metrica_primaria+'</b></p>';
+  }
+  if(h.metricas_secundarias && h.metricas_secundarias.length){
+   const sec=h.metricas_secundarias.filter(Boolean);
+   if(sec.length) html+='<p style="font-size:11px;margin:2px 0;"><b>Métricas secundárias:</b> '+sec.join(' · ')+'</p>';
+  }
   if(h.alvo_potencial){
    html+='<p style="font-size:11px;margin:2px 0;"><b>Alvo potencial:</b> '+h.alvo_potencial+'</p>';
   }

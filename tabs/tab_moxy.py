@@ -461,6 +461,7 @@ BODY = """
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Auditoria da estrutura de intervalos e resposta fisiológica dentro de cada WORK (entrada → saída) — etapa fundacional, separada da comparação Dia 1 × Dia 2 abaixo.</p>
     <div id="mxProfilageEstrutura" style="overflow-x:auto;"></div>
     <div id="mxProfilageEntryExit" style="overflow-x:auto;margin-top:10px;"></div>
+    <div id="mxProfilageDrift" style="overflow-x:auto;margin-top:14px;"></div>
 
     <h3 style="font-size:14px;margin-top:16px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
@@ -1978,6 +1979,7 @@ function mxVstCarregar(){
   mxDesenharVstTiming(d);
   mxVstRpe(id);
   mxProfilageMostrar(d);
+  mxProfilageDriftMostrar(d);
   mxVstPopularMoxySelect();
   mxVstCarregarConjunto(id);
 
@@ -2579,6 +2581,63 @@ function mxProfilageMostrar(d){
  h2+='</table>'
   +'<p class="sub" style="font-size:10px;margin-top:4px;">ENTRY = valor inicial do WORK, EXIT = valor final — mesma janela terminal já usada no resto da comparação Dia1×Dia2. Isto é só a mudança dentro de cada WORK, não uma tendência entre WORKs (isso é uma etapa futura).</p>';
  boxEE.innerHTML=h2;
+}
+
+// DRIFT INTRA-WORK -- le' so' d.profilage_drift (ja calculado no backend
+// por profilage_drift_intra_work, que reaproveita _direccao() e o mesmo
+// limiar de 2% ja usados em comparar_bp). Cada canal fica separado,
+// nunca combinado num score.
+function mxProfilageDriftMostrar(d){
+ const box=document.getElementById('mxProfilageDrift');
+ if(!box) return;
+ const drift=d.profilage_drift||{};
+ const linhas=drift.linhas||[];
+ if(!linhas.length){ box.innerHTML=''; return; }
+
+ const canais=[['hr','HR'],['respiracao','RF'],['smo2','SmO2'],
+              ['thb','THb'],['dfa1','DFA-α1']];
+ function corBP(bp){ return bp==='BP1'?'#5DADE2':(bp==='BP2'?'#F0883E':'#8b949e'); }
+ function fmtCelula(l, chave){
+  const en=l.entry[chave], ex=l.exit[chave], dir=l.direccao[chave];
+  if(en==null || ex==null) return '<span style="color:#8b949e;">dados insuficientes</span>';
+  const cor = dir==='↑'?'#3FB950':(dir==='↓'?'#F0883E':'#8b949e');
+  return en.toFixed(1)+'→'+ex.toFixed(1)+' <b style="color:'+cor+';">'+dir+'</b>';
+ }
+
+ let h='<b style="font-size:12px;">DRIFT — resposta dentro do WORK</b>'
+  +'<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
+  +'<tr class="sub" style="text-align:left;"><th style="padding:3px 10px 3px 0;">WORK</th>'
+  +'<th style="padding:3px 10px;">BP</th><th style="padding:3px 10px;">Power</th>'
+  +canais.map(c=>'<th style="padding:3px 10px;">'+c[1]+'</th>').join('')+'</tr>';
+ linhas.forEach(function(l){
+  h+='<tr style="border-top:1px solid #21262d;">'
+   +'<td style="padding:3px 10px 3px 0;">#'+l.ordem+'</td>'
+   +'<td style="padding:3px 10px;color:'+corBP(l.bp)+';">'+(l.bp||'—')+'</td>'
+   +'<td style="padding:3px 10px;">'+(l.potencia_media!=null?Math.round(l.potencia_media)+'W':'—')+'</td>'
+   +canais.map(c=>'<td style="padding:3px 10px;">'+fmtCelula(l,c[0])+'</td>').join('')
+   +'</tr>';
+ });
+ h+='</table>'
+  +'<p class="sub" style="font-size:10px;margin-top:4px;">↑/↓ = mudança acima de 2% (mesmo limiar já usado na comparação Dia1×Dia2) · → = dentro dessa faixa, tratado como estável · isto descreve a direcção, não interpreta causa.</p>';
+
+ // sintese descritiva BP1 x BP2 -- nunca um score, so descreve o que se
+ // ve nas direccoes predominantes de cada canal dentro do bloco
+ function _linhaSintese(s){
+  if(!s) return '<p class="sub" style="font-size:11px;">sem WORKs neste bloco.</p>';
+  const partes=canais.map(function(c){
+   const info=s.por_canal[c[0]];
+   if(!info) return null;
+   const pred=info.predominante;
+   const cor = pred==='↑'?'#3FB950':(pred==='↓'?'#F0883E':(pred==='misto'?'#F4D03F':'#8b949e'));
+   return c[1]+' <b style="color:'+cor+';">'+pred+'</b>';
+  }).filter(Boolean).join(' · ');
+  return '<p style="font-size:11px;margin:2px 0;"><b>'+s.bp+'</b> ('+s.n_works+' WORKs): '+partes+'</p>';
+ }
+ h+='<div style="margin-top:10px;"><b style="font-size:12px;">Comparação BP1 × BP2 — síntese descritiva</b>'
+  +_linhaSintese(drift.sintese_bp1)+_linhaSintese(drift.sintese_bp2)
+  +'<p class="sub" style="font-size:10px;">direcção predominante = a que aparece em mais WORKs desse bloco para aquele canal; "misto" = empate entre direcções. Isto é descritivo — não é um score de BP1 vs BP2.</p></div>';
+
+ box.innerHTML=h;
 }
 
 function mxVstAuditoriaRecovery(titulo, comp){

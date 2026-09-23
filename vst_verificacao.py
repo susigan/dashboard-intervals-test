@@ -2164,6 +2164,86 @@ ESTILOS_DE_TREINO = {
                               'menor acumulação entre WORKs; recovery igual ou melhor.'),
         'padroes_indicados': ['RESPOSTA MULTISSISTÊMICA'],
     },
+    # ---- novos estilos (item 6 do pedido) ----
+    'progressivo': {
+        'nome': 'Progressivo',
+        'tipo': 'Progressivo',
+        'intensidade': 'entrada controlada → aumento gradual → sustentação próxima de BP2',
+        'recuperacao': 'passiva no final (se intervalado) ou contínuo',
+        'objetivo': ('Verificar em que ponto os sinais começam a divergir e '
+                     'se esse ponto pode ser deslocado com o treino.'),
+        'estrutura': 'entrada em intensidade abaixo de BP1 → progressão gradual '
+                     '→ chegar e manter próximo de BP2 → observar DRIFT e primeira divergência',
+        'ancoras': ['BP1', 'BP2', 'entre BP1 e BP2'],
+        'o_que_observar': ['primeira divergência', 'convergência temporal', 'DRIFT', 'RPE'],
+        'resposta_esperada': ('divergência ocorrendo a uma intensidade maior, '
+                              'ou mais tarde em cada bloco, comparado à VST de referência.'),
+        'padroes_indicados': ['PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE',
+                              'PADRÃO PERIFÉRICO PREDOMINANTE',
+                              'RESPOSTA MULTISSISTÊMICA'],
+    },
+    'inicio_forte': {
+        'nome': 'Início forte → sustentação',
+        'tipo': 'Intervalado',
+        'intensidade': 'entrada acima de BP2 → sustentação entre BP1 e BP2',
+        'recuperacao': 'completa entre repetições',
+        'objetivo': ('Testar tolerância após entrada forte e capacidade de '
+                     'estabilização fisiológica subsequente.'),
+        'estrutura': 'início acima de BP2 por período curto → redução para entre BP1 e BP2 '
+                     '→ sustentar → recuperação completa → repetir',
+        'ancoras': ['acima de BP2', 'entre BP1 e BP2'],
+        'o_que_observar': ['HR', 'RF', 'SmO2', 'primeira divergência após a transição',
+                           'Recovery', 'RPE'],
+        'resposta_esperada': ('estabilização mais rápida dos sinais após a entrada forte; '
+                              'DRIFT menor na fase de sustentação.'),
+        'padroes_indicados': ['PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE',
+                              'RESPOSTA MULTISSISTÊMICA'],
+    },
+    'acumulacao_progressiva': {
+        'nome': 'Acumulação progressiva',
+        'tipo': 'Volume incremental',
+        'intensidade': 'intensidade similar à do protocolo VST (BP1/BP2)',
+        'recuperacao': 'moderada entre sessões/blocos; não testado num único esforço',
+        'objetivo': ('Testar se o atleta consegue acumular mais tempo total '
+                     'antes da primeira divergência ou antes de exceder o DRIFT tolerável.'),
+        'estrutura': 'manter intensidade próxima de BP1 → aumentar progressivamente '
+                     'a duração total → observar quando divergência aparece',
+        'ancoras': ['próximo de BP1', 'entre BP1 e BP2'],
+        'o_que_observar': ['ACCUMULATION', 'DRIFT', 'primeira divergência',
+                           'ENTRY de cada WORK', 'Recovery', 'RPE'],
+        'resposta_esperada': ('tempo até primeira divergência aumentando; '
+                              'menor progressão de HR/RF/SmO2 por unidade de tempo acumulado.'),
+        'padroes_indicados': ['PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE',
+                              'PADRÃO PERIFÉRICO PREDOMINANTE',
+                              'RESPOSTA MULTISSISTÊMICA'],
+    },
+    'tiros_curtos': {
+        'nome': 'Tiros curtos / intervalos curtos',
+        'tipo': 'Intervalado curto',
+        'intensidade': 'acima de BP2',
+        'recuperacao': 'curta a moderada entre repetições',
+        'objetivo': ('Testar tolerância a esforços de maior intensidade '
+                     'e a qualidade da recuperação entre repetições.'),
+        'estrutura': 'esforço curto acima de BP2 → recuperação curta → repetir; '
+                     'NÃO assumir automaticamente adequação a qualquer LIMITER — '
+                     'sugerido somente quando há padrão de acumulação claro',
+        'ancoras': ['acima de BP2'],
+        'o_que_observar': ['Recovery', 'ENTRY de cada repetição',
+                           'HR', 'RF', 'SmO2', 'RPE'],
+        'resposta_esperada': ('ENTRY das repetições seguintes mais estável; '
+                              'recovery mais consistente entre repetições.'),
+        'padroes_indicados': ['RESPOSTAS DISSOCIADAS'],  # candidato de investigacao
+    },
+}
+
+# mapeamento LIMITER VST → chave em utils/intervencoes.py (aba Intervenções MOXY)
+# usado para verificar concordância/discordância (item 4/13 do pedido)
+_LIMITER_PARA_INTERVENCAO = {
+    'PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE': ['entrega', 'ventilacao', 'cardiaco'],
+    'PADRÃO PERIFÉRICO PREDOMINANTE': ['utilizacao'],
+    'RESPOSTA MULTISSISTÊMICA': ['entrega', 'utilizacao', 'ventilacao'],
+    'RESPOSTAS DISSOCIADAS': [],
+    'EVIDÊNCIA INSUFICIENTE': [],
 }
 
 # Mapeamento padrao → estilos primários e secundários.
@@ -2172,17 +2252,18 @@ ESTILOS_DE_TREINO = {
 _ESTILOS_POR_PADRAO = {
     'PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE': {
         'primarios': ['continuo_sustentado', 'intervalado_recuperacao_completa'],
-        'secundarios': ['over_under', 'bloco_progressivo',
-                        'intervalado_recuperacao_incompleta'],
+        'secundarios': ['over_under', 'bloco_progressivo', 'progressivo',
+                        'intervalado_recuperacao_incompleta', 'acumulacao_progressiva'],
     },
     'PADRÃO PERIFÉRICO PREDOMINANTE': {
         'primarios': ['foco_periferico', 'continuo_sustentado'],
-        'secundarios': ['bloco_progressivo', 'intervalado_recuperacao_completa'],
+        'secundarios': ['bloco_progressivo', 'progressivo',
+                        'acumulacao_progressiva', 'intervalado_recuperacao_completa'],
     },
     'RESPOSTA MULTISSISTÊMICA': {
         'primarios': ['estimulo_multissistemico', 'intervalado_recuperacao_completa'],
-        'secundarios': ['over_under', 'continuo_sustentado',
-                        'intervalado_recuperacao_incompleta'],
+        'secundarios': ['over_under', 'continuo_sustentado', 'progressivo',
+                        'inicio_forte', 'intervalado_recuperacao_incompleta'],
     },
     'RESPOSTAS DISSOCIADAS': {
         'primarios': [],  # nao prescrever automaticamente sem recorrencia
@@ -2193,6 +2274,37 @@ _ESTILOS_POR_PADRAO = {
         'secundarios': [],
     },
 }
+
+
+def concordancia_moxy_vst(padrao_vst, limitador_moxy):
+    """Verifica se o padrão encontrado pela VST é concordante com o
+    limitador identificado pela aba Intervenções MOXY.
+    limitador_moxy: string com a chave (ex: 'entrega', 'utilizacao',
+    'ventilacao', 'cardiaco') ou None quando não disponível.
+    Devolve um dict com status ('concordante'/'discordante'/'parcial'/
+    'sem_dados') e uma nota descritiva.
+    """
+    if not limitador_moxy:
+        return {'status': 'sem_dados',
+                'nota': 'Sem evidência complementar disponível no MOXY/Intervenções.'}
+    chaves_esperadas = _LIMITER_PARA_INTERVENCAO.get(padrao_vst, [])
+    if not chaves_esperadas:
+        return {'status': 'sem_dados',
+                'nota': f'Padrão VST "{padrao_vst}" não tem correspondência '
+                        'directa com a classificação de limitador do MOXY.'}
+    lim = limitador_moxy.lower().strip()
+    if lim in chaves_esperadas:
+        return {'status': 'concordante',
+                'nota': f'Evidência complementar encontrada no MOXY/Intervenções '
+                        f'— achado "{limitador_moxy}" é compatível com o padrão VST.'}
+    if any(c in lim for c in chaves_esperadas) or any(lim in c for c in chaves_esperadas):
+        return {'status': 'parcial',
+                'nota': f'Achado MOXY "{limitador_moxy}" é parcialmente compatível '
+                        'com o padrão VST — manter hipótese aberta.'}
+    return {'status': 'discordante',
+            'nota': f'Achado VST e achado MOXY/Intervenções ("{limitador_moxy}") '
+                    'não são concordantes — manter hipótese aberta, '
+                    'considerar nova verificação.'}
 
 
 def _estilos_para_padrao(padrao, recorrencia_estado, n_modalidades):
@@ -2215,13 +2327,13 @@ def _estilos_para_padrao(padrao, recorrencia_estado, n_modalidades):
     return resultado
 
 
-def profilage_historico_estilos(entradas):
-    """Consome a lista de verificacoes salvas (ja' lidas do DB com
-    padrao_bp1/padrao_bp2/modalidade/analisado_em) e devolve:
+def profilage_historico_estilos(entradas, limitador_moxy=None):
+    """Consome a lista de verificacoes salvas e devolve:
     - padroes recorrentes globais e por modalidade;
-    - biblioteca de estilos para a sessao actual e para o historico.
-    Nunca recalcula dados fisiologicos -- so' agrega o que ja' foi
-    persistido. 'entradas' e' a lista montada pelo endpoint.
+    - biblioteca de estilos para o historico;
+    - concordância com achado MOXY (quando disponível).
+    limitador_moxy: string da chave do limitador da aba Intervenções,
+    ex: 'entrega', 'utilizacao', 'ventilacao', None quando sem dados.
     """
     from collections import Counter
 
@@ -2323,11 +2435,18 @@ def profilage_historico_estilos(entradas):
                     'n_modalidades': r['n_modalidades'],
                 })
 
+    # concordância com a aba Intervenções MOXY (item 4/13 do pedido)
+    concordancia_por_padrao = {}
+    for r in rec_global:
+        concordancia_por_padrao[r['padrao']] = concordancia_moxy_vst(
+            r['padrao'], limitador_moxy)
+
     return {
         'n_verificacoes': n_total,
         'recorrencia_global': rec_global,
         'recorrencia_por_modalidade': rec_por_modal,
         'estilos_historico': estilos_hist,
+        'concordancia_moxy': concordancia_por_padrao,
         'nota_metodologica': ('Frequência de padrão não demonstra causalidade. '
                               'Padrão recorrente aumenta a justificativa para testar '
                               'a hipótese — nunca comprova o mecanismo fisiológico.'),

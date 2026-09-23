@@ -2529,7 +2529,9 @@ def registar(app):
                     'recovery_bp1': lbp1.get('recovery_coerencia'),
                     'recovery_bp2': lbp2.get('recovery_coerencia'),
                 })
-            resultado = vst.profilage_historico_estilos(entradas)
+            # limitador da aba Intervenções (opcional, passado pelo frontend)
+            limitador_moxy = request.args.get('limitador_moxy') or None
+            resultado = vst.profilage_historico_estilos(entradas, limitador_moxy)
             return jsonify({'status': 'ok', **resultado})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

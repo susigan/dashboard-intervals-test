@@ -2801,6 +2801,7 @@ def profilage_estilos_parametrizados(padrao_vst, limitador_moxy_us,
             'nota_modalidade': ('Parâmetros de intensidade (watts) específicos '
                                 f'da modalidade {modalidade} — não transferir '
                                 'para outra modalidade.'),
+            'instrucoes': _instrucoes_operacionais(chave, faixas),
         }
 
     estilos = []
@@ -2831,4 +2832,378 @@ def profilage_estilos_parametrizados(padrao_vst, limitador_moxy_us,
         'n_modalidades_historico': n_modalidades_historico,
         'recorrencia': recorrencia_estado,
         'nota': None,
+    }
+
+
+# ============================================================
+# CAMADA OPERACIONAL — traduz termos analíticos em instruções
+# simples de execução por estilo. Estas regras são qualitativas
+# (nunca inventam limites numéricos individuais sem dados reais).
+# Os limites numéricos são acrescentados dinamicamente por
+# _instrucoes_operacionais() a partir dos dados da sessão.
+# ============================================================
+_COMO_CONTROLAR = {
+    'continuo_sustentado': {
+        'watts': 'faixa entre BP1 e BP2 (referência: próximo de BP2)',
+        'work_instrucao': 'bloco contínuo sem interrupção',
+        'recovery_instrucao': 'não aplicável — esforço sem pausa',
+        'rpe_instrucao': 'RPE moderado a moderado-alto; evite progressão acentuada antes do final do bloco',
+        'durante_work': [
+            'mantenha HR dentro do comportamento observado nesta intensidade',
+            'se RF começar a subir progressivamente sem aumento de potência, o drift está aumentando',
+            'não aumente a potência se houver progressão contínua de HR/RF',
+        ],
+        'entre_works': None,  # sem intervalo
+        'continuar_se': [
+            'HR/RF permanecem relativamente estáveis ao longo do bloco',
+            'a progressão de RF é gradual e controlada',
+            'RPE permanece dentro do esperado',
+        ],
+        'nao_aumentar_se': [
+            'HR/RF apresentam progressão acentuada antes do final do bloco',
+            'DRIFT ultrapassa a tolerância individual observada na VST',
+            'RPE aumenta desproporcionalmente antes da conclusão do acúmulo',
+        ],
+        'nota_entry': None,  # sem intervalos, sem ENTRY relevante
+    },
+    'intervalado_recuperacao_completa': {
+        'watts': 'faixa entre BP1 e BP2 (ou próximo de BP2)',
+        'work_instrucao': 'cada WORK de forma independente, com recuperação suficiente antes do próximo',
+        'recovery_instrucao': 'aguarde HR/RF retornarem próximos à faixa de recuperação antes do próximo WORK',
+        'rpe_instrucao': 'RPE deve permanecer aproximadamente estável entre os primeiros WORKs',
+        'durante_work': [
+            'observe se HR sobe de forma controlada e estabiliza antes do final do WORK',
+            'RF deve permanecer dentro do comportamento observado na VST para esta intensidade',
+            'não aumente a potência se houver progressão contínua de HR/RF antes do final do WORK',
+        ],
+        'entre_works': [
+            'antes do próximo WORK, observe se HR/RF estão próximos da faixa esperada',
+            'se cada repetição começa com HR/RF progressivamente mais altos, não aumente o volume',
+            'o objetivo da recuperação completa é iniciar cada WORK em estado semelhante ao anterior',
+        ],
+        'continuar_se': [
+            'cada WORK começa com HR/RF aproximadamente no mesmo nível',
+            'drift intra-WORK permanece dentro do comportamento esperado',
+            'RPE permanece controlado e estável entre repetições',
+            'recuperação permanece compatível com o objetivo do treino',
+        ],
+        'nao_aumentar_se': [
+            'ENTRY (início do WORK) apresenta progressão crescente entre repetições',
+            'drift intra-WORK aumenta progressivamente a cada repetição',
+            'RPE sobe desproporcionalmente antes do final do acúmulo',
+            'recovery não retorna ao nível esperado antes do próximo WORK',
+        ],
+        'nota_entry': (
+            'ENTRY: antes de cada WORK, observe se HR/RF iniciam próximos do mesmo nível. '
+            'Se cada repetição começar progressivamente mais alto, há acumulação fisiológica '
+            '— não aumente potência nem volume enquanto isso ocorrer.'),
+    },
+    'intervalado_recuperacao_incompleta': {
+        'watts': 'faixa entre BP1 e BP2',
+        'work_instrucao': 'WORKs com recuperação curta; alguma elevação do ENTRY é esperada e faz parte do estímulo',
+        'recovery_instrucao': 'não é necessário recuperar completamente; inicie o próximo WORK ainda parcialmente elevado',
+        'rpe_instrucao': 'RPE pode progredir ligeiramente entre repetições; interrompa o acúmulo se RPE subir abruptamente',
+        'durante_work': [
+            'observe a progressão de HR/RF dentro de cada WORK',
+            'algum aumento entre WORKs é esperado — o objetivo é controlar essa acumulação, não eliminá-la',
+            'não aumente a potência se a progressão entre WORKs for excessiva',
+        ],
+        'entre_works': [
+            'alguma elevação do ENTRY é esperada neste estilo',
+            'o sinal de alerta é uma progressão EXCESSIVA: HR/RF começando cada vez mais alto a cada repetição',
+            'se isso ocorrer, encerre o acúmulo — não aumente potência nem volume',
+        ],
+        'continuar_se': [
+            'a progressão entre WORKs é gradual e controlada',
+            'HR/RF dentro de cada WORK permanecem relativamente estáveis',
+            'RPE não aumenta abruptamente entre repetições',
+        ],
+        'nao_aumentar_se': [
+            'ENTRY apresenta progressão excessiva — cada repetição começa muito mais alto',
+            'drift intra-WORK piora progressivamente',
+            'RPE sobe abruptamente antes do final do acúmulo planejado',
+            'SmO2 acompanha a acumulação com queda progressiva entre WORKs',
+        ],
+        'nota_entry': (
+            'Neste estilo, alguma elevação do ENTRY é esperada e intencional. '
+            'O sinal de alerta é progressão EXCESSIVA entre repetições — '
+            'não aumente volume nem intensidade se isso ocorrer.'),
+    },
+    'over_under': {
+        'watts': 'fase OVER: acima de BP2 | fase UNDER: entre BP1 e BP2',
+        'work_instrucao': 'alterne fase OVER (maior intensidade) e fase UNDER (menor intensidade) sem pausa entre elas',
+        'recovery_instrucao': 'a recuperação parcial ocorre no próprio bloco UNDER; pausa completa somente ao final de toda a alternância',
+        'rpe_instrucao': 'RPE deve cair ligeiramente durante a fase UNDER; se não cair, a intensidade OVER pode estar excessiva',
+        'durante_work': [
+            'durante a fase OVER: observe se HR/RF sobem de forma controlada',
+            'durante a fase UNDER: observe se HR/RF descem parcialmente antes do próximo OVER',
+            'se HR/RF não descerem durante a fase UNDER, a recuperação parcial não está ocorrendo como esperado',
+            'não aumente a intensidade da fase OVER se o UNDER não promover recuperação parcial suficiente',
+        ],
+        'entre_works': [
+            'entre blocos completos de alternância, aguarde recuperação mais completa antes de repetir',
+            'se cada bloco começa com HR/RF mais altos que o bloco anterior, não aumente o volume',
+        ],
+        'continuar_se': [
+            'a fase UNDER promove recuperação parcial visível de HR/RF',
+            'RPE cai durante a fase UNDER e não progride abruptamente entre blocos',
+            'HR/RF não apresentam tendência crescente de bloco para bloco',
+        ],
+        'nao_aumentar_se': [
+            'HR/RF não descem durante a fase UNDER (ausência de recuperação parcial)',
+            'progressão crescente de HR/RF de bloco para bloco',
+            'RPE permanece elevado na fase UNDER e sobe na fase OVER além do esperado',
+            'SmO2 continua caindo mesmo durante a fase UNDER',
+        ],
+        'nota_entry': (
+            'OVER/UNDER: o sinal de controle principal é o comportamento de HR/RF '
+            'durante a fase UNDER. Se não houver descida parcial, o estímulo não '
+            'está produzindo o efeito esperado — reveja a intensidade das fases.'),
+    },
+    'progressivo': {
+        'watts': 'inicie abaixo de BP1, aumente gradualmente até próximo de BP2',
+        'work_instrucao': 'aumente a intensidade de forma gradual; não avance se os sinais divergirem prematuramente',
+        'recovery_instrucao': 'não aplicável no bloco progressivo; pausa após o bloco completo',
+        'rpe_instrucao': 'RPE deve aumentar proporcionalmente à progressão de carga; divergência abrupta de RPE indica progressão excessiva',
+        'durante_work': [
+            'observe em qual intensidade HR/RF começam a subir de forma mais acentuada',
+            'se múltiplos sinais (HR, RF, SmO2) divergirem ao mesmo tempo, isso é relevante',
+            'não continue aumentando a intensidade se os sinais divergirem antes de atingir a faixa-alvo',
+        ],
+        'entre_works': None,
+        'continuar_se': [
+            'HR/RF sobem de forma proporcional ao aumento de carga',
+            'a divergência não ocorre prematuramente (antes da faixa-alvo)',
+            'RPE progride de forma controlada e proporcional',
+        ],
+        'nao_aumentar_se': [
+            'HR/RF divergem antes de atingir a faixa-alvo',
+            'RPE sobe abruptamente em uma faixa inferior à esperada',
+            'múltiplos sinais divergem simultaneamente em intensidade mais baixa que o esperado',
+        ],
+        'nota_entry': None,
+    },
+    'inicio_forte': {
+        'watts': 'fase inicial: acima de BP2 | fase de sustentação: entre BP1 e BP2',
+        'work_instrucao': 'inicie com intensidade elevada por curto período; reduza para a faixa de sustentação e mantenha',
+        'recovery_instrucao': 'recuperação completa entre repetições',
+        'rpe_instrucao': 'RPE elevado na fase inicial, deve reduzir e estabilizar durante a sustentação',
+        'durante_work': [
+            'fase inicial: aceite HR/RF elevados por curto período',
+            'fase de sustentação: observe se HR/RF estabilizam após a redução de potência',
+            'se HR/RF continuarem subindo durante a sustentação, o início foi excessivamente intenso',
+            'o objetivo é estabilizar — não sustentar a intensidade inicial',
+        ],
+        'entre_works': [
+            'aguarde recuperação suficiente antes do próximo início forte',
+            'se HR/RF não retornam próximo à linha de base na recuperação, a carga total pode ser excessiva',
+        ],
+        'continuar_se': [
+            'HR/RF estabilizam durante a fase de sustentação',
+            'RPE reduz após a fase inicial e permanece controlado na sustentação',
+            'recuperação entre repetições é suficiente',
+        ],
+        'nao_aumentar_se': [
+            'HR/RF continuam subindo durante a fase de sustentação (não estabilizam)',
+            'RPE permanece elevado e não reduz após o início forte',
+            'recovery entre repetições é insuficiente — cada repetição começa mais elevada',
+        ],
+        'nota_entry': (
+            'O sinal principal de controle é a ESTABILIZAÇÃO durante a fase de sustentação. '
+            'Se os sinais não estabilizarem após reduzir a intensidade, '
+            'reveja a intensidade da fase inicial.'),
+    },
+    'bloco_progressivo': {
+        'watts': 'inicie abaixo de BP1, progrida bloco a bloco até próximo de BP2',
+        'work_instrucao': 'blocos de duração fixa com aumento gradual de intensidade a cada bloco',
+        'recovery_instrucao': 'pausa curta entre blocos (1–3 min)',
+        'rpe_instrucao': 'RPE deve aumentar proporcionalmente; divergência abrupta indica bloco excessivo',
+        'durante_work': [
+            'observe em qual bloco HR/RF começam a subir de forma mais acentuada',
+            'esse ponto é a referência individual da sessão — registre-o',
+        ],
+        'entre_works': [
+            'na pausa curta entre blocos, observe se HR/RF descem parcialmente',
+            'se não descerem, a pausa pode ser curta demais para o nível de intensidade',
+        ],
+        'continuar_se': [
+            'cada bloco é executável com progressão proporcional de HR/RF e RPE',
+            'HR/RF sobem mas não divergem prematuramente dentro de cada bloco',
+        ],
+        'nao_aumentar_se': [
+            'HR/RF divergem antes do final do bloco atual',
+            'RPE sobe abruptamente antes de atingir a intensidade-alvo',
+        ],
+        'nota_entry': None,
+    },
+    'acumulacao_progressiva': {
+        'watts': 'próximo de BP1 (intensidade sustentável)',
+        'work_instrucao': 'mantenha a mesma intensidade e aumente progressivamente a duração total a cada sessão',
+        'recovery_instrucao': 'recuperação entre sessões (não é um único esforço)',
+        'rpe_instrucao': 'RPE deve permanecer estável a cada sessão; aumento de RPE para a mesma carga indica acumulação entre sessões',
+        'durante_work': [
+            'observe se HR/RF permanecem estáveis pelo tempo total do bloco',
+            'aumento progressivo de HR/RF ao longo do bloco (drift) é o sinal de que a duração pode estar no limite',
+        ],
+        'entre_works': None,
+        'continuar_se': [
+            'HR/RF permanecem estáveis ao longo de todo o bloco',
+            'RPE permanece controlado para a mesma potência',
+            'o drift não aumenta progressivamente ao longo das sessões',
+        ],
+        'nao_aumentar_se': [
+            'drift aumenta progressivamente ao longo do bloco',
+            'RPE aumenta para a mesma potência em sessões consecutivas',
+        ],
+        'nota_entry': None,
+    },
+    'foco_periferico': {
+        'watts': 'faixa entre BP1 e BP2',
+        'work_instrucao': 'cada WORK focando na observação de SmO2; recuperação suficiente para SmO2 recuperar parcialmente',
+        'recovery_instrucao': 'aguarde SmO2 recuperar parcialmente antes do próximo WORK — não precisa retornar ao valor inicial',
+        'rpe_instrucao': 'RPE como controle secundário; não há faixa individual determinada sem dados suficientes',
+        'durante_work': [
+            'observe se SmO2 apresenta queda controlada durante o WORK',
+            'HR/RF como referência secundária (não devem dominar a resposta)',
+            'se SmO2 cair abruptamente junto com HR/RF elevados, há resposta multissistêmica relevante',
+        ],
+        'entre_works': [
+            'observe se SmO2 recupera parcialmente durante a pausa',
+            'se SmO2 não recupera entre WORKs, a recuperação pode ser curta ou a carga elevada demais',
+        ],
+        'continuar_se': [
+            'SmO2 recupera parcialmente entre WORKs',
+            'HR/RF permanecem dentro do comportamento esperado',
+        ],
+        'nao_aumentar_se': [
+            'SmO2 não recupera entre WORKs e continua caindo progressivamente',
+            'HR/RF apresentam acumulação excessiva entre repetições',
+        ],
+        'nota_entry': (
+            'Observe SmO2 no início de cada WORK: se começar cada vez mais baixo, '
+            'a recuperação entre WORKs não está sendo suficiente.'),
+    },
+    'estimulo_multissistemico': {
+        'watts': 'faixa entre BP1 e BP2 (próximo à intensidade do protocolo VST)',
+        'work_instrucao': 'monitor HR, RF e SmO2 em conjunto; não priorize um único sinal',
+        'recovery_instrucao': 'recuperação completa a moderada antes do próximo WORK',
+        'rpe_instrucao': 'RPE como indicador de carga total; deve permanecer controlado e estável entre repetições',
+        'durante_work': [
+            'observe HR, RF e SmO2 simultaneamente',
+            'se vários sinais divergem ao mesmo tempo, isso é o principal sinal fisiológico do estímulo',
+            'não tente controlar um único sinal — o objetivo é estabilidade conjunta',
+        ],
+        'entre_works': [
+            'observe se HR, RF e SmO2 retornam próximos ao estado inicial antes do próximo WORK',
+            'se vários sinais permanecem elevados ao mesmo tempo no início do próximo WORK, não aumente o volume',
+        ],
+        'continuar_se': [
+            'HR, RF e SmO2 permanecem dentro do comportamento esperado durante e entre WORKs',
+            'RPE estável entre repetições',
+        ],
+        'nao_aumentar_se': [
+            'vários sinais (HR + RF + SmO2) divergem simultaneamente antes do final do WORK',
+            'RPE aumenta desproporcionalmente',
+            'ENTRY de múltiplos sinais sobe progressivamente entre repetições',
+        ],
+        'nota_entry': (
+            'Observe HR, RF e SmO2 no início de cada WORK. '
+            'Se múltiplos sinais começam progressivamente mais altos, '
+            'há acumulação multissistêmica — encerre o acúmulo.'),
+    },
+    'tiros_curtos': {
+        'watts': 'acima de BP2',
+        'work_instrucao': 'esforços curtos acima de BP2; recuperação suficiente para que HR/RF recuperem parcialmente',
+        'recovery_instrucao': 'recuperação moderada a completa; se HR/RF não recuperam entre tiros, a carga total está excessiva',
+        'rpe_instrucao': 'RPE elevado durante o tiro; deve reduzir claramente durante a recuperação',
+        'durante_work': [
+            'esforço curto e controlado — não tente sustentar por mais tempo que o planejado',
+            'observe se HR/RF atingem o nível esperado para a intensidade',
+        ],
+        'entre_works': [
+            'observe se HR/RF descem durante a recuperação',
+            'se HR/RF permanecem elevados durante toda a recuperação, reduza a quantidade de tiros',
+        ],
+        'continuar_se': [
+            'HR/RF recuperam parcialmente entre tiros',
+            'RPE reduz claramente durante a recuperação',
+            'o início de cada tiro não está progressivamente mais elevado',
+        ],
+        'nao_aumentar_se': [
+            'HR/RF não recuperam entre tiros',
+            'o início de cada tiro está progressivamente mais elevado',
+            'RPE permanece elevado mesmo durante a recuperação',
+        ],
+        'nota_entry': (
+            'O sinal de alerta principal é HR/RF no início de cada tiro. '
+            'Se cada tiro começa mais elevado que o anterior, encerre o acúmulo.'),
+    },
+}
+
+
+def _instrucoes_operacionais(chave, faixas_watts, limiter_result=None,
+                             comp_recovery=None, comp_rpe=None):
+    """Combina as instruções qualitativas do _COMO_CONTROLAR com os
+    valores numéricos reais da sessão (quando disponíveis).
+    Nunca inventa limites numéricos sem dados.
+    Devolve um dict com as chaves que o frontend usa directamente.
+    """
+    base = _COMO_CONTROLAR.get(chave, {})
+    z = (faixas_watts or {}).get('zonas', {})
+    fw_disp = (faixas_watts or {}).get('disponivel', False)
+
+    # faixa de watts operacional
+    if fw_disp:
+        if chave == 'over_under':
+            watts_label = f"OVER: {z.get('over','—')} | UNDER: {z.get('under','—')}"
+        elif chave in ('inicio_forte',):
+            watts_label = (f"Fase forte: {z.get('fase_forte','—')} | "
+                           f"Sustentação: {z.get('fase_sustentacao','—')}")
+        elif chave == 'progressivo':
+            bp1s = z.get('bp1','—'); bp2s = z.get('bp2','—')
+            watts_label = f"{bp1s} → {bp2s}"
+        elif chave == 'acumulacao_progressiva':
+            watts_label = z.get('bp1', z.get('abaixo_bp1', '—'))
+        else:
+            faixa = (z.get('entre_bp1_bp2')
+                     if z.get('entre_bp1_bp2') and z['entre_bp1_bp2'] != '—'
+                     else z.get('proximo_bp2', z.get('bp2', '—')))
+            watts_label = faixa
+    else:
+        watts_label = (faixas_watts or {}).get(
+            'nota', 'Faixa de potência não determinada — BP1/BP2/CP insuficientes.')
+
+    # notas de recovery da sessão (qualitativas, sem inventar números)
+    recovery_nota = ''
+    if comp_recovery:
+        status_rec = (comp_recovery or {}).get('status', '')
+        if status_rec in ('DETERIORANDO', 'AUSENTE'):
+            recovery_nota = ('⚠ Recovery deteriorando na sessão de referência — '
+                             'priorize recuperação mais completa.')
+        elif status_rec == 'CONVERGENTE':
+            recovery_nota = '✓ Recovery convergente na sessão de referência.'
+
+    # RPE da sessão (qualitativo)
+    rpe_nota = ''
+    if comp_rpe:
+        rpe_status = (comp_rpe or {}).get('status', '')
+        if rpe_status == 'CONSISTENTE':
+            rpe_nota = 'RPE consistente na sessão de referência — use como controle secundário.'
+        elif rpe_status in ('ALTO', 'AUMENTANDO'):
+            rpe_nota = ('⚠ RPE elevado/crescente na sessão de referência — '
+                        'monitore de perto durante o acúmulo.')
+
+    return {
+        'watts_label': watts_label,
+        'work_instrucao': base.get('work_instrucao', '—'),
+        'recovery_instrucao': base.get('recovery_instrucao', '—'),
+        'rpe_instrucao': base.get('rpe_instrucao',
+                                  'Limite individual não determinado — use RPE como controle complementar.'),
+        'durante_work': base.get('durante_work', []),
+        'entre_works': base.get('entre_works'),
+        'continuar_se': base.get('continuar_se', []),
+        'nao_aumentar_se': base.get('nao_aumentar_se', []),
+        'nota_entry': base.get('nota_entry'),
+        'recovery_nota': recovery_nota,
+        'rpe_nota': rpe_nota,
     }

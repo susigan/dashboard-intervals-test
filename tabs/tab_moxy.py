@@ -3607,94 +3607,6 @@ function mxHipoteseMostrar(d){
 // ESTILOS DE TREINO / HISTÓRICO -- le' /api/moxy/vst/historico_estilos
 // (que agrega todas as verificacoes salvas no DB sem recalcular nada);
 // so' mostra, nunca prescreve, nunca inventa watts/duracao/series.
-function mxHistoricoEstilosMostrar(){
- const boxP=document.getElementById('mxHistoricoPatterns');
- const boxE=document.getElementById('mxHistoricoEstilos');
- if(!boxP || !boxE) return;
- boxP.innerHTML='<p class="sub" style="font-size:11px;">a carregar...</p>';
- boxE.innerHTML='';
- fetch('/api/moxy/vst/historico_estilos').then(r=>r.json()).then(function(d){
-  if(d.status!=='ok'){ boxP.innerHTML='<p class="sub">erro: '+(d.mensagem||'?')+'</p>'; return; }
-  const rec=d.recorrencia_global||[];
-  const porMod=d.recorrencia_por_modalidade||{};
-  const estilos=d.estilos_historico||[];
-
-  if(!rec.length){
-   boxP.innerHTML='<p class="sub" style="font-size:11px;">sem verificações salvas com padrões registados.</p>';
-   boxE.innerHTML=''; return;
-  }
-
-  // --- tabela de padroes globais ---
-  function corRec(r){
-   if(r==='RECORRENTE EM MÚLTIPLAS MODALIDADES') return '#A371F7';
-   if(r==='RECORRENTE NA MESMA MODALIDADE') return '#5DADE2';
-   if(r==='OBSERVADO EM MÚLTIPLAS SESSÕES') return '#F4D03F';
-   return '#8b949e';
-  }
-  let hP='<b style="font-size:12px;">Padrão global (todas as verificações)</b>'
-   +'<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
-   +'<tr class="sub" style="text-align:left;"><th style="padding:3px 10px 3px 0;">Padrão</th>'
-   +'<th style="padding:3px 8px;">Sessões</th><th style="padding:3px 8px;">BP1</th>'
-   +'<th style="padding:3px 8px;">BP2</th><th style="padding:3px 8px;">Modalidades</th>'
-   +'<th style="padding:3px 8px;">Recorrência</th><th style="padding:3px 8px;">Última</th></tr>';
-  rec.forEach(function(r){
-   hP+='<tr style="border-top:1px solid #21262d;">'
-    +'<td style="padding:3px 10px 3px 0;font-size:10px;">'+r.padrao+'</td>'
-    +'<td style="padding:3px 8px;text-align:center;">'+r.n_total+'</td>'
-    +'<td style="padding:3px 8px;text-align:center;">'+r.n_bp1+'</td>'
-    +'<td style="padding:3px 8px;text-align:center;">'+r.n_bp2+'</td>'
-    +'<td style="padding:3px 8px;font-size:10px;">'+(r.modalidades||[]).join(', ')+'</td>'
-    +'<td style="padding:3px 8px;color:'+corRec(r.recorrencia)+';font-size:10px;">'+r.recorrencia+'</td>'
-    +'<td style="padding:3px 8px;font-size:10px;">'+(r.ultima_ocorrencia||'—')+'</td></tr>';
-  });
-  hP+='</table>';
-  // padroes por modalidade (sub-tabela compacta)
-  const mods=Object.keys(porMod);
-  if(mods.length>1){
-   hP+='<b style="font-size:12px;margin-top:10px;display:block;">Por modalidade</b>'
-    +'<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
-    +'<tr class="sub" style="text-align:left;"><th style="padding:3px 10px 3px 0;">Modalidade</th>'
-    +'<th style="padding:3px 8px;">Padrão</th><th style="padding:3px 8px;">BP1</th>'
-    +'<th style="padding:3px 8px;">BP2</th><th style="padding:3px 8px;">Total</th></tr>';
-   mods.forEach(function(mod){
-    (porMod[mod]||[]).forEach(function(p,i){
-     hP+='<tr style="border-top:1px solid #21262d;">'
-      +'<td style="padding:3px 10px 3px 0;font-size:10px;">'+(i===0?mod:'')+'</td>'
-      +'<td style="padding:3px 8px;font-size:10px;">'+p.padrao+'</td>'
-      +'<td style="padding:3px 8px;text-align:center;">'+p.n_bp1+'</td>'
-      +'<td style="padding:3px 8px;text-align:center;">'+p.n_bp2+'</td>'
-      +'<td style="padding:3px 8px;text-align:center;">'+p.n_total+'/'+p.n_sessoes_modalidade+'</td></tr>';
-    });
-   });
-   hP+='</table>';
-  }
-  hP+='<p class="sub" style="font-size:10px;margin-top:4px;">'+d.nota_metodologica+'</p>';
-  boxP.innerHTML=hP;
-
-  // --- cards de estilos ---
-  if(!estilos.length){ boxE.innerHTML='<p class="sub" style="font-size:11px;">sem estilos candidatos com o histórico disponível.</p>'; return; }
-  let hE='<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));">';
-  estilos.forEach(function(e){
-   const corPrio=e.prioridade==='primário'?'#3FB950':'#8b949e';
-   hE+='<div class="card" style="min-width:240px;">'
-    +'<div class="label" style="color:'+corPrio+';">'+e.nome
-    +' <span style="font-size:9px;background:#21262d;padding:1px 5px;border-radius:3px;">'+e.prioridade+'</span></div>'
-    +'<div style="font-size:10px;color:#8b949e;margin-top:3px;">Motivado por: '+e.motivado_por+'<br>'
-    +'Recorrência: '+e.recorrencia+' · '+e.n_sessoes+' sessão(ões) · '+e.n_modalidades+' modalidade(s)</div>'
-    +'<div style="font-size:11px;margin-top:5px;"><b>Objectivo:</b> '+e.objetivo+'</div>'
-    +'<div style="font-size:11px;margin-top:3px;"><b>Estrutura:</b> '+e.estrutura+'</div>'
-    +'<div style="font-size:10px;color:#8b949e;margin-top:3px;"><b>Observar:</b> '+(e.o_que_observar||[]).join(' · ')+'</div>'
-    +'<div style="font-size:10px;margin-top:3px;"><b>Resp. esperada:</b> '+e.resposta_esperada+'</div>'
-    +'<p style="font-size:9px;color:#484f58;margin-top:5px;font-style:italic;">HIPÓTESE — REQUER NOVA VERIFICAÇÃO. Não inclui watts, duração ou séries.</p>'
-    +'</div>';
-  });
-  hE+='</div>';
-  boxE.innerHTML=hE;
- }).catch(function(e){
-  boxP.innerHTML='<p class="sub" style="font-size:11px;">erro ao carregar histórico: '+e.message+'</p>';
- });
-}
-
 // ESTILOS DE TREINO / HISTÓRICO -- versão melhorada com âncoras BP,
 // concordância MOXY e detalhes em <details>. Consome
 // /api/moxy/vst/historico_estilos; nunca inventa watts ou durações.
@@ -3704,9 +3616,23 @@ function mxHistoricoEstilosMostrar(){
  if(!boxP || !boxE) return;
  boxP.innerHTML='<p class="sub" style="font-size:11px;">a carregar histórico...</p>';
  boxE.innerHTML='';
- // tentar obter o limitador MOXY actual para concordância
- const limMoxy=(window.MX_LIMITADOR_MOXY||'');
- const url='/api/moxy/vst/historico_estilos'+(limMoxy?'?limitador_moxy='+encodeURIComponent(limMoxy):'');
+ // tentar obter limitadores MOXY, BP1/BP2/CP, e modalidade actual
+ const limMoxyUs=(MX_ULT_US||'');   // limitador US da aba Intervenções
+ const limMoxyPc=(MX_ULT_PC||'');   // limitador PC
+ const limD=MX_ULT_LIMIARES_D||{};  // dados da sessao de limiares (tem bp1_w, bp2_w)
+ const bp1=limD.bp_moxy&&limD.bp_moxy.bp1_w!=null ? Math.round(limD.bp_moxy.bp1_w) : null;
+ const bp2=limD.bp_moxy&&limD.bp_moxy.bp2_w!=null ? Math.round(limD.bp_moxy.bp2_w) : null;
+ const cp=(typeof PM_CP!=='undefined'&&PM_CP!=null) ? Math.round(PM_CP) : null;
+ const mod=(document.getElementById('mxModalidade')||{}).value||'';
+ const qs=[
+  limMoxyUs?'limitador_moxy='+encodeURIComponent(limMoxyUs):'',
+  limMoxyPc?'limitador_moxy_pc='+encodeURIComponent(limMoxyPc):'',
+  bp1!=null?'bp1_w='+bp1:'',
+  bp2!=null?'bp2_w='+bp2:'',
+  cp!=null?'cp_w='+cp:'',
+  mod?'modalidade='+encodeURIComponent(mod):'',
+ ].filter(Boolean).join('&');
+ const url='/api/moxy/vst/historico_estilos'+(qs?'?'+qs:'');
  fetch(url).then(r=>r.json()).then(function(d){
   if(d.status!=='ok'){ boxP.innerHTML='<p class="sub">erro: '+(d.mensagem||'?')+'</p>'; return; }
   const rec=d.recorrencia_global||[];
@@ -3789,6 +3715,66 @@ function mxHistoricoEstilosMostrar(){
   });
   hE+='</div>';
   boxE.innerHTML=hE;
+
+  // ── estilos parametrizados com faixas de watts reais ──
+  const ep=d.estilos_parametrizados;
+  if(ep && ep.estilos && ep.estilos.length){
+   let hParam='<h3 style="font-size:13px;margin-top:14px;border-top:1px solid #21262d;padding-top:10px;">Estilos candidatos parametrizados</h3>'
+    +'<p class="sub" style="font-size:10px;margin:2px 0 8px;">Faixas de watts calculadas com BP1/BP2/CP da sessão actual ('+(ep.modalidade||'—')+').</p>';
+   // card de concordância VST × MOXY
+   const cv=ep.concordancia||{};
+   const corCV={concordante:'#3FB950',parcial:'#F4D03F',discordante:'#F0883E',sem_dados:'#8b949e'}[cv.status]||'#8b949e';
+   hParam+='<div style="border-left:3px solid '+corCV+';padding:5px 10px;margin-bottom:10px;font-size:11px;">'
+    +'<b>VST × MOXY:</b> '+(cv.status||'—').toUpperCase()+' — '+cv.nota+'</div>';
+   // top 3 visíveis, resto em <details>
+   const top3=ep.estilos.slice(0,3);
+   const resto=ep.estilos.slice(3);
+   function cardEstilo(e){
+    const fw=e.faixas_watts||{};
+    const z=fw.zonas||{};
+    const corPrio={principal:'#3FB950',secundário:'#F4D03F',alternativa:'#8b949e'}[e.prioridade]||'#8b949e';
+    let wattsHtml='';
+    if(fw.disponivel){
+     if(e.chave==='over_under' && z.over)
+      wattsHtml='<div style="font-size:10px;margin-top:3px;"><b>Watts OVER:</b> '+z.over+'<br><b>Watts UNDER:</b> '+(z.under||'—')+'</div>';
+     else if(e.chave==='inicio_forte' && z.fase_forte)
+      wattsHtml='<div style="font-size:10px;margin-top:3px;"><b>Fase forte:</b> '+z.fase_forte+'<br><b>Sustentação:</b> '+(z.fase_sustentacao||'—')+'</div>';
+     else
+      wattsHtml='<div style="font-size:10px;margin-top:3px;"><b>Faixa principal:</b> '+(z.entre_bp1_bp2||z.bp2||z.proximo_bp2||'—')+'</div>';
+    } else {
+     wattsHtml='<div style="font-size:10px;color:#F0883E;margin-top:3px;">'+fw.nota+'</div>';
+    }
+    return '<div class="card" style="min-width:260px;">'
+     +'<div class="label" style="color:'+corPrio+';">'+e.nome
+     +' <span style="font-size:9px;background:#21262d;padding:1px 5px;border-radius:3px;">'+e.prioridade+'</span></div>'
+     +'<div style="font-size:11px;margin-top:4px;"><b>Objectivo:</b> '+e.objetivo+'</div>'
+     +'<div style="font-size:11px;margin-top:3px;color:#8b949e;">Por que: '+e.por_que+'</div>'
+     +wattsHtml
+     +'<details style="margin-top:4px;"><summary class="sub" style="cursor:pointer;font-size:10px;">WORK · Recovery · Acúmulo · Métricas</summary>'
+     +'<div style="font-size:10px;margin-top:3px;"><b>WORK:</b> '+e.work+'</div>'
+     +'<div style="font-size:10px;"><b>Recovery:</b> '+e.recovery+'</div>'
+     +'<div style="font-size:10px;"><b>Acúmulo:</b> '+e.acumulo+'</div>'
+     +'<div style="font-size:10px;"><b>Métricas principais:</b> '+(e.metricas_principais||[]).join(' · ')+'</div>'
+     +'<div style="font-size:10px;"><b>Resposta esperada:</b> '+e.resposta_esperada+'</div>'
+     +'<p style="font-size:9px;color:#484f58;margin-top:4px;font-style:italic;">Sem número de séries obrigatório. O utilizador/treinador decide a quantidade e frequência.</p>'
+     +'</details>'
+     +'</div>';
+   }
+   hParam+='<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));">';
+   top3.forEach(function(e){ hParam+=cardEstilo(e); });
+   hParam+='</div>';
+   if(resto.length){
+    hParam+='<details style="margin-top:8px;"><summary class="sub" style="cursor:pointer;font-size:11px;">Ver outros estilos candidatos ('+resto.length+')</summary>'
+     +'<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));margin-top:6px;">';
+    resto.forEach(function(e){ hParam+=cardEstilo(e); });
+    hParam+='</div></details>';
+   }
+   hParam+='<p class="sub" style="font-size:10px;margin-top:6px;">'
+    +'Padrão histórico: '+ep.recorrencia+' · '+ep.n_modalidades_historico+' modalidade(s). '
+    +'Watts derivados de BP1/BP2/CP reais — não usar watts de outra modalidade.</p>';
+   boxE.innerHTML+=hParam;
+  }
+
  }).catch(function(e){
   boxP.innerHTML='<p class="sub" style="font-size:11px;">erro ao carregar histórico: '+e.message+'</p>';
  });

@@ -2251,8 +2251,8 @@ _LIMITER_PARA_INTERVENCAO = {
 # Secundários: também compatíveis, mas não os primeiros a testar.
 _ESTILOS_POR_PADRAO = {
     'PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE': {
-        'primarios': ['continuo_sustentado', 'intervalado_recuperacao_completa'],
-        'secundarios': ['over_under', 'bloco_progressivo', 'progressivo',
+        'primarios': ['over_under', 'intervalado_recuperacao_completa'],
+        'secundarios': ['continuo_sustentado', 'bloco_progressivo', 'progressivo',
                         'intervalado_recuperacao_incompleta', 'acumulacao_progressiva'],
     },
     'PADRÃO PERIFÉRICO PREDOMINANTE': {
@@ -2458,3 +2458,377 @@ def estilos_para_hipotese(padrao, recorrencia_estado, n_modalidades):
     de recorrência, devolve os estilos coerentes (sem histórico global).
     """
     return _estilos_para_padrao(padrao, recorrencia_estado, n_modalidades)
+
+
+# ============================================================
+# ESTILOS PARAMETRIZADOS — calcula faixas de watts a partir de
+# BP1/BP2/CP reais da modalidade actual; nunca inventa números.
+# ============================================================
+
+# Mapeamento dos limitadores MOXY → grupos fisiológicos VST.
+# Chaves vindas de MX_ULT_US / MX_ULT_PC (tab_moxy.py).
+_MOXY_PARA_GRUPO = {
+    'Utilização':    'periferico',
+    'Fornecimento':  'cardiorrespiratorio',
+    'Cardíaco':      'cardiorrespiratorio',
+    'Pulmonar':      'cardiorrespiratorio',
+    'Ventilatório':  'cardiorrespiratorio',
+}
+_PADRAO_PARA_GRUPO = {
+    'PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE': 'cardiorrespiratorio',
+    'PADRÃO PERIFÉRICO PREDOMINANTE':          'periferico',
+    'RESPOSTA MULTISSISTÊMICA':               'multisistemico',
+    'PADRÃO MISTO':                           'multisistemico',
+    'RESPOSTAS DISSOCIADAS':                  'dissociado',
+    'EVIDÊNCIA INSUFICIENTE':                 'insuficiente',
+}
+
+# Explicações fisiológicas por estilo — o "por quê" que liga cada
+# formato ao mecanismo observado.  Chave = chave do ESTILOS_DE_TREINO.
+_EXPLICACAO_FISIOLOGICA = {
+    'over_under': {
+        'cardiorrespiratorio': (
+            'O atleta apresenta progressão de RF/HR e/ou dificuldade de '
+            'recuperação entre esforços. O Over/Under cria repetidamente '
+            'uma fase de alta demanda seguida de menor intensidade, '
+            'trabalhando a capacidade de sustentar e recuperar a resposta '
+            'cardiorrespiratória DURANTE o exercício, sem pausa completa.'),
+        'multisistemico': (
+            'Múltiplos sistemas respondem progressivamente durante o WORK. '
+            'O Over/Under expõe o atleta a variações de demanda e permite '
+            'observar se a estabilidade conjunta de HR/RF/SmO2 melhora '
+            'com o estímulo repetido de alternância.'),
+        'periferico': (
+            'SmO2 mostra deterioração sustentada. O Over/Under permite '
+            'acumular tempo em intensidade relevante intercalado com '
+            'períodos de menor demanda, testando a capacidade periférica '
+            'de recuperação parcial sem pausa completa.'),
+    },
+    'intervalado_recuperacao_completa': {
+        'cardiorrespiratorio': (
+            'Quando a recuperação é suficiente, é possível separar a '
+            'capacidade de produzir o esforço da capacidade de recuperar '
+            'entre esforços. Este formato revela se o ENTRY de cada '
+            'WORK melhora progressivamente, sinalizando melhora na '
+            'recuperação cardiorrespiratória.'),
+        'multisistemico': (
+            'Permite isolar cada WORK e observar se os múltiplos sistemas '
+            'iniciam cada esforço num estado semelhante ao anterior, '
+            'controlando a acumulação entre WORKs.'),
+        'periferico': (
+            'Recuperação completa entre WORKs permite que SmO2 retorne '
+            'próximo ao valor inicial, separando a resposta dentro de '
+            'cada WORK da acumulação entre WORKs.'),
+    },
+    'continuo_sustentado': {
+        'cardiorrespiratorio': (
+            'Esforço contínuo na faixa fisiológica relevante avalia a '
+            'estabilidade de HR/RF durante exposição prolongada. Um menor '
+            'drift ao longo do tempo é o indicador de resposta ao estímulo.'),
+        'multisistemico': (
+            'Permite observar a evolução conjunta de HR/RF/SmO2 durante '
+            'esforço contínuo, sem a variabilidade introduzida pela '
+            'recuperação entre intervalos.'),
+        'periferico': (
+            'Expõe SmO2 a uma demanda sustentada na faixa relevante, '
+            'permitindo avaliar a estabilidade periférica durante tempo '
+            'prolongado de exercício.'),
+    },
+    'intervalado_recuperacao_incompleta': {
+        'cardiorrespiratorio': (
+            'Quando a recuperação é curta, a acumulação fisiológica entre '
+            'WORKs fica visível. Este formato testa a tolerância a essa '
+            'acumulação — o ENTRY de cada WORK progressivamente mais alto '
+            'é um indicador de acumulação fisiológica.'),
+        'multisistemico': (
+            'Permite observar como a acumulação de múltiplos sistemas '
+            'evolui quando a recuperação é insuficiente para restaurar '
+            'completamente o estado fisiológico.'),
+        'periferico': (
+            'Recuperação incompleta entre WORKs permite avaliar se SmO2 '
+            'se deteriora progressivamente com o acúmulo de estímulos '
+            'com recuperação curta.'),
+    },
+    'progressivo': {
+        'cardiorrespiratorio': (
+            'Permite observar em que ponto HR/RF divergem e se esse ponto '
+            'pode ser deslocado com o treino. A progressão gradual evita '
+            'a antecipação da divergência por esforço súbito.'),
+        'multisistemico': (
+            'Permite monitorar qual sistema responde primeiro ao aumento '
+            'progressivo de carga, fornecendo informação sobre o padrão '
+            'de divergência temporal.'),
+        'periferico': (
+            'Permite identificar o ponto em que SmO2 diverge durante '
+            'a progressão de carga, sem que o esforço súbito '
+            'antecipe a resposta periférica.'),
+    },
+    'inicio_forte': {
+        'cardiorrespiratorio': (
+            'Testa se o atleta consegue estabilizar HR/RF após uma entrada '
+            'de alta demanda. Relevant quando o DRIFT é maior no início '
+            'do WORK do que na parte sustentada.'),
+        'multisistemico': (
+            'Permite observar se múltiplos sistemas se estabilizam após '
+            'a entrada forte, ou se a perturbação inicial mantém '
+            'progressão até ao final do WORK.'),
+        'periferico': (
+            'Testa a capacidade de SmO2 se estabilizar após entrada '
+            'de alta demanda periférica.'),
+    },
+    'acumulacao_progressiva': {
+        'cardiorrespiratorio': (
+            'Aumentar progressivamente a duração total na faixa relevante '
+            'testa se HR/RF conseguem manter estabilidade por períodos '
+            'mais longos do que os observados na VST de referência.'),
+        'multisistemico': (
+            'Permite acumular exposição mantendo múltiplos sistemas '
+            'monitorados, verificando se a progressão conjunta dos '
+            'sinais diminui com o aumento do volume acumulado.'),
+        'periferico': (
+            'Acumular tempo na faixa relevante expõe SmO2 a uma '
+            'demanda crescente de duração, testando a tolerância '
+            'periférica sustentada.'),
+    },
+    'foco_periferico': {
+        'periferico': (
+            'SmO2 apresenta deterioração consistente durante o WORK. '
+            'Este formato permite acumular trabalho na faixa periférica '
+            'com recuperação suficiente para SmO2 recuperar parcialmente '
+            'entre WORKs, separando a resposta intra-WORK da acumulação '
+            'entre WORKs.'),
+    },
+    'estimulo_multissistemico': {
+        'multisistemico': (
+            'Múltiplos sistemas — cardiorrespiratório e periférico — '
+            'responderam de forma temporalmente relacionada. Este formato '
+            'mantém todos os sistemas monitorados simultaneamente, testando '
+            'a tolerância integrada sem privilegiar um único sistema.'),
+    },
+    'bloco_progressivo': {
+        'cardiorrespiratorio': (
+            'Aumentar gradualmente a demanda ao longo de blocos permite '
+            'verificar em que ponto ocorre a primeira divergência de '
+            'HR/RF e se esse ponto pode ser deslocado.'),
+        'multisistemico': (
+            'Permite observar a ordem em que os sistemas divergem '
+            'durante a progressão de carga, fornecendo informação '
+            'complementar ao padrão de convergência temporal.'),
+        'periferico': (
+            'Permite identificar a intensidade de início de deterioração '
+            'de SmO2, informação complementar ao timing observado na VST.'),
+    },
+}
+
+
+def _faixas_watts(bp1_w, bp2_w, cp_w, padrao):
+    """Calcula faixas de watts para cada zona de intensidade a partir
+    dos valores reais da modalidade actual. Nunca inventa números.
+    Devolve um dict com as faixas textuais e numéricas disponíveis.
+    Se não houver dados suficientes, indica explicitamente.
+    """
+    if bp1_w is None and bp2_w is None and cp_w is None:
+        return {'disponivel': False,
+                'nota': 'Faixa de potência não determinada — sem BP1/BP2/CP '
+                        'disponíveis para esta modalidade e sessão.'}
+
+    def _fmt(v): return f'{round(v)} W' if v is not None else '—'
+    def _faixa(lo, hi):
+        if lo is not None and hi is not None:
+            return f'{round(lo)}–{round(hi)} W'
+        if lo is not None:
+            return f'≥ {round(lo)} W'
+        if hi is not None:
+            return f'≤ {round(hi)} W'
+        return '—'
+
+    ref_principal = bp2_w or cp_w or bp1_w
+
+    zonas = {
+        'abaixo_bp1': _faixa(None, bp1_w),
+        'bp1':        _fmt(bp1_w),
+        'entre_bp1_bp2': _faixa(bp1_w, bp2_w) if bp1_w and bp2_w else '—',
+        'bp2':        _fmt(bp2_w),
+        'proximo_bp2': (f'{round(ref_principal * 0.97)}–{round(ref_principal)} W'
+                        if ref_principal else '—'),
+        'acima_bp2':  (f'> {round(bp2_w)} W' if bp2_w else
+                       f'> {round(cp_w)} W' if cp_w else '—'),
+        'cp':         _fmt(cp_w),
+    }
+    # faixas específicas por estilo (derivadas, nunca fixas)
+    if padrao == 'over_under':
+        zonas['over'] = (f'{round(bp2_w * 1.02)}–{round(bp2_w * 1.07)} W'
+                         if bp2_w else zonas['acima_bp2'])
+        zonas['under'] = zonas['entre_bp1_bp2'] or zonas['bp1']
+    elif padrao == 'inicio_forte':
+        zonas['fase_forte'] = zonas['acima_bp2']
+        zonas['fase_sustentacao'] = zonas['entre_bp1_bp2'] or zonas['bp2']
+
+    return {'disponivel': True, 'zonas': zonas,
+            'bp1_w': bp1_w, 'bp2_w': bp2_w, 'cp_w': cp_w}
+
+
+# Estrutura WORK/RECOVERY por estilo
+_WORK_RECOVERY = {
+    'continuo_sustentado': {
+        'work': 'contínuo (sem intervalos)', 'recovery': 'não aplicável',
+        'acumulo': '20–60 min de exposição total na faixa-alvo',
+    },
+    'intervalado_recuperacao_completa': {
+        'work': '4–12 min', 'recovery': 'recuperação completa (1:1 a 1:2)',
+        'acumulo': '20–50 min totais de WORK acumulado',
+    },
+    'intervalado_recuperacao_incompleta': {
+        'work': '3–8 min', 'recovery': 'recuperação curta (1:0.5 a 1:1)',
+        'acumulo': '15–40 min totais de WORK acumulado',
+    },
+    'over_under': {
+        'work': 'alternância over (1–4 min) → under (1–4 min), repetido',
+        'recovery': 'a recuperação ocorre no próprio bloco under; pausa completa no final',
+        'acumulo': '20–45 min de alternância total',
+    },
+    'bloco_progressivo': {
+        'work': 'blocos de 3–8 min em intensidade crescente',
+        'recovery': 'pausa curta entre blocos (1–3 min)',
+        'acumulo': '20–45 min totais',
+    },
+    'progressivo': {
+        'work': 'rampa contínua de intensidade', 'recovery': 'não aplicável',
+        'acumulo': '15–30 min de progressão total',
+    },
+    'inicio_forte': {
+        'work': 'fase forte: 30–90 s | fase sustentação: 4–10 min',
+        'recovery': 'completa entre repetições',
+        'acumulo': '3–5 repetições (decisão do utilizador/treinador)',
+    },
+    'acumulacao_progressiva': {
+        'work': 'duração progressivamente maior a cada sessão',
+        'recovery': 'entre sessões; não é um único esforço',
+        'acumulo': 'aumentar progressivamente o tempo total na faixa-alvo',
+    },
+    'foco_periferico': {
+        'work': '3–8 min', 'recovery': 'suficiente para SmO2 recuperar parcialmente (1:1 a 1:2)',
+        'acumulo': '20–40 min totais de WORK acumulado',
+    },
+    'estimulo_multissistemico': {
+        'work': '4–12 min', 'recovery': 'completa a moderada (1:1 a 1:2)',
+        'acumulo': '20–50 min totais',
+    },
+    'tiros_curtos': {
+        'work': '20–60 s', 'recovery': 'curta a moderada (1:3 a 1:5)',
+        'acumulo': '10–20 min de WORK acumulado',
+    },
+}
+
+
+def profilage_estilos_parametrizados(padrao_vst, limitador_moxy_us,
+                                     limitador_moxy_pc, bp1_w, bp2_w,
+                                     cp_w, recorrencia_estado,
+                                     n_modalidades_historico, modalidade):
+    """Camada de interpretação + parametrização de estilos de treino.
+    Consome APENAS resultados já calculados; não faz nenhum cálculo
+    fisiológico novo.
+
+    Devolve os estilos mais relevantes com:
+    - explicação fisiológica específica para o padrão observado;
+    - faixas de watts derivadas de BP1/BP2/CP reais;
+    - WORK/RECOVERY por estilo;
+    - concordância VST × MOXY;
+    - prioridade (principal/secundário/alternativa).
+    """
+    grupo = _PADRAO_PARA_GRUPO.get(padrao_vst, 'insuficiente')
+
+    # ── concordância VST × MOXY ──
+    grupo_moxy_us = _MOXY_PARA_GRUPO.get(limitador_moxy_us or '') if limitador_moxy_us else None
+    grupo_moxy_pc = _MOXY_PARA_GRUPO.get(limitador_moxy_pc or '') if limitador_moxy_pc else None
+    grupos_moxy = {g for g in [grupo_moxy_us, grupo_moxy_pc] if g}
+
+    if not grupos_moxy:
+        concordancia = {'status': 'sem_dados',
+                        'nota': 'Sem limitador identificado na aba MOXY/Intervenções.'}
+    elif grupo in grupos_moxy:
+        concordancia = {'status': 'concordante',
+                        'nota': (f'VST ({padrao_vst}) e MOXY '
+                                 f'({limitador_moxy_us or ""} / {limitador_moxy_pc or ""})'
+                                 ' apontam para componentes fisiológicos compatíveis — '
+                                 'aumenta a coerência da hipótese.')}
+    elif grupo == 'multisistemico' and grupos_moxy:
+        concordancia = {'status': 'parcial',
+                        'nota': (f'VST (multissistêmico) e MOXY '
+                                 f'({limitador_moxy_us or ""} / {limitador_moxy_pc or ""})'
+                                 ' — sobreposição parcial: componente MOXY presente '
+                                 'no padrão VST.')}
+    else:
+        concordancia = {'status': 'discordante',
+                        'nota': (f'VST ({padrao_vst}) e MOXY '
+                                 f'({limitador_moxy_us or ""} / {limitador_moxy_pc or ""})'
+                                 ' apontam para componentes diferentes — '
+                                 'manter múltiplas hipóteses; não forçar conclusão.')}
+
+    # ── selecção de estilos ──
+    conf = _ESTILOS_POR_PADRAO.get(padrao_vst) or {'primarios': [], 'secundarios': []}
+    chaves_prim = conf['primarios']
+    chaves_sec  = conf['secundarios'] if recorrencia_estado in (
+        'RECORRENTE NA MESMA MODALIDADE',
+        'RECORRENTE EM MÚLTIPLAS MODALIDADES',
+        'OBSERVADO EM MÚLTIPLAS SESSÕES') else conf['secundarios'][:2]
+
+    def _montar(chave, prioridade):
+        if chave not in ESTILOS_DE_TREINO:
+            return None
+        base = ESTILOS_DE_TREINO[chave]
+        expl_grupo = _EXPLICACAO_FISIOLOGICA.get(chave, {})
+        explicacao = (expl_grupo.get(grupo)
+                      or expl_grupo.get('cardiorrespiratorio')
+                      or base.get('objetivo', ''))
+        faixas = _faixas_watts(bp1_w, bp2_w, cp_w, chave)
+        wr = _WORK_RECOVERY.get(chave, {})
+        return {
+            'chave': chave,
+            'nome': base['nome'],
+            'prioridade': prioridade,
+            'limitador_relacionado': padrao_vst,
+            'objetivo': base['objetivo'],
+            'por_que': explicacao,
+            'faixas_watts': faixas,
+            'work': wr.get('work', '—'),
+            'recovery': wr.get('recovery', '—'),
+            'acumulo': wr.get('acumulo', '—'),
+            'metricas_principais': base.get('o_que_observar', [])[:4],
+            'metricas_complementares': base.get('o_que_observar', [])[4:],
+            'resposta_esperada': base.get('resposta_esperada', ''),
+            'modalidade': modalidade,
+            'nota_modalidade': ('Parâmetros de intensidade (watts) específicos '
+                                f'da modalidade {modalidade} — não transferir '
+                                'para outra modalidade.'),
+        }
+
+    estilos = []
+    prioridades = ['principal'] + ['secundário'] * max(0, len(chaves_prim) - 1)
+    for i, c in enumerate(chaves_prim):
+        r = _montar(c, prioridades[i] if i < len(prioridades) else 'principal')
+        if r:
+            estilos.append(r)
+    for i, c in enumerate(chaves_sec):
+        prio = 'secundário' if i == 0 else 'alternativa'
+        r = _montar(c, prio)
+        if r:
+            estilos.append(r)
+
+    if not estilos and grupo in ('dissociado', 'insuficiente'):
+        return {
+            'grupo': grupo, 'concordancia': concordancia,
+            'estilos': [], 'modalidade': modalidade,
+            'nota': ('Dados insuficientes/dissociados para atribuir um estilo '
+                     'de treino específico a um limitador. '
+                     'Considerar nova verificação com melhor qualidade de dados.'),
+        }
+
+    return {
+        'grupo': grupo, 'concordancia': concordancia,
+        'estilos': estilos[:7],   # máximo 7, nunca lista interminável
+        'modalidade': modalidade,
+        'n_modalidades_historico': n_modalidades_historico,
+        'recorrencia': recorrencia_estado,
+        'nota': None,
+    }

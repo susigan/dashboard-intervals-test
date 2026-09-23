@@ -2783,6 +2783,12 @@ def profilage_estilos_parametrizados(padrao_vst, limitador_moxy_us,
                       or base.get('objetivo', ''))
         faixas = _faixas_watts(bp1_w, bp2_w, cp_w, chave)
         wr = _WORK_RECOVERY.get(chave, {})
+        # extrair durações numéricas da string de WORK para calcular distâncias
+        import re as _re
+        _nums = [int(x) for x in _re.findall(r'\d+', wr.get('work','')) if int(x) < 200]
+        _t_min = (min(_nums) * 60) if _nums else None
+        _t_max = (max(_nums) * 60) if _nums else None
+        pace_dist = faixas_pace_e_distancia(bp1_w, bp2_w, _t_min, _t_max, modalidade)
         return {
             'chave': chave,
             'nome': base['nome'],
@@ -2802,6 +2808,7 @@ def profilage_estilos_parametrizados(padrao_vst, limitador_moxy_us,
                                 f'da modalidade {modalidade} — não transferir '
                                 'para outra modalidade.'),
             'instrucoes': _instrucoes_operacionais(chave, faixas),
+            'pace_e_distancia': pace_dist,
         }
 
     estilos = []
@@ -3206,4 +3213,98 @@ def _instrucoes_operacionais(chave, faixas_watts, limiter_result=None,
         'nota_entry': base.get('nota_entry'),
         'recovery_nota': recovery_nota,
         'rpe_nota': rpe_nota,
+    }
+
+
+# ============================================================
+# PACE / 500 m — Fórmula oficial Concept2
+# Derivada empiricamente dos dados publicados em:
+#   https://www.concept2.com/training/watts-calculator
+# Relação: watts = C / pace_500m_s^3
+#   onde C = 2×10^8 e pace_500m_s = pace em segundos por 500 m
+# Verificado: 100W↔2:06, 200W↔1:40, 250W↔1:33, 300W↔1:27, 400W↔1:19
+# Aplicável a Row e SkiErg (Concept2). Não usar para Bike nem Run.
+# ============================================================
+_C2_CONSTANTE = 2e8   # watts * pace_500m_s^3 = 2×10^8
+
+def watts_para_pace_500m(watts):
+    """Devolve o pace /500 m em segundos para uma dada potência (W).
+    Usa a fórmula Concept2: pace_s = (2×10^8 / watts)^(1/3).
+    Devolve None se watts ≤ 0.
+    """
+    if not watts or watts <= 0:
+        return None
+    return (_C2_CONSTANTE / watts) ** (1 / 3)
+
+
+def _fmt_pace(pace_500m_s):
+    """Converte segundos/500m em string 'M:SS' (ex: 110.4 → '1:50')."""
+    if pace_500m_s is None:
+        return '—'
+    mins = int(pace_500m_s // 60)
+    segs = int(round(pace_500m_s % 60))
+    if segs == 60:
+        mins += 1; segs = 0
+    return f"{mins}:{segs:02d}"
+
+
+def _distancia_metros(duracao_s, watts):
+    """Distância percorrida (m) dado duração em segundos e potência.
+    Usa a fórmula Concept2: dist = duracao_s / (pace_500m_s / 500).
+    """
+    if not duracao_s or not watts or watts <= 0:
+        return None
+    pace_500m_s = (_C2_CONSTANTE / watts) ** (1 / 3)
+    pace_s_per_m = pace_500m_s / 500
+    return round(duracao_s / pace_s_per_m)
+
+
+def faixas_pace_e_distancia(bp1_w, bp2_w, work_min_s, work_max_s, modalidade):
+    """Para Row e SkiErg, calcula pace/500m e distâncias a partir das faixas
+    de watts e das durações de série. Devolve dict com faixas textuais.
+    Para Bike e Run, devolve None (pace/500m não se aplica).
+    """
+    if modalidade not in ('Row', 'Ski'):
+        return None
+    # pace: W maior → pace mais rápido (menor número)
+    p_lento = watts_para_pace_500m(bp1_w) if bp1_w else None
+    p_rapido = watts_para_pace_500m(bp2_w) if bp2_w else None
+
+    def _dist_faixa(w, t_min, t_max):
+        d_min = _distancia_metros(t_min, w) if t_min else None
+        d_max = _distancia_metros(t_max, w) if t_max else None
+        return d_min, d_max
+
+    # distância mínima = W_max (ritmo rápido) × duração mínima
+    # distância máxima = W_min (ritmo lento) × duração máxima
+    if bp2_w and work_min_s:
+        d_min = _distancia_metros(work_min_s, bp2_w)
+    else:
+        d_min = None
+    if bp1_w and work_max_s:
+        d_max = _distancia_metros(work_max_s, bp1_w)
+    else:
+        d_max = None
+
+    pace_str = None
+    if p_lento and p_rapido:
+        pace_str = f"{_fmt_pace(p_rapido)}–{_fmt_pace(p_lento)} /500m"
+    elif p_rapido:
+        pace_str = f"≈ {_fmt_pace(p_rapido)} /500m"
+    elif p_lento:
+        pace_str = f"≈ {_fmt_pace(p_lento)} /500m"
+
+    dist_str = None
+    if d_min and d_max and d_min != d_max:
+        dist_str = f"≈ {d_min:,}–{d_max:,} m".replace(',', '.')
+    elif d_min:
+        dist_str = f"≈ {d_min:,} m".replace(',', '.')
+    elif d_max:
+        dist_str = f"≈ {d_max:,} m".replace(',', '.')
+
+    return {
+        'pace_500m': pace_str,
+        'distancia_por_serie': dist_str,
+        'pace_min_s': p_rapido,  # numérico para cálculos
+        'pace_max_s': p_lento,
     }

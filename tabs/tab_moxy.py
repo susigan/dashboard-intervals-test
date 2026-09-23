@@ -3613,229 +3613,258 @@ function mxHipoteseMostrar(d){
 // mxHistoricoEstilosMostrar(d) -- recebe o objecto completo do /comparar
 // para extrair moxy_id, bp1_w/bp2_w/padrao sem depender do estado do
 // frontend (MX_ULT_US / MX_ULT_LIMIARES_D podem não estar populados).
+// mxHistoricoEstilosMostrar(d) — recebe o objecto completo do /comparar.
+// Resolve o limitador MOXY em 3 níveis (mais específico → mais geral):
+//   1. moxy_id vinculado ao VST actual;
+//   2. interpretação mais recente da modalidade (novo endpoint);
+//   3. MX_ULT_US/PC se carregados na sessão de browser.
+// Usa linguagem operacional: "Série", "Recuperação", pace/500m para Row/Ski.
 function mxHistoricoEstilosMostrar(d){
  const boxP=document.getElementById('mxHistoricoPatterns');
  const boxE=document.getElementById('mxHistoricoEstilos');
  if(!boxP || !boxE) return;
- boxP.innerHTML='<p class="sub" style="font-size:11px;">a carregar histórico...</p>';
+ boxP.innerHTML='<p class="sub" style="font-size:11px;">a carregar...</p>';
  boxE.innerHTML='';
 
- // --- extrair dados fiáveis do objecto do /comparar ---
  d=d||{};
  const moxyId=d.dia1_activity_id||'';
- // BP1/BP2 da verificação actual (dia2 = VST actual)
  const comp1=d.comparacao_bp1||{}, comp2=d.comparacao_bp2||{};
- const pot1=comp1.potencia||{}, pot2=comp2.potencia||{};
+ const pot1=(comp1.potencia)||{}, pot2=(comp2.potencia)||{};
  const bp1=pot1.dia2_w!=null?Math.round(pot1.dia2_w):null;
  const bp2=pot2.dia2_w!=null?Math.round(pot2.dia2_w):null;
- // CP da tab Metabol (pode não existir)
  const cp=(typeof PM_CP!=='undefined'&&PM_CP!=null)?Math.round(PM_CP):null;
- // padrão actual (BP1 como referência; se insuficiente, tentar BP2)
  const lbp1=d.limiter_bp1||{}, lbp2=d.limiter_bp2||{};
- const padrao1=lbp1.padrao||'';
- const padrao2=lbp2.padrao||'';
+ const padrao1=lbp1.padrao||'', padrao2=lbp2.padrao||'';
  const padraoAtual=padrao1&&padrao1!=='EVIDÊNCIA INSUFICIENTE'?padrao1:padrao2;
- // modalidade do selector existente
  const modEl=document.getElementById('mxModalidade');
  const mod=modEl?modEl.value:'';
- // limitadores MOXY (se já carregados nesta sessão, usá-los; o backend
- // irá buscá-los directamente se não forem passados)
- const limUs=MX_ULT_US||'';
- const limPc=MX_ULT_PC||'';
 
- const qs=[
-  moxyId?'moxy_id='+encodeURIComponent(moxyId):'',
-  padraoAtual?'padrao_atual='+encodeURIComponent(padraoAtual):'',
-  bp1!=null?'bp1_w='+bp1:'',
-  bp2!=null?'bp2_w='+bp2:'',
-  cp!=null?'cp_w='+cp:'',
-  mod?'modalidade='+encodeURIComponent(mod):'',
-  limUs?'limitador_moxy='+encodeURIComponent(limUs):'',
-  limPc?'limitador_moxy_pc='+encodeURIComponent(limPc):'',
- ].filter(Boolean).join('&');
- const url='/api/moxy/vst/historico_estilos'+(qs?'?'+qs:'');
-
- fetch(url).then(r=>r.json()).then(function(data){
-  if(data.status!=='ok'){ boxP.innerHTML='<p class="sub">erro: '+(data.mensagem||'?')+'</p>'; return; }
-  const rec=data.recorrencia_global||[];
-  const porMod=data.recorrencia_por_modalidade||{};
-  const estilos=data.estilos_historico||[];
-  const conc=data.concordancia_moxy||{};
-  const ep=data.estilos_parametrizados;
-
-  // ── resumo: padrão actual + MOXY + histórico ──
-  const limUsReal=data.limitador_moxy_us||limUs||null;
-  const limPcReal=data.limitador_moxy_pc||limPc||null;
-  const moxyLabel=[limUsReal,limPcReal].filter(Boolean).join(' / ')||'Sem dados';
-  const bp1r=data.bp1_w_usado!=null?data.bp1_w_usado:bp1;
-  const bp2r=data.bp2_w_usado!=null?data.bp2_w_usado:bp2;
-  const padraoHistorico=(rec[0]||{}).padrao||'—';
-  const recHistorico=(rec[0]||{}).recorrencia||'—';
-  const nMod=(rec[0]||{}).n_modalidades||0;
-  const nSess=(rec[0]||{}).n_total||0;
-  // concordância: usar o que o backend calculou, ou calcular aqui
-  const epConc=(ep||{}).concordancia||{};
-  const corCV={concordante:'#3FB950',parcial:'#F4D03F',discordante:'#F0883E',sem_dados:'#8b949e'}[epConc.status]||'#8b949e';
-  function corRec(r){
-   if(r==='RECORRENTE EM MÚLTIPLAS MODALIDADES') return '#A371F7';
-   if(r==='RECORRENTE NA MESMA MODALIDADE') return '#5DADE2';
-   if(r==='OBSERVADO EM MÚLTIPLAS SESSÕES') return '#F4D03F';
-   return '#8b949e';
-  }
-
-  let hP='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;">'
-   +'<b style="font-size:12px;">Padrão / Limitador</b>'
-   +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;width:100%;">'
-   +'<tr><td style="color:#8b949e;padding:2px 8px 2px 0;width:140px;">Padrão VST actual</td>'
-   +'<td><b>'+padrao1+'</b>'+(padrao2&&padrao2!==padrao1?' / '+padrao2:'')+'</td></tr>'
-   +'<tr><td style="color:#8b949e;padding:2px 8px 2px 0;">MOXY / Intervenções</td>'
-   +'<td><b>'+moxyLabel+'</b></td></tr>'
-   +'<tr><td style="color:#8b949e;padding:2px 8px 2px 0;">Padrão histórico</td>'
-   +'<td>'+padraoHistorico+' <span style="color:'+corRec(recHistorico)+';">('+recHistorico+' · '+nSess+' sess. · '+nMod+' mod.)</span></td></tr>'
-   +(epConc.status&&epConc.status!=='sem_dados'
-    ?'<tr><td style="color:#8b949e;padding:2px 8px 2px 0;">VST × MOXY</td>'
-     +'<td style="color:'+corCV+';">'+epConc.status.toUpperCase()+' — <span style="color:#ccc;font-size:10px;">'+epConc.nota+'</span></td></tr>'
-    :'<tr><td style="color:#8b949e;padding:2px 8px 2px 0;">VST × MOXY</td>'
-     +'<td style="color:#8b949e;">Sem dados MOXY disponíveis para esta sessão.</td></tr>')
-   +(bp1r||bp2r
-    ?'<tr><td style="color:#8b949e;padding:2px 8px 2px 0;">Watts sessão</td>'
-     +'<td>BP1 '+((bp1r!=null?bp1r+'W':'—'))+' · BP2 '+((bp2r!=null?bp2r+'W':'—'))+(cp?' · CP '+cp+'W':'')+'</td></tr>'
-    :'')
-   +'</table></div>';
-
-  // detalhes históricos em <details>
-  if(rec.length){
-   let hDet='<details style="margin-top:4px;"><summary class="sub" style="cursor:pointer;font-size:11px;">Ver histórico completo por modalidade</summary>';
-   hDet+='<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
-    +'<tr class="sub"><th style="padding:2px 8px 2px 0;">Padrão</th><th style="padding:2px 6px;">Sess.</th><th style="padding:2px 6px;">Mod.</th><th style="padding:2px 6px;">BP1</th><th style="padding:2px 6px;">BP2</th><th style="padding:2px 6px;">Última</th></tr>';
-   rec.forEach(function(r){
-    hDet+='<tr style="border-top:1px solid #21262d;">'
-     +'<td style="padding:2px 8px 2px 0;font-size:10px;">'+r.padrao+'</td>'
-     +'<td style="padding:2px 6px;text-align:center;">'+r.n_total+'</td>'
-     +'<td style="padding:2px 6px;font-size:10px;">'+(r.modalidades||[]).join(', ')+'</td>'
-     +'<td style="padding:2px 6px;text-align:center;">'+r.n_bp1+'</td>'
-     +'<td style="padding:2px 6px;text-align:center;">'+r.n_bp2+'</td>'
-     +'<td style="padding:2px 6px;font-size:10px;">'+(r.ultima_ocorrencia||'—')+'</td></tr>';
-   });
-   hDet+='</table>';
-   if(Object.keys(porMod).length>1){
-    hDet+='<b style="font-size:11px;margin-top:6px;display:block;">Por modalidade</b>'
-     +'<table style="border-collapse:collapse;font-size:10px;margin-top:3px;">'
-     +'<tr class="sub"><th style="padding:2px 8px 2px 0;">Mod.</th><th>Padrão</th><th style="padding:2px 6px;">BP1</th><th style="padding:2px 6px;">BP2</th></tr>';
-    Object.keys(porMod).forEach(function(m){
-     (porMod[m]||[]).forEach(function(p,i){
-      hDet+='<tr style="border-top:1px solid #21262d;">'
-       +'<td style="padding:2px 8px 2px 0;">'+(i===0?m:'')+'</td>'
-       +'<td style="padding:2px 8px;font-size:10px;">'+p.padrao+'</td>'
-       +'<td style="text-align:center;">'+p.n_bp1+'</td>'
-       +'<td style="text-align:center;">'+p.n_bp2+'</td></tr>';
-     });
-    });
-    hDet+='</table>';
-   }
-   hDet+='<p class="sub" style="font-size:10px;margin-top:4px;">'+data.nota_metodologica+'</p></details>';
-   hP+=hDet;
-  }
-  boxP.innerHTML=hP;
-
-  // ── estilos parametrizados ──
-  if(!ep || !ep.estilos || !ep.estilos.length){
-   boxE.innerHTML='<p class="sub" style="font-size:11px;">'+(ep&&ep.nota||'Sem estilos candidatos para o padrão observado.')+'</p>';
+ // resolver o limitador MOXY em 3 níveis
+ function _fetchLimitador(callback){
+  // nível 1: MX_ULT_US já carregado nesta sessão
+  if(MX_ULT_US){ callback(MX_ULT_US, MX_ULT_PC, 'sessão actual'); return; }
+  // nível 2: novo endpoint por modalidade (independente do vínculo VST)
+  if(mod){
+   fetch('/api/moxy/limitador/'+encodeURIComponent(mod))
+   .then(r=>r.json()).then(function(ld){
+    if(ld.status==='ok'&&(ld.limitador_us||ld.limitador_pc)){
+     callback(ld.limitador_us, ld.limitador_pc, 'histórico '+mod);
+    } else {
+     callback(null, null, null);
+    }
+   }).catch(function(){ callback(null, null, null); });
    return;
   }
-  const wattsLabel=bp1r||bp2r
-   ?'BP1='+(bp1r!=null?bp1r+'W':'—')+', BP2='+(bp2r!=null?bp2r+'W':'—')+(cp?', CP='+cp+'W':'')
-   :'BP1/BP2/CP não disponíveis — faixas indicativas apenas';
-  let hE='<h3 style="font-size:13px;margin-top:2px;">Estilos de treino candidatos <span class="sub" style="font-size:10px;font-weight:normal;">('+ep.modalidade+' · '+wattsLabel+')</span></h3>';
-  function cardEstilo(e,idx){
-   const fw=e.faixas_watts||{}, z=fw.zonas||{};
-   const instr=e.instrucoes||{};
-   const corP={principal:'#3FB950',secundário:'#F4D03F',alternativa:'#8b949e'}[e.prioridade]||'#8b949e';
-   // --- watts operacional ---
-   const wLabel=instr.watts_label||'—';
-   // --- listas como bullets HTML ---
-   function ul(items,cor){
-    if(!items||!items.length) return '';
-    return '<ul style="margin:3px 0 0 14px;padding:0;font-size:11px;">'
-     +items.map(t=>'<li style="margin:1px 0;'+(cor?'color:'+cor+';':'')+'">' +t+'</li>').join('')+'</ul>';
-   }
-   function check(items){ return ul(items,'#8b949e'); }
-   function warn(items){
-    if(!items||!items.length) return '';
-    return '<ul style="margin:3px 0 0 14px;padding:0;font-size:11px;">'
-     +items.map(t=>'<li style="margin:1px 0;">⚠ '+t+'</li>').join('')+'</ul>';
-   }
-   let html='<div class="card" style="min-width:270px;">'
-    // cabeçalho
-    +'<div class="label" style="color:'+corP+';">'+e.nome
-    +' <span style="font-size:9px;background:#21262d;padding:1px 5px;border-radius:3px;">'+e.prioridade+'</span></div>'
-    +'<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+e.objetivo+'</div>'
-    // secção operacional principal
-    +'<div style="background:#0d1117;border-radius:6px;padding:8px 10px;margin-top:6px;">'
-    // WATTS
-    +'<div style="font-size:12px;margin-bottom:4px;"><b>Watts</b> <span style="color:#F4D03F;">'+wLabel+'</span></div>'
-    // WORK
-    +'<div style="font-size:11px;margin-bottom:2px;"><b>WORK:</b> '+instr.work_instrucao+'</div>'
-    // RECOVERY
-    +'<div style="font-size:11px;margin-bottom:2px;"><b>Recovery:</b> '+instr.recovery_instrucao+'</div>'
-    // ACÚMULO
-    +'<div style="font-size:11px;margin-bottom:2px;"><b>Acúmulo:</b> '+e.acumulo+'</div>'
-    // RPE
-    +'<div style="font-size:11px;margin-bottom:'+(instr.durante_work&&instr.durante_work.length?'4':'0')+'px;"><b>RPE:</b> '+instr.rpe_instrucao+'</div>'
-    +(instr.rpe_nota?'<div style="font-size:10px;color:#F4D03F;">'+instr.rpe_nota+'</div>':'')
-    +(instr.recovery_nota?'<div style="font-size:10px;color:#F4D03F;">'+instr.recovery_nota+'</div>':'')
-    // DURANTE O WORK
-    +(instr.durante_work&&instr.durante_work.length
-     ?'<div style="font-size:11px;margin-top:4px;"><b>Durante o WORK:</b></div>'+check(instr.durante_work)
-     :'')
-    // ENTRE WORKS
-    +(instr.entre_works&&instr.entre_works.length
-     ?'<div style="font-size:11px;margin-top:4px;"><b>Entre WORKs:</b></div>'+check(instr.entre_works)
-     :'')
-    // NOTA ENTRY
-    +(instr.nota_entry
-     ?'<div style="font-size:10px;color:#8b949e;border-left:2px solid #30363d;padding-left:6px;margin-top:4px;">'+instr.nota_entry+'</div>'
-     :'')
-    +'</div>'
-    // CONTINUAR / NÃO AUMENTAR
-    +'<details style="margin-top:6px;"><summary class="sub" style="cursor:pointer;font-size:11px;">✓ Continuar se… / ⚠ Não aumentar se…</summary>'
-    +'<div style="font-size:11px;margin-top:4px;color:#3FB950;">Continue acumulando se:</div>'
-    +check(instr.continuar_se)
-    +'<div style="font-size:11px;margin-top:4px;color:#F0883E;">Não aumente se:</div>'
-    +warn(instr.nao_aumentar_se)
-    +'</details>'
-    // DADOS TÉCNICOS EM DETAILS
-    +'<details style="margin-top:4px;"><summary class="sub" style="cursor:pointer;font-size:10px;">Critérios fisiológicos do sistema</summary>'
-    +'<div style="font-size:10px;margin-top:3px;color:#8b949e;"><b>Justificativa:</b> '+e.por_que+'</div>'
-    +'<div style="font-size:10px;margin-top:2px;"><b>Métricas analíticas:</b> '+(e.metricas_principais||[]).join(' · ')+'</div>'
-    +'<div style="font-size:10px;margin-top:2px;"><b>Resposta esperada:</b> '+e.resposta_esperada+'</div>'
-    +(fw.disponivel&&z.entre_bp1_bp2
-     ?'<div style="font-size:10px;margin-top:2px;"><b>Referências de intensidade:</b> '
-      +'BP1 '+(fw.bp1_w!=null?fw.bp1_w+'W':'—')+' | BP2 '+(fw.bp2_w!=null?fw.bp2_w+'W':'—')+(fw.cp_w?' | CP '+fw.cp_w+'W':'')+'</div>'
-     :'')
-    +'</details>'
-    +'<p style="font-size:9px;color:#484f58;margin-top:4px;font-style:italic;">Sem nº de séries obrigatório. Utilizador/treinador decide a quantidade.</p>'
-    +'</div>';
-   return html;
-  }
+  callback(null, null, null);
+ }
 
-  const top3=ep.estilos.slice(0,3), resto=ep.estilos.slice(3);
-  hE+='<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(270px,1fr));">';
-  top3.forEach(function(e,i){ hE+=cardEstilo(e,i); });
-  hE+='</div>';
-  if(resto.length){
-   hE+='<details style="margin-top:8px;"><summary class="sub" style="cursor:pointer;font-size:11px;">Ver outros estilos candidatos ('+resto.length+')</summary>'
-    +'<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(270px,1fr));margin-top:6px;">';
-   resto.forEach(function(e,i){ hE+=cardEstilo(e,i+3); });
-   hE+='</div></details>';
-  }
-  hE+='<p class="sub" style="font-size:10px;margin-top:6px;">Watts derivados de BP1/BP2/CP reais da sessão actual ('+ep.modalidade+'). Não usar watts de outra modalidade.</p>';
-  boxE.innerHTML=hE;
+ _fetchLimitador(function(limUs, limPc, limFonte){
+  const qs=[
+   moxyId?'moxy_id='+encodeURIComponent(moxyId):'',
+   padraoAtual?'padrao_atual='+encodeURIComponent(padraoAtual):'',
+   bp1!=null?'bp1_w='+bp1:'',
+   bp2!=null?'bp2_w='+bp2:'',
+   cp!=null?'cp_w='+cp:'',
+   mod?'modalidade='+encodeURIComponent(mod):'',
+   limUs?'limitador_moxy='+encodeURIComponent(limUs):'',
+   limPc?'limitador_moxy_pc='+encodeURIComponent(limPc):'',
+  ].filter(Boolean).join('&');
+  fetch('/api/moxy/vst/historico_estilos'+(qs?'?'+qs:'')).then(r=>r.json()).then(function(data){
+   if(data.status!=='ok'){boxP.innerHTML='<p class="sub">erro: '+(data.mensagem||'?')+'</p>'; return;}
+   const rec=data.recorrencia_global||[];
+   const porMod=data.recorrencia_por_modalidade||{};
+   const ep=data.estilos_parametrizados;
+   const limUsReal=data.limitador_moxy_us||limUs||null;
+   const limPcReal=data.limitador_moxy_pc||limPc||null;
+   const moxyLabel=[limUsReal,limPcReal].filter(Boolean).join(' / ');
+   const bp1r=data.bp1_w_usado!=null?data.bp1_w_usado:bp1;
+   const bp2r=data.bp2_w_usado!=null?data.bp2_w_usado:bp2;
+   const padraoHistorico=(rec[0]||{}).padrao||'—';
+   const recHistorico=(rec[0]||{}).recorrencia||'—';
+   const nMod=(rec[0]||{}).n_modalidades||0;
+   const nSess=(rec[0]||{}).n_total||0;
+   const epConc=(ep||{}).concordancia||{};
+   const corCV={concordante:'#3FB950',parcial:'#F4D03F',discordante:'#F0883E',sem_dados:'#8b949e'}[epConc.status||'sem_dados']||'#8b949e';
+   function corRec(r){
+    if(r==='RECORRENTE EM MÚLTIPLAS MODALIDADES') return '#A371F7';
+    if(r==='RECORRENTE NA MESMA MODALIDADE') return '#5DADE2';
+    if(r==='OBSERVADO EM MÚLTIPLAS SESSÕES') return '#F4D03F';
+    return '#8b949e';
+   }
 
- }).catch(function(e){
-  boxP.innerHTML='<p class="sub" style="font-size:11px;">erro: '+e.message+'</p>';
+   // ── painel de resumo ──
+   let moxyLine='';
+   if(moxyLabel){
+    const concordStr=epConc.status&&epConc.status!=='sem_dados'
+     ?' <span style="color:'+corCV+';">('+(epConc.status==='concordante'?'compatível com VST':epConc.status==='parcial'?'parcialmente compatível':'sinais diferentes')+')</span>':'';
+    moxyLine='<tr><td style="color:#8b949e;padding:2px 8px 2px 0;width:130px;">MOXY '+(limFonte||'')+'</td>'
+     +'<td><b>'+moxyLabel+'</b>'+concordStr+'</td></tr>';
+   } else {
+    const moxyDetalhe=moxyId?('Sem interpretação disponível para a sessão MOXY vinculada')
+     :('Sem dado MOXY disponível para '+mod+' — use a aba Intervenções para gerar uma.');
+    moxyLine='<tr><td style="color:#8b949e;padding:2px 8px 2px 0;">MOXY</td>'
+     +'<td style="color:#8b949e;font-size:10px;">'+moxyDetalhe+'</td></tr>';
+   }
+   const wattsLinha=bp1r||bp2r
+    ?'<tr><td style="color:#8b949e;padding:2px 8px 2px 0;">Watts sessão</td>'
+     +'<td>BP1 '+(bp1r!=null?bp1r+'W':'—')+' · BP2 '+(bp2r!=null?bp2r+'W':'—')+(cp?' · CP '+cp+'W':'')+'</td></tr>'
+    :'';
+   let hP='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:8px;">'
+    +'<b style="font-size:12px;">Limitação / Padrão</b>'
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:5px;width:100%;">'
+    +'<tr><td style="color:#8b949e;padding:2px 8px 2px 0;width:130px;">Padrão VST actual</td>'
+    +'<td><b>'+padrao1+'</b>'+(padrao2&&padrao2!==padrao1&&padrao2?'<br><span style="font-size:10px;color:#8b949e;">BP2: '+padrao2+'</span>':'')+'</td></tr>'
+    +moxyLine
+    +(rec.length?'<tr><td style="color:#8b949e;padding:2px 8px 2px 0;">Padrão histórico</td>'
+     +'<td>'+padraoHistorico+' <span style="color:'+corRec(recHistorico)+';">('+recHistorico+' · '+nSess+' sess. · '+nMod+' modal.)</span></td></tr>':'')
+    +wattsLinha
+    +'</table>';
+   // histórico por modalidade em <details>
+   if(rec.length>1||Object.keys(porMod).length>1){
+    hP+='<details style="margin-top:4px;"><summary class="sub" style="cursor:pointer;font-size:10px;">Padrões históricos completos</summary>'
+     +'<table style="border-collapse:collapse;font-size:10px;margin-top:4px;">'
+     +'<tr class="sub"><th style="padding:2px 6px 2px 0;">Padrão</th><th>Sess.</th><th>Modal.</th><th>BP1</th><th>BP2</th><th>Última</th></tr>';
+    rec.forEach(function(r){
+     hP+='<tr style="border-top:1px solid #21262d;">'
+      +'<td style="padding:2px 6px 2px 0;">'+r.padrao+'</td>'
+      +'<td style="text-align:center;">'+r.n_total+'</td>'
+      +'<td style="font-size:9px;">'+(r.modalidades||[]).join(', ')+'</td>'
+      +'<td style="text-align:center;">'+r.n_bp1+'</td>'
+      +'<td style="text-align:center;">'+r.n_bp2+'</td>'
+      +'<td style="font-size:9px;">'+(r.ultima_ocorrencia||'—')+'</td></tr>';
+    });
+    hP+='</table>';
+    if(Object.keys(porMod).length>1){
+     hP+='<b style="font-size:10px;margin-top:4px;display:block;">Por modalidade</b>'
+      +'<table style="border-collapse:collapse;font-size:10px;margin-top:2px;">'
+      +'<tr class="sub"><th style="padding:2px 6px 2px 0;">Mod.</th><th>Padrão</th><th>BP1</th><th>BP2</th></tr>';
+     Object.keys(porMod).forEach(function(m){
+      (porMod[m]||[]).forEach(function(p,i){
+       hP+='<tr style="border-top:1px solid #21262d;">'
+        +'<td style="padding:2px 6px 2px 0;">'+(i===0?m:'')+'</td>'
+        +'<td>'+p.padrao+'</td>'
+        +'<td style="text-align:center;">'+p.n_bp1+'</td>'
+        +'<td style="text-align:center;">'+p.n_bp2+'</td></tr>';
+      });
+     });
+     hP+='</table>';
+    }
+    hP+='<p class="sub" style="font-size:9px;margin-top:3px;">'+data.nota_metodologica+'</p></details>';
+   }
+   hP+='</div>';
+   boxP.innerHTML=hP;
+
+   // ── estilos parametrizados ──
+   if(!ep||!ep.estilos||!ep.estilos.length){
+    boxE.innerHTML='<p class="sub" style="font-size:11px;">'+(ep&&ep.nota||'Sem estilos candidatos para o padrão observado.')+'</p>';
+    return;
+   }
+   const isRowSki=mod==='Row'||mod==='Ski';
+   const wattsLabel=bp1r||bp2r
+    ?((bp1r!=null?'BP1 '+bp1r+'W':'')+' · '+(bp2r!=null?'BP2 '+bp2r+'W':'')+(cp?' · CP '+cp+'W':''))
+    :'Sem BP/CP disponíveis para esta sessão';
+   let hE='<div style="font-size:11px;color:#8b949e;margin-bottom:6px;">'+ep.modalidade+' · '+wattsLabel+'</div>';
+
+   // ── card de cada estilo ──
+   function cardEstilo(e){
+    const fw=e.faixas_watts||{}, z=fw.zonas||{};
+    const instr=e.instrucoes||{};
+    const pd=e.pace_e_distancia||null;
+    const corP={principal:'#3FB950',secundário:'#F4D03F',alternativa:'#8b949e'}[e.prioridade]||'#8b949e';
+    // intensidade
+    let wHTML='';
+    if(fw.disponivel){
+     if(e.chave==='over_under')
+      wHTML='<div><b>OVER:</b> <span style="color:#F4D03F;">'+z.over+'</span> · <b>UNDER:</b> <span style="color:#5DADE2;">'+z.under+'</span></div>';
+     else if(e.chave==='inicio_forte')
+      wHTML='<div><b>Fase forte:</b> '+z.fase_forte+' · <b>Sustentação:</b> '+(z.fase_sustentacao||'—')+'</div>';
+     else if(e.chave==='progressivo')
+      wHTML='<div><b>Progressão:</b> '+(z.bp1||'—')+' → '+(z.bp2||'—')+'</div>';
+     else{
+      const f=z.entre_bp1_bp2&&z.entre_bp1_bp2!=='—'?z.entre_bp1_bp2:z.proximo_bp2||z.bp2||'—';
+      wHTML='<div><b>Intensidade:</b> <span style="color:#F4D03F;">'+f+'</span></div>';
+     }
+     // pace/500m para Row e Ski
+     if(isRowSki&&pd&&pd.pace_500m){
+      wHTML+='<div style="font-size:11px;margin-top:1px;"><b>Pace/500m:</b> <span style="color:#F4D03F;">'+pd.pace_500m+'</span></div>';
+      if(pd.distancia_por_serie)
+       wHTML+='<div style="font-size:10px;color:#8b949e;"><b>Distância/série:</b> '+pd.distancia_por_serie+'</div>';
+     }
+    } else {
+     wHTML='<div style="color:#F0883E;font-size:10px;">'+fw.nota+'</div>';
+    }
+    function ul(items,cor){
+     if(!items||!items.length) return '';
+     return '<ul style="margin:2px 0 0 12px;padding:0;font-size:11px;">'
+      +items.map(t=>'<li style="margin:1px 0;'+(cor?'color:'+cor+';':'')+'">' +t+'</li>').join('')+'</ul>';
+    }
+    return '<div class="card" style="min-width:270px;">'
+     // título
+     +'<div class="label" style="color:'+corP+';">'+e.nome
+     +' <span style="font-size:9px;background:#21262d;padding:1px 5px;border-radius:3px;">'+e.prioridade+'</span></div>'
+     +'<div style="font-size:10px;color:#8b949e;margin-top:1px;">'+e.objetivo+'</div>'
+     // bloco de execução
+     +'<div style="background:#0d1117;border-radius:6px;padding:8px 10px;margin-top:5px;font-size:11px;">'
+     +wHTML
+     +'<div style="margin-top:4px;"><b>Série:</b> '+instr.work_instrucao+'</div>'
+     +'<div><b>Recuperação:</b> '+instr.recovery_instrucao+'</div>'
+     +'<div><b>Acúmulo:</b> '+e.acumulo+'</div>'
+     +'<div style="margin-top:3px;"><b>RPE:</b> '+instr.rpe_instrucao+'</div>'
+     +(instr.rpe_nota?'<div style="font-size:10px;color:#F4D03F;">'+instr.rpe_nota+'</div>':'')
+     +(instr.recovery_nota?'<div style="font-size:10px;color:#F4D03F;">'+instr.recovery_nota+'</div>':'')
+     +(instr.durante_work&&instr.durante_work.length
+      ?'<div style="margin-top:4px;"><b>Durante a série:</b></div>'
+       +'<ul style="margin:2px 0 0 12px;padding:0;font-size:11px;">'
+       +instr.durante_work.map(t=>'<li style="margin:1px 0;">'+t+'</li>').join('')
+       +'</ul>':'')
+     +(instr.entre_works&&instr.entre_works.length
+      ?'<div style="margin-top:4px;"><b>Entre séries:</b></div>'
+       +'<ul style="margin:2px 0 0 12px;padding:0;font-size:11px;">'
+       +instr.entre_works.map(t=>'<li style="margin:1px 0;">'+t+'</li>').join('')
+       +'</ul>':'')
+     +(instr.nota_entry
+      ?'<div style="font-size:10px;color:#8b949e;border-left:2px solid #30363d;padding-left:5px;margin-top:3px;">'+instr.nota_entry+'</div>':'')
+     +'</div>'
+     // continuar / não aumentar
+     +'<details style="margin-top:5px;"><summary class="sub" style="cursor:pointer;font-size:10px;">✓ Continue se… / ⚠ Não aumente se…</summary>'
+     +'<div style="font-size:11px;margin-top:3px;color:#3FB950;">Continue / progrida se:</div>'
+     +'<ul style="margin:2px 0 4px 12px;padding:0;font-size:11px;">'
+     +(instr.continuar_se||[]).map(t=>'<li style="margin:1px 0;color:#8b949e;">✓ '+t+'</li>').join('')
+     +'</ul>'
+     +'<div style="font-size:11px;color:#F0883E;">Não aumente / reduza se:</div>'
+     +'<ul style="margin:2px 0 0 12px;padding:0;font-size:11px;">'
+     +(instr.nao_aumentar_se||[]).map(t=>'<li style="margin:1px 0;">⚠ '+t+'</li>').join('')
+     +'</ul></details>'
+     // critérios fisiológicos em details
+     +'<details style="margin-top:3px;"><summary class="sub" style="cursor:pointer;font-size:10px;">Critérios fisiológicos do sistema</summary>'
+     +'<div style="font-size:10px;color:#8b949e;margin-top:2px;"><b>Por que:</b> '+e.por_que+'</div>'
+     +'<div style="font-size:10px;margin-top:2px;"><b>Métricas:</b> '+(e.metricas_principais||[]).join(' · ')+'</div>'
+     +'<div style="font-size:10px;margin-top:2px;"><b>Resp. esperada:</b> '+e.resposta_esperada+'</div>'
+     +(fw.disponivel?'<div style="font-size:10px;margin-top:2px;"><b>Referências:</b> BP1 '+(fw.bp1_w!=null?fw.bp1_w+'W':'—')+' · BP2 '+(fw.bp2_w!=null?fw.bp2_w+'W':'—')+(fw.cp_w?' · CP '+fw.cp_w+'W':'')+'</div>':'')
+     +'</details>'
+     +'<p style="font-size:9px;color:#484f58;margin-top:4px;font-style:italic;">O utilizador/treinador decide nº de séries e frequência semanal.</p>'
+     +'</div>';
+   }
+
+   const top3=ep.estilos.slice(0,3), resto=ep.estilos.slice(3);
+   hE+='<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(270px,1fr));">';
+   top3.forEach(function(e){ hE+=cardEstilo(e); });
+   hE+='</div>';
+   if(resto.length){
+    hE+='<details style="margin-top:8px;"><summary class="sub" style="cursor:pointer;font-size:11px;">Ver outros estilos candidatos ('+resto.length+')</summary>'
+     +'<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(270px,1fr));margin-top:5px;">';
+    resto.forEach(function(e){ hE+=cardEstilo(e); });
+    hE+='</div></details>';
+   }
+   hE+='<p class="sub" style="font-size:9px;margin-top:5px;">Watts/pace da modalidade actual ('+ep.modalidade+'). Não usar parâmetros de outra modalidade.</p>';
+   boxE.innerHTML=hE;
+
+  }).catch(function(e){
+   boxP.innerHTML='<p class="sub" style="font-size:11px;">erro: '+e.message+'</p>';
+  });
  });
 }
+
 
 
 function mxVstLimitacoes(d){

@@ -2483,11 +2483,12 @@ def registar(app):
 
     @app.route('/api/moxy/vst/historico_estilos')
     def api_moxy_vst_historico_estilos():
-        """Le' todas as verificacoes salvas (resultado_json) e devolve:
-        - padroes recorrentes por BP e por modalidade;
-        - biblioteca de estilos coerentes com esses padroes.
-        Nunca recalcula dados fisiologicos -- so' le' o que ja' foi
-        persistido em vst_conjuntos.resultado_json.
+        """Le' todas as verificacoes salvas e devolve:
+        - padroes recorrentes por BP e modalidade (histório global);
+        - limitador MOXY real da sessao actual (buscado directamente do
+          backend -- nao depende de MX_ULT_US no frontend, que so existe
+          se a aba Intervencoes foi carregada);
+        - estilos parametrizados com watts reais de BP1/BP2/CP.
         """
         try:
             import drive_db_perfil as ddp
@@ -2529,28 +2530,75 @@ def registar(app):
                     'recovery_bp1': lbp1.get('recovery_coerencia'),
                     'recovery_bp2': lbp2.get('recovery_coerencia'),
                 })
-            # limitadores da aba Intervenções (US=utilização/sistema, PC=pulmonar/cardíaco)
-            limitador_moxy = request.args.get('limitador_moxy') or None
-            limitador_moxy_pc = request.args.get('limitador_moxy_pc') or None
-            # BP1/BP2/CP da modalidade actual (passados pelo frontend)
+
+            # --- sessão actual: moxy_id e vst_id passados pelo frontend ---
+            moxy_id_atual = request.args.get('moxy_id') or ''
+            modalidade_atual = request.args.get('modalidade') or ''
+
+            # BP1/BP2 do resultado_json já persistido da verificação actual
+            # (prioridade): mais fiáveis que qualquer variável do frontend
+            # porque foram calculados e guardados no momento da análise.
             def _w(k): return request.args.get(k, type=float) or None
             bp1_w = _w('bp1_w'); bp2_w = _w('bp2_w'); cp_w = _w('cp_w')
-            modalidade_atual = request.args.get('modalidade') or ''
-            resultado = vst.profilage_historico_estilos(entradas, limitador_moxy)
+            # complementar com o resultado_json da entrada mais recente
+            # da mesma sessão Moxy (quando os watts não vieram do frontend)
+            if bp1_w is None and bp2_w is None and moxy_id_atual:
+                for ent in entradas:
+                    if str(ent.get('moxy_activity_id')) == str(moxy_id_atual):
+                        row2 = cn.execute(
+                            "SELECT resultado_json FROM vst_conjuntos "
+                            "WHERE moxy_activity_id=? ORDER BY analisado_em DESC LIMIT 1",
+                            (moxy_id_atual,)).fetchone()
+                        if row2 and row2[0]:
+                            rdata2 = json.loads(row2[0])
+                            comp1 = rdata2.get('comparacao_bp1') or {}
+                            comp2 = rdata2.get('comparacao_bp2') or {}
+                            pot1 = (comp1.get('potencia') or {})
+                            pot2 = (comp2.get('potencia') or {})
+                            bp1_w = bp1_w or pot1.get('dia2_w') or pot1.get('dia1_w')
+                            bp2_w = bp2_w or pot2.get('dia2_w') or pot2.get('dia1_w')
+                        break
 
-            # padrão mais recorrente (para os estilos parametrizados)
+            # --- limitador MOXY real: buscar do backend directamente ---
+            # Evita dependência de MX_ULT_US no frontend (que só existe
+            # se a aba Intervenções foi aberta na mesma sessão de browser).
+            limitador_moxy_us = request.args.get('limitador_moxy') or None
+            limitador_moxy_pc = request.args.get('limitador_moxy_pc') or None
+            if (not limitador_moxy_us) and moxy_id_atual:
+                try:
+                    itp_resp = api_moxy_interpretacao(moxy_id_atual)
+                    itp_data = (itp_resp[0].get_json() if isinstance(itp_resp, tuple)
+                                else itp_resp.get_json())
+                    if itp_data and itp_data.get('status') == 'ok':
+                        intr = itp_data.get('interpretacao') or {}
+                        limitador_moxy_us = (intr.get('us') or {}).get('limitador')
+                        limitador_moxy_pc = (intr.get('pc') or {}).get('limitador')
+                except Exception:
+                    pass  # sem dados MOXY -- continuar sem ele
+
+            resultado = vst.profilage_historico_estilos(entradas, limitador_moxy_us)
+
+            # --- estilos parametrizados: usar o padrão da verificação
+            # ACTUAL (BP passado pelo frontend), não o padrão histórico --
+            # o histórico é evidência de recorrência, não o padrão de hoje.
+            padrao_atual = request.args.get('padrao_atual') or None
             padrao_recorrente = (resultado.get('recorrencia_global') or [{}])[0].get('padrao')
             rec_estado = (resultado.get('recorrencia_global') or [{}])[0].get('recorrencia', 'OBSERVADO UMA VEZ')
             n_mod_hist = (resultado.get('recorrencia_global') or [{}])[0].get('n_modalidades', 1)
-            if padrao_recorrente:
+            padrao_para_estilos = padrao_atual or padrao_recorrente
+            if padrao_para_estilos:
                 estilos_param = vst.profilage_estilos_parametrizados(
-                    padrao_recorrente, limitador_moxy, limitador_moxy_pc,
+                    padrao_para_estilos, limitador_moxy_us, limitador_moxy_pc,
                     bp1_w, bp2_w, cp_w, rec_estado, n_mod_hist, modalidade_atual)
             else:
                 estilos_param = None
 
             return jsonify({'status': 'ok', **resultado,
-                           'estilos_parametrizados': estilos_param})
+                           'estilos_parametrizados': estilos_param,
+                           'limitador_moxy_us': limitador_moxy_us,
+                           'limitador_moxy_pc': limitador_moxy_pc,
+                           'bp1_w_usado': bp1_w, 'bp2_w_usado': bp2_w,
+                           'cp_w_usado': cp_w})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

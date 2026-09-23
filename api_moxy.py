@@ -189,6 +189,51 @@ def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
 
 def registar(app):
 
+    @app.route('/api/moxy/limitador/<modalidade>')
+    def api_moxy_limitador_modalidade(modalidade):
+        """Devolve o limitador MOXY (US e PC) da sessão mais recente para
+        esta modalidade, independentemente de existir um conjunto VST
+        vinculado. Usado pela camada de estilos para mostrar evidência
+        complementar mesmo quando a sessão VST não tem moxy_id próprio.
+        """
+        try:
+            import db as _db
+            from config import TYPE_MAP
+            variantes = [k for k, v in TYPE_MAP.items() if v == modalidade]
+            if not variantes:
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': f'Modalidade "{modalidade}" não reconhecida.'}), 200
+            ph = ','.join('?' * len(variantes))
+            linhas = _db._exec(
+                f"SELECT id FROM activities WHERE raw IS NOT NULL "
+                f"AND type IN ({ph}) ORDER BY date DESC LIMIT 20",
+                variantes, fetch='all') or []
+            for (aid,) in linhas:
+                try:
+                    itp_resp = api_moxy_interpretacao(aid)
+                    itp_data = (itp_resp[0].get_json() if isinstance(itp_resp, tuple)
+                                else itp_resp.get_json())
+                    if itp_data and itp_data.get('status') == 'ok':
+                        intr = itp_data.get('interpretacao') or {}
+                        lus = (intr.get('us') or {}).get('limitador')
+                        lpc = (intr.get('pc') or {}).get('limitador')
+                        if lus or lpc:
+                            return jsonify({
+                                'status': 'ok',
+                                'modalidade': modalidade,
+                                'activity_id': str(aid),
+                                'limitador_us': lus,
+                                'limitador_pc': lpc,
+                                'label': ' / '.join(filter(None, [lus, lpc])),
+                            })
+                except Exception:
+                    continue
+            return jsonify({'status': 'sem_dados',
+                            'mensagem': f'Sem interpretação MOXY disponível para {modalidade}.'}), 200
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/sessoes')
     def api_moxy_sessoes():
         """Sessoes marcadas como Moxy.  ?modalidade=Bike&dias=3650&n=300"""

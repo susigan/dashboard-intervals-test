@@ -3749,40 +3749,76 @@ function mxHistoricoEstilosMostrar(d){
   let hE='<h3 style="font-size:13px;margin-top:2px;">Estilos de treino candidatos <span class="sub" style="font-size:10px;font-weight:normal;">('+ep.modalidade+' · '+wattsLabel+')</span></h3>';
   function cardEstilo(e,idx){
    const fw=e.faixas_watts||{}, z=fw.zonas||{};
+   const instr=e.instrucoes||{};
    const corP={principal:'#3FB950',secundário:'#F4D03F',alternativa:'#8b949e'}[e.prioridade]||'#8b949e';
-   let wattsHtml='';
-   if(fw.disponivel){
-    if(e.chave==='over_under'&&z.over)
-     wattsHtml='<tr><td class="sub" style="padding:2px 8px 2px 0;">Watts OVER</td><td><b>'+z.over+'</b></td></tr>'
-      +'<tr><td class="sub" style="padding:2px 8px 2px 0;">Watts UNDER</td><td><b>'+z.under+'</b></td></tr>';
-    else if(e.chave==='inicio_forte'&&z.fase_forte)
-     wattsHtml='<tr><td class="sub" style="padding:2px 8px 2px 0;">Fase forte</td><td><b>'+z.fase_forte+'</b></td></tr>'
-      +'<tr><td class="sub" style="padding:2px 8px 2px 0;">Fase sustentação</td><td><b>'+(z.fase_sustentacao||'—')+'</b></td></tr>';
-    else{
-     const f=z.entre_bp1_bp2&&z.entre_bp1_bp2!=='—'?z.entre_bp1_bp2:(z.proximo_bp2&&z.proximo_bp2!=='—'?z.proximo_bp2:z.bp2||'—');
-     wattsHtml='<tr><td class="sub" style="padding:2px 8px 2px 0;">Faixa principal</td><td><b>'+f+'</b></td></tr>';
-    }
-   } else {
-    wattsHtml='<tr><td colspan="2" style="color:#F0883E;font-size:10px;padding:2px 0;">'+fw.nota+'</td></tr>';
+   // --- watts operacional ---
+   const wLabel=instr.watts_label||'—';
+   // --- listas como bullets HTML ---
+   function ul(items,cor){
+    if(!items||!items.length) return '';
+    return '<ul style="margin:3px 0 0 14px;padding:0;font-size:11px;">'
+     +items.map(t=>'<li style="margin:1px 0;'+(cor?'color:'+cor+';':'')+'">' +t+'</li>').join('')+'</ul>';
    }
-   return '<div class="card" style="min-width:270px;">'
+   function check(items){ return ul(items,'#8b949e'); }
+   function warn(items){
+    if(!items||!items.length) return '';
+    return '<ul style="margin:3px 0 0 14px;padding:0;font-size:11px;">'
+     +items.map(t=>'<li style="margin:1px 0;">⚠ '+t+'</li>').join('')+'</ul>';
+   }
+   let html='<div class="card" style="min-width:270px;">'
+    // cabeçalho
     +'<div class="label" style="color:'+corP+';">'+e.nome
     +' <span style="font-size:9px;background:#21262d;padding:1px 5px;border-radius:3px;">'+e.prioridade+'</span></div>'
-    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;width:100%;">'
-    +wattsHtml
-    +'<tr><td class="sub" style="padding:2px 8px 2px 0;">WORK</td><td>'+e.work+'</td></tr>'
-    +'<tr><td class="sub" style="padding:2px 8px 2px 0;">Recovery</td><td>'+e.recovery+'</td></tr>'
-    +'<tr><td class="sub" style="padding:2px 8px 2px 0;">Acúmulo</td><td>'+e.acumulo+'</td></tr>'
-    +'<tr><td class="sub" style="padding:2px 8px 2px 0;">Métricas</td><td>'+(e.metricas_principais||[]).slice(0,4).join(' · ')+'</td></tr>'
-    +'</table>'
-    +'<div style="font-size:11px;margin-top:5px;"><b>Objectivo:</b> '+e.objetivo+'</div>'
-    +'<details style="margin-top:4px;"><summary class="sub" style="cursor:pointer;font-size:10px;">Por que + resposta esperada</summary>'
-    +'<div style="font-size:10px;margin-top:3px;color:#8b949e;">'+e.por_que+'</div>'
-    +'<div style="font-size:10px;margin-top:2px;"><b>Resp. esperada:</b> '+e.resposta_esperada+'</div>'
+    +'<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+e.objetivo+'</div>'
+    // secção operacional principal
+    +'<div style="background:#0d1117;border-radius:6px;padding:8px 10px;margin-top:6px;">'
+    // WATTS
+    +'<div style="font-size:12px;margin-bottom:4px;"><b>Watts</b> <span style="color:#F4D03F;">'+wLabel+'</span></div>'
+    // WORK
+    +'<div style="font-size:11px;margin-bottom:2px;"><b>WORK:</b> '+instr.work_instrucao+'</div>'
+    // RECOVERY
+    +'<div style="font-size:11px;margin-bottom:2px;"><b>Recovery:</b> '+instr.recovery_instrucao+'</div>'
+    // ACÚMULO
+    +'<div style="font-size:11px;margin-bottom:2px;"><b>Acúmulo:</b> '+e.acumulo+'</div>'
+    // RPE
+    +'<div style="font-size:11px;margin-bottom:'+(instr.durante_work&&instr.durante_work.length?'4':'0')+'px;"><b>RPE:</b> '+instr.rpe_instrucao+'</div>'
+    +(instr.rpe_nota?'<div style="font-size:10px;color:#F4D03F;">'+instr.rpe_nota+'</div>':'')
+    +(instr.recovery_nota?'<div style="font-size:10px;color:#F4D03F;">'+instr.recovery_nota+'</div>':'')
+    // DURANTE O WORK
+    +(instr.durante_work&&instr.durante_work.length
+     ?'<div style="font-size:11px;margin-top:4px;"><b>Durante o WORK:</b></div>'+check(instr.durante_work)
+     :'')
+    // ENTRE WORKS
+    +(instr.entre_works&&instr.entre_works.length
+     ?'<div style="font-size:11px;margin-top:4px;"><b>Entre WORKs:</b></div>'+check(instr.entre_works)
+     :'')
+    // NOTA ENTRY
+    +(instr.nota_entry
+     ?'<div style="font-size:10px;color:#8b949e;border-left:2px solid #30363d;padding-left:6px;margin-top:4px;">'+instr.nota_entry+'</div>'
+     :'')
+    +'</div>'
+    // CONTINUAR / NÃO AUMENTAR
+    +'<details style="margin-top:6px;"><summary class="sub" style="cursor:pointer;font-size:11px;">✓ Continuar se… / ⚠ Não aumentar se…</summary>'
+    +'<div style="font-size:11px;margin-top:4px;color:#3FB950;">Continue acumulando se:</div>'
+    +check(instr.continuar_se)
+    +'<div style="font-size:11px;margin-top:4px;color:#F0883E;">Não aumente se:</div>'
+    +warn(instr.nao_aumentar_se)
     +'</details>'
-    +'<p style="font-size:9px;color:#484f58;margin-top:4px;font-style:italic;">Sem nº de séries obrigatório — utilizador/treinador decide quantidade e frequência.</p>'
+    // DADOS TÉCNICOS EM DETAILS
+    +'<details style="margin-top:4px;"><summary class="sub" style="cursor:pointer;font-size:10px;">Critérios fisiológicos do sistema</summary>'
+    +'<div style="font-size:10px;margin-top:3px;color:#8b949e;"><b>Justificativa:</b> '+e.por_que+'</div>'
+    +'<div style="font-size:10px;margin-top:2px;"><b>Métricas analíticas:</b> '+(e.metricas_principais||[]).join(' · ')+'</div>'
+    +'<div style="font-size:10px;margin-top:2px;"><b>Resposta esperada:</b> '+e.resposta_esperada+'</div>'
+    +(fw.disponivel&&z.entre_bp1_bp2
+     ?'<div style="font-size:10px;margin-top:2px;"><b>Referências de intensidade:</b> '
+      +'BP1 '+(fw.bp1_w!=null?fw.bp1_w+'W':'—')+' | BP2 '+(fw.bp2_w!=null?fw.bp2_w+'W':'—')+(fw.cp_w?' | CP '+fw.cp_w+'W':'')+'</div>'
+     :'')
+    +'</details>'
+    +'<p style="font-size:9px;color:#484f58;margin-top:4px;font-style:italic;">Sem nº de séries obrigatório. Utilizador/treinador decide a quantidade.</p>'
     +'</div>';
+   return html;
   }
+
   const top3=ep.estilos.slice(0,3), resto=ep.estilos.slice(3);
   hE+='<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(270px,1fr));">';
   top3.forEach(function(e,i){ hE+=cardEstilo(e,i); });

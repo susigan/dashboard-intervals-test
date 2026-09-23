@@ -2529,10 +2529,28 @@ def registar(app):
                     'recovery_bp1': lbp1.get('recovery_coerencia'),
                     'recovery_bp2': lbp2.get('recovery_coerencia'),
                 })
-            # limitador da aba Intervenções (opcional, passado pelo frontend)
+            # limitadores da aba Intervenções (US=utilização/sistema, PC=pulmonar/cardíaco)
             limitador_moxy = request.args.get('limitador_moxy') or None
+            limitador_moxy_pc = request.args.get('limitador_moxy_pc') or None
+            # BP1/BP2/CP da modalidade actual (passados pelo frontend)
+            def _w(k): return request.args.get(k, type=float) or None
+            bp1_w = _w('bp1_w'); bp2_w = _w('bp2_w'); cp_w = _w('cp_w')
+            modalidade_atual = request.args.get('modalidade') or ''
             resultado = vst.profilage_historico_estilos(entradas, limitador_moxy)
-            return jsonify({'status': 'ok', **resultado})
+
+            # padrão mais recorrente (para os estilos parametrizados)
+            padrao_recorrente = (resultado.get('recorrencia_global') or [{}])[0].get('padrao')
+            rec_estado = (resultado.get('recorrencia_global') or [{}])[0].get('recorrencia', 'OBSERVADO UMA VEZ')
+            n_mod_hist = (resultado.get('recorrencia_global') or [{}])[0].get('n_modalidades', 1)
+            if padrao_recorrente:
+                estilos_param = vst.profilage_estilos_parametrizados(
+                    padrao_recorrente, limitador_moxy, limitador_moxy_pc,
+                    bp1_w, bp2_w, cp_w, rec_estado, n_mod_hist, modalidade_atual)
+            else:
+                estilos_param = None
+
+            return jsonify({'status': 'ok', **resultado,
+                           'estilos_parametrizados': estilos_param})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

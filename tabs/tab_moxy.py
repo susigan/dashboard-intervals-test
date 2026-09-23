@@ -3695,6 +3695,105 @@ function mxHistoricoEstilosMostrar(){
  });
 }
 
+// ESTILOS DE TREINO / HISTÓRICO -- versão melhorada com âncoras BP,
+// concordância MOXY e detalhes em <details>. Consome
+// /api/moxy/vst/historico_estilos; nunca inventa watts ou durações.
+function mxHistoricoEstilosMostrar(){
+ const boxP=document.getElementById('mxHistoricoPatterns');
+ const boxE=document.getElementById('mxHistoricoEstilos');
+ if(!boxP || !boxE) return;
+ boxP.innerHTML='<p class="sub" style="font-size:11px;">a carregar histórico...</p>';
+ boxE.innerHTML='';
+ // tentar obter o limitador MOXY actual para concordância
+ const limMoxy=(window.MX_LIMITADOR_MOXY||'');
+ const url='/api/moxy/vst/historico_estilos'+(limMoxy?'?limitador_moxy='+encodeURIComponent(limMoxy):'');
+ fetch(url).then(r=>r.json()).then(function(d){
+  if(d.status!=='ok'){ boxP.innerHTML='<p class="sub">erro: '+(d.mensagem||'?')+'</p>'; return; }
+  const rec=d.recorrencia_global||[];
+  const porMod=d.recorrencia_por_modalidade||{};
+  const estilos=d.estilos_historico||[];
+  const conc=d.concordancia_moxy||{};
+
+  if(!rec.length){
+   boxP.innerHTML='<p class="sub" style="font-size:11px;">sem verificações salvas com padrões registados.</p>';
+   boxE.innerHTML=''; return;
+  }
+
+  function corRec(r){
+   if(r==='RECORRENTE EM MÚLTIPLAS MODALIDADES') return '#A371F7';
+   if(r==='RECORRENTE NA MESMA MODALIDADE') return '#5DADE2';
+   if(r==='OBSERVADO EM MÚLTIPLAS SESSÕES') return '#F4D03F';
+   return '#8b949e';
+  }
+  function corConc(s){
+   return {concordante:'#3FB950',parcial:'#F4D03F',discordante:'#F0883E'}[s]||'#8b949e';
+  }
+
+  // ── resumo principal (visível) ──
+  let hP='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin-bottom:8px;">';
+  rec.forEach(function(r){
+   const cv=conc[r.padrao]||{};
+   hP+='<div class="card" style="min-width:220px;">'
+    +'<div class="label">'+r.padrao+'</div>'
+    +'<div style="font-size:10px;color:'+corRec(r.recorrencia)+';">'+r.recorrencia+'</div>'
+    +'<div style="font-size:10px;margin-top:3px;">'+r.n_total+' sessão(ões) · '+r.n_modalidades+' modalidade(s)'
+    +'<br>BP1: '+r.n_bp1+' · BP2: '+r.n_bp2
+    +(r.ultima_ocorrencia?'<br>Última: '+r.ultima_ocorrencia:'')+'</div>'
+    +(cv.nota?'<div style="font-size:10px;margin-top:4px;color:'+corConc(cv.status)+';">'+cv.nota+'</div>':'')
+    +'</div>';
+  });
+  hP+='</div>';
+  // detalhes por modalidade em <details>
+  if(Object.keys(porMod).length>1){
+   hP+='<details style="margin-top:6px;"><summary class="sub" style="cursor:pointer;font-size:11px;">Ver por modalidade</summary>'
+    +'<table style="border-collapse:collapse;font-size:11px;margin-top:4px;">'
+    +'<tr class="sub"><th style="padding:2px 8px 2px 0;">Mod.</th><th style="padding:2px 8px;">Padrão</th>'
+    +'<th style="padding:2px 6px;">BP1</th><th style="padding:2px 6px;">BP2</th><th style="padding:2px 6px;">Total</th></tr>';
+   Object.keys(porMod).forEach(function(mod){
+    (porMod[mod]||[]).forEach(function(p,i){
+     hP+='<tr style="border-top:1px solid #21262d;">'
+      +'<td style="padding:2px 8px 2px 0;font-size:10px;">'+(i===0?mod:'')+'</td>'
+      +'<td style="padding:2px 8px;font-size:10px;">'+p.padrao+'</td>'
+      +'<td style="padding:2px 6px;text-align:center;">'+p.n_bp1+'</td>'
+      +'<td style="padding:2px 6px;text-align:center;">'+p.n_bp2+'</td>'
+      +'<td style="padding:2px 6px;text-align:center;">'+p.n_total+'/'+p.n_sessoes_modalidade+'</td></tr>';
+    });
+   });
+   hP+='</table></details>';
+  }
+  hP+='<p class="sub" style="font-size:10px;margin-top:4px;">'+d.nota_metodologica+'</p>';
+  boxP.innerHTML=hP;
+
+  // ── cards de estilos ──
+  if(!estilos.length){ boxE.innerHTML='<p class="sub" style="font-size:11px;">sem estilos candidatos com o histórico disponível.</p>'; return; }
+  let hE='<div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr));">';
+  estilos.forEach(function(e){
+   const corPrio=e.prioridade==='primário'?'#3FB950':'#8b949e';
+   const ancoras=(e.ancoras||[]).length?'<div style="font-size:10px;margin-top:3px;"><b>Âncoras:</b> '+(e.ancoras.join(' · '))+'</div>':'';
+   hE+='<div class="card" style="min-width:260px;">'
+    +'<div class="label" style="color:'+corPrio+';">'+e.nome
+    +(e.tipo?' <span style="font-size:9px;background:#21262d;padding:1px 5px;border-radius:3px;">'+e.tipo+'</span>':'')
+    +' <span style="font-size:9px;background:#21262d;padding:1px 5px;border-radius:3px;">'+e.prioridade+'</span></div>'
+    +'<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+e.motivado_por+' · '+e.recorrencia+' · '+e.n_sessoes+' sessão(ões)</div>'
+    +(e.intensidade?'<div style="font-size:11px;margin-top:4px;"><b>Intensidade:</b> '+e.intensidade+'</div>':'')
+    +(e.recuperacao?'<div style="font-size:11px;"><b>Recuperação:</b> '+e.recuperacao+'</div>':'')
+    +ancoras
+    +'<div style="font-size:11px;margin-top:4px;"><b>Objectivo:</b> '+e.objetivo+'</div>'
+    +'<details style="margin-top:4px;"><summary class="sub" style="cursor:pointer;font-size:10px;">Estrutura + métricas</summary>'
+    +'<div style="font-size:10px;margin-top:3px;"><b>Estrutura:</b> '+e.estrutura+'</div>'
+    +'<div style="font-size:10px;margin-top:2px;"><b>Observar:</b> '+(e.o_que_observar||[]).join(' · ')+'</div>'
+    +'<div style="font-size:10px;margin-top:2px;"><b>Resp. esperada:</b> '+e.resposta_esperada+'</div>'
+    +'</details>'
+    +'<p style="font-size:9px;color:#484f58;margin-top:4px;font-style:italic;">HIPÓTESE — REQUER NOVA VERIFICAÇÃO. Sem watts/duração/séries.</p>'
+    +'</div>';
+  });
+  hE+='</div>';
+  boxE.innerHTML=hE;
+ }).catch(function(e){
+  boxP.innerHTML='<p class="sub" style="font-size:11px;">erro ao carregar histórico: '+e.message+'</p>';
+ });
+}
+
 function mxVstLimitacoes(d){
  const box=document.getElementById('mxVstLimitacoes');
  if(!box) return;

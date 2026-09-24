@@ -1736,6 +1736,7 @@ def profilage_limiter(bp_nome, divergencia_bloco, convergencia_works, convergenc
 
     return {
         'bp': bp_nome, 'padrao': padrao, 'motivo': motivo,
+        'intervencao_chave': _VST_PADRAO_PARA_INTERVENCAO.get(padrao),
         'evidencia': {
             'cardiorrespiratorio': {'hr': estados['HR'], 'rf': estados['RF'], **cardio},
             'periferico': {'smo2': estados['SmO2'], 'thb_contexto': thb_contexto, **perif},
@@ -2238,6 +2239,20 @@ ESTILOS_DE_TREINO = {
 
 # mapeamento LIMITER VST → chave em utils/intervencoes.py (aba Intervenções MOXY)
 # usado para verificar concordância/discordância (item 4/13 do pedido)
+# Mapeamento canónico: padrão do LIMITER VST → chave de intervencoes.py
+# Chaves válidas: 'entrega' | 'utilizacao' | 'respiratorio' | None
+# None = sem mapeamento directo (multissistêmico, dissociado, insuficiente)
+# Este é o ponto único de mapeamento — VST, Dashboard e historico_estilos
+# devem todos usar este dict, nunca strings hardcoded em paralelo.
+_VST_PADRAO_PARA_INTERVENCAO = {
+    'PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE': 'entrega',
+    'PADRÃO PERIFÉRICO PREDOMINANTE':          'utilizacao',
+    'RESPOSTA MULTISSISTÊMICA':                None,   # sintetizar() com ambos
+    'PADRÃO MISTO':                            None,
+    'RESPOSTAS DISSOCIADAS':                   None,
+    'EVIDÊNCIA INSUFICIENTE':                  None,
+}
+
 _LIMITER_PARA_INTERVENCAO = {
     'PADRÃO CARDIORRESPIRATÓRIO PREDOMINANTE': ['entrega', 'ventilacao', 'cardiaco'],
     'PADRÃO PERIFÉRICO PREDOMINANTE': ['utilizacao'],

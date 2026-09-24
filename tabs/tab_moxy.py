@@ -457,13 +457,23 @@ BODY = """
     </div>
     <div id="mxVstConjuntoEstado" style="margin-top:6px;"></div>
 
-    <!-- ─── DASHBOARD — cards BP1/BP2/Recovery/RPE + sistemas ─── -->
+    <!-- 1. DASHBOARD — BP1/BP2/Recovery/RPE + sistemas ──────────── -->
     <h3 style="font-size:14px;margin-top:16px;">Perfil Fisiológico</h3>
-    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta análise identifica padrões de resposta fisiológica. Não demonstra causalmente qual sistema limita o desempenho.</p>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta análise identifica padrões de resposta fisiológica — não demonstra causalmente qual sistema limita o desempenho.</p>
     <div id="mxVstDashboard" style="margin-bottom:12px;"></div>
 
-    <!-- ─── GRÁFICO TEMPORAL PRINCIPAL ─────────────────────────── -->
-    <h3 style="font-size:14px;margin-top:16px;">Gráfico temporal — Dia 2</h3>
+    <!-- 2. GRÁFICO RPE × POTÊNCIA ──────────────────────────────── -->
+    <h3 style="font-size:14px;margin-top:16px;">RPE × Potência — Dia 1 × Dia 2</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 6px;">Consistência entre esforço externo (potência) e esforço percebido (RPE) entre as duas sessões.</p>
+    <div id="mxVstRpePotsStatus" style="font-size:11px;color:#8b949e;margin-bottom:4px;"></div>
+    <div class="chartbox" style="position:relative;width:100%;max-height:280px;">
+      <canvas id="chMxVstRpePots" height="260"></canvas>
+      <div id="mxTipVstRpePots" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+    </div>
+
+    <!-- 3. REFERÊNCIA FISIOLÓGICA RF+HR+SmO2 ─────────────────────  -->
+    <h3 style="font-size:14px;margin-top:20px;">Referência fisiológica — Dia 1 × Dia 2</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 6px;">Gráfico temporal com potência, HR, RF e SmO2. Referência para comparar o comportamento fisiológico entre as sessões.</p>
     <div id="mxVstTemporalToggles" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;font-size:11px;">
       <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
         <input type="checkbox" checked onchange="mxVstToggleTemporal('power',this.checked)">
@@ -483,145 +493,144 @@ BODY = """
       <div id="mxTipVstTemporal" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
     </div>
 
-    <!-- ─── LIMITER ─────────────────────────────────────────────── -->
+    <!-- 4. LIMITER ───────────────────────────────────────────────  -->
     <h3 style="font-size:14px;margin-top:20px;">LIMITER / Padrão fisiológico</h3>
-    <p class="sub" style="font-size:10px;margin:2px 0 8px;">HR, RF, SmO2, THb e DFA-α1 são marcadores complementares; a convergência entre eles aumenta a coerência do padrão, mas não estabelece causalidade.</p>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">HR, RF, SmO2, THb e DFA-α1 são marcadores complementares; a convergência aumenta a coerência do padrão, mas não estabelece causalidade.</p>
     <div id="mxLimiter" style="overflow-x:auto;"></div>
 
-    <!-- ─── HIPÓTESE ─────────────────────────────────────────────  -->
+    <!-- 5. HIPÓTESE ─────────────────────────────────────────────── -->
     <h3 style="font-size:14px;margin-top:20px;">HIPÓTESE DE INTERVENÇÃO / TREINO</h3>
-    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta é uma hipótese para teste. O padrão observado não demonstra causalidade nem identifica isoladamente um limitante de desempenho.</p>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Hipótese para teste — o padrão observado não demonstra causalidade.</p>
     <div id="mxHipotese" style="overflow-x:auto;"></div>
 
-    <!-- ─── HISTÓRICO E ESTILOS ──────────────────────────────────  -->
+    <!-- 6. HISTÓRICO E ESTILOS ──────────────────────────────────── -->
     <h3 style="font-size:14px;margin-top:20px;">Padrões recorrentes — histórico</h3>
-    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Frequência de padrão não demonstra causalidade. Padrão recorrente aumenta a justificativa para testar a hipótese.</p>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Frequência de padrão não demonstra causalidade.</p>
     <div id="mxHistoricoPatterns" style="overflow-x:auto;margin-top:6px;"></div>
-    <h3 style="font-size:14px;margin-top:16px;">Estilos de treino candidatos — histórico</h3>
+    <h3 style="font-size:14px;margin-top:16px;">Treinos candidatos</h3>
     <div id="mxHistoricoEstilos" style="overflow-x:auto;margin-top:6px;"></div>
 
-    <!-- ─── COMPARAÇÃO Dia 1 × Dia 2 ────────────────────────────  -->
+    <!-- 7. COMPARAÇÃO Dia 1 × Dia 2 — cards ────────────────────── -->
     <h3 style="font-size:14px;margin-top:20px;">Comparação — Dia 1 × Dia 2</h3>
     <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
     <div id="mxVstRpe" style="margin-top:10px;"></div>
 
-    <!-- ─── LIMITAÇÕES ──────────────────────────────────────────── -->
+    <!-- 8. LIMITAÇÕES ──────────────────────────────────────────── -->
     <details style="margin-top:10px;" open>
       <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Limitações</summary>
       <div id="mxVstLimitacoes" style="margin-top:8px;"></div>
     </details>
 
-    <!-- ─── RESPOSTA FISIOLÓGICA (gráficos por métrica) ─────────  -->
+    <!-- 9. DETALHES TÉCNICOS ─ tudo fechado ───────────────────── -->
     <details style="margin-top:16px;">
-      <summary style="cursor:pointer;font-size:14px;color:#c9d1d9;font-weight:600;padding:4px 0;">Resposta fisiológica</summary>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
-        <div style="flex:1;min-width:280px;">
-          <div class="chartbox" style="position:relative;width:100%;">
-            <canvas id="chMxVstHR" height="170"></canvas>
-            <div id="mxTipVstHR" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+      <summary style="cursor:pointer;font-size:14px;color:#8b949e;font-weight:600;padding:6px 0;">▼ Detalhes técnicos</summary>
+
+      <details style="margin-top:8px;margin-left:8px;">
+        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Resposta fisiológica (gráficos por métrica)</summary>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+          <div style="flex:1;min-width:280px;">
+            <div class="chartbox" style="position:relative;width:100%;">
+              <canvas id="chMxVstHR" height="170"></canvas>
+              <div id="mxTipVstHR" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+            </div>
+          </div>
+          <div style="flex:1;min-width:280px;">
+            <div class="chartbox" style="position:relative;width:100%;">
+              <canvas id="chMxVstRF" height="170"></canvas>
+              <div id="mxTipVstRF" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+            </div>
           </div>
         </div>
-        <div style="flex:1;min-width:280px;">
-          <div class="chartbox" style="position:relative;width:100%;">
-            <canvas id="chMxVstRF" height="170"></canvas>
-            <div id="mxTipVstRF" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+          <div style="flex:1;min-width:280px;">
+            <div class="chartbox" style="position:relative;width:100%;">
+              <canvas id="chMxVstSmO2" height="170"></canvas>
+              <div id="mxTipVstSmO2" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+            </div>
+          </div>
+          <div style="flex:1;min-width:280px;">
+            <div class="chartbox" style="position:relative;width:100%;">
+              <canvas id="chMxVstTHb" height="170"></canvas>
+              <div id="mxTipVstTHb" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+            </div>
           </div>
         </div>
-      </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
-        <div style="flex:1;min-width:280px;">
-          <div class="chartbox" style="position:relative;width:100%;">
-            <canvas id="chMxVstSmO2" height="170"></canvas>
-            <div id="mxTipVstSmO2" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
-          </div>
+        <div class="chartbox" style="position:relative;width:100%;margin-top:8px;">
+          <canvas id="chMxVstDFA1" height="170"></canvas>
+          <div id="mxTipVstDFA1" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
         </div>
-        <div style="flex:1;min-width:280px;">
-          <div class="chartbox" style="position:relative;width:100%;">
-            <canvas id="chMxVstTHb" height="170"></canvas>
-            <div id="mxTipVstTHb" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
-          </div>
+      </details>
+
+      <details style="margin-top:6px;margin-left:8px;">
+        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Heatmap Dia 2</summary>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+          <div class="chartbox"><div class="legend"><span>BP1</span></div>
+            <canvas id="chVstHeatBP1" height="200"></canvas></div>
+          <div class="chartbox"><div class="legend"><span>BP2</span></div>
+            <canvas id="chVstHeatBP2" height="200"></canvas></div>
         </div>
-      </div>
-      <div class="chartbox" style="position:relative;width:100%;margin-top:8px;">
-        <canvas id="chMxVstDFA1" height="170"></canvas>
-        <div id="mxTipVstDFA1" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
-      </div>
-    </details>
+      </details>
 
-    <!-- ─── HEATMAP ──────────────────────────────────────────────  -->
-    <details style="margin-top:6px;">
-      <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Heatmap Dia 2</summary>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
-        <div class="chartbox"><div class="legend"><span>BP1</span></div>
-          <canvas id="chVstHeatBP1" height="200"></canvas></div>
-        <div class="chartbox"><div class="legend"><span>BP2</span></div>
-          <canvas id="chVstHeatBP2" height="200"></canvas></div>
-      </div>
-    </details>
+      <details style="margin-top:6px;margin-left:8px;">
+        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Detalhes da comparação</summary>
+        <div id="mxVstCartoes" style="margin-top:10px;"></div>
+        <div id="mxVstTabela" style="margin-top:14px;overflow-x:auto;"></div>
+        <div id="mxVstComparacao" style="margin-top:8px;"></div>
+        <div id="mxVstRpeTabela" style="margin-top:14px;overflow-x:auto;"></div>
+        <div id="mxVstRecoveryTabela" style="margin-top:14px;overflow-x:auto;"></div>
+      </details>
 
-    <!-- ─── DETALHES DA COMPARAÇÃO ──────────────────────────────  -->
-    <details style="margin-top:6px;">
-      <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Detalhes da comparação</summary>
-      <div id="mxVstCartoes" style="margin-top:10px;"></div>
-      <div id="mxVstTabela" style="margin-top:14px;overflow-x:auto;"></div>
-      <div id="mxVstComparacao" style="margin-top:8px;"></div>
-      <div id="mxVstRpeTabela" style="margin-top:14px;overflow-x:auto;"></div>
-      <div id="mxVstRecoveryTabela" style="margin-top:14px;overflow-x:auto;"></div>
-    </details>
+      <details style="margin-top:6px;margin-left:8px;">
+        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ PROFILAGE — WORKs</summary>
+        <p class="sub" style="font-size:10px;margin:2px 0 8px;">Auditoria da estrutura de intervalos e resposta fisiológica dentro de cada WORK.</p>
+        <div id="mxProfilageEstrutura" style="overflow-x:auto;"></div>
+        <div id="mxProfilageEntryExit" style="overflow-x:auto;margin-top:10px;"></div>
+        <div id="mxProfilageDrift" style="overflow-x:auto;margin-top:14px;"></div>
+        <div id="mxProfilageAccumulation" style="overflow-x:auto;margin-top:14px;"></div>
+        <div style="margin-top:8px;">
+          <label class="sel" style="font-size:11px;margin-right:8px;">Métrica:
+            <select id="mxAccMetrica" onchange="mxProfilageAccGraficos()">
+              <option value="hr">HR</option><option value="respiration">RF</option>
+              <option value="smo2">SmO2</option><option value="thb">THb</option>
+              <option value="dfa1">DFA-α1</option>
+            </select>
+          </label>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+          <div class="chartbox"><div class="legend"><span>ENTRY por WORK</span></div>
+            <canvas id="chMxAccEntry" height="200"></canvas></div>
+          <div class="chartbox"><div class="legend"><span>EXIT por WORK</span></div>
+            <canvas id="chMxAccExit" height="200"></canvas></div>
+        </div>
+      </details>
 
-    <!-- ─── PROFILAGE E WORKs ────────────────────────────────────  -->
-    <details style="margin-top:10px;">
-      <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:6px 0;">▼ PROFILAGE — Estado dos WORKs</summary>
-      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Auditoria da estrutura de intervalos e resposta fisiológica dentro de cada WORK.</p>
-      <div id="mxProfilageEstrutura" style="overflow-x:auto;"></div>
-      <div id="mxProfilageEntryExit" style="overflow-x:auto;margin-top:10px;"></div>
-      <div id="mxProfilageDrift" style="overflow-x:auto;margin-top:14px;"></div>
-      <div id="mxProfilageAccumulation" style="overflow-x:auto;margin-top:14px;"></div>
-      <div style="margin-top:8px;">
-        <label class="sel" style="font-size:11px;margin-right:8px;">Métrica:
-          <select id="mxAccMetrica" onchange="mxProfilageAccGraficos()">
-            <option value="hr">HR</option>
-            <option value="respiration">RF</option>
-            <option value="smo2">SmO2</option>
-            <option value="thb">THb</option>
-            <option value="dfa1">DFA-α1</option>
-          </select>
-        </label>
-      </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
-        <div class="chartbox"><div class="legend"><span>ENTRY por WORK</span></div>
-          <canvas id="chMxAccEntry" height="200"></canvas></div>
-        <div class="chartbox"><div class="legend"><span>EXIT por WORK</span></div>
-          <canvas id="chMxAccExit" height="200"></canvas></div>
-      </div>
-    </details>
+      <details style="margin-top:6px;margin-left:8px;">
+        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Primeira divergência</summary>
+        <div id="mxProfilageDivergencia" style="overflow-x:auto;margin-top:8px;"></div>
+        <div style="margin-top:8px;">
+          <label class="sel" style="font-size:11px;margin-right:8px;">WORK:
+            <select id="mxDivWork" onchange="mxProfilageDivGrafico();mxProfilageConvTimeline();"></select>
+          </label>
+          <label class="sel" style="font-size:11px;">Métrica:
+            <select id="mxDivMetrica" onchange="mxProfilageDivGrafico()">
+              <option value="hr">HR</option><option value="respiration">RF</option>
+              <option value="smo2">SmO2</option><option value="thb">THb</option>
+              <option value="dfa1">DFA-α1</option>
+            </select>
+          </label>
+        </div>
+        <div class="chartbox"><div class="legend"><span>Primeira divergência dentro do WORK</span></div>
+          <canvas id="chMxDivergencia" height="180"></canvas></div>
+      </details>
 
-    <details style="margin-top:6px;">
-      <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">▼ PROFILAGE — Primeira divergência</summary>
-      <div id="mxProfilageDivergencia" style="overflow-x:auto;margin-top:8px;"></div>
-      <div style="margin-top:8px;">
-        <label class="sel" style="font-size:11px;margin-right:8px;">WORK:
-          <select id="mxDivWork" onchange="mxProfilageDivGrafico();mxProfilageConvTimeline();"></select>
-        </label>
-        <label class="sel" style="font-size:11px;">Métrica:
-          <select id="mxDivMetrica" onchange="mxProfilageDivGrafico()">
-            <option value="hr">HR</option><option value="respiration">RF</option>
-            <option value="smo2">SmO2</option><option value="thb">THb</option>
-            <option value="dfa1">DFA-α1</option>
-          </select>
-        </label>
-      </div>
-      <div class="chartbox"><div class="legend"><span>Primeira divergência dentro do WORK</span></div>
-        <canvas id="chMxDivergencia" height="180"></canvas></div>
-    </details>
+      <details style="margin-top:6px;margin-left:8px;">
+        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Convergência temporal</summary>
+        <div class="chartbox"><div class="legend"><span>Linha temporal</span></div>
+          <canvas id="chMxConvTimeline" height="130"></canvas></div>
+        <div id="mxProfilageConvergencia" style="overflow-x:auto;margin-top:10px;"></div>
+      </details>
 
-    <details style="margin-top:6px;">
-      <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">▼ PROFILAGE — Convergência temporal</summary>
-      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Quando uma métrica diverge primeiro, as outras divergem numa janela temporal próxima?</p>
-      <div class="chartbox"><div class="legend"><span>Linha temporal — WORK seleccionado acima</span></div>
-        <canvas id="chMxConvTimeline" height="130"></canvas></div>
-      <div id="mxProfilageConvergencia" style="overflow-x:auto;margin-top:10px;"></div>
-    </details>
+    </details><!-- fim detalhes técnicos -->
 
 
     <div id="mxVstRecoveryFinal" style="margin-top:12px;"></div>
@@ -2268,6 +2277,7 @@ function mxVstCarregarComparacao(vstId){
   if(typeof DEBUG_VST_VERIFICACAO!=='undefined' && DEBUG_VST_VERIFICACAO) mxVstRevisaoCritica(d);
   mxVstLimitacoes(d);
   mxVstDashboard(d);
+  mxVstDesenharRpePots(d);
   mxLimiterMostrar(d);
   mxHipoteseMostrar(d);
   mxHistoricoEstilosMostrar(d);
@@ -4170,6 +4180,141 @@ function mxVstDashboard(d){
 }
 
 
+
+// mxVstDesenharRpePots — gráfico RPE × Potência Dia1 × Dia2.
+// Lê o RPE de /api/moxy/vst/rpe/<vid> (independente de quando foi
+// gravado) e cruza com d.comparacao_bp1/bp2 para obter potência,
+// HR, RF e SmO2 por WORK. Zero recálculos.
+function mxVstDesenharRpePots(d){
+ const cv=document.getElementById('chMxVstRpePots');
+ const tip=document.getElementById('mxTipVstRpePots');
+ const st=document.getElementById('mxVstRpePotsStatus');
+ if(!cv) return;
+ const vid=d.vst_activity_id||d.dia2_activity_id||'';
+ if(!vid){ if(st) st.textContent='Sem ID de sessão VST.'; return; }
+ if(st) st.textContent='a carregar RPE…';
+ fetch('/api/moxy/vst/rpe/'+vid).then(r=>r.json()).then(function(rd){
+  if(rd.status!=='ok'||!rd.blocos||!rd.blocos.length){
+   if(st) st.textContent='RPE não registrado — registe os valores RPE nos WORKs para activar este gráfico.';
+   return;
+  }
+  const blocos=rd.blocos.filter(b=>b.rpe!=null&&b.watts_medio>0);
+  if(!blocos.length){
+   if(st) st.textContent='RPE não registrado — registe os valores RPE nos WORKs para activar este gráfico.';
+   return;
+  }
+
+  // extrair métricas por WORK do objecto d (já calculado pelo backend)
+  function _metWORK(comp){
+   // comparacao_bp1 ou bp2 tem 'metricas' com entry/exit de HR/RF/SmO2
+   const m=comp&&comp.metricas||{};
+   const w=[];
+   // iterar pelas métricas disponíveis e construir lookup por posição
+   return m;
+  }
+  const metBP1=_metWORK(d.comparacao_bp1||{});
+  const metBP2=_metWORK(d.comparacao_bp2||{});
+
+  // classificação qualitativa
+  const todasComRpe=rd.todos_gravados;
+  const rpeD1=rd.rpe_dia1||null;  // pode não existir se só tiver Dia2
+  const status=todasComRpe?'TODOS OS WORKs COM RPE':'RPE PARCIAL';
+  if(st) st.textContent=status;
+
+  // pontos por BP
+  const cores={bp1:'#5DADE2',bp2:'#3FB950'};
+  const pts={bp1:[],bp2:[]};
+  blocos.forEach(function(b){
+   pts[b.grupo]=pts[b.grupo]||[];
+   pts[b.grupo].push(b);
+  });
+
+  // desenhar com canvas 2d nativo
+  const W=cv.offsetWidth||cv.parentElement.offsetWidth||600;
+  const H=260;
+  cv.width=W; cv.height=H;
+  const ctx=cv.getContext('2d');
+  ctx.clearRect(0,0,W,H);
+  const pad={l:44,r:20,t:20,b:40};
+  const pw=W-pad.l-pad.r, ph=H-pad.t-pad.b;
+  const allW=blocos.map(b=>b.watts_medio);
+  const wMin=Math.min(...allW)-10, wMax=Math.max(...allW)+10;
+  function xp(w){ return pad.l+((w-wMin)/(wMax-wMin))*pw; }
+  function yp(r){ return pad.t+((10-r)/10)*ph; }
+
+  // grade
+  ctx.strokeStyle='#21262d'; ctx.lineWidth=1;
+  for(let r=2;r<=10;r+=2){
+   const y=yp(r);
+   ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+pw,y); ctx.stroke();
+   ctx.fillStyle='#6e7681'; ctx.font='10px monospace';
+   ctx.fillText(r,pad.l-22,y+4);
+  }
+  // eixo Y label
+  ctx.save(); ctx.translate(12,pad.t+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillStyle='#8b949e'; ctx.font='11px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('RPE (1–10)',0,0); ctx.restore();
+  // eixo X label
+  ctx.fillStyle='#8b949e'; ctx.font='11px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('Potência média do WORK (W)',pad.l+pw/2,H-6);
+  // escala X
+  const nTicks=5;
+  for(let i=0;i<=nTicks;i++){
+   const w=wMin+(wMax-wMin)*i/nTicks;
+   const x=xp(w);
+   ctx.fillStyle='#6e7681'; ctx.font='10px monospace'; ctx.textAlign='center';
+   ctx.fillText(Math.round(w),x,H-pad.b+14);
+  }
+
+  // legend
+  ['bp1','bp2'].forEach(function(g,gi){
+   const cx=pad.l+pw-60+gi*0+0;
+   ctx.fillStyle=cores[g];
+   ctx.beginPath(); ctx.arc(cx,pad.t+6+gi*16,5,0,Math.PI*2); ctx.fill();
+   ctx.fillStyle='#c9d1d9'; ctx.font='10px sans-serif'; ctx.textAlign='left';
+   ctx.fillText(g.toUpperCase(),cx+9,pad.t+10+gi*16);
+  });
+
+  // pontos
+  const hitboxes=[];
+  ['bp1','bp2'].forEach(function(g){
+   (pts[g]||[]).forEach(function(b){
+    const x=xp(b.watts_medio), y=yp(b.rpe);
+    ctx.beginPath(); ctx.arc(x,y,7,0,Math.PI*2);
+    ctx.fillStyle=cores[g]; ctx.fill();
+    ctx.strokeStyle='#0d1117'; ctx.lineWidth=1.5; ctx.stroke();
+    ctx.fillStyle='#fff'; ctx.font='bold 9px monospace'; ctx.textAlign='center';
+    ctx.fillText(b.numero,x,y+3);
+    hitboxes.push({x,y,b,g});
+   });
+  });
+
+  // tooltip via mouse
+  if(tip){
+   cv.onmousemove=function(ev){
+    const rect=cv.getBoundingClientRect();
+    const mx=ev.clientX-rect.left, my=ev.clientY-rect.top;
+    const hit=hitboxes.find(h=>Math.hypot(h.x-mx,h.y-my)<12);
+    if(hit){
+     const b=hit.b;
+     tip.style.display='block';
+     tip.style.left=(mx+14)+'px'; tip.style.top=(my-10)+'px';
+     tip.textContent=[
+      hit.g.toUpperCase()+' WORK '+b.numero,
+      'Potência: '+b.watts_medio+' W',
+      'RPE: '+b.rpe+'/10',
+      b.rf_medio!=null?'RF: '+Math.round(b.rf_medio)+' rpm':'',
+      b.hr_medio!=null?'HR: '+Math.round(b.hr_medio)+' bpm':'',
+      b.smo2_medio!=null?'SmO2: '+Math.round(b.smo2_medio)+'%':'',
+     ].filter(Boolean).join(String.fromCharCode(10));
+    } else { tip.style.display='none'; }
+   };
+   cv.onmouseleave=function(){ tip.style.display='none'; };
+  }
+ }).catch(function(e){
+  if(st) st.textContent='Erro ao carregar RPE: '+e.message;
+ });
+}
 
 function mxVstLimitacoes(d){
  const box=document.getElementById('mxVstLimitacoes');

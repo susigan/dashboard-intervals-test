@@ -3198,11 +3198,20 @@ def registar(app):
                 pot1 = comp_bp1.get('potencia') or {}
                 pot2 = comp_bp2.get('potencia') or {}
                 agora = datetime.now().isoformat(timespec='seconds')
+                # Garantir que a linha existe antes do UPDATE —
+                # cobre o caso em que o utilizador abre uma verificação
+                # guardada sem ter passado pelo botão Sincronizar, ou
+                # volta à aba após o container restartar.
+                cn.execute(
+                    "INSERT OR IGNORE INTO vst_conjuntos "
+                    "(vst_activity_id, moxy_activity_id, criado_em, actualizado_em) "
+                    "VALUES (?,?,?,?)",
+                    (vid, mid, agora, agora))
                 cn.execute(
                     "UPDATE vst_conjuntos SET bp1_status=?, bp2_status=?, "
                     "recovery_bp1_status=?, recovery_bp2_status=?, "
                     "dia1_bp1_w=?, dia2_bp1_w=?, dia1_bp2_w=?, dia2_bp2_w=?, "
-                    "resultado_json=?, analisado_em=? WHERE vst_activity_id=?",
+                    "resultado_json=?, analisado_em=?, actualizado_em=? WHERE vst_activity_id=?",
                     (comp_bp1.get('status'), comp_bp2.get('status'),
                      comp_recovery_bp1.get('status'), comp_recovery_bp2.get('status'),
                      pot1.get('dia1_w'), pot1.get('dia2_w'),
@@ -3213,7 +3222,7 @@ def registar(app):
                                 'limiter_bp1': limiter_bp1, 'limiter_bp2': limiter_bp2,
                                 'hipotese_bp1': hipotese_bp1, 'hipotese_bp2': hipotese_bp2},
                                ensure_ascii=False),
-                     agora, vid))
+                     agora, agora, vid))
                 cn.commit()
                 ddp.upload()
             except Exception:

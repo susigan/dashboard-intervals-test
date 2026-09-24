@@ -3877,39 +3877,51 @@ function mxHistoricoEstilosMostrar(d){
 // As funções analíticas existentes (mxLimiterMostrar, mxVstRecovery...)
 // continuam intactas e são acessíveis em <details> abaixo.
 // ═══════════════════════════════════════════════════════════════════
+// mxVstDashboard(d) — hierarquia: RESUMO → SISTEMAS → LIMITADOR
+// → PADRÃO → ALVO → TREINO → MONITORAMENTO.
+// Consome EXCLUSIVAMENTE campos já produzidos pelo backend:
+//   d.comparacao_bp1/bp2, d.limiter_bp1/bp2, d.limiter_sintese,
+//   d.comparacao_recovery_bp1/bp2, d.comparacao_rpe_bp1/bp2.
+// A chave canónica limiter_bp1.intervencao_chave (nova) permite
+// ligar directamente ao endpoint /api/moxy/intervencoes — mesmo
+// caminho que mxSintese usa, sem duplicar nenhum cálculo.
 function mxVstDashboard(d){
  const box=document.getElementById('mxVstDashboard');
- if(!box || !d) return;
+ if(!box||!d) return;
 
  const bp1c=d.comparacao_bp1||{}, bp2c=d.comparacao_bp2||{};
  const rec1=d.comparacao_recovery_bp1||{}, rec2=d.comparacao_recovery_bp2||{};
  const rpe1=d.comparacao_rpe_bp1, rpe2=d.comparacao_rpe_bp2;
  const lbp1=d.limiter_bp1||{}, lbp2=d.limiter_bp2||{};
  const sint=d.limiter_sintese||{};
+ const mod=(document.getElementById('mxModalidade')||{}).value||'';
 
  // ── helpers ──────────────────────────────────────────────────────
- const COR=_vstCorGeral;  // reutiliza a função existente
- function _pot(comp){
+ const COR=_vstCorGeral;
+ function _potTxt(comp){
   const p=comp.potencia;
-  if(!p) return null;
-  return {d1:p.dia1_w, d2:p.dia2_w, delta:p.diferenca_w, pct:p.diferenca_pct};
+  return p&&p.dia2_w!=null?p.dia2_w+'W':null;
  }
  function _badge(txt,cor){
   return '<span style="font-size:10px;background:'+cor+'22;color:'+cor+';border:1px solid '+cor+'55;'
    +'border-radius:4px;padding:1px 6px;white-space:nowrap;">'+txt+'</span>';
  }
+ function _secLabel(txt){
+  return '<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">'+txt+'</div>';
+ }
+ function _card(body,minW){
+  return '<div class="card" style="min-width:'+(minW||180)+'px;flex:1;">'+body+'</div>';
+ }
  function _estadoCor(info){
-  if(!info) return '#8b949e';
   return {consistente:'#3FB950',parcial:'#F4D03F',tardio:'#F0883E',
-          ausente:'#8b949e',insuficiente:'#6e7681',contextual:'#8b949e'}[info.estado||'']||'#8b949e';
+          ausente:'#8b949e',insuficiente:'#6e7681',contextual:'#8b949e'}[(info&&info.estado)||'']||'#8b949e';
  }
  function _estadoLabel(info){
-  if(!info||!info.estado) return null;
-  const map={consistente:'consistente',parcial:'parcial',tardio:'tardio',
-             ausente:'ausente',insuficiente:'insuf.',contextual:'contextual'};
-  return map[info.estado]||info.estado;
+  const m={consistente:'consistente',parcial:'parcial',tardio:'tardio',
+           ausente:'ausente',insuficiente:'insuf.',contextual:'contextual'};
+  return info&&info.estado ? (m[info.estado]||info.estado) : null;
  }
- function _padraoCorLimiter(p){
+ function _padraoCorLim(p){
   if(!p) return '#8b949e';
   if(p.includes('CARDIORRESPIRATÓRIO')) return '#5DADE2';
   if(p.includes('PERIFÉRICO')) return '#3FB950';
@@ -3917,219 +3929,236 @@ function mxVstDashboard(d){
   if(p.includes('DISSOCIADAS')) return '#F0883E';
   return '#8b949e';
  }
- function _cardBase(body, minW){
-  return '<div class="card" style="min-width:'+(minW||180)+'px;flex:1;">'
-   +body+'</div>';
- }
- function _secLabel(txt){
-  return '<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;'
-   +'margin-bottom:2px;">'+txt+'</div>';
- }
- function _rpeSnippet(r, nome){
-  if(!r||r.status==='DADOS INSUFICIENTES')
-   return '<div style="font-size:10px;color:#8b949e;">'+nome+': não registrado</div>';
-  return '<div style="font-size:10px;margin-top:2px;">'
-   +nome+': D1 '+r.dia1.inicial+'→'+r.dia1.final+' / D2 '+r.dia2.inicial+'→'+r.dia2.final
-   +' <span style="color:'+COR(r.status)+';">'+r.status+'</span></div>';
- }
- // evidências rápidas do limiter (HR, RF, SmO2, DFA1, THb)
- function _evBadges(lim){
+ function _evBitsHTMLBP(lim){
   if(!lim||!lim.evidencia) return '';
   const ev=lim.evidencia;
-  const hr=(ev.cardiorrespiratorio||{}).hr;
-  const rf=(ev.cardiorrespiratorio||{}).rf;
-  const smo2=(ev.periferico||{}).smo2;
-  const dfa1=(ev.autonomico||{}).dfa1;
-  const thb=(ev.periferico||{}).thb_contexto;
-  let bits=[];
+  const hr=(ev.cardiorrespiratorio||{}).hr, rf=(ev.cardiorrespiratorio||{}).rf;
+  const smo2=(ev.periferico||{}).smo2, dfa1=(ev.autonomico||{}).dfa1;
+  const bits=[];
   if(hr&&hr.estado&&hr.estado!=='ausente')
-   bits.push('<span style="color:'+_estadoCor(hr)+';">HR '+_estadoLabel(hr)+'</span>');
+   bits.push('<span style="color:'+_estadoCor(hr)+';font-size:10px;">HR '+_estadoLabel(hr)+'</span>');
   if(rf&&rf.estado&&rf.estado!=='ausente')
-   bits.push('<span style="color:'+_estadoCor(rf)+';">RF '+_estadoLabel(rf)+'</span>');
+   bits.push('<span style="color:'+_estadoCor(rf)+';font-size:10px;">RF '+_estadoLabel(rf)+'</span>');
   if(smo2&&smo2.estado&&smo2.estado!=='ausente')
-   bits.push('<span style="color:'+_estadoCor(smo2)+';">SmO2 '+_estadoLabel(smo2)+'</span>');
+   bits.push('<span style="color:'+_estadoCor(smo2)+';font-size:10px;">SmO2 '+_estadoLabel(smo2)+'</span>');
   if(dfa1&&dfa1.estado&&dfa1.estado!=='ausente')
-   bits.push('<span style="color:#8b949e;">DFA-α1 '+_estadoLabel(dfa1)+' (compl.)</span>');
-  if(thb)
-   bits.push('<span style="color:#8b949e;">THb (ctx)</span>');
-  return bits.length?'<div style="font-size:10px;margin-top:4px;line-height:1.8;">'+bits.join(' · ')+'</div>':'';
+   bits.push('<span style="color:#8b949e;font-size:10px;">DFA-α1 '+_estadoLabel(dfa1)+' (compl.)</span>');
+  return bits.length?'<div style="margin-top:4px;line-height:1.9;">'+bits.join(' · ')+'</div>':'';
  }
 
- // ── HEADER ────────────────────────────────────────────────────────
- const mod=(document.getElementById('mxModalidade')||{}).value||'';
- const pot1=_pot(bp1c), pot2=_pot(bp2c);
- const d2W1=pot1?pot1.d2+'W':'—', d2W2=pot2?pot2.d2+'W':'—';
- const statusGeral=(()=>{
-  const ord={'DIVERGENTE':0,'PARCIALMENTE CONSISTENTE':1,'DADOS INSUFICIENTES':1,'CONSISTENTE':2};
-  return (ord[bp1c.status]??1)<=(ord[bp2c.status]??1)?bp1c.status:bp2c.status;
- })();
+ // ── STATUS GERAL ─────────────────────────────────────────────────
+ const ord={'DIVERGENTE':0,'PARCIALMENTE CONSISTENTE':1,'DADOS INSUFICIENTES':1,'CONSISTENTE':2};
+ const statusGeral=(ord[bp1c.status]??1)<=(ord[bp2c.status]??1)?bp1c.status:bp2c.status;
+
+ // ── A. HEADER ────────────────────────────────────────────────────
  let html='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;">'
   +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
   +'<b style="font-size:13px;">VST — Perfil Fisiológico</b>'
   +(mod?_badge(mod,'#5DADE2'):'')
-  +_badge('Dia 1 × Dia 2','#8b949e')
   +'<span style="font-size:11px;margin-left:auto;color:'+COR(statusGeral)+';font-weight:600;">'+statusGeral+'</span>'
   +'</div>'
   +(sint.bp1||sint.bp2
-   ?'<div style="font-size:11px;color:#8b949e;margin-top:4px;">'
-    +(sint.bp1||'')+(sint.bp1&&sint.bp2?' · ':'')+( sint.bp2||'')+'</div>'
+   ?'<div style="font-size:11px;color:#8b949e;margin-top:4px;">'+(sint.bp1||'')+(sint.bp1&&sint.bp2?' · ':''+(sint.bp2||''))+'</div>'
    :'')
   +'</div>';
 
- // ── FILA 1: BP1 · BP2 · RECOVERY · RPE ───────────────────────────
+ // ── B. RESUMO (4 cards) ──────────────────────────────────────────
+ const pot1=_potTxt(bp1c), pot2=_potTxt(bp2c);
+ const recOrd={'DIVERGENTE':0,'PARCIALMENTE CONVERGENTE':1,'DADOS INSUFICIENTES':1,'CONVERGENTE':2};
+ const recStatusBest=(recOrd[rec1.status]??1)<=(recOrd[rec2.status]??1)?rec1.status:rec2.status;
+ const rpeDisp=(rpe1&&rpe1.status!=='DADOS INSUFICIENTES')||(rpe2&&rpe2.status!=='DADOS INSUFICIENTES');
+
  html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">';
+ // BP1
+ html+=_card(_secLabel('BP1'+(pot1?' · '+pot1:''))
+  +'<div style="font-size:14px;font-weight:700;color:'+COR(bp1c.status)+';">'+(bp1c.status||'—')+'</div>'
+  +(lbp1.padrao?'<div style="font-size:10px;color:'+_padraoCorLim(lbp1.padrao)+';margin-top:2px;">'+lbp1.padrao+'</div>':'')
+  +_evBitsHTMLBP(lbp1));
+ // BP2
+ html+=_card(_secLabel('BP2'+(pot2?' · '+pot2:''))
+  +'<div style="font-size:14px;font-weight:700;color:'+COR(bp2c.status)+';">'+(bp2c.status||'—')+'</div>'
+  +(lbp2.padrao?'<div style="font-size:10px;color:'+_padraoCorLim(lbp2.padrao)+';margin-top:2px;">'+lbp2.padrao+'</div>':'')
+  +_evBitsHTMLBP(lbp2));
+ // Recovery 0-60s
+ html+=_card(_secLabel('Recovery 0–60 s')
+  +'<div style="font-size:14px;font-weight:700;color:'+COR(recStatusBest)+';">'+(recStatusBest||'—')+'</div>'
+  +'<div style="font-size:10px;color:#8b949e;margin-top:2px;">BP1: '+(rec1.status||'—')+' · BP2: '+(rec2.status||'—')+'</div>'
+  +'<div style="font-size:9px;color:#6e7681;margin-top:1px;">janela comparação Dia1×Dia2</div>');
+ // RPE
+ html+=_card(_secLabel('RPE (complementar)')
+  +(rpeDisp
+   ?function(){
+    let r='';
+    function _rpeL(rp,bp){
+     if(!rp||rp.status==='DADOS INSUFICIENTES') return '<div style="font-size:10px;color:#8b949e;">'+bp+': n/a</div>';
+     return '<div style="font-size:10px;">'+bp+' D2 '+rp.dia2.inicial+'→'+rp.dia2.final
+      +' <span style="color:'+COR(rp.status)+';">'+rp.status+'</span></div>';
+    }
+    return _rpeL(rpe1,'BP1')+_rpeL(rpe2,'BP2');
+   }()
+   :'<div style="font-size:12px;color:#8b949e;">não registrado</div>'));
+ html+='</div>';
 
- // CARD BP1
- const pBP1=lbp1.padrao;
- html+=_cardBase(
-  _secLabel('BP1'+(d2W1!=='—'?' · '+d2W1:''))
-  +'<div style="font-size:14px;font-weight:600;color:'+COR(bp1c.status)+';">'+(bp1c.status||'—')+'</div>'
-  +(pBP1?'<div style="font-size:11px;color:'+_padraoCorLimiter(pBP1)+';margin-top:3px;">'+pBP1+'</div>':'')
-  +(bp1c.motivo?'<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+bp1c.motivo.slice(0,80)+'</div>':'')
-  +_evBadges(lbp1)
- );
-
- // CARD BP2
- const pBP2=lbp2.padrao;
- html+=_cardBase(
-  _secLabel('BP2'+(d2W2!=='—'?' · '+d2W2:''))
-  +'<div style="font-size:14px;font-weight:600;color:'+COR(bp2c.status)+';">'+(bp2c.status||'—')+'</div>'
-  +(pBP2?'<div style="font-size:11px;color:'+_padraoCorLimiter(pBP2)+';margin-top:3px;">'+pBP2+'</div>':'')
-  +(bp2c.motivo?'<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+bp2c.motivo.slice(0,80)+'</div>':'')
-  +_evBadges(lbp2)
- );
-
- // CARD RECOVERY (0–60s, a janela da comparação)
- const recStatusBest=(()=>{
-  const ord={'DIVERGENTE':0,'PARCIALMENTE CONVERGENTE':1,'DADOS INSUFICIENTES':1,'CONVERGENTE':2};
-  return (ord[rec1.status]??1)<=(ord[rec2.status]??1)?rec1.status:rec2.status;
- })();
- html+=_cardBase(
-  _secLabel('Recovery 0–60 s')
-  +'<div style="font-size:14px;font-weight:600;color:'+COR(recStatusBest)+';">'+(recStatusBest||'—')+'</div>'
-  +'<div style="font-size:10px;color:#8b949e;margin-top:3px;">'
-  +'BP1: '+(rec1.status||'—')+' · BP2: '+(rec2.status||'—')
-  +'</div>'
-  +'<div style="font-size:9px;color:#6e7681;margin-top:2px;">Janela de 60 s — janela da comparação Dia1×Dia2</div>'
- );
-
- // CARD RPE
- const rpeOk=rpe1&&rpe1.status!=='DADOS INSUFICIENTES';
- const rpe2Ok=rpe2&&rpe2.status!=='DADOS INSUFICIENTES';
- html+=_cardBase(
-  _secLabel('RPE (complementar)')
-  +(rpeOk||rpe2Ok
-   ?_rpeSnippet(rpe1,'BP1')+_rpeSnippet(rpe2,'BP2')
-   :'<div style="font-size:12px;color:#8b949e;">não registrado</div>')
- );
- html+='</div>';  // fila 1
-
- // ── FILA 2: Sistemas ──────────────────────────────────────────────
- // Ventilação · Transporte · Utilização — lidos do limiter existente
+ // ── C. SISTEMAS ─────────────────────────────────────────────────
  html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">';
-
- function _sistemaCard(icon,titulo,cor,campos_bp1,campos_bp2,nota){
-  let c=_secLabel(icon+' '+titulo);
-  function _faixaCampo(label,info){
-   if(!info) return '';
-   const lbl=_estadoLabel(info);
-   if(!lbl) return '';
-   return '<div style="font-size:10px;"><span style="color:#8b949e;">'+label+'</span> '
-    +'<span style="color:'+_estadoCor(info)+';">'+lbl+'</span></div>';
-  }
-  const linhas=[...campos_bp1.map(function(f){ return _faixaCampo('BP1 '+f.label,f.info); }),
-                ...campos_bp2.map(function(f){ return _faixaCampo('BP2 '+f.label,f.info); })].filter(Boolean);
-  c+=linhas.length
-   ?'<div style="margin-top:4px;">'+linhas.join('')+'</div>'
-   :'<div style="font-size:11px;color:#8b949e;margin-top:4px;">dados insuficientes</div>';
-  if(nota) c+='<div style="font-size:9px;color:#6e7681;margin-top:3px;font-style:italic;">'+nota+'</div>';
-  return _cardBase(c);
- }
-
  const ev1=lbp1.evidencia||{}, ev2=lbp2.evidencia||{};
  const cr1=ev1.cardiorrespiratorio||{}, cr2=ev2.cardiorrespiratorio||{};
  const pf1=ev1.periferico||{}, pf2=ev2.periferico||{};
  const au1=ev1.autonomico||{}, au2=ev2.autonomico||{};
 
- // 🫁 Ventilatório (RF + autonomico DFA1 complementar)
- html+=_sistemaCard('🫁','Ventilatório','#5DADE2',
-  [{label:'RF',info:cr1.rf}],
-  [{label:'RF',info:cr2.rf}],
-  'DFA-α1: '+(au1.dfa1&&au1.dfa1.estado&&au1.dfa1.estado!=='ausente'
-   ?'BP1 '+_estadoLabel(au1.dfa1)+' / BP2 '+(_estadoLabel(au2.dfa1)||'—')+' (complementar)'
-   :'sem dados — complementar'));
+ function _sistCard(icon,titulo,campos){
+  // campos = [{label, info_bp1, info_bp2}]
+  let rows=campos.map(function(c){
+   const l1=_estadoLabel(c.info1), l2=_estadoLabel(c.info2);
+   if(!l1&&!l2) return '<div style="font-size:10px;color:#8b949e;">'+c.label+': dados insuficientes</div>';
+   return '<div style="font-size:10px;"><span style="color:#8b949e;">'+c.label+'</span> '
+    +(l1?'<span style="color:'+_estadoCor(c.info1)+';margin-right:6px;">BP1 '+l1+'</span>':'')
+    +(l2?'<span style="color:'+_estadoCor(c.info2)+';">BP2 '+l2+'</span>':'')+'</div>';
+  }).join('');
+  return _card(_secLabel(icon+' '+titulo)+rows);
+ }
+ // 🫁 Ventilatório: RF + nota DFA1 complementar
+ const dfa1_txt = (function(){
+  const d1=au1.dfa1, d2=au2.dfa1;
+  const l1=_estadoLabel(d1), l2=_estadoLabel(d2);
+  if(!l1&&!l2) return 'DFA-α1: sem dados (complementar)';
+  return 'DFA-α1: '+(l1?'BP1 '+l1:'')+' '+(l2?'BP2 '+l2:'')+'  (complementar — nunca isolado)';
+ })();
+ html+=_card(_secLabel('🫁 Ventilatório')
+  +_sistCard('','',
+   [{label:'RF',info1:cr1.rf,info2:cr2.rf}]).replace('<div class="card"','<div').replace('</div>','')
+  +'<div style="font-size:9px;color:#6e7681;margin-top:4px;">'+dfa1_txt+'</div>'
+  +'</div>');
+ // ❤️ Transporte: HR
+ html+=_sistCard('❤️','Transporte',[{label:'HR',info1:cr1.hr,info2:cr2.hr}]);
+ // 🦵 Utilização: SmO2 + THb contextual
+ const thb1=(pf1.thb_contexto||null), thb2=(pf2.thb_contexto||null);
+ html+=_card(_secLabel('🦵 Utilização')
+  +_sistCard('','',
+   [{label:'SmO2',info1:pf1.smo2,info2:pf2.smo2}]).replace('<div class="card"','<div').replace('</div>','')
+  +'<div style="font-size:9px;color:#6e7681;margin-top:4px;">'
+  +(thb1||thb2?'THb: '+(thb1||thb2)+' (contextual)':'THb: sem dados (contextual)')
+  +'</div></div>');
+ html+='</div>';
 
- // ❤️ Transporte (HR)
- html+=_sistemaCard('❤️','Transporte','#E74C3C',
-  [{label:'HR',info:cr1.hr}],
-  [{label:'HR',info:cr2.hr}],
-  null);
+ // ── D. LIMITADOR ─────────────────────────────────────────────────
+ const padraoMain=lbp1.padrao&&lbp1.padrao!=='EVIDÊNCIA INSUFICIENTE'?lbp1.padrao:(lbp2.padrao||'—');
+ const corMain=_padraoCorLim(padraoMain);
+ // intervencao_chave: novo campo do backend (vst_verificacao.py)
+ const ivKey1=lbp1.intervencao_chave||null;
+ const ivKey2=lbp2.intervencao_chave||null;
+ const ivKeyMain=ivKey1||ivKey2;
 
- // 🦵 Utilização (SmO2 + THb contextual)
- const thb1txt=pf1.thb_contexto||null, thb2txt=pf2.thb_contexto||null;
- html+=_sistemaCard('🦵','Utilização','#2ECC71',
-  [{label:'SmO2',info:pf1.smo2}],
-  [{label:'SmO2',info:pf2.smo2}],
-  'THb: '+(thb1txt||thb2txt?((thb1txt||'—')+' (contextual)') : 'sem dados — contextual'));
-
- html+='</div>';  // fila 2
-
- // ── CARD: Padrão principal + interpretação ─────────────────────
- const padraoMain=pBP1&&pBP1!=='EVIDÊNCIA INSUFICIENTE'?pBP1:(pBP2||'—');
- const corMain=_padraoCorLimiter(padraoMain);
- const motivoMain=(lbp1&&lbp1.motivo||lbp2&&lbp2.motivo||'');
- // nota de limitação fisiológica (fixa — não afirma mecanismo)
- const notaLimite='As métricas disponíveis descrevem padrões de resposta fisiológica. '
-  +'Não identificam isoladamente causa mecânica, química ou metaboreflexa.';
  html+='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;">'
-  +'<div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;">'
-  // padrão
-  +'<div style="flex:1;min-width:160px;">'
-  +_secLabel('🔎 Padrão principal')
-  +'<div style="font-size:16px;font-weight:700;color:'+corMain+';margin-top:2px;">'+padraoMain+'</div>'
-  +(motivoMain?'<div style="font-size:11px;color:#8b949e;margin-top:3px;">'+motivoMain+'</div>':'')
-  +'<div style="font-size:10px;margin-top:5px;">'
-  +_evBadges(lbp1)+_evBadges(lbp2)
-  +'</div></div>'
-  // interpretação
-  +'<div style="flex:2;min-width:200px;">'
-  +_secLabel('Como interpretar')
-  +'<div style="font-size:11px;color:#c9d1d9;margin-top:2px;">'
-  +(padraoMain.includes('CARDIORRESPIRATÓRIO')
-   ?'O padrão observado indica progressão conjunta de HR e RF durante o esforço, '
-    +'com menor participação periférica ou resposta periférica mais tardia.'
-   :padraoMain.includes('PERIFÉRICO')
-   ?'O padrão observado indica resposta periférica (SmO2) predominante, '
-    +'com menor participação cardiorrespiratória equivalente.'
-   :padraoMain.includes('MULTISSISTÊMICA')
-   ?'Cardiorrespiratório e periférico apresentam respostas temporalmente relacionadas.'
-   :padraoMain.includes('DISSOCIADAS')
-   ?'Os sinais aparecem temporalmente separados, sem agrupamento predominante.'
-   :'Dados insuficientes para descrever o padrão fisiológico.')
+  +_secLabel('🎯 Limitador identificado')
+  +'<div style="display:flex;gap:20px;flex-wrap:wrap;">'
+  +'<div>'
+  +'<div style="font-size:10px;color:#8b949e;margin-bottom:1px;">BP1</div>'
+  +'<div style="font-size:13px;font-weight:700;color:'+_padraoCorLim(lbp1.padrao)+';">'+(lbp1.padrao||'—')+'</div>'
+  +(ivKey1?'<div style="font-size:9px;color:#6e7681;">chave: '+ivKey1+'</div>':'')
   +'</div>'
-  +'<div style="font-size:10px;color:#6e7681;margin-top:5px;font-style:italic;">'+notaLimite+'</div>'
-  +'</div></div></div>';
-
- // ── CARD: O que observar no treino ────────────────────────────────
- html+='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;">'
-  +_secLabel('📈 O que observar durante o treino')
-  +'<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:4px;font-size:11px;color:#c9d1d9;">'
-  +'<ul style="margin:0;padding-left:16px;line-height:1.8;">'
-  +'<li>RF não sobe progressivamente de forma precoce</li>'
-  +'<li>HR não apresenta deriva desproporcional</li>'
-  +'<li>Recuperação de HR/RF é adequada entre séries</li>'
-  +'</ul>'
-  +'<ul style="margin:0;padding-left:16px;line-height:1.8;">'
-  +'<li>RPE permanece proporcional à carga</li>'
-  +'<li>SmO2 compatível com o objetivo fisiológico</li>'
-  +'<li>Próxima série não começa com HR/RF muito mais altos</li>'
-  +'</ul>'
+  +'<div>'
+  +'<div style="font-size:10px;color:#8b949e;margin-bottom:1px;">BP2</div>'
+  +'<div style="font-size:13px;font-weight:700;color:'+_padraoCorLim(lbp2.padrao)+';">'+(lbp2.padrao||'—')+'</div>'
+  +(ivKey2?'<div style="font-size:9px;color:#6e7681;">chave: '+ivKey2+'</div>':'')
   +'</div>'
-  +'<div style="font-size:9px;color:#6e7681;margin-top:4px;">Critérios qualitativos — não criar limites numéricos sem dados individuais.</div>'
+  +'</div>'
+  +(lbp1.motivo?'<div style="font-size:10px;color:#8b949e;margin-top:5px;">'+lbp1.motivo+'</div>':'')
   +'</div>';
 
+ // ── E. PADRÃO ────────────────────────────────────────────────────
+ const interprTxt=(function(){
+  if(padraoMain.includes('CARDIORRESPIRATÓRIO'))
+   return 'Progressão conjunta de HR e RF durante o esforço, com menor participação periférica ou resposta periférica mais tardia.';
+  if(padraoMain.includes('PERIFÉRICO'))
+   return 'Resposta periférica (SmO2) predominante, com menor participação cardiorrespiratória equivalente.';
+  if(padraoMain.includes('MULTISSISTÊMICA'))
+   return 'Cardiorrespiratório e periférico apresentam respostas temporalmente relacionadas.';
+  if(padraoMain.includes('DISSOCIADAS'))
+   return 'Os sinais aparecem temporalmente separados, sem agrupamento predominante.';
+  return 'Dados insuficientes para descrever o padrão fisiológico.';
+ })();
+ html+='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;display:flex;gap:14px;flex-wrap:wrap;">'
+  +'<div style="flex:1;min-width:150px;">'
+  +_secLabel('🔎 Padrão observado')
+  +'<div style="font-size:15px;font-weight:700;color:'+corMain+';margin-top:2px;">'+padraoMain+'</div>'
+  +_evBitsHTMLBP(lbp1)
+  +'<div style="font-size:9px;color:#6e7681;margin-top:4px;font-style:italic;">'
+  +'As métricas descrevem padrões de resposta — não identificam causa mecanística isolada.</div>'
+  +'</div>'
+  +'<div style="flex:2;min-width:180px;">'
+  +_secLabel('Como interpretar')
+  +'<div style="font-size:11px;color:#c9d1d9;margin-top:2px;">'+interprTxt+'</div>'
+  +'</div>'
+  +'</div>';
+
+ // ── F+G. ALVO + TREINO (do endpoint de intervenções, via chave canónica) ──
+ const ivBox=document.createElement('div');
+ ivBox.id='mxVstDashboardIV';
+ ivBox.innerHTML='<div style="font-size:11px;color:#8b949e;margin-bottom:8px;">'
+  +(ivKeyMain?'A carregar alvo e formato de treino…':'Alvo/formato ainda não mapeado para este padrão.')
+  +'</div>';
  box.innerHTML=html;
+ box.appendChild(ivBox);
+
+ if(ivKeyMain){
+  fetch('/api/moxy/intervencoes?limitador='+encodeURIComponent(ivKeyMain))
+  .then(r=>r.json()).then(function(iv){
+   if(!iv||iv.status!=='ok'||!iv.intervencao){
+    ivBox.innerHTML='<div style="font-size:10px;color:#8b949e;">Alvo/formato: não mapeado ('+ivKeyMain+')</div>';
+    return;
+   }
+   const i=iv.intervencao;
+   // alvo de adaptação
+   let hiv='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;">'
+    +_secLabel('🎯 Alvo de adaptação')
+    +'<div style="font-size:13px;font-weight:700;color:#A371F7;">'+(i.nome||'—')+'</div>'
+    +'<div style="font-size:11px;color:#8b949e;margin-top:3px;">'+(i.o_que_e||'')+'</div>'
+    +'</div>';
+   // treino
+   const z=i.zonas||[];
+   const nomeZonas=z.map(function(zn){ return zn.nome||''; }).filter(Boolean);
+   hiv+='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;">'
+    +_secLabel('🏋️ Formato/treino')
+    +(nomeZonas.length
+     ?'<div style="font-size:12px;font-weight:600;color:#3FB950;">'+(nomeZonas[0]||'')+'</div>'
+      +(nomeZonas.slice(1).length?'<div style="font-size:10px;color:#8b949e;margin-top:2px;">Alternativas: '+nomeZonas.slice(1).join(' · ')+'</div>':'')
+     :'<div style="font-size:11px;color:#8b949e;">formato não mapeado</div>');
+   // por que este estímulo
+   const porqueBase=padraoMain.includes('CARDIORRESPIRATÓRIO')
+    ?'O padrão observado (HR+RF) é compatível com um alvo de adaptação cardiorrespiratória. '
+      +'O formato seleccionado estimula este sistema dentro da faixa observada no protocolo VST.'
+    :padraoMain.includes('PERIFÉRICO')
+    ?'O padrão observado (SmO2) é compatível com um alvo de utilização periférica. '
+      +'O formato seleccionado expõe o músculo à faixa de intensidade observada no protocolo VST.'
+    :padraoMain.includes('MULTISSISTÊMICA')
+    ?'O padrão observado envolve múltiplos sistemas. O formato deve trabalhar os dois eixos simultaneamente.'
+    :'Padrão observado → alvo → formato.';
+   hiv+='<div style="background:#0d1117;border-radius:5px;padding:7px 10px;margin-top:6px;font-size:10px;color:#8b949e;">'
+    +'💡 <b>Por que este estímulo?</b> '+porqueBase
+    +'</div></div>';
+   // monitoramento
+   const sinais=(i.sinais||[]).map(function(s){ return s.nome||s; }).filter(Boolean);
+   hiv+='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;">'
+    +_secLabel('📈 O que observar')
+    +'<ul style="margin:4px 0 0 14px;padding:0;font-size:11px;color:#c9d1d9;">'
+    +'<li>RF não sobe progressivamente de forma precoce</li>'
+    +'<li>HR não apresenta deriva desproporcional</li>'
+    +'<li>Recuperação de HR/RF adequada entre séries</li>'
+    +(sinais.length?'<li>Sinais a monitorar: '+sinais.join(' · ')+'</li>':'')
+    +'<li>RPE proporcional à carga</li>'
+    +'<li>SmO2 compatível com o objectivo</li>'
+    +'</ul>'
+    +'<div style="font-size:9px;color:#6e7681;margin-top:4px;">Sem limites numéricos universais — critérios derivados dos dados individuais disponíveis.</div>'
+    +'</div>';
+   ivBox.innerHTML=hiv;
+  }).catch(function(){
+   ivBox.innerHTML='<div style="font-size:10px;color:#8b949e;">Alvo/formato: erro ao carregar.</div>';
+  });
+ }
+ // nao setar box.innerHTML depois do appendChild -- ja' foi feito acima
 }
+
 
 function mxVstLimitacoes(d){
  const box=document.getElementById('mxVstLimitacoes');

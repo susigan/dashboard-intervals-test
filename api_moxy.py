@@ -2678,6 +2678,7 @@ def registar(app):
             limitador_moxy_us = request.args.get('limitador_moxy') or None
             limitador_moxy_pc = request.args.get('limitador_moxy_pc') or None
             if (not limitador_moxy_us) and moxy_id_atual:
+                # Nível 1: 5-1-5 (mais precisa, exige que tenha sido executada)
                 try:
                     itp_resp = api_moxy_interpretacao(moxy_id_atual)
                     itp_data = (itp_resp[0].get_json() if isinstance(itp_resp, tuple)
@@ -2687,7 +2688,25 @@ def registar(app):
                         limitador_moxy_us = (intr.get('us') or {}).get('limitador')
                         limitador_moxy_pc = (intr.get('pc') or {}).get('limitador')
                 except Exception:
-                    pass  # sem dados MOXY -- continuar sem ele
+                    pass
+            # Nível 2 (fallback): Rede Causal — disponível sem 5-1-5
+            # Mapeamento: sistema rede → rotulo que para_limitador() aceita
+            _REDE_PARA_US = {
+                'cardiaco': 'Fornecimento', 'cardíaco': 'Fornecimento',
+                'periferico': 'Utilização', 'periférico': 'Utilização',
+                'respiratorio': 'Pulmonar', 'respiratório': 'Pulmonar',
+            }
+            if (not limitador_moxy_us) and moxy_id_atual:
+                try:
+                    rd_resp = api_moxy_rede(moxy_id_atual)
+                    rd_data = (rd_resp[0].get_json() if isinstance(rd_resp, tuple)
+                               else rd_resp.get_json())
+                    rl = (rd_data or {}).get('limitador') or {}
+                    sistema = rl.get('sistema') or ''
+                    if sistema in _REDE_PARA_US:
+                        limitador_moxy_us = _REDE_PARA_US[sistema]
+                except Exception:
+                    pass  # sem dados de rede -- continuar sem limitador
 
             resultado = vst.profilage_historico_estilos(entradas, limitador_moxy_us)
 

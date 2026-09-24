@@ -457,126 +457,149 @@ BODY = """
     </div>
     <div id="mxVstConjuntoEstado" style="margin-top:6px;"></div>
 
-    <!-- DASHBOARD — aparece primeiro, antes de qualquer tabela técnica -->
-    <h3 style="font-size:14px;margin-top:20px;">LIMITER / Padrão fisiológico</h3>
+    <!-- ─── 1. DASHBOARD — cards + sistemas (sempre visível) ──────── -->
+    <h3 style="font-size:14px;margin-top:20px;">Perfil Fisiológico — VST</h3>
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta análise identifica padrões de resposta fisiológica. Não demonstra causalmente qual sistema limita o desempenho.</p>
-    <div id="mxVstDashboard" style="margin-bottom:16px;"></div>
+    <div id="mxVstDashboard" style="margin-bottom:12px;"></div>
 
-    <!-- DETALHES TÉCNICOS — fechados por omissão -->
-    <details style="margin-top:8px;">
-      <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:6px 0;">▼ DETALHES DA ANÁLISE</summary>
+    <!-- ─── 2. GRÁFICO TEMPORAL PRINCIPAL ───────────────────────── -->
+    <h3 style="font-size:14px;margin-top:16px;">Gráfico temporal — Dia 2</h3>
+    <div id="mxVstTemporalToggles" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;font-size:11px;">
+      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+        <input type="checkbox" checked onchange="mxVstToggleTemporal('power',this.checked)">
+        <span style="color:#c9d1d9;">Power (W)</span></label>
+      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+        <input type="checkbox" checked onchange="mxVstToggleTemporal('heartrate',this.checked)">
+        <span style="color:#E3B341;">HR (bpm)</span></label>
+      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+        <input type="checkbox" checked onchange="mxVstToggleTemporal('respiration',this.checked)">
+        <span style="color:#58A6FF;">RF (resp/min)</span></label>
+      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+        <input type="checkbox" checked onchange="mxVstToggleTemporal('smo2',this.checked)">
+        <span style="color:#3FB950;">SmO2 (%)</span></label>
+    </div>
+    <div class="chartbox" style="position:relative;width:100%;margin-top:6px;">
+      <canvas id="chMxVstTemporal" height="240"></canvas>
+      <div id="mxTipVstTemporal" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+    </div>
 
-      <details style="margin-top:10px;margin-left:8px;">
-        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ PROFILAGE — WORKs individuais (Entry / Exit / Drift / Accumulation)</summary>
-        <p class="sub" style="font-size:10px;margin:2px 0 8px;">Auditoria da estrutura de intervalos e resposta fisiológica dentro de cada WORK.</p>
-        <div id="mxProfilageEstrutura" style="overflow-x:auto;"></div>
-        <div id="mxProfilageEntryExit" style="overflow-x:auto;margin-top:10px;"></div>
-        <div id="mxProfilageDrift" style="overflow-x:auto;margin-top:14px;"></div>
-        <div id="mxProfilageAccumulation" style="overflow-x:auto;margin-top:14px;"></div>
-        <div style="margin-top:8px;">
-          <label class="sel" style="font-size:11px;margin-right:8px;">Métrica:
-            <select id="mxAccMetrica" onchange="mxProfilageAccGraficos()">
-              <option value="hr">HR</option>
-              <option value="respiration">RF</option>
-              <option value="smo2">SmO2</option>
-              <option value="thb">THb</option>
-              <option value="dfa1">DFA-α1</option>
-            </select>
-          </label>
-        </div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
-          <div class="chartbox"><div class="legend"><span>ENTRY por WORK</span></div>
-            <canvas id="chMxAccEntry" height="200"></canvas></div>
-          <div class="chartbox"><div class="legend"><span>EXIT por WORK</span></div>
-            <canvas id="chMxAccExit" height="200"></canvas></div>
-        </div>
-      </details>
+    <!-- ─── 3. LIMITADOR — visível ───────────────────────────────── -->
+    <h3 style="font-size:14px;margin-top:20px;">LIMITER / Padrão fisiológico</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">HR, RF, SmO2, THb e DFA-α1 são marcadores complementares; a convergência entre eles aumenta a coerência do padrão, mas não estabelece causalidade.</p>
+    <div id="mxLimiter" style="overflow-x:auto;"></div>
 
-      <details style="margin-top:6px;margin-left:8px;">
-        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ PROFILAGE — Primeira divergência</summary>
-        <div id="mxProfilageDivergencia" style="overflow-x:auto;margin-top:8px;"></div>
-        <div style="margin-top:8px;">
-          <label class="sel" style="font-size:11px;margin-right:8px;">WORK:
-            <select id="mxDivWork" onchange="mxProfilageDivGrafico();mxProfilageConvTimeline();"></select>
-          </label>
-          <label class="sel" style="font-size:11px;">Métrica:
-            <select id="mxDivMetrica" onchange="mxProfilageDivGrafico()">
-              <option value="hr">HR</option>
-              <option value="respiration">RF</option>
-              <option value="smo2">SmO2</option>
-              <option value="thb">THb</option>
-              <option value="dfa1">DFA-α1</option>
-            </select>
-          </label>
-        </div>
-        <div class="chartbox"><div class="legend"><span>Primeira divergência dentro do WORK</span></div>
-          <canvas id="chMxDivergencia" height="180"></canvas></div>
-      </details>
+    <!-- ─── 4. HIPÓTESE — visível ────────────────────────────────── -->
+    <h3 style="font-size:14px;margin-top:20px;">Hipótese de intervenção / treino</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta é uma hipótese para teste. O padrão observado não demonstra causalidade nem identifica isoladamente um limitante de desempenho.</p>
+    <div id="mxHipotese" style="overflow-x:auto;"></div>
 
-      <details style="margin-top:6px;margin-left:8px;">
-        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ PROFILAGE — Convergência temporal</summary>
-        <p class="sub" style="font-size:10px;margin:2px 0 8px;">Quando uma métrica diverge primeiro, as outras divergem numa janela temporal próxima?</p>
-        <div class="chartbox"><div class="legend"><span>Linha temporal — WORK seleccionado acima</span></div>
-          <canvas id="chMxConvTimeline" height="130"></canvas></div>
-        <div id="mxProfilageConvergencia" style="overflow-x:auto;margin-top:10px;"></div>
-      </details>
+    <!-- ─── 5. PADRÕES HISTÓRICOS + ESTILOS — visíveis ───────────── -->
+    <h3 style="font-size:14px;margin-top:20px;">Padrões recorrentes — histórico</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Frequência de padrão não demonstra causalidade.</p>
+    <div id="mxHistoricoPatterns" style="overflow-x:auto;margin-top:6px;"></div>
+    <h3 style="font-size:14px;margin-top:16px;">Estilos de treino candidatos</h3>
+    <div id="mxHistoricoEstilos" style="overflow-x:auto;margin-top:6px;"></div>
 
-      <details style="margin-top:6px;margin-left:8px;">
-        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ LIMITER / Padrão (tabela técnica)</summary>
-        <div id="mxLimiter" style="overflow-x:auto;margin-top:8px;"></div>
-      </details>
+    <!-- ─── 6. CONSISTÊNCIA Dia 1 × Dia 2 — visível (cards) ──────── -->
+    <h3 style="font-size:14px;margin-top:20px;">Comparação — Dia 1 × Dia 2</h3>
+    <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
+    <div id="mxVstRpe" style="margin-top:10px;"></div>
 
-      <details style="margin-top:6px;margin-left:8px;">
-        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Hipótese de intervenção / treino (técnico)</summary>
-        <div id="mxHipotese" style="overflow-x:auto;margin-top:8px;"></div>
-      </details>
-
-      <details style="margin-top:6px;margin-left:8px;">
-        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Padrões recorrentes — histórico</summary>
-        <div id="mxHistoricoPatterns" style="overflow-x:auto;margin-top:6px;"></div>
-        <div id="mxHistoricoEstilos" style="overflow-x:auto;margin-top:6px;"></div>
-      </details>
-
-      <details style="margin-top:6px;margin-left:8px;">
-        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Comparação Dia 1 × Dia 2 (tabelas e gráfico)</summary>
-        <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
-        <div id="mxVstRpe" style="margin-top:10px;"></div>
-        <div id="mxVstTemporalToggles" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;font-size:11px;">
-          <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
-            <input type="checkbox" checked onchange="mxVstToggleTemporal('power',this.checked)">
-            <span style="color:#c9d1d9;">Power (W)</span></label>
-          <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
-            <input type="checkbox" checked onchange="mxVstToggleTemporal('heartrate',this.checked)">
-            <span style="color:#E3B341;">HR (bpm)</span></label>
-          <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
-            <input type="checkbox" checked onchange="mxVstToggleTemporal('respiration',this.checked)">
-            <span style="color:#58A6FF;">RF (resp/min)</span></label>
-          <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
-            <input type="checkbox" checked onchange="mxVstToggleTemporal('smo2',this.checked)">
-            <span style="color:#3FB950;">SmO2 (%)</span></label>
-        </div>
-        <div class="chartbox" style="position:relative;width:100%;margin-top:6px;">
-          <canvas id="chMxVstTemporal" height="240"></canvas>
-          <div id="mxTipVstTemporal" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
-        </div>
-        <h3 style="font-size:14px;margin-top:20px;">Resposta fisiológica</h3>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
-          <div style="flex:1;min-width:280px;">
-            <div class="chartbox" style="position:relative;width:100%;">
-              <canvas id="chMxVstHR" height="170"></canvas>
-              <div id="mxTipVstHR" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
-            </div>
-          </div>
-          <div style="flex:1;min-width:280px;">
-            <div class="chartbox" style="position:relative;width:100%;">
-              <canvas id="chMxVstRF" height="170"></canvas>
-
-    </details>
-
-    <details style="margin-top:10px;">
-      <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Limitações</summary>
+    <!-- ─── 7. LIMITAÇÕES — visível ─────────────────────────────── -->
+    <details style="margin-top:10px;" open>
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Limitações da interpretação</summary>
       <div id="mxVstLimitacoes" style="margin-top:8px;"></div>
     </details>
+
+    <!-- ─── 8. RESPOSTA FISIOLÓGICA — gráficos HR/RF/SmO2 ────────── -->
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:6px 0;">▼ Resposta fisiológica (gráficos por métrica)</summary>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+        <div style="flex:1;min-width:280px;">
+          <div class="chartbox" style="position:relative;width:100%;">
+            <canvas id="chMxVstHR" height="170"></canvas>
+            <div id="mxTipVstHR" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+          </div>
+        </div>
+        <div style="flex:1;min-width:280px;">
+          <div class="chartbox" style="position:relative;width:100%;">
+            <canvas id="chMxVstRF" height="170"></canvas>
+            <div id="mxTipVstRF" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+        <div style="flex:1;min-width:280px;">
+          <div class="chartbox" style="position:relative;width:100%;">
+            <canvas id="chMxVstSmO2" height="170"></canvas>
+            <div id="mxTipVstSmO2" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+          </div>
+        </div>
+        <div style="flex:1;min-width:280px;">
+          <div class="chartbox" style="position:relative;width:100%;">
+            <canvas id="chMxVstTHb" height="170"></canvas>
+            <div id="mxTipVstTHb" class="mxTipVst" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- ─── 9. DETALHES TÉCNICOS — tudo fechado por omissão ──────── -->
+    <details style="margin-top:10px;">
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:6px 0;">▼ Estrutura dos WORKs e PROFILAGE</summary>
+      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Auditoria da estrutura de intervalos e resposta fisiológica dentro de cada WORK.</p>
+      <div id="mxProfilageEstrutura" style="overflow-x:auto;"></div>
+      <div id="mxProfilageEntryExit" style="overflow-x:auto;margin-top:10px;"></div>
+      <div id="mxProfilageDrift" style="overflow-x:auto;margin-top:14px;"></div>
+      <div id="mxProfilageAccumulation" style="overflow-x:auto;margin-top:14px;"></div>
+      <div style="margin-top:8px;">
+        <label class="sel" style="font-size:11px;margin-right:8px;">Métrica:
+          <select id="mxAccMetrica" onchange="mxProfilageAccGraficos()">
+            <option value="hr">HR</option>
+            <option value="respiration">RF</option>
+            <option value="smo2">SmO2</option>
+            <option value="thb">THb</option>
+            <option value="dfa1">DFA-α1</option>
+          </select>
+        </label>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+        <div class="chartbox"><div class="legend"><span>ENTRY por WORK</span></div>
+          <canvas id="chMxAccEntry" height="200"></canvas></div>
+        <div class="chartbox"><div class="legend"><span>EXIT por WORK</span></div>
+          <canvas id="chMxAccExit" height="200"></canvas></div>
+      </div>
+    </details>
+
+    <details style="margin-top:6px;">
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:6px 0;">▼ Primeira divergência</summary>
+      <div id="mxProfilageDivergencia" style="overflow-x:auto;margin-top:8px;"></div>
+      <div style="margin-top:8px;">
+        <label class="sel" style="font-size:11px;margin-right:8px;">WORK:
+          <select id="mxDivWork" onchange="mxProfilageDivGrafico();mxProfilageConvTimeline();"></select>
+        </label>
+        <label class="sel" style="font-size:11px;">Métrica:
+          <select id="mxDivMetrica" onchange="mxProfilageDivGrafico()">
+            <option value="hr">HR</option>
+            <option value="respiration">RF</option>
+            <option value="smo2">SmO2</option>
+            <option value="thb">THb</option>
+            <option value="dfa1">DFA-α1</option>
+          </select>
+        </label>
+      </div>
+      <div class="chartbox"><div class="legend"><span>Primeira divergência dentro do WORK</span></div>
+        <canvas id="chMxDivergencia" height="180"></canvas></div>
+    </details>
+
+    <details style="margin-top:6px;">
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:6px 0;">▼ Convergência temporal</summary>
+      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Quando uma métrica diverge primeiro, as outras divergem numa janela temporal próxima?</p>
+      <div class="chartbox"><div class="legend"><span>Linha temporal — WORK seleccionado acima</span></div>
+        <canvas id="chMxConvTimeline" height="130"></canvas></div>
+      <div id="mxProfilageConvergencia" style="overflow-x:auto;margin-top:10px;"></div>
+    </details>
+
 
     <div id="mxVstRecoveryFinal" style="margin-top:12px;"></div>
   </div>

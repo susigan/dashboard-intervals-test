@@ -2204,6 +2204,74 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/rpe_degraus/<path:activity_id>')
+    def api_moxy_rpe_degraus(activity_id):
+        """Blocos de trabalho de uma sessão MOXY com RPE + médias de
+        HR, RF e SmO2 por bloco — para o gráfico RPE×Potência Day1.
+
+        Usa a mesma fonte que mxBlocosTabelaUnica no frontend:
+        api_moxy_dados() para os streams + moxy_rpe para os RPEs.
+        Zero recálculo — apenas leitura e junção dos dados existentes.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            # dados completos da sessão (streams + blocos)
+            dd = api_moxy_dados(aid)
+            d = (dd[0].get_json() if isinstance(dd, tuple)
+                 else dd.get_json()) or {}
+            if d.get('status') != 'ok':
+                return jsonify({'status': 'erro',
+                                'mensagem': d.get('mensagem') or 'sem dados'}), 200
+
+            blocos_raw = ((d.get('blocos') or {}).get('blocos')) or []
+            ons = [b for b in blocos_raw if b.get('on')
+                   and b.get('watts_medio') is not None]
+            tempo = d.get('tempo') or []
+            canais = d.get('canais') or {}
+
+            def _media(canal, t0, t1):
+                """Média do canal no intervalo [t0,t1] — mesma lógica
+                que _mxMedia no frontend."""
+                serie = canais.get(canal) or []
+                if not serie or not tempo:
+                    return None
+                vals = [serie[i] for i, t in enumerate(tempo)
+                        if t0 <= t <= t1 and i < len(serie)
+                        and serie[i] is not None]
+                return round(sum(vals) / len(vals), 1) if vals else None
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            rpe_map = {int(r[0]): r[1] for r in cn.execute(
+                "SELECT bloco_indice, rpe FROM moxy_rpe "
+                "WHERE activity_id=?", (aid,)).fetchall()}
+
+            fora = []
+            for i, b in enumerate(ons):
+                t0, t1 = float(b['t0']), float(b['t1'])
+                fora.append({
+                    'bloco_indice': i,
+                    'degrau': i + 1,
+                    'watts_medio': round(b.get('watts_medio_da_api')
+                                         or b.get('watts_medio') or 0),
+                    't0_s': round(t0), 't1_s': round(t1),
+                    'duracao_s': round(t1 - t0),
+                    'rpe': rpe_map.get(i),
+                    'hr_medio': _media('heartrate', t0, t1),
+                    'rf_medio': _media('respiration', t0, t1),
+                    'smo2_medio': _media('smo2', t0, t1),
+                })
+            return jsonify({
+                'status': 'ok',
+                'activity_id': aid,
+                'blocos': fora,
+                'todos_gravados': bool(fora) and all(
+                    b['rpe'] is not None for b in fora),
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/rpe/<path:activity_id>', methods=['POST'])
     def api_moxy_rpe_gravar(activity_id):
         """Grava (ou substitui) o RPE de cada bloco enviado.

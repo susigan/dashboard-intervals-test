@@ -4224,48 +4224,108 @@ function mxVstDashboard(d){
 // /api/moxy/limiares/<moxy_id> (o mesmo endpoint que a aba Limiares usa).
 // Zero recálculos — apenas leitura e apresentação dos dados existentes.
 
+// mxVstMostrarLimitadorDay1 — mostra o limitador da sessão MOXY Day 1.
+// Fonte: a mesma cadeia usada pela aba Moxy → Intervenções:
+//   1. GET /api/moxy/interpretacao/<moxy_id>
+//        → interpretacao.us.limitador (ex: 'Fornecimento')
+//        → interpretacao.pc.limitador (ex: null)
+//   2. GET /api/moxy/intervencoes?us=<us>&pc=<pc>
+//        → intervencao.nome (ex: 'Limitação de entrega (cardíaco)')
+// Não recalcula, não infere, não usa BP1/BP2 como proxy.
 function mxVstMostrarLimitadorDay1(d){
  const box=document.getElementById('mxVstLimitadorDay1');
  if(!box||!d) return;
  const moxyId=d.dia1_activity_id||'';
- // Se MX_ULT_LIMIARES_D já tiver sido carregado para esta sessão MOXY,
- // usa-o directamente sem fetch adicional.
- const cached=(MX_ULT_LIMIARES_D&&MX_ULT_LIMIARES_D.activity_id&&
-               String(MX_ULT_LIMIARES_D.activity_id)===String(moxyId))
-              ?MX_ULT_LIMIARES_D:null;
- function _renderLim(ld){
-  if(!ld){ box.innerHTML='<p class="sub" style="font-size:11px;">Sem dados MOXY disponíveis para Day 1 (sessão '+moxyId+').</p>'; return; }
-  const lc=ld.limiares_consenso||{};
-  const p1=lc.primeiro||{}, p2=lc.segundo||{};
-  const bp1w=p1.mediana||null, bp2w=p2.mediana||null;
-  const lim=ld.limitador_fisiologico||{};
-  const limNome=lim.nome||lim.label||lim.limitador||null;
-  const interp=ld.interpretacao||{};
-  const us=(interp.us||{}).limitador, pc=(interp.pc||{}).limitador;
-  const limMoxyLabel=[us,pc].filter(Boolean).join(' / ')||limNome||'—';
-  const mod=ld.modalidade||'';
+ if(!moxyId){
+  box.innerHTML='<p class="sub" style="font-size:11px;">Sem sessão MOXY vinculada.</p>';
+  return;
+ }
+
+ // BP1/BP2 para mostrar no card (já existem em MX_ULT_VALORES ou /limiares)
+ function _bp(){
+  if(MX_ULT_VALORES&&MX_ULT_VALORES.bp1_w!=null)
+   return {bp1:MX_ULT_VALORES.bp1_w, bp2:MX_ULT_VALORES.bp2_w,
+           mod:MX_ULT_VALORES.modalidade};
+  if(MX_ULT_LIMIARES_D&&String(MX_ULT_LIMIARES_D.activity_id)===String(moxyId)){
+   const lc=MX_ULT_LIMIARES_D.limiares_consenso||{};
+   return {bp1:(lc.primeiro||{}).mediana||null,
+           bp2:(lc.segundo||{}).mediana||null,
+           mod:MX_ULT_LIMIARES_D.modalidade};
+  }
+  return {bp1:null,bp2:null,mod:null};
+ }
+
+ function _render(limNome,limDesc,bps){
+  const mod=bps.mod||d.modalidade||'';
+  const bp1txt=bps.bp1!=null?'BP1: '+Math.round(bps.bp1)+' W':'';
+  const bp2txt=bps.bp2!=null?'BP2: '+Math.round(bps.bp2)+' W':'';
+  const bpStr=[bp1txt,bp2txt].filter(Boolean).join(' · ');
   box.innerHTML='<div style="display:flex;gap:10px;flex-wrap:wrap;">'
+   // Coluna esquerda — limitador MOXY
    +'<div class="card" style="min-width:160px;flex:1;">'
-   +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">MOXY Day 1'+(mod?' · '+mod:'')+'</div>'
-   +'<div style="font-size:13px;font-weight:700;color:#5DADE2;">'+limMoxyLabel+'</div>'
-   +(bp1w!=null?'<div style="font-size:10px;color:#8b949e;margin-top:3px;">BP1: '+Math.round(bp1w)+'W'+(bp2w!=null?' · BP2: '+Math.round(bp2w)+'W':'')+'</div>':'')
+   +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;'
+   +'letter-spacing:.5px;margin-bottom:3px;">MOXY Day 1'+(mod?' · '+mod:'')+'</div>'
+   +'<div style="font-size:9px;color:#8b949e;margin-bottom:2px;">LIMITADOR</div>'
+   +'<div style="font-size:14px;font-weight:700;color:#5DADE2;">'
+   +(limNome||'Não disponível')+'</div>'
+   +(limDesc?'<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+limDesc+'</div>':'')
+   +(bpStr?'<div style="font-size:10px;color:#8b949e;margin-top:4px;">'+bpStr+'</div>':'')
    +'</div>'
+   // Coluna direita — padrão VST Day 2
    +'<div class="card" style="min-width:200px;flex:2;">'
-   +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">Verificação Day 2 / VST</div>'
-   +'<div style="font-size:12px;color:#c9d1d9;">'+(d.limiter_bp1&&d.limiter_bp1.padrao?d.limiter_bp1.padrao:'—')+'</div>'
+   +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;'
+   +'letter-spacing:.5px;margin-bottom:3px;">VST Day 2 — Padrão observado</div>'
+   +'<div style="font-size:12px;color:#c9d1d9;">'
+   +(d.limiter_bp1&&d.limiter_bp1.padrao?d.limiter_bp1.padrao:'—')+'</div>'
    +(d.limiter_bp2&&d.limiter_bp2.padrao&&d.limiter_bp2.padrao!==d.limiter_bp1.padrao
     ?'<div style="font-size:10px;color:#8b949e;">BP2: '+d.limiter_bp2.padrao+'</div>':'')
-   +'<div style="font-size:9px;color:#6e7681;margin-top:3px;font-style:italic;">Padrão observado no Day 2 — não confirma nem nega o limitador do Day 1.</div>'
+   +'<div style="font-size:9px;color:#6e7681;margin-top:3px;font-style:italic;">'
+   +'Padrão observado no Day 2 — não confirma nem nega o limitador do Day 1.</div>'
    +'</div></div>';
  }
- if(cached){ _renderLim(cached); return; }
- if(!moxyId){ box.innerHTML='<p class="sub" style="font-size:11px;">Sem sessão MOXY vinculada.</p>'; return; }
+
  box.innerHTML='<p class="sub" style="font-size:11px;">a carregar limitador Day 1…</p>';
- fetch('/api/moxy/limiares/'+moxyId).then(r=>r.json()).then(function(ld){
-  if(ld.status!=='ok'){ box.innerHTML='<p class="sub">Sem dados MOXY para Day 1.</p>'; return; }
-  _renderLim(ld);
- }).catch(function(){ box.innerHTML='<p class="sub">Erro ao carregar dados MOXY Day 1.</p>'; });
+ const bps=_bp();
+
+ // Passo 1: buscar interpretacao.us.limitador para esta sessão MOXY
+ // (mesma fonte que popula MX_ULT_US na aba principal)
+ fetch('/api/moxy/interpretacao/'+moxyId)
+ .then(r=>r.json()).then(function(id){
+  if(!id||id.status==='sem_dados'||id.status==='erro'){
+   _render(null,null,bps); return;
+  }
+  const interp=id.interpretacao||{};
+  const us=(interp.us||{}).limitador||null;   // ex: 'Fornecimento'
+  const pc=(interp.pc||{}).limitador||null;   // ex: null
+
+  if(!us&&!pc){
+   // interpretação feita mas sem limitador identificado
+   _render('Sem limitador identificado','A interpretação 5-1-5 não identificou um limitador predominante.',bps);
+   return;
+  }
+
+  // Passo 2: buscar o nome legível via /api/moxy/intervencoes?us=...
+  // (mesma chamada que mxSintese() faz)
+  const q=[];
+  if(us) q.push('us='+encodeURIComponent(us));
+  if(pc) q.push('pc='+encodeURIComponent(pc));
+  fetch('/api/moxy/intervencoes?'+q.join('&'))
+  .then(r=>r.json()).then(function(iv){
+   const nome=(iv.intervencao||{}).nome||null;
+   const oqueE=(iv.intervencao||{}).o_que_e||null;
+   // o_que_e pode ser longo — mostrar só a primeira frase
+   const desc=oqueE?oqueE.split('.')[0]+'.':null;
+   _render(nome,desc,bps);
+  }).catch(function(){
+   // fallback: mostrar apenas o valor bruto (ex: 'Fornecimento')
+   _render(us+(pc&&pc!==us?' / '+pc:''),null,bps);
+  });
+ }).catch(function(){
+  _render(null,null,bps);
+ });
 }
+
+
 
 // mxVstDesenharRpePots — gráfico RPE × Potência com DUAS séries:
 //   Day 1 (MOXY): círculos azuis — dados da actividade MOXY original

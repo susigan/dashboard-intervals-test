@@ -2408,6 +2408,46 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    @app.route('/api/moxy/vst/resultado/<path:vst_activity_id>')
+    def api_moxy_vst_resultado(vst_activity_id):
+        """Resultado já persistido da comparação VST — lê directamente o
+        resultado_json de vst_conjuntos sem recalcular nada.
+
+        Devolve o mesmo objecto que /vst/comparar, mas instantaneamente,
+        porque vem da BD. Se não houver resultado gravado (sessão nova ou
+        nunca comparada), devolve status='sem_resultado' para que o
+        frontend saiba que precisa de chamar /vst/comparar.
+
+        Inclui também os campos de moxy_rpe mais recentes (RPE já gravado)
+        para que o dashboard os possa mostrar sem fetch adicional.
+        """
+        try:
+            vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT moxy_activity_id, resultado_json, analisado_em "
+                "FROM vst_conjuntos WHERE vst_activity_id=?",
+                (vid,)).fetchone()
+            if not r:
+                return jsonify({'status': 'sem_resultado',
+                                'mensagem': 'sem conjunto salvo para esta sessão VST'})
+            moxy_id, rjson, analisado_em = r
+            if not rjson:
+                return jsonify({'status': 'sem_resultado',
+                                'mensagem': 'conjunto existe mas análise ainda não foi gravada'})
+            resultado = json.loads(rjson)
+            resultado['status'] = 'ok'
+            resultado['dia1_activity_id'] = moxy_id
+            resultado['dia2_activity_id'] = vid
+            resultado['vst_activity_id'] = vid
+            resultado['analisado_em'] = analisado_em
+            resultado['fonte'] = 'cache'  # indica que veio da BD, não foi recalculado
+            return jsonify(resultado)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
     @app.route('/api/moxy/vst/conjunto/<path:vst_activity_id>')
     def api_moxy_vst_conjunto_ler(vst_activity_id):
         """Vínculo já gravado para esta sessão VST, se existir."""

@@ -4267,174 +4267,232 @@ function mxVstMostrarLimitadorDay1(d){
  }).catch(function(){ box.innerHTML='<p class="sub">Erro ao carregar dados MOXY Day 1.</p>'; });
 }
 
+// mxVstDesenharRpePots — gráfico RPE × Potência com DUAS séries:
+//   Day 1 (MOXY): círculos azuis — dados da actividade MOXY original
+//     via /api/moxy/rpe_degraus/<moxy_activity_id>
+//   Day 2 (VST):  quadrados verdes — WORKs do VST
+//     via /api/moxy/vst/rpe/<vst_activity_id>
+// Zonas Z1/Z2/Z3 baseadas em BP1/BP2 do Day1 (MX_ULT_VALORES).
+// Zero recálculos — apenas leitura e apresentação de dados existentes.
 function mxVstDesenharRpePots(d){
  const cv=document.getElementById('chMxVstRpePots');
  const tip=document.getElementById('mxTipVstRpePots');
  const st=document.getElementById('mxVstRpePotsStatus');
  if(!cv) return;
+
  const vid=d.vst_activity_id||d.dia2_activity_id||'';
  const moxyId=d.dia1_activity_id||'';
+
+ // Log de diagnóstico (remover depois de confirmar)
+ console.log('[mxVstDesenharRpePots] moxy_id='+moxyId+' vst_id='+vid);
+
  if(!vid){ if(st) st.textContent='Sem ID de sessão VST.'; return; }
 
- // obter BP1/BP2 do Day1 — de MX_ULT_VALORES se disponível,
- // ou do cache MX_ULT_LIMIARES_D, ou fallback via fetch
- function _desenhar(bp1w,bp2w,rdPts){
-  const blocos=rdPts.filter(b=>b.rpe!=null&&b.watts_medio>0);
-  if(!blocos.length){
-   if(st) st.textContent='RPE não registrado — registe os valores nos WORKs para activar este gráfico.';
+ // resolver BP1/BP2 Day1
+ function _getBP(){
+  if(MX_ULT_VALORES&&MX_ULT_VALORES.bp1_w!=null)
+   return {bp1:MX_ULT_VALORES.bp1_w, bp2:MX_ULT_VALORES.bp2_w};
+  const lc=(MX_ULT_LIMIARES_D&&
+            String(MX_ULT_LIMIARES_D.activity_id)===String(moxyId))
+           ?(MX_ULT_LIMIARES_D.limiares_consenso||{}):{};
+  return {bp1:(lc.primeiro||{}).mediana||null,
+          bp2:(lc.segundo||{}).mediana||null};
+ }
+
+ if(st) st.textContent='a carregar dados Day 1 e Day 2…';
+
+ // Fetch Day2 (VST) — fonte inalterada
+ const pDay2=fetch('/api/moxy/vst/rpe/'+vid).then(r=>r.json());
+
+ // Fetch Day1 (MOXY) — novo endpoint rpe_degraus
+ const pDay1=moxyId
+  ?fetch('/api/moxy/rpe_degraus/'+moxyId).then(r=>r.json())
+  :Promise.resolve(null);
+
+ // Fetch BP1/BP2 se necessário
+ const bpNow=_getBP();
+ const pBP=(bpNow.bp1!=null||!moxyId)
+  ?Promise.resolve(bpNow)
+  :fetch('/api/moxy/limiares/'+moxyId).then(r=>r.json()).then(function(ld){
+    if(!ld||ld.status!=='ok') return {bp1:null,bp2:null};
+    const lc=ld.limiares_consenso||{};
+    return {bp1:(lc.primeiro||{}).mediana||null,
+            bp2:(lc.segundo||{}).mediana||null};
+   }).catch(function(){ return {bp1:null,bp2:null}; });
+
+ Promise.all([pDay1,pDay2,pBP]).then(function(res){
+  const rd1=res[0], rd2=res[1], bp=res[2];
+  const bp1w=bp.bp1, bp2w=bp.bp2;
+
+  // pontos Day1 — degraus MOXY com RPE
+  const pts1=rd1&&rd1.status==='ok'
+   ?(rd1.blocos||[]).filter(b=>b.rpe!=null&&b.watts_medio>0)
+   :[];
+  // pontos Day2 — WORKs VST com RPE
+  const pts2=rd2&&rd2.status==='ok'
+   ?(rd2.blocos||[]).filter(b=>b.rpe!=null&&b.watts_medio>0)
+   :[];
+
+  // Log de diagnóstico (remover depois de confirmar)
+  console.log('[mxVstDesenharRpePots] Day1 pontos='+pts1.length
+   +(pts1.length?'  primeiro='+pts1[0].watts_medio+'W/RPE'+pts1[0].rpe:''));
+  console.log('[mxVstDesenharRpePots] Day2 pontos='+pts2.length
+   +(pts2.length?'  primeiro='+pts2[0].watts_medio+'W/RPE'+pts2[0].rpe:''));
+
+  if(!pts1.length&&!pts2.length){
+   if(st) st.textContent='Sem RPE registrado em nenhuma das sessões.';
    return;
   }
-  if(st) st.textContent=(rdPts.todos_gravados?'Todos os WORKs com RPE':'RPE parcial');
+  const temD1=pts1.length>0, temD2=pts2.length>0;
+  if(st) st.textContent=(temD1?'Day 1: '+pts1.length+' degraus':'Day 1: sem RPE')
+   +' · '+(temD2?'Day 2: '+pts2.length+' WORKs':'Day 2: sem RPE');
 
+  // dimensões canvas
   const W=cv.offsetWidth||cv.parentElement&&cv.parentElement.offsetWidth||640;
-  const H=270;
+  const H=280;
   cv.width=W; cv.height=H;
   const ctx=cv.getContext('2d');
   ctx.clearRect(0,0,W,H);
-  const pad={l:44,r:20,t:36,b:44};
+  const pad={l:46,r:24,t:38,b:46};
   const pw=W-pad.l-pad.r, ph=H-pad.t-pad.b;
 
-  const allW=blocos.map(b=>b.watts_medio);
-  const wMin=Math.max(0,Math.min(...allW)-20);
-  const wMax=Math.max(...allW)+20;
+  // escala X (potência)
+  const allW=[...pts1,...pts2].map(b=>b.watts_medio);
+  const wMin=Math.max(0,Math.min(...allW)-25);
+  const wMax=Math.max(...allW)+25;
   function xp(w){ return pad.l+Math.max(0,Math.min(1,(w-wMin)/(wMax-wMin)))*pw; }
   function yp(r){ return pad.t+((10-r)/10)*ph; }
 
-  // zonas de fundo (Z1/Z2/Z3)
-  const zonas=[
-   {from:wMin, to:bp1w||wMin, cor:'#1E3A5F44', lbl:'Z1 < BP1'},
-   {from:bp1w||wMin, to:bp2w||wMax, cor:'#1B5E2044', lbl:'Z2 BP1–BP2'},
-   {from:bp2w||wMax, to:wMax, cor:'#4A1C1244', lbl:'Z3 > BP2'},
-  ].filter(z=>z.to>z.from);
-  zonas.forEach(function(z){
-   const x1=xp(z.from), x2=xp(z.to);
-   ctx.fillStyle=z.cor;
-   ctx.fillRect(x1,pad.t,x2-x1,ph);
-   // label da zona no topo
-   if(x2-x1>30){
+  // ── ZONAS Z1/Z2/Z3 ──────────────────────────────────────────
+  const zonaDefs=[
+   {de:wMin, ate:bp1w||wMax, cor:'#1E3A5F', lbl:'Z1 — abaixo BP1'},
+   {de:bp1w||wMin, ate:bp2w||wMax, cor:'#1B5E20', lbl:'Z2 — BP1 a BP2'},
+   {de:bp2w||wMax, ate:wMax, cor:'#4A1C12', lbl:'Z3 — acima BP2'},
+  ].filter(z=>bp1w&&z.ate>z.de);
+
+  zonaDefs.forEach(function(z){
+   const x1=xp(z.de), x2=xp(z.ate);
+   if(x2<=x1) return;
+   ctx.fillStyle=z.cor; ctx.globalAlpha=0.18;
+   ctx.fillRect(x1,pad.t,x2-x1,ph); ctx.globalAlpha=1;
+   if(x2-x1>36){
     ctx.fillStyle='#8b949e'; ctx.font='9px sans-serif'; ctx.textAlign='center';
-    ctx.fillText(z.lbl,x1+(x2-x1)/2,pad.t-6);
+    ctx.fillText(z.lbl, x1+(x2-x1)/2, pad.t-8);
    }
   });
 
-  // linhas BP1/BP2
+  // linhas verticais BP1/BP2
   [['BP1',bp1w,'#5DADE2'],['BP2',bp2w,'#3FB950']].forEach(function(arr){
-   const lbl=arr[0],bpw=arr[1],cor=arr[2];
-   if(!bpw) return;
-   const x=xp(bpw);
-   ctx.strokeStyle=cor+'88'; ctx.lineWidth=1.5; ctx.setLineDash([4,4]);
+   if(!arr[1]) return;
+   const x=xp(arr[1]);
+   ctx.strokeStyle=arr[2]+'99'; ctx.lineWidth=1.5; ctx.setLineDash([4,4]);
    ctx.beginPath(); ctx.moveTo(x,pad.t); ctx.lineTo(x,pad.t+ph); ctx.stroke();
    ctx.setLineDash([]);
-   ctx.fillStyle=cor; ctx.font='9px monospace'; ctx.textAlign='center';
-   ctx.fillText(lbl,x,pad.t+ph+14);
-   ctx.fillText(Math.round(bpw)+'W',x,pad.t+ph+24);
+   ctx.fillStyle=arr[2]; ctx.font='9px monospace'; ctx.textAlign='center';
+   ctx.fillText(arr[0], x, pad.t+ph+14);
+   ctx.fillText(Math.round(arr[1])+'W', x, pad.t+ph+24);
   });
 
-  // grade RPE
-  ctx.strokeStyle='#21262d33'; ctx.lineWidth=1;
+  // ── GRADE RPE ────────────────────────────────────────────────
+  ctx.strokeStyle='#21262d44'; ctx.lineWidth=1;
   for(let r=2;r<=10;r+=2){
    const y=yp(r);
    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+pw,y); ctx.stroke();
    ctx.fillStyle='#6e7681'; ctx.font='10px monospace'; ctx.textAlign='right';
-   ctx.fillText(r,pad.l-6,y+4);
+   ctx.fillText(r, pad.l-6, y+4);
   }
-  // eixo Y
-  ctx.save(); ctx.translate(13,pad.t+ph/2); ctx.rotate(-Math.PI/2);
+  // labels eixos
+  ctx.save(); ctx.translate(14,pad.t+ph/2); ctx.rotate(-Math.PI/2);
   ctx.fillStyle='#8b949e'; ctx.font='11px sans-serif'; ctx.textAlign='center';
   ctx.fillText('RPE (1–10)',0,0); ctx.restore();
-  // eixo X
   ctx.fillStyle='#8b949e'; ctx.font='10px sans-serif'; ctx.textAlign='center';
-  ctx.fillText('Potência média do WORK (W)',pad.l+pw/2,H-5);
-
-  // legenda
-  function _legItem(x,y,shape,cor,lbl){
-   ctx.fillStyle=cor;
-   if(shape==='circle'){ ctx.beginPath(); ctx.arc(x,y,5,0,Math.PI*2); ctx.fill(); }
-   else { ctx.fillRect(x-5,y-5,10,10); }
-   ctx.fillStyle='#c9d1d9'; ctx.font='10px sans-serif'; ctx.textAlign='left';
-   ctx.fillText(lbl,x+10,y+4);
+  ctx.fillText('Potência média (W)', pad.l+pw/2, H-6);
+  // escala X
+  for(let i=0;i<=5;i++){
+   const w=wMin+(wMax-wMin)*i/5;
+   ctx.fillStyle='#6e7681'; ctx.font='10px monospace'; ctx.textAlign='center';
+   ctx.fillText(Math.round(w), xp(w), pad.t+ph+38);
   }
-  _legItem(pad.l+pw-120,pad.t+10,'circle','#5DADE2','Day 1 — MOXY');
-  _legItem(pad.l+pw-120,pad.t+26,'rect','#3FB950','Day 2 — VST');
 
-  // pontos: Day1=círculos azuis, Day2=quadrados verdes
-  // bp1 = Day1 MOXY, bp2 = Day2 VST (nomenclatura do endpoint vst/rpe)
-  // NOTA: no contexto VST, 'bp1'/'bp2' são os blocos de intensidade (breakpoints)
-  // não as sessões; ambos os blocos pertencem ao Day 2 (VST).
-  // Para Day1 (MOXY), não existe RPE dos WORKs individuais por defeito.
-  // Portanto o eixo semântico correcto é: cada ponto é um WORK do VST (Day 2).
-  // Mostramos BP1-WORKs vs BP2-WORKs como grupos de intensidade distintos.
-  const hitboxes=[];
-  const corGrp={bp1:'#5DADE2',bp2:'#3FB950'};
-  const lblGrp={bp1:'BP1 (zona 1–2)',bp2:'BP2 (zona 2–3)'};
-  blocos.forEach(function(b){
-   const x=xp(b.watts_medio), y=yp(b.rpe);
-   const cor=corGrp[b.grupo]||'#8b949e';
+  // ── LEGENDA ──────────────────────────────────────────────────
+  function _legItem(lx,ly,shape,cor,lbl){
    ctx.fillStyle=cor;
-   if(b.grupo==='bp1'){
-    ctx.beginPath(); ctx.arc(x,y,7,0,Math.PI*2); ctx.fill();
-    ctx.strokeStyle='#0d1117'; ctx.lineWidth=1.5; ctx.stroke();
-   } else {
-    ctx.fillRect(x-7,y-7,14,14);
-    ctx.strokeStyle='#0d1117'; ctx.lineWidth=1.5; ctx.strokeRect(x-7,y-7,14,14);
-   }
+   if(shape==='circle'){ ctx.beginPath(); ctx.arc(lx,ly,5,0,Math.PI*2); ctx.fill(); }
+   else { ctx.fillRect(lx-5,ly-5,10,10); }
+   ctx.fillStyle='#c9d1d9'; ctx.font='10px sans-serif'; ctx.textAlign='left';
+   ctx.fillText(lbl, lx+9, ly+4);
+  }
+  _legItem(pad.l+pw-170, pad.t+12, 'circle', '#5DADE2', 'Day 1 — MOXY (degraus)');
+  _legItem(pad.l+pw-170, pad.t+28, 'rect',   '#3FB950', 'Day 2 — VST (WORKs)');
+
+  // ── PONTOS ───────────────────────────────────────────────────
+  const hitboxes=[];
+
+  // Day1: círculos azuis
+  pts1.forEach(function(b){
+   const x=xp(b.watts_medio), y=yp(b.rpe);
+   ctx.beginPath(); ctx.arc(x,y,7,0,Math.PI*2);
+   ctx.fillStyle='#5DADE2'; ctx.fill();
+   ctx.strokeStyle='#0d1117'; ctx.lineWidth=1.5; ctx.stroke();
    ctx.fillStyle='#fff'; ctx.font='bold 9px monospace'; ctx.textAlign='center';
-   ctx.fillText(b.numero,x,y+3);
-   hitboxes.push({x,y,b,cor});
+   ctx.fillText(b.degrau||b.bloco_indice+1, x, y+3);
+   hitboxes.push({x,y,b,sessao:'day1'});
   });
 
-  // tooltip
+  // Day2: quadrados verdes
+  pts2.forEach(function(b){
+   const x=xp(b.watts_medio), y=yp(b.rpe);
+   ctx.fillStyle='#3FB950';
+   ctx.fillRect(x-7,y-7,14,14);
+   ctx.strokeStyle='#0d1117'; ctx.lineWidth=1.5; ctx.strokeRect(x-7,y-7,14,14);
+   ctx.fillStyle='#fff'; ctx.font='bold 9px monospace'; ctx.textAlign='center';
+   ctx.fillText(b.numero||b.bloco_indice+1, x, y+3);
+   hitboxes.push({x,y,b,sessao:'day2'});
+  });
+
+  // ── TOOLTIP ──────────────────────────────────────────────────
   if(tip){
    cv.onmousemove=function(ev){
     const rect=cv.getBoundingClientRect();
-    const mx=ev.clientX-rect.left, my=ev.clientY-rect.top;
+    const mx=(ev.clientX-rect.left)*(cv.width/rect.width);
+    const my=(ev.clientY-rect.top)*(cv.height/rect.height);
     const hit=hitboxes.find(h=>Math.hypot(h.x-mx,h.y-my)<14);
     if(hit){
-     const b=hit.b, grpLbl=b.grupo==='bp1'?'BP1':'BP2';
+     const b=hit.b, nl=String.fromCharCode(10);
+     let linhas;
+     if(hit.sessao==='day1'){
+      linhas=['Sessão: Day 1 — MOXY',
+       'Degrau: '+(b.degrau||b.bloco_indice+1),
+       'Potência: '+b.watts_medio+' W',
+       'RPE: '+b.rpe+'/10',
+       b.rf_medio!=null?'RF: '+b.rf_medio+' rpm':'',
+       b.hr_medio!=null?'HR: '+Math.round(b.hr_medio)+' bpm':'',
+       b.smo2_medio!=null?'SmO2: '+b.smo2_medio+'%':'',
+      ];
+     } else {
+      const grp=(b.grupo||'').toUpperCase();
+      linhas=['Sessão: Day 2 — VST',
+       'BP: '+grp+' · WORK '+b.numero,
+       'Potência: '+b.watts_medio+' W',
+       'RPE: '+b.rpe+'/10',
+       b.rf_medio!=null?'RF: '+b.rf_medio+' rpm':'',
+       b.hr_medio!=null?'HR: '+Math.round(b.hr_medio)+' bpm':'',
+       b.smo2_medio!=null?'SmO2: '+b.smo2_medio+'%':'',
+      ];
+     }
      tip.style.display='block';
-     tip.style.left=(mx+14)+'px'; tip.style.top=(my-10)+'px';
-     const nl=String.fromCharCode(10);
-     tip.textContent=['Day 2 — VST · '+grpLbl+' WORK '+b.numero,
-      'Potência: '+b.watts_medio+' W',
-      'RPE: '+b.rpe+'/10',
-      b.rf_medio!=null?'RF: '+Math.round(b.rf_medio)+' rpm':'',
-      b.hr_medio!=null?'HR: '+Math.round(b.hr_medio)+' bpm':'',
-      b.smo2_medio!=null?'SmO2: '+Math.round(b.smo2_medio)+'%':'',
-     ].filter(Boolean).join(nl);
+     tip.style.left=(ev.offsetX+14)+'px'; tip.style.top=(ev.offsetY-10)+'px';
+     tip.textContent=linhas.filter(Boolean).join(nl);
     } else { tip.style.display='none'; }
    };
    cv.onmouseleave=function(){ tip.style.display='none'; };
   }
- }
-
- // resolver BP1/BP2 Day1
- const cached=(MX_ULT_LIMIARES_D&&String(MX_ULT_LIMIARES_D.activity_id)===String(moxyId))
-              ?MX_ULT_LIMIARES_D:null;
- const fromValores=(MX_ULT_VALORES&&MX_ULT_VALORES.bp1_w!=null)?MX_ULT_VALORES:null;
- const bp1wKnown=fromValores?fromValores.bp1_w:(cached?(((cached.limiares_consenso||{}).primeiro||{}).mediana||null):null);
- const bp2wKnown=fromValores?fromValores.bp2_w:(cached?(((cached.limiares_consenso||{}).segundo||{}).mediana||null):null);
-
- if(st) st.textContent='a carregar RPE…';
- const pRpe=fetch('/api/moxy/vst/rpe/'+vid).then(r=>r.json());
- // Se BP1/BP2 já conhecidos, desenhar sem fetch extra
- if(bp1wKnown||bp2wKnown){
-  pRpe.then(function(rd){
-   if(rd.status!=='ok') { if(st) st.textContent='RPE não disponível.'; return; }
-   _desenhar(bp1wKnown,bp2wKnown,rd.blocos||[]);
-  }).catch(function(e){ if(st) st.textContent='Erro: '+e.message; });
- } else {
-  // buscar limiares Day1
-  const pLim=moxyId?fetch('/api/moxy/limiares/'+moxyId).then(r=>r.json()):Promise.resolve(null);
-  Promise.all([pRpe,pLim]).then(function(res){
-   const rd=res[0],ld=res[1];
-   const lc=(ld&&ld.limiares_consenso)||{};
-   const bp1w=(lc.primeiro||{}).mediana||null;
-   const bp2w=(lc.segundo||{}).mediana||null;
-   if(rd.status!=='ok') { if(st) st.textContent='RPE não disponível.'; return; }
-   _desenhar(bp1w,bp2w,rd.blocos||[]);
-  }).catch(function(e){ if(st) st.textContent='Erro: '+e.message; });
- }
+ }).catch(function(e){
+  if(st) st.textContent='Erro ao carregar dados: '+e.message;
+  console.error('[mxVstDesenharRpePots]',e);
+ });
 }
+
 
 
 function mxVstLimitacoes(d){

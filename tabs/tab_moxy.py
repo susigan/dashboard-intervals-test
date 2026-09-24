@@ -4244,6 +4244,25 @@ function mxVstDashboard(d){
 //   mxSintese() → /api/moxy/intervencoes?us=<MX_ULT_US>&rede=<MX_ULT_REDE>
 // Não usa a 5-1-5 (que pode nunca ter sido executada).
 // Não recalcula, não infere, não usa BP1/BP2 como proxy.
+// mxVstMostrarLimitadorDay1 — limitador da sessão MOXY Day 1.
+//
+// FONTE E CADEIA (sem necessitar de 5-1-5 nem botão "Calcular"):
+//
+//   GET /api/moxy/limiares/<moxy_id>
+//     → rede_limitador.sistema  ('cardiaco'|'periferico'|'respiratorio')
+//     → limiares_consenso.primeiro.mediana  (BP1 W)
+//     → limiares_consenso.segundo.mediana   (BP2 W)
+//
+//   Mapeamento sistema → chave que para_limitador aceita:
+//     'cardiaco'    → 'entrega'     → 'Limitação de entrega (cardíaco)'
+//     'periferico'  → 'utilizacao'  → 'Limitação de utilização ...'
+//     'respiratorio'→ 'respiratorio'→ 'Limitação respiratória (pulmonar)'
+//
+//   GET /api/moxy/intervencoes?limitador=<chave>
+//     → intervencao.nome  (texto exacto da aba Intervenções)
+//
+// Esta é a MESMA cadeia que a aba Rede Causal + Intervenções usa, sem
+// exigir que o utilizador abra essas abas ou clique em "Calcular".
 function mxVstMostrarLimitadorDay1(d){
  const box=document.getElementById('mxVstLimitadorDay1');
  if(!box||!d) return;
@@ -4254,21 +4273,29 @@ function mxVstMostrarLimitadorDay1(d){
  }
  box.innerHTML='<p class="sub" style="font-size:11px;">a carregar limitador Day 1…</p>';
 
+ // Mapeamento sistema rede → chave canónica de para_limitador()
+ const SISTEMA_PARA_CHAVE={
+  'cardiaco':'entrega', 'cardíaco':'entrega',
+  'periferico':'utilizacao', 'periférico':'utilizacao',
+  'respiratorio':'respiratorio', 'respiratório':'respiratorio',
+ };
+
  function _render(limNome,limDesc,bps){
-  const mod=bps&&bps.mod||d.modalidade||'';
+  const mod=(bps&&bps.mod)||d.modalidade||'';
   const bp1txt=bps&&bps.bp1!=null?'BP1: '+Math.round(bps.bp1)+' W':'';
   const bp2txt=bps&&bps.bp2!=null?'BP2: '+Math.round(bps.bp2)+' W':'';
   const bpStr=[bp1txt,bp2txt].filter(Boolean).join(' · ');
   box.innerHTML='<div style="display:flex;gap:10px;flex-wrap:wrap;">'
+   // Card MOXY Day 1
    +'<div class="card" style="min-width:160px;flex:1;">'
    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;'
    +'letter-spacing:.5px;margin-bottom:3px;">MOXY Day 1'+(mod?' · '+mod:'')+'</div>'
    +'<div style="font-size:9px;color:#8b949e;margin-bottom:2px;">LIMITADOR</div>'
-   +'<div style="font-size:14px;font-weight:700;color:#5DADE2;">'
-   +(limNome||'Não identificado')+'</div>'
+   +'<div style="font-size:14px;font-weight:700;color:#5DADE2;">'+(limNome||'—')+'</div>'
    +(limDesc?'<div style="font-size:10px;color:#8b949e;margin-top:2px;">'+limDesc+'</div>':'')
    +(bpStr?'<div style="font-size:10px;color:#8b949e;margin-top:4px;">'+bpStr+'</div>':'')
    +'</div>'
+   // Card VST Day 2
    +'<div class="card" style="min-width:200px;flex:2;">'
    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;'
    +'letter-spacing:.5px;margin-bottom:3px;">VST Day 2 — Padrão observado</div>'
@@ -4281,39 +4308,45 @@ function mxVstMostrarLimitadorDay1(d){
    +'</div></div>';
  }
 
- // Tentar usar cache (se a sessão MOXY estiver carregada na aba principal)
- const cachedLim=(MX_ULT_VALORES&&MX_ULT_VALORES.limitador_fisiologico)
-                 ?MX_ULT_VALORES.limitador_fisiologico:null;
- const cachedBP={
-  bp1:MX_ULT_VALORES&&MX_ULT_VALORES.bp1_w||null,
-  bp2:MX_ULT_VALORES&&MX_ULT_VALORES.bp2_w||null,
-  mod:MX_ULT_VALORES&&MX_ULT_VALORES.modalidade||null,
- };
- // rotulo da rede causal (ex: 'Fornecimento')
- const cachedRede=MX_ULT_LIMIARES_D&&String(MX_ULT_LIMIARES_D.activity_id)===String(moxyId)
-  ?(MX_ULT_LIMIARES_D.rede_limitador||{}).rotulo||null:null;
-
- function _fetchNome(rotulo, bps){
-  // rotulo = 'Fornecimento' | 'Utilização' | 'Respiratório' | null
-  if(!rotulo){ _render('Sem dados de rede causal',null,bps); return; }
-  fetch('/api/moxy/intervencoes?us='+encodeURIComponent(rotulo))
+ function _nomeViaChave(chave, bps){
+  // Busca o nome legível via /api/moxy/intervencoes?limitador=<chave>
+  // — mesmo endpoint que a aba Intervenções usa
+  if(!chave){ _render('Sem limitador identificado pela rede causal',null,bps); return; }
+  fetch('/api/moxy/intervencoes?limitador='+encodeURIComponent(chave))
   .then(r=>r.json()).then(function(iv){
-   const nome=(iv.intervencao||{}).nome||rotulo;
-   const oqueE=(iv.intervencao||{}).o_que_e||null;
-   const desc=oqueE?oqueE.split('.')[0]+'.':null;
-   _render(nome,desc,bps);
-  }).catch(function(){ _render(rotulo,null,bps); });
+   if(iv.status==='ok'&&iv.intervencao){
+    const nome=iv.intervencao.nome||chave;
+    const desc=iv.intervencao.o_que_e?(iv.intervencao.o_que_e.split('.')[0]+'.'):null;
+    _render(nome,desc,bps);
+   } else {
+    _render(chave,null,bps);
+   }
+  }).catch(function(){ _render(chave,null,bps); });
  }
 
- if(cachedRede){
-  // rede já carregada para este moxyId — usar directamente
-  _fetchNome(cachedRede,cachedBP);
+ // Verificar cache — se MX_ULT_LIMIARES_D já tem este moxyId
+ const cached=MX_ULT_LIMIARES_D&&String(MX_ULT_LIMIARES_D.activity_id)===String(moxyId)
+  ?MX_ULT_LIMIARES_D:null;
+
+ if(cached){
+  const lc=cached.limiares_consenso||{};
+  const bps={
+   bp1:(lc.primeiro||{}).mediana||null,
+   bp2:(lc.segundo||{}).mediana||null,
+   mod:cached.modalidade||null,
+  };
+  const rl=cached.rede_limitador||{};
+  const chave=SISTEMA_PARA_CHAVE[rl.sistema||'']||null;
+  _nomeViaChave(chave,bps);
   return;
  }
 
- // Buscar /limiares — fonte única, sem exigir 5-1-5
+ // Sem cache: buscar /limiares (calcula rede em runtime, sem botão)
  fetch('/api/moxy/limiares/'+moxyId).then(r=>r.json()).then(function(ld){
-  if(!ld||ld.status!=='ok'){ _render(null,null,{}); return; }
+  if(!ld||ld.status!=='ok'){
+   _render('Erro ao carregar dados MOXY',null,{});
+   return;
+  }
   const lc=ld.limiares_consenso||{};
   const bps={
    bp1:(lc.primeiro||{}).mediana||null,
@@ -4321,12 +4354,17 @@ function mxVstMostrarLimitadorDay1(d){
    mod:ld.modalidade||null,
   };
   const rl=ld.rede_limitador||{};
-  // rotulo = 'Fornecimento' / 'Utilização' / 'Respiratório' / ...
-  // sistema = 'entrega' / 'utilizacao' / 'respiratorio' / ...
-  const rotulo=rl.rotulo||null;
-  _fetchNome(rotulo,bps);
- }).catch(function(){ _render(null,null,{}); });
+  // 'sistema' = 'cardiaco'|'periferico'|'respiratorio'|null
+  // 'rotulo' = 'Central / débito'|... (label descritivo, não aceite por para_limitador)
+  const chave=SISTEMA_PARA_CHAVE[rl.sistema||'']||null;
+  console.log('[mxVstLimitadorDay1] moxy='+moxyId+' sistema='+rl.sistema+' → chave='+chave);
+  _nomeViaChave(chave,bps);
+ }).catch(function(e){
+  _render('Erro: '+e.message,null,{});
+  console.error('[mxVstLimitadorDay1]',e);
+ });
 }
+
 
 
 

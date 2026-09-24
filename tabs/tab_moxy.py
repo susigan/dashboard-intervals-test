@@ -2207,28 +2207,59 @@ function mxVstMoxySelecionado(){
  }).catch(function(){});
 }
 
+// mxVstCarregarConjunto — ao abrir uma verificação salva (ABRIR VERIFICAÇÃO
+// ou seleccionar sessão VST), tenta primeiro o resultado já persistido em BD
+// via /api/moxy/vst/resultado/<vid>. Só chama /vst/comparar (recálculo
+// completo) se não houver resultado gravado — evita recalcular a cada abertura.
 function mxVstCarregarConjunto(vstId){
  const box=document.getElementById('mxVstConjuntoEstado');
  const selMoxy=document.getElementById('mxVstMoxySelect');
  if(!box) return;
- fetch('/api/moxy/vst/conjunto/'+vstId).then(r=>r.json()).then(function(d){
-  if(d.status!=='ok'){ box.innerHTML=''; return; }
-  if(!d.sincronizado){
-   box.innerHTML='<p class="sub" style="font-size:12px;">ainda não '
-    +'sincronizado com nenhuma sessão Moxy</p>';
-   return;
+ fetch('/api/moxy/vst/resultado/'+vstId).then(r=>r.json()).then(function(cached){
+  if(cached.status==='ok'){
+   // resultado já em BD — usar directamente, sem recalcular
+   if(selMoxy&&cached.dia1_activity_id) selMoxy.value=cached.dia1_activity_id;
+   const ts=cached.analisado_em?(cached.analisado_em||'').slice(0,16):'';
+   box.innerHTML='<div style="border-left:3px solid #3FB950;padding:6px 10px;">'\
+    +'<b>CONJUNTO DE VERIFICAÇÃO</b><br>'\
+    +'MOXY: '+cached.dia1_activity_id+'<br>'\
+    +'VST: '+vstId+'<br>'\
+    +'<span style="color:#3FB950;">STATUS: SINCRONIZADO</span>'\
+    +(ts?'<div style="font-size:11px;color:#8b949e;margin-top:2px">analisado em '+ts+'</div>':'')
+    +'<div style="margin-top:6px;"><button onclick="mxVstForcaComparar(\\x27'+vstId+'\\x27)" '\
+    +'style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid #58A6FF;'\
+    +'background:transparent;color:#58A6FF;cursor:pointer;">↻ Re-sincronizar</button></div>'\
+    +'</div>';
+   // usar os dados em cache directamente — zero recálculo
+   _mxVstRenderComparacao(cached, vstId);
+  } else {
+   // sem resultado em BD — buscar o vínculo e comparar
+   fetch('/api/moxy/vst/conjunto/'+vstId).then(r=>r.json()).then(function(d){
+    if(d.status!=='ok'||!d.sincronizado){
+     box.innerHTML='<p class="sub" style="font-size:12px;">ainda não sincronizado</p>';
+     return;
+    }
+    if(selMoxy) selMoxy.value=d.moxy_activity_id;
+    box.innerHTML='<div style="border-left:3px solid #F4D03F;padding:6px 10px;">'\
+     +'<b>CONJUNTO DE VERIFICAÇÃO</b><br>'\
+     +'MOXY: '+d.moxy_activity_id+' · VST: '+vstId+'<br>'\
+     +'<span style="color:#F4D03F;">A CALCULAR...</span></div>';
+    mxVstCarregarComparacao(vstId);
+   }).catch(function(){ box.innerHTML=''; });
   }
-  if(selMoxy) selMoxy.value=d.moxy_activity_id;
-  box.innerHTML='<div style="border-left:3px solid #3FB950;padding:6px 10px;">'
-   +'<b>CONJUNTO DE VERIFICAÇÃO</b><br>'
-   +'MOXY: '+d.moxy_activity_id+'<br>'
-   +'VST: '+d.vst_activity_id+'<br>'
-   +'<span style="color:#3FB950;">STATUS: SINCRONIZADO</span>'
-   +'<div style="font-size:11px;color:#8b949e;margin-top:2px">desde '
-   +d.criado_em+(d.actualizado_em!==d.criado_em?' · actualizado '+d.actualizado_em:'')
-   +'</div></div>';
+ }).catch(function(){
+  // fallback de rede: tentar comparar normalmente
   mxVstCarregarComparacao(vstId);
- }).catch(function(){ box.innerHTML=''; });
+ });
+}
+
+// mxVstForcaComparar — chamado pelo botão "Re-sincronizar".
+// Recalcula e persiste o resultado actualizado.
+function mxVstForcaComparar(vstId){
+ const box=document.getElementById('mxVstConjuntoEstado');
+ if(box) box.innerHTML='<div style="border-left:3px solid #F4D03F;padding:6px 10px;">'\
+  +'<span style="color:#F4D03F;">A RE-SINCRONIZAR...</span></div>';
+ mxVstCarregarComparacao(vstId);
 }
 
 function mxVstSincronizar(){
@@ -2236,63 +2267,85 @@ function mxVstSincronizar(){
  const moxySel=document.getElementById('mxVstMoxySelect');
  const vstId=vstSel&&vstSel.value, moxyId=moxySel&&moxySel.value;
  const box=document.getElementById('mxVstConjuntoEstado');
- if(!vstId){ if(box) box.innerHTML='<p class="sub">escolhe primeiro '
-  +'uma sessão VST</p>'; return; }
- if(!moxyId){ if(box) box.innerHTML='<p class="sub">escolhe a sessão '
-  +'Moxy correspondente</p>'; return; }
+ if(!vstId){ if(box) box.innerHTML='<p class="sub">escolhe primeiro uma sessão VST</p>'; return; }
+ if(!moxyId){ if(box) box.innerHTML='<p class="sub">escolhe a sessão Moxy correspondente</p>'; return; }
+ // gravar o vínculo e depois comparar (recalcula e persiste)
  fetch('/api/moxy/vst/conjunto', {
   method:'POST', headers:{'Content-Type':'application/json'},
   body: JSON.stringify({vst_activity_id:vstId, moxy_activity_id:moxyId})
  }).then(r=>r.json()).then(function(d){
-  if(d.status!=='ok'){
+  if(d.status!=='ok'&&d.status!=='gravado_sem_upload'){
    if(box) box.innerHTML='<p class="sub">erro: '+(d.mensagem||'desconhecido')+'</p>';
    return;
   }
-  mxVstCarregarConjunto(vstId);
   mxVstCarregarComparacao(vstId);
-  // Actualizar a lista de verificações salvas para reflectir o novo conjunto
   if(typeof mxVstCarregarConjuntosSalvos==='function') mxVstCarregarConjuntosSalvos();
  }).catch(function(e){
   if(box) box.innerHTML='<p class="sub">erro de rede: '+e.message+'</p>';
  });
 }
 
+// _mxVstRenderComparacao — renderiza o resultado (cache ou recalculado)
+// nos divs existentes. Centraliza toda a renderização para evitar duplicação.
+function _mxVstRenderComparacao(d, vstId){
+ const box=document.getElementById('mxVstComparacao');
+ if(box) box.innerHTML=_vstTabelaComparacao('BP1', d.comparacao_bp1, d.comparacao_rpe_bp1)
+  + _vstTabelaComparacao('BP2', d.comparacao_bp2, d.comparacao_rpe_bp2);
+ mxVstRpeTabela(d);
+ MX_VST_ULT_COMP = d;
+ if(MX_VST_ULT) mxDesenharVstHeatmap(MX_VST_ULT);
+ mxVstResumoCartoes(d);
+ mxVstRecoveryCartoes(d);
+ mxVstRecoveryTabela(d);
+ mxVstRecoveryFinalMostrar(d.recuperacao_final_dia2);
+ mxDesenharVstRecoveryTempo(d);
+ if(typeof DEBUG_VST_VERIFICACAO!=='undefined' && DEBUG_VST_VERIFICACAO) mxVstRevisaoCritica(d);
+ mxVstLimitacoes(d);
+ mxVstDashboard(d);
+ mxVstMostrarLimitadorDay1(d);
+ mxVstDesenharRpePots(d);
+ mxLimiterMostrar(d);
+ mxHipoteseMostrar(d);
+ mxHistoricoEstilosMostrar(d);
+}
+
+
+
 // Comparacao Dia1 x Dia2: Dia1 = a sessao Moxy vinculada, Dia2 = a
 // propria sessao VST. Reaproveita tudo o que ja' esta calculado -- nao
 // refaz deteccao de blocos nem limiares, so' pede ao endpoint que ja'
 // junta os dois.
+// mxVstCarregarComparacao — chama /vst/comparar (recálculo completo) e
+// persiste o resultado. Usa _mxVstRenderComparacao para renderizar.
+// Chamado apenas quando não há resultado em cache ou ao re-sincronizar.
 function mxVstCarregarComparacao(vstId){
  const box=document.getElementById('mxVstComparacao');
- if(!box) return;
- box.innerHTML='<p class="sub" style="font-size:12px;">a comparar…</p>';
+ if(box) box.innerHTML='<p class="sub" style="font-size:12px;">a comparar…</p>';
  fetch('/api/moxy/vst/comparar/'+vstId).then(r=>r.json()).then(function(d){
   if(d.status!=='ok'){
-   box.innerHTML='<p class="sub" style="font-size:12px;">'+
-    (d.mensagem||'sem dados suficientes para comparar')+'</p>';
+   if(box) box.innerHTML='<p class="sub" style="font-size:12px;">'
+    +(d.mensagem||'sem dados suficientes para comparar')+'</p>';
    return;
   }
-  box.innerHTML=_vstTabelaComparacao('BP1', d.comparacao_bp1, d.comparacao_rpe_bp1)
-   + _vstTabelaComparacao('BP2', d.comparacao_bp2, d.comparacao_rpe_bp2);
-  mxVstRpeTabela(d);
-  MX_VST_ULT_COMP = d;
-  if(MX_VST_ULT) mxDesenharVstHeatmap(MX_VST_ULT);
-  mxVstResumoCartoes(d);
-  mxVstRecoveryCartoes(d);
-  mxVstRecoveryTabela(d);
-  mxVstRecoveryFinalMostrar(d.recuperacao_final_dia2);
-  mxDesenharVstRecoveryTempo(d);
-  if(typeof DEBUG_VST_VERIFICACAO!=='undefined' && DEBUG_VST_VERIFICACAO) mxVstRevisaoCritica(d);
-  mxVstLimitacoes(d);
-  mxVstDashboard(d);
-  mxVstMostrarLimitadorDay1(d);
-  mxVstDesenharRpePots(d);
-  mxLimiterMostrar(d);
-  mxHipoteseMostrar(d);
-  mxHistoricoEstilosMostrar(d);
+  // actualizar o estado do conjunto (agora tem resultado)
+  const conjBox=document.getElementById('mxVstConjuntoEstado');
+  if(conjBox&&conjBox.innerHTML.includes('A CALCULAR')||conjBox&&conjBox.innerHTML.includes('A RE-SINCRONIZAR')){
+   const mid=(document.getElementById('mxVstMoxySelect')||{}).value||'';
+   conjBox.innerHTML='<div style="border-left:3px solid #3FB950;padding:6px 10px;">'\
+    +'<b>CONJUNTO DE VERIFICAÇÃO</b><br>'\
+    +'MOXY: '+mid+' · VST: '+vstId+'<br>'\
+    +'<span style="color:#3FB950;">STATUS: SINCRONIZADO</span>'\
+    +'<div style="margin-top:6px;"><button onclick="mxVstForcaComparar(\\x27'+vstId+'\\x27)" '\
+    +'style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid #58A6FF;'\
+    +'background:transparent;color:#58A6FF;cursor:pointer;">↻ Re-sincronizar</button></div>'\
+    +'</div>';
+  }
+  _mxVstRenderComparacao(d, vstId);
  }).catch(function(e){
-  box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
+  if(box) box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
  });
 }
+
 
 function _vstCorConsistencia(c){
  return {'CONSISTENTE':'#3FB950', 'PARCIAL':'#F4D03F', 'DIVERGENTE':'#E74C3C',

@@ -467,6 +467,11 @@ BODY = """
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Resultado da análise MOXY da sessão Day 1 associada a esta verificação. Fonte: a mesma usada pela aba de Limiares.</p>
     <div id="mxVstLimitadorDay1" style="margin-bottom:8px;"></div>
 
+    <!-- 3c. REDE CAUSAL — DAY 1 / MOXY ──────────────────────────  -->
+    <h3 style="font-size:14px;margin-top:14px;">Rede Causal — Day 1 / MOXY</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Executada automaticamente ao comparar. Reutiliza o mesmo endpoint da aba Rede Causal — sem nova análise.</p>
+    <div id="mxVstRedeCausal" style="margin-bottom:8px;"></div>
+
     <!-- 4. GRÁFICO RPE × POTÊNCIA ──────────────────────────────── -->
     <h3 style="font-size:14px;margin-top:16px;">RPE × Potência — Day 1 × Day 2</h3>
     <p class="sub" style="font-size:10px;margin:2px 0 6px;">Consistência entre esforço externo (potência) e esforço percebido (RPE) entre as duas sessões.</p>
@@ -2303,11 +2308,71 @@ function _mxVstRenderComparacao(d, vstId){
  mxVstLimitacoes(d);
  mxVstDashboard(d);
  mxVstMostrarLimitadorDay1(d);
+ mxVstRenderRedeCausal(d);
  mxVstDesenharRpePots(d);
  mxLimiterMostrar(d);
  mxHipoteseMostrar(d);
  mxHistoricoEstilosMostrar(d);
 }
+
+// mxVstRenderRedeCausal — mostra o resultado da Rede Causal Day1 na Verificação.
+// Reutiliza o campo d.rede_causal retornado por /api/moxy/vst/comparar.
+// Usa o mesmo mapeamento canónico SISTEMA_PARA_CHAVE já existente.
+// Não cria nova análise — só renderiza o que chegou do backend.
+function mxVstRenderRedeCausal(d){
+ const box=document.getElementById('mxVstRedeCausal');
+ if(!box) return;
+
+ const rc=d.rede_causal||null;
+ if(!rc||rc.status==='sem_dados'||rc.status==='erro'){
+  const motivo=(rc&&rc.motivo_ausencia)||'dados insuficientes para calcular a rede causal';
+  box.innerHTML='<p class="sub" style="font-size:11px;color:#6e7681;">'
+   +'Rede causal: '+motivo+'</p>';
+  return;
+ }
+
+ const lim=rc.limitador||{};
+ const sistema=lim.sistema||'';
+ const rotulo=lim.rotulo||'—';
+ const pct=lim.pct!=null?Math.round(lim.pct)+'%':'';
+ const confianca=lim.confianca||'';
+ const aresta=lim.aresta_dominante||'';
+ const leitura=lim.leitura||'';
+
+ // Cor por sistema (mesma lógica da aba Rede Causal)
+ const COR={'cardiaco':'#5DADE2','cardíaco':'#5DADE2',
+             'periferico':'#3FB950','periférico':'#3FB950',
+             'respiratorio':'#F4D03F','respiratório':'#F4D03F',
+             'autonomico':'#A371F7','autonómico':'#A371F7'};
+ const cor=COR[sistema]||'#8b949e';
+
+ // Mapeamento canónico sistema → nome (reutiliza SISTEMA_PARA_CHAVE já existente)
+ const SISTEMA_PARA_CHAVE={
+  'cardiaco':'entrega','cardíaco':'entrega',
+  'periferico':'utilizacao','periférico':'utilizacao',
+  'respiratorio':'respiratorio','respiratório':'respiratorio',
+ };
+ const chave=SISTEMA_PARA_CHAVE[sistema]||null;
+
+ box.innerHTML='<div class="card" style="border-left:3px solid '+cor+';padding:10px 14px;">'
+  +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">'
+  +'Rede Causal · Day 1 / MOXY</div>'
+  +'<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">'
+  +'<div>'
+  +'<div style="font-size:9px;color:#8b949e;">Sistema dominante</div>'
+  +'<div style="font-size:16px;font-weight:700;color:'+cor+';">'+rotulo+'</div>'
+  +(pct?'<div style="font-size:10px;color:#8b949e;">'+pct+(confianca?' · '+confianca:'')+'</div>':'')
+  +'</div>'
+  +(chave?'<div>'
+  +'<div style="font-size:9px;color:#8b949e;">Limitador canónico</div>'
+  +'<div style="font-size:12px;color:#c9d1d9;font-weight:600;">'+chave+'</div>'
+  +'</div>':'')
+  +'</div>'
+  +(leitura?'<div style="font-size:10px;color:#8b949e;margin-top:6px;font-style:italic;">'+leitura+'</div>':'')
+  +(aresta?'<div style="font-size:10px;color:#6e7681;margin-top:3px;">Aresta: '+aresta+'</div>':'')
+  +'</div>';
+}
+
 
 
 

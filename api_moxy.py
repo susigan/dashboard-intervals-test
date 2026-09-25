@@ -2862,11 +2862,14 @@ def registar(app):
 
     @app.route('/api/moxy/vst/rpe/<path:vst_activity_id>')
     def api_moxy_vst_rpe_ver(vst_activity_id):
-        """RPE do Dia 2 (VST) -- MESMA tabela moxy_rpe, MESMA lógica de
-        persistência (activity_id, bloco_indice) já usada pela Principal;
-        a única diferença é a lista de blocos: aqui só os WORKs de BP1 e
-        BP2 já identificados por api_moxy_vst_analise (sem aquecimento,
-        sem RECOVERY) -- nada reanalisado, só filtrado.
+        """RPE do Dia 2 (VST) — WORKs de BP1 e BP2 com o RPE já gravado.
+
+        Resolução de RPE (nova arquitectura):
+          1. activity_interval_rpe por (activity_id, start_time=bloco.t0)
+             rpe=0  → campo vazio, sem fallback
+             rpe=1..10 → valor real
+          2. moxy_rpe por bloco_indice (legado) — só quando sem linha nova
+          3. sem nenhum → None
         """
         try:
             vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
@@ -2883,21 +2886,29 @@ def registar(app):
 
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
+            # Fallback legado (moxy_rpe por índice)
             linhas = cn.execute(
                 "SELECT bloco_indice, rpe FROM moxy_rpe "
                 "WHERE activity_id=?", (vid,)).fetchall()
-            rpe_por_indice = {int(r[0]): r[1] for r in linhas}
+            rpe_legacy = {int(r[0]): r[1] for r in linhas}
 
             fora = []
             contagem = {'bp1': 0, 'bp2': 0}
             for i, item in enumerate(trabalho):
                 b, grupo = item['bloco'], item['grupo']
                 contagem[grupo] += 1
+                t0 = float(b['t0'])
+                # Resolver via activity_interval_rpe primeiro
+                rpe_val, rpe_fonte = _rpe_interval_resolver(cn, vid, t0)
+                if rpe_fonte == 'absent':
+                    rpe_val = rpe_legacy.get(i)
+                    rpe_fonte = 'legacy' if rpe_val is not None else 'absent'
                 fora.append({
                     'bloco_indice': i, 'grupo': grupo, 'numero': contagem[grupo],
                     'watts_medio': round(b.get('watts_medio_da_api') or b.get('watts_medio') or 0),
-                    't0_s': round(b['t0']), 't1_s': round(b['t1']),
-                    'rpe': rpe_por_indice.get(i),
+                    't0_s': round(t0), 't1_s': round(b['t1']),
+                    'rpe': rpe_val,
+                    'rpe_fonte': rpe_fonte,
                 })
             return jsonify({
                 'status': 'ok', 'activity_id': vid,
@@ -3717,33 +3728,62 @@ def registar(app):
                 (dia2.get('bp2') or {}).get('metricas') or [], recs_bp2_dia2,
                 dia2_recuperacoes_1min=recs_bp2_1min)
 
-            # RPE -- evidencia perceptiva complementar, lida directamente
-            # de moxy_rpe (mesma tabela da Parte 1, nada recalculado).
+            # RPE -- evidencia perceptiva complementar.
+            # Nova arquitectura: activity_interval_rpe (start_time) primeiro,
+            # fallback moxy_rpe (bloco_indice) se não houver linha nova.
+            # rpe=0 em activity_interval_rpe = apagado explicitamente, sem fallback.
             # Dia1: usa o MESMO bloco (b1_bp1/b1_bp2) ja escolhido para a
-            # fisiologia -- nao um novo emparelhamento. Dia2: os RPEs dos
-            # WORKs de cada BP, na mesma ordem/indexacao ja usada por
-            # /api/moxy/vst/rpe (bp1 primeiro, depois bp2).
+            # fisiologia — não um novo emparelhamento.
+            # Dia2: os RPEs dos WORKs de cada BP, na mesma ordem do VST.
             try:
+                # ── Legado Day1 e Day2 (fallback) ──────────────────────────
                 rpe_rows_d1 = cn.execute(
                     "SELECT bloco_indice, rpe FROM moxy_rpe WHERE activity_id=? "
                     "ORDER BY bloco_indice", (mid,)).fetchall()
-                rpe_d1_por_indice = {int(r[0]): r[1] for r in rpe_rows_d1}
-                rpe_d1_base = rpe_d1_por_indice.get(0)
-
-                def _rpe_d1_no_bloco(bloco_alvo):
-                    if not bloco_alvo or bloco_alvo not in ons1:
-                        return None
-                    return rpe_d1_por_indice.get(ons1.index(bloco_alvo))
+                rpe_d1_legacy = {int(r[0]): r[1] for r in rpe_rows_d1}
 
                 rpe_rows_d2 = cn.execute(
                     "SELECT bloco_indice, rpe FROM moxy_rpe WHERE activity_id=? "
                     "ORDER BY bloco_indice", (vid,)).fetchall()
-                rpe_d2_por_indice = {int(r[0]): r[1] for r in rpe_rows_d2}
+                rpe_d2_legacy = {int(r[0]): r[1] for r in rpe_rows_d2}
+
+                # ── Day1: resolver RPE do bloco escolhido ───────────────────
+                def _rpe_d1_no_bloco(bloco_alvo):
+                    if not bloco_alvo or bloco_alvo not in ons1:
+                        return None
+                    t0 = float(bloco_alvo['t0'])
+                    val, fonte = _rpe_interval_resolver(cn, mid, t0)
+                    if fonte == 'absent':
+                        idx = ons1.index(bloco_alvo)
+                        val = rpe_d1_legacy.get(idx)
+                    return val  # None se 'deleted' ou realmente ausente
+
+                rpe_d1_base_val, rpe_d1_base_fonte = _rpe_interval_resolver(
+                    cn, mid, float(ons1[0]['t0']) if ons1 else -1)
+                if rpe_d1_base_fonte == 'absent':
+                    rpe_d1_base = rpe_d1_legacy.get(0)
+                else:
+                    rpe_d1_base = rpe_d1_base_val  # None se 'deleted'
+
+                # ── Day2: resolver RPE de cada WORK de BP1 e BP2 ───────────
+                # Blocos Day2 (VST) ordenados: bp1 primeiro, depois bp2
+                trabalho_d2 = []
+                for grp in ('bp1', 'bp2'):
+                    for bk in ((dia2.get(grp) or {}).get('blocos') or []):
+                        trabalho_d2.append(bk)
+
+                rpe_d2_all = []
+                for i, bk in enumerate(trabalho_d2):
+                    t0 = float(bk['t0'])
+                    val, fonte = _rpe_interval_resolver(cn, vid, t0)
+                    if fonte == 'absent':
+                        val = rpe_d2_legacy.get(i)
+                    rpe_d2_all.append(val)  # None se 'deleted' ou ausente
+
                 n_bp1_works = len((dia2.get('bp1') or {}).get('blocos') or [])
                 n_bp2_works = len((dia2.get('bp2') or {}).get('blocos') or [])
-                rpe_d2_bp1 = [rpe_d2_por_indice.get(i) for i in range(n_bp1_works)]
-                rpe_d2_bp2 = [rpe_d2_por_indice.get(i)
-                             for i in range(n_bp1_works, n_bp1_works + n_bp2_works)]
+                rpe_d2_bp1 = rpe_d2_all[:n_bp1_works]
+                rpe_d2_bp2 = rpe_d2_all[n_bp1_works:n_bp1_works + n_bp2_works]
 
                 comp_rpe_bp1 = vst.comparar_rpe(
                     rpe_d1_base, _rpe_d1_no_bloco(b1_bp1), rpe_d2_bp1)

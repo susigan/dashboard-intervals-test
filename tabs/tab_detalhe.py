@@ -856,13 +856,52 @@ async function load(){
 
  const ivs=(d.intervals&&(d.intervals.icu_intervals||d.intervals))||[];
  if(Array.isArray(ivs)&&ivs.length){
-  const cols=['label','type','start_time','elapsed_time','distance','average_watts','max_watts',
-   'weighted_average_watts','average_heartrate','max_heartrate','average_cadence','intensity','joules','decoupling'];
-  document.getElementById('ivHead').innerHTML=cols.map(c=>'<th>'+c+'</th>').join('');
-  document.getElementById('ivBody').innerHTML=ivs.map(iv=>'<tr>'+cols.map(function(c){
-   var v=iv[c];return '<td class="num">'+(v==null?'-':(typeof v==='number'?Math.round(v*10)/10:v))+'</td>';
-  }).join('')+'</tr>').join('');
+  // Carregar RPE existentes antes de renderizar a tabela
+  fetch('/api/activity/'+AID+'/interval_rpe').then(r=>r.json()).then(function(rpeData){
+   const rpeMap={};
+   ((rpeData||{}).intervals||[]).forEach(function(iv){
+    rpeMap[String(iv.start_time)]=iv.rpe; // 0=apagado, 1-10=valor
+   });
+
+   const cols=['label','type','rpe_col','start_time','elapsed_time','distance','average_watts','max_watts',
+    'weighted_average_watts','average_heartrate','max_heartrate','average_cadence','intensity','joules','decoupling'];
+   document.getElementById('ivHead').innerHTML=cols.map(function(c){
+    if(c==='rpe_col') return '<th style="color:#5DADE2;">RPE</th>';
+    return '<th>'+c+'</th>';
+   }).join('');
+   document.getElementById('ivBody').innerHTML=ivs.map(function(iv,idx){
+    return '<tr>'+cols.map(function(c){
+     if(c==='rpe_col'){
+      const st=String(iv.start_time);
+      const rpeStored=rpeMap[st]; // undefined=sem linha; 0=apagado; 1-10=valor
+      const rpeVal=(rpeStored===undefined||rpeStored===0)?'':(rpeStored);
+      return '<td style="text-align:center;padding:2px;">'
+       +'<input type="number" min="1" max="10" step="1" '
+       +'value="'+rpeVal+'" '
+       +'style="width:44px;background:#0d1117;border:1px solid #30363d;'
+       +'color:#c9d1d9;border-radius:4px;padding:2px 4px;text-align:center;" '
+       +'data-start="'+iv.start_time+'" '
+       +'data-type="'+(iv.type||'')+'" '
+       +'data-elapsed="'+(iv.elapsed_time||'')+'" '
+       +'oninput="this.dataset.dirty=\'1\'" '
+       +'onblur="mxSalvarRpe(this)" '
+       +'onkeydown="if(event.key===\'Enter\'){event.preventDefault();this.blur();}" '
+       +'/></td>';
+     }
+     var v=iv[c];return '<td class="num">'+(v==null?'-':(typeof v==='number'?Math.round(v*10)/10:v))+'</td>';
+    }).join('')+'</tr>';
+   }).join('');
+  }).catch(function(){
+   // fallback sem RPE se o endpoint falhar
+   const cols=['label','type','start_time','elapsed_time','distance','average_watts','max_watts',
+    'weighted_average_watts','average_heartrate','max_heartrate','average_cadence','intensity','joules','decoupling'];
+   document.getElementById('ivHead').innerHTML=cols.map(c=>'<th>'+c+'</th>').join('');
+   document.getElementById('ivBody').innerHTML=ivs.map(iv=>'<tr>'+cols.map(function(c){
+    var v=iv[c];return '<td class="num">'+(v==null?'-':(typeof v==='number'?Math.round(v*10)/10:v))+'</td>';
+   }).join('')+'</tr>').join('');
+  });
  } else document.getElementById('ivBody').innerHTML='<tr><td class="loading">Sem intervalos</td></tr>';
+
 
  document.getElementById('rawkv').innerHTML=Object.keys(a).sort()
   .filter(k=>!(k in cf)).map(k=>'<div><span class="k">'+k+'</span><span class="v">'+fmtv(a[k])+'</span></div>').join('');
@@ -886,6 +925,52 @@ function _pintarBotoesModo(modoActivo){
   } else {
    b.style.background='#161b22'; b.style.borderColor='#30363d'; b.style.color='#8b949e';
   }
+ });
+}
+
+// Salva o RPE de um intervalo ao sair do campo (blur/Enter).
+// Usa activity_interval_rpe como fonte de verdade.
+// rpe vazio → grava 0 (apagado explicitamente, impede fallback para moxy_rpe legado).
+// rpe 1-10  → grava o valor.
+function mxSalvarRpe(input){
+ if(!input.dataset.dirty) return; // campo não foi editado — ignorar
+ input.dataset.dirty='';
+ const st=parseFloat(input.dataset.start);
+ if(isNaN(st)) return;
+ const raw=input.value.trim();
+ let rpe=0; // default: apagado
+ if(raw!==''){
+  rpe=parseInt(raw,10);
+  if(isNaN(rpe)||rpe<1||rpe>10){
+   input.style.borderColor='#E74C3C';
+   setTimeout(function(){input.style.borderColor='#30363d';},1500);
+   return;
+  }
+ }
+ input.style.borderColor='#F4D03F'; // a gravar
+ fetch('/api/activity/'+AID+'/interval_rpe',{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({intervals:[{
+   start_time:st,
+   interval_type:input.dataset.type||null,
+   elapsed_time:input.dataset.elapsed?parseFloat(input.dataset.elapsed):null,
+   rpe:rpe
+  }]})
+ }).then(r=>r.json()).then(function(d){
+  if(d.status==='ok'||d.status==='gravado_sem_upload'){
+   input.style.borderColor='#3FB950'; // verde = ok
+   input.value=rpe===0?'':String(rpe);
+   setTimeout(function(){input.style.borderColor='#30363d';},1800);
+  } else {
+   input.style.borderColor='#E74C3C'; // vermelho = erro
+   console.error('[mxSalvarRpe]',d.mensagem);
+   setTimeout(function(){input.style.borderColor='#30363d';},2500);
+  }
+ }).catch(function(e){
+  input.style.borderColor='#E74C3C';
+  console.error('[mxSalvarRpe] rede:',e.message);
+  setTimeout(function(){input.style.borderColor='#30363d';},2500);
  });
 }
 

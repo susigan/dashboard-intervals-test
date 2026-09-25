@@ -207,6 +207,26 @@ MIGRACOES = [
 # dá blocos que o atleta não confia. Por omissão ('automatico' quando
 # não há registo) mantém-se o comportamento actual: tenta icu_intervals,
 # cai para detecção automática só se aquele falhar.
+
+# RPE manual por intervalo de qualquer actividade.
+# Fonte de verdade universal: uma anotação por (activity_id, start_time).
+# start_time = icu_interval.start_time = bloco.t0 (via blocos_de_laps).
+# rpe=0   → apagado explicitamente; NÃO fazer fallback para moxy_rpe.
+# rpe=1..10 → valor real.
+# Sem linha → sem anotação nova; fallback para moxy_rpe (legado).
+SCHEMA_ACTIVITY_INTERVAL_RPE = """
+CREATE TABLE IF NOT EXISTS activity_interval_rpe (
+    activity_id     TEXT    NOT NULL,
+    start_time      REAL    NOT NULL,
+    interval_type   TEXT,
+    elapsed_time    REAL,
+    rpe             INTEGER NOT NULL CHECK (rpe BETWEEN 0 AND 10),
+    source          TEXT    NOT NULL DEFAULT 'manual',
+    updated_at      TEXT    NOT NULL,
+    PRIMARY KEY (activity_id, start_time)
+);
+"""
+
 SCHEMA_MODO_BLOCOS = """
 CREATE TABLE IF NOT EXISTS moxy_modo_blocos (
     activity_id   TEXT PRIMARY KEY,
@@ -260,6 +280,7 @@ def aplicar_schema(conn):
     conn.executescript(SCHEMA)
     conn.execute(SCHEMA_MODO_BLOCOS)
     conn.executescript(SCHEMA_VST_CONJUNTO)
+    conn.executescript(SCHEMA_ACTIVITY_INTERVAL_RPE)
     conn.commit()
     migrar(conn)
     return conn

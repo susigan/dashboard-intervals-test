@@ -46,7 +46,7 @@ from api_client import (fetch_activities, cache_info, invalidar_cache,
                         fetch_da_api)
 from tabs import (tab_volume, tab_atividades, tab_detalhe,
                   tab_recordes, tab_pmc, tab_corporal, tab_metabol,
-                  tab_cp_model, tab_moxy, tab_recovery)
+                  tab_cp_model, tab_moxy, tab_recovery, tab_training)
 
 if db.ENABLED:
     db.init_schema()
@@ -111,6 +111,37 @@ def page_moxy():
 @app.route('/recovery')
 def page_recovery():
     return tab_recovery.render()
+
+
+@app.route('/training')
+def page_training():
+    return tab_training.render()
+
+
+@app.route('/api/training/executar', methods=['POST'])
+def api_training_executar():
+    """Ponto de entrada do engine de treinamento.
+
+    Recebe o contexto montado pelo frontend (JSON) e chama
+    utils/training.executar(contexto). O engine não acede a DB nem a API.
+    """
+    import traceback
+    try:
+        import os
+        import training as tr
+        tabela_path = os.environ.get(
+            'TRAINING_TABELA_PATH',
+            os.path.join(os.path.dirname(__file__),
+                         'Tabela_Mestre_Training_Engine_V5__1_.xlsx'))
+        if not os.path.exists(tabela_path):
+            return jsonify({'status': 'erro',
+                            'mensagem': f'Tabela não encontrada: {tabela_path}'}), 500
+        contexto = request.get_json(force=True, silent=True) or {}
+        resultado = tr.executar(contexto, tabela_path)
+        return jsonify(resultado)
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
 
 
 @app.route('/relatorio/<modalidade>')

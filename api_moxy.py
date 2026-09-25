@@ -187,6 +187,26 @@ def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
     }
 
 
+def _zona(watts, bp1_w, bp2_w):
+    """Classifica um valor de potência em Z1/Z2/Z3.
+
+    Usa SEMPRE os BP da própria sessão histórica — nunca os da sessão actual.
+    Z1 = watts < bp1_w
+    Z2 = bp1_w <= watts < bp2_w
+    Z3 = watts >= bp2_w
+    Retorna None se qualquer argumento for None ou inválido.
+    """
+    try:
+        w, b1, b2 = float(watts), float(bp1_w), float(bp2_w)
+    except (TypeError, ValueError):
+        return None
+    if w < b1:
+        return 'Z1'
+    if b1 <= w < b2:
+        return 'Z2'
+    return 'Z3'
+
+
 def registar(app):
 
     @app.route('/api/moxy/limitador/<modalidade>')
@@ -2268,6 +2288,248 @@ def registar(app):
                 'todos_gravados': bool(fora) and all(
                     b['rpe'] is not None for b in fora),
             })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/historico_zones/<modalidade>')
+    def api_moxy_historico_zones(modalidade):
+        """Referências históricas por zona para o Training Engine.
+
+        Devolve, por sessão histórica da modalidade, as médias de potência,
+        HR, RF, SmO2, RPE e split por zona (Z1/Z2/Z3) — classificadas usando
+        os BP1/BP2 da PRÓPRIA sessão, nunca os da sessão actual.
+
+        Sessões sem BP1 ou BP2 próprios são excluídas e declaradas.
+
+        ?modo=leve     Sem chamada à API externa. Usa apenas moxy_analises +
+                        moxy_rpe (potência e RPE por bloco já gravados).
+        ?modo=completo Chama api_moxy_rpe_degraus() por sessão para obter
+                        HR, RF e SmO2 por bloco (chama a API Intervals.icu).
+        ?n=12          Máximo de sessões a processar (cap técnico: 20).
+
+        O endpoint fornece dados agregados brutos.
+        training.py é responsável por threshold_calculation, runtime_value_type
+        e selecção das sessões comparáveis.
+        """
+        try:
+            import os as _os, sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            from cp_model import split_de_watts
+            import drive_db_perfil as ddp
+
+            modo = (request.args.get('modo') or 'leve').strip().lower()
+            n_max = min(int(request.args.get('n') or 12), 20)
+
+            cn = ddp.get_conn()
+            rows = cn.execute(
+                "SELECT activity_id, data, bp1_w, bp2_w "
+                "FROM moxy_analises "
+                "WHERE modalidade = ? AND bp1_w IS NOT NULL AND bp2_w IS NOT NULL "
+                "ORDER BY data DESC LIMIT ?",
+                (modalidade, n_max)).fetchall()
+
+            # Também registar as excluídas (sem BP) para transparência
+            excluidas_rows = cn.execute(
+                "SELECT activity_id, data "
+                "FROM moxy_analises "
+                "WHERE modalidade = ? AND (bp1_w IS NULL OR bp2_w IS NULL) "
+                "ORDER BY data DESC LIMIT 20",
+                (modalidade,)).fetchall()
+
+            excluidas = [
+                {'activity_id': r[0], 'data': r[1],
+                 'motivo': 'BP1 ou BP2 ausente — zona indeterminável'}
+                for r in excluidas_rows
+            ]
+
+            # ── Modo LEVE: só moxy_rpe (já persistido, zero chamada API) ──
+            def _processar_leve(activity_id, bp1_w, bp2_w):
+                """Agrega potência e RPE por zona usando moxy_rpe."""
+                blocos_db = cn.execute(
+                    "SELECT bloco_indice, watts_medio, t0_s, t1_s, rpe "
+                    "FROM moxy_rpe WHERE activity_id = ? ORDER BY bloco_indice",
+                    (activity_id,)).fetchall()
+
+                if not blocos_db:
+                    return None, ['moxy_rpe: sem blocos gravados']
+
+                por_zona = {'Z1': [], 'Z2': [], 'Z3': []}
+                for _, watts, t0, t1, rpe in blocos_db:
+                    if watts is None:
+                        continue
+                    z = _zona(watts, bp1_w, bp2_w)
+                    if z:
+                        por_zona[z].append({
+                            'watts': watts, 'rpe': rpe,
+                            't0': t0, 't1': t1,
+                        })
+
+                campos_ausentes = []
+                resultado = {'dados_por_bloco': {'tem_dados_por_bloco': False}}
+                for z, blocos in por_zona.items():
+                    if not blocos:
+                        resultado[f'potencia_por_zona_{z}'] = None
+                        resultado[f'rpe_por_zona_{z}'] = None
+                        continue
+                    w_vals = [b['watts'] for b in blocos if b['watts'] is not None]
+                    rpe_vals = [b['rpe'] for b in blocos if b['rpe'] is not None]
+                    resultado[f'potencia_por_zona_{z}'] = (
+                        round(sum(w_vals) / len(w_vals), 1) if w_vals else None)
+                    resultado[f'rpe_por_zona_{z}'] = (
+                        round(sum(rpe_vals) / len(rpe_vals), 1) if rpe_vals else None)
+                    if not rpe_vals:
+                        campos_ausentes.append(f'rpe em {z}: sem RPE gravado')
+                return resultado, campos_ausentes
+
+            # ── Modo COMPLETO: usa api_moxy_rpe_degraus (chama API) ────────
+            def _processar_completo(activity_id, bp1_w, bp2_w, modalidade_s):
+                """Agrega HR, RF, SmO2, potência, RPE, split por zona."""
+                # Reutilizar api_moxy_rpe_degraus que já tem toda a lógica
+                # de streams + blocos + _media(canal, t0, t1)
+                rpe_resp = api_moxy_rpe_degraus(activity_id)
+                rpe_d = (rpe_resp[0].get_json()
+                         if isinstance(rpe_resp, tuple)
+                         else rpe_resp.get_json()) or {}
+
+                if rpe_d.get('status') != 'ok':
+                    return None, [f'api_moxy_rpe_degraus: {rpe_d.get("mensagem","erro")}']
+
+                blocos = rpe_d.get('blocos') or []
+                if not blocos:
+                    return None, ['sem blocos de trabalho na sessão']
+
+                # Necessitamos também de velocity_smooth para split.
+                # _dados_sessao já processou isso em api_moxy_rpe_degraus,
+                # mas não expôs. Precisamos de um fetch adicional do canal.
+                # Para não duplicar, chamamos api_moxy_dados para o canal
+                # de velocidade apenas se modalidade não for Bike.
+                vel_por_bloco = {}  # bloco_indice → split_s_por_500m
+                if modalidade_s in ('Row', 'Ski', 'Run'):
+                    try:
+                        dd = api_moxy_dados(activity_id)
+                        dj = (dd[0].get_json() if isinstance(dd, tuple)
+                              else dd.get_json()) or {}
+                        if dj.get('status') == 'ok':
+                            tempo_s = dj.get('tempo') or []
+                            canais_s = dj.get('canais') or {}
+                            vel = canais_s.get('velocity_smooth') or []
+                            # média de velocity_smooth por intervalo de bloco
+                            def _vel_media(t0, t1):
+                                if not vel or not tempo_s:
+                                    return None
+                                vs = [vel[i] for i, t in enumerate(tempo_s)
+                                      if t0 <= t <= t1 and i < len(vel)
+                                      and vel[i] is not None and vel[i] > 0]
+                                return round(sum(vs) / len(vs), 3) if vs else None
+
+                            for b in blocos:
+                                t0 = float(b.get('t0_s') or 0)
+                                t1 = float(b.get('t1_s') or 0)
+                                v_ms = _vel_media(t0, t1)
+                                if v_ms is not None and v_ms > 0:
+                                    # velocity_smooth é em m/s
+                                    # split s/500m = 500 / v_ms
+                                    split_s = round(500.0 / v_ms, 1)
+                                    vel_por_bloco[b['bloco_indice']] = split_s
+                    except Exception:
+                        pass  # velocity_smooth indisponível — declarar ausência
+
+                # Classificar cada bloco na zona e agregar
+                por_zona = {'Z1': [], 'Z2': [], 'Z3': []}
+                for b in blocos:
+                    watts = b.get('watts_medio')
+                    if watts is None:
+                        continue
+                    z = _zona(float(watts), bp1_w, bp2_w)
+                    if z:
+                        por_zona[z].append({
+                            'watts': watts,
+                            'hr':    b.get('hr_medio'),
+                            'rf':    b.get('rf_medio'),
+                            'smo2':  b.get('smo2_medio'),
+                            'rpe':   b.get('rpe'),
+                            'split': vel_por_bloco.get(b['bloco_indice']),
+                        })
+
+                def _med(lst, k):
+                    vs = [x[k] for x in lst if x.get(k) is not None]
+                    return round(sum(vs) / len(vs), 1) if vs else None
+
+                campos_ausentes = []
+                resultado = {
+                    'dados_por_bloco': {'tem_dados_por_bloco': True},
+                }
+                for z, blocos_z in por_zona.items():
+                    if not blocos_z:
+                        for campo in ('potencia', 'hr', 'rf', 'smo2', 'rpe', 'split'):
+                            resultado.setdefault(f'{campo}_por_zona', {})[z] = None
+                        continue
+                    for campo, key in (('potencia','watts'),('hr','hr'),('rf','rf'),
+                                       ('smo2','smo2'),('rpe','rpe'),('split','split')):
+                        val = _med(blocos_z, key)
+                        resultado.setdefault(f'{campo}_por_zona', {})[z] = val
+                        if val is None:
+                            campos_ausentes.append(f'{campo} em {z}: indisponível')
+
+                # n_blocos por zona (diagnóstico)
+                resultado['n_blocos_por_zona'] = {
+                    z: len(bz) for z, bz in por_zona.items()}
+
+                return resultado, campos_ausentes
+
+            # ── Iterar sessões ─────────────────────────────────────────────
+            sessoes = []
+            for aid, data, bp1_w, bp2_w in rows:
+                if modo == 'completo':
+                    dados, ausentes = _processar_completo(
+                        aid, bp1_w, bp2_w, modalidade)
+                else:
+                    dados, ausentes = _processar_leve(aid, bp1_w, bp2_w)
+
+                entrada = {
+                    'activity_id': aid,
+                    'data': data,
+                    'bp1_w': bp1_w,
+                    'bp2_w': bp2_w,
+                    'campos_ausentes': ausentes or [],
+                }
+                if dados:
+                    entrada.update(dados)
+                    # Normalizar para o formato esperado por training.py
+                    # (campos planos → dicts por zona, conforme o modo leve)
+                    if modo == 'leve':
+                        # modo leve usa chaves planas; converter para dicts
+                        for campo in ('potencia', 'rpe'):
+                            entrada[f'{campo}_por_zona'] = {
+                                z: entrada.pop(f'{campo}_por_zona_{z}', None)
+                                for z in ('Z1', 'Z2', 'Z3')
+                            }
+                        # campos não calculados no modo leve
+                        for campo in ('hr', 'rf', 'smo2', 'split'):
+                            entrada[f'{campo}_por_zona'] = None
+                else:
+                    entrada['erro'] = True
+                    for campo in ('potencia','hr','rf','smo2','rpe','split'):
+                        entrada[f'{campo}_por_zona'] = None
+
+                sessoes.append(entrada)
+
+            return jsonify({
+                'status': 'ok',
+                'modalidade': modalidade,
+                'modo': modo,
+                'n_sessoes': len(sessoes),
+                'sessoes': sessoes,
+                'excluidas_sem_bp': excluidas,
+                'nota': (
+                    'sessões sem BP1/BP2 próprios foram excluídas. '
+                    'training.py é responsável por seleccionar sessões '
+                    'comparáveis e calcular referências individuais.'
+                ),
+            })
+
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

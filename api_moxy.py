@@ -187,6 +187,19 @@ def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
     }
 
 
+# Mapeamento canónico: sistema da Rede Causal → chave de limitador.
+# Único em todo o projecto — reutilizado em Python e espelhado no JS
+# (SISTEMA_PARA_CHAVE em tab_moxy.py). Não criar mapa paralelo.
+_SISTEMA_PARA_CHAVE = {
+    'cardiaco': 'entrega',
+    'cardíaco': 'entrega',
+    'periferico': 'utilizacao',
+    'periférico': 'utilizacao',
+    'respiratorio': 'respiratorio',
+    'respiratório': 'respiratorio',
+}
+
+
 def _zona(watts, bp1_w, bp2_w):
     """Classifica um valor de potência em Z1/Z2/Z3.
 
@@ -2997,7 +3010,147 @@ def registar(app):
             resultado['dia2_activity_id'] = vid
             resultado['vst_activity_id'] = vid
             resultado['analisado_em'] = analisado_em
-            resultado['fonte'] = 'cache'  # indica que veio da BD, não foi recalculado
+            resultado['fonte'] = 'cache'
+
+            # ── Actualizar rede_causal em runtime ──────────────────────────
+            # O cache pode ter rede_causal de uma sessão anterior. A rede
+            # da sessão MOXY actual é recalculada aqui para garantir que
+            # a Verificação mostra o sistema/limitador ACTUAL, nunca um
+            # resultado obsoleto de comparações anteriores.
+            try:
+                _rd_live = api_moxy_rede(moxy_id)
+                _rd_live = (_rd_live[0].get_json() if isinstance(_rd_live, tuple)
+                            else _rd_live.get_json())
+                if _rd_live and _rd_live.get('status') == 'ok':
+                    resultado['rede_causal'] = {
+                        'status': 'ok',
+                        'limitador': _rd_live.get('limitador'),
+                        'canais_usados': _rd_live.get('canais_usados'),
+                        'motivo_ausencia': None,
+                    }
+                else:
+                    resultado['rede_causal'] = {
+                        'status': 'sem_dados',
+                        'limitador': None,
+                        'motivo_ausencia': (_rd_live or {}).get('mensagem') or 'sem dados',
+                    }
+            except Exception as _e_rc:
+                resultado['rede_causal'] = {
+                    'status': 'erro', 'limitador': None,
+                    'motivo_ausencia': f'{type(_e_rc).__name__}: {_e_rc}',
+                }
+
+            # ── Recalcular comparação RPE em runtime ───────────────────────
+            # O cache pode ter comparacao_rpe_bp1/bp2 = DADOS INSUFICIENTES
+            # gravado quando o RPE ainda não existia. Os RPEs podem ter sido
+            # gravados entretanto em activity_interval_rpe ou moxy_rpe.
+            # Recalcular a partir dos RPEs actuais sem tocar na fisiologia.
+            try:
+                import vst_verificacao as _vst_live
+
+                # Carregar legado moxy_rpe para fallback
+                _rpe_d1_leg_idx = {int(r[0]): r[2] for r in cn.execute(
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? ORDER BY bloco_indice", (moxy_id,)).fetchall()}
+                _rpe_d1_leg_t0  = {float(r[1]): r[2] for r in cn.execute(
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? AND t0_s IS NOT NULL", (moxy_id,)).fetchall()}
+                _rpe_d2_leg_idx = {int(r[0]): r[2] for r in cn.execute(
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? ORDER BY bloco_indice", (vid,)).fetchall()}
+                _rpe_d2_leg_t0  = {float(r[1]): r[2] for r in cn.execute(
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? AND t0_s IS NOT NULL", (vid,)).fetchall()}
+
+                def _res_rpe(aid, t0_val, idx_fb, leg_idx, leg_t0):
+                    val, fonte = _rpe_interval_resolver(cn, aid, t0_val)
+                    if fonte in ('new', 'deleted'):
+                        return val
+                    for t0_l, rpe_l in (leg_t0 or {}).items():
+                        if abs(t0_l - t0_val) <= 1:
+                            return rpe_l
+                    return (leg_idx or {}).get(idx_fb)
+
+                # Reconstruir blocos Day1 a partir do cache (dia1_* já gravados)
+                # Usar os blocos do comparacao_bp1/bp2 que têm potência → t0 implícito
+                # A abordagem mais segura: re-resolver pelo rpe_degraus do Day1
+                _rd1 = api_moxy_rpe_degraus(moxy_id)
+                _rd1 = (_rd1[0].get_json() if isinstance(_rd1, tuple)
+                        else _rd1.get_json()) or {}
+                _ons1_live = [b for b in (_rd1.get('blocos') or [])
+                              if b.get('watts_medio', 0) > 0]
+
+                # Obter BP1/BP2 do resultado gravado
+                _bp1w = resultado.get('dia1_bp1_w') or resultado.get('dia2_bp1_w')
+                _bp2w = resultado.get('dia1_bp2_w') or resultado.get('dia2_bp2_w')
+                # Fallback: usar limiares_consenso se disponível
+                if not _bp1w or not _bp2w:
+                    _lim_r = api_moxy_limiares(moxy_id)
+                    _lim_r = (_lim_r[0].get_json() if isinstance(_lim_r, tuple)
+                              else _lim_r.get_json()) or {}
+                    _lc = (_lim_r.get('limiares_consenso') or {})
+                    _bp1w = (_lc.get('primeiro') or {}).get('mediana') or _bp1w
+                    _bp2w = (_lc.get('segundo') or {}).get('mediana') or _bp2w
+
+                def _mais_proximo(alvo, blocos):
+                    if alvo is None or not blocos:
+                        return None
+                    return min(blocos, key=lambda b: abs(
+                        (b.get('watts_medio') or 1e9) - alvo))
+
+                _b1_bp1 = _mais_proximo(_bp1w, _ons1_live)
+                _b1_bp2 = _mais_proximo(_bp2w, _ons1_live)
+
+                def _idx_live(bloco):
+                    if not bloco:
+                        return 0
+                    t0 = float(bloco.get('t0_s', 0))
+                    for i, b in enumerate(_ons1_live):
+                        if abs(float(b.get('t0_s', -999)) - t0) <= 0.5:
+                            return i
+                    return 0
+
+                _i_bp1 = _idx_live(_b1_bp1)
+                _i_bp2 = _idx_live(_b1_bp2)
+                _t0_b1 = float((_b1_bp1 or {}).get('t0_s', -1))
+                _t0_b2 = float((_b1_bp2 or {}).get('t0_s', -1))
+                _t0_base = float(_ons1_live[0]['t0_s']) if _ons1_live else -1
+
+                _rpe_d1_base = _res_rpe(moxy_id, _t0_base, 0,
+                                        _rpe_d1_leg_idx, _rpe_d1_leg_t0)
+                _rpe_d1_bp1  = _res_rpe(moxy_id, _t0_b1, _i_bp1,
+                                        _rpe_d1_leg_idx, _rpe_d1_leg_t0)
+                _rpe_d1_bp2  = _res_rpe(moxy_id, _t0_b2, _i_bp2,
+                                        _rpe_d1_leg_idx, _rpe_d1_leg_t0)
+
+                # Day2: obter WORKs do VST
+                _rd2 = api_moxy_vst_rpe_ver(vid)
+                _rd2 = (_rd2[0].get_json() if isinstance(_rd2, tuple)
+                        else _rd2.get_json()) or {}
+                _work_d2 = _rd2.get('blocos') or []
+
+                # Separar por grupo bp1/bp2
+                _rpe_d2_bp1 = [b['rpe'] for b in _work_d2 if b.get('grupo') == 'bp1']
+                _rpe_d2_bp2 = [b['rpe'] for b in _work_d2 if b.get('grupo') == 'bp2']
+
+                _comp_bp1 = _vst_live.comparar_rpe(_rpe_d1_base, _rpe_d1_bp1, _rpe_d2_bp1)
+                _comp_bp2 = _vst_live.comparar_rpe(_rpe_d1_base, _rpe_d1_bp2, _rpe_d2_bp2)
+
+                # Só sobrescrever se o recálculo produziu resultado real
+                if _comp_bp1.get('status') != 'DADOS INSUFICIENTES':
+                    resultado['comparacao_rpe_bp1'] = _comp_bp1
+                if _comp_bp2.get('status') != 'DADOS INSUFICIENTES':
+                    resultado['comparacao_rpe_bp2'] = _comp_bp2
+
+                print(f'[vst_resultado][RPE live] bp1={_comp_bp1.get("status")} '
+                      f'bp2={_comp_bp2.get("status")} '
+                      f'd1_base={_rpe_d1_base} d1_bp1={_rpe_d1_bp1} '
+                      f'd2_bp1={_rpe_d2_bp1} d2_bp2={_rpe_d2_bp2}')
+            except Exception as _e_rpe:
+                import traceback as _tb_rpe
+                print(f'[vst_resultado][RPE live] AVISO: {_e_rpe}\n{_tb_rpe.format_exc()}')
+                # Não sobrescrever: manter o que está no cache
+
             return jsonify(resultado)
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

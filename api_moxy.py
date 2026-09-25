@@ -207,6 +207,113 @@ def _zona(watts, bp1_w, bp2_w):
     return 'Z3'
 
 
+def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
+                   comp_recovery_bp1, comp_recovery_bp2,
+                   limiter_bp1, limiter_bp2,
+                   hipotese_bp1, hipotese_bp2):
+    """Persiste o resultado de uma verificação VST em vst_conjuntos.
+
+    Chamada por /api/moxy/vst/comparar  (melhor esforço, em try/except pass)
+    e por /api/moxy/vst/gravar_analise  (explícito, com feedback de erro).
+
+    Retorna (ok: bool, detalhe: str|None).
+    Não faz upload() — responsabilidade do chamador.
+    """
+    try:
+        pot1 = (comp_bp1 or {}).get('potencia') or {}
+        pot2 = (comp_bp2 or {}).get('potencia') or {}
+        agora = datetime.now().isoformat(timespec='seconds')
+        cn.execute(
+            "INSERT OR IGNORE INTO vst_conjuntos "
+            "(vst_activity_id, moxy_activity_id, criado_em, actualizado_em) "
+            "VALUES (?,?,?,?)",
+            (vid, mid, agora, agora))
+        cn.execute(
+            "UPDATE vst_conjuntos SET bp1_status=?, bp2_status=?, "
+            "recovery_bp1_status=?, recovery_bp2_status=?, "
+            "dia1_bp1_w=?, dia2_bp1_w=?, dia1_bp2_w=?, dia2_bp2_w=?, "
+            "resultado_json=?, analisado_em=?, actualizado_em=? "
+            "WHERE vst_activity_id=?",
+            ((comp_bp1 or {}).get('status'), (comp_bp2 or {}).get('status'),
+             (comp_recovery_bp1 or {}).get('status'),
+             (comp_recovery_bp2 or {}).get('status'),
+             pot1.get('dia1_w'), pot1.get('dia2_w'),
+             pot2.get('dia1_w'), pot2.get('dia2_w'),
+             json.dumps({
+                 'comparacao_bp1': comp_bp1,
+                 'comparacao_bp2': comp_bp2,
+                 'comparacao_recovery_bp1': comp_recovery_bp1,
+                 'comparacao_recovery_bp2': comp_recovery_bp2,
+                 'limiter_bp1': limiter_bp1,
+                 'limiter_bp2': limiter_bp2,
+                 'hipotese_bp1': hipotese_bp1,
+                 'hipotese_bp2': hipotese_bp2,
+             }, ensure_ascii=False),
+             agora, agora, vid))
+        cn.commit()
+        return True, None
+    except Exception as e:
+        return False, f'{type(e).__name__}: {e}'
+
+
+def _rpe_interval_resolver(cn, activity_id, start_time):
+    """Resolve o RPE para um intervalo específico.
+
+    Ordem de prioridade:
+      1. activity_interval_rpe (nova fonte)
+         rpe=0  → apagado explicitamente; retorna (None, 'deleted')
+         rpe=1..10 → retorna (rpe, 'new')
+      2. moxy_rpe (legado) — só quando não há linha nova
+         retorna (rpe, 'legacy') ou (None, 'absent')
+    """
+    import drive_db_perfil as ddp
+    row = cn.execute(
+        "SELECT rpe FROM activity_interval_rpe "
+        "WHERE activity_id=? AND start_time=?",
+        (str(activity_id), float(start_time))).fetchone()
+    if row is not None:
+        rpe_val = row[0]
+        if rpe_val == 0:
+            return None, 'deleted'
+        return rpe_val, 'new'
+    return None, 'absent'   # chamador faz fallback para moxy_rpe
+
+
+def _rpe_interval_upsert(cn, activity_id, intervals):
+    """UPSERT de uma lista de intervalos em activity_interval_rpe.
+
+    Cada item da lista deve ter: start_time, rpe (0..10).
+    Campos opcionais: interval_type, elapsed_time.
+    Retorna número de linhas afectadas.
+    """
+    agora = datetime.now().isoformat(timespec='seconds')
+    n = 0
+    for iv in (intervals or []):
+        st = iv.get('start_time')
+        rpe = iv.get('rpe')
+        if st is None or rpe is None:
+            continue
+        rpe = int(rpe)
+        if not (0 <= rpe <= 10):
+            raise ValueError(f'rpe inválido: {rpe!r} — tem de ser 0 a 10')
+        cn.execute(
+            "INSERT INTO activity_interval_rpe "
+            "(activity_id, start_time, interval_type, elapsed_time, "
+            " rpe, source, updated_at) "
+            "VALUES (?,?,?,?,?,'manual',?) "
+            "ON CONFLICT(activity_id, start_time) DO UPDATE SET "
+            "  interval_type=excluded.interval_type, "
+            "  elapsed_time=excluded.elapsed_time, "
+            "  rpe=excluded.rpe, "
+            "  source=excluded.source, "
+            "  updated_at=excluded.updated_at",
+            (str(activity_id), float(st),
+             iv.get('interval_type'), iv.get('elapsed_time'),
+             rpe, agora))
+        n += 1
+    return n
+
+
 def registar(app):
 
     @app.route('/api/moxy/limitador/<modalidade>')
@@ -2185,9 +2292,12 @@ def registar(app):
         None. O frontend decide, por bloco, se mostra a caixa de escrever
         ou o botão de "re-gravar".
 
-        A tabela moxy_rpe vive na MESMA base que moxy_analises
-        (drive_db_perfil), não na base de 'db' (que é só a cópia local
-        das actividades da Intervals.icu) — são duas bases diferentes.
+        Resolução de RPE (nova arquitectura):
+          1. activity_interval_rpe por (activity_id, start_time=bloco.t0)
+             rpe=0  → campo vazio, sem fallback (apagado explicitamente)
+             rpe=1..10 → valor real
+          2. moxy_rpe por bloco_indice (legado) — só quando sem linha nova
+          3. sem nenhum → None
         """
         try:
             aid = str(activity_id).strip().strip('/').split('/')[-1]
@@ -2200,19 +2310,26 @@ def registar(app):
 
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
+            # Fallback legado
             linhas = cn.execute(
                 "SELECT bloco_indice, rpe FROM moxy_rpe "
                 "WHERE activity_id=?", (aid,)).fetchall()
-            rpe_por_indice = {int(r[0]): r[1] for r in linhas}
+            rpe_legacy = {int(r[0]): r[1] for r in linhas}
 
             fora = []
             for i, b in enumerate(trabalho):
+                t0 = float(b['t0'])
+                rpe_val, rpe_fonte = _rpe_interval_resolver(cn, aid, t0)
+                if rpe_fonte == 'absent':
+                    rpe_val = rpe_legacy.get(i)
+                    rpe_fonte = 'legacy' if rpe_val is not None else 'absent'
                 fora.append({
                     'bloco_indice': i,
                     'watts_medio': round(b['watts_medio']),
-                    't0_s': round(b['t0']), 't1_s': round(b['t1']),
-                    'duracao_s': round(b['t1'] - b['t0']),
-                    'rpe': rpe_por_indice.get(i),
+                    't0_s': round(t0), 't1_s': round(b['t1']),
+                    'duracao_s': round(b['t1'] - t0),
+                    'rpe': rpe_val,
+                    'rpe_fonte': rpe_fonte,
                 })
             return jsonify({
                 'status': 'ok', 'activity_id': aid,
@@ -2262,13 +2379,24 @@ def registar(app):
 
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
-            rpe_map = {int(r[0]): r[1] for r in cn.execute(
+            # Mapa legado de fallback (moxy_rpe) — usado apenas quando
+            # não existe registo em activity_interval_rpe para aquele bloco.
+            rpe_map_legacy = {int(r[0]): r[1] for r in cn.execute(
                 "SELECT bloco_indice, rpe FROM moxy_rpe "
                 "WHERE activity_id=?", (aid,)).fetchall()}
 
             fora = []
             for i, b in enumerate(ons):
                 t0, t1 = float(b['t0']), float(b['t1'])
+                # Resolução de RPE:
+                # 1. activity_interval_rpe por (activity_id, start_time)
+                # 2. se ausente → moxy_rpe pelo índice (legado)
+                # 3. rpe=0 em activity_interval_rpe → campo vazio, sem fallback
+                rpe_val, rpe_fonte = _rpe_interval_resolver(cn, aid, t0)
+                if rpe_fonte == 'absent':
+                    # sem linha nova → tentar legado
+                    rpe_val = rpe_map_legacy.get(i)
+                    rpe_fonte = 'legacy' if rpe_val is not None else 'absent'
                 fora.append({
                     'bloco_indice': i,
                     'degrau': i + 1,
@@ -2276,7 +2404,8 @@ def registar(app):
                                          or b.get('watts_medio') or 0),
                     't0_s': round(t0), 't1_s': round(t1),
                     'duracao_s': round(t1 - t0),
-                    'rpe': rpe_map.get(i),
+                    'rpe': rpe_val,
+                    'rpe_fonte': rpe_fonte,   # 'new'|'deleted'|'legacy'|'absent'
                     'hr_medio': _media('heartrate', t0, t1),
                     'rf_medio': _media('respiration', t0, t1),
                     'smo2_medio': _media('smo2', t0, t1),
@@ -2530,6 +2659,157 @@ def registar(app):
                 ),
             })
 
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    # ── activity_interval_rpe: GET ────────────────────────────────────────
+    @app.route('/api/activity/<path:activity_id>/interval_rpe')
+    def api_activity_interval_rpe_ler(activity_id):
+        """Devolve todas as anotações de RPE por intervalo de uma actividade.
+
+        Inclui registos com rpe=0 (apagados explicitamente) — o frontend
+        usa isso para saber que existe uma exclusão e não deve fazer
+        fallback para moxy_rpe.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            rows = cn.execute(
+                "SELECT start_time, interval_type, elapsed_time, rpe, source, updated_at "
+                "FROM activity_interval_rpe WHERE activity_id=? "
+                "ORDER BY start_time",
+                (aid,)).fetchall()
+            intervals = [
+                {'start_time': r[0], 'interval_type': r[1],
+                 'elapsed_time': r[2], 'rpe': r[3],
+                 'source': r[4], 'updated_at': r[5]}
+                for r in rows
+            ]
+            return jsonify({'status': 'ok', 'activity_id': aid,
+                            'intervals': intervals, 'n': len(intervals)})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    # ── activity_interval_rpe: POST (UPSERT) ─────────────────────────────
+    @app.route('/api/activity/<path:activity_id>/interval_rpe', methods=['POST'])
+    def api_activity_interval_rpe_gravar(activity_id):
+        """Grava (UPSERT) anotações de RPE por intervalo.
+
+        Corpo: {"intervals": [{"start_time": 901, "rpe": 6,
+                               "interval_type": "WORK",
+                               "elapsed_time": 360}, ...]}
+
+        rpe=0   → marca como apagado explicitamente (impede fallback legado)
+        rpe=1..10 → valor real
+        Não aceitar valores fora de 0..10.
+        Chave de identidade: (activity_id, start_time)
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            if not aid:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'activity_id em falta'}), 400
+            corpo = request.get_json(force=True, silent=True) or {}
+            intervals = corpo.get('intervals') or []
+            if not intervals:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'corpo sem intervalos'}), 400
+            # Validar
+            for iv in intervals:
+                st = iv.get('start_time')
+                rpe = iv.get('rpe')
+                if st is None:
+                    return jsonify({'status': 'erro',
+                                    'mensagem': 'start_time obrigatório'}), 400
+                if rpe is None or not isinstance(rpe, (int, float)):
+                    return jsonify({'status': 'erro',
+                                    'mensagem': f'rpe inválido: {rpe!r}'}), 400
+                if not (0 <= int(rpe) <= 10):
+                    return jsonify({'status': 'erro',
+                                    'mensagem': f'rpe {rpe} fora do intervalo 0..10'}), 400
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            n = _rpe_interval_upsert(cn, aid, intervals)
+            cn.commit()
+            ok_up, det_up = ddp.upload()
+            return jsonify({
+                'status': 'ok' if ok_up else 'gravado_sem_upload',
+                'activity_id': aid,
+                'n_gravados': n,
+                'upload_ok': ok_up,
+                'upload_detalhe': None if ok_up else det_up,
+            })
+        except ValueError as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e)}), 400
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    # ── gravar_analise: persiste explicitamente uma análise VST ──────────
+    @app.route('/api/moxy/vst/gravar_analise', methods=['POST'])
+    def api_moxy_vst_gravar_analise():
+        """Persiste explicitamente o resultado de uma análise VST.
+
+        Usa _vst_persistir() — a mesma função que /vst/comparar usa
+        internamente. Não duplica a lógica de persistência.
+
+        Difere de /vst/comparar em dois aspectos:
+          1. Não recalcula nada — usa o resultado_json já calculado pelo
+             frontend (passado no corpo).
+          2. Informa claramente se a persistência ou o upload falharam;
+             não usa try/except pass.
+
+        Corpo: {
+          "vst_activity_id": "...",
+          "moxy_activity_id": "...",
+          "resultado_json": { ... }   (output de /vst/comparar)
+        }
+        """
+        try:
+            corpo = request.get_json(force=True, silent=True) or {}
+            vid = str(corpo.get('vst_activity_id') or '').strip()
+            mid = str(corpo.get('moxy_activity_id') or '').strip()
+            rjson = corpo.get('resultado_json') or {}
+            if not vid:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'vst_activity_id obrigatório'}), 400
+            if not mid:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'moxy_activity_id obrigatório'}), 400
+            if not rjson:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'resultado_json obrigatório'}), 400
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+
+            # Extrair campos do resultado_json (mesmo formato de /vst/comparar)
+            ok, det = _vst_persistir(
+                cn, vid, mid,
+                rjson.get('comparacao_bp1') or {},
+                rjson.get('comparacao_bp2') or {},
+                rjson.get('comparacao_recovery_bp1') or {},
+                rjson.get('comparacao_recovery_bp2') or {},
+                rjson.get('limiter_bp1'),
+                rjson.get('limiter_bp2'),
+                rjson.get('hipotese_bp1'),
+                rjson.get('hipotese_bp2'),
+            )
+            if not ok:
+                return jsonify({'status': 'erro',
+                                'mensagem': f'falha na persistência: {det}'}), 500
+
+            ok_up, det_up = ddp.upload()
+            return jsonify({
+                'status': 'ok' if ok_up else 'gravado_sem_upload',
+                'vst_activity_id': vid,
+                'moxy_activity_id': mid,
+                'upload_ok': ok_up,
+                'upload_detalhe': None if ok_up else det_up,
+            })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
@@ -3514,37 +3794,15 @@ def registar(app):
             # snapshot do resultado -- so' os campos ja' calculados
             # acima, nada recalculado; falha aqui nao deve derrubar a
             # resposta (melhor esforco, como o resto da persistencia
-            # deste projecto)
+            # deste projecto). _vst_persistir é partilhada com
+            # /api/moxy/vst/gravar_analise para não duplicar lógica.
             try:
-                pot1 = comp_bp1.get('potencia') or {}
-                pot2 = comp_bp2.get('potencia') or {}
-                agora = datetime.now().isoformat(timespec='seconds')
-                # Garantir que a linha existe antes do UPDATE —
-                # cobre o caso em que o utilizador abre uma verificação
-                # guardada sem ter passado pelo botão Sincronizar, ou
-                # volta à aba após o container restartar.
-                cn.execute(
-                    "INSERT OR IGNORE INTO vst_conjuntos "
-                    "(vst_activity_id, moxy_activity_id, criado_em, actualizado_em) "
-                    "VALUES (?,?,?,?)",
-                    (vid, mid, agora, agora))
-                cn.execute(
-                    "UPDATE vst_conjuntos SET bp1_status=?, bp2_status=?, "
-                    "recovery_bp1_status=?, recovery_bp2_status=?, "
-                    "dia1_bp1_w=?, dia2_bp1_w=?, dia1_bp2_w=?, dia2_bp2_w=?, "
-                    "resultado_json=?, analisado_em=?, actualizado_em=? WHERE vst_activity_id=?",
-                    (comp_bp1.get('status'), comp_bp2.get('status'),
-                     comp_recovery_bp1.get('status'), comp_recovery_bp2.get('status'),
-                     pot1.get('dia1_w'), pot1.get('dia2_w'),
-                     pot2.get('dia1_w'), pot2.get('dia2_w'),
-                     json.dumps({'comparacao_bp1': comp_bp1, 'comparacao_bp2': comp_bp2,
-                                'comparacao_recovery_bp1': comp_recovery_bp1,
-                                'comparacao_recovery_bp2': comp_recovery_bp2,
-                                'limiter_bp1': limiter_bp1, 'limiter_bp2': limiter_bp2,
-                                'hipotese_bp1': hipotese_bp1, 'hipotese_bp2': hipotese_bp2},
-                               ensure_ascii=False),
-                     agora, agora, vid))
-                cn.commit()
+                _vst_persistir(
+                    cn, vid, mid,
+                    comp_bp1, comp_bp2,
+                    comp_recovery_bp1, comp_recovery_bp2,
+                    limiter_bp1, limiter_bp2,
+                    hipotese_bp1, hipotese_bp2)
                 ddp.upload()
             except Exception:
                 pass

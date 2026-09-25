@@ -240,7 +240,20 @@ def mapear_achados(contexto: dict) -> dict:
                         'nota': f'padrão VST: {padrao}',
                     })
                 elif padrao not in ('EVIDÊNCIA INSUFICIENTE', None):
-                    # Padrão None/multissistêmico/dissociado — registar mas sem chave
+                    # Padrão sem chave única (multissistêmico, dissociado, misto):
+                    # preservar o achado original com nota — não inventar chave.
+                    achados.append({
+                        'fonte': 'vst',
+                        'limitador': None,
+                        'limitador_chave': None,
+                        'mecanismo': None,
+                        'plausibilidade': 'insuficiente',
+                        'nota': (
+                            f'padrão VST "{padrao}" não possui mapeamento '
+                            'canónico único — achado preservado sem chave; '
+                            'não gera regras candidatas'
+                        ),
+                    })
                     dados_ausentes.append(
                         f'vst: padrão "{padrao}" sem chave canónica única'
                     )
@@ -450,9 +463,11 @@ def filtrar_tabela(
                 })
                 continue
 
-        # Para limitação respiratória: só incluir regras de subtipo específico
-        # se o subtipo estiver nos achados. Subtipo None → excluir RD/RM/CO2
-        # como 'principal'; só manter como 'possível' se não exigir subtipo.
+        # Para limitação respiratória: qualquer regra de subtipo específico
+        # (RD, RM, CO2) só pode entrar se o subtipo estiver explicitamente
+        # presente em achados_mapeados.mecanismo.
+        # Subtipo None → excluir a regra com motivo explícito.
+        # NÃO demover para 'possível' — excluir completamente.
         if chave_regra == 'respiratorio':
             subtipo_achado = next(
                 (a.get('mecanismo') for a in achados_mapeados
@@ -461,10 +476,16 @@ def filtrar_tabela(
                 None
             )
             if subtipo_achado is None:
-                # Subtipo não determinado — demover principal → possível
-                # (nunca excluir completamente — declara no resultado)
-                if relevance == 'principal':
-                    relevance = 'possível'
+                excluidas.append({
+                    'rule_id': rule_id,
+                    'motivo': (
+                        'subtipo respiratório não determinado — '
+                        'nenhuma fonte disponível identificou explicitamente '
+                        'RD, RM ou CO2; limitação respiratória genérica não é '
+                        'suficiente para activar esta regra'
+                    ),
+                })
+                continue
 
         # Regra passou — adicionar com relevance efectivo
         entrada = dict(regra)

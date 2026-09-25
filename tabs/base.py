@@ -108,6 +108,7 @@ TABS = [
     ('cp',         '/cp-model',    'CP Model'),
     ('recordes',   '/recordes',    'Recordes'),
     ('atividades', '/atividades',  'Atividades'),
+    ('training',   '/training',    'Training'),
 ]
 
 

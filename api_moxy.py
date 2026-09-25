@@ -210,7 +210,8 @@ def _zona(watts, bp1_w, bp2_w):
 def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
                    comp_recovery_bp1, comp_recovery_bp2,
                    limiter_bp1, limiter_bp2,
-                   hipotese_bp1, hipotese_bp2):
+                   hipotese_bp1, hipotese_bp2,
+                   rede_causal_d1=None):
     """Persiste o resultado de uma verificação VST em vst_conjuntos.
 
     Chamada por /api/moxy/vst/comparar  (melhor esforço, em try/except pass)
@@ -239,7 +240,7 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
              (comp_recovery_bp2 or {}).get('status'),
              pot1.get('dia1_w'), pot1.get('dia2_w'),
              pot2.get('dia1_w'), pot2.get('dia2_w'),
-             json.dumps({
+             json.dumps({**{
                  'comparacao_bp1': comp_bp1,
                  'comparacao_bp2': comp_bp2,
                  'comparacao_recovery_bp1': comp_recovery_bp1,
@@ -248,7 +249,8 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
                  'limiter_bp2': limiter_bp2,
                  'hipotese_bp1': hipotese_bp1,
                  'hipotese_bp2': hipotese_bp2,
-             }, ensure_ascii=False),
+             }, **({'rede_causal': rede_causal_d1} if rede_causal_d1 is not None else {})},
+             ensure_ascii=False),
              agora, agora, vid))
         cn.commit()
         return True, None
@@ -3729,69 +3731,130 @@ def registar(app):
                 dia2_recuperacoes_1min=recs_bp2_1min)
 
             # RPE -- evidencia perceptiva complementar.
-            # Nova arquitectura: activity_interval_rpe (start_time) primeiro,
+            # Resolução defensiva: activity_interval_rpe (start_time) primeiro,
             # fallback moxy_rpe (bloco_indice) se não houver linha nova.
-            # rpe=0 em activity_interval_rpe = apagado explicitamente, sem fallback.
-            # Dia1: usa o MESMO bloco (b1_bp1/b1_bp2) ja escolhido para a
-            # fisiologia — não um novo emparelhamento.
-            # Dia2: os RPEs dos WORKs de cada BP, na mesma ordem do VST.
+            # rpe=0 = apagado explicitamente, sem fallback para moxy_rpe.
+            # Erro de código ≠ DADOS INSUFICIENTES — exceptions propagam com log.
+            # ── Legado Day1 e Day2 (fallback) ────────────────────────────────
+            rpe_d1_legacy = {}
+            rpe_d2_legacy = {}
             try:
-                # ── Legado Day1 e Day2 (fallback) ──────────────────────────
                 rpe_rows_d1 = cn.execute(
-                    "SELECT bloco_indice, rpe FROM moxy_rpe WHERE activity_id=? "
-                    "ORDER BY bloco_indice", (mid,)).fetchall()
-                rpe_d1_legacy = {int(r[0]): r[1] for r in rpe_rows_d1}
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? ORDER BY bloco_indice", (mid,)).fetchall()
+                rpe_d1_legacy_idx = {int(r[0]): r[2] for r in rpe_rows_d1}
+                # índice → (t0_s, rpe) para fallback por proximidade de t0
+                rpe_d1_legacy_t0  = {(r[1] or -1): r[2] for r in rpe_rows_d1 if r[1] is not None}
+                rpe_d1_legacy = rpe_d1_legacy_idx   # fallback principal por índice
 
                 rpe_rows_d2 = cn.execute(
-                    "SELECT bloco_indice, rpe FROM moxy_rpe WHERE activity_id=? "
-                    "ORDER BY bloco_indice", (vid,)).fetchall()
-                rpe_d2_legacy = {int(r[0]): r[1] for r in rpe_rows_d2}
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? ORDER BY bloco_indice", (vid,)).fetchall()
+                rpe_d2_legacy_idx = {int(r[0]): r[2] for r in rpe_rows_d2}
+                rpe_d2_legacy_t0  = {(r[1] or -1): r[2] for r in rpe_rows_d2 if r[1] is not None}
+                rpe_d2_legacy = rpe_d2_legacy_idx
+            except Exception as _e_leg:
+                import traceback as _tb
+                print(f'[vst_comparar] AVISO legado moxy_rpe: {_e_leg}\n{_tb.format_exc()}')
 
-                # ── Day1: resolver RPE do bloco escolhido ───────────────────
-                def _rpe_d1_no_bloco(bloco_alvo):
-                    if not bloco_alvo or bloco_alvo not in ons1:
-                        return None
-                    t0 = float(bloco_alvo['t0'])
-                    val, fonte = _rpe_interval_resolver(cn, mid, t0)
-                    if fonte == 'absent':
-                        idx = ons1.index(bloco_alvo)
-                        val = rpe_d1_legacy.get(idx)
-                    return val  # None se 'deleted' ou realmente ausente
+            def _resolver_rpe_bloco(activity_id, t0_val, idx_fallback, legacy_idx, legacy_t0):
+                """Resolve RPE para um bloco por (activity_id, start_time).
 
-                rpe_d1_base_val, rpe_d1_base_fonte = _rpe_interval_resolver(
-                    cn, mid, float(ons1[0]['t0']) if ons1 else -1)
-                if rpe_d1_base_fonte == 'absent':
-                    rpe_d1_base = rpe_d1_legacy.get(0)
-                else:
-                    rpe_d1_base = rpe_d1_base_val  # None se 'deleted'
+                1. activity_interval_rpe por start_time exacto
+                2. moxy_rpe pelo t0_s gravado (tolerância ≤1 s para rounding)
+                3. moxy_rpe pelo bloco_indice (fallback posicional legado)
+                4. None
 
-                # ── Day2: resolver RPE de cada WORK de BP1 e BP2 ───────────
-                # Blocos Day2 (VST) ordenados: bp1 primeiro, depois bp2
-                trabalho_d2 = []
-                for grp in ('bp1', 'bp2'):
-                    for bk in ((dia2.get(grp) or {}).get('blocos') or []):
-                        trabalho_d2.append(bk)
+                rpe=0 em activity_interval_rpe = apagado; não fazer fallback.
+                Erro de código propaga — não se converte em None silencioso.
+                """
+                # 1. activity_interval_rpe por start_time
+                val, fonte = _rpe_interval_resolver(cn, activity_id, t0_val)
+                if fonte in ('new', 'deleted'):
+                    return val, fonte  # None se deleted (sem fallback)
 
-                rpe_d2_all = []
-                for i, bk in enumerate(trabalho_d2):
-                    t0 = float(bk['t0'])
-                    val, fonte = _rpe_interval_resolver(cn, vid, t0)
-                    if fonte == 'absent':
-                        val = rpe_d2_legacy.get(i)
-                    rpe_d2_all.append(val)  # None se 'deleted' ou ausente
+                # 2. moxy_rpe por t0_s (mesmo valor gravado, tolerância 1s)
+                for t0_leg, rpe_leg in (legacy_t0 or {}).items():
+                    if abs(t0_leg - t0_val) <= 1:
+                        return rpe_leg, 'legacy_t0'
 
-                n_bp1_works = len((dia2.get('bp1') or {}).get('blocos') or [])
-                n_bp2_works = len((dia2.get('bp2') or {}).get('blocos') or [])
-                rpe_d2_bp1 = rpe_d2_all[:n_bp1_works]
-                rpe_d2_bp2 = rpe_d2_all[n_bp1_works:n_bp1_works + n_bp2_works]
+                # 3. moxy_rpe por índice posicional
+                rpe_idx = (legacy_idx or {}).get(idx_fallback)
+                if rpe_idx is not None:
+                    return rpe_idx, 'legacy_idx'
 
-                comp_rpe_bp1 = vst.comparar_rpe(
-                    rpe_d1_base, _rpe_d1_no_bloco(b1_bp1), rpe_d2_bp1)
-                comp_rpe_bp2 = vst.comparar_rpe(
-                    rpe_d1_base, _rpe_d1_no_bloco(b1_bp2), rpe_d2_bp2)
-            except Exception:
-                comp_rpe_bp1 = {'status': 'DADOS INSUFICIENTES', 'motivo': 'erro a ler RPE'}
-                comp_rpe_bp2 = {'status': 'DADOS INSUFICIENTES', 'motivo': 'erro a ler RPE'}
+                return None, 'absent'
+
+            # ── Day1: RPE base (bloco 0 de ons1) e RPE alvo (b1_bp1 / b1_bp2) ──
+            # Resolução defensiva: usa t0 do bloco, não identidade do objecto.
+            _d1_rpe_log = {'mid': mid, 'vid': vid}
+            rpe_d1_base = None
+            if ons1:
+                _b0_t0 = float(ons1[0].get('t0', -1))
+                rpe_d1_base, _src = _resolver_rpe_bloco(mid, _b0_t0, 0,
+                                                         rpe_d1_legacy_idx,
+                                                         rpe_d1_legacy_t0)
+                _d1_rpe_log['base'] = {'t0': _b0_t0, 'rpe': rpe_d1_base, 'fonte': _src}
+
+            def _rpe_d1_de_bloco(bloco_alvo, idx_em_ons1):
+                """RPE de um bloco Day1 pelo t0 e índice (defensivo)."""
+                if not bloco_alvo:
+                    return None, 'absent'
+                t0 = float(bloco_alvo.get('t0', -1))
+                return _resolver_rpe_bloco(mid, t0, idx_em_ons1,
+                                           rpe_d1_legacy_idx, rpe_d1_legacy_t0)
+
+            # índice de b1_bp1 e b1_bp2 em ons1 (por comparação de t0, não identidade)
+            def _idx_em_ons1(bloco):
+                if not bloco:
+                    return 0
+                t0 = float(bloco.get('t0', -1))
+                for i, b in enumerate(ons1):
+                    if abs(float(b.get('t0', -999)) - t0) <= 0.5:
+                        return i
+                return 0
+
+            _i_bp1 = _idx_em_ons1(b1_bp1)
+            _i_bp2 = _idx_em_ons1(b1_bp2)
+            rpe_d1_alvo_bp1, _src_bp1 = _rpe_d1_de_bloco(b1_bp1, _i_bp1)
+            rpe_d1_alvo_bp2, _src_bp2 = _rpe_d1_de_bloco(b1_bp2, _i_bp2)
+            _d1_rpe_log.update({
+                'alvo_bp1': {'t0': float((b1_bp1 or {}).get('t0', -1)),
+                             'rpe': rpe_d1_alvo_bp1, 'fonte': _src_bp1},
+                'alvo_bp2': {'t0': float((b1_bp2 or {}).get('t0', -1)),
+                             'rpe': rpe_d1_alvo_bp2, 'fonte': _src_bp2},
+            })
+            print(f'[vst_comparar][RPE Day1] {_d1_rpe_log}')
+
+            # ── Day2: RPE de cada WORK de BP1 e BP2 ────────────────────────────
+            # Sem correspondência 1:1 com Day1. Cada bloco independente.
+            n_bp1_works = len((dia2.get('bp1') or {}).get('blocos') or [])
+            n_bp2_works = len((dia2.get('bp2') or {}).get('blocos') or [])
+            trabalho_d2 = []
+            for grp in ('bp1', 'bp2'):
+                for bk in ((dia2.get(grp) or {}).get('blocos') or []):
+                    trabalho_d2.append(bk)
+
+            rpe_d2_all = []
+            _d2_rpe_log = []
+            for i, bk in enumerate(trabalho_d2):
+                t0 = float(bk.get('t0', -1))
+                val, fonte = _resolver_rpe_bloco(vid, t0, i,
+                                                  rpe_d2_legacy_idx,
+                                                  rpe_d2_legacy_t0)
+                rpe_d2_all.append(val)
+                _d2_rpe_log.append({'i': i, 't0': t0, 'rpe': val, 'fonte': fonte})
+            print(f'[vst_comparar][RPE Day2] n_bp1={n_bp1_works} n_bp2={n_bp2_works} '
+                  f'blocos={_d2_rpe_log}')
+
+            rpe_d2_bp1 = rpe_d2_all[:n_bp1_works]
+            rpe_d2_bp2 = rpe_d2_all[n_bp1_works:n_bp1_works + n_bp2_works]
+
+            # comparar_rpe: erro de código propaga — não é mascarado como DADOS INSUFICIENTES
+            comp_rpe_bp1 = vst.comparar_rpe(rpe_d1_base, rpe_d1_alvo_bp1, rpe_d2_bp1)
+            comp_rpe_bp2 = vst.comparar_rpe(rpe_d1_base, rpe_d1_alvo_bp2, rpe_d2_bp2)
+            print(f'[vst_comparar][RPE comp] BP1={comp_rpe_bp1.get("status")} '
+                  f'BP2={comp_rpe_bp2.get("status")}')
 
             # LIMITER / PADRAO FISIOLOGICO -- camada de integracao pura,
             # so' LE resultados ja' calculados: divergencia/convergencia/
@@ -3831,6 +3894,40 @@ def registar(app):
                 limiter_sintese = None
                 hipotese_bp1 = hipotese_bp2 = None
 
+            # ── Rede Causal Day1 (MOXY) ─────────────────────────────────────
+            # Reutiliza api_moxy_rede() existente — a mesma função da aba
+            # Rede Causal. Não cria nova análise.
+            # Inclusa aqui para que a Verificação nunca fique sem limitador
+            # só porque o utilizador não abriu a aba Rede Causal primeiro.
+            rede_causal_d1 = None
+            try:
+                _rd = api_moxy_rede(mid)
+                _rd = _rd[0].get_json() if isinstance(_rd, tuple) else _rd.get_json()
+                if _rd and _rd.get('status') == 'ok':
+                    rede_causal_d1 = {
+                        'status': 'ok',
+                        'limitador': _rd.get('limitador'),
+                        'canais_usados': _rd.get('canais_usados'),
+                        'motivo_ausencia': None,
+                    }
+                    print(f'[vst_comparar][Rede] sistema='
+                          f'{(_rd.get("limitador") or {}).get("sistema")} '
+                          f'pct={((_rd.get("limitador") or {}).get("pct") or "?")}')
+                else:
+                    rede_causal_d1 = {
+                        'status': 'sem_dados',
+                        'limitador': None,
+                        'motivo_ausencia': (_rd or {}).get('mensagem') or 'sem dados suficientes',
+                    }
+            except Exception as _e_rede:
+                import traceback as _tb_r
+                print(f'[vst_comparar][Rede] AVISO: {_e_rede}\n{_tb_r.format_exc()}')
+                rede_causal_d1 = {
+                    'status': 'erro',
+                    'limitador': None,
+                    'motivo_ausencia': f'{type(_e_rede).__name__}: {_e_rede}',
+                }
+
             # snapshot do resultado -- so' os campos ja' calculados
             # acima, nada recalculado; falha aqui nao deve derrubar a
             # resposta (melhor esforco, como o resto da persistencia
@@ -3842,7 +3939,8 @@ def registar(app):
                     comp_bp1, comp_bp2,
                     comp_recovery_bp1, comp_recovery_bp2,
                     limiter_bp1, limiter_bp2,
-                    hipotese_bp1, hipotese_bp2)
+                    hipotese_bp1, hipotese_bp2,
+                    rede_causal_d1=rede_causal_d1)
                 ddp.upload()
             except Exception:
                 pass
@@ -3858,6 +3956,7 @@ def registar(app):
                 'limiter_sintese': limiter_sintese,
                 'hipotese_bp1': hipotese_bp1, 'hipotese_bp2': hipotese_bp2,
                 'recuperacao_final_dia2': dia2.get('recuperacao_final'),
+                'rede_causal': rede_causal_d1,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

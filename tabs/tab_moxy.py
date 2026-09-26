@@ -581,6 +581,17 @@ BODY = """
         </div>
       </details>
 
+      <!-- Botão de gravar análise + badge de download DB -->
+      <div id="mxVstGravarBtnArea" style="margin:10px 0 4px;display:none;">
+        <button onclick="mxVstGravarAnalise()"
+          style="padding:6px 16px;background:#1c2331;border:1px solid #3FB950;
+          color:#3FB950;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
+          💾 Gravar análise VST
+        </button>
+        <span id="mxVstGravarStatus" style="font-size:11px;color:#8b949e;margin-left:10px;"></span>
+      </div>
+      <div id="mxVstDbBadge" style="margin-bottom:8px;"></div>
+
       <details style="margin-top:6px;margin-left:8px;">
         <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Detalhes da comparação</summary>
         <div id="mxVstCartoes" style="margin-top:10px;"></div>
@@ -1970,7 +1981,10 @@ function mxVstCarregarConjuntosSalvos(){
     +((c.recovery_bp1_status||c.recovery_bp2_status)?'Recovery <span style="color:'+_vstCorGeral(c.recovery_bp1_status||c.recovery_bp2_status)+';">'
       +(c.recovery_bp1_status||c.recovery_bp2_status)+'</span>':'')
     +'</div>'
-    +'<button style="margin-top:6px;font-size:11px;" onclick="mxVstAbrirVerificacao('+ix+')">ABRIR VERIFICAÇÃO</button>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
+    +'<button style="font-size:11px;" onclick="mxVstAbrirVerificacao('+ix+')">ABRIR</button>'
+    +'<button style="font-size:11px;background:#1c2331;border:1px solid #3FB950;color:#3FB950;border-radius:4px;padding:2px 8px;cursor:pointer;" onclick="mxVstGravarVerificacaoSalva('+ix+')">💾 GRAVAR</button>'
+    +'</div>'
     +'</div>';
   }).join('') + '</div>';
  }).catch(function(e){
@@ -2298,6 +2312,9 @@ function _mxVstRenderComparacao(d, vstId){
   + _vstTabelaComparacao('BP2', d.comparacao_bp2, d.comparacao_rpe_bp2);
  mxVstRpeTabela(d);
  MX_VST_ULT_COMP = d;
+ // Mostrar botão de gravar quando existe resultado calculado
+ const btnArea=document.getElementById('mxVstGravarBtnArea');
+ if(btnArea) btnArea.style.display='';
  if(MX_VST_ULT) mxDesenharVstHeatmap(MX_VST_ULT);
  mxVstResumoCartoes(d);
  mxVstRecoveryCartoes(d);
@@ -7746,6 +7763,86 @@ mxSessoes();
 // as precisava ("Intervenções — o que treinar") foi removida, o fluxo
 // por sessao ja mostra tudo sozinho. As duas funcoes ficam protegidas
 // contra elementos em falta, para o caso de ainda serem chamadas
+// ── Gravar análise VST explicitamente ────────────────────────────────────
+function mxVstGravarAnalise(){
+ if(!MX_VST_ULT_COMP||!MX_VID||!MX_MID){
+  const st=document.getElementById('mxVstGravarStatus');
+  if(st) st.textContent='Sem resultado — execute a comparação primeiro.';
+  return;
+ }
+ const st=document.getElementById('mxVstGravarStatus');
+ if(st) st.textContent='a gravar…';
+ fetch('/api/moxy/vst/gravar_analise',{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({
+   vst_activity_id:MX_VID,
+   moxy_activity_id:MX_MID,
+   resultado_json:MX_VST_ULT_COMP,
+  })
+ }).then(r=>r.json()).then(function(d){
+  if(d.status==='ok'){
+   if(st) st.textContent='✓ Gravado e sincronizado com o Drive.';
+  } else if(d.status==='gravado_sem_upload'){
+   if(st) st.textContent='✓ Gravado localmente (Drive indisponível).';
+   mxVstDbBadgeMostrar('Análise VST gravada no DB local. O Drive não está disponível — baixe o DB e faça upload manual.');
+  } else {
+   if(st) st.textContent='Erro: '+(d.mensagem||'?');
+  }
+ }).catch(function(e){
+  if(st) st.textContent='Erro de rede: '+e.message;
+ });
+}
+
+// Gravar uma verificação já salva (re-gravar o que já existe para forçar persistência)
+function mxVstGravarVerificacaoSalva(ix){
+ const c=MX_VST_CONJUNTOS_SALVOS[ix];
+ if(!c) return;
+ // Abrir primeiro para ter MX_VST_ULT_COMP preenchido, depois gravar
+ mxVstAbrirVerificacao(ix);
+ setTimeout(function(){
+  if(!MX_VST_ULT_COMP){
+   alert('Abra a verificação e aguarde o carregamento antes de gravar.');
+   return;
+  }
+  fetch('/api/moxy/vst/gravar_analise',{method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({
+    vst_activity_id:c.vst_activity_id,
+    moxy_activity_id:c.moxy_activity_id,
+    resultado_json:MX_VST_ULT_COMP,
+   })
+  }).then(r=>r.json()).then(function(d){
+   if(d.status==='gravado_sem_upload'){
+    mxVstDbBadgeMostrar('Verificação gravada localmente. Baixe o DB e faça upload para o Google Drive.');
+   }
+  }).catch(function(){});
+ }, 2000);
+}
+
+// Badge inline na aba MOXY para avisar sobre DB local
+function mxVstDbBadgeLimpar(){
+ const b=document.getElementById('mxVstDbBadge'); if(b) b.innerHTML='';
+}
+
+function mxVstDbBadgeMostrar(msg){
+ const badgeDiv=document.getElementById('mxVstDbBadge');
+ if(badgeDiv){
+  badgeDiv.innerHTML='<div style="border:1px solid #F0883E;border-radius:6px;'
+   +'padding:10px 14px;background:#1c2331;margin:4px 0;">'
+   +'<div style="color:#F0883E;font-weight:600;font-size:12px;margin-bottom:4px;">⚠ Drive indisponível</div>'
+   +'<div style="font-size:11px;color:#8b949e;margin-bottom:8px;">'+(msg||'Dados gravados localmente — efémeros.')+'</div>'
+   +'<a href="/api/admin/download-db" download="perfil_historico.db" '
+   +'style="padding:5px 14px;background:#1c2331;border:1px solid #F0883E;color:#F0883E;'
+   +'border-radius:6px;font-size:12px;text-decoration:none;font-weight:600;display:inline-block;">'
+   +'⬇ Baixar perfil_historico.db</a>'
+   +'<button onclick="mxVstDbBadgeLimpar()" '
+   +'style="margin-left:8px;padding:5px 10px;background:none;border:1px solid #30363d;'
+   +'color:#8b949e;border-radius:6px;font-size:11px;cursor:pointer;">Fechar</button>'
+   +'</div>';
+ }
+}
+
+
 // de outro sitio (ex.: depois de gravar uma analise).
 window.addEventListener('resize', function(){
  mxDraw();

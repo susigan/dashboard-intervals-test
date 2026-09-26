@@ -203,6 +203,30 @@ MIGRACOES = [
 ]
 
 
+# ── Snapshot de actividade com intervalos + RPE ───────────────────────────
+# Guarda os dados essenciais de uma actividade MOXY/VST para não depender
+# de icu_get() ao reabrir (útil quando a API key expira ou muda).
+# Não duplica os streams completos — guarda só o essencial para o Training.
+SCHEMA_ACTIVITY_SNAPSHOT = """
+CREATE TABLE IF NOT EXISTS activity_snapshot (
+    activity_id          TEXT    PRIMARY KEY,
+    nome                 TEXT,
+    data                 TEXT,
+    modalidade           TEXT,
+    elapsed_time         INTEGER,
+    avg_watts            REAL,
+    avg_hr               REAL,
+    rpe_sessao           REAL,
+    z1_sec               REAL,
+    z2_sec               REAL,
+    z3_sec               REAL,
+    icu_intervals_json   TEXT,   -- JSON de icu_intervals (label/type/watts/hr/start_time/elapsed)
+    rpe_intervalos_json  TEXT,   -- JSON do RPE por intervalo (start_time → rpe)
+    gravado_em           TEXT    NOT NULL
+);
+"""
+
+
 # ── Biblioteca mestre de treinos ──────────────────────────────────────────
 # Protocolo planificado — independente das actividades reais.
 # Campos de intensidade aceitam NULL quando não aplicáveis (FC-only, RPE-only).
@@ -369,6 +393,7 @@ def aplicar_schema(conn):
     conn.executescript(SCHEMA_TRAINING_LIBRARY)
     conn.executescript(SCHEMA_TRAINING_LIBRARY_BLOCKS)
     conn.executescript(SCHEMA_TRAINING_EXECUTIONS)
+    conn.executescript(SCHEMA_ACTIVITY_SNAPSHOT)
     conn.commit()
     migrar(conn)
     return conn

@@ -411,6 +411,17 @@ BODY = r"""<a href="/">&larr; Voltar a lista</a>
   </span>
 </h2>
 <div id="modoBlocosInfo" class="sub" style="margin-bottom:6px"></div>
+
+<!-- Botão de salvar todos os dados da atividade no DB -->
+<div style="margin:6px 0 8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+  <button onclick="mxSalvarAtividade()"
+    style="padding:6px 16px;background:#1c2331;border:1px solid #3FB950;
+    color:#3FB950;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
+    💾 Salvar dados desta atividade
+  </button>
+  <span id="mxSalvarStatus" style="font-size:11px;color:#8b949e;"></span>
+</div>
+
 <div class="wrap" style="max-height:360px"><table>
   <thead><tr id="ivHead"></tr></thead><tbody id="ivBody"></tbody></table></div>
 
@@ -981,6 +992,75 @@ function mxSalvarRpe(input){
 // ── Badge de download do DB ───────────────────────────────────────────────
 // Aparece sempre que um dado é gravado localmente mas o upload Drive falhou.
 // Persiste na página até ser descartado ou o utilizador fizer o download.
+
+// ── Salvar snapshot completo da atividade no DB ───────────────────────────
+// Grava: metadados + icu_intervals + RPE por intervalo em activity_snapshot.
+// Chama /api/activity/<AID>/salvar-snapshot (POST).
+function mxSalvarAtividade(){
+ const st=document.getElementById('mxSalvarStatus');
+ if(st) st.textContent='a recolher dados…';
+
+ // 1. Recolher RPE actuais da tabela (inputs na página)
+ const rpeIntervalos={};
+ document.querySelectorAll('#ivBody input[data-start]').forEach(function(inp){
+  const v=inp.value.trim();
+  if(v&&v!=='') rpeIntervalos[inp.dataset.start]=parseInt(v,10);
+ });
+
+ // 2. Recolher icu_intervals da variável DATA (carregada por load())
+ const ivs=(DATA&&DATA.intervals&&(DATA.intervals.icu_intervals||DATA.intervals))||[];
+ const ivsLimpo=(ivs||[]).map(function(iv){
+  return {
+   label:iv.label, type:iv.type, start_time:iv.start_time,
+   elapsed_time:iv.elapsed_time, distance:iv.distance,
+   average_watts:iv.average_watts, max_watts:iv.max_watts,
+   average_heartrate:iv.average_heartrate, max_heartrate:iv.max_heartrate,
+   average_cadence:iv.average_cadence, intensity:iv.intensity,
+  };
+ });
+
+ // 3. Metadados da actividade
+ const a=(DATA&&DATA.activity)||{};
+ const payload={
+  nome: a.name||'',
+  data: (a.start_date_local||a.start_date||'').slice(0,10),
+  modalidade: a._type_norm||a.type||'',
+  elapsed_time: a.elapsed_time||a.moving_time||null,
+  avg_watts: a.average_watts||a.icu_weighted_avg_watts||null,
+  avg_hr: a.average_heartrate||null,
+  rpe_sessao: a.perceived_exertion||null,
+  z1_sec: a.z1_sec||null,
+  z2_sec: a.z2_sec||null,
+  z3_sec: a.z3_sec||null,
+  icu_intervals: ivsLimpo,
+  rpe_intervalos: rpeIntervalos,
+ };
+
+ if(st) st.textContent='a gravar…';
+ fetch('/api/activity/'+AID+'/salvar-snapshot',{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(payload)
+ }).then(r=>r.json()).then(function(d){
+  if(d.status==='ok'){
+   if(st) st.textContent='✓ Dados gravados e sincronizados com o Drive.';
+   setTimeout(function(){if(st) st.textContent='';},4000);
+  } else if(d.status==='gravado_sem_upload'){
+   if(st) st.textContent='✓ Dados gravados localmente (Drive indisponível).';
+   dbDownloadMostrarBadge('Dados da atividade gravados no DB local. Baixe o DB e faça upload para o Google Drive.');
+  } else {
+   if(st) st.textContent='Erro: '+(d.mensagem||'?');
+  }
+ }).catch(function(e){
+  if(st) st.textContent='Erro de rede: '+e.message;
+ });
+}
+
+function dbDownloadFechar(){
+ const b=document.getElementById('_dbDownloadBadge');
+ if(b) b.remove();
+}
+
 function dbDownloadMostrarBadge(msg){
  let badge = document.getElementById('_dbDownloadBadge');
  if(!badge){
@@ -1005,7 +1085,7 @@ function dbDownloadMostrarBadge(msg){
   +'style="padding:6px 12px;background:#1c2331;border:1px solid #30363d;color:#8b949e;'
   +'border-radius:6px;font-size:11px;text-decoration:none;">'
   +'📊 Ver estado</a>'
-  +'<button onclick="document.getElementById('_dbDownloadBadge').remove()" '
+  +'<button onclick="dbDownloadFechar()" '
   +'style="padding:6px 10px;background:none;border:1px solid #30363d;color:#8b949e;'
   +'border-radius:6px;font-size:11px;cursor:pointer;">Fechar</button>'
   +'</div>';

@@ -3,14 +3,16 @@
 Responsabilidade: "Dado tudo que já foi encontrado, quais estímulos de
 treinamento são fisiologicamente plausíveis?"
 
-Fluxo:
-  MOXY / VST / Intervenções / Rede Causal / Histórico
-    ↓
-  contexto montado pelo frontend via fetch aos endpoints existentes
-    ↓
-  /api/training/executar  (chama utils/training.executar)
-    ↓
-  resultado renderizado na UI
+Fluxo automático ao abrir a aba:
+  /api/training/contexto          ← prioridade P1/P2/P3 (backend)
+        ↓
+  limitador_chave + modalidade
+        ↓
+  uma secção por modalidade
+        ↓
+  /api/training/executar × 4      ← Bike / Row / Ski / Run
+        ↓
+  cards organizados por relevance (principal → secundário → complementar)
 
 training.py permanece engine puro — não acessa DB nem API.
 Esta aba é a camada de apresentação da saída do engine.
@@ -21,8 +23,6 @@ from tabs.base import page
 
 SLUG = 'training'
 
-# Caminho para a Tabela_Mestre — configurável via variável de ambiente.
-# O servidor usa TRAINING_TABELA_PATH se definido, senão tenta path relativo.
 _TABELA_PATH_DEFAULT = os.path.join(
     os.path.dirname(os.path.dirname(__file__)),
     'Tabela_Mestre_Training_Engine_V5__1_.xlsx'
@@ -33,52 +33,388 @@ BODY = """
   <h1>Training</h1>
   <p class="sub">Opções de treinamento fisiologicamente plausíveis com base nos achados existentes.</p>
 
-  <!-- SELECÇÃO DE MODALIDADE -->
-  <div class="controls" style="margin-bottom:16px;">
-    <label class="sel">Modalidade:
-      <select id="trModalidade" onchange="trCarregar()">
-        <option value="">— escolher —</option>
-        <option value="Bike">Bike</option>
-        <option value="Row">Row</option>
-        <option value="Ski">Ski</option>
-        <option value="Run">Run</option>
-      </select>
-    </label>
-    <label class="sel" style="margin-left:12px;">Sessão MOXY (Day 1):
-      <select id="trMoxyId" onchange="trCarregar()" style="min-width:220px;">
-        <option value="">— escolher —</option>
-      </select>
-    </label>
-    <label class="sel" style="margin-left:12px;">Verificação VST (Day 2):
-      <select id="trVstId" onchange="trCarregar()" style="min-width:220px;">
-        <option value="">— nenhuma —</option>
-      </select>
-    </label>
-    <button onclick="trCarregar()"
-      style="margin-left:12px;padding:7px 16px;background:#1c2331;border:1px solid #5DADE2;
-      color:#5DADE2;border-radius:6px;cursor:pointer;font-size:13px;">
-      ↻ Executar engine
-    </button>
-  </div>
+  <!-- CABEÇALHO DE ANÁLISE FISIOLÓGICA ATUAL -->
+  <div id="trCabecalho" style="margin-bottom:20px;"></div>
 
-  <div id="trEstado" style="font-size:12px;color:#8b949e;margin-bottom:12px;"></div>
+  <!-- SECÇÕES POR MODALIDADE (preenchidas automaticamente) -->
+  <div id="trRecomendacoes"></div>
 
-  <!-- RESULTADO -->
-  <div id="trResultado"></div>
+  <!-- SEPARADOR -->
+  <hr style="border-color:#30363d;margin:28px 0 20px;">
+
+  <!-- OVERRIDE MANUAL (avançado, colapsado) -->
+  <details id="trOverride">
+    <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;user-select:none;">
+      ▼ Modo manual — selecionar sessão específica
+    </summary>
+    <div style="margin-top:14px;">
+      <div class="controls" style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
+        <label class="sel">Modalidade:
+          <select id="trModalidade">
+            <option value="">— escolher —</option>
+            <option value="Bike">Bike</option>
+            <option value="Row">Row</option>
+            <option value="Ski">Ski</option>
+            <option value="Run">Run</option>
+          </select>
+        </label>
+        <label class="sel">Sessão MOXY (Day 1):
+          <select id="trMoxyId" style="min-width:220px;">
+            <option value="">— escolher —</option>
+          </select>
+        </label>
+        <label class="sel">Verificação VST (Day 2):
+          <select id="trVstId" style="min-width:220px;">
+            <option value="">— nenhuma —</option>
+          </select>
+        </label>
+        <button onclick="trExecutarManual()"
+          style="padding:7px 16px;background:#1c2331;border:1px solid #5DADE2;
+          color:#5DADE2;border-radius:6px;cursor:pointer;font-size:13px;">
+          ↻ Executar engine
+        </button>
+      </div>
+      <div id="trResultadoManual"></div>
+    </div>
+  </details>
+
+  <!-- BIBLIOTECA (filtros) -->
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;user-select:none;">
+      ▼ Biblioteca de treinos — filtros
+    </summary>
+    <div style="margin-top:14px;">
+      <div class="controls" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+        <label class="sel">Modalidade:
+          <select id="filtMod" onchange="trFiltrar()">
+            <option value="">Todas</option>
+            <option value="Bike">Bike</option>
+            <option value="Row">Row</option>
+            <option value="Ski">Ski</option>
+            <option value="Run">Run</option>
+          </select>
+        </label>
+        <label class="sel">Zona:
+          <select id="filtZona" onchange="trFiltrar()">
+            <option value="">Todas</option>
+            <option value="Z1">Z1</option>
+            <option value="Z2">Z2</option>
+            <option value="Z3">Z3</option>
+          </select>
+        </label>
+        <label class="sel">Limitador:
+          <select id="filtLim" onchange="trFiltrar()">
+            <option value="">Todos</option>
+            <option value="entrega">Cardíaco / Entrega</option>
+            <option value="utilizacao">Periférico / Utilização</option>
+            <option value="respiratorio">Respiratório</option>
+          </select>
+        </label>
+        <label class="sel">Relevância:
+          <select id="filtRel" onchange="trFiltrar()">
+            <option value="">Todas</option>
+            <option value="principal">Principal</option>
+            <option value="possível">Possível</option>
+          </select>
+        </label>
+      </div>
+      <div id="trBiblioteca" style="font-size:12px;color:#8b949e;">
+        Execute o engine para ver a biblioteca.
+      </div>
+    </div>
+  </details>
 </div>
 """
 
 JS = r"""
-// ── Estado ───────────────────────────────────────────────────────────────
-let TR_ULT_RESULTADO = null;
+// ── Estado global ─────────────────────────────────────────────────────────
+let TR_CONTEXTO    = null;   // resultado de /api/training/contexto
+let TR_RESULTADOS  = {};     // {modalidade: resultado_do_engine}
+let TR_ULT_RESULTADO = null; // último resultado manual (compatibilidade)
 
-// ── Inicialização ─────────────────────────────────────────────────────────
+const TR_MODALIDADES = ['Bike', 'Row', 'Ski', 'Run'];
+
+const TR_COR_CHAVE = {
+  entrega:'#5DADE2', utilizacao:'#3FB950',
+  respiratorio:'#F4D03F', fadiga:'#E67E22', mecanico:'#A371F7'
+};
+const TR_COR_RELEVANCE = {
+  principal:'#3FB950', 'possível':'#F4D03F', limiar:'#E67E22'
+};
+const TR_PRIORIDADE_ORDEM = {principal:0, 'possível':1, limiar:2};
+
+// ── Inicialização automática ──────────────────────────────────────────────
 (function(){
+  trCarregarContexto();
   trCarregarSessoesMoxy();
   trCarregarVst();
 })();
 
-// ── Carregar lista de sessões MOXY disponíveis ────────────────────────────
+// ── P1/P2/P3: carregar contexto do backend ────────────────────────────────
+function trCarregarContexto(){
+  const cab = document.getElementById('trCabecalho');
+  const rec = document.getElementById('trRecomendacoes');
+  if(cab) cab.innerHTML = '<div class="loading" style="font-size:12px;color:#8b949e;">a determinar limitador actual…</div>';
+
+  fetch('/api/training/contexto').then(r=>r.json()).then(function(ctx){
+    TR_CONTEXTO = ctx;
+    trRenderCabecalho(ctx);
+
+    if(ctx.fonte === 'ausente' || !ctx.limitador_chave){
+      if(rec) rec.innerHTML = trCardErro('dados_insuficientes',
+        'Não foi encontrado um limitador fisiológico actual.<br>'
+        +'Execute uma análise MOXY ou sincronize um conjunto VST para obter recomendações automáticas.<br>'
+        +'Pode usar a biblioteca de treinos abaixo com os filtros disponíveis.');
+      return;
+    }
+
+    // Executar engine para cada modalidade
+    if(rec) rec.innerHTML = '<div class="loading" style="font-size:12px;color:#8b949e;">a calcular recomendações…</div>';
+    trExecutarTodasModalidades(ctx);
+  }).catch(function(e){
+    if(cab) cab.innerHTML = trCardErro('erro', 'Erro ao obter contexto: '+e.message);
+  });
+}
+
+// ── Cabeçalho de análise fisiológica atual ────────────────────────────────
+function trRenderCabecalho(ctx){
+  const cab = document.getElementById('trCabecalho');
+  if(!cab) return;
+
+  if(ctx.fonte === 'ausente' || !ctx.limitador_chave){
+    cab.innerHTML = '<div style="border:1px solid #30363d;border-radius:8px;padding:12px 16px;'
+      +'background:#0d1117;">'
+      +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Análise Fisiológica</div>'
+      +'<div style="font-size:13px;color:#8b949e;">Sem análise fisiológica recente disponível.</div>'
+      +'</div>';
+    return;
+  }
+
+  const cor = TR_COR_CHAVE[ctx.limitador_chave] || '#8b949e';
+  const fonteLabel = ctx.fonte==='vst'
+    ? 'MOXY + VST Verificação'
+    : ctx.fonte==='moxy'
+    ? 'MOXY (sem VST sincronizado)'
+    : '—';
+
+  let linhas = '';
+  if(ctx.moxy_data){
+    const dm = ctx.dias_moxy != null ? ' (há '+ctx.dias_moxy+' dia'+(ctx.dias_moxy!==1?'s':'')+')'  : '';
+    linhas += '<div style="font-size:11px;color:#8b949e;">MOXY: '
+      +(ctx.moxy_data||'').slice(0,10)+dm
+      +(ctx.moxy_id?' · <span style="color:#484f58;">'+ctx.moxy_id+'</span>':'')+'</div>';
+  }
+  if(ctx.vst_id){
+    const dv = ctx.dias_vst != null ? ' (há '+ctx.dias_vst+' dia'+(ctx.dias_vst!==1?'s':'')+')'  : '';
+    linhas += '<div style="font-size:11px;color:#8b949e;">VST: '
+      +(ctx.vst_data||'').slice(0,10)+dv
+      +(ctx.vst_id?' · <span style="color:#484f58;">'+ctx.vst_id+'</span>':'')+'</div>';
+  } else if(ctx.fonte==='moxy'){
+    linhas += '<div style="font-size:11px;color:#6e7681;">VST: não sincronizado</div>';
+  }
+
+  const bp = (ctx.bp1_w||ctx.bp2_w)
+    ? '<span style="font-size:11px;color:#8b949e;margin-left:12px;">'
+      +(ctx.bp1_w?'BP1 '+Math.round(ctx.bp1_w)+'W':'')
+      +(ctx.bp1_w&&ctx.bp2_w?' · ':'')
+      +(ctx.bp2_w?'BP2 '+Math.round(ctx.bp2_w)+'W':'')
+      +'</span>'
+    : '';
+
+  cab.innerHTML = '<div style="border:1px solid '+cor+'44;border-radius:8px;padding:12px 16px;background:#0d1117;">'
+    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Análise Fisiológica Actual</div>'
+    +'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">'
+    +'<div style="font-size:20px;font-weight:700;color:'+cor+';">'
+    +(ctx.limitador_nome||ctx.sistema||'—').toUpperCase()
+    +(ctx.limitador_chave?' / '+ctx.limitador_chave.toUpperCase():'')
+    +'</div>'+bp+'</div>'
+    +'<div style="font-size:11px;color:#8b949e;margin-top:4px;">Fonte: '+fonteLabel+'</div>'
+    +linhas
+    +'</div>';
+}
+
+// ── Executar engine para todas as modalidades automaticamente ─────────────
+function trExecutarTodasModalidades(ctx){
+  const rec = document.getElementById('trRecomendacoes');
+  TR_RESULTADOS = {};
+  let pendentes = TR_MODALIDADES.length;
+  const resultadosPorMod = {};
+
+  TR_MODALIDADES.forEach(function(mod){
+    const contexto = trMontarContextoDeCtx(ctx, mod);
+    fetch('/api/training/executar',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(contexto),
+    }).then(r=>r.json()).then(function(res){
+      resultadosPorMod[mod] = {resultado: res, contexto: contexto};
+      TR_RESULTADOS[mod] = res;
+    }).catch(function(e){
+      resultadosPorMod[mod] = {resultado: {status:'erro', motivo: e.message}, contexto: contexto};
+    }).finally(function(){
+      pendentes--;
+      if(pendentes === 0){
+        // Todos terminaram — renderizar por modalidade
+        let h = '';
+        TR_MODALIDADES.forEach(function(m){
+          h += trRenderSecaoModalidade(m, resultadosPorMod[m], ctx);
+        });
+        if(rec) rec.innerHTML = h;
+        // Popular biblioteca
+        trPopularBiblioteca(resultadosPorMod);
+      }
+    });
+  });
+}
+
+// ── Montar contexto a partir do resultado de /api/training/contexto ───────
+function trMontarContextoDeCtx(ctx, modalidade){
+  // Usa o limitador_chave já resolvido pelo backend (P1/P2/P3)
+  // sem depender de MX_ULT_US nem de variáveis globais do browser
+  const achadoRede = ctx.limitador_chave ? {
+    sistema:    ctx.sistema,
+    rotulo:     ctx.limitador_nome||null,
+    pct:        null,
+    disponivel: true,
+  } : {disponivel: false};
+
+  return {
+    modalidade: modalidade,
+    vst_activity_id:  ctx.vst_id||null,
+    moxy_activity_id: ctx.moxy_id||null,
+    bp1_w: ctx.bp1_w||null,
+    bp2_w: ctx.bp2_w||null,
+    cp_w:  null,
+    achados: {
+      rede_causal:  achadoRede,
+      intervencoes: {disponivel: false},
+      vst:          {disponivel: !!(ctx.vst_id)},
+      moxy:         {disponivel: false},
+    },
+    historico: [],
+    pace_individual: null,
+  };
+}
+
+// ── Secção de recomendações por modalidade ────────────────────────────────
+function trRenderSecaoModalidade(mod, entrada, ctx){
+  const res = entrada ? entrada.resultado : null;
+  const ops = (res&&res.opcoes)||[];
+
+  // Ordenar por prioridade: principal primeiro
+  const ordenadas = ops.slice().sort(function(a,b){
+    return (TR_PRIORIDADE_ORDEM[a.relevance]||99) - (TR_PRIORIDADE_ORDEM[b.relevance]||99);
+  });
+
+  const corMod = {Bike:'#5DADE2',Row:'#3FB950',Ski:'#A371F7',Run:'#F4D03F'}[mod]||'#8b949e';
+
+  let h = '<div style="margin-bottom:28px;">'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">'
+    +'<span style="font-size:14px;font-weight:700;color:'+corMod+';">'+mod.toUpperCase()+'</span>'
+    +(ctx&&ctx.bp1_w?'<span style="font-size:10px;color:#6e7681;">BP1 '+Math.round(ctx.bp1_w)
+      +(ctx.bp2_w?' · BP2 '+Math.round(ctx.bp2_w):'')+'W</span>':'')
+    +'</div>';
+
+  if(!res || res.status==='erro'){
+    h += '<div style="font-size:11px;color:#8b949e;padding:6px 0;">Erro ao calcular: '
+      +((res&&res.motivo)||'desconhecido')+'</div>';
+  } else if(res.status==='dados_insuficientes'){
+    h += '<div style="font-size:11px;color:#8b949e;padding:6px 0;">Dados insuficientes — '
+      +(res.motivo||'sem BP1/BP2 ou limitador')+'</div>';
+  } else if(!ordenadas.length){
+    h += '<div style="font-size:11px;color:#8b949e;padding:6px 0;">Sem treino recomendado para este limitador em '+mod+'.</div>';
+  } else {
+    // Cards em linha horizontal para compacidade
+    h += '<div style="display:flex;flex-wrap:wrap;gap:10px;">';
+    ordenadas.forEach(function(op){
+      h += trCardCompacto(op, corMod);
+    });
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+// ── Card compacto (visão de recomendação) ─────────────────────────────────
+function trCardCompacto(op, corMod){
+  const corRel = TR_COR_RELEVANCE[op.relevance] || '#8b949e';
+  const corZona = {Z1:'#1E3A5F',Z2:'#1B5E20',Z3:'#4A1C12'}[op.zona]||'#161b22';
+  const dose = op.dose||{};
+
+  return '<div style="border:1px solid #30363d;border-radius:8px;width:220px;overflow:hidden;flex-shrink:0;">'
+    +'<div style="background:'+corZona+'33;border-bottom:1px solid #30363d;padding:7px 10px;display:flex;justify-content:space-between;align-items:center;">'
+    +'<span style="font-size:10px;background:'+corZona+'55;color:#c9d1d9;border-radius:3px;padding:1px 6px;">'+op.zona+'</span>'
+    +'<span style="font-size:10px;color:'+corRel+';font-weight:600;">'+op.relevance.toUpperCase()+'</span>'
+    +'</div>'
+    +'<div style="padding:9px 10px;">'
+    +'<div style="font-size:12px;font-weight:600;color:#c9d1d9;margin-bottom:3px;">'+op.training_type+'</div>'
+    +'<div style="font-size:10px;color:#8b949e;margin-bottom:5px;">'+op.format+'</div>'
+    +'<div style="font-size:10px;color:#8b949e;">Work: <b style="color:#c9d1d9;">'+dose.work_range+'</b></div>'
+    +(dose.recovery_range&&dose.recovery_range!=='—'
+      ?'<div style="font-size:10px;color:#8b949e;">Rec: '+dose.recovery_range+'</div>':'')
+    +'<div style="font-size:10px;color:#8b949e;margin-top:3px;">RPE: '+op.expected_RPE_work+'</div>'
+    +'<details style="margin-top:6px;">'
+    +'<summary style="cursor:pointer;font-size:10px;color:#484f58;">▼ detalhe</summary>'
+    +'<div style="font-size:10px;color:#8b949e;margin-top:4px;">'+op.adaptacao+'</div>'
+    +'<div style="font-size:10px;color:#6e7681;">'+op.mecanismo_alvo+'</div>'
+    +(op.success_rule?'<div style="font-size:10px;color:#3FB950;margin-top:3px;">✓ '+op.success_rule+'</div>':'')
+    +'</details>'
+    +'</div></div>';
+}
+
+// ── Popular biblioteca com todos os resultados ────────────────────────────
+function trPopularBiblioteca(resultadosPorMod){
+  // Colecionar todas as opções de todas as modalidades
+  window._TR_TODAS_OPCOES = [];
+  TR_MODALIDADES.forEach(function(mod){
+    const entry = resultadosPorMod[mod];
+    if(!entry) return;
+    const ops = (entry.resultado.opcoes||[]);
+    ops.forEach(function(op){ window._TR_TODAS_OPCOES.push({...op, _modalidade: mod}); });
+  });
+  trFiltrar();
+}
+
+// ── Filtros da biblioteca ─────────────────────────────────────────────────
+function trFiltrar(){
+  const todas = window._TR_TODAS_OPCOES||[];
+  const mod  = (document.getElementById('filtMod')||{}).value||'';
+  const zona = (document.getElementById('filtZona')||{}).value||'';
+  const lim  = (document.getElementById('filtLim')||{}).value||'';
+  const rel  = (document.getElementById('filtRel')||{}).value||'';
+
+  const filtradas = todas.filter(function(op){
+    if(mod  && op._modalidade !== mod)  return false;
+    if(zona && op.zona !== zona)         return false;
+    if(lim  && op.limitador !== lim && !op.limitador_chave?.includes(lim)) return false;
+    if(rel  && op.relevance !== rel)     return false;
+    return true;
+  });
+
+  const bib = document.getElementById('trBiblioteca');
+  if(!bib) return;
+  if(!filtradas.length){
+    bib.innerHTML = '<div style="color:#8b949e;font-size:12px;">Nenhum treino encontrado com esses filtros.</div>';
+    return;
+  }
+  // Agrupar por modalidade
+  const porMod = {};
+  filtradas.forEach(function(op){ (porMod[op._modalidade]=porMod[op._modalidade]||[]).push(op); });
+  let h = '';
+  Object.entries(porMod).forEach(function([m, ops]){
+    const corMod = {Bike:'#5DADE2',Row:'#3FB950',Ski:'#A371F7',Run:'#F4D03F'}[m]||'#8b949e';
+    h += '<div style="margin-bottom:16px;">'
+      +'<div style="font-size:11px;font-weight:600;color:'+corMod+';margin-bottom:8px;">'+m.toUpperCase()
+      +' ('+ops.length+')</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:8px;">';
+    ops.slice().sort(function(a,b){
+      return (TR_PRIORIDADE_ORDEM[a.relevance]||99)-(TR_PRIORIDADE_ORDEM[b.relevance]||99);
+    }).forEach(function(op){ h+=trCardCompacto(op, corMod); });
+    h += '</div></div>';
+  });
+  bib.innerHTML = h;
+}
+
+// ── Modo manual (override) ────────────────────────────────────────────────
 function trCarregarSessoesMoxy(){
   fetch('/api/moxy/analises').then(r=>r.json()).then(function(d){
     const sel = document.getElementById('trMoxyId');
@@ -94,7 +430,6 @@ function trCarregarSessoesMoxy(){
   }).catch(function(){});
 }
 
-// ── Carregar lista de verificações VST disponíveis ────────────────────────
 function trCarregarVst(){
   fetch('/api/moxy/vst/conjuntos_salvos').then(r=>r.json()).then(function(d){
     const sel = document.getElementById('trVstId');
@@ -111,399 +446,152 @@ function trCarregarVst(){
   }).catch(function(){});
 }
 
-// ── Ponto de entrada principal ────────────────────────────────────────────
-function trCarregar(){
+function trExecutarManual(){
   const modalidade = (document.getElementById('trModalidade')||{}).value||'';
   const moxyId     = (document.getElementById('trMoxyId')||{}).value||'';
   const vstId      = (document.getElementById('trVstId')||{}).value||'';
-  const est = document.getElementById('trEstado');
-  const out = document.getElementById('trResultado');
+  const out = document.getElementById('trResultadoManual');
 
   if(!modalidade){
-    out.innerHTML = trCardErro('dados_insuficientes',
-      'Seleccione uma modalidade para executar o engine.');
+    if(out) out.innerHTML = trCardErro('dados_insuficientes','Seleccione uma modalidade.');
     return;
   }
-  if(est) est.textContent = 'a montar contexto e executar engine…';
-  out.innerHTML = '<div class="loading">a calcular…</div>';
+  if(out) out.innerHTML = '<div class="loading">a calcular…</div>';
 
-  // Montar contexto via fetches aos endpoints existentes
   Promise.all([
     moxyId ? fetch('/api/moxy/limiares/'+moxyId).then(r=>r.json()).catch(()=>null) : Promise.resolve(null),
     moxyId ? fetch('/api/moxy/rede/'+moxyId).then(r=>r.json()).catch(()=>null)     : Promise.resolve(null),
-    moxyId ? fetch('/api/moxy/interpretacao/'+moxyId).then(r=>r.json()).catch(()=>null) : Promise.resolve(null),
-    vstId  ? fetch('/api/moxy/vst/resultado/'+vstId).then(r=>r.json()).catch(()=>null)  : Promise.resolve(null),
-    fetch('/api/moxy/analises'+(modalidade?'?modalidade='+encodeURIComponent(modalidade):'')).then(r=>r.json()).catch(()=>({analises:[]})),
+    vstId  ? fetch('/api/moxy/vst/resultado/'+vstId).then(r=>r.json()).catch(()=>null) : Promise.resolve(null),
     fetch('/api/cp/actual/'+encodeURIComponent(modalidade)).then(r=>r.json()).catch(()=>null),
   ]).then(function(res){
-    const limiares    = res[0];
-    const rede        = res[1];
-    const interpretac = res[2];
-    const vstResult   = res[3];
-    const analises    = (res[4]||{}).analises || [];
-    const cp          = res[5];
-
-    // Construir contexto para training.executar
-    const contexto = trMontarContexto(
-      modalidade, moxyId, vstId,
-      limiares, rede, interpretac, vstResult, analises, cp
-    );
-
-    // Chamar o engine via endpoint backend
-    fetch('/api/training/executar', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(contexto),
-    }).then(r=>r.json()).then(function(resultado){
-      TR_ULT_RESULTADO = resultado;
-      if(est) est.textContent = 'engine executado · '+(resultado.opcoes||[]).length+' opção(ões)';
-      out.innerHTML = trRenderResultado(resultado, contexto);
-    }).catch(function(e){
-      out.innerHTML = trCardErro('erro', 'Erro ao executar engine: '+e.message);
-    });
+    const limiares = res[0], rede = res[1], vstResult = res[2], cp = res[3];
+    const lc   = (limiares&&limiares.limiares_consenso)||{};
+    const redeLim = (rede&&rede.limitador)||{};
+    const contexto = {
+      modalidade, vst_activity_id: vstId||null, moxy_activity_id: moxyId||null,
+      bp1_w: (lc.primeiro||{}).mediana||null,
+      bp2_w: (lc.segundo||{}).mediana||null,
+      cp_w:  cp&&cp.cp_w||null,
+      achados:{
+        rede_causal:{sistema:redeLim.sistema||null,rotulo:redeLim.rotulo||null,
+          pct:redeLim.pct||null,disponivel:!!(rede&&rede.status==='ok'&&redeLim.sistema)},
+        intervencoes:{disponivel:false},
+        vst:{disponivel:!!(vstResult&&vstResult.status==='ok')},
+        moxy:{disponivel:false},
+      },
+      historico:[],
+    };
+    return fetch('/api/training/executar',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(contexto)});
+  }).then(r=>r.json()).then(function(resultado){
+    TR_ULT_RESULTADO = resultado;
+    if(out) out.innerHTML = trRenderResultadoCompleto(resultado);
   }).catch(function(e){
-    out.innerHTML = trCardErro('erro', 'Erro ao montar contexto: '+e.message);
+    if(out) out.innerHTML = trCardErro('erro','Erro: '+e.message);
   });
 }
 
-// ── Montar contexto ───────────────────────────────────────────────────────
-function trMontarContexto(
-  modalidade, moxyId, vstId,
-  limiares, rede, interpretac, vstResult, analises, cp
-){
-  // BP1/BP2 da sessão MOXY seleccionada
-  const lc = (limiares&&limiares.limiares_consenso)||{};
-  const bp1_w = (lc.primeiro||{}).mediana||null;
-  const bp2_w = (lc.segundo||{}).mediana||null;
-  const cp_w  = cp&&cp.cp_w||null;
+// ── Renderizar resultado completo (modo manual) ───────────────────────────
+function trRenderResultadoCompleto(r){
+  if(r.status==='dados_insuficientes')
+    return trCardErro('dados_insuficientes','Dados insuficientes: '+(r.motivo||''));
+  if(r.status==='sem_opcao_plausivel')
+    return '<div style="border:1px solid #F4D03F;border-radius:8px;padding:12px;margin:12px 0;">'
+      +'<b style="color:#F4D03F;">Sem opção plausível</b>'
+      +'<p style="font-size:12px;color:#8b949e;">'+(r.motivo_sem_opcao||'')+'</p></div>';
 
-  // Achados: rede causal
-  const redeLim = (rede&&rede.limitador)||{};
-  const achadoRede = {
-    sistema:    redeLim.sistema||null,
-    rotulo:     redeLim.rotulo||null,
-    pct:        redeLim.pct||null,
-    disponivel: !!(rede&&rede.status==='ok'&&redeLim.sistema),
-  };
-
-  // Achados: intervenções (5-1-5)
-  const intr = (interpretac&&interpretac.interpretacao)||{};
-  const achadoInterv = {
-    us_limitador:    (intr.us||{}).limitador||null,
-    pc_limitador:    (intr.pc||{}).limitador||null,
-    intervencao_nome: null,
-    disponivel:      !!(interpretac&&interpretac.status==='ok'),
-  };
-
-  // Achados: VST
-  let achadoVst = {disponivel: false};
-  if(vstResult&&vstResult.status==='ok'){
-    const lbp1 = vstResult.limiter_bp1||{};
-    const lbp2 = vstResult.limiter_bp2||{};
-    achadoVst = {
-      disponivel: true,
-      limiter_bp1_padrao:       lbp1.padrao||null,
-      limiter_bp2_padrao:       lbp2.padrao||null,
-      comparacao_bp1_status:    (vstResult.comparacao_bp1||{}).status||null,
-      comparacao_bp2_status:    (vstResult.comparacao_bp2||{}).status||null,
-      comparacao_recovery_bp1:  (vstResult.comparacao_recovery_bp1||{}).status||null,
-      comparacao_recovery_bp2:  (vstResult.comparacao_recovery_bp2||{}).status||null,
-      rpe_bp1:                  vstResult.comparacao_rpe_bp1||null,
-      rpe_bp2:                  vstResult.comparacao_rpe_bp2||null,
-    };
-  }
-
-  // Histórico: sessões MOXY com BP próprios
-  const historico = (analises||[]).map(function(a){
-    return {
-      activity_id:         a.activity_id,
-      modalidade:          a.modalidade,
-      data:                a.data||'',
-      bp1_w:               a.bp1_w||null,
-      bp2_w:               a.bp2_w||null,
-      hr_medio_por_zona:   null,  // não disponível via /analises — declarado ausente
-      rf_medio_por_zona:   null,
-      smo2_por_zona:       null,
-      rpe_por_zona:        null,
-      potencia_por_zona:   null,
-      split_medio_por_zona: null,
-      dose_executada:      null,
-      resultado:           null,
-      dados_por_bloco:     {tem_dados_por_bloco: false},
-    };
-  });
-
-  return {
-    modalidade: modalidade,
-    vst_activity_id:  vstId||null,
-    moxy_activity_id: moxyId||null,
-    bp1_w: bp1_w,
-    bp2_w: bp2_w,
-    cp_w:  cp_w,
-    achados: {
-      rede_causal:  achadoRede,
-      intervencoes: achadoInterv,
-      vst:          achadoVst,
-      moxy:         {disponivel: false},
-    },
-    historico: historico,
-    pace_individual: null,
-  };
-}
-
-// ── Renderizar resultado completo ─────────────────────────────────────────
-function trRenderResultado(r, contexto){
-  let h = '';
-
-  // 1. CONTEXTO ATUAL
-  h += trSecContexto(r, contexto);
-
-  // 2. EVIDÊNCIAS
-  h += trSecEvidencias(r);
-
-  // 3. STATUS
-  if(r.status === 'dados_insuficientes'){
-    h += trCardErro('dados_insuficientes',
-      'Dados estruturais insuficientes para executar o engine. '
-      + (r.motivo||'')
-      + '<br><br>Ausências: '+(r.dados_ausentes||[]).join(' · '));
-    return h;
-  }
-  if(r.status === 'sem_opcao_plausivel'){
-    h += '<div style="border:1px solid #F4D03F;border-radius:8px;padding:12px 16px;margin:12px 0;">'
-      + '<b style="color:#F4D03F;">Sem opção plausível</b>'
-      + '<p style="font-size:12px;color:#8b949e;margin:6px 0 0;">'
-      + (r.motivo_sem_opcao||'Nenhuma regra sobreviveu aos filtros para os achados actuais.')+'</p>'
-      + trDetalhesExcluidas(r.excluidas||[])
-      + '</div>';
-    return h;
-  }
-
-  // 4. OPÇÕES
-  h += trSecOpcoes(r);
-
-  // 5. REGRAS EXCLUÍDAS (auditabilidade)
-  if((r.excluidas||[]).length){
-    h += '<details style="margin:10px 0;">'
-      + '<summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;">▼ Regras excluídas pelo engine ('+r.excluidas.length+')</summary>'
-      + trDetalhesExcluidas(r.excluidas)
-      + '</details>';
-  }
-
-  // 6. DADOS AUSENTES
-  if((r.dados_ausentes||[]).length){
-    h += '<details style="margin:6px 0;">'
-      + '<summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;">▼ Dados ausentes ('+(r.dados_ausentes||[]).length+')</summary>'
-      + '<div style="font-size:11px;color:#8b949e;padding:8px;">'
-      + (r.dados_ausentes||[]).map(d=>'<div style="margin:2px 0;">· '+d+'</div>').join('')
-      + '</div></details>';
-  }
-
+  let h = '<h3 style="margin:16px 0 10px;">Opções de treinamento</h3>';
+  (r.opcoes||[]).forEach(function(op){ h+=trRenderOpcao(op); });
+  if((r.excluidas||[]).length)
+    h += '<details style="margin:8px 0;"><summary style="cursor:pointer;font-size:11px;color:#8b949e;">▼ Regras excluídas ('+r.excluidas.length+')</summary>'
+      +trDetalhesExcluidas(r.excluidas)+'</details>';
   return h;
 }
 
-// ── Secção: Contexto actual ───────────────────────────────────────────────
-function trSecContexto(r, ctx){
-  const bp1 = ctx.bp1_w ? Math.round(ctx.bp1_w)+'W' : '—';
-  const bp2 = ctx.bp2_w ? Math.round(ctx.bp2_w)+'W' : '—';
-  const lims = (r.achados_mapeados||[]).filter(a=>a.limitador_chave);
-
-  let divs = (r.achados_mapeados||[]).map(function(a){
-    if(!a.limitador_chave) return trBadge(
-      'padrão sem chave: '+(a.nota||'').slice(0,60), '#8b949e');
-    const cor = {entrega:'#5DADE2',utilizacao:'#3FB950',respiratorio:'#F4D03F',
-                 fadiga:'#E67E22',mecanico:'#A371F7'}[a.limitador_chave]||'#8b949e';
-    return trBadge(
-      (a.limitador||a.limitador_chave)
-      +' · '+(a.plausibilidade||'?')
-      +' · '+a.fonte,
-      cor);
-  }).join('');
-
-  let divs_div = (r.divergencias||[]).map(function(d){
-    return '<div style="font-size:11px;color:#E67E22;margin:2px 0;">⚠ '+d.nota+'</div>';
-  }).join('');
-
-  return '<div class="card" style="margin-bottom:12px;padding:14px;">'
-    + '<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Contexto actual</div>'
-    + '<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;">'
-    + '<div><span style="color:#8b949e;">Modalidade</span> <b style="color:#5DADE2;">'+ctx.modalidade+'</b></div>'
-    + '<div><span style="color:#8b949e;">BP1</span> <b>'+bp1+'</b></div>'
-    + '<div><span style="color:#8b949e;">BP2</span> <b>'+bp2+'</b></div>'
-    + (ctx.cp_w?'<div><span style="color:#8b949e;">CP</span> <b style="color:#6e7681;">'+Math.round(ctx.cp_w)+'W (ref.)</b></div>':'')
-    + '</div>'
-    + '<div style="margin-top:8px;">' + divs + '</div>'
-    + (divs_div?'<div style="margin-top:6px;">'+divs_div+'</div>':'')
-    + '</div>';
-}
-
-// ── Secção: Evidências ────────────────────────────────────────────────────
-function trSecEvidencias(r){
-  const achs = r.achados_mapeados||[];
-  if(!achs.length) return '';
-
-  const porFonte = {};
-  achs.forEach(function(a){ (porFonte[a.fonte]=porFonte[a.fonte]||[]).push(a); });
-
-  let rows = Object.entries(porFonte).map(function([fonte, lista]){
-    return '<tr><td style="color:#8b949e;width:120px;font-size:11px;">'+fonte+'</td>'
-      + '<td style="font-size:12px;">'
-      + lista.map(a=>(a.limitador||'sem chave')
-        +'<span style="color:#6e7681;"> · '+(a.plausibilidade||'?')+'</span>'
-        +(a.nota?'<br><span style="font-size:10px;color:#8b949e;">'+a.nota+'</span>':'')).join('<br>')
-      + '</td></tr>';
-  }).join('');
-
-  return '<details style="margin:8px 0;">'
-    + '<summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;">▼ Evidências por fonte</summary>'
-    + '<table style="font-size:12px;margin-top:6px;"><tbody>'+rows+'</tbody></table>'
-    + '</details>';
-}
-
-// ── Secção: Opções de treinamento ─────────────────────────────────────────
-function trSecOpcoes(r){
-  const ops = r.opcoes||[];
-  if(!ops.length) return '<p style="color:#8b949e;font-size:13px;">Nenhuma opção retornada.</p>';
-
-  let h = '<h2 style="margin-top:20px;">Opções de treinamento</h2>';
-  ops.forEach(function(op){
-    h += trRenderOpcao(op);
-  });
-  return h;
-}
-
-// ── Render de uma opção ───────────────────────────────────────────────────
+// ── Render de uma opção completa (modo manual) ────────────────────────────
 function trRenderOpcao(op){
   const corZona = {Z1:'#1E3A5F',Z2:'#1B5E20',Z3:'#4A1C12'}[op.zona]||'#161b22';
-  const corRel  = {principal:'#3FB950',possível:'#F4D03F',limiar:'#E67E22'}[op.relevance]||'#8b949e';
+  const corRel  = TR_COR_RELEVANCE[op.relevance]||'#8b949e';
   const dose = op.dose||{};
   const refs = op.referencias_individuais||{};
   const prog = op.progressao||{};
 
-  // Header do card
   let h = '<div style="border:1px solid #30363d;border-radius:8px;margin-bottom:14px;overflow:hidden;">'
-    // Barra de cabeçalho com zona
-    + '<div style="background:'+corZona+'22;border-bottom:1px solid #30363d;padding:10px 14px;'
-    + 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
-    + '<span style="font-size:11px;background:'+corZona+'55;color:#c9d1d9;'
-    + 'border-radius:4px;padding:2px 8px;">'+op.zona+'</span>'
-    + '<b style="font-size:14px;">'+op.training_type+' — '+op.format+'</b>'
-    + '<span style="margin-left:auto;font-size:11px;color:'+corRel+';">'+op.relevance+'</span>'
-    + '<span style="font-size:10px;color:#6e7681;">'+op.rule_id+'</span>'
-    + '</div>'
-    + '<div style="padding:12px 14px;">';
+    +'<div style="background:'+corZona+'22;border-bottom:1px solid #30363d;padding:10px 14px;'
+    +'display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
+    +'<span style="font-size:11px;background:'+corZona+'55;color:#c9d1d9;border-radius:4px;padding:2px 8px;">'+op.zona+'</span>'
+    +'<b style="font-size:14px;">'+op.training_type+' — '+op.format+'</b>'
+    +'<span style="margin-left:auto;font-size:11px;color:'+corRel+';">'+op.relevance+'</span>'
+    +'<span style="font-size:10px;color:#6e7681;">'+op.rule_id+'</span>'
+    +'</div>'
+    +'<div style="padding:12px 14px;">';
 
-  // Adaptação e mecanismo
   h += '<div style="font-size:12px;color:#8b949e;margin-bottom:8px;">'
-    + '<b style="color:#c9d1d9;">Adaptação:</b> '+op.adaptacao+'<br>'
-    + '<b style="color:#c9d1d9;">Mecanismo:</b> '+op.mecanismo_alvo
-    + '</div>';
+    +'<b style="color:#c9d1d9;">Adaptação:</b> '+op.adaptacao+'<br>'
+    +'<b style="color:#c9d1d9;">Mecanismo:</b> '+op.mecanismo_alvo+'</div>';
 
-  // Grid: dose | referências | monitoramento
   h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:10px;">';
 
-  // Dose
   h += '<div style="background:#0d1117;border-radius:6px;padding:10px;">'
-    + '<div style="font-size:9px;color:#8b949e;text-transform:uppercase;margin-bottom:5px;">Dose</div>'
-    + '<div style="font-size:12px;"><b>'+dose.work_range+'</b></div>'
-    + (dose.recovery_range&&dose.recovery_range!=='—'?'<div style="font-size:11px;color:#8b949e;">Recovery: '+dose.recovery_range+'</div>':'')
-    + '<div style="font-size:11px;color:#8b949e;margin-top:4px;">RPE esperado: '+op.expected_RPE_work+'</div>'
-    + (dose.ponto_de_partida?'<div style="font-size:10px;color:#6e7681;margin-top:4px;">'
-      + 'Ponto de partida: '+dose.ponto_de_partida
-      + ' <span style="color:#484f58;">('+dose.ponto_de_partida_fonte+')</span>'
-      + '</div>':'')
-    + (dose.pace_referencia?'<div style="font-size:11px;color:#8b949e;margin-top:3px;">Pace ref.: '+dose.pace_referencia+'</div>':'')
-    + (dose.nota_distancia&&dose.pace_referencia===null?'<div style="font-size:10px;color:#6e7681;margin-top:3px;">'+dose.nota_distancia+'</div>':'')
-    + '</div>';
+    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;margin-bottom:5px;">Dose</div>'
+    +'<div style="font-size:12px;"><b>'+dose.work_range+'</b></div>'
+    +(dose.recovery_range&&dose.recovery_range!=='—'?'<div style="font-size:11px;color:#8b949e;">Recovery: '+dose.recovery_range+'</div>':'')
+    +'<div style="font-size:11px;color:#8b949e;margin-top:4px;">RPE esperado: '+op.expected_RPE_work+'</div>'
+    +(dose.ponto_de_partida?'<div style="font-size:10px;color:#6e7681;margin-top:4px;">Ponto de partida: '+dose.ponto_de_partida+'</div>':'')
+    +'</div>';
 
-  // Referências individuais
-  const refsDisponiveis = Object.entries(refs).filter(
-    ([k,v])=>v&&v.disponivel&&k!=='RPE_faixa_tabela'
-  );
-  const refsTxt = refsDisponiveis.length
-    ? refsDisponiveis.map(function([k,v]){
-        let val = '';
-        if(v.min!=null&&v.max!=null) val = v.min+'–'+v.max;
-        else if(v.teto!=null) val = '≤'+v.teto;
-        else if(v.trend) val = v.trend;
-        return '<div style="font-size:11px;"><span style="color:#8b949e;">'+k+':</span> <b>'+val+'</b></div>';
-      }).join('')
-    : '<div style="font-size:11px;color:#8b949e;">Indisponíveis — histórico insuficiente</div>';
+  const refsDisp = Object.entries(refs).filter(([k,v])=>v&&v.disponivel&&k!=='RPE_faixa_tabela');
+  h += '<div style="background:#0d1117;border-radius:6px;padding:10px;">'
+    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;margin-bottom:5px;">Referências individuais</div>'
+    +(refsDisp.length
+      ? refsDisp.map(function([k,v]){
+          let val=v.min!=null&&v.max!=null?v.min+'–'+v.max:(v.teto!=null?'≤'+v.teto:(v.trend||''));
+          return '<div style="font-size:11px;"><span style="color:#8b949e;">'+k+':</span> <b>'+val+'</b></div>';
+        }).join('')
+      : '<div style="font-size:11px;color:#8b949e;">Indisponíveis</div>')
+    +'</div>';
 
   h += '<div style="background:#0d1117;border-radius:6px;padding:10px;">'
-    + '<div style="font-size:9px;color:#8b949e;text-transform:uppercase;margin-bottom:5px;">Referências individuais</div>'
-    + refsTxt
-    + '</div>';
+    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;margin-bottom:5px;">Monitorar</div>'
+    +'<div style="font-size:11px;"><b>'+op.monitoramento.primary+'</b></div>'
+    +(op.monitoramento.rules||[]).filter(Boolean).map(r=>'<div style="font-size:10px;color:#8b949e;margin-top:3px;">'+r+'</div>').join('')
+    +'</div>';
 
-  // Monitoramento
-  h += '<div style="background:#0d1117;border-radius:6px;padding:10px;">'
-    + '<div style="font-size:9px;color:#8b949e;text-transform:uppercase;margin-bottom:5px;">Monitorar</div>'
-    + '<div style="font-size:11px;"><b>'+op.monitoramento.primary+'</b></div>'
-    + (op.monitoramento.rules||[]).filter(Boolean).map(
-        rule=>'<div style="font-size:10px;color:#8b949e;margin-top:3px;">'+rule+'</div>'
-      ).join('')
-    + '</div>';
+  h += '</div>';
 
-  h += '</div>'; // fim grid
+  h += '<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:11px;color:#8b949e;">▼ Critérios de sucesso, falha e interrupção</summary>'
+    +'<div style="font-size:11px;padding:8px 0;color:#c9d1d9;">'
+    +(op.success_rule?'<div style="margin-bottom:6px;"><b style="color:#3FB950;">✓ Sucesso:</b> '+op.success_rule+'</div>':'')
+    +(op.failure_rule?'<div style="margin-bottom:6px;"><b style="color:#F4D03F;">⚠ Falha:</b> '+op.failure_rule+'</div>':'')
+    +(op.work_stop_rule?'<div style="margin-bottom:6px;"><b style="color:#E74C3C;">✗ Interrupção:</b> '+op.work_stop_rule+'</div>':'')
+    +(op.recovery_gate?'<div><b style="color:#5DADE2;">⟳ Recovery gate:</b> '+op.recovery_gate+'</div>':'')
+    +'</div></details>';
 
-  // Critérios expandíveis (success / failure / work_stop / recovery_gate)
-  h += '<details style="margin-top:6px;">'
-    + '<summary style="cursor:pointer;font-size:11px;color:#8b949e;padding:3px 0;">▼ Critérios de sucesso, falha e interrupção</summary>'
-    + '<div style="font-size:11px;padding:8px 0;color:#c9d1d9;">'
-    + (op.success_rule?'<div style="margin-bottom:6px;"><b style="color:#3FB950;">✓ Sucesso:</b> '+op.success_rule+'</div>':'')
-    + (op.failure_rule?'<div style="margin-bottom:6px;"><b style="color:#F4D03F;">⚠ Falha:</b> '+op.failure_rule+'</div>':'')
-    + (op.work_stop_rule?'<div style="margin-bottom:6px;"><b style="color:#E74C3C;">✗ Interrupção:</b> '+op.work_stop_rule+'</div>':'')
-    + (op.recovery_gate?'<div><b style="color:#5DADE2;">⟳ Recovery gate:</b> '+op.recovery_gate+'</div>':'')
-    + '</div></details>';
+  h += '<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;color:#8b949e;">▼ Por que esta opção aparece</summary>'
+    +'<div style="font-size:11px;padding:8px 0;color:#8b949e;">'
+    +'<div><b style="color:#c9d1d9;">Limitador:</b> '+op.limitador+'</div>'
+    +'<div><b style="color:#c9d1d9;">Adaptação:</b> '+op.adaptacao+'</div>'
+    +'<div><b style="color:#c9d1d9;">Mecanismo-alvo:</b> '+op.mecanismo_alvo+'</div>'
+    +'<div><b style="color:#c9d1d9;">Regra da tabela:</b> '+op.rule_id+' (evidência '+op.evidence_level+')</div>'
+    +'</div></details>';
 
-  // Progressão
-  h += '<details style="margin-top:4px;">'
-    + '<summary style="cursor:pointer;font-size:11px;color:#8b949e;padding:3px 0;">▼ Progressão</summary>'
-    + '<div style="font-size:11px;padding:8px 0;color:#c9d1d9;">'
-    + '<div style="color:#8b949e;margin-bottom:4px;">'+prog.ordem+'</div>'
-    + (prog.estado_derivado?'<div style="margin-bottom:4px;"><b>Estado:</b> '+prog.estado_derivado
-      +' <span style="color:#6e7681;">('+prog.estado_fonte+')</span></div>':'')
-    + (prog.nota?'<div style="color:#8b949e;font-size:10px;font-style:italic;">'+prog.nota+'</div>':'')
-    + (prog.gate?'<div style="margin-top:4px;"><b>Gate:</b> '+prog.gate+'</div>':'')
-    + (prog.regression_gate?'<div style="margin-top:4px;"><b>Regressão:</b> '+prog.regression_gate+'</div>':'')
-    + '</div></details>';
-
-  // Por que esta opção aparece (auditabilidade)
-  h += '<details style="margin-top:4px;">'
-    + '<summary style="cursor:pointer;font-size:11px;color:#8b949e;padding:3px 0;">▼ Por que esta opção aparece</summary>'
-    + '<div style="font-size:11px;padding:8px 0;color:#8b949e;">'
-    + '<div><b style="color:#c9d1d9;">Limitador:</b> '+op.limitador+'</div>'
-    + '<div><b style="color:#c9d1d9;">Adaptação:</b> '+op.adaptacao+'</div>'
-    + '<div><b style="color:#c9d1d9;">Mecanismo-alvo:</b> '+op.mecanismo_alvo+'</div>'
-    + '<div><b style="color:#c9d1d9;">Regra da tabela:</b> '+op.rule_id+' (evidência '+op.evidence_level+')</div>'
-    + '</div></details>';
-
-  h += '</div></div>'; // fim padding + card
+  h += '</div></div>';
   return h;
 }
 
-// ── Detalhes das regras excluídas ─────────────────────────────────────────
 function trDetalhesExcluidas(excluidas){
   if(!excluidas.length) return '';
   return '<div style="font-size:11px;padding:8px;">'
-    + excluidas.map(e=>'<div style="color:#8b949e;margin:2px 0;">'
-      + '<b style="color:#484f58;">'+e.rule_id+'</b> — '+e.motivo+'</div>').join('')
-    + '</div>';
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────
-function trBadge(txt, cor){
-  return '<span style="font-size:10px;background:'+cor+'22;color:'+cor+';'
-    + 'border:1px solid '+cor+'55;border-radius:4px;padding:2px 8px;'
-    + 'margin:2px 4px 2px 0;display:inline-block;white-space:nowrap;">'
-    + txt + '</span>';
+    +excluidas.map(e=>'<div style="color:#8b949e;margin:2px 0;">'
+      +'<b style="color:#484f58;">'+e.rule_id+'</b> — '+e.motivo+'</div>').join('')
+    +'</div>';
 }
 
 function trCardErro(tipo, msg){
   const cor = tipo==='dados_insuficientes'?'#E67E22':'#E74C3C';
   return '<div style="border:1px solid '+cor+';border-radius:8px;padding:12px 16px;margin:12px 0;">'
-    + '<b style="color:'+cor+';">'+(tipo==='dados_insuficientes'?'Dados insuficientes':'Erro')+'</b>'
-    + '<p style="font-size:12px;color:#8b949e;margin:6px 0 0;">'+msg+'</p></div>';
+    +'<b style="color:'+cor+';">'+(tipo==='dados_insuficientes'?'Dados insuficientes':'Erro')+'</b>'
+    +'<p style="font-size:12px;color:#8b949e;margin:6px 0 0;">'+msg+'</p></div>';
 }
 """
 

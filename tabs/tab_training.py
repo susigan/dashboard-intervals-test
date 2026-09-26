@@ -78,13 +78,13 @@ BODY = """
     </div>
   </details>
 
-  <!-- BIBLIOTECA (filtros) -->
-  <details style="margin-top:10px;">
+  <!-- BIBLIOTECA (filtros + biblioteca mestre) -->
+  <details style="margin-top:10px;" id="trSecBiblioteca">
     <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;user-select:none;">
-      ▼ Biblioteca de treinos — filtros
+      ▼ Pesquisar biblioteca de treinos
     </summary>
     <div style="margin-top:14px;">
-      <div class="controls" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+      <div class="controls" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
         <label class="sel">Modalidade:
           <select id="filtMod" onchange="trFiltrar()">
             <option value="">Todas</option>
@@ -105,22 +105,150 @@ BODY = """
         <label class="sel">Limitador:
           <select id="filtLim" onchange="trFiltrar()">
             <option value="">Todos</option>
-            <option value="entrega">Cardíaco / Entrega</option>
-            <option value="utilizacao">Periférico / Utilização</option>
+            <option value="cardiaco">Cardíaco / Entrega</option>
+            <option value="periferico">Periférico / Utilização</option>
             <option value="respiratorio">Respiratório</option>
           </select>
         </label>
-        <label class="sel">Relevância:
-          <select id="filtRel" onchange="trFiltrar()">
+        <label class="sel">Tipo:
+          <select id="filtTipo" onchange="trFiltrar()">
+            <option value="">Todos</option>
+            <option value="Threshold">Threshold</option>
+            <option value="VO2">VO2</option>
+            <option value="Z2">Z2</option>
+            <option value="SIT">SIT</option>
+            <option value="HIIT">HIIT</option>
+            <option value="HIIT extensivo">HIIT extensivo</option>
+            <option value="Over/Under">Over/Under</option>
+            <option value="Intervalado">Intervalado</option>
+            <option value="Recovery">Recovery</option>
+            <option value="Endurance">Endurance</option>
+          </select>
+        </label>
+        <label class="sel">Prioridade:
+          <select id="filtPrio" onchange="trFiltrar()">
             <option value="">Todas</option>
             <option value="principal">Principal</option>
             <option value="possível">Possível</option>
+            <option value="complementar">Complementar</option>
           </select>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8b949e;">
+          <input type="checkbox" id="filtSoCompativeis" checked onchange="trFiltrar()">
+          Compatível com limitador atual
         </label>
       </div>
       <div id="trBiblioteca" style="font-size:12px;color:#8b949e;">
-        Execute o engine para ver a biblioteca.
+        Carregando biblioteca…
       </div>
+    </div>
+  </details>
+
+  <!-- ADICIONAR TREINO -->
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;user-select:none;">
+      ▼ Adicionar treino à biblioteca
+    </summary>
+    <div style="margin-top:14px;" id="trFormAdd">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:10px;">
+        <label class="sel">Nome *<input id="addNome" type="text" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">Modalidade *
+          <select id="addMod" style="width:100%;">
+            <option value="">—</option>
+            <option value="Bike">Bike</option><option value="Row">Row</option>
+            <option value="Ski">Ski</option><option value="Run">Run</option>
+          </select>
+        </label>
+        <label class="sel">Tipo
+          <select id="addTipo" style="width:100%;">
+            <option value="">—</option>
+            <option value="Threshold">Threshold</option><option value="VO2">VO2</option>
+            <option value="Z2">Z2</option><option value="SIT">SIT</option>
+            <option value="HIIT">HIIT</option><option value="Over/Under">Over/Under</option>
+            <option value="Intervalado">Intervalado</option><option value="Recovery">Recovery</option>
+            <option value="Endurance">Endurance</option>
+          </select>
+        </label>
+        <label class="sel">Limitador
+          <select id="addLim" style="width:100%;">
+            <option value="">—</option>
+            <option value="cardiaco">Cardíaco</option>
+            <option value="periferico">Periférico</option>
+            <option value="respiratorio">Respiratório</option>
+          </select>
+        </label>
+        <label class="sel">Zona
+          <select id="addZona" style="width:100%;">
+            <option value="">—</option>
+            <option value="Z1">Z1</option><option value="Z2">Z2</option><option value="Z3">Z3</option>
+          </select>
+        </label>
+        <label class="sel">Prioridade
+          <select id="addPrio" style="width:100%;">
+            <option value="principal">Principal</option>
+            <option value="possível">Possível</option>
+            <option value="complementar">Complementar</option>
+          </select>
+        </label>
+        <label class="sel">Séries<input id="addSeries" type="number" min="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">Work (seg)<input id="addWork" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">Recovery (seg)<input id="addRecovery" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">Duração total (seg)<input id="addDurTotal" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">Potência mín (W)<input id="addPwMin" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">Potência máx (W)<input id="addPwMax" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">FC mín (bpm)<input id="addHrMin" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">FC máx (bpm)<input id="addHrMax" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">RPE alvo (mín)<input id="addRpeMin" type="number" min="1" max="10" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">RPE alvo (máx)<input id="addRpeMax" type="number" min="1" max="10" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+      </div>
+      <label class="sel" style="display:block;margin-bottom:8px;">Objetivo
+        <textarea id="addObjetivo" rows="2" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;font-size:12px;"></textarea>
+      </label>
+      <label class="sel" style="display:block;margin-bottom:8px;">Instruções
+        <textarea id="addInstrucoes" rows="2" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;font-size:12px;"></textarea>
+      </label>
+      <div id="trBlocos" style="margin-bottom:10px;"></div>
+      <button onclick="trAddBloco()" style="font-size:11px;padding:4px 10px;background:#161b22;border:1px solid #30363d;color:#8b949e;border-radius:4px;cursor:pointer;margin-right:8px;">+ Adicionar bloco</button>
+      <button onclick="trSalvarProtocolo()" style="font-size:13px;padding:7px 18px;background:#1c2331;border:1px solid #3FB950;color:#3FB950;border-radius:6px;cursor:pointer;">Salvar protocolo</button>
+      <span id="trAddStatus" style="font-size:11px;color:#8b949e;margin-left:10px;"></span>
+    </div>
+  </details>
+
+  <!-- ANALISAR TREINO REALIZADO -->
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;user-select:none;">
+      ▼ Analisar treino realizado
+    </summary>
+    <div style="margin-top:14px;">
+      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px;align-items:flex-end;">
+        <label class="sel">Protocolo planificado:
+          <select id="analProto" style="min-width:280px;">
+            <option value="">— carregar biblioteca —</option>
+          </select>
+        </label>
+        <label class="sel">Modalidade (filtrar actividades):
+          <select id="analMod" onchange="trCarregarActividadesRecentes()" style="min-width:120px;">
+            <option value="">Todas</option>
+            <option value="Bike">Bike</option><option value="Row">Row</option>
+            <option value="Ski">Ski</option><option value="Run">Run</option>
+          </select>
+        </label>
+        <label class="sel" style="flex:1;min-width:200px;">Pesquisar actividade (nome/data):
+          <input id="analQ" type="text" placeholder="ex: interval, 2026-09" onkeyup="trFiltrarActiv()"
+            style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;">
+        </label>
+      </div>
+      <div id="analActiv" style="margin-bottom:12px;"></div>
+      <div id="analActSel" style="font-size:11px;color:#5DADE2;margin-bottom:8px;"></div>
+      <button onclick="trAnalisarExecucao(false)"
+        style="padding:7px 16px;background:#1c2331;border:1px solid #5DADE2;color:#5DADE2;border-radius:6px;cursor:pointer;font-size:13px;">
+        Analisar execução
+      </button>
+      <button onclick="trAnalisarExecucao(true)"
+        style="padding:7px 16px;background:#1c2331;border:1px solid #3FB950;color:#3FB950;border-radius:6px;cursor:pointer;font-size:13px;margin-left:8px;">
+        Analisar e gravar
+      </button>
+      <div id="trResultadoAnalise" style="margin-top:16px;"></div>
     </div>
   </details>
 </div>
@@ -148,6 +276,8 @@ const TR_PRIORIDADE_ORDEM = {principal:0, 'possível':1, limiar:2};
   trCarregarContexto();
   trCarregarSessoesMoxy();
   trCarregarVst();
+  trCarregarBiblioteca();
+  trCarregarActividadesRecentes();
 })();
 
 // ── P1/P2/P3: carregar contexto do backend ────────────────────────────────
@@ -585,6 +715,244 @@ function trDetalhesExcluidas(excluidas){
     +excluidas.map(e=>'<div style="color:#8b949e;margin:2px 0;">'
       +'<b style="color:#484f58;">'+e.rule_id+'</b> — '+e.motivo+'</div>').join('')
     +'</div>';
+}
+
+
+// ── Biblioteca mestre — carregar do backend ───────────────────────────────
+let TR_BIBLIOTECA_CACHE = [];
+let TR_ACT_RECENTES_CACHE = [];
+let TR_ACT_SEL = null;
+
+function trCarregarBiblioteca(){
+  fetch('/api/training/biblioteca').then(r=>r.json()).then(function(d){
+    TR_BIBLIOTECA_CACHE = d.protocolos || [];
+    const sel = document.getElementById('analProto');
+    if(sel){
+      while(sel.options.length > 1) sel.remove(1);
+      TR_BIBLIOTECA_CACHE.forEach(function(p){
+        const op = document.createElement('option');
+        op.value = p.id;
+        op.textContent = '['+p.modalidade+'] '+(p.tipo_treino||'')
+          +' — '+p.nome+(p.series?' '+p.series+'×':'')
+          +(p.work_seconds?' '+Math.round(p.work_seconds/60)+'min':'');
+        sel.appendChild(op);
+      });
+    }
+    trFiltrar();
+  }).catch(function(){});
+}
+
+function trCardProtocolo(p, corMod){
+  const corPrio = {principal:'#3FB950','possível':'#F4D03F',complementar:'#8b949e'}[p.prioridade]||'#8b949e';
+  const ws = p.work_seconds ? Math.round(p.work_seconds/60)+'min' : '';
+  const rec = p.recovery_seconds ? Math.round(p.recovery_seconds/60)+'min' : '';
+  return '<div style="border:1px solid #30363d;border-radius:8px;width:220px;overflow:hidden;flex-shrink:0;">'
+    +'<div style="background:#16141433;border-bottom:1px solid #30363d;padding:7px 10px;display:flex;justify-content:space-between;align-items:center;">'
+    +'<span style="font-size:10px;color:#8b949e;">'+(p.zona||'—')+'</span>'
+    +'<span style="font-size:9px;color:'+corPrio+';font-weight:600;">'+(p.prioridade||'').toUpperCase()+'</span>'
+    +'</div>'
+    +'<div style="padding:9px 10px;">'
+    +'<div style="font-size:11px;color:#6e7681;margin-bottom:2px;">'+(p.tipo_treino||'')+'</div>'
+    +'<div style="font-size:12px;font-weight:600;color:#c9d1d9;margin-bottom:5px;">'+p.nome+'</div>'
+    +(ws?'<div style="font-size:10px;color:#8b949e;">'+(p.series?p.series+'× ':'')+ws+(rec?' / Rec: '+rec:'')+'</div>':'')
+    +(p.alvo_power_min&&p.alvo_power_max?'<div style="font-size:10px;color:#8b949e;">'+Math.round(p.alvo_power_min)+'–'+Math.round(p.alvo_power_max)+' W</div>':'')
+    +'<div style="font-size:10px;color:#3FB950;margin-top:4px;cursor:pointer;" onclick="trSelecionarProtocolo('+p.id+')">↳ Seleccionar para análise</div>'
+    +'</div></div>';
+}
+
+function trSelecionarProtocolo(id){
+  const sel = document.getElementById('analProto');
+  if(sel) sel.value = id;
+}
+
+// Substituir trFiltrar para suportar a biblioteca mestre
+const _trFiltrarOrig = trFiltrar;
+function trFiltrar(){
+  const mod  = (document.getElementById('filtMod')||{}).value||'';
+  const zona = (document.getElementById('filtZona')||{}).value||'';
+  const lim  = (document.getElementById('filtLim')||{}).value||'';
+  const tipo = (document.getElementById('filtTipo')||{}).value||'';
+  const prio = (document.getElementById('filtPrio')||{}).value||'';
+  const soCompat = !!(document.getElementById('filtSoCompativeis')||{}).checked;
+  const chaveAtual = TR_CONTEXTO ? TR_CONTEXTO.limitador_chave : null;
+
+  const todas = [];
+  Object.entries(TR_RESULTADOS).forEach(function([m, res]){
+    (res.opcoes||[]).forEach(function(op){
+      todas.push({_fonte:'engine',_modalidade:m,nome:op.training_type,tipo_treino:op.training_type,
+        zona:op.zona,limitador:op.limitador,prioridade:op.relevance,_op:op});
+    });
+  });
+  TR_BIBLIOTECA_CACHE.forEach(function(p){
+    todas.push({_fonte:'biblioteca',_modalidade:p.modalidade,nome:p.nome,tipo_treino:p.tipo_treino,
+      zona:p.zona,limitador:p.limitador,prioridade:p.prioridade,_proto:p});
+  });
+
+  const filtradas = todas.filter(function(item){
+    if(mod  && item._modalidade !== mod) return false;
+    if(zona && item.zona !== zona)        return false;
+    if(lim  && item.limitador !== lim)    return false;
+    if(tipo && item.tipo_treino !== tipo) return false;
+    if(prio && item.prioridade !== prio)  return false;
+    if(soCompat && chaveAtual && item.limitador && item.limitador !== chaveAtual) return false;
+    return true;
+  });
+
+  const bib = document.getElementById('trBiblioteca');
+  if(!bib) return;
+  if(!filtradas.length){ bib.innerHTML='<div style="font-size:12px;color:#8b949e;">Nenhum treino encontrado.</div>'; return; }
+  const porMod = {};
+  filtradas.forEach(function(item){ (porMod[item._modalidade]=porMod[item._modalidade]||[]).push(item); });
+  let h = '';
+  Object.entries(porMod).forEach(function([m, items]){
+    const corMod = {Bike:'#5DADE2',Row:'#3FB950',Ski:'#A371F7',Run:'#F4D03F'}[m]||'#8b949e';
+    h += '<div style="margin-bottom:16px;"><div style="font-size:11px;font-weight:600;color:'+corMod+';margin-bottom:8px;">'+m.toUpperCase()+' ('+items.length+')</div><div style="display:flex;flex-wrap:wrap;gap:8px;">';
+    items.forEach(function(item){
+      h += item._fonte==='engine' ? trCardCompacto(item._op,corMod) : trCardProtocolo(item._proto,corMod);
+    });
+    h += '</div></div>';
+  });
+  bib.innerHTML = h;
+}
+
+// Adicionar treino — blocos dinâmicos
+let _trBlocoN = 0;
+function trAddBloco(){
+  _trBlocoN++;
+  const n = _trBlocoN;
+  const div = document.createElement('div');
+  div.id = 'bloco_'+n;
+  div.style.cssText = 'border:1px solid #30363d;border-radius:6px;padding:10px;margin-bottom:8px;';
+  div.innerHTML = '<div style="display:flex;justify-content:space-between;margin-bottom:6px;">'
+    +'<b style="font-size:12px;">Bloco '+n+'</b>'
+    +'<button onclick="document.getElementById(\'bloco_'+n+'\').remove()" style="background:none;border:none;color:#8b949e;cursor:pointer;font-size:11px;">✕</button></div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;">'
+    +'<label class="sel">Tipo<select name="tipo_bloco" style="width:100%;"><option value="warmup">Warm-up</option><option value="work" selected>Work</option><option value="recovery">Recovery</option><option value="cooldown">Cool-down</option></select></label>'
+    +'<label class="sel">Séries<input name="series" type="number" min="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 6px;margin-top:3px;"></label>'
+    +'<label class="sel">Work(seg)<input name="work_seconds" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 6px;margin-top:3px;"></label>'
+    +'<label class="sel">Rec(seg)<input name="recovery_seconds" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 6px;margin-top:3px;"></label>'
+    +'<label class="sel">Pw mín<input name="alvo_power_min" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 6px;margin-top:3px;"></label>'
+    +'<label class="sel">Pw máx<input name="alvo_power_max" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 6px;margin-top:3px;"></label>'
+    +'</div>';
+  document.getElementById('trBlocos').appendChild(div);
+}
+
+function _val(id){ const el=document.getElementById(id); return el?(el.value.trim()||null):null; }
+function _num(id){ const v=_val(id); return v?parseFloat(v):null; }
+function _int(id){ const v=_val(id); return v?parseInt(v):null; }
+
+function trSalvarProtocolo(){
+  const nome=_val('addNome'), mod=_val('addMod');
+  const st=document.getElementById('trAddStatus');
+  if(!nome||!mod){ if(st) st.textContent='Nome e Modalidade obrigatórios.'; return; }
+  const series=_int('addSeries'), work_s=_int('addWork');
+  const blocos=[];
+  let ordemB=0;
+  document.querySelectorAll('#trBlocos>div[id^="bloco_"]').forEach(function(div){
+    const b={ordem:ordemB++};
+    div.querySelectorAll('[name]').forEach(function(el){ const v=el.value.trim(); if(v) b[el.name]=isNaN(v)||el.type==='text'||el.tagName==='SELECT'?v:parseFloat(v); });
+    blocos.push(b);
+  });
+  const payload={nome,modalidade:mod,tipo_treino:_val('addTipo'),objetivo:_val('addObjetivo'),
+    limitador:_val('addLim'),zona:_val('addZona'),prioridade:_val('addPrio')||'principal',
+    series,work_seconds:_int('addWork'),recovery_seconds:_int('addRecovery'),
+    work_total_seconds:series&&work_s?series*work_s:null,
+    duration_total_seconds:_int('addDurTotal'),
+    alvo_power_min:_num('addPwMin'),alvo_power_max:_num('addPwMax'),
+    alvo_hr_min:_num('addHrMin'),alvo_hr_max:_num('addHrMax'),
+    alvo_rpe_min:_num('addRpeMin'),alvo_rpe_max:_num('addRpeMax'),
+    instrucoes:_val('addInstrucoes'),blocos};
+  if(st) st.textContent='A salvar…';
+  fetch('/api/training/biblioteca',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .then(r=>r.json()).then(function(d){
+      if(d.status==='ok'){ if(st) st.textContent='✓ Salvo (id '+d.id+')'; trCarregarBiblioteca(); }
+      else{ if(st) st.textContent='Erro: '+(d.mensagem||'?'); }
+    }).catch(function(e){ if(st) st.textContent='Erro: '+e.message; });
+}
+
+// Actividades recentes
+function trCarregarActividadesRecentes(){
+  const mod=(document.getElementById('analMod')||{}).value||'';
+  fetch('/api/training/actividades-recentes?n=30'+(mod?'&modalidade='+encodeURIComponent(mod):''))
+    .then(r=>r.json()).then(function(d){
+      TR_ACT_RECENTES_CACHE=d.actividades||[];
+      trRenderActividadesRecentes(TR_ACT_RECENTES_CACHE);
+    }).catch(function(){});
+}
+
+function trFiltrarActiv(){
+  const q=((document.getElementById('analQ')||{}).value||'').toLowerCase();
+  trRenderActividadesRecentes(q?TR_ACT_RECENTES_CACHE.filter(function(a){
+    return (a.nome||'').toLowerCase().includes(q)||(a.date||'').includes(q);
+  }):TR_ACT_RECENTES_CACHE);
+}
+
+function trRenderActividadesRecentes(acts){
+  const box=document.getElementById('analActiv'); if(!box) return;
+  if(!acts.length){ box.innerHTML='<div style="font-size:11px;color:#8b949e;">Sem actividades.</div>'; return; }
+  const fmtDur=function(s){if(!s)return '—';const m=Math.floor(s/60),ss=s%60;return m+':'+(ss<10?'0':'')+ss;};
+  let h='<div style="overflow-x:auto;"><table style="width:100%;font-size:11px;border-collapse:collapse;">'
+    +'<thead><tr style="color:#8b949e;"><th style="padding:4px 8px;text-align:left;">Data</th><th>Modal.</th><th>Nome</th><th>Dur.</th><th>Avg W</th><th></th></tr></thead><tbody>';
+  acts.forEach(function(a,i){
+    const sel=TR_ACT_SEL&&TR_ACT_SEL.activity_id===a.activity_id;
+    h+='<tr style="border-top:1px solid #21262d;'+(sel?'background:#1c2331':'')+'">'
+      +'<td style="padding:4px 8px;">'+(a.date||'').slice(0,10)+'</td>'
+      +'<td>'+(a.modalidade||'?')+'</td>'
+      +'<td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(a.nome||'')+'</td>'
+      +'<td>'+fmtDur(a.elapsed_time)+'</td>'
+      +'<td>'+(a.avg_watts?Math.round(a.avg_watts)+' W':'—')+'</td>'
+      +'<td><button onclick="trSelAct('+i+')" style="font-size:10px;padding:2px 7px;background:'+(sel?'#3FB950':'#161b22')+';border:1px solid '+(sel?'#3FB950':'#30363d')+';color:'+(sel?'#fff':'#8b949e')+';border-radius:4px;cursor:pointer;">'+(sel?'✓':'Sel.')+'</button></td></tr>';
+  });
+  h+='</tbody></table></div>';
+  box.innerHTML=h;
+}
+
+function trSelAct(i){
+  TR_ACT_SEL=TR_ACT_RECENTES_CACHE[i]||null;
+  const info=document.getElementById('analActSel');
+  if(TR_ACT_SEL&&info) info.textContent='Selecionada: '+(TR_ACT_SEL.date||'').slice(0,10)+' · '+(TR_ACT_SEL.modalidade||'')+' · '+(TR_ACT_SEL.nome||'');
+  trRenderActividadesRecentes(TR_ACT_RECENTES_CACHE);
+}
+
+function trAnalisarExecucao(gravar){
+  const pid=parseInt((document.getElementById('analProto')||{}).value||'');
+  if(!pid){ alert('Seleccione um protocolo.'); return; }
+  if(!TR_ACT_SEL){ alert('Seleccione uma actividade.'); return; }
+  const box=document.getElementById('trResultadoAnalise');
+  if(box) box.innerHTML='<div class="loading">a analisar…</div>';
+  fetch('/api/training/analisar-execucao',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({training_id:pid,activity_id:TR_ACT_SEL.activity_id,gravar})})
+    .then(r=>r.json()).then(function(d){ if(box) box.innerHTML=trRenderAnalise(d); })
+    .catch(function(e){ if(box) box.innerHTML=trCardErro('erro','Erro: '+e.message); });
+}
+
+function trRenderAnalise(d){
+  if(d.status!=='ok') return trCardErro('erro',d.mensagem||'?');
+  const COR={executado_conforme:'#3FB950',parcialmente:'#F4D03F',fora_protocolo:'#E74C3C',nao_avaliavel:'#8b949e'};
+  const LBL={executado_conforme:'EXECUTADO CONFORME',parcialmente:'EXECUTADO PARCIALMENTE',fora_protocolo:'FORA DO PROTOCOLO',nao_avaliavel:'NÃO AVALIÁVEL'};
+  const cor=COR[d.classificacao]||'#8b949e', lbl=LBL[d.classificacao]||d.classificacao;
+  const pct=d.percentual_execucao!=null?d.percentual_execucao+'%':'—';
+  const fmtS=function(s){if(s==null)return '—';const m=Math.floor(s/60),ss=Math.round(s%60);return m+':'+(ss<10?'0':'')+ss;};
+  let h='<div style="border:2px solid '+cor+';border-radius:10px;padding:14px 16px;margin-bottom:14px;">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;">'
+    +'<div style="font-size:24px;font-weight:700;color:'+cor+';">'+pct+'</div>'
+    +'<div style="font-size:13px;font-weight:700;color:'+cor+';">'+lbl+'</div>'
+    +'</div>'
+    +'<div style="font-size:11px;color:#8b949e;margin-top:4px;">Protocolo: <b>'+d.protocolo_nome+'</b>'+(d.limitador_protocolo?' · '+d.limitador_protocolo:'')+'</div></div>';
+  const m=d.metricas||{};
+  if(Object.keys(m).length){
+    h+='<table style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="color:#8b949e;"><th style="padding:5px 8px;text-align:left;">Métrica</th><th>Planificado</th><th>Realizado</th><th>Resultado</th></tr></thead><tbody>';
+    if(m.duracao){ const ok=m.duracao.dentro_tolerancia; h+='<tr style="border-top:1px solid #21262d;"><td style="padding:5px 8px;">Duração</td><td style="text-align:center;">'+fmtS(m.duracao.planificado_s)+'</td><td style="text-align:center;">'+fmtS(m.duracao.realizado_s)+'</td><td style="text-align:center;color:'+(ok?'#3FB950':'#F4D03F')+';">'+(ok?'✓':'⚠')+' '+m.duracao.pct+'%</td></tr>'; }
+    if(m.work){ const ok=m.work.dentro_tolerancia; h+='<tr style="border-top:1px solid #21262d;"><td style="padding:5px 8px;">Work (Z2+Z3)</td><td style="text-align:center;">'+fmtS(m.work.planificado_s)+'</td><td style="text-align:center;">'+fmtS(m.work.realizado_s)+'</td><td style="text-align:center;color:'+(ok?'#3FB950':'#F4D03F')+';">'+(ok?'✓':'⚠')+' '+m.work.pct+'%</td></tr>'; }
+    if(m.potencia){ const ok=m.potencia.dentro_alvo; h+='<tr style="border-top:1px solid #21262d;"><td style="padding:5px 8px;">Potência</td><td style="text-align:center;">'+Math.round(m.potencia.alvo_min)+'–'+Math.round(m.potencia.alvo_max)+' W</td><td style="text-align:center;">'+Math.round(m.potencia.realizado)+' W</td><td style="text-align:center;color:'+(ok?'#3FB950':'#E74C3C')+';">'+(ok?'✓':'✗')+'</td></tr>'; }
+    if(m.fc){ const ok=m.fc.dentro_alvo; h+='<tr style="border-top:1px solid #21262d;"><td style="padding:5px 8px;">FC</td><td style="text-align:center;">'+Math.round(m.fc.alvo_min)+'–'+Math.round(m.fc.alvo_max)+' bpm</td><td style="text-align:center;">'+Math.round(m.fc.realizado)+' bpm</td><td style="text-align:center;color:'+(ok?'#3FB950':'#E74C3C')+';">'+(ok?'✓':'✗')+'</td></tr>'; }
+    if(m.rpe&&m.rpe.realizado){ const ia=m.rpe.alvo_min!=null&&m.rpe.alvo_max!=null?m.rpe.realizado>=m.rpe.alvo_min&&m.rpe.realizado<=m.rpe.alvo_max:null; h+='<tr style="border-top:1px solid #21262d;"><td style="padding:5px 8px;">RPE</td><td style="text-align:center;">'+(m.rpe.alvo_min&&m.rpe.alvo_max?m.rpe.alvo_min+'–'+m.rpe.alvo_max:'—')+'</td><td style="text-align:center;">'+m.rpe.realizado+'</td><td style="text-align:center;color:'+(ia===true?'#3FB950':ia===false?'#E74C3C':'#8b949e')+';">'+(ia===true?'✓':ia===false?'✗':'—')+'</td></tr>'; }
+    h+='</tbody></table>';
+  } else {
+    h+='<div style="font-size:12px;color:#8b949e;margin-top:8px;">Dados insuficientes para avaliar métricas.</div>';
+  }
+  h+='<div style="font-size:10px;color:#484f58;margin-top:8px;">Tolerâncias: duração/work ±5% · potência ±5% · FC ±5 bpm</div>';
+  return h;
 }
 
 function trCardErro(tipo, msg){

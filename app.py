@@ -118,6 +118,125 @@ def page_training():
     return tab_training.render()
 
 
+@app.route('/api/training/contexto')
+def api_training_contexto():
+    """Determina o limitador fisiológico actual para o Training.
+
+    Hierarquia de prioridade (backend):
+      P1: VST sincronizado mais recente (vst_conjuntos + moxy_analises)
+      P2: Sessão MOXY mais recente sem VST (moxy_analises.rede_limitador)
+      P3: Sem dados → fonte='ausente', limitador_chave=None
+
+    Retorna os campos necessários para o Training sem recalcular
+    a análise MOXY/VST — usa apenas o que já foi gravado.
+    """
+    from datetime import datetime, timezone
+    _SISTEMA_PARA_CHAVE = {
+        'cardiaco': 'entrega', 'cardíaco': 'entrega',
+        'periferico': 'utilizacao', 'periférico': 'utilizacao',
+        'respiratorio': 'respiratorio', 'respiratório': 'respiratorio',
+        'autonomico': None, 'autonómico': None,
+    }
+    _SISTEMA_NOME = {
+        'cardiaco': 'Cardíaco', 'cardíaco': 'Cardíaco',
+        'periferico': 'Periférico', 'periférico': 'Periférico',
+        'respiratorio': 'Respiratório', 'respiratório': 'Respiratório',
+        'autonomico': 'Autonómico', 'autonómico': 'Autonómico',
+    }
+    def _dias(data_str):
+        if not data_str:
+            return None
+        try:
+            d = datetime.fromisoformat(data_str.replace('Z', '+00:00'))
+            agora = datetime.now(timezone.utc)
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            return max(0, (agora - d).days)
+        except Exception:
+            return None
+
+    try:
+        import drive_db_perfil as ddp
+        cn = ddp.get_conn()
+
+        # P1: VST sincronizado mais recente
+        vst_row = cn.execute(
+            "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em, "
+            "m.rede_limitador, m.us_limitador, m.pc_limitador, "
+            "m.data, m.modalidade, m.bp1_w, m.bp2_w "
+            "FROM vst_conjuntos v "
+            "LEFT JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id "
+            "WHERE v.moxy_activity_id IS NOT NULL "
+            "ORDER BY v.analisado_em DESC LIMIT 1"
+        ).fetchone()
+
+        if vst_row and vst_row[3]:  # tem rede_limitador
+            vid, mid, vst_data, rede_lim, us_lim, pc_lim, moxy_data, mod, bp1, bp2 = vst_row
+            sistema = (rede_lim or '').lower().strip()
+            chave = _SISTEMA_PARA_CHAVE.get(sistema)
+            return jsonify({
+                'status': 'ok',
+                'fonte': 'vst',
+                'sistema': sistema,
+                'limitador_chave': chave,
+                'limitador_nome': _SISTEMA_NOME.get(sistema, sistema),
+                'limitador_us': us_lim,
+                'limitador_pc': pc_lim,
+                'moxy_id': mid, 'moxy_data': moxy_data,
+                'vst_id': vid, 'vst_data': vst_data,
+                'modalidade': mod, 'bp1_w': bp1, 'bp2_w': bp2,
+                'dias_moxy': _dias(moxy_data),
+                'dias_vst': _dias(vst_data),
+            })
+
+        # P2: MOXY recente sem VST
+        moxy_row = cn.execute(
+            "SELECT activity_id, rede_limitador, us_limitador, pc_limitador, "
+            "data, modalidade, bp1_w, bp2_w "
+            "FROM moxy_analises "
+            "WHERE rede_limitador IS NOT NULL "
+            "ORDER BY data DESC LIMIT 1"
+        ).fetchone()
+
+        if moxy_row and moxy_row[1]:
+            mid, rede_lim, us_lim, pc_lim, moxy_data, mod, bp1, bp2 = moxy_row
+            sistema = (rede_lim or '').lower().strip()
+            chave = _SISTEMA_PARA_CHAVE.get(sistema)
+            return jsonify({
+                'status': 'ok',
+                'fonte': 'moxy',
+                'sistema': sistema,
+                'limitador_chave': chave,
+                'limitador_nome': _SISTEMA_NOME.get(sistema, sistema),
+                'limitador_us': us_lim,
+                'limitador_pc': pc_lim,
+                'moxy_id': mid, 'moxy_data': moxy_data,
+                'vst_id': None, 'vst_data': None,
+                'modalidade': mod, 'bp1_w': bp1, 'bp2_w': bp2,
+                'dias_moxy': _dias(moxy_data),
+                'dias_vst': None,
+            })
+
+        # P3: sem dados
+        return jsonify({
+            'status': 'ok',
+            'fonte': 'ausente',
+            'sistema': None,
+            'limitador_chave': None,
+            'limitador_nome': None,
+            'limitador_us': None,
+            'limitador_pc': None,
+            'moxy_id': None, 'moxy_data': None,
+            'vst_id': None, 'vst_data': None,
+            'modalidade': None, 'bp1_w': None, 'bp2_w': None,
+            'dias_moxy': None, 'dias_vst': None,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/training/executar', methods=['POST'])
 def api_training_executar():
     """Ponto de entrada do engine de treinamento.

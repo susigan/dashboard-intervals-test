@@ -3798,7 +3798,7 @@ function mxHistoricoEstilosMostrar(d){
  function _fetchLimitador(callback){
   if(moxyId){
    // Verificação: backend resolve pelo moxy_id — não passar limitador externo
-   callback(null, null, 'dia1_activity_id'); return;
+   callback(null, null, moxyId ? ('Day 1 · '+moxyId) : 'dia1'); return;
   }
   // Aba MOXY principal: resolução por MX_ULT_US ou último da modalidade
   if(MX_ULT_US){ callback(MX_ULT_US, MX_ULT_PC, 'sessão actual'); return; }

@@ -1,3 +1,4 @@
+import math
 """utils/interpretacao_515.py — 5-1-5 Interpretation Tool, automatizado.
 
 Portado do 515_Interpretation_tool_v2_2.xlsm. A ferramenta original faz 13
@@ -335,12 +336,37 @@ def medir(tempo, canais, blocos, fraccao_final=FRACCAO_FINAL,
             t_ = [thb[i] for i in jan_t if i < len(thb)]
             if len(t_) < 10:
                 continue
-            i_s = jan_t[s.index(min(s))]
-            i_t = jan_t[t_.index(min(t_))] if len(t_) == len(jan_t) else None
-            if i_t is not None:
+            # SmO2: encontrar jan_t correspondente ao mínimo válido
+            # (smo2[i] pode ser None quando o sensor perdeu sinal)
+            _pares_s = [
+                (j, v) for j, v in zip(jan_t, s)
+                if v is not None and isinstance(v, (int, float))
+                and math.isfinite(v)
+            ]
+            if not _pares_s:
+                continue
+            i_s = min(_pares_s, key=lambda x: x[1])[0]
+            # THb: idem, com correspondência jan_t ↔ t_
+            if len(t_) == len(jan_t):
+                _pares_t = [
+                    (j, v) for j, v in zip(jan_t, t_)
+                    if v is not None and isinstance(v, (int, float))
+                    and math.isfinite(v)
+                ]
+                i_t = min(_pares_t, key=lambda x: x[1])[0] if _pares_t else None
+            else:
+                i_t = None
+            if i_t is not None and tempo[i_s] is not None and tempo[i_t] is not None:
                 atrasos.append(tempo[i_s] - tempo[i_t])
     if atrasos:
-        med = sorted(atrasos)[len(atrasos) // 2]
+        # sorted defensivo: só floats finitos devem chegar aqui,
+        # mas filtrar por segurança para nunca comparar None
+        _atrasos_val = [a for a in atrasos
+                        if a is not None and isinstance(a, (int, float))
+                        and math.isfinite(a)]
+        med = sorted(_atrasos_val)[len(_atrasos_val) // 2] if _atrasos_val else None
+        if med is None:
+            atrasos = []  # forçar path else abaixo
         resp = ('>3 seconds' if med > 3 else
                 '1-3 seconds' if med >= 1 else 'No Delay')
         r['9'] = {'resposta': resp, 'atraso_mediano_s': round(med, 1),

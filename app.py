@@ -4632,15 +4632,30 @@ def api_training_analisar_execucao():
 
 @app.route('/api/admin/download-db')
 def api_admin_download_db():
-    """Serve o perfil_historico.db local para download manual.
+    """Serve o perfil_historico.db actual para download manual.
 
-    Como o upload automático para o Google Drive pode falhar
-    (googleapiclient não instalado ou credenciais ausentes),
-    este endpoint permite baixar o .db actualizado e fazer
-    upload manual para o Google Drive, substituindo o ficheiro anterior.
+    Uso obrigatório:
+      1. Baixar este ficheiro.
+      2. Fazer upload para o Google Drive na pasta:
+         https://drive.google.com/drive/folders/11oXQPkFrG6ZBCsvjDqb8RAiE_VfwBSfV
+         (substituir o ficheiro existente, ou criar se for a 1ª vez).
+      3. A partir daí, o upload automático passa a funcionar.
+
+    Contém todas as tabelas:
+      moxy_analises, vst_conjuntos, activity_interval_rpe,
+      moxy_rpe, moxy_cortes, moxy_modo_blocos,
+      cp_resultados, limiares_snapshots, perfil_snapshots,
+      training_library, training_library_blocks, training_executions.
     """
     import os
     from flask import send_file, abort
+    import drive_db_perfil as _ddp
+    # Garantir que o schema está actualizado antes de servir
+    try:
+        cn = _ddp.get_conn()
+        cn.close()
+    except Exception:
+        pass
     db_path = '/tmp/perfil_historico.db'
     if not os.path.exists(db_path):
         abort(404, 'perfil_historico.db não encontrado em /tmp')
@@ -4650,6 +4665,179 @@ def api_admin_download_db():
         as_attachment=True,
         download_name='perfil_historico.db',
     )
+
+
+@app.route('/api/admin/db-status')
+def api_admin_db_status():
+    """Estado do DB local e do upload para o Drive.
+
+    Mostra: tabelas, contagens, tamanho, resultado do último upload.
+    """
+    import os
+    import drive_db_perfil as _ddp
+    try:
+        cn = _ddp.get_conn()
+        tbls = cn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+        contagens = {}
+        for (t,) in tbls:
+            try:
+                n = cn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
+                contagens[t] = n
+            except Exception:
+                contagens[t] = None
+        cn.close()
+        db_path = '/tmp/perfil_historico.db'
+        tamanho_kb = round(os.path.getsize(db_path) / 1024, 1) if os.path.exists(db_path) else None
+        # Testar upload
+        ok_up, det_up = _ddp.upload()
+        return jsonify({
+            'status': 'ok',
+            'db_path': db_path,
+            'tamanho_kb': tamanho_kb,
+            'tabelas': contagens,
+            'upload_drive': {'ok': ok_up, 'detalhe': det_up},
+            'instrucoes': (
+                'Upload OK — dados persistidos no Drive.' if ok_up
+                else 'Drive indisponível. Baixe o DB em /api/admin/download-db e '
+                     'faça upload manual para a pasta do Drive '
+                     '(11oXQPkFrG6ZBCsvjDqb8RAiE_VfwBSfV).'
+            ),
+        })
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+
+
+@app.route('/admin/db')
+def page_admin_db():
+    """Página de diagnóstico e download do perfil_historico.db.
+
+    Mostra estado de todas as tabelas, resultado do upload para o Drive,
+    e disponibiliza o download do .db para upload manual.
+    """
+    html = """<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ATHELTICA — DB Admin</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#c9d1d9;font-family:system-ui,sans-serif;padding:24px;max-width:900px}
+h1{color:#5DADE2;margin-bottom:4px;font-size:20px}
+.sub{color:#8b949e;font-size:12px;margin-bottom:20px}
+.card{border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:14px;background:#161b22}
+.card h2{font-size:13px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{color:#8b949e;text-align:left;padding:5px 8px;border-bottom:1px solid #30363d}
+td{padding:5px 8px;border-bottom:1px solid #21262d}
+.ok{color:#3FB950}.warn{color:#F0883E}.err{color:#E74C3C}
+.btn{display:inline-block;padding:8px 18px;border-radius:6px;font-size:13px;font-weight:600;
+     text-decoration:none;cursor:pointer;border:none}
+.btn-dl{background:#1c2331;border:2px solid #5DADE2;color:#5DADE2}
+.btn-dl:hover{background:#5DADE2;color:#0d1117}
+.btn-status{background:#1c2331;border:1px solid #30363d;color:#8b949e}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+</style>
+</head>
+<body>
+<h1>ATHELTICA — perfil_historico.db</h1>
+<p class="sub">Diagnóstico e gestão da base de dados de perfil fisiológico.</p>
+
+<div class="card">
+  <h2>Download e instrução de bootstrap</h2>
+  <p style="font-size:13px;margin-bottom:12px;color:#c9d1d9;">
+    O upload automático para o Google Drive requer o módulo
+    <code style="color:#5DADE2;">googleapiclient</code>. Quando não está disponível,
+    os dados são gravados localmente em <code>/tmp/perfil_historico.db</code>
+    (efémero — apagado no redeploy). Para persistir:
+  </p>
+  <ol style="font-size:12px;color:#8b949e;margin:0 0 14px 18px;line-height:2;">
+    <li>Baixe o ficheiro abaixo (contém todos os dados actuais).</li>
+    <li>Faça upload para a pasta do Google Drive:<br>
+      <a href="https://drive.google.com/drive/folders/11oXQPkFrG6ZBCsvjDqb8RAiE_VfwBSfV"
+         target="_blank" style="color:#5DADE2;">
+        drive.google.com → pasta ATHELTICA
+      </a>
+    </li>
+    <li>Se o ficheiro já existir, substitua-o. Se não existir, crie-o com esse nome.</li>
+    <li>A partir daí, o upload automático passa a funcionar em cada gravação.</li>
+  </ol>
+  <a href="/api/admin/download-db" download="perfil_historico.db" class="btn btn-dl">
+    ⬇ Baixar perfil_historico.db
+  </a>
+</div>
+
+<div class="card">
+  <h2>Estado das tabelas</h2>
+  <div id="status">a carregar…</div>
+</div>
+
+<div class="card">
+  <h2>Tabelas e dados</h2>
+  <table>
+    <thead><tr><th>Tabela</th><th>Registos</th><th>Propósito</th></tr></thead>
+    <tbody id="tabelasBody"></tbody>
+  </table>
+</div>
+
+<script>
+const DESCRICOES = {
+  moxy_analises: 'Análise completa de cada sessão MOXY (BP1/BP2, limitadores, 5-1-5, Rede Causal, json_completo)',
+  vst_conjuntos: 'Par MOXY+VST — resultado da verificação (comparação BP1/BP2, recovery, limiter, hipotese, rede_causal)',
+  activity_interval_rpe: 'RPE por intervalo da actividade (start_time, tipo, elapsed_time)',
+  moxy_rpe: 'RPE por bloco MOXY (t0_s/t1_s/watts_medio)',
+  moxy_cortes: 'Cortes de tempo definidos para cada sessão MOXY',
+  moxy_modo_blocos: 'Modo WORK/RECOVERY escolhido para cada sessão',
+  cp_resultados: 'Modelos CP/W′ calculados por modalidade',
+  limiares_snapshots: 'Limiares percentílicos históricos',
+  perfil_snapshots: 'Snapshots completos do perfil metabólico',
+  training_library: 'Biblioteca de protocolos de treino planificados',
+  training_library_blocks: 'Blocos internos de cada protocolo',
+  training_executions: 'Histórico de execuções (protocolo × actividade real)',
+  sqlite_sequence: 'Interno do SQLite',
+};
+
+fetch('/api/admin/db-status').then(r=>r.json()).then(function(d){
+  const st = document.getElementById('status');
+  const tb = document.getElementById('tabelasBody');
+
+  if(d.status!=='ok'){ st.innerHTML='<span class="err">Erro: '+d.mensagem+'</span>'; return; }
+
+  const upOk = d.upload_drive&&d.upload_drive.ok;
+  st.innerHTML =
+    '<div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:10px;">'
+    +'<div><span style="color:#8b949e;font-size:11px;">Ficheiro</span><br>'
+    +'<code style="color:#5DADE2;">'+d.db_path+'</code></div>'
+    +'<div><span style="color:#8b949e;font-size:11px;">Tamanho</span><br>'
+    +'<b>'+(d.tamanho_kb||'?')+' KB</b></div>'
+    +'<div><span style="color:#8b949e;font-size:11px;">Drive</span><br>'
+    +'<span class="tag" style="background:'+(upOk?'#1a3a1a':'#3a1a1a')+';color:'+(upOk?'#3FB950':'#F0883E')+'">'
+    +(upOk?'✓ SINCRONIZADO':'⚠ APENAS LOCAL')+'</span></div>'
+    +'</div>'
+    +(upOk?'':'<div style="font-size:11px;color:#8b949e;margin-top:6px;">'+d.instrucoes+'</div>');
+
+  const tabs = d.tabelas||{};
+  let rows = '';
+  Object.entries(tabs).filter(([k])=>k!=='sqlite_sequence').sort().forEach(function([nome, n]){
+    const cor = n>0?'#3FB950':n===0?'#8b949e':'#E74C3C';
+    rows += '<tr>'
+      +'<td><code style="color:#5DADE2;">'+nome+'</code></td>'
+      +'<td style="color:'+cor+';font-weight:600;">'+(n===null?'erro':n)+'</td>'
+      +'<td style="color:#8b949e;">'+(DESCRICOES[nome]||'')+'</td>'
+      +'</tr>';
+  });
+  tb.innerHTML = rows;
+
+}).catch(function(e){
+  document.getElementById('status').innerHTML='<span class="err">Erro de rede: '+e.message+'</span>';
+});
+</script>
+</body>
+</html>"""
+    return html
 
 
 import api_moxy

@@ -4840,6 +4840,61 @@ fetch('/api/admin/db-status').then(r=>r.json()).then(function(d){
     return html
 
 
+
+@app.route('/api/activity/<activity_id>/salvar-snapshot', methods=['POST'])
+def api_activity_salvar_snapshot(activity_id):
+    """Grava snapshot completo de uma actividade em perfil_historico.db.
+
+    Recebe do frontend (JSON):
+      {
+        nome, data, modalidade, elapsed_time, avg_watts, avg_hr,
+        rpe_sessao, z1_sec, z2_sec, z3_sec,
+        icu_intervals: [...],    ← lista de icu_intervals
+        rpe_intervalos: {...}    ← {start_time: rpe} de activity_interval_rpe
+      }
+
+    Grava em activity_snapshot (upsert por activity_id).
+    Depois chama upload() para o Drive.
+    """
+    try:
+        import drive_db_perfil as ddp, json as _json
+        from datetime import datetime as _dt
+        corpo = request.get_json(force=True, silent=True) or {}
+        agora = _dt.now().isoformat(timespec='seconds')
+        cn = ddp.get_conn()
+
+        # Garantir que o schema existe (cria a tabela se não existir)
+        import perfil_schema as ps
+        ps.aplicar_schema(cn)
+
+        cn.execute(
+            """INSERT OR REPLACE INTO activity_snapshot
+               (activity_id, nome, data, modalidade, elapsed_time,
+                avg_watts, avg_hr, rpe_sessao,
+                z1_sec, z2_sec, z3_sec,
+                icu_intervals_json, rpe_intervalos_json, gravado_em)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (str(activity_id),
+             corpo.get('nome'), corpo.get('data'), corpo.get('modalidade'),
+             corpo.get('elapsed_time'), corpo.get('avg_watts'),
+             corpo.get('avg_hr'), corpo.get('rpe_sessao'),
+             corpo.get('z1_sec'), corpo.get('z2_sec'), corpo.get('z3_sec'),
+             _json.dumps(corpo.get('icu_intervals') or [], ensure_ascii=False),
+             _json.dumps(corpo.get('rpe_intervalos') or {}, ensure_ascii=False),
+             agora))
+        cn.commit()
+        ok_up, det_up = ddp.upload()
+        return jsonify({
+            'status': 'ok' if ok_up else 'gravado_sem_upload',
+            'activity_id': str(activity_id),
+            'upload_ok': ok_up,
+            'upload_detalhe': None if ok_up else det_up,
+        })
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 import api_moxy
 api_moxy.registar(app)
 

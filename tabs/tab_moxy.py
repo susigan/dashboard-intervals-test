@@ -3790,11 +3790,18 @@ function mxHistoricoEstilosMostrar(d){
  const modEl=document.getElementById('mxModalidade');
  const mod=modEl?modEl.value:'';
 
- // resolver o limitador MOXY em 3 níveis
+ // resolver o limitador MOXY para o histórico.
+ // Quando moxyId existe (Verificação com Day1 conhecido): NÃO usar MX_ULT_US
+ // nem /api/moxy/limitador/<mod> — ambos podem pertencer a outra sessão.
+ // Deixar o backend resolver via api_moxy_rede(moxy_id_atual).
+ // Quando moxyId não existe (aba MOXY principal): manter comportamento anterior.
  function _fetchLimitador(callback){
-  // nível 1: MX_ULT_US já carregado nesta sessão
+  if(moxyId){
+   // Verificação: backend resolve pelo moxy_id — não passar limitador externo
+   callback(null, null, 'dia1_activity_id'); return;
+  }
+  // Aba MOXY principal: resolução por MX_ULT_US ou último da modalidade
   if(MX_ULT_US){ callback(MX_ULT_US, MX_ULT_PC, 'sessão actual'); return; }
-  // nível 2: novo endpoint por modalidade (independente do vínculo VST)
   if(mod){
    fetch('/api/moxy/limitador/'+encodeURIComponent(mod))
    .then(r=>r.json()).then(function(ld){

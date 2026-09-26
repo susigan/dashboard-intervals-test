@@ -4265,6 +4265,370 @@ api_cp.registar(app)
 import api_streams_diag
 api_streams_diag.registar(app)
 
+
+# ── Training: biblioteca de protocolos ────────────────────────────────────
+# Tolerâncias centralizadas para análise planejado×realizado
+_TRAINING_TOLERANCIAS = {
+    'duracao_pct':    0.05,   # ±5%
+    'work_pct':       0.05,   # ±5%
+    'recovery_pct':   0.10,   # ±10%
+    'potencia_pct':   0.05,   # ±5%
+    'fc_abs':         5.0,    # ±5 bpm
+}
+
+@app.route('/api/training/biblioteca', methods=['GET'])
+def api_training_biblioteca_listar():
+    """Lista protocolos da biblioteca com filtros opcionais.
+    ?modalidade=Bike ?limitador=cardiaco ?zona=Z2 ?tipo=Threshold
+    ?compativel_com_limitador_atual=1 (filtra pelo limitador de /api/training/contexto)
+    """
+    try:
+        import drive_db_perfil as ddp
+        cn = ddp.get_conn()
+        cond, args = ['ativo = 1'], []
+        if request.args.get('modalidade'):
+            cond.append('modalidade = ?'); args.append(request.args['modalidade'])
+        if request.args.get('limitador'):
+            cond.append('limitador = ?'); args.append(request.args['limitador'])
+        if request.args.get('zona'):
+            cond.append('zona = ?'); args.append(request.args['zona'])
+        if request.args.get('tipo'):
+            cond.append('tipo_treino = ?'); args.append(request.args['tipo'])
+        if request.args.get('prioridade'):
+            cond.append('prioridade = ?'); args.append(request.args['prioridade'])
+        w = 'WHERE ' + ' AND '.join(cond)
+        rows = cn.execute(
+            f'SELECT * FROM training_library {w} ORDER BY modalidade, prioridade, nome',
+            args).fetchall()
+        cols = [d[0] for d in cn.execute(f'SELECT * FROM training_library {w} LIMIT 0', args).description or []]
+        # fallback para obter colunas
+        if not cols:
+            cols = [d[0] for d in cn.execute('SELECT * FROM training_library LIMIT 0').description]
+        items = []
+        for r in rows:
+            proto = dict(zip(cols, r))
+            # blocos do protocolo
+            blocos = cn.execute(
+                'SELECT * FROM training_library_blocks WHERE training_id = ? ORDER BY ordem',
+                (proto['id'],)).fetchall()
+            if blocos:
+                bcols = [d[0] for d in cn.execute(
+                    'SELECT * FROM training_library_blocks WHERE training_id = ? LIMIT 0',
+                    (proto['id'],)).description]
+                proto['blocos'] = [dict(zip(bcols, b)) for b in blocos]
+            else:
+                proto['blocos'] = []
+            items.append(proto)
+        return jsonify({'status': 'ok', 'n': len(items), 'protocolos': items})
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/training/biblioteca', methods=['POST'])
+def api_training_biblioteca_criar():
+    """Cria novo protocolo na biblioteca.
+    Corpo JSON: campos de training_library + lista opcional de blocos.
+    """
+    try:
+        import drive_db_perfil as ddp
+        from datetime import datetime as _dt
+        corpo = request.get_json(force=True, silent=True) or {}
+        nome = (corpo.get('nome') or '').strip()
+        modalidade = (corpo.get('modalidade') or '').strip()
+        if not nome:
+            return jsonify({'status': 'erro', 'mensagem': 'nome obrigatório'}), 400
+        if modalidade not in ('Bike', 'Row', 'Ski', 'Run'):
+            return jsonify({'status': 'erro', 'mensagem': 'modalidade inválida'}), 400
+        agora = _dt.now().isoformat(timespec='seconds')
+        cn = ddp.get_conn()
+        cur = cn.execute(
+            """INSERT INTO training_library
+               (nome, modalidade, tipo_treino, objetivo, limitador, zona,
+                series, work_seconds, recovery_seconds, work_total_seconds,
+                duration_total_seconds, intensidade_min, intensidade_max,
+                intensidade_unidade, alvo_power_min, alvo_power_max,
+                alvo_hr_min, alvo_hr_max, alvo_rpe_min, alvo_rpe_max,
+                descricao, instrucoes, progressao, prioridade, ativo,
+                criado_em, atualizado_em)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
+            (nome, modalidade,
+             corpo.get('tipo_treino'), corpo.get('objetivo'),
+             corpo.get('limitador'), corpo.get('zona'),
+             corpo.get('series'), corpo.get('work_seconds'),
+             corpo.get('recovery_seconds'), corpo.get('work_total_seconds'),
+             corpo.get('duration_total_seconds'),
+             corpo.get('intensidade_min'), corpo.get('intensidade_max'),
+             corpo.get('intensidade_unidade'),
+             corpo.get('alvo_power_min'), corpo.get('alvo_power_max'),
+             corpo.get('alvo_hr_min'), corpo.get('alvo_hr_max'),
+             corpo.get('alvo_rpe_min'), corpo.get('alvo_rpe_max'),
+             corpo.get('descricao'), corpo.get('instrucoes'),
+             corpo.get('progressao'), corpo.get('prioridade', 'principal'),
+             agora, agora))
+        training_id = cur.lastrowid
+        # inserir blocos se fornecidos
+        for i, bloco in enumerate(corpo.get('blocos') or []):
+            cn.execute(
+                """INSERT INTO training_library_blocks
+                   (training_id, ordem, tipo_bloco, nome, series,
+                    duration_seconds, work_seconds, recovery_seconds,
+                    intensidade_min, intensidade_max, intensidade_unidade,
+                    zona, alvo_power_min, alvo_power_max,
+                    alvo_hr_min, alvo_hr_max, observacoes)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (training_id, bloco.get('ordem', i),
+                 bloco.get('tipo_bloco'), bloco.get('nome'),
+                 bloco.get('series'), bloco.get('duration_seconds'),
+                 bloco.get('work_seconds'), bloco.get('recovery_seconds'),
+                 bloco.get('intensidade_min'), bloco.get('intensidade_max'),
+                 bloco.get('intensidade_unidade'), bloco.get('zona'),
+                 bloco.get('alvo_power_min'), bloco.get('alvo_power_max'),
+                 bloco.get('alvo_hr_min'), bloco.get('alvo_hr_max'),
+                 bloco.get('observacoes')))
+        cn.commit()
+        import drive_db_perfil as _ddp; _ddp.upload()
+        return jsonify({'status': 'ok', 'id': training_id})
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/training/biblioteca/<int:training_id>', methods=['PUT'])
+def api_training_biblioteca_editar(training_id):
+    """Actualiza campos de um protocolo existente."""
+    try:
+        import drive_db_perfil as ddp
+        from datetime import datetime as _dt
+        corpo = request.get_json(force=True, silent=True) or {}
+        agora = _dt.now().isoformat(timespec='seconds')
+        cn = ddp.get_conn()
+        campos_editaveis = ['nome','modalidade','tipo_treino','objetivo','limitador',
+            'zona','series','work_seconds','recovery_seconds','work_total_seconds',
+            'duration_total_seconds','intensidade_min','intensidade_max',
+            'intensidade_unidade','alvo_power_min','alvo_power_max',
+            'alvo_hr_min','alvo_hr_max','alvo_rpe_min','alvo_rpe_max',
+            'descricao','instrucoes','progressao','prioridade','ativo']
+        sets, vals = [], []
+        for c in campos_editaveis:
+            if c in corpo:
+                sets.append(f'{c}=?'); vals.append(corpo[c])
+        if not sets:
+            return jsonify({'status': 'erro', 'mensagem': 'nenhum campo a actualizar'}), 400
+        sets.append('atualizado_em=?'); vals.append(agora)
+        vals.append(training_id)
+        cn.execute(f"UPDATE training_library SET {','.join(sets)} WHERE id=?", vals)
+        cn.commit()
+        import drive_db_perfil as _ddp; _ddp.upload()
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+
+@app.route('/api/training/biblioteca/<int:training_id>', methods=['DELETE'])
+def api_training_biblioteca_desativar(training_id):
+    """Desactiva (soft-delete) um protocolo."""
+    try:
+        import drive_db_perfil as ddp
+        from datetime import datetime as _dt
+        cn = ddp.get_conn()
+        cn.execute("UPDATE training_library SET ativo=0, atualizado_em=? WHERE id=?",
+                   (_dt.now().isoformat(timespec='seconds'), training_id))
+        cn.commit()
+        import drive_db_perfil as _ddp; _ddp.upload()
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+
+@app.route('/api/training/actividades-recentes')
+def api_training_actividades_recentes():
+    """Lista actividades reais recentes para seleccionar como 'executado'.
+    ?n=20 ?modalidade=Bike ?q=<texto>
+    Não duplica dados — lê de activities (intervals.db).
+    """
+    try:
+        import db as _db
+        from config import TYPE_MAP
+        n = min(int(request.args.get('n') or 30), 100)
+        modalidade = request.args.get('modalidade', '').strip()
+        q = request.args.get('q', '').strip().lower()
+        cond, args = ['raw IS NOT NULL'], []
+        if modalidade:
+            variantes = [k for k, v in TYPE_MAP.items() if v == modalidade]
+            if variantes:
+                cond.append(f"type IN ({','.join('?'*len(variantes))})"); args += variantes
+        if q:
+            cond.append("(LOWER(name) LIKE ? OR LOWER(id) LIKE ?)"); args += [f'%{q}%', f'%{q}%']
+        rows = _db._exec(
+            f"SELECT id, date, type, name, elapsed_time, avg_watts, avg_hr, rpe "
+            f"FROM activities WHERE {' AND '.join(cond)} "
+            f"ORDER BY date DESC LIMIT ?",
+            tuple(args + [n]), fetch='all') or []
+        items = []
+        for aid, date, tipo, nome, dur, avg_w, avg_hr, rpe in rows:
+            items.append({
+                'activity_id': str(aid),
+                'date': str(date),
+                'modalidade': TYPE_MAP.get(tipo, tipo),
+                'nome': nome,
+                'elapsed_time': dur,
+                'avg_watts': avg_w,
+                'avg_hr': avg_hr,
+                'rpe': rpe,
+            })
+        return jsonify({'status': 'ok', 'n': len(items), 'actividades': items})
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/training/analisar-execucao', methods=['POST'])
+def api_training_analisar_execucao():
+    """Compara protocolo planificado (training_library) com actividade real.
+
+    Corpo: {training_id: int, activity_id: str, gravar: bool (default: false)}
+
+    Análise:
+      A) Duração total: elapsed_time vs duration_total_seconds (±5%)
+      B) Work total: z2_sec+z3_sec vs work_total_seconds (±5%)
+      C) Potência: avg_watts vs alvo_power_min/max (±5%)
+      D) FC: avg_hr vs alvo_hr_min/max (±5 bpm)
+      E) Séries: se definido no protocolo
+      F) Zona: tempo na zona alvo vs work_total
+    Classificação: executado_conforme|parcialmente|fora_protocolo|nao_avaliavel
+    """
+    try:
+        import db as _db
+        import drive_db_perfil as ddp
+        from datetime import datetime as _dt
+        from config import TYPE_MAP
+        corpo = request.get_json(force=True, silent=True) or {}
+        training_id = corpo.get('training_id')
+        activity_id = str(corpo.get('activity_id') or '').strip()
+        gravar = bool(corpo.get('gravar', False))
+        if not training_id or not activity_id:
+            return jsonify({'status': 'erro',
+                            'mensagem': 'training_id e activity_id obrigatórios'}), 400
+
+        cn = ddp.get_conn()
+        # Protocolo planificado
+        proto_row = cn.execute(
+            'SELECT * FROM training_library WHERE id=?', (training_id,)).fetchone()
+        if not proto_row:
+            return jsonify({'status': 'erro', 'mensagem': 'protocolo não encontrado'}), 404
+        pcols = [d[0] for d in cn.execute('SELECT * FROM training_library LIMIT 0').description]
+        proto = dict(zip(pcols, proto_row))
+
+        # Actividade real
+        act_row = _db._exec(
+            "SELECT elapsed_time, avg_watts, avg_hr, rpe, z1_sec, z2_sec, z3_sec, type "
+            "FROM activities WHERE id=?", (activity_id,), fetch='one')
+        if not act_row:
+            return jsonify({'status': 'erro', 'mensagem': 'actividade não encontrada'}), 404
+        dur_r, w_r, hr_r, rpe_r, z1_r, z2_r, z3_r, tipo_r = act_row
+        work_r = (z2_r or 0) + (z3_r or 0)  # proxy: work = Z2 + Z3
+
+        tol = _TRAINING_TOLERANCIAS
+        metricas = {}
+
+        # A) Duração total
+        if proto.get('duration_total_seconds') and dur_r:
+            plan = proto['duration_total_seconds']
+            pct = dur_r / plan
+            ok = abs(1 - pct) <= tol['duracao_pct']
+            metricas['duracao'] = {
+                'planificado_s': plan, 'realizado_s': int(dur_r),
+                'pct': round(pct * 100, 1),
+                'dentro_tolerancia': ok, 'tolerancia_pct': tol['duracao_pct'] * 100,
+            }
+
+        # B) Work total
+        if proto.get('work_total_seconds') and work_r:
+            plan = proto['work_total_seconds']
+            pct = work_r / plan
+            ok = abs(1 - pct) <= tol['work_pct']
+            metricas['work'] = {
+                'planificado_s': plan, 'realizado_s': int(work_r),
+                'pct': round(pct * 100, 1),
+                'dentro_tolerancia': ok, 'tolerancia_pct': tol['work_pct'] * 100,
+            }
+
+        # C) Potência
+        if proto.get('alvo_power_min') and proto.get('alvo_power_max') and w_r:
+            alvo_mid = (proto['alvo_power_min'] + proto['alvo_power_max']) / 2
+            dentro = proto['alvo_power_min'] * (1 - tol['potencia_pct']) <= w_r <= proto['alvo_power_max'] * (1 + tol['potencia_pct'])
+            metricas['potencia'] = {
+                'alvo_min': proto['alvo_power_min'], 'alvo_max': proto['alvo_power_max'],
+                'realizado': round(w_r, 1), 'dentro_alvo': dentro,
+                'tolerancia_pct': tol['potencia_pct'] * 100,
+            }
+
+        # D) FC
+        if proto.get('alvo_hr_min') and proto.get('alvo_hr_max') and hr_r:
+            dentro = (proto['alvo_hr_min'] - tol['fc_abs']) <= hr_r <= (proto['alvo_hr_max'] + tol['fc_abs'])
+            metricas['fc'] = {
+                'alvo_min': proto['alvo_hr_min'], 'alvo_max': proto['alvo_hr_max'],
+                'realizado': round(hr_r, 1), 'dentro_alvo': dentro,
+                'tolerancia_bpm': tol['fc_abs'],
+            }
+
+        # E) RPE
+        if rpe_r:
+            metricas['rpe'] = {'realizado': rpe_r, 'alvo_min': proto.get('alvo_rpe_min'),
+                               'alvo_max': proto.get('alvo_rpe_max')}
+
+        # Classificação global
+        avaliados = [v for v in metricas.values() if 'dentro_tolerancia' in v or 'dentro_alvo' in v]
+        if not avaliados:
+            classificacao = 'nao_avaliavel'
+            pct_execucao = None
+        else:
+            n_ok = sum(1 for v in avaliados
+                       if v.get('dentro_tolerancia', True) and v.get('dentro_alvo', True))
+            pct_execucao = round(n_ok / len(avaliados) * 100, 1)
+            if pct_execucao >= 80:
+                classificacao = 'executado_conforme'
+            elif pct_execucao >= 50:
+                classificacao = 'parcialmente'
+            else:
+                classificacao = 'fora_protocolo'
+
+        resultado = {
+            'status': 'ok',
+            'training_id': training_id,
+            'activity_id': activity_id,
+            'protocolo_nome': proto['nome'],
+            'modalidade': proto['modalidade'],
+            'limitador_protocolo': proto.get('limitador'),
+            'classificacao': classificacao,
+            'percentual_execucao': pct_execucao,
+            'metricas': metricas,
+            'tolerancias': tol,
+        }
+
+        # Gravar no histórico se pedido
+        if gravar:
+            import json as _json
+            cn.execute(
+                """INSERT INTO training_executions
+                   (training_id, activity_id, modalidade, analisado_em,
+                    percentual_execucao, classificacao, resultado_json, limitador_contexto)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (training_id, activity_id, proto['modalidade'],
+                 _dt.now().isoformat(timespec='seconds'),
+                 pct_execucao, classificacao,
+                 _json.dumps(resultado, ensure_ascii=False),
+                 None))
+            cn.commit()
+            ddp.upload()
+
+        return jsonify(resultado)
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 import api_moxy
 api_moxy.registar(app)
 

@@ -202,6 +202,91 @@ MIGRACOES = [
     ('vst_conjuntos', 'analisado_em', 'TEXT'),
 ]
 
+
+# ── Biblioteca mestre de treinos ──────────────────────────────────────────
+# Protocolo planificado — independente das actividades reais.
+# Campos de intensidade aceitam NULL quando não aplicáveis (FC-only, RPE-only).
+SCHEMA_TRAINING_LIBRARY = """
+CREATE TABLE IF NOT EXISTS training_library (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome                 TEXT    NOT NULL,
+    modalidade           TEXT    NOT NULL,     -- Bike|Row|Ski|Run
+    tipo_treino          TEXT,                 -- Threshold|VO2|SIT|HIIT|Z2|...
+    objetivo             TEXT,
+    limitador            TEXT,                 -- cardiaco|periferico|respiratorio|...
+    zona                 TEXT,                 -- Z1|Z2|Z3
+    series               INTEGER,
+    work_seconds         INTEGER,
+    recovery_seconds     INTEGER,
+    work_total_seconds   INTEGER,              -- series × work_seconds (calculado ou manual)
+    duration_total_seconds INTEGER,
+    intensidade_min      REAL,
+    intensidade_max      REAL,
+    intensidade_unidade  TEXT,                 -- W|%CP|%FTP|%FC|RPE|min/500m
+    alvo_power_min       REAL,
+    alvo_power_max       REAL,
+    alvo_hr_min          REAL,
+    alvo_hr_max          REAL,
+    alvo_rpe_min         REAL,
+    alvo_rpe_max         REAL,
+    descricao            TEXT,
+    instrucoes           TEXT,
+    progressao           TEXT,
+    prioridade           TEXT    DEFAULT 'principal',  -- principal|possível|complementar
+    ativo                INTEGER DEFAULT 1,
+    criado_em            TEXT    NOT NULL,
+    atualizado_em        TEXT    NOT NULL
+);
+"""
+
+# Blocos internos de um protocolo (filha de training_library).
+# Permite representar treinos multi-fase:
+#   BLOCO 1: Warm-up 10 min
+#   BLOCO 2: 4 × 8 min Work / 3 min Recovery
+#   BLOCO 3: Cool-down 10 min
+SCHEMA_TRAINING_LIBRARY_BLOCKS = """
+CREATE TABLE IF NOT EXISTS training_library_blocks (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    training_id          INTEGER NOT NULL REFERENCES training_library(id),
+    ordem                INTEGER NOT NULL DEFAULT 0,
+    tipo_bloco           TEXT,                 -- warmup|work|recovery|cooldown|Z2
+    nome                 TEXT,
+    series               INTEGER,
+    duration_seconds     INTEGER,
+    work_seconds         INTEGER,
+    recovery_seconds     INTEGER,
+    intensidade_min      REAL,
+    intensidade_max      REAL,
+    intensidade_unidade  TEXT,
+    zona                 TEXT,
+    alvo_power_min       REAL,
+    alvo_power_max       REAL,
+    alvo_hr_min          REAL,
+    alvo_hr_max          REAL,
+    observacoes          TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_tlb_training ON training_library_blocks(training_id);
+"""
+
+# Registo de execuções — histórico planejado×realizado.
+# Permite saber "este protocolo foi realizado antes?" e análise de progressão.
+SCHEMA_TRAINING_EXECUTIONS = """
+CREATE TABLE IF NOT EXISTS training_executions (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    training_id          INTEGER REFERENCES training_library(id),
+    activity_id          TEXT    NOT NULL,
+    modalidade           TEXT,
+    analisado_em         TEXT    NOT NULL,
+    percentual_execucao  REAL,
+    classificacao        TEXT,   -- executado_conforme|parcialmente|fora_protocolo|nao_avaliavel
+    resultado_json       TEXT,   -- JSON com detalhes da análise
+    limitador_contexto   TEXT    -- limitador activo no momento da execução
+);
+CREATE INDEX IF NOT EXISTS ix_te_training ON training_executions(training_id);
+CREATE INDEX IF NOT EXISTS ix_te_activity ON training_executions(activity_id);
+"""
+
+
 # Escolha do atleta: usar os blocos WORK/RECOVERY da Intervals.icu
 # (icu_intervals) ou a detecção automática nossa, quando a API falha ou
 # dá blocos que o atleta não confia. Por omissão ('automatico' quando
@@ -281,6 +366,9 @@ def aplicar_schema(conn):
     conn.execute(SCHEMA_MODO_BLOCOS)
     conn.executescript(SCHEMA_VST_CONJUNTO)
     conn.executescript(SCHEMA_ACTIVITY_INTERVAL_RPE)
+    conn.executescript(SCHEMA_TRAINING_LIBRARY)
+    conn.executescript(SCHEMA_TRAINING_LIBRARY_BLOCKS)
+    conn.executescript(SCHEMA_TRAINING_EXECUTIONS)
     conn.commit()
     migrar(conn)
     return conn

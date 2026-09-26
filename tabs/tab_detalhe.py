@@ -959,11 +959,15 @@ function mxSalvarRpe(input){
   }]})
  }).then(r=>r.json()).then(function(d){
   if(d.status==='ok'||d.status==='gravado_sem_upload'){
-   input.style.borderColor='#3FB950'; // verde = ok
+   input.style.borderColor='#3FB950';
    input.value=rpe===0?'':String(rpe);
+   // Se o upload para o Drive falhou, mostrar botão de download do DB
+   if(d.status==='gravado_sem_upload'){
+    dbDownloadMostrarBadge('RPE gravado localmente — Drive indisponível. Baixe o DB e faça upload manual para o Google Drive.');
+   }
    setTimeout(function(){input.style.borderColor='#30363d';},1800);
   } else {
-   input.style.borderColor='#E74C3C'; // vermelho = erro
+   input.style.borderColor='#E74C3C';
    console.error('[mxSalvarRpe]',d.mensagem);
    setTimeout(function(){input.style.borderColor='#30363d';},2500);
   }
@@ -972,6 +976,35 @@ function mxSalvarRpe(input){
   console.error('[mxSalvarRpe] rede:',e.message);
   setTimeout(function(){input.style.borderColor='#30363d';},2500);
  });
+}
+
+// ── Badge de download do DB ───────────────────────────────────────────────
+// Aparece sempre que um dado é gravado localmente mas o upload Drive falhou.
+// Persiste na página até ser descartado ou o utilizador fizer o download.
+function dbDownloadMostrarBadge(msg){
+ let badge = document.getElementById('_dbDownloadBadge');
+ if(!badge){
+  badge = document.createElement('div');
+  badge.id = '_dbDownloadBadge';
+  badge.style.cssText = [
+   'position:fixed;bottom:18px;right:18px;z-index:9999',
+   'background:#1c2331;border:1px solid #F0883E;border-radius:8px',
+   'padding:12px 16px;max-width:360px;font-size:12px;color:#c9d1d9',
+   'box-shadow:0 4px 20px #0008'
+  ].join(';');
+  document.body.appendChild(badge);
+ }
+ badge.innerHTML = '<div style="color:#F0883E;font-weight:600;margin-bottom:6px;">⚠ Dados gravados localmente</div>'
+  +'<div style="font-size:11px;color:#8b949e;margin-bottom:10px;">'+(msg||'O DB está em /tmp — efémero. Faça download e upload manual para o Google Drive.')+'</div>'
+  +'<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+  +'<a href="/api/admin/download-db" download="perfil_historico.db" '
+  +'style="padding:6px 14px;background:#1c2331;border:1px solid #F0883E;color:#F0883E;'
+  +'border-radius:6px;font-size:12px;text-decoration:none;font-weight:600;">'
+  +'⬇ Baixar perfil_historico.db</a>'
+  +'<button onclick="document.getElementById('_dbDownloadBadge').remove()" '
+  +'style="padding:6px 10px;background:none;border:1px solid #30363d;color:#8b949e;'
+  +'border-radius:6px;font-size:11px;cursor:pointer;">Fechar</button>'
+  +'</div>';
 }
 
 function carregarModoBlocos(){

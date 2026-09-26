@@ -2333,26 +2333,43 @@ function mxVstRenderRedeCausal(d){
 
  const lim=rc.limitador||{};
  const sistema=lim.sistema||'';
- const rotulo=lim.rotulo||'—';
- const pct=lim.pct!=null?Math.round(lim.pct)+'%':'';
- const confianca=lim.confianca||'';
- const aresta=lim.aresta_dominante||'';
  const leitura=lim.leitura||'';
+ // controlo_pct existe no contrato actual de api_moxy_rede (distribuição por sistema)
+ const cp=lim.controlo_pct||{};
 
- // Cor por sistema (mesma lógica da aba Rede Causal)
- const COR={'cardiaco':'#5DADE2','cardíaco':'#5DADE2',
-             'periferico':'#3FB950','periférico':'#3FB950',
-             'respiratorio':'#F4D03F','respiratório':'#F4D03F',
-             'autonomico':'#A371F7','autonómico':'#A371F7'};
+ // Cor e nome legível por sistema — mesmo padrão de mxCardRede.
+ // Usar sistema (campo garantido), não lim.rotulo (campo ausente na def2).
+ const COR={
+  'cardiaco':'#5DADE2','cardíaco':'#5DADE2',
+  'periferico':'#3FB950','periférico':'#3FB950',
+  'respiratorio':'#F4D03F','respiratório':'#F4D03F',
+  'autonomico':'#A371F7','autonómico':'#A371F7',
+ };
+ // Nome legível: capitalização amigável do sistema.
+ // Não usar lim.rotulo porque o campo não existe na def2 de rede_causal.py.
+ const NOME_SISTEMA={
+  'cardiaco':'Cardíaco','cardíaco':'Cardíaco',
+  'periferico':'Periférico','periférico':'Periférico',
+  'respiratorio':'Respiratório','respiratório':'Respiratório',
+  'autonomico':'Autonómico','autonómico':'Autonómico',
+ };
  const cor=COR[sistema]||'#8b949e';
+ const nomeExibido=sistema?NOME_SISTEMA[sistema]||sistema.toUpperCase():'indeterminado';
 
- // Mapeamento canónico sistema → nome (reutiliza SISTEMA_PARA_CHAVE já existente)
+ // Mapeamento canónico Rede Causal → chave de intervenção.
+ // IMPORTANTE: 'cardiaco' → 'entrega' (NÃO 'utilizacao').
+ // 'utilizacao'/'fornecimento' pertencem ao eixo US do 5-1-5, não à Rede Causal.
  const SISTEMA_PARA_CHAVE={
   'cardiaco':'entrega','cardíaco':'entrega',
   'periferico':'utilizacao','periférico':'utilizacao',
   'respiratorio':'respiratorio','respiratório':'respiratorio',
  };
- const chave=SISTEMA_PARA_CHAVE[sistema]||null;
+ const chave=sistema?SISTEMA_PARA_CHAVE[sistema]||null:null;
+
+ // Distribuição dos sistemas (controlo_pct existe e tem os percentuais reais)
+ const ks=Object.keys(cp).sort(function(a,b){ return cp[b]-cp[a]; });
+ const distrib=ks.length
+  ?ks.map(function(k){ return k+' '+cp[k]+'%'; }).join(' · '):'';
 
  box.innerHTML='<div class="card" style="border-left:3px solid '+cor+';padding:10px 14px;">'
   +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">'
@@ -2360,8 +2377,8 @@ function mxVstRenderRedeCausal(d){
   +'<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">'
   +'<div>'
   +'<div style="font-size:9px;color:#8b949e;">Sistema dominante</div>'
-  +'<div style="font-size:16px;font-weight:700;color:'+cor+';">'+rotulo+'</div>'
-  +(pct?'<div style="font-size:10px;color:#8b949e;">'+pct+(confianca?' · '+confianca:'')+'</div>':'')
+  +'<div style="font-size:16px;font-weight:700;color:'+cor+';">'+nomeExibido+'</div>'
+  +(distrib?'<div style="font-size:10px;color:#8b949e;">'+distrib+'</div>':'')
   +'</div>'
   +(chave?'<div>'
   +'<div style="font-size:9px;color:#8b949e;">Limitador canónico</div>'
@@ -2369,7 +2386,6 @@ function mxVstRenderRedeCausal(d){
   +'</div>':'')
   +'</div>'
   +(leitura?'<div style="font-size:10px;color:#8b949e;margin-top:6px;font-style:italic;">'+leitura+'</div>':'')
-  +(aresta?'<div style="font-size:10px;color:#6e7681;margin-top:3px;">Aresta: '+aresta+'</div>':'')
   +'</div>';
 }
 

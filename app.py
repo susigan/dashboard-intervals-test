@@ -4629,6 +4629,29 @@ def api_training_analisar_execucao():
                         'trace': traceback.format_exc()}), 500
 
 
+
+@app.route('/api/admin/download-db')
+def api_admin_download_db():
+    """Serve o perfil_historico.db local para download manual.
+
+    Como o upload automático para o Google Drive pode falhar
+    (googleapiclient não instalado ou credenciais ausentes),
+    este endpoint permite baixar o .db actualizado e fazer
+    upload manual para o Google Drive, substituindo o ficheiro anterior.
+    """
+    import os
+    from flask import send_file, abort
+    db_path = '/tmp/perfil_historico.db'
+    if not os.path.exists(db_path):
+        abort(404, 'perfil_historico.db não encontrado em /tmp')
+    return send_file(
+        db_path,
+        mimetype='application/octet-stream',
+        as_attachment=True,
+        download_name='perfil_historico.db',
+    )
+
+
 import api_moxy
 api_moxy.registar(app)
 

@@ -1956,6 +1956,8 @@ function mxVstToggleTemporal(chave, visivel){
  if(MX_VST_ULT) mxDesenharVstTemporal(MX_VST_ULT);
 }
 let MX_VST_CONJUNTOS_SALVOS = [];  // ultima lista de /api/moxy/vst/conjuntos_salvos, para o botao ABRIR por indice
+let MX_VID = null;  // vst_activity_id activo (para botão Gravar análise)
+let MX_MID = null;  // moxy_activity_id activo (para botão Gravar análise)
 const DEBUG_VST_VERIFICACAO = false;  // true mostra a revisao completa (so' para desenvolvimento)
 
 function mxVstCarregarConjuntosSalvos(){
@@ -1993,13 +1995,17 @@ function mxVstCarregarConjuntosSalvos(){
 }
 
 function mxVstAbrirVerificacao(ix){
- // usa o vinculo ja' salvo -- carrega o VST (que ja' auto-carrega a
- // Moxy vinculada, comportamento existente), sem recalcular nada
+ // Usa o resultado já salvo em BD via /api/moxy/vst/resultado/<vid>
+ // NÃO chama mxVstCarregar() — evita tentar recalcular com ID que
+ // pode já não existir na Intervals.icu (atividade reimportada).
  const c = MX_VST_CONJUNTOS_SALVOS[ix];
  if(!c) return;
  const selVst=document.getElementById('mxVstSelect');
  if(selVst){ selVst.value=c.vst_activity_id; }
- mxVstCarregar();
+ // Usar o cache directamente — mxVstCarregarConjunto já tem o fallback correcto
+ MX_VID = c.vst_activity_id;
+ MX_MID = c.moxy_activity_id;
+ mxVstCarregarConjunto(c.vst_activity_id);
 }
 
 function mxVstCarregarLista(){

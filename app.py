@@ -120,123 +120,133 @@ def page_training():
 
 @app.route('/api/training/contexto')
 def api_training_contexto():
-    """Determina o limitador fisiológico actual para o Training.
+    """Contexto fisiológico por modalidade para a aba Training.
 
-    Hierarquia de prioridade (backend):
-      P1: VST sincronizado mais recente (vst_conjuntos + moxy_analises)
-      P2: Sessão MOXY mais recente sem VST (moxy_analises.rede_limitador)
-      P3: Sem dados → fonte='ausente', limitador_chave=None
-
-    Retorna os campos necessários para o Training sem recalcular
-    a análise MOXY/VST — usa apenas o que já foi gravado.
+    Retorna {status:'ok', modalidades:{bike:{...}, row:{...}, ski:{...}, run:{...}}}.
+    Por modalidade:
+      P1: VST+MOXY sincronizado → usa o mais recente daquela modalidade.
+      P2: MOXY mais recente da modalidade (sem VST).
+      Regra especial: se P2 é mais recente que P1 e é outra sessão → usa P2.
+      P3: sem dados → fonte='ausente'.
     """
     from datetime import datetime, timezone
-    _SISTEMA_PARA_CHAVE = {
-        'cardiaco': 'entrega', 'cardíaco': 'entrega',
-        'periferico': 'utilizacao', 'periférico': 'utilizacao',
-        'respiratorio': 'respiratorio', 'respiratório': 'respiratorio',
-        'autonomico': None, 'autonómico': None,
-    }
+    import traceback as _tb
+
     _SISTEMA_NOME = {
         'cardiaco': 'Cardíaco', 'cardíaco': 'Cardíaco',
         'periferico': 'Periférico', 'periférico': 'Periférico',
         'respiratorio': 'Respiratório', 'respiratório': 'Respiratório',
         'autonomico': 'Autonómico', 'autonómico': 'Autonómico',
     }
-    def _dias(data_str):
-        if not data_str:
-            return None
+    _SISTEMA_PARA_CHAVE = {
+        'cardiaco': 'entrega', 'cardíaco': 'entrega',
+        'periferico': 'utilizacao', 'periférico': 'utilizacao',
+        'respiratorio': 'respiratorio', 'respiratório': 'respiratorio',
+        'autonomico': None, 'autonómico': None,
+    }
+    # modality_code (training_master) → nome usado em moxy_analises.modalidade
+    _MOD = {'bike': 'Bike', 'row': 'Row', 'ski': 'Ski', 'run': 'Run'}
+
+    def _dias(v):
+        if not v: return None
         try:
-            d = datetime.fromisoformat(data_str.replace('Z', '+00:00'))
-            agora = datetime.now(timezone.utc)
-            if d.tzinfo is None:
-                d = d.replace(tzinfo=timezone.utc)
-            return max(0, (agora - d).days)
+            d = datetime.fromisoformat(str(v).replace('Z', '+00:00'))
+            now = datetime.now(timezone.utc)
+            if d.tzinfo is None: d = d.replace(tzinfo=timezone.utc)
+            return max(0, (now - d).days)
         except Exception:
             return None
+
+    def _sf(v):
+        try: return float(v) if v is not None else None
+        except: return None
+
+    def _build(fonte, rede_lim, us_lim, pc_lim,
+               moxy_data, moxy_id, vst_id, vst_data,
+               bp1_w, bp2_w, bp1_bpm, bp2_bpm):
+        s = str(rede_lim or '').lower().strip()
+        return {
+            'fonte': fonte,
+            'sistema': s or None,
+            'limitador_nome': _SISTEMA_NOME.get(s) if s else None,
+            'limitador_chave': _SISTEMA_PARA_CHAVE.get(s) if s else None,
+            'us_limitador': us_lim, 'pc_limitador': pc_lim,
+            'moxy_id': moxy_id, 'moxy_data': str(moxy_data) if moxy_data else None,
+            'vst_id': vst_id,   'vst_data':  str(vst_data)  if vst_data  else None,
+            'bp1_w': _sf(bp1_w), 'bp2_w': _sf(bp2_w),
+            'bp1_bpm': _sf(bp1_bpm), 'bp2_bpm': _sf(bp2_bpm),
+            'dias_moxy': _dias(moxy_data), 'dias_vst': _dias(vst_data),
+        }
+
+    _AUSENTE = {
+        'fonte': 'ausente', 'sistema': None,
+        'limitador_nome': None, 'limitador_chave': None,
+        'us_limitador': None, 'pc_limitador': None,
+        'moxy_id': None, 'moxy_data': None,
+        'vst_id': None, 'vst_data': None,
+        'bp1_w': None, 'bp2_w': None, 'bp1_bpm': None, 'bp2_bpm': None,
+        'dias_moxy': None, 'dias_vst': None,
+    }
 
     try:
         import drive_db_perfil as ddp
         cn = ddp.get_conn()
+        resultado = {}
 
-        # P1: VST sincronizado mais recente
-        vst_row = cn.execute(
-            "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em, "
-            "m.rede_limitador, m.us_limitador, m.pc_limitador, "
-            "m.data, m.modalidade, m.bp1_w, m.bp2_w "
-            "FROM vst_conjuntos v "
-            "LEFT JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id "
-            "WHERE v.moxy_activity_id IS NOT NULL "
-            "ORDER BY v.analisado_em DESC LIMIT 1"
-        ).fetchone()
+        for mod_code, mod_nome in _MOD.items():
+            # P1: VST+MOXY sincronizado desta modalidade
+            vst_row = cn.execute(
+                "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
+                " m.rede_limitador, m.us_limitador, m.pc_limitador,"
+                " m.data, m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm"
+                " FROM vst_conjuntos v"
+                " JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id"
+                " WHERE LOWER(m.modalidade)=LOWER(?)"
+                " AND v.moxy_activity_id IS NOT NULL AND m.rede_limitador IS NOT NULL"
+                " ORDER BY v.analisado_em DESC LIMIT 1",
+                (mod_nome,)).fetchone()
 
-        if vst_row and vst_row[3]:  # tem rede_limitador
-            vid, mid, vst_data, rede_lim, us_lim, pc_lim, moxy_data, mod, bp1, bp2 = vst_row
-            sistema = (rede_lim or '').lower().strip()
-            chave = _SISTEMA_PARA_CHAVE.get(sistema)
-            return jsonify({
-                'status': 'ok',
-                'fonte': 'vst',
-                'sistema': sistema,
-                'limitador_chave': chave,
-                'limitador_nome': _SISTEMA_NOME.get(sistema, sistema),
-                'limitador_us': us_lim,
-                'limitador_pc': pc_lim,
-                'moxy_id': mid, 'moxy_data': moxy_data,
-                'vst_id': vid, 'vst_data': vst_data,
-                'modalidade': mod, 'bp1_w': bp1, 'bp2_w': bp2,
-                'dias_moxy': _dias(moxy_data),
-                'dias_vst': _dias(vst_data),
-            })
+            # P2: MOXY mais recente desta modalidade (independente de VST)
+            moxy_row = cn.execute(
+                "SELECT activity_id, rede_limitador, us_limitador, pc_limitador,"
+                " data, bp1_w, bp2_w, bp1_bpm, bp2_bpm"
+                " FROM moxy_analises"
+                " WHERE LOWER(modalidade)=LOWER(?) AND rede_limitador IS NOT NULL"
+                " ORDER BY data DESC LIMIT 1",
+                (mod_nome,)).fetchone()
 
-        # P2: MOXY recente sem VST
-        moxy_row = cn.execute(
-            "SELECT activity_id, rede_limitador, us_limitador, pc_limitador, "
-            "data, modalidade, bp1_w, bp2_w "
-            "FROM moxy_analises "
-            "WHERE rede_limitador IS NOT NULL "
-            "ORDER BY data DESC LIMIT 1"
-        ).fetchone()
+            if vst_row and moxy_row:
+                vst_dt = str(vst_row[2] or '')   # analisado_em do VST
+                mxy_dt = str(moxy_row[4] or '')   # data do MOXY
+                # Regra especial: MOXY posterior e diferente → usa MOXY
+                if mxy_dt > vst_dt and moxy_row[0] != vst_row[1]:
+                    resultado[mod_code] = _build(
+                        'moxy', moxy_row[1], moxy_row[2], moxy_row[3],
+                        moxy_row[4], moxy_row[0], None, None,
+                        moxy_row[5], moxy_row[6], moxy_row[7], moxy_row[8])
+                else:
+                    resultado[mod_code] = _build(
+                        'vst', vst_row[3], vst_row[4], vst_row[5],
+                        vst_row[6], vst_row[1], vst_row[0], vst_row[2],
+                        vst_row[7], vst_row[8], vst_row[9], vst_row[10])
+            elif moxy_row:
+                resultado[mod_code] = _build(
+                    'moxy', moxy_row[1], moxy_row[2], moxy_row[3],
+                    moxy_row[4], moxy_row[0], None, None,
+                    moxy_row[5], moxy_row[6], moxy_row[7], moxy_row[8])
+            elif vst_row:
+                resultado[mod_code] = _build(
+                    'vst', vst_row[3], vst_row[4], vst_row[5],
+                    vst_row[6], vst_row[1], vst_row[0], vst_row[2],
+                    vst_row[7], vst_row[8], vst_row[9], vst_row[10])
+            else:
+                resultado[mod_code] = dict(_AUSENTE)
 
-        if moxy_row and moxy_row[1]:
-            mid, rede_lim, us_lim, pc_lim, moxy_data, mod, bp1, bp2 = moxy_row
-            sistema = (rede_lim or '').lower().strip()
-            chave = _SISTEMA_PARA_CHAVE.get(sistema)
-            return jsonify({
-                'status': 'ok',
-                'fonte': 'moxy',
-                'sistema': sistema,
-                'limitador_chave': chave,
-                'limitador_nome': _SISTEMA_NOME.get(sistema, sistema),
-                'limitador_us': us_lim,
-                'limitador_pc': pc_lim,
-                'moxy_id': mid, 'moxy_data': moxy_data,
-                'vst_id': None, 'vst_data': None,
-                'modalidade': mod, 'bp1_w': bp1, 'bp2_w': bp2,
-                'dias_moxy': _dias(moxy_data),
-                'dias_vst': None,
-            })
-
-        # P3: sem dados
-        return jsonify({
-            'status': 'ok',
-            'fonte': 'ausente',
-            'sistema': None,
-            'limitador_chave': None,
-            'limitador_nome': None,
-            'limitador_us': None,
-            'limitador_pc': None,
-            'moxy_id': None, 'moxy_data': None,
-            'vst_id': None, 'vst_data': None,
-            'modalidade': None, 'bp1_w': None, 'bp2_w': None,
-            'dias_moxy': None, 'dias_vst': None,
-        })
+        cn.close()
+        return jsonify({'status': 'ok', 'modalidades': resultado})
     except Exception as e:
-        import traceback
         return jsonify({'status': 'erro', 'mensagem': str(e),
-                        'trace': traceback.format_exc()}), 500
-
-
+                        'trace': _tb.format_exc()}), 500
 @app.route('/api/training/executar', methods=['POST'])
 def api_training_executar():
     """Ponto de entrada do engine de treinamento.

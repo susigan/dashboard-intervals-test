@@ -123,14 +123,20 @@ def api_training_contexto():
     """Contexto fisiológico por modalidade para a aba Training.
 
     Retorna {status:'ok', modalidades:{bike:{...}, row:{...}, ski:{...}, run:{...}}}.
-    Por modalidade:
-      P1: VST+MOXY sincronizado → usa o mais recente daquela modalidade.
-      P2: MOXY mais recente da modalidade (sem VST).
-      Regra especial: se P2 é mais recente que P1 e é outra sessão → usa P2.
-      P3: sem dados → fonte='ausente'.
+
+    Por modalidade, hierarquia:
+      P1: VST+MOXY sincronizado com moxy_analises gravado
+          (JOIN vst_conjuntos + moxy_analises com rede_limitador)
+      P1b: VST+MOXY sincronizado mas sem moxy_analises —
+           extrai rede_causal do resultado_json do VST
+           (resultado_json['rede_causal']['limitador']['sistema'])
+      P2: MOXY recente com moxy_analises.rede_limitador
+      P3: ausente — mas ainda mostra cards sem PRINCIPAL/SUPLEMENTAR
+
+    Regra especial: MOXY posterior ao VST → usa o mais recente.
     """
     from datetime import datetime, timezone
-    import traceback as _tb
+    import json as _json, traceback as _tb
 
     _SISTEMA_NOME = {
         'cardiaco': 'Cardíaco', 'cardíaco': 'Cardíaco',
@@ -144,32 +150,40 @@ def api_training_contexto():
         'respiratorio': 'respiratorio', 'respiratório': 'respiratorio',
         'autonomico': None, 'autonómico': None,
     }
-    # modality_code (training_master) → nome usado em moxy_analises.modalidade
     _MOD = {'bike': 'Bike', 'row': 'Row', 'ski': 'Ski', 'run': 'Run'}
 
     def _dias(v):
         if not v: return None
         try:
-            d = datetime.fromisoformat(str(v).replace('Z', '+00:00'))
+            d = datetime.fromisoformat(str(v).replace('Z','+00:00'))
             now = datetime.now(timezone.utc)
             if d.tzinfo is None: d = d.replace(tzinfo=timezone.utc)
-            return max(0, (now - d).days)
-        except Exception:
-            return None
+            return max(0, (now-d).days)
+        except: return None
 
     def _sf(v):
         try: return float(v) if v is not None else None
         except: return None
 
-    def _build(fonte, rede_lim, us_lim, pc_lim,
+    def _sistema_de_resultado_json(rjson_str):
+        """Extrai sistema da rede causal do resultado_json do vst_conjuntos."""
+        if not rjson_str: return None
+        try:
+            rj = _json.loads(rjson_str) if isinstance(rjson_str, str) else rjson_str
+            rc = rj.get('rede_causal') or {}
+            lim = rc.get('limitador') or {}
+            return str(lim.get('sistema') or '').lower().strip() or None
+        except: return None
+
+    def _build(fonte, sistema, us_lim, pc_lim,
                moxy_data, moxy_id, vst_id, vst_data,
                bp1_w, bp2_w, bp1_bpm, bp2_bpm):
-        s = str(rede_lim or '').lower().strip()
+        s_ = str(sistema or '').lower().strip()
         return {
             'fonte': fonte,
-            'sistema': s or None,
-            'limitador_nome': _SISTEMA_NOME.get(s) if s else None,
-            'limitador_chave': _SISTEMA_PARA_CHAVE.get(s) if s else None,
+            'sistema': s_ or None,
+            'limitador_nome': _SISTEMA_NOME.get(s_) if s_ else None,
+            'limitador_chave': _SISTEMA_PARA_CHAVE.get(s_) if s_ else None,
             'us_limitador': us_lim, 'pc_limitador': pc_lim,
             'moxy_id': moxy_id, 'moxy_data': str(moxy_data) if moxy_data else None,
             'vst_id': vst_id,   'vst_data':  str(vst_data)  if vst_data  else None,
@@ -194,9 +208,11 @@ def api_training_contexto():
         resultado = {}
 
         for mod_code, mod_nome in _MOD.items():
-            # P1: VST+MOXY sincronizado desta modalidade
-            vst_row = cn.execute(
+
+            # ── P1: VST+MOXY com moxy_analises gravado ──────────────────
+            vst_com_moxy = cn.execute(
                 "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
+                " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json,"
                 " m.rede_limitador, m.us_limitador, m.pc_limitador,"
                 " m.data, m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm"
                 " FROM vst_conjuntos v"
@@ -206,7 +222,26 @@ def api_training_contexto():
                 " ORDER BY v.analisado_em DESC LIMIT 1",
                 (mod_nome,)).fetchone()
 
-            # P2: MOXY mais recente desta modalidade (independente de VST)
+            # ── P1b: VST+MOXY sem moxy_analises — usa resultado_json ────
+            vst_sem_moxy = None
+            if not vst_com_moxy:
+                vst_sem_moxy = cn.execute(
+                    "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
+                    " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json,"
+                    " m.modalidade, m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm, m.data"
+                    " FROM vst_conjuntos v"
+                    " LEFT JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id"
+                    " WHERE v.moxy_activity_id IS NOT NULL"
+                    " AND v.resultado_json IS NOT NULL"
+                    " ORDER BY v.analisado_em DESC LIMIT 1",
+                    ()).fetchone()
+                # Verificar que é desta modalidade (modalidade pode ser NULL se moxy_analises vazio)
+                if vst_sem_moxy:
+                    mod_check = str(vst_sem_moxy[6] or '').strip()
+                    if mod_check and mod_check.lower() != mod_nome.lower():
+                        vst_sem_moxy = None  # é de outra modalidade
+
+            # ── P2: MOXY mais recente desta modalidade ───────────────────
             moxy_row = cn.execute(
                 "SELECT activity_id, rede_limitador, us_limitador, pc_limitador,"
                 " data, bp1_w, bp2_w, bp1_bpm, bp2_bpm"
@@ -215,30 +250,39 @@ def api_training_contexto():
                 " ORDER BY data DESC LIMIT 1",
                 (mod_nome,)).fetchone()
 
-            if vst_row and moxy_row:
-                vst_dt = str(vst_row[2] or '')   # analisado_em do VST
-                mxy_dt = str(moxy_row[4] or '')   # data do MOXY
-                # Regra especial: MOXY posterior e diferente → usa MOXY
-                if mxy_dt > vst_dt and moxy_row[0] != vst_row[1]:
+            # ── Decidir qual fonte usar ───────────────────────────────────
+            if vst_com_moxy:
+                vst_dt = str(vst_com_moxy[2] or '')
+                mxy_dt = str(moxy_row[4] if moxy_row else '')
+                # Regra especial: MOXY posterior e sessão diferente → usa MOXY
+                if moxy_row and mxy_dt > vst_dt and moxy_row[0] != vst_com_moxy[1]:
                     resultado[mod_code] = _build(
                         'moxy', moxy_row[1], moxy_row[2], moxy_row[3],
                         moxy_row[4], moxy_row[0], None, None,
                         moxy_row[5], moxy_row[6], moxy_row[7], moxy_row[8])
                 else:
                     resultado[mod_code] = _build(
-                        'vst', vst_row[3], vst_row[4], vst_row[5],
-                        vst_row[6], vst_row[1], vst_row[0], vst_row[2],
-                        vst_row[7], vst_row[8], vst_row[9], vst_row[10])
+                        'vst', vst_com_moxy[6], vst_com_moxy[7], vst_com_moxy[8],
+                        vst_com_moxy[9], vst_com_moxy[1], vst_com_moxy[0], vst_com_moxy[2],
+                        vst_com_moxy[10], vst_com_moxy[11], vst_com_moxy[12], vst_com_moxy[13])
+
+            elif vst_sem_moxy:
+                # P1b: extrair sistema do resultado_json
+                sistema = _sistema_de_resultado_json(vst_sem_moxy[5])
+                bp1 = _sf(vst_sem_moxy[7]) or _sf(vst_sem_moxy[3])
+                bp2 = _sf(vst_sem_moxy[8]) or _sf(vst_sem_moxy[4])
+                resultado[mod_code] = _build(
+                    'vst', sistema, None, None,
+                    vst_sem_moxy[11], vst_sem_moxy[1],
+                    vst_sem_moxy[0], vst_sem_moxy[2],
+                    bp1, bp2,
+                    _sf(vst_sem_moxy[9]), _sf(vst_sem_moxy[10]))
+
             elif moxy_row:
                 resultado[mod_code] = _build(
                     'moxy', moxy_row[1], moxy_row[2], moxy_row[3],
                     moxy_row[4], moxy_row[0], None, None,
                     moxy_row[5], moxy_row[6], moxy_row[7], moxy_row[8])
-            elif vst_row:
-                resultado[mod_code] = _build(
-                    'vst', vst_row[3], vst_row[4], vst_row[5],
-                    vst_row[6], vst_row[1], vst_row[0], vst_row[2],
-                    vst_row[7], vst_row[8], vst_row[9], vst_row[10])
             else:
                 resultado[mod_code] = dict(_AUSENTE)
 

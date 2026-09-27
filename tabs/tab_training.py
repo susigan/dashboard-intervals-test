@@ -250,7 +250,7 @@ function trAplicarFiltros(){
   })).then(function(resultados){
     let h = '';
     resultados.forEach(function(res){
-      h += _renderSecaoMod(res.mod, res.data, res.ctx);
+      h += _renderSecaoMod(res.mod, res.data, res.ctx, fZona, fTipo, fLim, fWork);
     });
     box.innerHTML = h || '<div style="color:#8b949e;font-size:12px;">Sem opções encontradas.</div>';
   });
@@ -270,7 +270,7 @@ function _limCodeFromCtx(md){
 }
 
 // ── Renderizar secção de uma modalidade ──────────────────────────────────
-function _renderSecaoMod(mod, data, ctx){
+function _renderSecaoMod(mod, data, ctx, fZona, fTipo, fLim, fWork){
   const cor = TR_MOD_COR[mod]||'#8b949e';
   const nome = TR_MOD_NOME[mod]||mod;
   const lnome = ctx.limitador_nome||'—';
@@ -300,20 +300,30 @@ function _renderSecaoMod(mod, data, ctx){
     h += '</div>'; return h;
   }
 
-  // Mostrar no máximo 3 inicialmente
-  const visiveis = ops.slice(0,3);
-  const resto    = ops.slice(3);
+  // Com filtros activos: mostrar TODOS os resultados sem "Ver mais"
+  // Sem filtros (todas zonas, todos tipos, etc.): mostrar 3 + "Ver mais"
+  const temFiltrosActivos = !!(fZona || fTipo || fLim || fWork);
 
-  h += '<div style="display:flex;flex-wrap:wrap;gap:10px;">';
-  visiveis.forEach(function(op){ h += _card(op, cor); });
-  h += '</div>';
-
-  if(resto.length){
-    h += '<details style="margin-top:8px;">'
-      +'<summary style="cursor:pointer;font-size:11px;color:#484f58;">▼ Ver mais opções ('+resto.length+')</summary>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">';
-    resto.forEach(function(op){ h += _card(op, cor); });
-    h += '</div></details>';
+  if(temFiltrosActivos){
+    // Filtro aplicado → todos os resultados visíveis, ordenados por ranking
+    h += '<div style="display:flex;flex-wrap:wrap;gap:10px;">';
+    ops.forEach(function(op){ h += _card(op, cor); });
+    h += '</div>';
+  } else {
+    // Sem filtros → mostrar 3 primeiros (diversidade de zona) + Ver mais
+    const visiveis = ops.slice(0,3);
+    const resto    = ops.slice(3);
+    h += '<div style="display:flex;flex-wrap:wrap;gap:10px;">';
+    visiveis.forEach(function(op){ h += _card(op, cor); });
+    h += '</div>';
+    if(resto.length){
+      h += '<details style="margin-top:8px;">'
+        +'<summary style="cursor:pointer;font-size:11px;color:#484f58;">'
+        +'▼ Ver mais opções ('+resto.length+')</summary>'
+        +'<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">';
+      resto.forEach(function(op){ h += _card(op, cor); });
+      h += '</div></details>';
+    }
   }
 
   h += '</div>';
@@ -348,7 +358,9 @@ function _card(op, corMod){
     +'<div style="font-size:13px;font-weight:600;color:#c9d1d9;margin-bottom:4px;">'+fmt+'</div>'
     +'<div style="font-size:11px;color:#8b949e;margin-bottom:6px;'
     +'border-left:2px solid '+corRel+';padding-left:6px;">'
-    +'Favorece <b style="color:'+corRel+';">'+op.limiter_nome+'</b></div>'
+    +'Favorece <b style="color:'+corRel+';">'+op.limiter_nome+'</b>'
+    +(op.notes?'<div style="font-size:10px;color:#484f58;margin-top:2px;">'+op.notes+'</div>':'')
+    +'</div>'
     // métricas
     +'<div style="font-size:11px;display:grid;grid-template-columns:auto 1fr;gap:2px 8px;">'
     +'<span style="color:#6e7681;">Work</span><span>'+op.work_range+'</span>'

@@ -120,30 +120,17 @@ def page_training():
 
 @app.route('/api/training/contexto')
 def api_training_contexto():
-    """Contexto fisiológico por modalidade para a aba Training.
+    """Determina o limitador fisiológico actual para o Training.
 
-    Retorna para cada modalidade (bike/row/ski/run) o limitador mais
-    recente/relevante, seguindo:
-      P1+5: se existe VST+MOXY sincronizado MAS há MOXY mais recente →
-             usa o MOXY mais recente (regra 5 do spec)
-      P1:   VST+MOXY sincronizado
-      P2:   MOXY mais recente sem VST
-      P3:   sem dados → fonte='ausente'
+    Hierarquia de prioridade (backend):
+      P1: VST sincronizado mais recente (vst_conjuntos + moxy_analises)
+      P2: Sessão MOXY mais recente sem VST (moxy_analises.rede_limitador)
+      P3: Sem dados → fonte='ausente', limitador_chave=None
+
+    Retorna os campos necessários para o Training sem recalcular
+    a análise MOXY/VST — usa apenas o que já foi gravado.
     """
     from datetime import datetime, timezone
-    import traceback as _tb
-    def _dias(data_str):
-        if not data_str:
-            return None
-        try:
-            d = datetime.fromisoformat(str(data_str).replace('Z', '+00:00'))
-            agora = datetime.now(timezone.utc)
-            if d.tzinfo is None:
-                d = d.replace(tzinfo=timezone.utc)
-            return max(0, (agora - d).days)
-        except Exception:
-            return None
-
     _SISTEMA_PARA_CHAVE = {
         'cardiaco': 'entrega', 'cardíaco': 'entrega',
         'periferico': 'utilizacao', 'periférico': 'utilizacao',
@@ -156,98 +143,99 @@ def api_training_contexto():
         'respiratorio': 'Respiratório', 'respiratório': 'Respiratório',
         'autonomico': 'Autonómico', 'autonómico': 'Autonómico',
     }
-    _MOD_MAP = {'bike': 'Bike', 'row': 'Row', 'ski': 'Ski', 'run': 'Run'}
+    def _dias(data_str):
+        if not data_str:
+            return None
+        try:
+            d = datetime.fromisoformat(data_str.replace('Z', '+00:00'))
+            agora = datetime.now(timezone.utc)
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            return max(0, (agora - d).days)
+        except Exception:
+            return None
 
     try:
         import drive_db_perfil as ddp
         cn = ddp.get_conn()
-        resultado = {}
 
-        for mod_code, mod_nome in _MOD_MAP.items():
-            vst_row = cn.execute(
-                "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
-                " m.rede_limitador, m.us_limitador, m.pc_limitador,"
-                " m.data AS moxy_data, m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm"
-                " FROM vst_conjuntos v"
-                " JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id"
-                " WHERE LOWER(m.modalidade)=LOWER(?)"
-                " AND v.moxy_activity_id IS NOT NULL AND m.rede_limitador IS NOT NULL"
-                " ORDER BY v.analisado_em DESC LIMIT 1",
-                (mod_nome,)).fetchone()
+        # P1: VST sincronizado mais recente
+        vst_row = cn.execute(
+            "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em, "
+            "m.rede_limitador, m.us_limitador, m.pc_limitador, "
+            "m.data, m.modalidade, m.bp1_w, m.bp2_w "
+            "FROM vst_conjuntos v "
+            "LEFT JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id "
+            "WHERE v.moxy_activity_id IS NOT NULL "
+            "ORDER BY v.analisado_em DESC LIMIT 1"
+        ).fetchone()
 
-            moxy_row = cn.execute(
-                "SELECT activity_id, rede_limitador, us_limitador, pc_limitador,"
-                " data, bp1_w, bp2_w, bp1_bpm, bp2_bpm"
-                " FROM moxy_analises"
-                " WHERE LOWER(modalidade)=LOWER(?) AND rede_limitador IS NOT NULL"
-                " ORDER BY data DESC LIMIT 1",
-                (mod_nome,)).fetchone()
+        if vst_row and vst_row[3]:  # tem rede_limitador
+            vid, mid, vst_data, rede_lim, us_lim, pc_lim, moxy_data, mod, bp1, bp2 = vst_row
+            sistema = (rede_lim or '').lower().strip()
+            chave = _SISTEMA_PARA_CHAVE.get(sistema)
+            return jsonify({
+                'status': 'ok',
+                'fonte': 'vst',
+                'sistema': sistema,
+                'limitador_chave': chave,
+                'limitador_nome': _SISTEMA_NOME.get(sistema, sistema),
+                'limitador_us': us_lim,
+                'limitador_pc': pc_lim,
+                'moxy_id': mid, 'moxy_data': moxy_data,
+                'vst_id': vid, 'vst_data': vst_data,
+                'modalidade': mod, 'bp1_w': bp1, 'bp2_w': bp2,
+                'dias_moxy': _dias(moxy_data),
+                'dias_vst': _dias(vst_data),
+            })
 
-            def _build(fonte, rede_lim, us_lim, pc_lim, moxy_data,
-                        moxy_id, vst_id, vst_data, bp1_w, bp2_w, bp1_bpm, bp2_bpm):
-                sistema = str(rede_lim or '').lower().strip()
-                chave = _SISTEMA_PARA_CHAVE.get(sistema)
-                return {
-                    'fonte': fonte,
-                    'sistema': sistema or None,
-                    'limitador_chave': chave,
-                    'limitador_nome': _SISTEMA_NOME.get(sistema) if sistema else None,
-                    'limitador_us': us_lim, 'limitador_pc': pc_lim,
-                    'moxy_id': moxy_id,
-                    'moxy_data': str(moxy_data) if moxy_data else None,
-                    'vst_id': vst_id,
-                    'vst_data': str(vst_data) if vst_data else None,
-                    'bp1_w': float(bp1_w) if bp1_w is not None else None,
-                    'bp2_w': float(bp2_w) if bp2_w is not None else None,
-                    'bp1_bpm': float(bp1_bpm) if bp1_bpm is not None else None,
-                    'bp2_bpm': float(bp2_bpm) if bp2_bpm is not None else None,
-                    'dias_moxy': _dias(moxy_data),
-                    'dias_vst': _dias(vst_data),
-                }
+        # P2: MOXY recente sem VST
+        moxy_row = cn.execute(
+            "SELECT activity_id, rede_limitador, us_limitador, pc_limitador, "
+            "data, modalidade, bp1_w, bp2_w "
+            "FROM moxy_analises "
+            "WHERE rede_limitador IS NOT NULL "
+            "ORDER BY data DESC LIMIT 1"
+        ).fetchone()
 
-            _AUSENTE = {
-                'fonte': 'ausente', 'sistema': None,
-                'limitador_chave': None, 'limitador_nome': None,
-                'limitador_us': None, 'limitador_pc': None,
-                'moxy_id': None, 'moxy_data': None,
+        if moxy_row and moxy_row[1]:
+            mid, rede_lim, us_lim, pc_lim, moxy_data, mod, bp1, bp2 = moxy_row
+            sistema = (rede_lim or '').lower().strip()
+            chave = _SISTEMA_PARA_CHAVE.get(sistema)
+            return jsonify({
+                'status': 'ok',
+                'fonte': 'moxy',
+                'sistema': sistema,
+                'limitador_chave': chave,
+                'limitador_nome': _SISTEMA_NOME.get(sistema, sistema),
+                'limitador_us': us_lim,
+                'limitador_pc': pc_lim,
+                'moxy_id': mid, 'moxy_data': moxy_data,
                 'vst_id': None, 'vst_data': None,
-                'bp1_w': None, 'bp2_w': None,
-                'bp1_bpm': None, 'bp2_bpm': None,
-                'dias_moxy': None, 'dias_vst': None,
-            }
+                'modalidade': mod, 'bp1_w': bp1, 'bp2_w': bp2,
+                'dias_moxy': _dias(moxy_data),
+                'dias_vst': None,
+            })
 
-            if vst_row and moxy_row:
-                vst_dt = str(vst_row[2] or '')   # analisado_em
-                mxy_dt = str(moxy_row[4] or '')   # data
-                # Regra 5: MOXY mais recente que o par VST e é outra sessão
-                if mxy_dt > vst_dt and moxy_row[0] != vst_row[1]:
-                    r = moxy_row
-                    resultado[mod_code] = _build(
-                        'moxy', r[1], r[2], r[3], r[4],
-                        r[0], None, None, r[5], r[6], r[7], r[8])
-                else:
-                    resultado[mod_code] = _build(
-                        'vst', vst_row[3], vst_row[4], vst_row[5], vst_row[6],
-                        vst_row[1], vst_row[0], vst_row[2],
-                        vst_row[7], vst_row[8], vst_row[9], vst_row[10])
-            elif moxy_row:
-                r = moxy_row
-                resultado[mod_code] = _build(
-                    'moxy', r[1], r[2], r[3], r[4],
-                    r[0], None, None, r[5], r[6], r[7], r[8])
-            elif vst_row:
-                resultado[mod_code] = _build(
-                    'vst', vst_row[3], vst_row[4], vst_row[5], vst_row[6],
-                    vst_row[1], vst_row[0], vst_row[2],
-                    vst_row[7], vst_row[8], vst_row[9], vst_row[10])
-            else:
-                resultado[mod_code] = dict(_AUSENTE)
-
-        cn.close()
-        return jsonify({'status': 'ok', 'modalidades': resultado})
+        # P3: sem dados
+        return jsonify({
+            'status': 'ok',
+            'fonte': 'ausente',
+            'sistema': None,
+            'limitador_chave': None,
+            'limitador_nome': None,
+            'limitador_us': None,
+            'limitador_pc': None,
+            'moxy_id': None, 'moxy_data': None,
+            'vst_id': None, 'vst_data': None,
+            'modalidade': None, 'bp1_w': None, 'bp2_w': None,
+            'dias_moxy': None, 'dias_vst': None,
+        })
     except Exception as e:
+        import traceback
         return jsonify({'status': 'erro', 'mensagem': str(e),
-                        'trace': _tb.format_exc()}), 500
+                        'trace': traceback.format_exc()}), 500
+
 
 @app.route('/api/training/executar', methods=['POST'])
 def api_training_executar():
@@ -4338,48 +4326,41 @@ def api_training_biblioteca_listar():
 
 @app.route('/api/training/opcoes')
 def api_training_opcoes():
-    """Opções de treino do training_master.db para uma modalidade.
-
-    Query params:
-      modalidade  (obrigatório): bike|row|ski|run
-      limitador   : limiter_code actual (CD/UT/RD/FR/ME/CO2)
-      zona        : Z1|Z2|Z3
-      tipo        : código ou nome parcial do training_type
-      work        : categoria (lt1/1_3/3_5/5_10/10_20/gt20)
-      bp1_w, bp2_w, bp1_bpm, bp2_bpm: valores individuais para cálculo dinâmico
-      n           : máximo de resultados (default=10)
+    """Opções do training engine SQLite para uma modalidade.
+    Usa tm_buscar_opcoes() de utils/training.py (secção B — engine SQLite).
     """
     try:
         import sys as _sys
         _sys.path.insert(0, 'utils')
-        from training_master import buscar_opcoes, limiter_code_from_chave
+        import training as _tr
         mod = (request.args.get('modalidade') or '').lower().strip()
         if not mod or mod not in ('bike', 'row', 'ski', 'run'):
-            return jsonify({'status': 'erro', 'mensagem': 'modalidade obrigatória: bike|row|ski|run'}), 400
-
+            return jsonify({'status': 'erro',
+                            'mensagem': 'modalidade obrigatória: bike|row|ski|run'}), 400
         lim_code = request.args.get('limitador') or None
-        # Se vier como chave canónica (entrega/utilizacao/respiratorio) converter
+        # Normalizar limiter_code (pode vir como chave canónica ou código directo)
         if lim_code and lim_code not in ('CD', 'UT', 'RD', 'FR', 'ME', 'CO2'):
-            lim_code = limiter_code_from_chave(lim_code) or lim_code
+            lim_code = _tr.tm_limiter_code(lim_code) or lim_code
 
-        def _f(v):
-            try: return float(v) if v not in (None, '') else None
+        def _f(k):
+            v = request.args.get(k)
+            if v in (None, ''): return None
+            try: return float(v)
             except: return None
 
-        opcoes = buscar_opcoes(
+        opcoes = _tr.tm_buscar_opcoes(
             modality_code=mod,
             limiter_code_atual=lim_code,
             filtro_zona=request.args.get('zona') or None,
             filtro_tipo=request.args.get('tipo') or None,
             filtro_limitador=request.args.get('filtro_limitador') or None,
             filtro_work=request.args.get('work') or None,
-            bp1_w=_f(request.args.get('bp1_w')),
-            bp2_w=_f(request.args.get('bp2_w')),
-            bp1_bpm=_f(request.args.get('bp1_bpm')),
-            bp2_bpm=_f(request.args.get('bp2_bpm')),
+            bp1_w=_f('bp1_w'), bp2_w=_f('bp2_w'),
+            bp1_bpm=_f('bp1_bpm'), bp2_bpm=_f('bp2_bpm'),
             n_max=min(int(request.args.get('n') or 10), 50),
         )
-        return jsonify({'status': 'ok', 'modalidade': mod, 'n': len(opcoes), 'opcoes': opcoes})
+        return jsonify({'status': 'ok', 'modalidade': mod,
+                        'n': len(opcoes), 'opcoes': opcoes})
     except Exception as e:
         return jsonify({'status': 'erro', 'mensagem': str(e),
                         'trace': traceback.format_exc()}), 500
@@ -4387,16 +4368,16 @@ def api_training_opcoes():
 
 @app.route('/api/training/meta')
 def api_training_meta():
-    """Metadados do training_master.db: tipos, limitadores e categorias de work."""
+    """Metadados do training engine SQLite para popular os filtros da UI."""
     try:
         import sys as _sys
         _sys.path.insert(0, 'utils')
-        from training_master import carregar_tipos, carregar_limiters, _WORK_CATEGORIES
+        import training as _tr
         return jsonify({
             'status': 'ok',
-            'training_types': carregar_tipos(),
-            'limiters': carregar_limiters(),
-            'work_categories': _WORK_CATEGORIES,
+            'training_types': _tr.tm_carregar_tipos(),
+            'limiters':       _tr.tm_carregar_limiters(),
+            'work_categories': _tr.tm_work_categories,
         })
     except Exception as e:
         return jsonify({'status': 'erro', 'mensagem': str(e)}), 500

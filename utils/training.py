@@ -1373,9 +1373,52 @@ def tm_buscar_opcoes(
             'work_duration_category': work_cat,
         })
 
-    opcoes.sort(key=lambda o: (
-        _ord_rel.get(o['relacao'], 9),
-        _ord_zone.get(o['zone'], 9),
-        _ord_rev.get(o['relevance'], 9),
-    ))
-    return opcoes[:n_max]
+    # ── Ranking fisiológico ───────────────────────────────────────────────
+    # 1. Separar por relação
+    principais   = [o for o in opcoes if o['relacao'] == 'PRINCIPAL']
+    disponiveis  = [o for o in opcoes if o['relacao'] == 'DISPONÍVEL']
+    suplementares= [o for o in opcoes if o['relacao'] == 'SUPLEMENTAR']
+
+    # 2. Dentro de cada grupo, ordenar por relevância interna e zona
+    def _chave_interna(o):
+        return (_ord_zone.get(o['zone'], 9), _ord_rev.get(o['relevance'], 9))
+
+    principais.sort(key=_chave_interna)
+    disponiveis.sort(key=_chave_interna)
+    suplementares.sort(key=_chave_interna)
+
+    # 3. Quando NÃO há filtro de zona activo: diversificar por zona nos
+    #    primeiros slots — 1 melhor PRINCIPAL por zona, depois o resto.
+    #    Objectivo: card 1=Z1, card 2=Z2, card 3=Z3 quando existirem,
+    #    em vez de dois Z1 seguidos porque o limitador tem 2 regras em Z1.
+    if not filtro_zona and principais:
+        zonas_vistas = set()
+        frente = []   # 1 melhor por zona
+        resto_p = []  # PRINCIPAIS que ficaram fora da frente
+        for o in principais:
+            if o['zone'] not in zonas_vistas:
+                zonas_vistas.add(o['zone'])
+                frente.append(o)
+            else:
+                resto_p.append(o)
+        # PRINCIPAIS finais: frente (1 por zona) + resto ordenado + suplementares
+        ordenados = frente + resto_p + suplementares
+
+    elif not filtro_zona and disponiveis:
+        # Sem limitador definido: mesma lógica de diversidade para DISPONÍVEL
+        zonas_vistas = set()
+        frente = []
+        resto_d = []
+        for o in disponiveis:
+            if o['zone'] not in zonas_vistas:
+                zonas_vistas.add(o['zone'])
+                frente.append(o)
+            else:
+                resto_d.append(o)
+        ordenados = frente + resto_d + suplementares
+
+    else:
+        # COM filtro de zona: a zona já está fixa, ordenar por relevância
+        ordenados = principais + disponiveis + suplementares
+
+    return ordenados[:n_max]

@@ -143,8 +143,13 @@ const TR_ZONA_BG  = {Z1:'#0d1b2a',Z2:'#0d1f10',Z3:'#2a0d0d'};
     trRenderContexto(ctx);
     trCarregarBiblioteca();
   }).catch(function(e){
-    document.getElementById('trOpcoes').innerHTML =
-      '<div style="color:#E74C3C;font-size:12px;">Erro ao carregar: '+e.message+'</div>';
+    // Se contexto falhar, ainda tentar carregar os cards sem contexto fisiológico
+    console.error('[Training] init falhou:', e);
+    TR_CONTEXTO = {status:'ok', modalidades:{bike:{fonte:'ausente'},row:{fonte:'ausente'},ski:{fonte:'ausente'},run:{fonte:'ausente'}}};
+    if(TR_META) _popularFiltros(TR_META);
+    trAplicarFiltros();
+    const warn=document.getElementById('trContexto');
+    if(warn) warn.innerHTML='<div style="border:1px solid #F0883E;border-radius:6px;padding:8px 12px;font-size:11px;color:#F0883E;margin-bottom:8px;">⚠ Contexto fisiológico indisponível: '+e.message+'</div>';
   });
 })();
 
@@ -241,7 +246,7 @@ function trAplicarFiltros(){
     return fetch('/api/training/opcoes?'+params.toString())
       .then(r=>r.json())
       .then(function(d){ return {mod:m, data:d, ctx:md}; })
-      .catch(function(){ return {mod:m, data:{status:'erro',mensagem:'rede'}, ctx:md}; });
+      .catch(function(e){ return {mod:m, data:{status:'erro',mensagem:'rede: '+(e&&e.message?e.message:String(e))}, ctx:md}; });
   })).then(function(resultados){
     let h = '';
     resultados.forEach(function(res){
@@ -279,7 +284,13 @@ function _renderSecaoMod(mod, data, ctx){
     +'</div>';
 
   if(data.status !== 'ok'){
-    h += '<div style="font-size:12px;color:#E74C3C;">Erro: '+(data.mensagem||'?')+'</div>';
+    // Mostrar mensagem de erro com detalhe — não esconder com fallback genérico
+    const errMsg = data.mensagem || '?';
+    const isRede = errMsg.startsWith('rede:') || errMsg === 'rede';
+    h += '<div style="font-size:11px;color:'+(isRede?'#F0883E':'#E74C3C')+';">'
+      + (isRede ? '⚠ Não foi possível contactar /api/training/opcoes — verifique se o servidor está a correr.'
+                : 'Erro ao carregar opções: ' + errMsg)
+      + '</div>';
     h += '</div>'; return h;
   }
 

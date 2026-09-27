@@ -1292,17 +1292,28 @@ def tm_buscar_opcoes(
     filtro_work: str | None = None,
     bp1_w=None, bp2_w=None,
     bp1_bpm=None, bp2_bpm=None,
-    n_max: int = 10,
+    n_max: int = 50,
 ) -> list:
     """Opções de treino do training_master.db para uma modalidade.
 
-    Marca cada opção como PRINCIPAL (mesmo limiter_code que o actual),
-    SUPLEMENTAR (outro limitador) ou DISPONÍVEL (sem limitador definido).
-    Garante pelo menos 3 resultados quando existem regras compatíveis.
-    Nunca faz comparações com None (todos os valores são protegidos).
+    Usa limiter_codes (campo multi-valor separado por vírgula) para que
+    uma regra consolidada (ex: CD,RD,ME) apareça UMA ÚNICA VEZ.
+
+    Marcação:
+      PRINCIPAL  — qualquer limiter_codes contém o limiter_code_atual
+      DISPONÍVEL — sem limitador definido (limiter_code_atual=None)
+      SUPLEMENTAR— nenhum dos limiter_codes coincide
+
+    n_max=50 por omissão — o frontend decide quantos mostrar inicialmente.
     """
+    _LIMITER_NOME = {
+        'CD': 'Cardíaco',     'UT': 'Utilização',
+        'RD': 'Respiratório', 'CO2': 'Resp. / CO₂',
+        'FR': 'Fadiga',       'ME': 'Mecânico',
+    }
+
     cn = _tm_conn()
-    cond  = ['rm.modality_code = ?']
+    cond   = ['rm.modality_code = ?']
     params: list = [str(modality_code).lower()]
 
     if filtro_zona:
@@ -1311,16 +1322,21 @@ def tm_buscar_opcoes(
         cond.append('(r.training_type LIKE ? OR r.format LIKE ?)')
         params += [f'%{filtro_tipo}%', f'%{filtro_tipo}%']
     if filtro_limitador:
-        cond.append('r.limiter_code = ?'); params.append(filtro_limitador)
+        # filtrar por limiter_code principal OU pelo campo multi-valor
+        cond.append(
+            "(r.limiter_code = ? OR ',' || COALESCE(r.limiter_codes, r.limiter_code) || ',' LIKE ?)"
+        )
+        params += [filtro_limitador, f'%,{filtro_limitador},%']
 
     where = 'WHERE ' + ' AND '.join(cond)
     rows = cn.execute(f"""
-        SELECT r.rule_id, r.limiter_code, r.zone, r.training_type, r.format,
+        SELECT r.rule_id, r.limiter_code,
+               COALESCE(r.limiter_codes, r.limiter_code) as lim_codes,
+               r.zone, r.training_type, r.format,
                r.work_range, r.recovery_range, r.expected_rpe_work,
-               r.expected_rpe_session, r.relevance, r.duration_category,
-               r.adaptation_target, r.mechanism_target,
+               r.relevance, r.adaptation_target, r.mechanism_target,
                r.success_rule, r.failure_rule, r.monitor_primary, r.notes,
-               l.limiter_name, l.family, l.physiology_domain
+               l.limiter_name, l.family
         FROM training_rules r
         JOIN rule_modalities rm ON rm.rule_id = r.rule_id
         LEFT JOIN limiters l ON l.limiter_code = r.limiter_code
@@ -1329,18 +1345,28 @@ def tm_buscar_opcoes(
     """, params).fetchall()
     cn.close()
 
-    _ord_rel  = {'PRINCIPAL': 0, 'DISPONÍVEL': 1, 'SUPLEMENTAR': 2}
     _ord_zone = {'Z1': 0, 'Z2': 1, 'Z3': 2}
     _ord_rev  = {'principal': 0, 'possível': 1, 'limiar': 2}
 
     opcoes = []
+    seen: set = set()   # cada rule_id aparece apenas uma vez
+
     for row in rows:
         r = dict(row)
+        rid = r['rule_id']
+        if rid in seen:
+            continue
+        seen.add(rid)
+
         work_cat = _tm_work_category(r.get('work_range'))
         if filtro_work and work_cat != filtro_work:
             continue
 
-        if limiter_code_atual and r['limiter_code'] == limiter_code_atual:
+        lim_codes_str  = str(r['lim_codes'] or '').strip()
+        lim_codes_list = [c.strip() for c in lim_codes_str.split(',') if c.strip()]
+        lim_nomes      = ' / '.join(_LIMITER_NOME.get(c, c) for c in lim_codes_list)
+
+        if limiter_code_atual and limiter_code_atual in lim_codes_list:
             relacao = 'PRINCIPAL'
         elif limiter_code_atual is None:
             relacao = 'DISPONÍVEL'
@@ -1348,9 +1374,10 @@ def tm_buscar_opcoes(
             relacao = 'SUPLEMENTAR'
 
         opcoes.append({
-            'rule_id':          r['rule_id'],
+            'rule_id':          rid,
             'limiter_code':     r['limiter_code'],
-            'limiter_nome':     r.get('limiter_name', ''),
+            'limiter_codes':    lim_codes_list,
+            'limiter_nome':     lim_nomes or r.get('limiter_name', ''),
             'limiter_family':   r.get('family', ''),
             'zone':             r['zone'],
             'training_type':    r.get('training_type', ''),
@@ -1374,51 +1401,42 @@ def tm_buscar_opcoes(
         })
 
     # ── Ranking fisiológico ───────────────────────────────────────────────
-    # 1. Separar por relação
-    principais   = [o for o in opcoes if o['relacao'] == 'PRINCIPAL']
-    disponiveis  = [o for o in opcoes if o['relacao'] == 'DISPONÍVEL']
-    suplementares= [o for o in opcoes if o['relacao'] == 'SUPLEMENTAR']
+    principais    = [o for o in opcoes if o['relacao'] == 'PRINCIPAL']
+    disponiveis   = [o for o in opcoes if o['relacao'] == 'DISPONÍVEL']
+    suplementares = [o for o in opcoes if o['relacao'] == 'SUPLEMENTAR']
 
-    # 2. Dentro de cada grupo, ordenar por relevância interna e zona
-    def _chave_interna(o):
+    def _chave(o):
         return (_ord_zone.get(o['zone'], 9), _ord_rev.get(o['relevance'], 9))
 
-    principais.sort(key=_chave_interna)
-    disponiveis.sort(key=_chave_interna)
-    suplementares.sort(key=_chave_interna)
+    principais.sort(key=_chave)
+    disponiveis.sort(key=_chave)
+    suplementares.sort(key=_chave)
 
-    # 3. Quando NÃO há filtro de zona activo: diversificar por zona nos
-    #    primeiros slots — 1 melhor PRINCIPAL por zona, depois o resto.
-    #    Objectivo: card 1=Z1, card 2=Z2, card 3=Z3 quando existirem,
-    #    em vez de dois Z1 seguidos porque o limitador tem 2 regras em Z1.
-    if not filtro_zona and principais:
-        zonas_vistas = set()
-        frente = []   # 1 melhor por zona
-        resto_p = []  # PRINCIPAIS que ficaram fora da frente
+    if not filtro_zona:
+        # Sem filtro de zona: 1 melhor PRINCIPAL por zona para os primeiros slots
+        zonas_vistas: set = set()
+        frente, resto_p = [], []
         for o in principais:
             if o['zone'] not in zonas_vistas:
                 zonas_vistas.add(o['zone'])
                 frente.append(o)
             else:
                 resto_p.append(o)
-        # PRINCIPAIS finais: frente (1 por zona) + resto ordenado + suplementares
-        ordenados = frente + resto_p + suplementares
-
-    elif not filtro_zona and disponiveis:
-        # Sem limitador definido: mesma lógica de diversidade para DISPONÍVEL
-        zonas_vistas = set()
-        frente = []
-        resto_d = []
-        for o in disponiveis:
-            if o['zone'] not in zonas_vistas:
-                zonas_vistas.add(o['zone'])
-                frente.append(o)
-            else:
-                resto_d.append(o)
-        ordenados = frente + resto_d + suplementares
-
+        if frente:
+            ordenados = frente + resto_p + suplementares
+        else:
+            # Sem PRINCIPAL: diversidade de zona nos DISPONÍVEL
+            zonas_vistas2: set = set()
+            frente_d, resto_d = [], []
+            for o in disponiveis:
+                if o['zone'] not in zonas_vistas2:
+                    zonas_vistas2.add(o['zone'])
+                    frente_d.append(o)
+                else:
+                    resto_d.append(o)
+            ordenados = frente_d + resto_d + suplementares
     else:
-        # COM filtro de zona: a zona já está fixa, ordenar por relevância
+        # Com filtro de zona: ordem directa por relevância
         ordenados = principais + disponiveis + suplementares
 
     return ordenados[:n_max]

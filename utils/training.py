@@ -1128,3 +1128,254 @@ def executar(contexto: dict, caminho_tabela: str) -> dict:
             resultado['dados_ausentes'].append(da)
 
     return resultado
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECÇÃO B — Engine SQLite (training_master.db)
+#
+# Complementa o engine Excel acima sem o substituir.
+# Lê data/training_master.db directamente e devolve opções de treino
+# classificadas por limitador (PRINCIPAL / SUPLEMENTAR / DISPONÍVEL).
+#
+# Funções exportadas desta secção:
+#   tm_buscar_opcoes        — opções para uma modalidade
+#   tm_limiter_code         — sistema/chave → limiter_code do DB
+#   tm_carregar_tipos       — lista de tipos para filtros
+#   tm_carregar_limiters    — lista de limitadores para filtros
+#   tm_work_categories      — categorias de duração de work
+# ═══════════════════════════════════════════════════════════════════════════
+
+import sqlite3 as _sqlite3
+
+_TM_DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'training_master.db')
+
+_TM_REDE_PARA_FAMILY = {
+    'cardiaco':    'cardiaco',   'cardíaco':    'cardiaco',
+    'periferico':  'periferico', 'periférico':  'periferico',
+    'respiratorio':'respiratorio','respiratório':'respiratorio',
+    'autonomico':  None,         'autonómico':  None,
+}
+_TM_CHAVE_PARA_FAMILY = {
+    'entrega':       'cardiaco',
+    'utilizacao':    'periferico',
+    'utilizacão':    'periferico',
+    'respiratorio':  'respiratorio',
+}
+_TM_FAMILY_PARA_CODE = {
+    'cardiaco':    'CD',
+    'periferico':  'UT',
+    'respiratorio':'RD',
+    'fadiga':      'FR',
+    'mecanica':    'ME',
+}
+
+tm_work_categories = {
+    'lt1':   '<1 min',
+    '1_3':   '1–3 min',
+    '3_5':   '3–5 min',
+    '5_10':  '5–10 min',
+    '10_20': '10–20 min',
+    'gt20':  '>20 min',
+}
+
+
+def _tm_conn():
+    cn = _sqlite3.connect(_TM_DB_PATH)
+    cn.row_factory = _sqlite3.Row
+    return cn
+
+
+def _tm_safe_float(v):
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
+def tm_limiter_code(sistema_ou_chave: str | None) -> str | None:
+    """Converte sistema da Rede Causal ou chave canónica → limiter_code do DB.
+
+    Aceita: 'cardiaco', 'periferico', 'respiratorio' (sistema)
+            'entrega', 'utilizacao', 'respiratorio'  (chave canónica)
+    Retorna: 'CD', 'UT', 'RD', 'FR', 'ME', 'CO2' ou None.
+    """
+    if not sistema_ou_chave:
+        return None
+    val = str(sistema_ou_chave).lower().strip()
+    family = _TM_REDE_PARA_FAMILY.get(val) or _TM_CHAVE_PARA_FAMILY.get(val)
+    return _TM_FAMILY_PARA_CODE.get(family) if family else None
+
+
+def tm_carregar_tipos() -> list:
+    """Lista de training_types para popular o filtro de tipo na UI."""
+    cn = _tm_conn()
+    rows = cn.execute(
+        "SELECT training_type_code, training_type_name, category, typical_rpe "
+        "FROM training_types ORDER BY training_type_name"
+    ).fetchall()
+    cn.close()
+    return [dict(r) for r in rows]
+
+
+def tm_carregar_limiters() -> list:
+    """Lista de limitadores para popular o filtro de limitador na UI."""
+    cn = _tm_conn()
+    rows = cn.execute(
+        "SELECT limiter_code, limiter_name, family, physiology_domain "
+        "FROM limiters ORDER BY family, limiter_code"
+    ).fetchall()
+    cn.close()
+    return [dict(r) for r in rows]
+
+
+def _tm_work_category(work_range: str | None) -> str | None:
+    """Classifica work_range numa categoria de duração."""
+    import re as _re
+    if not work_range:
+        return None
+    w = work_range.lower()
+    nums = [float(x) for x in _re.findall(r'(\d+(?:\.\d+)?)\s*min', w)]
+    nums += [float(x) / 60 for x in _re.findall(r'(\d+(?:\.\d+)?)\s*s\b', w)]
+    if not nums:
+        return None
+    avg = sum(nums) / len(nums)
+    if avg < 1:   return 'lt1'
+    if avg <= 3:  return '1_3'
+    if avg <= 5:  return '3_5'
+    if avg <= 10: return '5_10'
+    if avg <= 20: return '10_20'
+    return 'gt20'
+
+
+def _tm_calc_watts(zone: str | None, bp1_w, bp2_w) -> str | None:
+    """Calcula faixa de potência do WORK por zona. Nunca compara None."""
+    b1 = _tm_safe_float(bp1_w)
+    b2 = _tm_safe_float(bp2_w)
+    if zone == 'Z1':
+        return f'{max(1, round(b1 * 0.75))}–{round(b1 * 0.95)} W' if b1 is not None else None
+    if zone == 'Z2':
+        if b1 is not None and b2 is not None:
+            return f'{round(b1)}–{round(b2)} W'
+        if b1 is not None:
+            return f'{round(b1)}–? W'
+        return None
+    if zone == 'Z3':
+        return f'{round(b2)}–{round(b2 * 1.10)} W' if b2 is not None else None
+    return None
+
+
+def _tm_calc_bpm(zone: str | None, bp1_bpm, bp2_bpm) -> str | None:
+    """Calcula faixa de FC do WORK por zona. Nunca compara None."""
+    b1 = _tm_safe_float(bp1_bpm)
+    b2 = _tm_safe_float(bp2_bpm)
+    if zone == 'Z1':
+        return f'{max(1, round(b1 * 0.82))}–{round(b1 * 0.95)} bpm' if b1 is not None else None
+    if zone == 'Z2':
+        if b1 is not None and b2 is not None:
+            return f'{round(b1)}–{round(b2)} bpm'
+        if b1 is not None:
+            return f'~{round(b1)}+ bpm'
+        return None
+    if zone == 'Z3':
+        return f'{round(b2)}+ bpm' if b2 is not None else None
+    return None
+
+
+def tm_buscar_opcoes(
+    modality_code: str,
+    limiter_code_atual: str | None = None,
+    filtro_zona: str | None = None,
+    filtro_tipo: str | None = None,
+    filtro_limitador: str | None = None,
+    filtro_work: str | None = None,
+    bp1_w=None, bp2_w=None,
+    bp1_bpm=None, bp2_bpm=None,
+    n_max: int = 10,
+) -> list:
+    """Opções de treino do training_master.db para uma modalidade.
+
+    Marca cada opção como PRINCIPAL (mesmo limiter_code que o actual),
+    SUPLEMENTAR (outro limitador) ou DISPONÍVEL (sem limitador definido).
+    Garante pelo menos 3 resultados quando existem regras compatíveis.
+    Nunca faz comparações com None (todos os valores são protegidos).
+    """
+    cn = _tm_conn()
+    cond  = ['rm.modality_code = ?']
+    params: list = [str(modality_code).lower()]
+
+    if filtro_zona:
+        cond.append('r.zone = ?'); params.append(filtro_zona)
+    if filtro_tipo:
+        cond.append('(r.training_type LIKE ? OR r.format LIKE ?)')
+        params += [f'%{filtro_tipo}%', f'%{filtro_tipo}%']
+    if filtro_limitador:
+        cond.append('r.limiter_code = ?'); params.append(filtro_limitador)
+
+    where = 'WHERE ' + ' AND '.join(cond)
+    rows = cn.execute(f"""
+        SELECT r.rule_id, r.limiter_code, r.zone, r.training_type, r.format,
+               r.work_range, r.recovery_range, r.expected_rpe_work,
+               r.expected_rpe_session, r.relevance, r.duration_category,
+               r.adaptation_target, r.mechanism_target,
+               r.success_rule, r.failure_rule, r.monitor_primary, r.notes,
+               l.limiter_name, l.family, l.physiology_domain
+        FROM training_rules r
+        JOIN rule_modalities rm ON rm.rule_id = r.rule_id
+        LEFT JOIN limiters l ON l.limiter_code = r.limiter_code
+        {where}
+        ORDER BY r.zone, r.relevance
+    """, params).fetchall()
+    cn.close()
+
+    _ord_rel  = {'PRINCIPAL': 0, 'DISPONÍVEL': 1, 'SUPLEMENTAR': 2}
+    _ord_zone = {'Z1': 0, 'Z2': 1, 'Z3': 2}
+    _ord_rev  = {'principal': 0, 'possível': 1, 'limiar': 2}
+
+    opcoes = []
+    for row in rows:
+        r = dict(row)
+        work_cat = _tm_work_category(r.get('work_range'))
+        if filtro_work and work_cat != filtro_work:
+            continue
+
+        if limiter_code_atual and r['limiter_code'] == limiter_code_atual:
+            relacao = 'PRINCIPAL'
+        elif limiter_code_atual is None:
+            relacao = 'DISPONÍVEL'
+        else:
+            relacao = 'SUPLEMENTAR'
+
+        opcoes.append({
+            'rule_id':          r['rule_id'],
+            'limiter_code':     r['limiter_code'],
+            'limiter_nome':     r.get('limiter_name', ''),
+            'limiter_family':   r.get('family', ''),
+            'zone':             r['zone'],
+            'training_type':    r.get('training_type', ''),
+            'format':           r.get('format', ''),
+            'work_range':       r.get('work_range', ''),
+            'recovery_range':   r.get('recovery_range', ''),
+            'expected_rpe_work':r.get('expected_rpe_work', ''),
+            'relevance':        r.get('relevance', ''),
+            'adaptation_target':r.get('adaptation_target', ''),
+            'mechanism_target': r.get('mechanism_target', ''),
+            'success_rule':     r.get('success_rule', ''),
+            'failure_rule':     r.get('failure_rule', ''),
+            'monitor_primary':  r.get('monitor_primary', ''),
+            'notes':            r.get('notes', ''),
+            'relacao':          relacao,
+            'work_watts':       _tm_calc_watts(r['zone'], bp1_w, bp2_w),
+            'work_bpm':         _tm_calc_bpm(r['zone'], bp1_bpm, bp2_bpm),
+            'bp1_w':            _tm_safe_float(bp1_w),
+            'bp2_w':            _tm_safe_float(bp2_w),
+            'work_duration_category': work_cat,
+        })
+
+    opcoes.sort(key=lambda o: (
+        _ord_rel.get(o['relacao'], 9),
+        _ord_zone.get(o['zone'], 9),
+        _ord_rev.get(o['relevance'], 9),
+    ))
+    return opcoes[:n_max]

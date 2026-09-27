@@ -4739,13 +4739,17 @@ def api_admin_download_db():
 
 @app.route('/api/admin/db-status')
 def api_admin_db_status():
-    """Estado do DB local e do upload para o Drive.
-
-    Mostra: tabelas, contagens, tamanho, resultado do último upload.
-    """
-    import os
-    import drive_db_perfil as _ddp
+    """Diagnóstico completo do DB e da persistência no Drive."""
+    import os, drive_db_perfil as _ddp
     try:
+        # 1. Variáveis de ambiente
+        gcp_ok     = bool(os.environ.get('GCP_SERVICE_ACCOUNT'))
+        folder_id  = os.environ.get('GDRIVE_FOLDER_ID', _ddp._FOLDER_ID)
+
+        # 2. Testar download (sem fazer nada no DB)
+        ok_down, det_down = _ddp.download() if not os.path.exists(_ddp._LOCAL_DB) else (None, 'ficheiro já existe')
+
+        # 3. Estado do DB
         cn = _ddp.get_conn()
         tbls = cn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -4753,27 +4757,40 @@ def api_admin_db_status():
         contagens = {}
         for (t,) in tbls:
             try:
-                n = cn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
-                contagens[t] = n
+                contagens[t] = cn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
             except Exception:
                 contagens[t] = None
         cn.close()
-        db_path = '/tmp/perfil_historico.db'
-        tamanho_kb = round(os.path.getsize(db_path) / 1024, 1) if os.path.exists(db_path) else None
-        # Testar upload
+
+        db_path    = _ddp._LOCAL_DB
+        tamanho_kb = round(os.path.getsize(db_path)/1024, 1) if os.path.exists(db_path) else None
+
+        # 4. Testar upload
         ok_up, det_up = _ddp.upload()
+
+        # 5. Diagnóstico
+        if not gcp_ok:
+            diagnostico = ('PROBLEMA: GCP_SERVICE_ACCOUNT não configurada no Railway. '
+                           'Configure a variável de ambiente com o JSON da service account '
+                           'e faça upload manual do perfil_historico.db para a pasta do Drive '
+                           f'({folder_id}). Depois o upload/download automáticos funcionarão.')
+        elif ok_up:
+            diagnostico = 'OK: dados sincronizados com o Google Drive.'
+        else:
+            diagnostico = (f'PROBLEMA: upload falhou — {det_up}. '
+                           'Baixe o DB em /api/admin/download-db e faça upload manual para o Drive.')
+
         return jsonify({
             'status': 'ok',
             'db_path': db_path,
             'tamanho_kb': tamanho_kb,
             'tabelas': contagens,
+            'env': {
+                'GCP_SERVICE_ACCOUNT': 'configurada' if gcp_ok else 'NÃO configurada ← causa provável do problema',
+                'GDRIVE_FOLDER_ID': folder_id,
+            },
             'upload_drive': {'ok': ok_up, 'detalhe': det_up},
-            'instrucoes': (
-                'Upload OK — dados persistidos no Drive.' if ok_up
-                else 'Drive indisponível. Baixe o DB em /api/admin/download-db e '
-                     'faça upload manual para a pasta do Drive '
-                     '(11oXQPkFrG6ZBCsvjDqb8RAiE_VfwBSfV).'
-            ),
+            'diagnostico': diagnostico,
         })
     except Exception as e:
         return jsonify({'status': 'erro', 'mensagem': str(e)}), 500

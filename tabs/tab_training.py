@@ -1,181 +1,104 @@
-"""tab_training.py — aba de decisão de treinamento.
+"""tab_training.py — aba de opções de treino classificadas por limitador.
 
-Responsabilidade: "Dado tudo que já foi encontrado, quais estímulos de
-treinamento são fisiologicamente plausíveis?"
+Arquitectura:
+  DADOS MOXY/VST → CONTEXTO por modalidade → training_master.db
+  → FILTROS do utilizador → RANKING → PRINCIPAL/SUPLEMENTAR → CARDS
 
-Fluxo automático ao abrir a aba:
-  /api/training/contexto          ← prioridade P1/P2/P3 (backend)
-        ↓
-  limitador_chave + modalidade
-        ↓
-  uma secção por modalidade
-        ↓
-  /api/training/executar × 4      ← Bike / Row / Ski / Run
-        ↓
-  cards organizados por relevance (principal → secundário → complementar)
-
-training.py permanece engine puro — não acessa DB nem API.
-Esta aba é a camada de apresentação da saída do engine.
+Não prescreve treino, não avalia execução, não força escolha.
+O utilizador escolhe a opção que quer usar.
 """
-
-import os, sys
 from tabs.base import page
 
 SLUG = 'training'
 
-_TABELA_PATH_DEFAULT = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)),
-    'Tabela_Mestre_Training_Engine_V5__1_.xlsx'
-)
-
-BODY = """
+BODY = r"""
 <div>
   <h1>Training</h1>
-  <p class="sub">Opções de treinamento fisiologicamente plausíveis com base nos achados existentes.</p>
+  <p class="sub">Opções de treino organizadas pelo limitador fisiológico actual.
+    Não é prescrição — é um mapa de possibilidades. Você escolhe.</p>
 
-  <!-- CABEÇALHO DE ANÁLISE FISIOLÓGICA ATUAL -->
-  <div id="trCabecalho" style="margin-bottom:20px;"></div>
+  <!-- FILTROS NO TOPO -->
+  <div id="trFiltros" style="display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 18px;align-items:flex-end;">
+    <label class="sel">Modalidade
+      <select id="fMod" onchange="trAplicarFiltros()">
+        <option value="">Todas</option>
+        <option value="bike">Bike</option>
+        <option value="row">Row</option>
+        <option value="ski">Ski</option>
+        <option value="run">Run</option>
+      </select>
+    </label>
+    <label class="sel">Zona
+      <select id="fZona" onchange="trAplicarFiltros()">
+        <option value="">Todas</option>
+        <option value="Z1">Z1</option>
+        <option value="Z2">Z2</option>
+        <option value="Z3">Z3</option>
+      </select>
+    </label>
+    <label class="sel">Tipo
+      <select id="fTipo" onchange="trAplicarFiltros()">
+        <option value="">Todos</option>
+      </select>
+    </label>
+    <label class="sel">Limitador
+      <select id="fLim" onchange="trAplicarFiltros()">
+        <option value="">Todos</option>
+      </select>
+    </label>
+    <label class="sel">Work
+      <select id="fWork" onchange="trAplicarFiltros()">
+        <option value=""  >Qualquer</option>
+        <option value="lt1">  &lt; 1 min</option>
+        <option value="1_3"> 1–3 min</option>
+        <option value="3_5"> 3–5 min</option>
+        <option value="5_10">5–10 min</option>
+        <option value="10_20">10–20 min</option>
+        <option value="gt20">&gt; 20 min</option>
+      </select>
+    </label>
+    <button onclick="trAplicarFiltros()"
+      style="padding:6px 14px;background:#1c2331;border:1px solid #5DADE2;
+      color:#5DADE2;border-radius:6px;cursor:pointer;font-size:12px;">
+      ↻ Atualizar
+    </button>
+  </div>
 
-  <!-- SECÇÕES POR MODALIDADE (preenchidas automaticamente) -->
-  <div id="trRecomendacoes"></div>
+  <!-- CONTEXTO FISIOLÓGICO (cabeçalho) -->
+  <div id="trContexto" style="margin-bottom:20px;"></div>
 
-  <!-- SEPARADOR -->
-  <hr style="border-color:#30363d;margin:28px 0 20px;">
+  <!-- OPÇÕES POR MODALIDADE -->
+  <div id="trOpcoes"></div>
 
-  <!-- OVERRIDE MANUAL (avançado, colapsado) -->
-  <details id="trOverride">
+  <!-- BIBLIOTECA (expansível) -->
+  <details style="margin-top:14px;">
     <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;user-select:none;">
-      ▼ Modo manual — selecionar sessão específica
+      ▼ Biblioteca de treinos adicionados
     </summary>
-    <div style="margin-top:14px;">
-      <div class="controls" style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
-        <label class="sel">Modalidade:
-          <select id="trModalidade">
-            <option value="">— escolher —</option>
-            <option value="Bike">Bike</option>
-            <option value="Row">Row</option>
-            <option value="Ski">Ski</option>
-            <option value="Run">Run</option>
-          </select>
-        </label>
-        <label class="sel">Sessão MOXY (Day 1):
-          <select id="trMoxyId" style="min-width:220px;">
-            <option value="">— escolher —</option>
-          </select>
-        </label>
-        <label class="sel">Verificação VST (Day 2):
-          <select id="trVstId" style="min-width:220px;">
-            <option value="">— nenhuma —</option>
-          </select>
-        </label>
-        <button onclick="trExecutarManual()"
-          style="padding:7px 16px;background:#1c2331;border:1px solid #5DADE2;
-          color:#5DADE2;border-radius:6px;cursor:pointer;font-size:13px;">
-          ↻ Executar engine
-        </button>
-      </div>
-      <div id="trResultadoManual"></div>
-    </div>
-  </details>
-
-  <!-- BIBLIOTECA (filtros + biblioteca mestre) -->
-  <details style="margin-top:10px;" id="trSecBiblioteca">
-    <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;user-select:none;">
-      ▼ Pesquisar biblioteca de treinos
-    </summary>
-    <div style="margin-top:14px;">
-      <div class="controls" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
-        <label class="sel">Modalidade:
-          <select id="filtMod" onchange="trFiltrar()">
-            <option value="">Todas</option>
-            <option value="Bike">Bike</option>
-            <option value="Row">Row</option>
-            <option value="Ski">Ski</option>
-            <option value="Run">Run</option>
-          </select>
-        </label>
-        <label class="sel">Zona:
-          <select id="filtZona" onchange="trFiltrar()">
-            <option value="">Todas</option>
-            <option value="Z1">Z1</option>
-            <option value="Z2">Z2</option>
-            <option value="Z3">Z3</option>
-          </select>
-        </label>
-        <label class="sel">Limitador:
-          <select id="filtLim" onchange="trFiltrar()">
-            <option value="">Todos</option>
-            <option value="cardiaco">Cardíaco / Entrega</option>
-            <option value="periferico">Periférico / Utilização</option>
-            <option value="respiratorio">Respiratório</option>
-          </select>
-        </label>
-        <label class="sel">Tipo:
-          <select id="filtTipo" onchange="trFiltrar()">
-            <option value="">Todos</option>
-            <option value="Threshold">Threshold</option>
-            <option value="VO2">VO2</option>
-            <option value="Z2">Z2</option>
-            <option value="SIT">SIT</option>
-            <option value="HIIT">HIIT</option>
-            <option value="HIIT extensivo">HIIT extensivo</option>
-            <option value="Over/Under">Over/Under</option>
-            <option value="Intervalado">Intervalado</option>
-            <option value="Recovery">Recovery</option>
-            <option value="Endurance">Endurance</option>
-          </select>
-        </label>
-        <label class="sel">Prioridade:
-          <select id="filtPrio" onchange="trFiltrar()">
-            <option value="">Todas</option>
-            <option value="principal">Principal</option>
-            <option value="possível">Possível</option>
-            <option value="complementar">Complementar</option>
-          </select>
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8b949e;">
-          <input type="checkbox" id="filtSoCompativeis" checked onchange="trFiltrar()">
-          Compatível com limitador atual
-        </label>
-      </div>
+    <div style="margin-top:12px;">
       <div id="trBiblioteca" style="font-size:12px;color:#8b949e;">
-        Carregando biblioteca…
+        (sem treinos adicionados ainda — use a seção abaixo para adicionar)
       </div>
     </div>
   </details>
 
   <!-- ADICIONAR TREINO -->
-  <details style="margin-top:10px;">
+  <details style="margin-top:8px;">
     <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;user-select:none;">
-      ▼ Adicionar treino à biblioteca
+      ▼ Adicionar treino à biblioteca pessoal
     </summary>
     <div style="margin-top:14px;" id="trFormAdd">
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:10px;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-bottom:10px;">
         <label class="sel">Nome *<input id="addNome" type="text" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
         <label class="sel">Modalidade *
           <select id="addMod" style="width:100%;">
             <option value="">—</option>
-            <option value="Bike">Bike</option><option value="Row">Row</option>
-            <option value="Ski">Ski</option><option value="Run">Run</option>
+            <option value="bike">Bike</option><option value="row">Row</option>
+            <option value="ski">Ski</option><option value="run">Run</option>
           </select>
         </label>
         <label class="sel">Tipo
-          <select id="addTipo" style="width:100%;">
-            <option value="">—</option>
-            <option value="Threshold">Threshold</option><option value="VO2">VO2</option>
-            <option value="Z2">Z2</option><option value="SIT">SIT</option>
-            <option value="HIIT">HIIT</option><option value="Over/Under">Over/Under</option>
-            <option value="Intervalado">Intervalado</option><option value="Recovery">Recovery</option>
-            <option value="Endurance">Endurance</option>
-          </select>
-        </label>
-        <label class="sel">Limitador
-          <select id="addLim" style="width:100%;">
-            <option value="">—</option>
-            <option value="cardiaco">Cardíaco</option>
-            <option value="periferico">Periférico</option>
-            <option value="respiratorio">Respiratório</option>
-          </select>
+          <select id="addTipo" style="width:100%;"><option value="">—</option></select>
         </label>
         <label class="sel">Zona
           <select id="addZona" style="width:100%;">
@@ -183,72 +106,15 @@ BODY = """
             <option value="Z1">Z1</option><option value="Z2">Z2</option><option value="Z3">Z3</option>
           </select>
         </label>
-        <label class="sel">Prioridade
-          <select id="addPrio" style="width:100%;">
-            <option value="principal">Principal</option>
-            <option value="possível">Possível</option>
-            <option value="complementar">Complementar</option>
-          </select>
-        </label>
-        <label class="sel">Séries<input id="addSeries" type="number" min="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
-        <label class="sel">Work (seg)<input id="addWork" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
-        <label class="sel">Recovery (seg)<input id="addRecovery" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
-        <label class="sel">Duração total (seg)<input id="addDurTotal" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
-        <label class="sel">Potência mín (W)<input id="addPwMin" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
-        <label class="sel">Potência máx (W)<input id="addPwMax" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
-        <label class="sel">FC mín (bpm)<input id="addHrMin" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
-        <label class="sel">FC máx (bpm)<input id="addHrMax" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
-        <label class="sel">RPE alvo (mín)<input id="addRpeMin" type="number" min="1" max="10" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
-        <label class="sel">RPE alvo (máx)<input id="addRpeMax" type="number" min="1" max="10" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">Work (descrição)<input id="addWork" type="text" placeholder="ex: 4×8min" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">Recovery<input id="addRec" type="text" placeholder="ex: 3min" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
+        <label class="sel">RPE esperado<input id="addRpe" type="text" placeholder="ex: 7–8" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;"></label>
       </div>
-      <label class="sel" style="display:block;margin-bottom:8px;">Objetivo
-        <textarea id="addObjetivo" rows="2" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;font-size:12px;"></textarea>
-      </label>
-      <label class="sel" style="display:block;margin-bottom:8px;">Instruções
-        <textarea id="addInstrucoes" rows="2" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;font-size:12px;"></textarea>
-      </label>
-      <div id="trBlocos" style="margin-bottom:10px;"></div>
-      <button onclick="trAddBloco()" style="font-size:11px;padding:4px 10px;background:#161b22;border:1px solid #30363d;color:#8b949e;border-radius:4px;cursor:pointer;margin-right:8px;">+ Adicionar bloco</button>
-      <button onclick="trSalvarProtocolo()" style="font-size:13px;padding:7px 18px;background:#1c2331;border:1px solid #3FB950;color:#3FB950;border-radius:6px;cursor:pointer;">Salvar protocolo</button>
+      <button onclick="trSalvarBiblioteca()"
+        style="padding:6px 16px;background:#1c2331;border:1px solid #3FB950;color:#3FB950;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
+        Salvar na biblioteca
+      </button>
       <span id="trAddStatus" style="font-size:11px;color:#8b949e;margin-left:10px;"></span>
-    </div>
-  </details>
-
-  <!-- ANALISAR TREINO REALIZADO -->
-  <details style="margin-top:10px;">
-    <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:4px 0;user-select:none;">
-      ▼ Analisar treino realizado
-    </summary>
-    <div style="margin-top:14px;">
-      <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px;align-items:flex-end;">
-        <label class="sel">Protocolo planificado:
-          <select id="analProto" style="min-width:280px;">
-            <option value="">— carregar biblioteca —</option>
-          </select>
-        </label>
-        <label class="sel">Modalidade (filtrar actividades):
-          <select id="analMod" onchange="trCarregarActividadesRecentes()" style="min-width:120px;">
-            <option value="">Todas</option>
-            <option value="Bike">Bike</option><option value="Row">Row</option>
-            <option value="Ski">Ski</option><option value="Run">Run</option>
-          </select>
-        </label>
-        <label class="sel" style="flex:1;min-width:200px;">Pesquisar actividade (nome/data):
-          <input id="analQ" type="text" placeholder="ex: interval, 2026-09" onkeyup="trFiltrarActiv()"
-            style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:5px 8px;margin-top:3px;">
-        </label>
-      </div>
-      <div id="analActiv" style="margin-bottom:12px;"></div>
-      <div id="analActSel" style="font-size:11px;color:#5DADE2;margin-bottom:8px;"></div>
-      <button onclick="trAnalisarExecucao(false)"
-        style="padding:7px 16px;background:#1c2331;border:1px solid #5DADE2;color:#5DADE2;border-radius:6px;cursor:pointer;font-size:13px;">
-        Analisar execução
-      </button>
-      <button onclick="trAnalisarExecucao(true)"
-        style="padding:7px 16px;background:#1c2331;border:1px solid #3FB950;color:#3FB950;border-radius:6px;cursor:pointer;font-size:13px;margin-left:8px;">
-        Analisar e gravar
-      </button>
-      <div id="trResultadoAnalise" style="margin-top:16px;"></div>
     </div>
   </details>
 </div>
@@ -256,710 +122,283 @@ BODY = """
 
 JS = r"""
 // ── Estado global ─────────────────────────────────────────────────────────
-let TR_CONTEXTO    = null;   // resultado de /api/training/contexto
-let TR_RESULTADOS  = {};     // {modalidade: resultado_do_engine}
-let TR_ULT_RESULTADO = null; // último resultado manual (compatibilidade)
+let TR_CONTEXTO    = null;   // {status:'ok', modalidades:{bike:{...}, ...}}
+let TR_META        = null;   // {training_types, limiters, work_categories}
+const TR_MODS = ['bike','row','ski','run'];
+const TR_MOD_NOME = {bike:'Bike',row:'Row',ski:'Ski',run:'Run'};
+const TR_MOD_COR  = {bike:'#5DADE2',row:'#3FB950',ski:'#A371F7',run:'#F4D03F'};
+const TR_REL_COR  = {PRINCIPAL:'#3FB950',SUPLEMENTAR:'#8b949e',DISPONÍVEL:'#5DADE2'};
+const TR_ZONA_BG  = {Z1:'#0d1b2a',Z2:'#0d1f10',Z3:'#2a0d0d'};
 
-const TR_MODALIDADES = ['Bike', 'Row', 'Ski', 'Run'];
-
-const TR_COR_CHAVE = {
-  entrega:'#5DADE2', utilizacao:'#3FB950',
-  respiratorio:'#F4D03F', fadiga:'#E67E22', mecanico:'#A371F7'
-};
-const TR_COR_RELEVANCE = {
-  principal:'#3FB950', 'possível':'#F4D03F', limiar:'#E67E22'
-};
-const TR_PRIORIDADE_ORDEM = {principal:0, 'possível':1, limiar:2};
-
-// ── Inicialização automática ──────────────────────────────────────────────
+// ── Inicialização ─────────────────────────────────────────────────────────
 (function(){
-  trCarregarContexto();
-  trCarregarSessoesMoxy();
-  trCarregarVst();
-  trCarregarBiblioteca();
-  trCarregarActividadesRecentes();
+  Promise.all([
+    fetch('/api/training/contexto').then(r=>r.json()),
+    fetch('/api/training/meta').then(r=>r.json()),
+  ]).then(function([ctx, meta]){
+    TR_CONTEXTO = ctx;
+    TR_META = meta;
+    _popularFiltros(meta);
+    trAplicarFiltros();
+    trRenderContexto(ctx);
+    trCarregarBiblioteca();
+  }).catch(function(e){
+    document.getElementById('trOpcoes').innerHTML =
+      '<div style="color:#E74C3C;font-size:12px;">Erro ao carregar: '+e.message+'</div>';
+  });
 })();
 
-// ── P1/P2/P3: carregar contexto do backend ────────────────────────────────
-function trCarregarContexto(){
-  const cab = document.getElementById('trCabecalho');
-  const rec = document.getElementById('trRecomendacoes');
-  if(cab) cab.innerHTML = '<div class="loading" style="font-size:12px;color:#8b949e;">a determinar limitador actual…</div>';
-
-  fetch('/api/training/contexto').then(r=>r.json()).then(function(ctx){
-    TR_CONTEXTO = ctx;
-    trRenderCabecalho(ctx);
-
-    if(ctx.fonte === 'ausente' || !ctx.limitador_chave){
-      if(rec) rec.innerHTML = trCardErro('dados_insuficientes',
-        'Não foi encontrado um limitador fisiológico actual.<br>'
-        +'Execute uma análise MOXY ou sincronize um conjunto VST para obter recomendações automáticas.<br>'
-        +'Pode usar a biblioteca de treinos abaixo com os filtros disponíveis.');
-      return;
-    }
-
-    // Executar engine para cada modalidade
-    if(rec) rec.innerHTML = '<div class="loading" style="font-size:12px;color:#8b949e;">a calcular recomendações…</div>';
-    trExecutarTodasModalidades(ctx);
-  }).catch(function(e){
-    if(cab) cab.innerHTML = trCardErro('erro', 'Erro ao obter contexto: '+e.message);
-  });
-}
-
-// ── Cabeçalho de análise fisiológica atual ────────────────────────────────
-function trRenderCabecalho(ctx){
-  const cab = document.getElementById('trCabecalho');
-  if(!cab) return;
-
-  if(ctx.fonte === 'ausente' || !ctx.limitador_chave){
-    cab.innerHTML = '<div style="border:1px solid #30363d;border-radius:8px;padding:12px 16px;'
-      +'background:#0d1117;">'
-      +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Análise Fisiológica</div>'
-      +'<div style="font-size:13px;color:#8b949e;">Sem análise fisiológica recente disponível.</div>'
-      +'</div>';
-    return;
-  }
-
-  const cor = TR_COR_CHAVE[ctx.limitador_chave] || '#8b949e';
-  const fonteLabel = ctx.fonte==='vst'
-    ? 'MOXY + VST Verificação'
-    : ctx.fonte==='moxy'
-    ? 'MOXY (sem VST sincronizado)'
-    : '—';
-
-  let linhas = '';
-  if(ctx.moxy_data){
-    const dm = ctx.dias_moxy != null ? ' (há '+ctx.dias_moxy+' dia'+(ctx.dias_moxy!==1?'s':'')+')'  : '';
-    linhas += '<div style="font-size:11px;color:#8b949e;">MOXY: '
-      +(ctx.moxy_data||'').slice(0,10)+dm
-      +(ctx.moxy_id?' · <span style="color:#484f58;">'+ctx.moxy_id+'</span>':'')+'</div>';
-  }
-  if(ctx.vst_id){
-    const dv = ctx.dias_vst != null ? ' (há '+ctx.dias_vst+' dia'+(ctx.dias_vst!==1?'s':'')+')'  : '';
-    linhas += '<div style="font-size:11px;color:#8b949e;">VST: '
-      +(ctx.vst_data||'').slice(0,10)+dv
-      +(ctx.vst_id?' · <span style="color:#484f58;">'+ctx.vst_id+'</span>':'')+'</div>';
-  } else if(ctx.fonte==='moxy'){
-    linhas += '<div style="font-size:11px;color:#6e7681;">VST: não sincronizado</div>';
-  }
-
-  const bp = (ctx.bp1_w||ctx.bp2_w)
-    ? '<span style="font-size:11px;color:#8b949e;margin-left:12px;">'
-      +(ctx.bp1_w?'BP1 '+Math.round(ctx.bp1_w)+'W':'')
-      +(ctx.bp1_w&&ctx.bp2_w?' · ':'')
-      +(ctx.bp2_w?'BP2 '+Math.round(ctx.bp2_w)+'W':'')
-      +'</span>'
-    : '';
-
-  cab.innerHTML = '<div style="border:1px solid '+cor+'44;border-radius:8px;padding:12px 16px;background:#0d1117;">'
-    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Análise Fisiológica Actual</div>'
-    +'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">'
-    +'<div style="font-size:20px;font-weight:700;color:'+cor+';">'
-    +(ctx.limitador_nome||ctx.sistema||'—').toUpperCase()
-    +(ctx.limitador_chave?' / '+ctx.limitador_chave.toUpperCase():'')
-    +'</div>'+bp+'</div>'
-    +'<div style="font-size:11px;color:#8b949e;margin-top:4px;">Fonte: '+fonteLabel+'</div>'
-    +linhas
-    +'</div>';
-}
-
-// ── Executar engine para todas as modalidades automaticamente ─────────────
-function trExecutarTodasModalidades(ctx){
-  const rec = document.getElementById('trRecomendacoes');
-  TR_RESULTADOS = {};
-  let pendentes = TR_MODALIDADES.length;
-  const resultadosPorMod = {};
-
-  TR_MODALIDADES.forEach(function(mod){
-    const contexto = trMontarContextoDeCtx(ctx, mod);
-    fetch('/api/training/executar',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(contexto),
-    }).then(r=>r.json()).then(function(res){
-      resultadosPorMod[mod] = {resultado: res, contexto: contexto};
-      TR_RESULTADOS[mod] = res;
-    }).catch(function(e){
-      resultadosPorMod[mod] = {resultado: {status:'erro', motivo: e.message}, contexto: contexto};
-    }).finally(function(){
-      pendentes--;
-      if(pendentes === 0){
-        // Todos terminaram — renderizar por modalidade
-        let h = '';
-        TR_MODALIDADES.forEach(function(m){
-          h += trRenderSecaoModalidade(m, resultadosPorMod[m], ctx);
-        });
-        if(rec) rec.innerHTML = h;
-        // Popular biblioteca
-        trPopularBiblioteca(resultadosPorMod);
-      }
-    });
-  });
-}
-
-// ── Montar contexto a partir do resultado de /api/training/contexto ───────
-function trMontarContextoDeCtx(ctx, modalidade){
-  // Usa o limitador_chave já resolvido pelo backend (P1/P2/P3)
-  // sem depender de MX_ULT_US nem de variáveis globais do browser
-  const achadoRede = ctx.limitador_chave ? {
-    sistema:    ctx.sistema,
-    rotulo:     ctx.limitador_nome||null,
-    pct:        null,
-    disponivel: true,
-  } : {disponivel: false};
-
-  return {
-    modalidade: modalidade,
-    vst_activity_id:  ctx.vst_id||null,
-    moxy_activity_id: ctx.moxy_id||null,
-    bp1_w: ctx.bp1_w||null,
-    bp2_w: ctx.bp2_w||null,
-    cp_w:  null,
-    achados: {
-      rede_causal:  achadoRede,
-      intervencoes: {disponivel: false},
-      vst:          {disponivel: !!(ctx.vst_id)},
-      moxy:         {disponivel: false},
-    },
-    historico: [],
-    pace_individual: null,
-  };
-}
-
-// ── Secção de recomendações por modalidade ────────────────────────────────
-function trRenderSecaoModalidade(mod, entrada, ctx){
-  const res = entrada ? entrada.resultado : null;
-  const ops = (res&&res.opcoes)||[];
-
-  // Ordenar por prioridade: principal primeiro
-  const ordenadas = ops.slice().sort(function(a,b){
-    return (TR_PRIORIDADE_ORDEM[a.relevance]||99) - (TR_PRIORIDADE_ORDEM[b.relevance]||99);
-  });
-
-  const corMod = {Bike:'#5DADE2',Row:'#3FB950',Ski:'#A371F7',Run:'#F4D03F'}[mod]||'#8b949e';
-
-  let h = '<div style="margin-bottom:28px;">'
-    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">'
-    +'<span style="font-size:14px;font-weight:700;color:'+corMod+';">'+mod.toUpperCase()+'</span>'
-    +(ctx&&ctx.bp1_w?'<span style="font-size:10px;color:#6e7681;">BP1 '+Math.round(ctx.bp1_w)
-      +(ctx.bp2_w?' · BP2 '+Math.round(ctx.bp2_w):'')+'W</span>':'')
-    +'</div>';
-
-  if(!res || res.status==='erro'){
-    h += '<div style="font-size:11px;color:#8b949e;padding:6px 0;">Erro ao calcular: '
-      +((res&&res.motivo)||'desconhecido')+'</div>';
-  } else if(res.status==='dados_insuficientes'){
-    h += '<div style="font-size:11px;color:#8b949e;padding:6px 0;">Dados insuficientes — '
-      +(res.motivo||'sem BP1/BP2 ou limitador')+'</div>';
-  } else if(!ordenadas.length){
-    h += '<div style="font-size:11px;color:#8b949e;padding:6px 0;">Sem treino recomendado para este limitador em '+mod+'.</div>';
-  } else {
-    // Cards em linha horizontal para compacidade
-    h += '<div style="display:flex;flex-wrap:wrap;gap:10px;">';
-    ordenadas.forEach(function(op){
-      h += trCardCompacto(op, corMod);
-    });
-    h += '</div>';
-  }
-  h += '</div>';
-  return h;
-}
-
-// ── Card compacto (visão de recomendação) ─────────────────────────────────
-function trCardCompacto(op, corMod){
-  const corRel = TR_COR_RELEVANCE[op.relevance] || '#8b949e';
-  const corZona = {Z1:'#1E3A5F',Z2:'#1B5E20',Z3:'#4A1C12'}[op.zona]||'#161b22';
-  const dose = op.dose||{};
-
-  return '<div style="border:1px solid #30363d;border-radius:8px;width:220px;overflow:hidden;flex-shrink:0;">'
-    +'<div style="background:'+corZona+'33;border-bottom:1px solid #30363d;padding:7px 10px;display:flex;justify-content:space-between;align-items:center;">'
-    +'<span style="font-size:10px;background:'+corZona+'55;color:#c9d1d9;border-radius:3px;padding:1px 6px;">'+op.zona+'</span>'
-    +'<span style="font-size:10px;color:'+corRel+';font-weight:600;">'+op.relevance.toUpperCase()+'</span>'
-    +'</div>'
-    +'<div style="padding:9px 10px;">'
-    +'<div style="font-size:12px;font-weight:600;color:#c9d1d9;margin-bottom:3px;">'+op.training_type+'</div>'
-    +'<div style="font-size:10px;color:#8b949e;margin-bottom:5px;">'+op.format+'</div>'
-    +'<div style="font-size:10px;color:#8b949e;">Work: <b style="color:#c9d1d9;">'+dose.work_range+'</b></div>'
-    +(dose.recovery_range&&dose.recovery_range!=='—'
-      ?'<div style="font-size:10px;color:#8b949e;">Rec: '+dose.recovery_range+'</div>':'')
-    +'<div style="font-size:10px;color:#8b949e;margin-top:3px;">RPE: '+op.expected_RPE_work+'</div>'
-    +'<details style="margin-top:6px;">'
-    +'<summary style="cursor:pointer;font-size:10px;color:#484f58;">▼ detalhe</summary>'
-    +'<div style="font-size:10px;color:#8b949e;margin-top:4px;">'+op.adaptacao+'</div>'
-    +'<div style="font-size:10px;color:#6e7681;">'+op.mecanismo_alvo+'</div>'
-    +(op.success_rule?'<div style="font-size:10px;color:#3FB950;margin-top:3px;">✓ '+op.success_rule+'</div>':'')
-    +'</details>'
-    +'</div></div>';
-}
-
-// ── Popular biblioteca com todos os resultados ────────────────────────────
-function trPopularBiblioteca(resultadosPorMod){
-  // Colecionar todas as opções de todas as modalidades
-  window._TR_TODAS_OPCOES = [];
-  TR_MODALIDADES.forEach(function(mod){
-    const entry = resultadosPorMod[mod];
-    if(!entry) return;
-    const ops = (entry.resultado.opcoes||[]);
-    ops.forEach(function(op){ window._TR_TODAS_OPCOES.push({...op, _modalidade: mod}); });
-  });
-  trFiltrar();
-}
-
-// ── Filtros da biblioteca ─────────────────────────────────────────────────
-function trFiltrar(){
-  const todas = window._TR_TODAS_OPCOES||[];
-  const mod  = (document.getElementById('filtMod')||{}).value||'';
-  const zona = (document.getElementById('filtZona')||{}).value||'';
-  const lim  = (document.getElementById('filtLim')||{}).value||'';
-  const rel  = (document.getElementById('filtRel')||{}).value||'';
-
-  const filtradas = todas.filter(function(op){
-    if(mod  && op._modalidade !== mod)  return false;
-    if(zona && op.zona !== zona)         return false;
-    if(lim  && op.limitador !== lim && !op.limitador_chave?.includes(lim)) return false;
-    if(rel  && op.relevance !== rel)     return false;
-    return true;
-  });
-
-  const bib = document.getElementById('trBiblioteca');
-  if(!bib) return;
-  if(!filtradas.length){
-    bib.innerHTML = '<div style="color:#8b949e;font-size:12px;">Nenhum treino encontrado com esses filtros.</div>';
-    return;
-  }
-  // Agrupar por modalidade
-  const porMod = {};
-  filtradas.forEach(function(op){ (porMod[op._modalidade]=porMod[op._modalidade]||[]).push(op); });
-  let h = '';
-  Object.entries(porMod).forEach(function([m, ops]){
-    const corMod = {Bike:'#5DADE2',Row:'#3FB950',Ski:'#A371F7',Run:'#F4D03F'}[m]||'#8b949e';
-    h += '<div style="margin-bottom:16px;">'
-      +'<div style="font-size:11px;font-weight:600;color:'+corMod+';margin-bottom:8px;">'+m.toUpperCase()
-      +' ('+ops.length+')</div>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:8px;">';
-    ops.slice().sort(function(a,b){
-      return (TR_PRIORIDADE_ORDEM[a.relevance]||99)-(TR_PRIORIDADE_ORDEM[b.relevance]||99);
-    }).forEach(function(op){ h+=trCardCompacto(op, corMod); });
-    h += '</div></div>';
-  });
-  bib.innerHTML = h;
-}
-
-// ── Modo manual (override) ────────────────────────────────────────────────
-function trCarregarSessoesMoxy(){
-  fetch('/api/moxy/analises').then(r=>r.json()).then(function(d){
-    const sel = document.getElementById('trMoxyId');
-    if(!sel||d.status!=='ok') return;
-    (d.analises||[]).forEach(function(a){
-      const op = document.createElement('option');
-      op.value = a.activity_id;
-      op.textContent = (a.data||'').slice(0,10)+' · '+(a.modalidade||'?')
-        +(a.bp1_w?' · BP1 '+Math.round(a.bp1_w)+'W':'')
-        +(a.bp2_w?' · BP2 '+Math.round(a.bp2_w)+'W':'');
-      sel.appendChild(op);
-    });
-  }).catch(function(){});
-}
-
-function trCarregarVst(){
-  fetch('/api/moxy/vst/conjuntos_salvos').then(r=>r.json()).then(function(d){
-    const sel = document.getElementById('trVstId');
-    if(!sel||d.status!=='ok') return;
-    (d.conjuntos||[]).forEach(function(c){
-      const op = document.createElement('option');
-      op.value = c.vst_activity_id;
-      const ts = (c.analisado_em||'').slice(0,10);
-      op.textContent = ts+' · '+(c.modalidade||'?')
-        +' · VST '+c.vst_activity_id.slice(-6)
-        +(c.bp1_status?' · '+c.bp1_status:'');
-      sel.appendChild(op);
-    });
-  }).catch(function(){});
-}
-
-function trExecutarManual(){
-  const modalidade = (document.getElementById('trModalidade')||{}).value||'';
-  const moxyId     = (document.getElementById('trMoxyId')||{}).value||'';
-  const vstId      = (document.getElementById('trVstId')||{}).value||'';
-  const out = document.getElementById('trResultadoManual');
-
-  if(!modalidade){
-    if(out) out.innerHTML = trCardErro('dados_insuficientes','Seleccione uma modalidade.');
-    return;
-  }
-  if(out) out.innerHTML = '<div class="loading">a calcular…</div>';
-
-  Promise.all([
-    moxyId ? fetch('/api/moxy/limiares/'+moxyId).then(r=>r.json()).catch(()=>null) : Promise.resolve(null),
-    moxyId ? fetch('/api/moxy/rede/'+moxyId).then(r=>r.json()).catch(()=>null)     : Promise.resolve(null),
-    vstId  ? fetch('/api/moxy/vst/resultado/'+vstId).then(r=>r.json()).catch(()=>null) : Promise.resolve(null),
-    fetch('/api/cp/actual/'+encodeURIComponent(modalidade)).then(r=>r.json()).catch(()=>null),
-  ]).then(function(res){
-    const limiares = res[0], rede = res[1], vstResult = res[2], cp = res[3];
-    const lc   = (limiares&&limiares.limiares_consenso)||{};
-    const redeLim = (rede&&rede.limitador)||{};
-    const contexto = {
-      modalidade, vst_activity_id: vstId||null, moxy_activity_id: moxyId||null,
-      bp1_w: (lc.primeiro||{}).mediana||null,
-      bp2_w: (lc.segundo||{}).mediana||null,
-      cp_w:  cp&&cp.cp_w||null,
-      achados:{
-        rede_causal:{sistema:redeLim.sistema||null,rotulo:redeLim.rotulo||null,
-          pct:redeLim.pct||null,disponivel:!!(rede&&rede.status==='ok'&&redeLim.sistema)},
-        intervencoes:{disponivel:false},
-        vst:{disponivel:!!(vstResult&&vstResult.status==='ok')},
-        moxy:{disponivel:false},
-      },
-      historico:[],
-    };
-    return fetch('/api/training/executar',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify(contexto)});
-  }).then(r=>r.json()).then(function(resultado){
-    TR_ULT_RESULTADO = resultado;
-    if(out) out.innerHTML = trRenderResultadoCompleto(resultado);
-  }).catch(function(e){
-    if(out) out.innerHTML = trCardErro('erro','Erro: '+e.message);
-  });
-}
-
-// ── Renderizar resultado completo (modo manual) ───────────────────────────
-function trRenderResultadoCompleto(r){
-  if(r.status==='dados_insuficientes')
-    return trCardErro('dados_insuficientes','Dados insuficientes: '+(r.motivo||''));
-  if(r.status==='sem_opcao_plausivel')
-    return '<div style="border:1px solid #F4D03F;border-radius:8px;padding:12px;margin:12px 0;">'
-      +'<b style="color:#F4D03F;">Sem opção plausível</b>'
-      +'<p style="font-size:12px;color:#8b949e;">'+(r.motivo_sem_opcao||'')+'</p></div>';
-
-  let h = '<h3 style="margin:16px 0 10px;">Opções de treinamento</h3>';
-  (r.opcoes||[]).forEach(function(op){ h+=trRenderOpcao(op); });
-  if((r.excluidas||[]).length)
-    h += '<details style="margin:8px 0;"><summary style="cursor:pointer;font-size:11px;color:#8b949e;">▼ Regras excluídas ('+r.excluidas.length+')</summary>'
-      +trDetalhesExcluidas(r.excluidas)+'</details>';
-  return h;
-}
-
-// ── Render de uma opção completa (modo manual) ────────────────────────────
-function trRenderOpcao(op){
-  const corZona = {Z1:'#1E3A5F',Z2:'#1B5E20',Z3:'#4A1C12'}[op.zona]||'#161b22';
-  const corRel  = TR_COR_RELEVANCE[op.relevance]||'#8b949e';
-  const dose = op.dose||{};
-  const refs = op.referencias_individuais||{};
-  const prog = op.progressao||{};
-
-  let h = '<div style="border:1px solid #30363d;border-radius:8px;margin-bottom:14px;overflow:hidden;">'
-    +'<div style="background:'+corZona+'22;border-bottom:1px solid #30363d;padding:10px 14px;'
-    +'display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'
-    +'<span style="font-size:11px;background:'+corZona+'55;color:#c9d1d9;border-radius:4px;padding:2px 8px;">'+op.zona+'</span>'
-    +'<b style="font-size:14px;">'+op.training_type+' — '+op.format+'</b>'
-    +'<span style="margin-left:auto;font-size:11px;color:'+corRel+';">'+op.relevance+'</span>'
-    +'<span style="font-size:10px;color:#6e7681;">'+op.rule_id+'</span>'
-    +'</div>'
-    +'<div style="padding:12px 14px;">';
-
-  h += '<div style="font-size:12px;color:#8b949e;margin-bottom:8px;">'
-    +'<b style="color:#c9d1d9;">Adaptação:</b> '+op.adaptacao+'<br>'
-    +'<b style="color:#c9d1d9;">Mecanismo:</b> '+op.mecanismo_alvo+'</div>';
-
-  h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:10px;">';
-
-  h += '<div style="background:#0d1117;border-radius:6px;padding:10px;">'
-    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;margin-bottom:5px;">Dose</div>'
-    +'<div style="font-size:12px;"><b>'+dose.work_range+'</b></div>'
-    +(dose.recovery_range&&dose.recovery_range!=='—'?'<div style="font-size:11px;color:#8b949e;">Recovery: '+dose.recovery_range+'</div>':'')
-    +'<div style="font-size:11px;color:#8b949e;margin-top:4px;">RPE esperado: '+op.expected_RPE_work+'</div>'
-    +(dose.ponto_de_partida?'<div style="font-size:10px;color:#6e7681;margin-top:4px;">Ponto de partida: '+dose.ponto_de_partida+'</div>':'')
-    +'</div>';
-
-  const refsDisp = Object.entries(refs).filter(([k,v])=>v&&v.disponivel&&k!=='RPE_faixa_tabela');
-  h += '<div style="background:#0d1117;border-radius:6px;padding:10px;">'
-    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;margin-bottom:5px;">Referências individuais</div>'
-    +(refsDisp.length
-      ? refsDisp.map(function([k,v]){
-          let val=v.min!=null&&v.max!=null?v.min+'–'+v.max:(v.teto!=null?'≤'+v.teto:(v.trend||''));
-          return '<div style="font-size:11px;"><span style="color:#8b949e;">'+k+':</span> <b>'+val+'</b></div>';
-        }).join('')
-      : '<div style="font-size:11px;color:#8b949e;">Indisponíveis</div>')
-    +'</div>';
-
-  h += '<div style="background:#0d1117;border-radius:6px;padding:10px;">'
-    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;margin-bottom:5px;">Monitorar</div>'
-    +'<div style="font-size:11px;"><b>'+op.monitoramento.primary+'</b></div>'
-    +(op.monitoramento.rules||[]).filter(Boolean).map(r=>'<div style="font-size:10px;color:#8b949e;margin-top:3px;">'+r+'</div>').join('')
-    +'</div>';
-
-  h += '</div>';
-
-  h += '<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:11px;color:#8b949e;">▼ Critérios de sucesso, falha e interrupção</summary>'
-    +'<div style="font-size:11px;padding:8px 0;color:#c9d1d9;">'
-    +(op.success_rule?'<div style="margin-bottom:6px;"><b style="color:#3FB950;">✓ Sucesso:</b> '+op.success_rule+'</div>':'')
-    +(op.failure_rule?'<div style="margin-bottom:6px;"><b style="color:#F4D03F;">⚠ Falha:</b> '+op.failure_rule+'</div>':'')
-    +(op.work_stop_rule?'<div style="margin-bottom:6px;"><b style="color:#E74C3C;">✗ Interrupção:</b> '+op.work_stop_rule+'</div>':'')
-    +(op.recovery_gate?'<div><b style="color:#5DADE2;">⟳ Recovery gate:</b> '+op.recovery_gate+'</div>':'')
-    +'</div></details>';
-
-  h += '<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;color:#8b949e;">▼ Por que esta opção aparece</summary>'
-    +'<div style="font-size:11px;padding:8px 0;color:#8b949e;">'
-    +'<div><b style="color:#c9d1d9;">Limitador:</b> '+op.limitador+'</div>'
-    +'<div><b style="color:#c9d1d9;">Adaptação:</b> '+op.adaptacao+'</div>'
-    +'<div><b style="color:#c9d1d9;">Mecanismo-alvo:</b> '+op.mecanismo_alvo+'</div>'
-    +'<div><b style="color:#c9d1d9;">Regra da tabela:</b> '+op.rule_id+' (evidência '+op.evidence_level+')</div>'
-    +'</div></details>';
-
-  h += '</div></div>';
-  return h;
-}
-
-function trDetalhesExcluidas(excluidas){
-  if(!excluidas.length) return '';
-  return '<div style="font-size:11px;padding:8px;">'
-    +excluidas.map(e=>'<div style="color:#8b949e;margin:2px 0;">'
-      +'<b style="color:#484f58;">'+e.rule_id+'</b> — '+e.motivo+'</div>').join('')
-    +'</div>';
-}
-
-
-// ── Biblioteca mestre — carregar do backend ───────────────────────────────
-let TR_BIBLIOTECA_CACHE = [];
-let TR_ACT_RECENTES_CACHE = [];
-let TR_ACT_SEL = null;
-
-function trCarregarBiblioteca(){
-  fetch('/api/training/biblioteca').then(r=>r.json()).then(function(d){
-    TR_BIBLIOTECA_CACHE = d.protocolos || [];
-    const sel = document.getElementById('analProto');
-    if(sel){
-      while(sel.options.length > 1) sel.remove(1);
-      TR_BIBLIOTECA_CACHE.forEach(function(p){
-        const op = document.createElement('option');
-        op.value = p.id;
-        op.textContent = '['+p.modalidade+'] '+(p.tipo_treino||'')
-          +' — '+p.nome+(p.series?' '+p.series+'×':'')
-          +(p.work_seconds?' '+Math.round(p.work_seconds/60)+'min':'');
+// ── Popular filtros a partir dos metadados do DB ──────────────────────────
+function _popularFiltros(meta){
+  const sTipo = document.getElementById('fTipo');
+  const sLim  = document.getElementById('fLim');
+  const addT  = document.getElementById('addTipo');
+  if(sTipo && meta && meta.training_types){
+    meta.training_types.forEach(function(t){
+      [sTipo, addT].forEach(function(sel){ if(!sel) return;
+        const op=document.createElement('option');
+        op.value=t.training_type_code; op.textContent=t.training_type_name;
         sel.appendChild(op);
       });
-    }
-    trFiltrar();
-  }).catch(function(){});
-}
-
-function trCardProtocolo(p, corMod){
-  const corPrio = {principal:'#3FB950','possível':'#F4D03F',complementar:'#8b949e'}[p.prioridade]||'#8b949e';
-  const ws = p.work_seconds ? Math.round(p.work_seconds/60)+'min' : '';
-  const rec = p.recovery_seconds ? Math.round(p.recovery_seconds/60)+'min' : '';
-  return '<div style="border:1px solid #30363d;border-radius:8px;width:220px;overflow:hidden;flex-shrink:0;">'
-    +'<div style="background:#16141433;border-bottom:1px solid #30363d;padding:7px 10px;display:flex;justify-content:space-between;align-items:center;">'
-    +'<span style="font-size:10px;color:#8b949e;">'+(p.zona||'—')+'</span>'
-    +'<span style="font-size:9px;color:'+corPrio+';font-weight:600;">'+(p.prioridade||'').toUpperCase()+'</span>'
-    +'</div>'
-    +'<div style="padding:9px 10px;">'
-    +'<div style="font-size:11px;color:#6e7681;margin-bottom:2px;">'+(p.tipo_treino||'')+'</div>'
-    +'<div style="font-size:12px;font-weight:600;color:#c9d1d9;margin-bottom:5px;">'+p.nome+'</div>'
-    +(ws?'<div style="font-size:10px;color:#8b949e;">'+(p.series?p.series+'× ':'')+ws+(rec?' / Rec: '+rec:'')+'</div>':'')
-    +(p.alvo_power_min&&p.alvo_power_max?'<div style="font-size:10px;color:#8b949e;">'+Math.round(p.alvo_power_min)+'–'+Math.round(p.alvo_power_max)+' W</div>':'')
-    +'<div style="font-size:10px;color:#3FB950;margin-top:4px;cursor:pointer;" onclick="trSelecionarProtocolo('+p.id+')">↳ Seleccionar para análise</div>'
-    +'</div></div>';
-}
-
-function trSelecionarProtocolo(id){
-  const sel = document.getElementById('analProto');
-  if(sel) sel.value = id;
-}
-
-// Substituir trFiltrar para suportar a biblioteca mestre
-const _trFiltrarOrig = trFiltrar;
-function trFiltrar(){
-  const mod  = (document.getElementById('filtMod')||{}).value||'';
-  const zona = (document.getElementById('filtZona')||{}).value||'';
-  const lim  = (document.getElementById('filtLim')||{}).value||'';
-  const tipo = (document.getElementById('filtTipo')||{}).value||'';
-  const prio = (document.getElementById('filtPrio')||{}).value||'';
-  const soCompat = !!(document.getElementById('filtSoCompativeis')||{}).checked;
-  const chaveAtual = TR_CONTEXTO ? TR_CONTEXTO.limitador_chave : null;
-
-  const todas = [];
-  Object.entries(TR_RESULTADOS).forEach(function([m, res]){
-    (res.opcoes||[]).forEach(function(op){
-      todas.push({_fonte:'engine',_modalidade:m,nome:op.training_type,tipo_treino:op.training_type,
-        zona:op.zona,limitador:op.limitador,prioridade:op.relevance,_op:op});
     });
-  });
-  TR_BIBLIOTECA_CACHE.forEach(function(p){
-    todas.push({_fonte:'biblioteca',_modalidade:p.modalidade,nome:p.nome,tipo_treino:p.tipo_treino,
-      zona:p.zona,limitador:p.limitador,prioridade:p.prioridade,_proto:p});
-  });
-
-  const filtradas = todas.filter(function(item){
-    if(mod  && item._modalidade !== mod) return false;
-    if(zona && item.zona !== zona)        return false;
-    if(lim  && item.limitador !== lim)    return false;
-    if(tipo && item.tipo_treino !== tipo) return false;
-    if(prio && item.prioridade !== prio)  return false;
-    if(soCompat && chaveAtual && item.limitador && item.limitador !== chaveAtual) return false;
-    return true;
-  });
-
-  const bib = document.getElementById('trBiblioteca');
-  if(!bib) return;
-  if(!filtradas.length){ bib.innerHTML='<div style="font-size:12px;color:#8b949e;">Nenhum treino encontrado.</div>'; return; }
-  const porMod = {};
-  filtradas.forEach(function(item){ (porMod[item._modalidade]=porMod[item._modalidade]||[]).push(item); });
-  let h = '';
-  Object.entries(porMod).forEach(function([m, items]){
-    const corMod = {Bike:'#5DADE2',Row:'#3FB950',Ski:'#A371F7',Run:'#F4D03F'}[m]||'#8b949e';
-    h += '<div style="margin-bottom:16px;"><div style="font-size:11px;font-weight:600;color:'+corMod+';margin-bottom:8px;">'+m.toUpperCase()+' ('+items.length+')</div><div style="display:flex;flex-wrap:wrap;gap:8px;">';
-    items.forEach(function(item){
-      h += item._fonte==='engine' ? trCardCompacto(item._op,corMod) : trCardProtocolo(item._proto,corMod);
-    });
-    h += '</div></div>';
-  });
-  bib.innerHTML = h;
-}
-
-// Adicionar treino — blocos dinâmicos
-let _trBlocoN = 0;
-function trAddBloco(){
-  _trBlocoN++;
-  const n = _trBlocoN;
-  const div = document.createElement('div');
-  div.id = 'bloco_'+n;
-  div.style.cssText = 'border:1px solid #30363d;border-radius:6px;padding:10px;margin-bottom:8px;';
-  div.innerHTML = '<div style="display:flex;justify-content:space-between;margin-bottom:6px;">'
-    +'<b style="font-size:12px;">Bloco '+n+'</b>'
-    +'<button onclick="document.getElementById(\'bloco_'+n+'\').remove()" style="background:none;border:none;color:#8b949e;cursor:pointer;font-size:11px;">✕</button></div>'
-    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;">'
-    +'<label class="sel">Tipo<select name="tipo_bloco" style="width:100%;"><option value="warmup">Warm-up</option><option value="work" selected>Work</option><option value="recovery">Recovery</option><option value="cooldown">Cool-down</option></select></label>'
-    +'<label class="sel">Séries<input name="series" type="number" min="1" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 6px;margin-top:3px;"></label>'
-    +'<label class="sel">Work(seg)<input name="work_seconds" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 6px;margin-top:3px;"></label>'
-    +'<label class="sel">Rec(seg)<input name="recovery_seconds" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 6px;margin-top:3px;"></label>'
-    +'<label class="sel">Pw mín<input name="alvo_power_min" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 6px;margin-top:3px;"></label>'
-    +'<label class="sel">Pw máx<input name="alvo_power_max" type="number" min="0" style="width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:4px;padding:4px 6px;margin-top:3px;"></label>'
-    +'</div>';
-  document.getElementById('trBlocos').appendChild(div);
-}
-
-function _val(id){ const el=document.getElementById(id); return el?(el.value.trim()||null):null; }
-function _num(id){ const v=_val(id); return v?parseFloat(v):null; }
-function _int(id){ const v=_val(id); return v?parseInt(v):null; }
-
-function trSalvarProtocolo(){
-  const nome=_val('addNome'), mod=_val('addMod');
-  const st=document.getElementById('trAddStatus');
-  if(!nome||!mod){ if(st) st.textContent='Nome e Modalidade obrigatórios.'; return; }
-  const series=_int('addSeries'), work_s=_int('addWork');
-  const blocos=[];
-  let ordemB=0;
-  document.querySelectorAll('#trBlocos>div[id^="bloco_"]').forEach(function(div){
-    const b={ordem:ordemB++};
-    div.querySelectorAll('[name]').forEach(function(el){ const v=el.value.trim(); if(v) b[el.name]=isNaN(v)||el.type==='text'||el.tagName==='SELECT'?v:parseFloat(v); });
-    blocos.push(b);
-  });
-  const payload={nome,modalidade:mod,tipo_treino:_val('addTipo'),objetivo:_val('addObjetivo'),
-    limitador:_val('addLim'),zona:_val('addZona'),prioridade:_val('addPrio')||'principal',
-    series,work_seconds:_int('addWork'),recovery_seconds:_int('addRecovery'),
-    work_total_seconds:series&&work_s?series*work_s:null,
-    duration_total_seconds:_int('addDurTotal'),
-    alvo_power_min:_num('addPwMin'),alvo_power_max:_num('addPwMax'),
-    alvo_hr_min:_num('addHrMin'),alvo_hr_max:_num('addHrMax'),
-    alvo_rpe_min:_num('addRpeMin'),alvo_rpe_max:_num('addRpeMax'),
-    instrucoes:_val('addInstrucoes'),blocos};
-  if(st) st.textContent='A salvar…';
-  fetch('/api/training/biblioteca',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
-    .then(r=>r.json()).then(function(d){
-      if(d.status==='ok'){ if(st) st.textContent='✓ Salvo (id '+d.id+')'; trCarregarBiblioteca(); }
-      else{ if(st) st.textContent='Erro: '+(d.mensagem||'?'); }
-    }).catch(function(e){ if(st) st.textContent='Erro: '+e.message; });
-}
-
-// Actividades recentes
-function trCarregarActividadesRecentes(){
-  const mod=(document.getElementById('analMod')||{}).value||'';
-  fetch('/api/training/actividades-recentes?n=30'+(mod?'&modalidade='+encodeURIComponent(mod):''))
-    .then(r=>r.json()).then(function(d){
-      TR_ACT_RECENTES_CACHE=d.actividades||[];
-      trRenderActividadesRecentes(TR_ACT_RECENTES_CACHE);
-    }).catch(function(){});
-}
-
-function trFiltrarActiv(){
-  const q=((document.getElementById('analQ')||{}).value||'').toLowerCase();
-  trRenderActividadesRecentes(q?TR_ACT_RECENTES_CACHE.filter(function(a){
-    return (a.nome||'').toLowerCase().includes(q)||(a.date||'').includes(q);
-  }):TR_ACT_RECENTES_CACHE);
-}
-
-function trRenderActividadesRecentes(acts){
-  const box=document.getElementById('analActiv'); if(!box) return;
-  if(!acts.length){ box.innerHTML='<div style="font-size:11px;color:#8b949e;">Sem actividades.</div>'; return; }
-  const fmtDur=function(s){if(!s)return '—';const m=Math.floor(s/60),ss=s%60;return m+':'+(ss<10?'0':'')+ss;};
-  let h='<div style="overflow-x:auto;"><table style="width:100%;font-size:11px;border-collapse:collapse;">'
-    +'<thead><tr style="color:#8b949e;"><th style="padding:4px 8px;text-align:left;">Data</th><th>Modal.</th><th>Nome</th><th>Dur.</th><th>Avg W</th><th></th></tr></thead><tbody>';
-  acts.forEach(function(a,i){
-    const sel=TR_ACT_SEL&&TR_ACT_SEL.activity_id===a.activity_id;
-    h+='<tr style="border-top:1px solid #21262d;'+(sel?'background:#1c2331':'')+'">'
-      +'<td style="padding:4px 8px;">'+(a.date||'').slice(0,10)+'</td>'
-      +'<td>'+(a.modalidade||'?')+'</td>'
-      +'<td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(a.nome||'')+'</td>'
-      +'<td>'+fmtDur(a.elapsed_time)+'</td>'
-      +'<td>'+(a.avg_watts?Math.round(a.avg_watts)+' W':'—')+'</td>'
-      +'<td><button onclick="trSelAct('+i+')" style="font-size:10px;padding:2px 7px;background:'+(sel?'#3FB950':'#161b22')+';border:1px solid '+(sel?'#3FB950':'#30363d')+';color:'+(sel?'#fff':'#8b949e')+';border-radius:4px;cursor:pointer;">'+(sel?'✓':'Sel.')+'</button></td></tr>';
-  });
-  h+='</tbody></table></div>';
-  box.innerHTML=h;
-}
-
-function trSelAct(i){
-  TR_ACT_SEL=TR_ACT_RECENTES_CACHE[i]||null;
-  const info=document.getElementById('analActSel');
-  if(TR_ACT_SEL&&info) info.textContent='Selecionada: '+(TR_ACT_SEL.date||'').slice(0,10)+' · '+(TR_ACT_SEL.modalidade||'')+' · '+(TR_ACT_SEL.nome||'');
-  trRenderActividadesRecentes(TR_ACT_RECENTES_CACHE);
-}
-
-function trAnalisarExecucao(gravar){
-  const pid=parseInt((document.getElementById('analProto')||{}).value||'');
-  if(!pid){ alert('Seleccione um protocolo.'); return; }
-  if(!TR_ACT_SEL){ alert('Seleccione uma actividade.'); return; }
-  const box=document.getElementById('trResultadoAnalise');
-  if(box) box.innerHTML='<div class="loading">a analisar…</div>';
-  fetch('/api/training/analisar-execucao',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({training_id:pid,activity_id:TR_ACT_SEL.activity_id,gravar})})
-    .then(r=>r.json()).then(function(d){ if(box) box.innerHTML=trRenderAnalise(d); })
-    .catch(function(e){ if(box) box.innerHTML=trCardErro('erro','Erro: '+e.message); });
-}
-
-function trRenderAnalise(d){
-  if(d.status!=='ok') return trCardErro('erro',d.mensagem||'?');
-  const COR={executado_conforme:'#3FB950',parcialmente:'#F4D03F',fora_protocolo:'#E74C3C',nao_avaliavel:'#8b949e'};
-  const LBL={executado_conforme:'EXECUTADO CONFORME',parcialmente:'EXECUTADO PARCIALMENTE',fora_protocolo:'FORA DO PROTOCOLO',nao_avaliavel:'NÃO AVALIÁVEL'};
-  const cor=COR[d.classificacao]||'#8b949e', lbl=LBL[d.classificacao]||d.classificacao;
-  const pct=d.percentual_execucao!=null?d.percentual_execucao+'%':'—';
-  const fmtS=function(s){if(s==null)return '—';const m=Math.floor(s/60),ss=Math.round(s%60);return m+':'+(ss<10?'0':'')+ss;};
-  let h='<div style="border:2px solid '+cor+';border-radius:10px;padding:14px 16px;margin-bottom:14px;">'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;">'
-    +'<div style="font-size:24px;font-weight:700;color:'+cor+';">'+pct+'</div>'
-    +'<div style="font-size:13px;font-weight:700;color:'+cor+';">'+lbl+'</div>'
-    +'</div>'
-    +'<div style="font-size:11px;color:#8b949e;margin-top:4px;">Protocolo: <b>'+d.protocolo_nome+'</b>'+(d.limitador_protocolo?' · '+d.limitador_protocolo:'')+'</div></div>';
-  const m=d.metricas||{};
-  if(Object.keys(m).length){
-    h+='<table style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="color:#8b949e;"><th style="padding:5px 8px;text-align:left;">Métrica</th><th>Planificado</th><th>Realizado</th><th>Resultado</th></tr></thead><tbody>';
-    if(m.duracao){ const ok=m.duracao.dentro_tolerancia; h+='<tr style="border-top:1px solid #21262d;"><td style="padding:5px 8px;">Duração</td><td style="text-align:center;">'+fmtS(m.duracao.planificado_s)+'</td><td style="text-align:center;">'+fmtS(m.duracao.realizado_s)+'</td><td style="text-align:center;color:'+(ok?'#3FB950':'#F4D03F')+';">'+(ok?'✓':'⚠')+' '+m.duracao.pct+'%</td></tr>'; }
-    if(m.work){ const ok=m.work.dentro_tolerancia; h+='<tr style="border-top:1px solid #21262d;"><td style="padding:5px 8px;">Work (Z2+Z3)</td><td style="text-align:center;">'+fmtS(m.work.planificado_s)+'</td><td style="text-align:center;">'+fmtS(m.work.realizado_s)+'</td><td style="text-align:center;color:'+(ok?'#3FB950':'#F4D03F')+';">'+(ok?'✓':'⚠')+' '+m.work.pct+'%</td></tr>'; }
-    if(m.potencia){ const ok=m.potencia.dentro_alvo; h+='<tr style="border-top:1px solid #21262d;"><td style="padding:5px 8px;">Potência</td><td style="text-align:center;">'+Math.round(m.potencia.alvo_min)+'–'+Math.round(m.potencia.alvo_max)+' W</td><td style="text-align:center;">'+Math.round(m.potencia.realizado)+' W</td><td style="text-align:center;color:'+(ok?'#3FB950':'#E74C3C')+';">'+(ok?'✓':'✗')+'</td></tr>'; }
-    if(m.fc){ const ok=m.fc.dentro_alvo; h+='<tr style="border-top:1px solid #21262d;"><td style="padding:5px 8px;">FC</td><td style="text-align:center;">'+Math.round(m.fc.alvo_min)+'–'+Math.round(m.fc.alvo_max)+' bpm</td><td style="text-align:center;">'+Math.round(m.fc.realizado)+' bpm</td><td style="text-align:center;color:'+(ok?'#3FB950':'#E74C3C')+';">'+(ok?'✓':'✗')+'</td></tr>'; }
-    if(m.rpe&&m.rpe.realizado){ const ia=m.rpe.alvo_min!=null&&m.rpe.alvo_max!=null?m.rpe.realizado>=m.rpe.alvo_min&&m.rpe.realizado<=m.rpe.alvo_max:null; h+='<tr style="border-top:1px solid #21262d;"><td style="padding:5px 8px;">RPE</td><td style="text-align:center;">'+(m.rpe.alvo_min&&m.rpe.alvo_max?m.rpe.alvo_min+'–'+m.rpe.alvo_max:'—')+'</td><td style="text-align:center;">'+m.rpe.realizado+'</td><td style="text-align:center;color:'+(ia===true?'#3FB950':ia===false?'#E74C3C':'#8b949e')+';">'+(ia===true?'✓':ia===false?'✗':'—')+'</td></tr>'; }
-    h+='</tbody></table>';
-  } else {
-    h+='<div style="font-size:12px;color:#8b949e;margin-top:8px;">Dados insuficientes para avaliar métricas.</div>';
   }
-  h+='<div style="font-size:10px;color:#484f58;margin-top:8px;">Tolerâncias: duração/work ±5% · potência ±5% · FC ±5 bpm</div>';
+  if(sLim && meta && meta.limiters){
+    meta.limiters.forEach(function(l){
+      const op=document.createElement('option');
+      op.value=l.limiter_code; op.textContent=l.limiter_name;
+      sLim.appendChild(op);
+    });
+  }
+}
+
+// ── Cabeçalho de contexto fisiológico ────────────────────────────────────
+function trRenderContexto(ctx){
+  const box = document.getElementById('trContexto');
+  if(!box || !ctx || ctx.status!=='ok') return;
+  const mods = ctx.modalidades || {};
+
+  let h = '<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;'
+    +'background:#161b22;margin-bottom:4px;">'
+    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;'
+    +'margin-bottom:8px;">Contexto Fisiológico Actual</div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:14px;">';
+
+  TR_MODS.forEach(function(m){
+    const d = mods[m] || {};
+    const cor = TR_MOD_COR[m]||'#8b949e';
+    const lnome = d.limitador_nome||'—';
+    const fonte = d.fonte==='vst'?'VST + MOXY':d.fonte==='moxy'?'MOXY':'Sem dados';
+    const dias = d.dias_moxy!=null?' · há '+d.dias_moxy+'d':'';
+    const bp = (d.bp1_w||d.bp2_w)
+      ? '<div style="font-size:10px;color:#6e7681;">'
+        +(d.bp1_w?'BP1 '+Math.round(d.bp1_w)+'W':'')
+        +(d.bp1_w&&d.bp2_w?' · ':'')
+        +(d.bp2_w?'BP2 '+Math.round(d.bp2_w)+'W':'')
+        +'</div>' : '';
+    h += '<div style="min-width:110px;">'
+      +'<div style="font-size:10px;font-weight:700;color:'+cor+';margin-bottom:2px;">'
+      +TR_MOD_NOME[m]+'</div>'
+      +'<div style="font-size:13px;font-weight:700;color:'+(d.fonte==='ausente'?'#484f58':cor)+';margin-bottom:2px;">'
+      +lnome+'</div>'
+      +'<div style="font-size:10px;color:#6e7681;">'+fonte+dias+'</div>'
+      +bp+'</div>';
+  });
+
+  h += '</div></div>';
+  box.innerHTML = h;
+}
+
+// ── Aplicar filtros e re-renderizar todas as modalidades ──────────────────
+function trAplicarFiltros(){
+  const fMod  = document.getElementById('fMod').value;
+  const fZona = document.getElementById('fZona').value;
+  const fTipo = document.getElementById('fTipo').value;
+  const fLim  = document.getElementById('fLim').value;
+  const fWork = document.getElementById('fWork').value;
+
+  const mods = fMod ? [fMod] : TR_MODS;
+  const box = document.getElementById('trOpcoes');
+  if(!box) return;
+  box.innerHTML = '<div class="loading" style="font-size:12px;color:#8b949e;">a carregar opções…</div>';
+
+  const ctx = (TR_CONTEXTO && TR_CONTEXTO.modalidades) || {};
+
+  Promise.all(mods.map(function(m){
+    const md = ctx[m] || {};
+    // Limiter_code actual para marcar PRINCIPAL/SUPLEMENTAR
+    const limCode = _limCodeFromCtx(md);
+    const params = new URLSearchParams({modalidade: m});
+    if(fZona) params.set('zona', fZona);
+    if(fTipo) params.set('tipo', fTipo);
+    if(fLim)  params.set('filtro_limitador', fLim);
+    if(fWork) params.set('work', fWork);
+    if(limCode) params.set('limitador', limCode);
+    if(md.bp1_w)   params.set('bp1_w', md.bp1_w);
+    if(md.bp2_w)   params.set('bp2_w', md.bp2_w);
+    if(md.bp1_bpm) params.set('bp1_bpm', md.bp1_bpm);
+    if(md.bp2_bpm) params.set('bp2_bpm', md.bp2_bpm);
+    params.set('n', '10');
+    return fetch('/api/training/opcoes?'+params.toString())
+      .then(r=>r.json())
+      .then(function(d){ return {mod:m, data:d, ctx:md}; })
+      .catch(function(){ return {mod:m, data:{status:'erro',mensagem:'rede'}, ctx:md}; });
+  })).then(function(resultados){
+    let h = '';
+    resultados.forEach(function(res){
+      h += _renderSecaoMod(res.mod, res.data, res.ctx);
+    });
+    box.innerHTML = h || '<div style="color:#8b949e;font-size:12px;">Sem opções encontradas.</div>';
+  });
+}
+
+// Mapeia o contexto da modalidade → limiter_code do training_master
+function _limCodeFromCtx(md){
+  if(!md || md.fonte==='ausente') return null;
+  // Usar sistema da Rede Causal → family → code
+  const _MAP = {
+    cardiaco:'CD','cardíaco':'CD',
+    periferico:'UT','periférico':'UT',
+    respiratorio:'RD','respiratório':'RD',
+  };
+  const s = (md.sistema||'').toLowerCase().trim();
+  return _MAP[s] || null;
+}
+
+// ── Renderizar secção de uma modalidade ──────────────────────────────────
+function _renderSecaoMod(mod, data, ctx){
+  const cor = TR_MOD_COR[mod]||'#8b949e';
+  const nome = TR_MOD_NOME[mod]||mod;
+  const lnome = ctx.limitador_nome||'—';
+  const fonte = ctx.fonte==='vst'?'VST+MOXY':ctx.fonte==='moxy'?'MOXY':'Sem avaliação';
+
+  let h = '<div style="margin-bottom:28px;">'
+    +'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px;">'
+    +'<span style="font-size:16px;font-weight:700;color:'+cor+';">'+nome.toUpperCase()+'</span>'
+    +'<span style="font-size:11px;color:#8b949e;">Limitador: <b style="color:'+cor+';">'+lnome+'</b>'
+    +' · '+fonte+'</span>'
+    +'</div>';
+
+  if(data.status !== 'ok'){
+    h += '<div style="font-size:12px;color:#E74C3C;">Erro: '+(data.mensagem||'?')+'</div>';
+    h += '</div>'; return h;
+  }
+
+  const ops = data.opcoes || [];
+  if(!ops.length){
+    h += '<div style="font-size:12px;color:#8b949e;">Sem opções para os filtros seleccionados.</div>';
+    h += '</div>'; return h;
+  }
+
+  // Mostrar no máximo 3 inicialmente
+  const visiveis = ops.slice(0,3);
+  const resto    = ops.slice(3);
+
+  h += '<div style="display:flex;flex-wrap:wrap;gap:10px;">';
+  visiveis.forEach(function(op){ h += _card(op, cor); });
+  h += '</div>';
+
+  if(resto.length){
+    h += '<details style="margin-top:8px;">'
+      +'<summary style="cursor:pointer;font-size:11px;color:#484f58;">▼ Ver mais opções ('+resto.length+')</summary>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">';
+    resto.forEach(function(op){ h += _card(op, cor); });
+    h += '</div></details>';
+  }
+
+  h += '</div>';
   return h;
 }
 
-function trCardErro(tipo, msg){
-  const cor = tipo==='dados_insuficientes'?'#E67E22':'#E74C3C';
-  return '<div style="border:1px solid '+cor+';border-radius:8px;padding:12px 16px;margin:12px 0;">'
-    +'<b style="color:'+cor+';">'+(tipo==='dados_insuficientes'?'Dados insuficientes':'Erro')+'</b>'
-    +'<p style="font-size:12px;color:#8b949e;margin:6px 0 0;">'+msg+'</p></div>';
+// ── Card de opção de treino ───────────────────────────────────────────────
+function _card(op, corMod){
+  const corRel  = TR_REL_COR[op.relacao]||'#8b949e';
+  const bgZona  = TR_ZONA_BG[op.zone]||'#161b22';
+  const relBg   = op.relacao==='PRINCIPAL'?'#1a3a1a':op.relacao==='SUPLEMENTAR'?'#1f1f1f':'#1a1a3a';
+
+  // Limpar nomenclaturas internas dos campos visíveis
+  const tipo = (op.training_type||'').replace(/^[A-Z]{1,2}-[A-Z]\d-\d+\s*/,'');
+  const fmt  = (op.format||'');
+
+  const workW = op.work_watts || null;
+  const workB = op.work_bpm   || null;
+
+  return '<div style="border:1px solid #30363d;border-radius:8px;width:230px;'
+    +'overflow:hidden;flex-shrink:0;display:flex;flex-direction:column;">'
+    // cabeçalho com zona e relação
+    +'<div style="background:'+bgZona+';border-bottom:1px solid #30363d;'
+    +'padding:7px 10px;display:flex;justify-content:space-between;align-items:center;">'
+    +'<span style="font-size:10px;color:#8b949e;font-weight:600;">'+op.zone+'</span>'
+    +'<span style="font-size:9px;font-weight:700;color:'+corRel+';background:'+relBg+';'
+    +'padding:2px 7px;border-radius:4px;">'+op.relacao+'</span>'
+    +'</div>'
+    // corpo
+    +'<div style="padding:10px 12px;flex:1;">'
+    +'<div style="font-size:11px;color:#8b949e;margin-bottom:2px;">'+tipo+'</div>'
+    +'<div style="font-size:13px;font-weight:600;color:#c9d1d9;margin-bottom:4px;">'+fmt+'</div>'
+    +'<div style="font-size:11px;color:#8b949e;margin-bottom:6px;'
+    +'border-left:2px solid '+corRel+';padding-left:6px;">'
+    +'Favorece <b style="color:'+corRel+';">'+op.limiter_nome+'</b></div>'
+    // métricas
+    +'<div style="font-size:11px;display:grid;grid-template-columns:auto 1fr;gap:2px 8px;">'
+    +'<span style="color:#6e7681;">Work</span><span>'+op.work_range+'</span>'
+    +(op.recovery_range&&op.recovery_range!=='—'
+      ?'<span style="color:#6e7681;">Recovery</span><span>'+op.recovery_range+'</span>':'')
+    +'<span style="color:#6e7681;">RPE</span><span>'+op.expected_rpe_work+'</span>'
+    +(workW?'<span style="color:#5DADE2;">WORK W</span><span style="color:#5DADE2;font-weight:600;">'+workW+'</span>':'')
+    +(workB?'<span style="color:#E74C3C;">FC</span><span style="color:#E74C3C;">'+workB+'</span>':'')
+    +'</div>'
+    // detalhes expansíveis
+    +(op.adaptation_target||op.mechanism_target
+      ?'<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:10px;color:#484f58;">▼ objectivo</summary>'
+       +'<div style="font-size:10px;color:#8b949e;margin-top:4px;">'
+       +(op.adaptation_target?'<b>Adaptação:</b> '+op.adaptation_target+'<br>':'')
+       +(op.mechanism_target?'<b>Mecanismo:</b> '+op.mechanism_target:'')
+       +'</div></details>':'')
+    +'</div>'
+    +'</div>';
+}
+
+// ── Biblioteca pessoal ────────────────────────────────────────────────────
+function trCarregarBiblioteca(){
+  fetch('/api/training/biblioteca').then(r=>r.json()).then(function(d){
+    const box = document.getElementById('trBiblioteca');
+    if(!box) return;
+    const ps = (d.protocolos||[]).filter(p=>p.ativo);
+    if(!ps.length){ box.innerHTML='<div style="font-size:12px;color:#8b949e;">(sem treinos adicionados)</div>'; return; }
+    box.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:8px;">'
+      +ps.map(function(p){
+        const cor = TR_MOD_COR[p.modalidade.toLowerCase()]||'#8b949e';
+        return '<div style="border:1px solid #30363d;border-radius:6px;padding:8px 10px;width:200px;">'
+          +'<div style="font-size:10px;color:'+cor+';font-weight:600;">'+p.modalidade.toUpperCase()+'</div>'
+          +'<div style="font-size:12px;font-weight:600;color:#c9d1d9;margin:3px 0;">'+p.nome+'</div>'
+          +(p.tipo_treino?'<div style="font-size:10px;color:#8b949e;">'+p.tipo_treino+'</div>':'')
+          +(p.work_seconds?'<div style="font-size:10px;color:#8b949e;">Work: '+Math.round(p.work_seconds/60)+'min</div>':'')
+          +'</div>';
+      }).join('')+'</div>';
+  }).catch(function(){});
+}
+
+function trSalvarBiblioteca(){
+  const nome=((document.getElementById('addNome')||{}).value||'').trim();
+  const mod=((document.getElementById('addMod')||{}).value||'').trim();
+  const st=document.getElementById('trAddStatus');
+  if(!nome||!mod){ if(st) st.textContent='Nome e modalidade obrigatórios.'; return; }
+  const payload={
+    nome, modalidade: mod.charAt(0).toUpperCase()+mod.slice(1),
+    tipo_treino:((document.getElementById('addTipo')||{}).value||null),
+    zona:((document.getElementById('addZona')||{}).value||null),
+    descricao:((document.getElementById('addWork')||{}).value||null),
+    instrucoes:((document.getElementById('addRec')||{}).value||null),
+    alvo_rpe_min:null, alvo_rpe_max:null,
+    prioridade:'possível',
+  };
+  if(st) st.textContent='a salvar…';
+  fetch('/api/training/biblioteca',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .then(r=>r.json()).then(function(d){
+      if(d.status==='ok'){if(st) st.textContent='✓ Salvo.'; trCarregarBiblioteca();}
+      else{if(st) st.textContent='Erro: '+(d.mensagem||'?');}
+    }).catch(function(e){ if(st) st.textContent='Erro: '+e.message; });
 }
 """
 

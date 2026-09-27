@@ -873,6 +873,12 @@ async function load(){
    ((rpeData||{}).intervals||[]).forEach(function(iv){
     rpeMap[String(iv.start_time)]=iv.rpe; // 0=apagado, 1-10=valor
    });
+   // Aviso quando RPE vem de snapshot de ID anterior (atividade reimportada)
+   if((rpeData||{}).fonte==='snapshot_legado'){
+    const box=document.getElementById('mxSalvarStatus');
+    if(box) box.innerHTML='<span style="color:#F0883E;">⚠ '+(rpeData.aviso||'RPE recuperado de snapshot anterior.')
+     +' <a href="#" onclick="mxSalvarAtividade();return false;" style="color:#5DADE2;">Salvar agora</a></span>';
+   }
 
    const cols=['label','type','rpe_col','start_time','elapsed_time','distance','average_watts','max_watts',
     'weighted_average_watts','average_heartrate','max_heartrate','average_cadence','intensity','joules','decoupling'];

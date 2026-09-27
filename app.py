@@ -166,13 +166,27 @@ def api_training_contexto():
         except: return None
 
     def _sistema_de_resultado_json(rjson_str):
-        """Extrai sistema da rede causal do resultado_json do vst_conjuntos."""
+        """Extrai sistema da rede causal do resultado_json do vst_conjuntos.
+
+        Tenta várias estruturas possíveis dependendo de quando o resultado
+        foi gravado (o formato pode variar entre versões).
+        """
         if not rjson_str: return None
         try:
             rj = _json.loads(rjson_str) if isinstance(rjson_str, str) else rjson_str
+            # 1. rede_causal.limitador.sistema (formato principal do vst_comparar)
             rc = rj.get('rede_causal') or {}
             lim = rc.get('limitador') or {}
-            return str(lim.get('sistema') or '').lower().strip() or None
+            s = str(lim.get('sistema') or '').lower().strip()
+            if s: return s
+            # 2. rede_causal.sistema (fallback)
+            s = str(rc.get('sistema') or '').lower().strip()
+            if s: return s
+            # 3. limitador.sistema directo (fallback antigo)
+            lim2 = rj.get('limitador') or {}
+            s = str(lim2.get('sistema') or '').lower().strip()
+            if s: return s
+            return None
         except: return None
 
     def _build(fonte, sistema, us_lim, pc_lim,
@@ -4416,8 +4430,9 @@ def api_training_opcoes():
         return jsonify({'status': 'ok', 'modalidade': mod,
                         'n': len(opcoes), 'opcoes': opcoes})
     except Exception as e:
+        import traceback as _tb
         return jsonify({'status': 'erro', 'mensagem': str(e),
-                        'trace': traceback.format_exc()}), 500
+                        'trace': _tb.format_exc()}), 500
 
 
 @app.route('/api/training/meta')
@@ -5024,6 +5039,46 @@ def api_activity_salvar_snapshot(activity_id):
     except Exception as e:
         return jsonify({'status': 'erro', 'mensagem': str(e),
                         'trace': traceback.format_exc()}), 500
+
+
+
+@app.route('/api/admin/vst-debug')
+def api_admin_vst_debug():
+    """Debug do conteúdo de vst_conjuntos — para diagnosticar o contexto de training."""
+    import drive_db_perfil as _ddp, json as _json
+    try:
+        cn = _ddp.get_conn()
+        rows = cn.execute(
+            "SELECT vst_activity_id, moxy_activity_id, analisado_em, "
+            "bp1_status, bp2_status, resultado_json "
+            "FROM vst_conjuntos ORDER BY analisado_em DESC"
+        ).fetchall()
+        resultado = []
+        for r in rows:
+            rj = None
+            sistema = None
+            tem_rede = False
+            if r[5]:
+                try:
+                    rj = _json.loads(r[5])
+                    rc = rj.get('rede_causal') or {}
+                    lim = rc.get('limitador') or {}
+                    sistema = lim.get('sistema') or rc.get('sistema')
+                    tem_rede = bool(rc)
+                except Exception:
+                    pass
+            resultado.append({
+                'vst_id': r[0], 'moxy_id': r[1], 'analisado_em': r[2],
+                'bp1_status': r[3], 'bp2_status': r[4],
+                'tem_resultado_json': bool(r[5]),
+                'tem_rede_causal': tem_rede,
+                'sistema_extraido': sistema,
+                'chaves_resultado_json': list(rj.keys()) if rj else [],
+            })
+        cn.close()
+        return jsonify({'status': 'ok', 'n': len(resultado), 'conjuntos': resultado})
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
 
 
 import api_moxy

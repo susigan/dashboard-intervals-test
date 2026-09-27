@@ -2681,20 +2681,19 @@ def registar(app):
     # ── activity_interval_rpe: GET ────────────────────────────────────────
     @app.route('/api/activity/<path:activity_id>/interval_rpe')
     def api_activity_interval_rpe_ler(activity_id):
-        """Devolve todas as anotações de RPE por intervalo de uma actividade.
+        """Devolve anotações de RPE por intervalo.
 
-        Inclui registos com rpe=0 (apagados explicitamente) — o frontend
-        usa isso para saber que existe uma exclusão e não deve fazer
-        fallback para moxy_rpe.
+        Fallback: se o ID da atividade mudou (reimportada na Intervals.icu),
+        procura em activity_snapshot uma atividade com o mesmo nome+data
+        e devolve o rpe_intervalos_json salvo, marcando fonte='snapshot_legado'.
         """
         try:
             aid = str(activity_id).strip().strip('/').split('/')[-1]
-            import drive_db_perfil as ddp
+            import drive_db_perfil as ddp, json as _json
             cn = ddp.get_conn()
             rows = cn.execute(
                 "SELECT start_time, interval_type, elapsed_time, rpe, source, updated_at "
-                "FROM activity_interval_rpe WHERE activity_id=? "
-                "ORDER BY start_time",
+                "FROM activity_interval_rpe WHERE activity_id=? ORDER BY start_time",
                 (aid,)).fetchall()
             intervals = [
                 {'start_time': r[0], 'interval_type': r[1],
@@ -2702,12 +2701,58 @@ def registar(app):
                  'source': r[4], 'updated_at': r[5]}
                 for r in rows
             ]
+
+            # ── Fallback quando o ID da atividade mudou ───────────────────
+            if not intervals:
+                try:
+                    import db as _db
+                    row_act = _db._exec(
+                        "SELECT name, start_date_local FROM activities WHERE id=?",
+                        (aid,), fetch='one')
+                    if row_act:
+                        nome_act = str(row_act[0] or '').strip()
+                        data_act = str(row_act[1] or '')[:10]
+                        snap = cn.execute(
+                            "SELECT activity_id, rpe_intervalos_json, icu_intervals_json "
+                            "FROM activity_snapshot "
+                            "WHERE nome=? AND data=? AND rpe_intervalos_json IS NOT NULL",
+                            (nome_act, data_act)).fetchone()
+                        if snap:
+                            old_aid, rpe_json_str, ivs_json_str = snap
+                            rpe_map = _json.loads(rpe_json_str or '{}')
+                            ivs     = _json.loads(ivs_json_str or '[]')
+                            snap_ivs = []
+                            for iv in ivs:
+                                st = iv.get('start_time')
+                                if st is None: continue
+                                rpe_val = rpe_map.get(str(st)) or rpe_map.get(str(float(st)))
+                                if rpe_val is not None and int(rpe_val) > 0:
+                                    snap_ivs.append({
+                                        'start_time': float(st),
+                                        'interval_type': iv.get('type'),
+                                        'elapsed_time': iv.get('elapsed_time'),
+                                        'rpe': int(rpe_val),
+                                        'source': 'snapshot_legado',
+                                        'updated_at': None,
+                                    })
+                            if snap_ivs:
+                                return jsonify({
+                                    'status': 'ok', 'activity_id': aid,
+                                    'intervals': snap_ivs, 'n': len(snap_ivs),
+                                    'fonte': 'snapshot_legado',
+                                    'aviso': (f'RPE recuperado do snapshot anterior '
+                                              f'(id anterior: {old_aid}). '
+                                              f'Salve novamente para guardar com o ID actual.'),
+                                })
+                except Exception:
+                    pass  # fallback silencioso — devolve lista vazia
+
             return jsonify({'status': 'ok', 'activity_id': aid,
-                            'intervals': intervals, 'n': len(intervals)})
+                            'intervals': intervals, 'n': len(intervals),
+                            'fonte': 'activity_interval_rpe'})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
-
     # ── activity_interval_rpe: POST (UPSERT) ─────────────────────────────
     @app.route('/api/activity/<path:activity_id>/interval_rpe', methods=['POST'])
     def api_activity_interval_rpe_gravar(activity_id):

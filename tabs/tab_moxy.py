@@ -712,6 +712,15 @@ function mxMudarSubTab(nome){
   MX_VST_LISTA_CARREGADA = true;
   mxVstCarregarLista();
   mxVstCarregarConjuntosSalvos();
+  // Se as sessões MOXY ainda não foram carregadas (utilizador foi directo
+  // à aba verificação sem passar pela Principal), carregar agora para
+  // popular o dropdown de seleção MOXY.
+  if(!MX_SESSOES.length){
+   fetch('/api/moxy/sessoes').then(r=>r.json()).then(function(d){
+    if(d.status==='ok') MX_SESSOES = d.sessoes || [];
+    mxVstPopularMoxySelect();
+   }).catch(function(){});
+  }
  }
 }
 
@@ -1995,17 +2004,15 @@ function mxVstCarregarConjuntosSalvos(){
 }
 
 function mxVstAbrirVerificacao(ix){
- // Usa o resultado já salvo em BD via /api/moxy/vst/resultado/<vid>
- // NÃO chama mxVstCarregar() — evita tentar recalcular com ID que
- // pode já não existir na Intervals.icu (atividade reimportada).
+ // usa o vinculo ja' salvo -- carrega o VST (que ja' auto-carrega a
+ // Moxy vinculada via mxVstCarregarConjunto, comportamento existente)
  const c = MX_VST_CONJUNTOS_SALVOS[ix];
  if(!c) return;
  const selVst=document.getElementById('mxVstSelect');
  if(selVst){ selVst.value=c.vst_activity_id; }
- // Usar o cache directamente — mxVstCarregarConjunto já tem o fallback correcto
  MX_VID = c.vst_activity_id;
  MX_MID = c.moxy_activity_id;
- mxVstCarregarConjunto(c.vst_activity_id);
+ mxVstCarregar();
 }
 
 function mxVstCarregarLista(){

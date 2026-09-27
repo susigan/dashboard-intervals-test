@@ -1147,7 +1147,7 @@ def executar(contexto: dict, caminho_tabela: str) -> dict:
 
 import sqlite3 as _sqlite3
 
-_TM_DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'training_master.db')
+_TM_DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'training_master.db'))
 
 _TM_REDE_PARA_FAMILY = {
     'cardiaco':    'cardiaco',   'cardíaco':    'cardiaco',

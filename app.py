@@ -283,6 +283,19 @@ def api_training_contexto():
             elif vst_sem_moxy:
                 # P1b: extrair sistema do resultado_json
                 sistema = _sistema_de_resultado_json(vst_sem_moxy[5])
+                # Se resultado_json não tem rede_causal, calcular em runtime
+                # chamando api_moxy_rede(moxy_id) — mesmo que /vst/resultado faz
+                if not sistema:
+                    try:
+                        import api_moxy as _am
+                        _rd = _am.api_moxy_rede(vst_sem_moxy[1])
+                        _rd = (_rd[0].get_json() if isinstance(_rd, tuple)
+                               else _rd.get_json())
+                        if _rd and _rd.get('status') == 'ok':
+                            lim = (_rd.get('limitador') or {})
+                            sistema = str(lim.get('sistema') or '').lower().strip() or None
+                    except Exception:
+                        pass
                 bp1 = _sf(vst_sem_moxy[7]) or _sf(vst_sem_moxy[3])
                 bp2 = _sf(vst_sem_moxy[8]) or _sf(vst_sem_moxy[4])
                 resultado[mod_code] = _build(

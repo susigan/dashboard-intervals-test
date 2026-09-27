@@ -29,7 +29,6 @@ import os
 import sys
 from typing import Any
 
-import pandas as pd
 
 # ── Importar mapeamentos canónicos já existentes no projecto ──────────────
 _HERE = os.path.dirname(__file__)
@@ -105,6 +104,7 @@ def carregar_tabela(caminho_xlsx: str) -> list[dict]:
     'limiter_chave' com a chave canónica derivada de _LIMITER_TEXTO_PARA_CHAVE
     para evitar comparações de texto livre em filtrar_tabela.
     """
+    import pandas as pd  # lazy import — só necessário para o engine Excel
     df = pd.read_excel(caminho_xlsx, sheet_name='Tabela_Mestre')
     regras: list[dict] = []
     for _, row in df.iterrows():

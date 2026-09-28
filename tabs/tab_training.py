@@ -302,7 +302,7 @@ function _renderSecaoMod(mod, data, ctx, fZona, fTipo, fLim, fWork){
 
   // Com filtros activos: mostrar TODOS os resultados sem "Ver mais"
   // Sem filtros (todas zonas, todos tipos, etc.): mostrar 3 + "Ver mais"
-  const temFiltrosActivos = !!(fZona || fTipo || fLim || fWork);
+  const temFiltrosActivos = !!(fMod || fZona || fTipo || fLim || fWork);
 
   if(temFiltrosActivos){
     // Filtro aplicado → todos os resultados visíveis, ordenados por ranking
@@ -359,7 +359,6 @@ function _card(op, corMod){
     +'<div style="font-size:11px;color:#8b949e;margin-bottom:6px;'
     +'border-left:2px solid '+corRel+';padding-left:6px;">'
     +'Favorece <b style="color:'+corRel+';">'+op.limiter_nome+'</b>'
-    +(op.notes?'<div style="font-size:10px;color:#484f58;margin-top:2px;">'+op.notes+'</div>':'')
     +'</div>'
     // métricas
     +'<div style="font-size:11px;display:grid;grid-template-columns:auto 1fr;gap:2px 8px;">'
@@ -367,15 +366,16 @@ function _card(op, corMod){
     +(op.recovery_range&&op.recovery_range!=='—'
       ?'<span style="color:#6e7681;">Recovery</span><span>'+op.recovery_range+'</span>':'')
     +'<span style="color:#6e7681;">RPE</span><span>'+op.expected_rpe_work+'</span>'
-    +(workW?'<span style="color:#5DADE2;">WORK W</span><span style="color:#5DADE2;font-weight:600;">'+workW+'</span>':'')
-    +(workB?'<span style="color:#E74C3C;">FC</span><span style="color:#E74C3C;">'+workB+'</span>':'')
+    +(workW?'<span style="color:#5DADE2;">WORK W</span><span style="color:#5DADE2;font-weight:600;">'+workW+'</span>':'<span style="color:#6e7681;">WORK W</span><span style="color:#484f58;">—</span>')
+    +(workB?'<span style="color:#E74C3C;">FC</span><span style="color:#E74C3C;">'+workB+'</span>':'<span style="color:#6e7681;">FC</span><span style="color:#484f58;">—</span>')
     +'</div>'
-    // detalhes expansíveis
-    +(op.adaptation_target||op.mechanism_target
+    // detalhes expansíveis — objectivo + mecanismo + notas de consolidação
+    +((op.adaptation_target||op.mechanism_target||op.notes)
       ?'<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:10px;color:#484f58;">▼ objectivo</summary>'
-       +'<div style="font-size:10px;color:#8b949e;margin-top:4px;">'
+       +'<div style="font-size:10px;color:#8b949e;margin-top:4px;line-height:1.5;">'
        +(op.adaptation_target?'<b>Adaptação:</b> '+op.adaptation_target+'<br>':'')
-       +(op.mechanism_target?'<b>Mecanismo:</b> '+op.mechanism_target:'')
+       +(op.mechanism_target?'<b>Mecanismo:</b> '+op.mechanism_target+'<br>':'')
+       +(op.notes?'<div style="font-size:10px;color:#484f58;margin-top:2px;">'+op.notes+'</div>':'')
        +'</div></details>':'')
     +'</div>'
     +'</div>';

@@ -200,6 +200,10 @@ MIGRACOES = [
     ('vst_conjuntos', 'dia2_bp2_w', 'REAL'),
     ('vst_conjuntos', 'resultado_json', 'TEXT'),
     ('vst_conjuntos', 'analisado_em', 'TEXT'),
+    # Modalidade da sessão VST/MOXY (ex: 'Ski', 'Bike', 'Row', 'Run')
+    # Necessário para o P1b de /api/training/contexto filtrar por modalidade
+    # sem depender de moxy_analises (que pode estar vazio).
+    ('vst_conjuntos', 'modalidade', 'TEXT'),
 ]
 
 

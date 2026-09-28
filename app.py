@@ -237,28 +237,62 @@ def api_training_contexto():
                 (mod_nome,)).fetchone()
 
             # ── P1b: VST+MOXY sem moxy_analises — usa resultado_json ────
-            # A query filtra por moxy_activity_id presente em moxy_analises
-            # daquela modalidade, OU usa o resultado_json para identificar a sessão.
-            # FIX: filtro explícito de modalidade via subquery de moxy_analises,
-            # para evitar que uma sessão de Ski seja usada para Bike/Row/Run.
+            # Usa COALESCE(v.modalidade, m.modalidade):
+            #   - v.modalidade: preenchida desde a correcção (gravar_analise envia c.modalidade)
+            #   - m.modalidade: preenchida quando moxy_analises existe
+            # Para registos antigos sem v.modalidade nem moxy_analises:
+            #   fallback via db.activities (a mesma fonte que conjuntos_salvos usa)
             vst_sem_moxy = None
             if not vst_com_moxy:
-                # Tentar primeiro: VST cujo moxy_id existe em moxy_analises da modalidade
-                # (mesmo que rede_limitador esteja NULL — apenas para confirmar modalidade)
+                # Tentar via v.modalidade (novo) ou m.modalidade (moxy_analises existente)
                 vst_sem_moxy = cn.execute(
                     "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
                     " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json,"
-                    " m.modalidade, m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm, m.data"
+                    " COALESCE(v.modalidade, m.modalidade) as modalidade_encontrada,"
+                    " m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm, m.data"
                     " FROM vst_conjuntos v"
-                    " JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id"
-                    " WHERE LOWER(m.modalidade)=LOWER(?)"
-                    " AND v.moxy_activity_id IS NOT NULL"
+                    " LEFT JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id"
+                    " WHERE v.moxy_activity_id IS NOT NULL"
                     " AND v.resultado_json IS NOT NULL"
+                    " AND LOWER(COALESCE(v.modalidade, m.modalidade, ''))=LOWER(?)"
                     " ORDER BY v.analisado_em DESC LIMIT 1",
                     (mod_nome,)).fetchone()
-                # Se não há registo em moxy_analises para esta modalidade, P1b falha:
-                # não há forma de confirmar que o VST pertence a esta modalidade.
-                # Resultado: ausente para esta modalidade (não copiar dados de outra).
+                # Fallback para registos antigos sem modalidade em v nem em moxy_analises:
+                # tentar resolver a modalidade via db.activities (tabela local de Intervals.icu)
+                if not vst_sem_moxy:
+                    try:
+                        import db as _idb
+                        from config import TYPE_MAP as _TM
+                        _all_vst = cn.execute(
+                            "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
+                            " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json"
+                            " FROM vst_conjuntos v"
+                            " WHERE v.moxy_activity_id IS NOT NULL"
+                            " AND v.resultado_json IS NOT NULL"
+                            " AND (v.modalidade IS NULL OR v.modalidade='')"
+                            " ORDER BY v.analisado_em DESC"
+                        ).fetchall()
+                        for _row in _all_vst:
+                            _mid = _row[1]
+                            _act = (_idb._exec(
+                                "SELECT type FROM activities WHERE id=?",
+                                (_mid,), fetch='one') or [None])
+                            _tipo = _act[0] if _act else None
+                            _mod_db = _TM.get(_tipo) if _tipo else None
+                            if _mod_db and _mod_db.lower() == mod_nome.lower():
+                                # Gravar a modalidade no banco para evitar esta pesquisa no futuro
+                                cn.execute(
+                                    "UPDATE vst_conjuntos SET modalidade=?"
+                                    " WHERE vst_activity_id=?",
+                                    (_mod_db, _row[0]))
+                                cn.commit()
+                                # Construir a linha no mesmo formato da query principal
+                                vst_sem_moxy = (_row[0], _row[1], _row[2],
+                                                _row[3], _row[4], _row[5],
+                                                _mod_db, None, None, None, None, None)
+                                break
+                    except Exception:
+                        pass
 
             # ── P2: MOXY mais recente desta modalidade ───────────────────
             moxy_row = cn.execute(

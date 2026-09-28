@@ -363,8 +363,7 @@ function _card(op, corMod){
     // métricas
     +'<div style="font-size:11px;display:grid;grid-template-columns:auto 1fr;gap:2px 8px;">'
     +'<span style="color:#6e7681;">Work</span><span>'+op.work_range+'</span>'
-    +(op.recovery_range&&op.recovery_range!=='—'
-      ?'<span style="color:#6e7681;">Recovery</span><span>'+op.recovery_range+'</span>':'')
+    +'<span style="color:#6e7681;">Recovery</span><span>'+(op.recovery_range&&op.recovery_range!=='—'?op.recovery_range:'—')+'</span>'
     +'<span style="color:#6e7681;">RPE</span><span>'+op.expected_rpe_work+'</span>'
     +(workW?'<span style="color:#5DADE2;">WORK W</span><span style="color:#5DADE2;font-weight:600;">'+workW+'</span>':'<span style="color:#6e7681;">WORK W</span><span style="color:#484f58;">—</span>')
     +(workB?'<span style="color:#E74C3C;">FC</span><span style="color:#E74C3C;">'+workB+'</span>':'<span style="color:#6e7681;">FC</span><span style="color:#484f58;">—</span>')

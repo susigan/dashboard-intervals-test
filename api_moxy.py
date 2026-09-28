@@ -224,7 +224,7 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
                    comp_recovery_bp1, comp_recovery_bp2,
                    limiter_bp1, limiter_bp2,
                    hipotese_bp1, hipotese_bp2,
-                   rede_causal_d1=None):
+                   rede_causal_d1=None, modalidade=None):
     """Persiste o resultado de uma verificação VST em vst_conjuntos.
 
     Chamada por /api/moxy/vst/comparar  (melhor esforço, em try/except pass)
@@ -242,6 +242,12 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
             "(vst_activity_id, moxy_activity_id, criado_em, actualizado_em) "
             "VALUES (?,?,?,?)",
             (vid, mid, agora, agora))
+        # Actualizar modalidade se fornecida (e não já preenchida)
+        if modalidade:
+            cn.execute(
+                "UPDATE vst_conjuntos SET modalidade=? "
+                "WHERE vst_activity_id=? AND (modalidade IS NULL OR modalidade='')",
+                (modalidade, vid))
         cn.execute(
             "UPDATE vst_conjuntos SET bp1_status=?, bp2_status=?, "
             "recovery_bp1_status=?, recovery_bp2_status=?, "
@@ -2833,6 +2839,7 @@ def registar(app):
             vid = str(corpo.get('vst_activity_id') or '').strip()
             mid = str(corpo.get('moxy_activity_id') or '').strip()
             rjson = corpo.get('resultado_json') or {}
+            modalidade = str(corpo.get('modalidade') or '').strip() or None
             if not vid:
                 return jsonify({'status': 'erro',
                                 'mensagem': 'vst_activity_id obrigatório'}), 400
@@ -2857,6 +2864,8 @@ def registar(app):
                 rjson.get('limiter_bp2'),
                 rjson.get('hipotese_bp1'),
                 rjson.get('hipotese_bp2'),
+                rede_causal_d1=rjson.get('rede_causal'),
+                modalidade=modalidade,
             )
             if not ok:
                 return jsonify({'status': 'erro',

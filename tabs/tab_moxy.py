@@ -7823,6 +7823,7 @@ function mxVstGravarVerificacaoSalva(ix){
     vst_activity_id:c.vst_activity_id,
     moxy_activity_id:c.moxy_activity_id,
     resultado_json:MX_VST_ULT_COMP,
+    modalidade:c.modalidade||null,
    })
   }).then(r=>r.json()).then(function(d){
    if(d.status==='gravado_sem_upload'){

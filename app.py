@@ -237,23 +237,28 @@ def api_training_contexto():
                 (mod_nome,)).fetchone()
 
             # ── P1b: VST+MOXY sem moxy_analises — usa resultado_json ────
+            # A query filtra por moxy_activity_id presente em moxy_analises
+            # daquela modalidade, OU usa o resultado_json para identificar a sessão.
+            # FIX: filtro explícito de modalidade via subquery de moxy_analises,
+            # para evitar que uma sessão de Ski seja usada para Bike/Row/Run.
             vst_sem_moxy = None
             if not vst_com_moxy:
+                # Tentar primeiro: VST cujo moxy_id existe em moxy_analises da modalidade
+                # (mesmo que rede_limitador esteja NULL — apenas para confirmar modalidade)
                 vst_sem_moxy = cn.execute(
                     "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
                     " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json,"
                     " m.modalidade, m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm, m.data"
                     " FROM vst_conjuntos v"
-                    " LEFT JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id"
-                    " WHERE v.moxy_activity_id IS NOT NULL"
+                    " JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id"
+                    " WHERE LOWER(m.modalidade)=LOWER(?)"
+                    " AND v.moxy_activity_id IS NOT NULL"
                     " AND v.resultado_json IS NOT NULL"
                     " ORDER BY v.analisado_em DESC LIMIT 1",
-                    ()).fetchone()
-                # Verificar que é desta modalidade (modalidade pode ser NULL se moxy_analises vazio)
-                if vst_sem_moxy:
-                    mod_check = str(vst_sem_moxy[6] or '').strip()
-                    if mod_check and mod_check.lower() != mod_nome.lower():
-                        vst_sem_moxy = None  # é de outra modalidade
+                    (mod_nome,)).fetchone()
+                # Se não há registo em moxy_analises para esta modalidade, P1b falha:
+                # não há forma de confirmar que o VST pertence a esta modalidade.
+                # Resultado: ausente para esta modalidade (não copiar dados de outra).
 
             # ── P2: MOXY mais recente desta modalidade ───────────────────
             moxy_row = cn.execute(

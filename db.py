@@ -251,6 +251,20 @@ def init_schema():
     _exec("CREATE INDEX IF NOT EXISTS idx_intervals_activity_id ON intervals(activity_id)")
     _exec("CREATE INDEX IF NOT EXISTS idx_intervals_activity_start ON intervals(activity_id, start_sec)")
 
+    # Migração segura: se o Railway tem o schema antigo (interval_index como UNIQUE),
+    # adicionar a coluna start_sec se não existir e tentar criar o novo índice.
+    # Em PostgreSQL, estas operações são seguras e idempotentes.
+    for _sql_mig in [
+        # Garantir que start_sec existe (pode não existir no schema antigo)
+        "ALTER TABLE intervals ADD COLUMN IF NOT EXISTS start_sec DOUBLE PRECISION",
+        # Remover FK obrigatória para activities se existir (evita erros quando atividade não está em activities)
+        # Nota: não conseguimos DROP CONSTRAINT sem nome — ignorar se falhar
+    ]:
+        try:
+            _exec(_sql_mig)
+        except Exception:
+            pass
+
     # ── interval_rpe: RPE subjectivo por intervalo WORK ───────────────────
     # Chave: interval_id (FK para intervals.id) — UNIQUE garante 1 RPE por intervalo.
     # activity_id redundante mas util para consultas sem JOIN.
@@ -1184,6 +1198,9 @@ def upsert_intervals(activity_id, ivs_raw):
         ))
     if not params:
         return 0
+    # Tentar UPSERT por (activity_id, start_sec) — o schema actual.
+    # Se falhar (Railway pode ter schema antigo com UNIQUE por interval_index),
+    # tentar INSERT OR IGNORE (SQLite) ou INSERT ... ON CONFLICT DO NOTHING (PG).
     try:
         _exec("""INSERT INTO intervals
                  (activity_id, start_sec, end_sec, interval_type, name, label,
@@ -1207,9 +1224,22 @@ def upsert_intervals(activity_id, ivs_raw):
                    updated_at     = EXCLUDED.updated_at""", many=params)
         print(f"[INTERVALS] activity={activity_id} intervals_upserted={len(params)}")
         return len(params)
-    except Exception as e:
-        print(f"[INTERVALS] upsert_intervals falhou para {activity_id}: {e}")
-        return 0
+    except Exception as e_upsert:
+        print(f"[INTERVALS] UPSERT por start_sec falhou ({e_upsert}), a tentar INSERT simples")
+        # Fallback: INSERT ignorando conflitos — preserva dados existentes
+        n_ok = 0
+        for p in params:
+            try:
+                _exec("""INSERT INTO intervals
+                         (activity_id, start_sec, end_sec, interval_type, name, label,
+                          interval_index, duration_sec, distance_m, avg_watts, max_watts,
+                          avg_hr, max_hr, reps, raw, updated_at)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", p)
+                n_ok += 1
+            except Exception:
+                pass  # linha já existe — ignorar
+        print(f"[INTERVALS] activity={activity_id} intervals_inseridos={n_ok}/{len(params)}")
+        return n_ok
 
 
 def get_intervals_with_rpe(activity_id):

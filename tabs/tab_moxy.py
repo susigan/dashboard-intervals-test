@@ -1969,6 +1969,73 @@ let MX_VID = null;  // vst_activity_id activo (para botão Gravar análise)
 let MX_MID = null;  // moxy_activity_id activo (para botão Gravar análise)
 const DEBUG_VST_VERIFICACAO = false;  // true mostra a revisao completa (so' para desenvolvimento)
 
+
+function _mxVstBpmValidacaoCard(val){
+ /* Renderiza o painel VALIDAÇÃO BPM – MOXY × VST.
+    val = {bp1:{...}, bp2:{...}} como retornado por nirs_breakpoints.validar_bpm_vst() */
+ if(!val) return '';
+ const _cor={'consistente':'#3FB950','proximo':'#E3B341','inconsistente':'#F85149',
+              'insuficiente':'#8b949e','sem_bpm_moxy':'#8b949e','nao_validado':'#484f58'};
+ const _icone={'consistente':'✓','proximo':'≈','inconsistente':'⚠',
+                'insuficiente':'—','sem_bpm_moxy':'—','nao_validado':'—'};
+ const _label={'consistente':'CONSISTENTE','proximo':'PRÓXIMO','inconsistente':'INCONSISTENTE',
+                'insuficiente':'INSUFICIENTE','sem_bpm_moxy':'SEM BPM MOXY','nao_validado':'NÃO VALIDADO'};
+ function _renderBp(label, bp){
+  if(!bp) return '';
+  const st = bp.status || 'nao_validado';
+  const cor = _cor[st]||'#8b949e';
+  const icone = _icone[st]||'—';
+  const lbl = _label[st]||st;
+  let h='<div style="margin-top:4px;padding:4px 6px;background:#0d1117;border-radius:4px;border-left:2px solid '+cor+';">';
+  h+='<div style="font-size:10px;color:#8b949e;font-weight:600;">'+label+'</div>';
+  if(bp.status==='nao_validado'){
+   h+='<div style="font-size:10px;color:#484f58;">VST não disponível</div>';
+  } else if(bp.status==='sem_bpm_moxy'){
+   h+='<div style="font-size:10px;color:#484f58;">BPM MOXY indisponível</div>';
+  } else if(bp.status==='insuficiente'){
+   h+='<div style="font-size:10px;color:#484f58;">Intervalos insuficientes ('+bp.n_validos+' válidos)</div>';
+  } else {
+   h+='<table style="font-size:10px;border-collapse:collapse;width:100%;">';
+   h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">MOXY</td>'
+     +'<td style="color:#ccc;font-weight:600;">'+(bp.moxy_bpm!=null?bp.moxy_bpm+' bpm':'—')+'</td></tr>';
+   h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">VST range</td>'
+     +'<td style="color:#ccc;">'+(bp.vst_bpm_min!=null?bp.vst_bpm_min+'–'+bp.vst_bpm_max+' bpm':'—')+'</td></tr>';
+   h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">Média VST</td>'
+     +'<td style="color:#ccc;">'+(bp.vst_bpm_mean!=null?bp.vst_bpm_mean+' bpm':'—')+'</td></tr>';
+   h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">Mediana VST</td>'
+     +'<td style="color:#ccc;">'+(bp.vst_bpm_median!=null?bp.vst_bpm_median+' bpm':'—')+'</td></tr>';
+   if(bp.difference_mean!=null){
+    const sinal=bp.difference_mean>=0?'+':'';
+    h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">Diferença</td>'
+      +'<td style="color:'+cor+';font-weight:600;">'+sinal+bp.difference_mean+' bpm</td></tr>';
+   }
+   h+='</table>';
+   // intervalos individuais
+   const ivs=(bp.intervalos||[]).filter(function(iv){return iv.valido;});
+   if(ivs.length){
+    h+='<div style="font-size:9px;color:#6e7681;margin-top:3px;">Intervalos ('+ivs.length+'): ';
+    h+=ivs.map(function(iv){
+     return (iv.watts!=null?Math.round(iv.watts)+'W':'?')+' → '+(iv.hr_media!=null?Math.round(iv.hr_media)+' bpm':'?');
+    }).join(' · ');
+    h+='</div>';
+   }
+   const exc=(bp.intervalos||[]).filter(function(iv){return !iv.valido;});
+   if(exc.length){
+    h+='<div style="font-size:9px;color:#F85149;margin-top:1px;">FC inválida/congelada: '+exc.length+' excluído(s)</div>';
+   }
+  }
+  h+='<div style="font-size:10px;font-weight:600;margin-top:3px;color:'+cor+';">'+icone+' '+lbl+'</div>';
+  h+='</div>';
+  return h;
+ }
+ let h='<div style="margin-top:6px;border:1px solid #21262d;border-radius:4px;padding:6px 8px;">';
+ h+='<div style="font-size:10px;font-weight:600;color:#8b949e;letter-spacing:.05em;margin-bottom:4px;">VALIDAÇÃO BPM · MOXY × VST</div>';
+ h+=_renderBp('BP1',val.bp1);
+ h+=_renderBp('BP2',val.bp2);
+ h+='</div>';
+ return h;
+}
+
 function mxVstCarregarConjuntosSalvos(){
  const box=document.getElementById('mxVstConjuntosSalvos');
  if(!box) return;
@@ -1992,6 +2059,7 @@ function mxVstCarregarConjuntosSalvos(){
     +((c.recovery_bp1_status||c.recovery_bp2_status)?'Recovery <span style="color:'+_vstCorGeral(c.recovery_bp1_status||c.recovery_bp2_status)+';">'
       +(c.recovery_bp1_status||c.recovery_bp2_status)+'</span>':'')
     +'</div>'
+    +(c.bpm_vst_validacao ? _mxVstBpmValidacaoCard(c.bpm_vst_validacao) : '')
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
     +'<button style="font-size:11px;" onclick="mxVstAbrirVerificacao('+ix+')">ABRIR</button>'
     +'<button style="font-size:11px;background:#1c2331;border:1px solid #3FB950;color:#3FB950;border-radius:4px;padding:2px 8px;cursor:pointer;" onclick="mxVstGravarVerificacaoSalva('+ix+')">💾 GRAVAR</button>'

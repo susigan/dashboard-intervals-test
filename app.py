@@ -43,7 +43,7 @@ import db
 import sync
 from datetime import datetime, timedelta
 from api_client import (fetch_activities, cache_info, invalidar_cache,
-                        fetch_da_api)
+                        fetch_da_api, icu_get)
 from tabs import (tab_volume, tab_atividades, tab_detalhe,
                   tab_recordes, tab_pmc, tab_corporal, tab_metabol,
                   tab_cp_model, tab_moxy, tab_recovery, tab_training)

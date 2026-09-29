@@ -1970,6 +1970,93 @@ let MX_MID = null;  // moxy_activity_id activo (para botão Gravar análise)
 const DEBUG_VST_VERIFICACAO = false;  // true mostra a revisao completa (so' para desenvolvimento)
 
 
+
+function _mxVstFisioCard(val){
+ /* Painel VALIDAÇÃO FISIOLÓGICA — MOXY × VST
+    val = output de nirs_breakpoints.validar_fisiologica_vst() */
+ if(!val) return '';
+ const refs = val.referencias_fisiologicas || {};
+ const _cor = {
+  coerente:'#3FB950', atencao:'#E3B341', discrepancia:'#F85149', sem_dados:'#484f58'};
+ const _icone = {
+  coerente:'✓', atencao:'≈', discrepancia:'⚠', sem_dados:'—'};
+ const _posicao_label = {
+  abaixo_bp1:'↓ BP1', regiao_bp1:'≈ BP1', entre_bp1_bp2:'↔ BP1–BP2',
+  regiao_bp2:'≈ BP2', acima_bp2:'↑ BP2', sem_dados:'—'};
+ const _fc_label = {
+  abaixo_hrvt1:'↓ HRVT1', regiao_hrvt1:'≈ HRVT1',
+  entre_hrvt1_hrvt2:'↔ HRVT1–HRVT2', regiao_hrvt2:'≈ HRVT2',
+  acima_hrvt2:'↑ HRVT2', sem_referencia:'sem ref.', sem_dados:'—'};
+ const _rpe_label = {
+  abaixo_esperado:'abaixo', compativel:'OK', elevado:'↑', muito_elevado:'↑↑', sem_dados:'—'};
+
+ function _fv(v, u){ return v!=null ? v+(u||'') : '—'; }
+
+ function _renderBpFisio(label, bp){
+  if(!bp) return '';
+  const ivs = bp.intervalos || [];
+  const coers = ivs.map(function(iv){ return iv.coerencia||'sem_dados'; });
+  const globalCor = coers.some(function(c){return c==='discrepancia';}) ? _cor.discrepancia
+                  : coers.some(function(c){return c==='atencao';}) ? _cor.atencao
+                  : _cor.coerente;
+  let h='<div style="margin-top:4px;padding:4px 6px;background:#0d1117;border-radius:4px;border-left:2px solid '+globalCor+';">';
+  h+='<div style="font-size:10px;color:#8b949e;font-weight:600;">'+label+'</div>';
+  h+='<table style="font-size:10px;border-collapse:collapse;width:100%;margin-top:2px;">';
+  h+='<tr><td style="color:#6e7681;padding:1px 4px 1px 0;">MOXY W</td>'
+   +'<td style="color:#ccc;">'+_fv(bp.moxy_watts,' W')+'</td></tr>';
+  h+='<tr><td style="color:#6e7681;padding:1px 4px 1px 0;">MOXY bpm obs.</td>'
+   +'<td style="color:#6e7681;font-style:italic;">'+_fv(bp.moxy_bpm_observado,' bpm')+'</td></tr>';
+  if(bp.rpe_esperado!=null){
+   h+='<tr><td style="color:#6e7681;padding:1px 4px 1px 0;">RPE esp.</td>'
+    +'<td style="color:#ccc;">'+bp.rpe_esperado+'</td></tr>';
+  }
+  h+='</table>';
+  if(ivs.length){
+   h+='<div style="font-size:9px;color:#6e7681;margin-top:4px;font-weight:600;">'
+    +'Intervalos VST:</div>';
+   ivs.forEach(function(iv){
+    const cor = _cor[iv.coerencia]||'#484f58';
+    const icn = _icone[iv.coerencia]||'—';
+    h+='<div style="font-size:9px;margin-top:2px;padding:2px 4px;'
+     +'border-radius:3px;background:#161b22;">';
+    h+='<span style="color:#8b949e;">#'+iv.ordem+'</span> ';
+    h+='<b>'+_fv(iv.potencia_media,' W')+'</b>'
+     +' <span style="color:#484f58;">'+(_posicao_label[iv.posicao_potencia]||'')+'</span> ';
+    h+='· FC '+_fv(iv.hr_final,' bpm')
+     +' <span style="color:#484f58;">'+(_fc_label[iv.fc_classificacao]||'')+'</span> ';
+    if(iv.rpe!=null){
+     h+='· RPE '+iv.rpe;
+     if(iv.rpe_esperado_potencia!=null){
+      const dif = iv.rpe_diferenca;
+      const sn = dif!=null&&dif>=0?'+':'';
+      h+=' (esp '+iv.rpe_esperado_potencia+(dif!=null?' Δ'+sn+dif:'')+')';}
+    }
+    h+=' <span style="color:'+cor+';font-weight:600;">'+icn+'</span>';
+    h+='</div>';
+   });
+  }
+  h+='</div>';
+  return h;
+ }
+
+ let h='<div style="margin-top:6px;border:1px solid #21262d;border-radius:4px;padding:6px 8px;">';
+ h+='<div style="font-size:10px;font-weight:600;color:#8b949e;letter-spacing:.05em;margin-bottom:4px;">'
+  +'VALIDAÇÃO FISIOLÓGICA · MOXY × VST</div>';
+ // Referências HRVT
+ h+='<div style="font-size:9px;color:#6e7681;margin-bottom:4px;">';
+ if(refs.hrvt1_min_bpm!=null||refs.hrvt1_max_bpm!=null){
+  h+='HRVT1 '+(refs.hrvt1_min_bpm||'—')+'–'+(refs.hrvt1_max_bpm||'—')+' bpm';
+  h+=' (indiv. '+(refs.hrvt1_individualizado_bpm||'—')+' · clás. '+(refs.hrvt1_classico_bpm||'—')+')';
+ }
+ if(refs.hrvt2_bpm!=null) h+=' · HRVT2 '+refs.hrvt2_bpm+' bpm';
+ if(!refs.hrvt1_min_bpm&&!refs.hrvt2_bpm) h+='Referências HRVT não disponíveis';
+ h+='</div>';
+ h+=_renderBpFisio('BP1',val.bp1);
+ h+=_renderBpFisio('BP2',val.bp2);
+ h+='</div>';
+ return h;
+}
+
 function _mxVstBpmValidacaoCard(val){
  /* Renderiza o painel VALIDAÇÃO BPM – MOXY × VST.
     val = {bp1:{...}, bp2:{...}} como retornado por nirs_breakpoints.validar_bpm_vst() */
@@ -2067,6 +2154,7 @@ function mxVstCarregarConjuntosSalvos(){
       +(c.recovery_bp1_status||c.recovery_bp2_status)+'</span>':'')
     +'</div>'
     +(c.bpm_vst_validacao ? _mxVstBpmValidacaoCard(c.bpm_vst_validacao) : '')
+    +(c.validacao_fisiologica ? _mxVstFisioCard(c.validacao_fisiologica) : '')
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
     +'<button style="font-size:11px;" onclick="mxVstAbrirVerificacao('+ix+')">ABRIR</button>'
     +'<button style="font-size:11px;background:#1c2331;border:1px solid #3FB950;color:#3FB950;border-radius:4px;padding:2px 8px;cursor:pointer;" onclick="mxVstGravarVerificacaoSalva('+ix+')">💾 GRAVAR</button>'

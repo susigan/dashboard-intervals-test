@@ -1972,90 +1972,175 @@ const DEBUG_VST_VERIFICACAO = false;  // true mostra a revisao completa (so' par
 
 
 function _mxVstFisioCard(val){
- /* Painel VALIDAÇÃO FISIOLÓGICA — MOXY × VST
-    val = output de nirs_breakpoints.validar_fisiologica_vst() */
  if(!val) return '';
  const refs = val.referencias_fisiologicas || {};
- const _cor = {
-  coerente:'#3FB950', atencao:'#E3B341', discrepancia:'#F85149', sem_dados:'#484f58'};
- const _icone = {
-  coerente:'✓', atencao:'≈', discrepancia:'⚠', sem_dados:'—'};
- const _posicao_label = {
-  abaixo_bp1:'↓ BP1', regiao_bp1:'≈ BP1', entre_bp1_bp2:'↔ BP1–BP2',
-  regiao_bp2:'≈ BP2', acima_bp2:'↑ BP2', sem_dados:'—'};
- const _fc_label = {
-  abaixo_hrvt1:'↓ HRVT1', regiao_hrvt1:'≈ HRVT1',
-  entre_hrvt1_hrvt2:'↔ HRVT1–HRVT2', regiao_hrvt2:'≈ HRVT2',
-  acima_hrvt2:'↑ HRVT2', sem_referencia:'sem ref.', sem_dados:'—'};
- const _rpe_label = {
-  abaixo_esperado:'abaixo', compativel:'OK', elevado:'↑', muito_elevado:'↑↑', sem_dados:'—'};
+ const _COR = {
+  coerente:'#3FB950', atencao:'#E3B341',
+  discrepancia:'#F85149', dissociacao_forte_potencia_fc_rpe:'#F85149',
+  fc_alta_para_potencia:'#F85149', rpe_alto_para_potencia:'#E3B341',
+  fc_baixa_para_potencia:'#8b949e', sem_dados:'#484f58'};
+ const _ICO = {
+  coerente:'✓', atencao:'≈', discrepancia:'⚠',
+  dissociacao_forte_potencia_fc_rpe:'⚠', fc_alta_para_potencia:'⚠',
+  rpe_alto_para_potencia:'≈', fc_baixa_para_potencia:'↓', sem_dados:'—'};
+ const _CLABEL = {
+  coerente:'Coerente', atencao:'Atenção',
+  dissociacao_forte_potencia_fc_rpe:'Dissociação W-FC-RPE',
+  fc_alta_para_potencia:'FC alta p/ potência',
+  rpe_alto_para_potencia:'RPE alto p/ potência',
+  fc_baixa_para_potencia:'FC baixa p/ potência'};
+ const _GLABEL = {
+  COERENTE:'✓ COERENTE',
+  ATENCAO_FC_RPE_ELEVADOS:'≈ ATENÇÃO — FC/RPE elevados',
+  DISSOCIACAO_POTENCIA_FC_RPE:'⚠ DISSOCIAÇÃO W–FC–RPE',
+  DADOS_INSUFICIENTES:'— DADOS INSUFICIENTES'};
+ const _GCOR = {
+  COERENTE:'#3FB950', ATENCAO_FC_RPE_ELEVADOS:'#E3B341',
+  DISSOCIACAO_POTENCIA_FC_RPE:'#F85149', DADOS_INSUFICIENTES:'#484f58'};
+ function _fv(v,u){return v!=null?v+(u||''):'—';}
+ function _hrv_label(fc_class){
+  const m={abaixo_HRVT1:'< HRVT1',transicao_HRVT1:'~HRVT1',
+   entre_HRVT1_HRVT2:'HRVT1–HRVT2',acima_HRVT2:'> HRVT2',
+   sem_referencia:'—',sem_dados:'—'};
+  return m[fc_class]||fc_class;
+ }
 
- function _fv(v, u){ return v!=null ? v+(u||'') : '—'; }
+ // Visualização de escala BPM (HRVT + MOXY + VST intervalos)
+ function _bpmScale(refs_f, bp, label){
+  const all_bpm=[];
+  if(refs_f.hrvt1_individualizado_bpm) all_bpm.push(refs_f.hrvt1_individualizado_bpm);
+  if(refs_f.hrvt1_classico_bpm) all_bpm.push(refs_f.hrvt1_classico_bpm);
+  if(refs_f.hrvt2_bpm) all_bpm.push(refs_f.hrvt2_bpm);
+  if(bp&&bp.moxy_bpm_observado) all_bpm.push(bp.moxy_bpm_observado);
+  (bp&&bp.intervalos||[]).forEach(function(iv){if(iv.hr_final) all_bpm.push(iv.hr_final);});
+  if(!all_bpm.length) return '';
+  const mn=Math.min.apply(null,all_bpm)-5;
+  const mx=Math.max.apply(null,all_bpm)+5;
+  const rng=mx-mn||1;
+  const BAR=140;
+  function _bar(v,cor,lbl,bold){
+   const pct=Math.round(((v-mn)/rng)*BAR);
+   return '<div style="display:flex;align-items:center;gap:4px;margin:1px 0;">'
+    +'<span style="font-size:9px;color:#6e7681;width:38px;text-align:right;">'+lbl+'</span>'
+    +'<div style="background:'+(cor||'#3d444d')+';height:3px;width:'+pct+'px;border-radius:2px;"></div>'
+    +'<span style="font-size:9px;color:'+(cor||'#6e7681')+';'+(bold?'font-weight:600;':'')+'">'+v+' bpm</span>'
+    +'</div>';
+  }
+  let h='<div style="margin-top:6px;padding:4px 0;">';
+  if(refs_f.hrvt1_individualizado_bpm)
+   h+=_bar(refs_f.hrvt1_individualizado_bpm,'#58a6ff','HRVT1c',false);
+  if(refs_f.hrvt1_classico_bpm)
+   h+=_bar(refs_f.hrvt1_classico_bpm,'#79c0ff','HRVT1s',false);
+  if(refs_f.hrvt2_bpm)
+   h+=_bar(refs_f.hrvt2_bpm,'#d2a8ff','HRVT2',false);
+  if(bp&&bp.moxy_bpm_observado)
+   h+=_bar(bp.moxy_bpm_observado,'#E3B341','MOXY obs.',true);
+  (bp&&bp.intervalos||[]).filter(function(iv){return iv.hr_final;}).forEach(function(iv,i){
+   h+=_bar(iv.hr_final,'#8b949e','VST#'+(i+1),false);
+  });
+  h+='</div>';
+  return h;
+ }
+
+ // Tabela de intervalos
+ function _tabelaIntervalos(bp, bp_w, label){
+  const ivs=(bp&&bp.intervalos)||[];
+  if(!ivs.length) return '';
+  let h='<div style="overflow-x:auto;margin-top:6px;">';
+  h+='<table style="font-size:9px;border-collapse:collapse;width:100%;min-width:380px;">';
+  h+='<thead><tr style="border-bottom:1px solid #21262d;">';
+  ['#','W','%BP','FC final','HRVT zona','RPE','Coerência'].forEach(function(col){
+   h+='<th style="padding:2px 5px;color:#6e7681;text-align:left;font-weight:500;">'+col+'</th>';
+  });
+  h+='</tr></thead><tbody>';
+  ivs.forEach(function(iv){
+   const coer_cor = _COR[iv.coerencia]||'#484f58';
+   const coer_ico = _ICO[iv.coerencia]||'—';
+   const coer_lbl = _CLABEL[iv.coerencia]||iv.coerencia;
+   const pct = iv.potencia_pct_bp!=null?(iv.potencia_pct_bp>0?'+':'')+iv.potencia_pct_bp+'%':'—';
+   const rpe_str = iv.rpe!=null?iv.rpe+(iv.rpe_esperado_potencia!=null
+    ?' (esp '+iv.rpe_esperado_potencia+(iv.rpe_diferenca!=null
+     ?' Δ'+(iv.rpe_diferenca>0?'+':'')+iv.rpe_diferenca
+     :'')+')':''):'—';
+   h+='<tr style="border-bottom:1px solid #161b22;">';
+   h+='<td style="padding:2px 5px;color:#6e7681;">'+iv.ordem+'</td>';
+   h+='<td style="padding:2px 5px;color:#ccc;">'+_fv(iv.potencia_media,' W')+'</td>';
+   h+='<td style="padding:2px 5px;color:#8b949e;">'+pct+'</td>';
+   h+='<td style="padding:2px 5px;color:#ccc;font-weight:600;">'+_fv(iv.hr_final,' bpm')+'</td>';
+   h+='<td style="padding:2px 5px;color:#8b949e;">'+_hrv_label(iv.fc_classificacao)+'</td>';
+   h+='<td style="padding:2px 5px;color:#ccc;">'+rpe_str+'</td>';
+   h+='<td style="padding:2px 5px;font-weight:600;color:'+coer_cor+';">'+coer_ico+' '+coer_lbl+'</td>';
+   h+='</tr>';
+  });
+  h+='</tbody></table></div>';
+  return h;
+ }
 
  function _renderBpFisio(label, bp){
   if(!bp) return '';
-  const ivs = bp.intervalos || [];
-  const coers = ivs.map(function(iv){ return iv.coerencia||'sem_dados'; });
-  const globalCor = coers.some(function(c){return c==='discrepancia';}) ? _cor.discrepancia
-                  : coers.some(function(c){return c==='atencao';}) ? _cor.atencao
-                  : _cor.coerente;
-  let h='<div style="margin-top:4px;padding:4px 6px;background:#0d1117;border-radius:4px;border-left:2px solid '+globalCor+';">';
-  h+='<div style="font-size:10px;color:#8b949e;font-weight:600;">'+label+'</div>';
-  h+='<table style="font-size:10px;border-collapse:collapse;width:100%;margin-top:2px;">';
-  h+='<tr><td style="color:#6e7681;padding:1px 4px 1px 0;">MOXY W</td>'
-   +'<td style="color:#ccc;">'+_fv(bp.moxy_watts,' W')+'</td></tr>';
-  h+='<tr><td style="color:#6e7681;padding:1px 4px 1px 0;">MOXY bpm obs.</td>'
-   +'<td style="color:#6e7681;font-style:italic;">'+_fv(bp.moxy_bpm_observado,' bpm')+'</td></tr>';
-  if(bp.rpe_esperado!=null){
-   h+='<tr><td style="color:#6e7681;padding:1px 4px 1px 0;">RPE esp.</td>'
-    +'<td style="color:#ccc;">'+bp.rpe_esperado+'</td></tr>';
+  const gc = bp.classificacao_global||'DADOS_INSUFICIENTES';
+  const gcor = _GCOR[gc]||'#484f58';
+  const glbl = _GLABEL[gc]||gc;
+  let h='<div style="margin-top:6px;padding:6px 8px;background:#0d1117;border-radius:4px;border-left:2px solid '+gcor+';">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;">';
+  h+='<span style="font-size:11px;color:#ccc;font-weight:600;">'+label
+   +' — '+_fv(bp.moxy_watts,' W')+'</span>';
+  h+='<span style="font-size:10px;font-weight:700;color:'+gcor+';">'+glbl+'</span>';
+  h+='</div>';
+  // Resumo HRVT + MOXY BPM
+  h+='<div style="font-size:9px;color:#6e7681;margin-top:3px;">';
+  if(refs.hrvt1_individualizado_bpm)
+   h+='HRVT1c: <b style="color:#58a6ff;">'+refs.hrvt1_individualizado_bpm+' bpm</b>';
+  if(refs.hrvt1_classico_bpm)
+   h+=' · HRVT1s: <b style="color:#79c0ff;">'+refs.hrvt1_classico_bpm+' bpm</b>';
+  if(refs.hrvt2_bpm)
+   h+=' · HRVT2: <b style="color:#d2a8ff;">'+refs.hrvt2_bpm+' bpm</b>';
+  if(bp.moxy_bpm_observado)
+   h+=' · <span style="color:#E3B341;">MOXY obs.: '+bp.moxy_bpm_observado+' bpm</span>';
+  h+='</div>';
+  // Estatísticas consolidadas
+  if(bp.n_intervalos>0){
+   h+='<div style="font-size:9px;color:#6e7681;margin-top:3px;">';
+   h+='FC final: <b style="color:#ccc;">'+_fv(bp.fc_final_min)+' – '+_fv(bp.fc_final_max)+' bpm</b>';
+   h+=' (méd '+_fv(bp.fc_final_mean)+' · med '+_fv(bp.fc_final_median)+')';
+   if(bp.rpe_min!=null)
+    h+=' · RPE: <b style="color:#ccc;">'+bp.rpe_min+' – '+bp.rpe_max+'</b>';
+   if(bp.n_dissociacoes_fortes>0)
+    h+=' · <span style="color:#F85149;font-weight:600;">'+bp.n_dissociacoes_fortes+'/'+bp.n_intervalos+' dissoc.</span>';
+   else if(bp.n_fc_alta_para_potencia>0||bp.n_rpe_alto_para_potencia>0)
+    h+=' · <span style="color:#E3B341;">'+(bp.n_fc_alta_para_potencia||0)+'FC↑ '+(bp.n_rpe_alto_para_potencia||0)+'RPE↑</span>';
+   h+='</div>';
   }
-  h+='</table>';
-  if(ivs.length){
-   h+='<div style="font-size:9px;color:#6e7681;margin-top:4px;font-weight:600;">'
-    +'Intervalos VST:</div>';
-   ivs.forEach(function(iv){
-    const cor = _cor[iv.coerencia]||'#484f58';
-    const icn = _icone[iv.coerencia]||'—';
-    h+='<div style="font-size:9px;margin-top:2px;padding:2px 4px;'
-     +'border-radius:3px;background:#161b22;">';
-    h+='<span style="color:#8b949e;">#'+iv.ordem+'</span> ';
-    h+='<b>'+_fv(iv.potencia_media,' W')+'</b>'
-     +' <span style="color:#484f58;">'+(_posicao_label[iv.posicao_potencia]||'')+'</span> ';
-    h+='· FC '+_fv(iv.hr_final,' bpm')
-     +' <span style="color:#484f58;">'+(_fc_label[iv.fc_classificacao]||'')+'</span> ';
-    if(iv.rpe!=null){
-     h+='· RPE '+iv.rpe;
-     if(iv.rpe_esperado_potencia!=null){
-      const dif = iv.rpe_diferenca;
-      const sn = dif!=null&&dif>=0?'+':'';
-      h+=' (esp '+iv.rpe_esperado_potencia+(dif!=null?' Δ'+sn+dif:'')+')';}
-    }
-    h+=' <span style="color:'+cor+';font-weight:600;">'+icn+'</span>';
-    h+='</div>';
-   });
-  }
+  // Escala BPM visual
+  h+=_bpmScale(refs, bp, label);
+  // Tabela de intervalos
+  h+=_tabelaIntervalos(bp, bp.moxy_watts, label);
   h+='</div>';
   return h;
  }
 
  let h='<div style="margin-top:6px;border:1px solid #21262d;border-radius:4px;padding:6px 8px;">';
- h+='<div style="font-size:10px;font-weight:600;color:#8b949e;letter-spacing:.05em;margin-bottom:4px;">'
-  +'VALIDAÇÃO FISIOLÓGICA · MOXY × VST</div>';
- // Referências HRVT
- h+='<div style="font-size:9px;color:#6e7681;margin-bottom:4px;">';
- if(refs.hrvt1_min_bpm!=null||refs.hrvt1_max_bpm!=null){
-  h+='HRVT1 '+(refs.hrvt1_min_bpm||'—')+'–'+(refs.hrvt1_max_bpm||'—')+' bpm';
-  h+=' (indiv. '+(refs.hrvt1_individualizado_bpm||'—')+' · clás. '+(refs.hrvt1_classico_bpm||'—')+')';
- }
- if(refs.hrvt2_bpm!=null) h+=' · HRVT2 '+refs.hrvt2_bpm+' bpm';
- if(!refs.hrvt1_min_bpm&&!refs.hrvt2_bpm) h+='Referências HRVT não disponíveis';
- h+='</div>';
- h+=_renderBpFisio('BP1',val.bp1);
- h+=_renderBpFisio('BP2',val.bp2);
+ h+='<div style="font-size:10px;font-weight:600;color:#8b949e;letter-spacing:.05em;margin-bottom:4px;">';
+ h+='VALIDAÇÃO FISIOLÓGICA · POTÊNCIA × FC/HRVT × RPE</div>';
+ // Notas de contexto
+ h+='<div style="font-size:9px;color:#484f58;margin-bottom:4px;">';
+ h+='MOXY BPM = FC do degrau mais próximo ao breakpoint (complementar). ';
+ h+='FC VST = FC observada nos intervalos de confirmação. ';
+ h+='HRVT = referência fisiológica principal.</div>';
+ // Watts HRVT como contexto
+ const wctx=[];
+ if(refs.hrvt1_individualizado_w) wctx.push('HRVT1c '+refs.hrvt1_individualizado_w+'W');
+ if(refs.hrvt1_classico_w)        wctx.push('HRVT1s '+refs.hrvt1_classico_w+'W');
+ if(refs.hrvt2_w)                 wctx.push('HRVT2 '+refs.hrvt2_w+'W');
+ if(wctx.length)
+  h+='<div style="font-size:9px;color:#484f58;margin-bottom:4px;">'
+   +'Watts HRVT (contexto): '+wctx.join(' · ')+'</div>';
+ h+=_renderBpFisio('BP1', val.bp1);
+ h+=_renderBpFisio('BP2', val.bp2);
  h+='</div>';
  return h;
 }
+
 
 function _mxVstBpmValidacaoCard(val){
  /* Renderiza o painel VALIDAÇÃO BPM – MOXY × VST.

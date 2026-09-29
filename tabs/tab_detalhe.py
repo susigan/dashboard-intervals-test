@@ -907,21 +907,21 @@ async function load(){
     return '<tr>'+cols.map(function(c){
      if(c==='rpe_work_col'){
       if(!isWork) return '<td style="text-align:center;color:#484f58;">—</td>';
-      const st=String(iv.start_time);
-      const rpeStored=rpeMap[st]; // legado: 0=apagado, 1-10=valor
-      const rpeVal=(rpeStored===undefined||rpeStored===0)?'':(rpeStored);
+      // interval_id vem da BD via /api/activities/<id>/interval-rpe
+      const iid=String(iv.interval_id!=null?iv.interval_id:'');
+      const rpeStored=iid?rpeMap[iid]:undefined;
+      const rpeVal=(rpeStored==null||rpeStored===0)?'':(rpeStored);
       return '<td style="text-align:center;padding:2px;">'
        +'<input type="number" min="1" max="10" step="1" '
        +'value="'+rpeVal+'" '
        +'style="width:44px;background:#0d1117;border:1px solid #30363d;'
        +'color:#c9d1d9;border-radius:4px;padding:2px 4px;text-align:center;" '
-       +'data-start="'+iv.start_time+'" '
+       +'data-iid="'+iid+'" '
        +'data-type="'+(iv.type||'')+'" '
-       +'data-elapsed="'+(iv.elapsed_time||'')+'" '
-       +'title="RPE do WORK (1-10). Separado do RPE global da sessão." '
-       +'oninput="this.dataset.dirty=\'1\'" '
+       +'title="RPE WORK (1-10). Separado do RPE global da sessão." '
+       +'oninput="this.dataset.dirty='1'" '
        +'onblur="mxSalvarRpe(this)" '
-       +'onkeydown="if(event.key===\'Enter\'){event.preventDefault();this.blur();}" '
+       +'onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" '
        +'/></td>';
      }
      var v=iv[c];return '<td class="num">'+(v==null?'-':(typeof v==='number'?Math.round(v*10)/10:v))+'</td>';
@@ -969,22 +969,20 @@ function _pintarBotoesModo(modoActivo){
 // rpe vazio → grava 0 (apagado explicitamente, impede fallback para moxy_rpe legado).
 // rpe 1-10  → grava o valor.
 function mxSalvarRpe(input){
- if(!input.dataset.dirty) return; // campo não foi editado — ignorar
+ if(!input.dataset.dirty) return;
  input.dataset.dirty='';
- const st=parseFloat(input.dataset.start);
- if(isNaN(st)) return;
+ const iid=parseInt(input.dataset.iid,10);
+ if(!iid||isNaN(iid)) return; // sem interval_id, nao e possivel salvar
  const raw=input.value.trim();
- let rpe=0; // default: apagado
- if(raw!==''){
-  rpe=parseInt(raw,10);
-  if(isNaN(rpe)||rpe<1||rpe>10){
-   input.style.borderColor='#E74C3C';
-   setTimeout(function(){input.style.borderColor='#30363d';},1500);
-   return;
-  }
+ if(raw==='') return; // campo vazio — nao apagar (remover usa DELETE explicitamente)
+ const rpe=parseInt(raw,10);
+ if(isNaN(rpe)||rpe<1||rpe>10){
+  input.style.borderColor='#E74C3C';
+  setTimeout(function(){input.style.borderColor='#30363d';},1500);
+  return;
  }
- input.style.borderColor='#F4D03F'; // a gravar
- fetch('/api/intervals/'+AID+'/'+Math.round(st)+'/rpe',{
+ input.style.borderColor='#F4D03F';
+ fetch('/api/intervals/'+iid+'/rpe',{
   method:'PUT',
   headers:{'Content-Type':'application/json'},
   body:JSON.stringify({rpe:rpe}))
@@ -999,7 +997,7 @@ function mxSalvarRpe(input){
    setTimeout(function(){input.style.borderColor='#30363d';},1800);
   } else {
    input.style.borderColor='#E74C3C';
-   console.error('[mxSalvarRpe]',d.mensagem);
+   console.error('[mxSalvarRpe]', d.erro||d.mensagem);
    setTimeout(function(){input.style.borderColor='#30363d';},2500);
   }
  }).catch(function(e){

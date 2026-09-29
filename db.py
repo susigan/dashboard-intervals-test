@@ -222,48 +222,48 @@ def init_schema():
         criado_em     {ts}
     )""")
 
-    # ── intervalos (WORK/RECOVERY/WARMUP/COOLDOWN) ─────────────────────────
-    # Cada linha é um intervalo de uma atividade, obtido da Intervals.icu API
-    # (/activity/{id}/intervals). A chave lógica é (activity_id, interval_index)
-    # que é estável enquanto a atividade não for reimportada.
-    # interval_index  = posição temporal dentro da atividade (0-based, da API)
-    # interval_type   = WORK | RECOVERY | WARMUP | COOLDOWN (ou outro valor da API)
-    # start_sec/end_sec = segundos desde o inicio da atividade
+    # ── intervals (WORK/RECOVERY/WARMUP/COOLDOWN) ─────────────────────────
+    # Chave logica: (activity_id, start_sec) — compativel com a Intervals.icu API.
+    # start_sec e o identificador temporal que a API usa.
+    # raw guarda o JSON original para nao perder campos desconhecidos.
     _exec(f"""CREATE TABLE IF NOT EXISTS intervals (
-        id              {serial},
-        activity_id     TEXT    NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
-        interval_index  INTEGER NOT NULL,
-        interval_type   TEXT    NOT NULL,
-        label           TEXT,
-        start_sec       DOUBLE PRECISION,
-        end_sec         DOUBLE PRECISION,
-        duration_sec    DOUBLE PRECISION,
-        avg_watts       DOUBLE PRECISION,
-        max_watts       DOUBLE PRECISION,
-        avg_hr          DOUBLE PRECISION,
-        max_hr          DOUBLE PRECISION,
-        created_at      {ts},
-        updated_at      {ts},
-        UNIQUE (activity_id, interval_index)
+        id             {serial},
+        activity_id    TEXT             NOT NULL,
+        start_sec      INTEGER          NOT NULL,
+        end_sec        INTEGER,
+        interval_type  TEXT,
+        name           TEXT,
+        label          TEXT,
+        interval_index INTEGER,
+        duration_sec   DOUBLE PRECISION,
+        distance_m     DOUBLE PRECISION,
+        avg_watts      DOUBLE PRECISION,
+        max_watts      DOUBLE PRECISION,
+        avg_hr         DOUBLE PRECISION,
+        max_hr         DOUBLE PRECISION,
+        reps           INTEGER,
+        source         TEXT DEFAULT 'intervals_icu',
+        raw            {jsn},
+        created_at     {ts} DEFAULT CURRENT_TIMESTAMP,
+        updated_at     {ts} DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (activity_id, start_sec)
     )""")
-    _exec("CREATE INDEX IF NOT EXISTS ix_int_act ON intervals(activity_id)")
-    _exec("CREATE INDEX IF NOT EXISTS ix_int_type ON intervals(interval_type)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_intervals_activity_id ON intervals(activity_id)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_intervals_activity_start ON intervals(activity_id, start_sec)")
 
-    # ── RPE subjectivo por intervalo WORK ──────────────────────────────────
-    # Separado de activities.rpe (RPE GLOBAL DA SESSÃO) — são dados independentes.
-    # activities.rpe não é lido, copiado nem distribuído aqui.
-    # Constraint CHECK garante escala 1-10 a nível de base de dados.
-    # UNIQUE(interval_id) impede duplicação: no máximo 1 RPE por intervalo.
+    # ── interval_rpe: RPE subjectivo por intervalo WORK ───────────────────
+    # PRIMARY KEY = (activity_id, start_sec) — mesma chave que intervals.
+    # activities.rpe (RPE global da sessao) NAO e lido nem alterado aqui.
     _exec(f"""CREATE TABLE IF NOT EXISTS interval_rpe (
-        id           {serial},
-        interval_id  INTEGER NOT NULL UNIQUE REFERENCES intervals(id) ON DELETE CASCADE,
-        activity_id  TEXT    NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
-        rpe          INTEGER NOT NULL CHECK (rpe >= 1 AND rpe <= 10),
-        created_at   {ts},
-        updated_at   {ts}
+        activity_id TEXT             NOT NULL,
+        start_sec   INTEGER          NOT NULL,
+        rpe         DOUBLE PRECISION NOT NULL
+                    CHECK (rpe >= 1 AND rpe <= 10),
+        created_at  {ts} DEFAULT CURRENT_TIMESTAMP,
+        updated_at  {ts} DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (activity_id, start_sec)
     )""")
-    _exec("CREATE INDEX IF NOT EXISTS ix_irpe_act ON interval_rpe(activity_id)")
-    _exec("CREATE INDEX IF NOT EXISTS ix_irpe_int ON interval_rpe(interval_id)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_interval_rpe_activity ON interval_rpe(activity_id)")
 
     return True
 
@@ -1140,163 +1140,172 @@ def tempo_por_zona(tipo=None, kind='power', desde=None):
             for r in rows]
 
 
+
 # ── intervals + interval_rpe ──────────────────────────────────────────────
-# Segue o mesmo padrão dos outros helpers: _exec() + UPSERT idempotente.
-# activities.rpe (RPE global) não é lido nem alterado por nenhuma destas funções.
+# Chave logica: (activity_id, start_sec).
+# activities.rpe (RPE global) nunca e lido nem alterado por estas funcoes.
 
 def upsert_intervals(activity_id, ivs_raw):
     """Persiste os intervalos de uma atividade (fonte: Intervals.icu API).
 
-    ivs_raw: lista de dicts da API (campos icu_intervals ou /intervals).
-    Usa UPSERT por (activity_id, interval_index) — seguro abrir a mesma
-    atividade várias vezes sem criar duplicados.
-    Retorna número de intervalos gravados.
+    UPSERT por (activity_id, start_sec) — idempotente.
+    NAO toca em interval_rpe: RPEs ja gravados sao preservados.
+    Retorna numero de intervalos processados.
     """
     if not ENABLED or not ivs_raw:
         return 0
     now = _now()
     params = []
     for idx, iv in enumerate(ivs_raw):
-        start = iv.get('start_time')       # segundos (campo da API ICU)
+        start = iv.get('start_time')
+        if start is None:
+            continue
+        start = int(start)
         elapsed = iv.get('elapsed_time')
-        end = (start + elapsed) if (start is not None and elapsed is not None) else None
+        end = (start + int(elapsed)) if elapsed is not None else None
+        raw_val = (json.dumps(iv, ensure_ascii=False)
+                   if DRIVER == 'postgres' else None)
+        itype = (iv.get('type') or iv.get('interval_type') or '').upper() or None
         params.append((
-            activity_id, idx,
-            (iv.get('type') or 'UNKNOWN').upper(),
-            iv.get('label'),
-            start, end, elapsed,
+            str(activity_id), start, end, itype,
+            iv.get('name'), iv.get('label'), idx,
+            float(elapsed) if elapsed is not None else None,
+            iv.get('distance'),
             iv.get('average_watts'), iv.get('max_watts'),
-            iv.get('average_heartrate'), iv.get('max_heartrate'),
-            now, now,
+            iv.get('average_heartrate') or iv.get('avg_hr'),
+            iv.get('max_heartrate') or iv.get('max_hr'),
+            iv.get('reps'), raw_val, now,
         ))
+    if not params:
+        return 0
     _exec("""INSERT INTO intervals
-             (activity_id, interval_index, interval_type, label,
-              start_sec, end_sec, duration_sec,
-              avg_watts, max_watts, avg_hr, max_hr,
-              created_at, updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-             ON CONFLICT (activity_id, interval_index) DO UPDATE SET
-               interval_type = EXCLUDED.interval_type,
-               label         = EXCLUDED.label,
-               start_sec     = EXCLUDED.start_sec,
-               end_sec       = EXCLUDED.end_sec,
-               duration_sec  = EXCLUDED.duration_sec,
-               avg_watts     = EXCLUDED.avg_watts,
-               max_watts     = EXCLUDED.max_watts,
-               avg_hr        = EXCLUDED.avg_hr,
-               max_hr        = EXCLUDED.max_hr,
-               updated_at    = EXCLUDED.updated_at""", many=params)
+             (activity_id, start_sec, end_sec, interval_type, name, label,
+              interval_index, duration_sec, distance_m, avg_watts, max_watts,
+              avg_hr, max_hr, reps, raw, updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT (activity_id, start_sec) DO UPDATE SET
+               end_sec        = EXCLUDED.end_sec,
+               interval_type  = EXCLUDED.interval_type,
+               name           = EXCLUDED.name,
+               label          = EXCLUDED.label,
+               interval_index = EXCLUDED.interval_index,
+               duration_sec   = EXCLUDED.duration_sec,
+               distance_m     = EXCLUDED.distance_m,
+               avg_watts      = EXCLUDED.avg_watts,
+               max_watts      = EXCLUDED.max_watts,
+               avg_hr         = EXCLUDED.avg_hr,
+               max_hr         = EXCLUDED.max_hr,
+               reps           = EXCLUDED.reps,
+               raw            = EXCLUDED.raw,
+               updated_at     = EXCLUDED.updated_at""", many=params)
+    print(f"[INTERVALS] activity={activity_id} intervals_upserted={len(params)}")
     return len(params)
 
 
-def get_intervals(activity_id):
-    """Intervalos de uma atividade com o RPE já associado.
+def get_intervals_with_rpe(activity_id):
+    """Intervalos com RPE ja associado (LEFT JOIN por start_sec).
 
-    Retorna lista de dicts; interval_rpe.rpe é None quando ainda não gravado.
-    activities.rpe (RPE global) não está incluído aqui — fonte diferente.
+    Retorna lista ordenada por start_sec.
+    rpe=None quando o utilizador ainda nao registou.
+    activities.rpe (RPE global) nao esta incluido.
     """
     if not ENABLED:
         return []
-    rows = _exec("""SELECT i.id, i.interval_index, i.interval_type, i.label,
-                           i.start_sec, i.end_sec, i.duration_sec,
+    rows = _exec("""SELECT i.start_sec, i.end_sec, i.interval_type,
+                           i.name, i.label, i.interval_index,
+                           i.duration_sec, i.distance_m,
                            i.avg_watts, i.max_watts, i.avg_hr, i.max_hr,
-                           ir.rpe
+                           r.rpe, r.updated_at
                     FROM intervals i
-                    LEFT JOIN interval_rpe ir ON ir.interval_id = i.id
+                    LEFT JOIN interval_rpe r
+                           ON r.activity_id = i.activity_id
+                          AND r.start_sec   = i.start_sec
                     WHERE i.activity_id = ?
-                    ORDER BY i.interval_index""",
-                 (activity_id,), fetch='all') or []
-    return [{'id': r[0], 'interval_index': r[1], 'interval_type': r[2],
-             'label': r[3], 'start_sec': r[4], 'end_sec': r[5],
-             'duration_sec': r[6], 'avg_watts': r[7], 'max_watts': r[8],
-             'avg_hr': r[9], 'max_hr': r[10],
-             'rpe': r[11]}         # None = sem RPE registado
+                    ORDER BY i.start_sec""",
+                 (str(activity_id),), fetch='all') or []
+    print(f"[INTERVALS] activity={activity_id} intervals_loaded={len(rows)}")
+    return [{'start_sec': r[0], 'end_sec': r[1],
+             'type': r[2], 'name': r[3], 'label': r[4],
+             'interval_index': r[5], 'duration_sec': r[6],
+             'distance_m': r[7], 'avg_watts': r[8], 'max_watts': r[9],
+             'avg_hr': r[10], 'max_hr': r[11],
+             'rpe': r[12],
+             'rpe_updated_at': str(r[13]) if r[13] else None}
             for r in rows]
 
 
-def get_interval_by_id(interval_id):
-    """Um intervalo pelo id primário, com rpe incluído."""
-    if not ENABLED:
-        return None
-    row = _exec("""SELECT i.id, i.activity_id, i.interval_index, i.interval_type,
-                          i.start_sec, i.end_sec, i.duration_sec,
-                          i.avg_watts, i.avg_hr, ir.rpe
-                   FROM intervals i
-                   LEFT JOIN interval_rpe ir ON ir.interval_id = i.id
-                   WHERE i.id = ?""", (interval_id,), fetch='one')
-    if not row:
-        return None
-    return {'id': row[0], 'activity_id': row[1], 'interval_index': row[2],
-            'interval_type': row[3], 'start_sec': row[4], 'end_sec': row[5],
-            'duration_sec': row[6], 'avg_watts': row[7], 'avg_hr': row[8],
-            'rpe': row[9]}
+def upsert_interval_rpe(activity_id, start_sec, rpe):
+    """Grava ou actualiza o RPE de um intervalo (chave: activity_id + start_sec).
 
-
-def upsert_interval_rpe(interval_id, activity_id, rpe):
-    """Grava ou actualiza o RPE de um intervalo WORK.
-
-    Valida: rpe 1-10, interval_type = WORK, interval pertence à activity.
+    Valida: rpe 1-10, intervalo existe.
     Retorna (ok, erro_msg).
-    Não lê nem altera activities.rpe (RPE global da sessão).
+    NAO altera activities.rpe.
     """
     if not ENABLED:
         return False, 'sem base de dados'
-    if not isinstance(rpe, int) or not (1 <= rpe <= 10):
-        return False, f'RPE inválido: {rpe!r} — deve ser inteiro 1-10'
-    # Verificar que o intervalo existe, pertence à activity e é WORK
-    row = _exec("""SELECT activity_id, interval_type FROM intervals WHERE id = ?""",
-                (interval_id,), fetch='one')
+    try:
+        rpe_f = float(rpe)
+    except (TypeError, ValueError):
+        return False, f'rpe deve ser numerico, recebido: {rpe!r}'
+    if not (1 <= rpe_f <= 10):
+        return False, f'RPE fora de 1-10: {rpe_f}'
+    row = _exec("SELECT 1 FROM intervals WHERE activity_id=? AND start_sec=?",
+                (str(activity_id), int(start_sec)), fetch='one')
     if not row:
-        return False, f'intervalo {interval_id} não encontrado'
-    if str(row[0]) != str(activity_id):
-        return False, (f'intervalo {interval_id} pertence à activity {row[0]}, '
-                       f'não à {activity_id}')
-    if (row[1] or '').upper() != 'WORK':
-        return False, (f'RPE de intervalo só pode ser registado em WORK '
-                       f'(este é {row[1]!r})')
+        return False, (f'intervalo nao encontrado: '
+                       f'activity={activity_id} start_sec={start_sec}')
     now = _now()
-    _exec("""INSERT INTO interval_rpe (interval_id, activity_id, rpe, created_at, updated_at)
+    _exec("""INSERT INTO interval_rpe (activity_id, start_sec, rpe, created_at, updated_at)
              VALUES (?,?,?,?,?)
-             ON CONFLICT (interval_id) DO UPDATE SET
-               rpe = EXCLUDED.rpe,
+             ON CONFLICT (activity_id, start_sec) DO UPDATE SET
+               rpe        = EXCLUDED.rpe,
                updated_at = EXCLUDED.updated_at""",
-          (interval_id, activity_id, rpe, now, now))
+          (str(activity_id), int(start_sec), rpe_f, now, now))
+    print(f"[INTERVAL_RPE] activity={activity_id} start_sec={start_sec} rpe={rpe_f} saved")
     return True, None
 
 
 def bulk_upsert_interval_rpe(activity_id, items):
-    """Grava vários RPEs em transação.
+    """Grava varios RPEs em transaccao.
 
-    items: lista de {'interval_id': int, 'rpe': int}
-    Retorna {'ok': int, 'errors': [str]}.
-    """
-    ok_count, errors = 0, []
-    for item in items:
-        iid = item.get('interval_id')
-        rpe = item.get('rpe')
-        ok, err = upsert_interval_rpe(iid, activity_id, rpe)
-        if ok:
-            ok_count += 1
-        else:
-            errors.append(f'interval {iid}: {err}')
-    return {'ok': ok_count, 'errors': errors}
-
-
-def delete_interval_rpe(interval_id, activity_id):
-    """Remove o RPE de um intervalo (permite limpar um valor gravado).
-
-    Não altera activities.rpe.
+    items: lista de {'start_sec': int, 'rpe': float/int}
+    Valida todos antes de gravar — retorna erro sem gravar parcialmente.
+    Retorna {'saved': [dicts], 'errors': [str]}.
     """
     if not ENABLED:
+        return {'saved': [], 'errors': ['sem base de dados']}
+    errors = []
+    validated = []
+    for item in items:
+        ss = item.get('start_sec')
+        try:
+            rpe_f = float(item.get('rpe', ''))
+        except (TypeError, ValueError):
+            errors.append(f"start_sec={ss}: rpe invalido {item.get('rpe')!r}")
+            continue
+        if not (1 <= rpe_f <= 10):
+            errors.append(f"start_sec={ss}: RPE {rpe_f} fora de 1-10")
+            continue
+        validated.append((str(activity_id), int(ss), rpe_f))
+    if errors:
+        return {'saved': [], 'errors': errors}
+    now = _now()
+    _exec("""INSERT INTO interval_rpe (activity_id, start_sec, rpe, created_at, updated_at)
+             VALUES (?,?,?,?,?)
+             ON CONFLICT (activity_id, start_sec) DO UPDATE SET
+               rpe = EXCLUDED.rpe, updated_at = EXCLUDED.updated_at""",
+          many=[(a, s, r, now, now) for a, s, r in validated])
+    saved = [{'activity_id': a, 'start_sec': s, 'rpe': r}
+             for a, s, r in validated]
+    return {'saved': saved, 'errors': []}
+
+
+def delete_interval_rpe(activity_id, start_sec):
+    """Remove o RPE de um intervalo. Nao altera activities.rpe."""
+    if not ENABLED:
         return False, 'sem base de dados'
-    row = _exec("SELECT activity_id FROM intervals WHERE id = ?",
-                (interval_id,), fetch='one')
-    if not row:
-        return False, f'intervalo {interval_id} não encontrado'
-    if str(row[0]) != str(activity_id):
-        return False, 'intervalo não pertence a esta atividade'
-    _exec("DELETE FROM interval_rpe WHERE interval_id = ? AND activity_id = ?",
-          (interval_id, activity_id))
+    _exec("DELETE FROM interval_rpe WHERE activity_id=? AND start_sec=?",
+          (str(activity_id), int(start_sec)))
     return True, None
 
 

@@ -1035,12 +1035,31 @@ def api_activity_interval_rpe_get(activity_id):
     try:
         ivs = db.get_intervals_with_rpe(activity_id)
         if not ivs:
-            # Lazy-load: buscar da API ICU e persistir
+            # Lazy-load: buscar os intervalos da API ICU e persistir no DB
+            # O DB é cache/armazenamento — a API ICU é sempre a fonte de verdade
             raw_ivs, err = icu_get(f"/activity/{activity_id}/intervals")
             if not err and isinstance(raw_ivs, list) and raw_ivs:
                 db.upsert_intervals(activity_id, raw_ivs)
+                # Tentar de novo após upsert (pode ter falhado parcialmente)
                 ivs = db.get_intervals_with_rpe(activity_id)
-            # Se a API falhar, continuar com lista vazia (nao abortar)
+                if not ivs:
+                    # Se o DB não retornou nada (schema incompatível?), usar os dados da API directamente
+                    # convertendo para o formato esperado pelo frontend
+                    ivs = [{'interval_id': None,
+                             'start_sec': float(iv.get('start_time') or 0),
+                             'end_sec': (float(iv.get('start_time') or 0) + float(iv.get('elapsed_time') or 0))
+                                         if iv.get('elapsed_time') else None,
+                             'type': (iv.get('type') or '').upper() or None,
+                             'name': iv.get('name'), 'label': iv.get('label'),
+                             'interval_index': i,
+                             'duration_sec': float(iv.get('elapsed_time') or 0) if iv.get('elapsed_time') else None,
+                             'distance_m': iv.get('distance'),
+                             'avg_watts': iv.get('average_watts'), 'max_watts': iv.get('max_watts'),
+                             'avg_hr': iv.get('average_heartrate'), 'max_hr': iv.get('max_heartrate'),
+                             'rpe': None,   # sem RPE ainda — normal
+                             'rpe_updated_at': None}
+                            for i, iv in enumerate(raw_ivs)]
+            # Se a API falhar também, continuar com lista vazia (nao abortar)
 
         # session_rpe: apenas leitura de activities.rpe (RPE GLOBAL)
         # Nao e distribuido nem copiado para os intervalos

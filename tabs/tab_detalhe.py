@@ -724,8 +724,17 @@ function fmtv(v){
 }
 
 async function load(){
- const d=await fetch('/api/activity/'+AID+'/full').then(r=>r.json());
- if(d.error){document.getElementById('title').textContent='Erro: '+d.error;return;}
+ let d;
+ try{
+  d=await fetch('/api/activity/'+AID+'/full').then(r=>r.json());
+ }catch(e){
+  document.getElementById('title').textContent='Erro ao carregar: '+e.message;
+  return;
+ }
+ if(!d||d.error||d.status==='error'){
+  document.getElementById('title').textContent='Erro: '+(d&&(d.error||d.message))||'falha ao carregar';
+  return;
+ }
  DATA=d;
  const a=d.activity||{},cf=d.custom_fields||{};
  window.__ELAPSED__=a.elapsed_time||a.moving_time||0;

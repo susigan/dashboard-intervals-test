@@ -229,8 +229,8 @@ def init_schema():
     _exec(f"""CREATE TABLE IF NOT EXISTS intervals (
         id             {serial},
         activity_id    TEXT             NOT NULL,
-        start_sec      INTEGER          NOT NULL,
-        end_sec        INTEGER,
+        start_sec      DOUBLE PRECISION NOT NULL,
+        end_sec        DOUBLE PRECISION,
         interval_type  TEXT,
         name           TEXT,
         label          TEXT,
@@ -266,17 +266,7 @@ def init_schema():
     )""")
     _exec("CREATE INDEX IF NOT EXISTS idx_interval_rpe_activity ON interval_rpe(activity_id)")
 
-    # Migração segura: se a tabela existe com schema antigo (activity_id, start_sec),
-    # adicionar colunas em falta sem apagar dados existentes.
-    # Em PostgreSQL, estas DDLs são idempotentes com IF NOT EXISTS.
-    try:
-        _exec("ALTER TABLE interval_rpe ADD COLUMN IF NOT EXISTS interval_id BIGINT")
-    except Exception:
-        pass  # SQLite nao suporta IF NOT EXISTS no ADD COLUMN; ignorar
-    try:
-        _exec("ALTER TABLE interval_rpe ADD COLUMN IF NOT EXISTS activity_id TEXT")
-    except Exception:
-        pass
+    # schema interval_rpe definitivo: PRIMARY KEY(interval_id), sem start_sec
 
     return True
 
@@ -1194,49 +1184,58 @@ def upsert_intervals(activity_id, ivs_raw):
         ))
     if not params:
         return 0
-    _exec("""INSERT INTO intervals
-             (activity_id, start_sec, end_sec, interval_type, name, label,
-              interval_index, duration_sec, distance_m, avg_watts, max_watts,
-              avg_hr, max_hr, reps, raw, updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-             ON CONFLICT (activity_id, start_sec) DO UPDATE SET
-               end_sec        = EXCLUDED.end_sec,
-               interval_type  = EXCLUDED.interval_type,
-               name           = EXCLUDED.name,
-               label          = EXCLUDED.label,
-               interval_index = EXCLUDED.interval_index,
-               duration_sec   = EXCLUDED.duration_sec,
-               distance_m     = EXCLUDED.distance_m,
-               avg_watts      = EXCLUDED.avg_watts,
-               max_watts      = EXCLUDED.max_watts,
-               avg_hr         = EXCLUDED.avg_hr,
-               max_hr         = EXCLUDED.max_hr,
-               reps           = EXCLUDED.reps,
-               raw            = EXCLUDED.raw,
-               updated_at     = EXCLUDED.updated_at""", many=params)
-    print(f"[INTERVALS] activity={activity_id} intervals_upserted={len(params)}")
-    return len(params)
+    try:
+        _exec("""INSERT INTO intervals
+                 (activity_id, start_sec, end_sec, interval_type, name, label,
+                  interval_index, duration_sec, distance_m, avg_watts, max_watts,
+                  avg_hr, max_hr, reps, raw, updated_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 ON CONFLICT (activity_id, start_sec) DO UPDATE SET
+                   end_sec        = EXCLUDED.end_sec,
+                   interval_type  = EXCLUDED.interval_type,
+                   name           = EXCLUDED.name,
+                   label          = EXCLUDED.label,
+                   interval_index = EXCLUDED.interval_index,
+                   duration_sec   = EXCLUDED.duration_sec,
+                   distance_m     = EXCLUDED.distance_m,
+                   avg_watts      = EXCLUDED.avg_watts,
+                   max_watts      = EXCLUDED.max_watts,
+                   avg_hr         = EXCLUDED.avg_hr,
+                   max_hr         = EXCLUDED.max_hr,
+                   reps           = EXCLUDED.reps,
+                   raw            = EXCLUDED.raw,
+                   updated_at     = EXCLUDED.updated_at""", many=params)
+        print(f"[INTERVALS] activity={activity_id} intervals_upserted={len(params)}")
+        return len(params)
+    except Exception as e:
+        print(f"[INTERVALS] upsert_intervals falhou para {activity_id}: {e}")
+        return 0
 
 
 def get_intervals_with_rpe(activity_id):
     """Intervalos com RPE (LEFT JOIN por interval_id).
 
     Retorna lista ordenada por start_sec.
-    rpe=None quando o utilizador nao registou.
+    rpe=None quando o utilizador nao registou — isso e normal e valido.
     activities.rpe (RPE global) nao esta incluido.
+    Retorna [] se a tabela ainda nao existir ou estiver vazia (nunca lanca 500).
     """
     if not ENABLED:
         return []
-    rows = _exec("""SELECT i.id, i.start_sec, i.end_sec, i.interval_type,
-                           i.name, i.label, i.interval_index,
-                           i.duration_sec, i.distance_m,
-                           i.avg_watts, i.max_watts, i.avg_hr, i.max_hr,
-                           r.rpe, r.updated_at
-                    FROM intervals i
-                    LEFT JOIN interval_rpe r ON r.interval_id = i.id
-                    WHERE i.activity_id = ?
-                    ORDER BY i.start_sec""",
-                 (str(activity_id),), fetch='all') or []
+    try:
+        rows = _exec("""SELECT i.id, i.start_sec, i.end_sec, i.interval_type,
+                               i.name, i.label, i.interval_index,
+                               i.duration_sec, i.distance_m,
+                               i.avg_watts, i.max_watts, i.avg_hr, i.max_hr,
+                               r.rpe, r.updated_at
+                        FROM intervals i
+                        LEFT JOIN interval_rpe r ON r.interval_id = i.id
+                        WHERE i.activity_id = ?
+                        ORDER BY i.start_sec""",
+                     (str(activity_id),), fetch='all') or []
+    except Exception as e:
+        print(f"[INTERVALS] get_intervals_with_rpe falhou para {activity_id}: {e}")
+        return []
     print(f"[INTERVALS] activity={activity_id} intervals_loaded={len(rows)}")
     return [{'interval_id': r[0], 'start_sec': r[1], 'end_sec': r[2],
              'type': r[3], 'name': r[4], 'label': r[5],

@@ -1998,24 +1998,31 @@ function _mxVstBpmValidacaoCard(val){
    h+='<table style="font-size:10px;border-collapse:collapse;width:100%;">';
    h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">MOXY</td>'
      +'<td style="color:#ccc;font-weight:600;">'+(bp.moxy_bpm!=null?bp.moxy_bpm+' bpm':'—')+'</td></tr>';
-   h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">VST range</td>'
-     +'<td style="color:#ccc;">'+(bp.vst_bpm_min!=null?bp.vst_bpm_min+'–'+bp.vst_bpm_max+' bpm':'—')+'</td></tr>';
-   h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">Média VST</td>'
-     +'<td style="color:#ccc;">'+(bp.vst_bpm_mean!=null?bp.vst_bpm_mean+' bpm':'—')+'</td></tr>';
+   h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">VST final bpm</td>'
+     +'<td style="color:#ccc;">'+(bp.vst_hr_final_min!=null?bp.vst_hr_final_min+'–'+bp.vst_hr_final_max+' bpm':'—')+'</td></tr>';
    h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">Mediana VST</td>'
-     +'<td style="color:#ccc;">'+(bp.vst_bpm_median!=null?bp.vst_bpm_median+' bpm':'—')+'</td></tr>';
-   if(bp.difference_mean!=null){
-    const sinal=bp.difference_mean>=0?'+':'';
-    h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">Diferença</td>'
-      +'<td style="color:'+cor+';font-weight:600;">'+sinal+bp.difference_mean+' bpm</td></tr>';
+     +'<td style="color:#ccc;">'+(bp.vst_hr_final_median!=null?bp.vst_hr_final_median+' bpm':'—')+'</td></tr>';
+   h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">Média VST</td>'
+     +'<td style="color:#ccc;">'+(bp.vst_hr_final_mean!=null?bp.vst_hr_final_mean+' bpm':'—')+'</td></tr>';
+   if(bp.diferenca_median!=null){
+    const sinal=bp.diferenca_median>=0?'+':'';
+    h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">Dif. mediana</td>'
+      +'<td style="color:'+cor+';font-weight:600;">'+sinal+bp.diferenca_median+' bpm</td></tr>';
+   }
+   if(bp.vst_hr_media_median!=null){
+    h+='<tr><td style="color:#8b949e;padding:1px 4px 1px 0;">Média bpm (ctx)</td>'
+      +'<td style="color:#6e7681;">'+bp.vst_hr_media_median+' bpm</td></tr>';
    }
    h+='</table>';
-   // intervalos individuais
+   // intervalos individuais — mostrar potência + hr_final
    const ivs=(bp.intervalos||[]).filter(function(iv){return iv.valido;});
    if(ivs.length){
     h+='<div style="font-size:9px;color:#6e7681;margin-top:3px;">Intervalos ('+ivs.length+'): ';
     h+=ivs.map(function(iv){
-     return (iv.watts!=null?Math.round(iv.watts)+'W':'?')+' → '+(iv.hr_media!=null?Math.round(iv.hr_media)+' bpm':'?');
+     const w=iv.potencia_media!=null?Math.round(iv.potencia_media)+'W':'?';
+     const hrf=iv.hr_final!=null?Math.round(iv.hr_final)+' bpm (final)':'?';
+     const hrm=iv.hr_media!=null?' / '+Math.round(iv.hr_media)+' bpm (média)':'';
+     return w+' → '+hrf+hrm;
     }).join(' · ');
     h+='</div>';
    }

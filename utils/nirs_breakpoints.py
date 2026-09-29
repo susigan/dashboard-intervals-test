@@ -2006,3 +2006,172 @@ def dmax(blocos):
                   'máxima à recta 1º–último ponto',
         'reta_referencia': {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2},
     }
+
+
+# ── Validação cruzada BPM MOXY × VST ─────────────────────────────────────
+# Tolerância de FC para classificação PROXIMO (bpm).
+# Única constante — não duplicar noutros lugares.
+TOLERANCIA_BPM = 3
+
+
+def validar_bpm_vst(bp1_bpm, bp2_bpm,
+                    bp1_metricas_lista, bp2_metricas_lista):
+    """Valida os BPM calculados pelo MOXY contra a FC observada nos
+    intervalos VST utilizados para confirmar BP1 e BP2.
+
+    Parâmetros
+    ----------
+    bp1_bpm, bp2_bpm : float | None
+        BPM do MOXY (saída de _hr_interp / bp_moxy). NÃO são alterados.
+    bp1_metricas_lista : list[dict]
+        Lista de métricas de intervalos VST para BP1
+        (cada dict é o retorno de vst_verificacao.metricas_intervalo).
+        Espera-se 4 intervalos; menos de 4 válidos → status='insuficiente'.
+    bp2_metricas_lista : list[dict]
+        Idem para BP2; espera-se 3 intervalos.
+
+    Retorna
+    -------
+    dict com duas chaves 'bp1' e 'bp2', cada uma contendo:
+        moxy_bpm          : float | None   — BPM MOXY original
+        intervalos        : list[dict]     — detalhe de cada intervalo VST
+        n_validos         : int
+        n_excluidos       : int
+        vst_bpm_min       : float | None
+        vst_bpm_max       : float | None
+        vst_bpm_mean      : float | None
+        vst_bpm_median    : float | None
+        difference_mean   : float | None   — moxy_bpm - vst_bpm_mean
+        difference_abs    : float | None
+        status            : str  — 'consistente'|'proximo'|'inconsistente'|
+                                   'insuficiente'|'sem_bpm_moxy'|'nao_validado'
+    """
+    resultado = {}
+    configs = [
+        ('bp1', bp1_bpm, bp1_metricas_lista, 4),
+        ('bp2', bp2_bpm, bp2_metricas_lista, 3),
+    ]
+    for chave, moxy_bpm, metricas_lista, n_min in configs:
+        resultado[chave] = _validar_bp(chave, moxy_bpm,
+                                        metricas_lista or [], n_min)
+    return resultado
+
+
+def _validar_bp(chave, moxy_bpm, metricas_lista, n_min_validos):
+    """Valida um único breakpoint."""
+    # sem BPM MOXY — não há nada para comparar
+    if moxy_bpm is None:
+        return {
+            'moxy_bpm': None,
+            'intervalos': [],
+            'n_validos': 0, 'n_excluidos': 0,
+            'vst_bpm_min': None, 'vst_bpm_max': None,
+            'vst_bpm_mean': None, 'vst_bpm_median': None,
+            'difference_mean': None, 'difference_abs': None,
+            'status': 'sem_bpm_moxy',
+        }
+
+    # sem lista de métricas VST
+    if not metricas_lista:
+        return {
+            'moxy_bpm': moxy_bpm,
+            'intervalos': [],
+            'n_validos': 0, 'n_excluidos': 0,
+            'vst_bpm_min': None, 'vst_bpm_max': None,
+            'vst_bpm_mean': None, 'vst_bpm_median': None,
+            'difference_mean': None, 'difference_abs': None,
+            'status': 'nao_validado',
+        }
+
+    # processar cada intervalo
+    intervalos_out = []
+    validos = []
+
+    for m in metricas_lista:
+        w_info = m.get('potencia') or {}
+        hr_info = m.get('hr') or {}
+
+        watts = (w_info.get('media') if w_info.get('ok') else None)
+        hr_ok = hr_info.get('ok', False)
+
+        if not hr_ok:
+            intervalos_out.append({
+                'watts': watts,
+                'hr_media': None,
+                'hr_min': None,
+                'hr_max': None,
+                'valido': False,
+                'motivo_exclusao': hr_info.get('motivo', 'FC indisponível'),
+            })
+            continue
+
+        hr_media  = hr_info.get('media')
+        hr_min    = hr_info.get('minimo')
+        hr_max    = hr_info.get('maximo')
+
+        if hr_media is None:
+            intervalos_out.append({
+                'watts': watts,
+                'hr_media': None,
+                'hr_min': hr_min,
+                'hr_max': hr_max,
+                'valido': False,
+                'motivo_exclusao': 'hr_media ausente',
+            })
+            continue
+
+        intervalos_out.append({
+            'watts': round(watts, 1) if watts is not None else None,
+            'hr_media': round(hr_media, 1),
+            'hr_min': round(hr_min, 1) if hr_min is not None else None,
+            'hr_max': round(hr_max, 1) if hr_max is not None else None,
+            'valido': True,
+        })
+        validos.append(hr_media)
+
+    n_validos   = len(validos)
+    n_excluidos = len(intervalos_out) - n_validos
+
+    if n_validos < n_min_validos:
+        return {
+            'moxy_bpm': moxy_bpm,
+            'intervalos': intervalos_out,
+            'n_validos': n_validos,
+            'n_excluidos': n_excluidos,
+            'vst_bpm_min': None, 'vst_bpm_max': None,
+            'vst_bpm_mean': None, 'vst_bpm_median': None,
+            'difference_mean': None, 'difference_abs': None,
+            'status': 'insuficiente',
+        }
+
+    vst_min    = min(validos)
+    vst_max    = max(validos)
+    vst_mean   = sum(validos) / len(validos)
+    sv         = sorted(validos)
+    mid        = len(sv) // 2
+    vst_median = (sv[mid] if len(sv) % 2 else (sv[mid-1] + sv[mid]) / 2)
+
+    diff_mean  = moxy_bpm - vst_mean
+    diff_abs   = abs(diff_mean)
+
+    # classificação (regras em cascata)
+    if vst_min <= moxy_bpm <= vst_max:
+        status = 'consistente'
+    elif diff_abs <= TOLERANCIA_BPM:
+        status = 'proximo'
+    else:
+        status = 'inconsistente'
+
+    return {
+        'moxy_bpm': moxy_bpm,
+        'intervalos': intervalos_out,
+        'n_validos': n_validos,
+        'n_excluidos': n_excluidos,
+        'vst_bpm_min': round(vst_min, 1),
+        'vst_bpm_max': round(vst_max, 1),
+        'vst_bpm_mean': round(vst_mean, 1),
+        'vst_bpm_median': round(vst_median, 1),
+        'difference_mean': round(diff_mean, 1),
+        'difference_abs': round(diff_abs, 1),
+        'status': status,
+    }

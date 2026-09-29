@@ -868,7 +868,7 @@ async function load(){
  const ivs=(d.intervals&&(d.intervals.icu_intervals||d.intervals))||[];
  if(Array.isArray(ivs)&&ivs.length){
   // Carregar RPE existentes antes de renderizar a tabela
-  fetch('/api/activity/'+AID+'/interval_rpe').then(r=>r.json()).then(function(rpeData){
+  fetch('/api/activities/'+AID+'/interval-rpe').then(r=>r.json()).then(function(rpeData){
    const rpeMap={};
    ((rpeData||{}).intervals||[]).forEach(function(iv){
     rpeMap[String(iv.start_time)]=iv.rpe; // 0=apagado, 1-10=valor
@@ -984,17 +984,12 @@ function mxSalvarRpe(input){
   }
  }
  input.style.borderColor='#F4D03F'; // a gravar
- fetch('/api/activity/'+AID+'/interval_rpe',{
-  method:'POST',
+ fetch('/api/intervals/'+AID+'/'+Math.round(st)+'/rpe',{
+  method:'PUT',
   headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({intervals:[{
-   start_time:st,
-   interval_type:input.dataset.type||null,
-   elapsed_time:input.dataset.elapsed?parseFloat(input.dataset.elapsed):null,
-   rpe:rpe
-  }]})
+  body:JSON.stringify({rpe:rpe}))
  }).then(r=>r.json()).then(function(d){
-  if(d.status==='ok'||d.status==='gravado_sem_upload'){
+  if(d.success||d.status==='ok'||d.status==='gravado_sem_upload'){
    input.style.borderColor='#3FB950';
    input.value=rpe===0?'':String(rpe);
    // Se o upload para o Drive falhou, mostrar botão de download do DB

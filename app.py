@@ -1019,22 +1019,20 @@ def api_activity_prs(activity_id):
 
 
 # ── Intervalos + RPE por intervalo WORK ──────────────────────────────────
-# Chave logica: (activity_id, start_sec).
-# activities.rpe (RPE global da sessao) nao e lido nem alterado por estas rotas.
+# Chave de identidade: intervals.id (int).
+# start_sec/end_sec continuam nos intervalos para uso temporal/streams.
+# activities.rpe (RPE global) nao e lido nem alterado aqui.
 
 @app.route('/api/activities/<activity_id>/interval-rpe', methods=['GET'])
 def api_activity_interval_rpe_get(activity_id):
-    """Lista de intervalos com RPE (se existir).
+    """Lista de intervalos com RPE por interval_id (LEFT JOIN).
 
-    Tenta primeiro a BD local; se vazia, chama a API ICU e persiste.
-    Retorna:
-      {activity_id, session_rpe (so leitura de activities.rpe),
-       intervals: [{start_sec, end_sec, type, name, avg_watts, avg_hr, rpe}]}
+    Lazy-load da API ICU se a BD estiver vazia.
+    Retorna: {activity_id, session_rpe (so leitura), intervals:[...]}
+    interval_id e o campo a usar para salvar RPE.
     """
-    # Tentar BD primeiro
     ivs = db.get_intervals_with_rpe(activity_id)
     if not ivs:
-        # Lazy loading da API ICU (igual ao padrao dos streams)
         raw_ivs, err = icu_get(f"/activity/{activity_id}/intervals")
         if err:
             return jsonify({'erro': err}), 502
@@ -1042,87 +1040,86 @@ def api_activity_interval_rpe_get(activity_id):
             db.upsert_intervals(activity_id, raw_ivs)
             ivs = db.get_intervals_with_rpe(activity_id)
 
-    # Ler activities.rpe apenas para expor o RPE global (nao distribui para intervalos)
     act_row = db._exec("SELECT rpe FROM activities WHERE id = ?",
                        (activity_id,), fetch='one')
     session_rpe = act_row[0] if act_row else None
 
     return jsonify({
         'activity_id': activity_id,
-        'session_rpe': session_rpe,   # RPE GLOBAL — separado do RPE por WORK
+        'session_rpe': session_rpe,
         'intervals': ivs,
     })
 
 
 @app.route('/api/activity/<activity_id>/intervals', methods=['GET'])
 def api_activity_intervals_get(activity_id):
-    """Alias GET /api/activity/<id>/intervals (compatibilidade com frontend actual)."""
+    """Alias GET para compatibilidade com frontend existente."""
     return api_activity_interval_rpe_get(activity_id)
 
 
 @app.route('/api/activity/<activity_id>/intervals/sync', methods=['POST'])
 def api_activity_intervals_sync(activity_id):
-    """Forca re-sincronizacao dos intervalos da API ICU para a BD."""
+    """Re-sincroniza intervalos da API ICU para a BD.
+
+    Faz UPSERT em intervals — NAO apaga interval_rpe.
+    """
     raw_ivs, err = icu_get(f"/activity/{activity_id}/intervals")
     if err:
         return jsonify({'erro': err}), 502
     if not isinstance(raw_ivs, list):
-        return jsonify({'erro': 'resposta inesperada da API'}), 502
+        return jsonify({'erro': 'resposta inesperada da API Intervals.icu'}), 502
     n = db.upsert_intervals(activity_id, raw_ivs)
     return jsonify({'activity_id': activity_id, 'intervals_upserted': n})
 
 
-@app.route('/api/intervals/<activity_id>/<int:start_sec>/rpe', methods=['PUT', 'PATCH'])
-def api_interval_rpe_put(activity_id, start_sec):
-    """Grava ou actualiza o RPE de um intervalo WORK.
+@app.route('/api/intervals/<int:interval_id>/rpe', methods=['PUT', 'PATCH'])
+def api_interval_rpe_put(interval_id):
+    """Grava ou actualiza o RPE de um intervalo pelo seu id.
 
-    PUT /api/intervals/<activity_id>/<start_sec>/rpe
-    Body: {"rpe": 8}
-    Valida: rpe 1-10, intervalo existe.
-    activities.rpe nao e alterado.
+    PUT /api/intervals/<interval_id>/rpe
+    Body: {"rpe": 7}
+    Valida rpe 1-10. NAO altera activities.rpe.
     """
     body = request.get_json(force=True, silent=True) or {}
-    rpe = body.get('rpe')
+    rpe  = body.get('rpe')
     if rpe is None:
         return jsonify({'erro': 'campo rpe obrigatorio'}), 400
-    ok, err = db.upsert_interval_rpe(activity_id, start_sec, rpe)
+    ok, err, activity_id = db.upsert_interval_rpe_by_id(interval_id, rpe)
     if not ok:
-        code = 400 if ('invalido' in (err or '').lower()
-                       or '1-10' in (err or '')) else 404
+        code = 400 if ('1-10' in (err or '') or 'numerico' in (err or '')) else 404
         return jsonify({'erro': err}), code
     return jsonify({
         'success': True,
+        'interval_id': interval_id,
         'activity_id': str(activity_id),
-        'start_sec': int(start_sec),
         'rpe': float(rpe),
     })
 
 
-@app.route('/api/intervals/<activity_id>/<int:start_sec>/rpe', methods=['DELETE'])
-def api_interval_rpe_delete(activity_id, start_sec):
-    """Remove o RPE de um intervalo. Nao altera activities.rpe."""
-    ok, err = db.delete_interval_rpe(activity_id, start_sec)
+@app.route('/api/intervals/<int:interval_id>/rpe', methods=['DELETE'])
+def api_interval_rpe_delete(interval_id):
+    """Remove o RPE de um intervalo. NAO altera activities.rpe."""
+    ok, err = db.delete_interval_rpe_by_id(interval_id)
     if not ok:
-        return jsonify({'erro': err}), 422
-    return jsonify({'activity_id': str(activity_id),
-                    'start_sec': int(start_sec), 'rpe': None, 'removed': True})
+        return jsonify({'erro': err}), 404
+    return jsonify({'interval_id': interval_id, 'rpe': None, 'removed': True})
 
 
 @app.route('/api/activities/<activity_id>/interval-rpe', methods=['POST', 'PATCH'])
 def api_activity_interval_rpe_bulk(activity_id):
-    """Salva varios RPEs de uma atividade em transaccao.
+    """Salva varios RPEs por interval_id em transaccao.
 
     POST /api/activities/<id>/interval-rpe
-    Body: {"intervals": [{"start_sec": 300, "rpe": 7}, ...]}
-    Valida todos antes de gravar; rejeita a lista inteira se houver erro.
-    activities.rpe nao e alterado.
+    Body: {"intervals": [{"interval_id": 123, "rpe": 7}, ...]}
+    Rejeita a lista inteira se houver qualquer erro de validacao.
+    NAO altera activities.rpe.
     """
-    body = request.get_json(force=True, silent=True) or {}
+    body  = request.get_json(force=True, silent=True) or {}
     items = body.get('intervals')
     if not isinstance(items, list) or not items:
         return jsonify({'erro': 'campo intervals (lista) obrigatorio'}), 400
     result = db.bulk_upsert_interval_rpe(activity_id, items)
-    status = 200 if not result['errors'] else 207   # 207 Multi-Status
+    status = 200 if not result['errors'] else 207
     return jsonify({'activity_id': activity_id, **result}), status
 
 

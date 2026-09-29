@@ -1025,30 +1025,48 @@ def api_activity_prs(activity_id):
 
 @app.route('/api/activities/<activity_id>/interval-rpe', methods=['GET'])
 def api_activity_interval_rpe_get(activity_id):
-    """Lista de intervalos com RPE por interval_id (LEFT JOIN).
+    """Lista de intervalos com RPE (LEFT JOIN por interval_id).
 
-    Lazy-load da API ICU se a BD estiver vazia.
-    Retorna: {activity_id, session_rpe (so leitura), intervals:[...]}
-    interval_id e o campo a usar para salvar RPE.
+    - Funciona mesmo que interval_rpe esteja completamente vazia (rpe=null e normal).
+    - Lazy-load da API ICU se intervals estiver vazio.
+    - Nunca retorna 500 por ausencia de RPE.
+    - activities.rpe nao e lido para o RPE dos intervalos.
     """
-    ivs = db.get_intervals_with_rpe(activity_id)
-    if not ivs:
-        raw_ivs, err = icu_get(f"/activity/{activity_id}/intervals")
-        if err:
-            return jsonify({'erro': err}), 502
-        if isinstance(raw_ivs, list) and raw_ivs:
-            db.upsert_intervals(activity_id, raw_ivs)
-            ivs = db.get_intervals_with_rpe(activity_id)
+    try:
+        ivs = db.get_intervals_with_rpe(activity_id)
+        if not ivs:
+            # Lazy-load: buscar da API ICU e persistir
+            raw_ivs, err = icu_get(f"/activity/{activity_id}/intervals")
+            if not err and isinstance(raw_ivs, list) and raw_ivs:
+                db.upsert_intervals(activity_id, raw_ivs)
+                ivs = db.get_intervals_with_rpe(activity_id)
+            # Se a API falhar, continuar com lista vazia (nao abortar)
 
-    act_row = db._exec("SELECT rpe FROM activities WHERE id = ?",
-                       (activity_id,), fetch='one')
-    session_rpe = act_row[0] if act_row else None
+        # session_rpe: apenas leitura de activities.rpe (RPE GLOBAL)
+        # Nao e distribuido nem copiado para os intervalos
+        session_rpe = None
+        try:
+            act_row = db._exec("SELECT rpe FROM activities WHERE id = ?",
+                               (activity_id,), fetch='one')
+            session_rpe = act_row[0] if act_row else None
+        except Exception:
+            pass  # BD indisponivel nao deve impedir a resposta
 
-    return jsonify({
-        'activity_id': activity_id,
-        'session_rpe': session_rpe,
-        'intervals': ivs,
-    })
+        return jsonify({
+            'activity_id': activity_id,
+            'session_rpe': session_rpe,
+            'intervals': ivs,   # rpe=null quando nao gravado — comportamento correcto
+        })
+    except Exception as exc:
+        import traceback
+        print(f"[INTERVAL_RPE] GET falhou activity={activity_id}: {exc}")
+        print(traceback.format_exc())
+        return jsonify({
+            'activity_id': activity_id,
+            'session_rpe': None,
+            'intervals': [],
+            '_erro': str(exc),
+        }), 200   # 200 com lista vazia: a tab carrega mesmo sem intervalos
 
 
 @app.route('/api/activity/<activity_id>/intervals', methods=['GET'])
@@ -1074,24 +1092,31 @@ def api_activity_intervals_sync(activity_id):
 
 @app.route('/api/intervals/<int:interval_id>/rpe', methods=['PUT', 'PATCH'])
 def api_interval_rpe_put(interval_id):
-    """Grava ou actualiza o RPE de um intervalo pelo seu id.
+    """Grava ou actualiza o RPE de um intervalo pelo seu id (intervals.id).
 
     PUT /api/intervals/<interval_id>/rpe
     Body: {"rpe": 7}
-    Valida rpe 1-10. NAO altera activities.rpe.
+    Valida rpe 1-10.
+    404 apenas se interval_id nao existir em intervals.
+    activities.rpe nao e alterado.
     """
     body = request.get_json(force=True, silent=True) or {}
     rpe  = body.get('rpe')
     if rpe is None:
         return jsonify({'erro': 'campo rpe obrigatorio'}), 400
-    ok, err, activity_id = db.upsert_interval_rpe_by_id(interval_id, rpe)
+    try:
+        ok, err, activity_id = db.upsert_interval_rpe_by_id(interval_id, rpe)
+    except Exception as exc:
+        import traceback
+        print(f"[INTERVAL_RPE] PUT falhou interval_id={interval_id}: {exc}")
+        return jsonify({'erro': str(exc)}), 500
     if not ok:
         code = 400 if ('1-10' in (err or '') or 'numerico' in (err or '')) else 404
-        return jsonify({'erro': err}), code
+        return jsonify({'erro': err, 'interval_id': interval_id}), code
     return jsonify({
         'success': True,
         'interval_id': interval_id,
-        'activity_id': str(activity_id),
+        'activity_id': str(activity_id) if activity_id else None,
         'rpe': float(rpe),
     })
 

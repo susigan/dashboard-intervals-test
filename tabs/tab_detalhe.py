@@ -880,17 +880,35 @@ async function load(){
      +' <a href="#" onclick="mxSalvarAtividade();return false;" style="color:#5DADE2;">Salvar agora</a></span>';
    }
 
-   const cols=['label','type','rpe_col','start_time','elapsed_time','distance','average_watts','max_watts',
+   // RPE GLOBAL DA SESSÃO — vem de activities.rpe, separado do RPE por WORK
+   const sessionRpe=(rpeData||{}).session_rpe;
+   const sessionRpeBox=document.getElementById('mxSessionRpe');
+   if(sessionRpeBox){
+    sessionRpeBox.innerHTML=sessionRpe!=null
+     ?'<span style="color:#5DADE2;font-weight:600;">'+sessionRpe+'</span> <span style="color:#6e7681;font-size:10px;">(RPE global da sessão — activities.rpe)</span>'
+     :'<span style="color:#6e7681;">não registado</span>';
+   }
+
+   // Tabela de intervalos: coluna RPE WORK só aparece em linhas WORK
+   const cols=['label','type','rpe_work_col','start_time','elapsed_time','distance','average_watts','max_watts',
     'weighted_average_watts','average_heartrate','max_heartrate','average_cadence','intensity','joules','decoupling'];
    document.getElementById('ivHead').innerHTML=cols.map(function(c){
-    if(c==='rpe_col') return '<th style="color:#5DADE2;">RPE</th>';
+    if(c==='rpe_work_col') return '<th style="color:#5DADE2;">RPE WORK</th>';
     return '<th>'+c+'</th>';
    }).join('');
+
+   // Construir mapa por interval_id (BD) e por start_time (legado)
+   const rpeById={};
+   const ivBdList=((rpeData||{}).intervals)||[];
+   ivBdList.forEach(function(iv){ if(iv.id) rpeById[iv.id]=iv.rpe; });
+
    document.getElementById('ivBody').innerHTML=ivs.map(function(iv,idx){
+    const isWork=(iv.type||'').toUpperCase()==='WORK';
     return '<tr>'+cols.map(function(c){
-     if(c==='rpe_col'){
+     if(c==='rpe_work_col'){
+      if(!isWork) return '<td style="text-align:center;color:#484f58;">—</td>';
       const st=String(iv.start_time);
-      const rpeStored=rpeMap[st]; // undefined=sem linha; 0=apagado; 1-10=valor
+      const rpeStored=rpeMap[st]; // legado: 0=apagado, 1-10=valor
       const rpeVal=(rpeStored===undefined||rpeStored===0)?'':(rpeStored);
       return '<td style="text-align:center;padding:2px;">'
        +'<input type="number" min="1" max="10" step="1" '
@@ -900,6 +918,7 @@ async function load(){
        +'data-start="'+iv.start_time+'" '
        +'data-type="'+(iv.type||'')+'" '
        +'data-elapsed="'+(iv.elapsed_time||'')+'" '
+       +'title="RPE do WORK (1-10). Separado do RPE global da sessão." '
        +'oninput="this.dataset.dirty=\'1\'" '
        +'onblur="mxSalvarRpe(this)" '
        +'onkeydown="if(event.key===\'Enter\'){event.preventDefault();this.blur();}" '

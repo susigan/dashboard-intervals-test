@@ -2215,13 +2215,11 @@ def _validar_bp(chave, moxy_bpm, metricas_lista, n_min_validos):
     }
 
 
-# ── Validação fisiológica complementar MOXY × VST ────────────────────────
+
+# -- Validacao fisiologica complementar MOXY x VST --
 
 def _interp_rpe(curva_watts_rpe, alvo_w):
-    """Interpolação linear da curva potência→RPE para estimar RPE em alvo_w.
-    curva_watts_rpe: lista de (watts, rpe) ordenada por watts crescente.
-    Retorna float ou None.
-    """
+    """Interpolacao linear da curva potencia-RPE."""
     pts = sorted((w, r) for w, r in curva_watts_rpe if w is not None and r is not None)
     if not pts:
         return None
@@ -2237,85 +2235,106 @@ def _interp_rpe(curva_watts_rpe, alvo_w):
     return None
 
 
-def _classificar_fc(hr_bpm, hrvt1_min, hrvt1_max, hrvt2_bpm):
-    """Classifica uma FC em relação a HRVT1 e HRVT2.
-    Retorna string: abaixo_hrvt1 | regiao_hrvt1 | entre_hrvt1_hrvt2 |
-                    regiao_hrvt2 | acima_hrvt2 | sem_referencia
-    """
+def _classificar_fc(hr_bpm, hrvt1c, hrvt1s, hrvt2):
+    """Classifica FC: abaixo_HRVT1|transicao_HRVT1|entre_HRVT1_HRVT2|acima_HRVT2."""
     if hr_bpm is None:
         return 'sem_dados'
-    if hrvt1_min is None and hrvt1_max is None and hrvt2_bpm is None:
+    if hrvt1c is None and hrvt1s is None and hrvt2 is None:
         return 'sem_referencia'
-    MARG = TOLERANCIA_BPM  # ±3 bpm como zona de fronteira
-
-    if hrvt2_bpm is not None and hr_bpm >= hrvt2_bpm + MARG:
-        return 'acima_hrvt2'
-    if hrvt2_bpm is not None and hr_bpm >= hrvt2_bpm - MARG:
-        return 'regiao_hrvt2'
-    if hrvt1_max is not None and hr_bpm > hrvt1_max + MARG:
-        return 'entre_hrvt1_hrvt2'
-    if hrvt1_max is not None and hr_bpm >= hrvt1_max - MARG:
-        return 'regiao_hrvt1'
-    if hrvt1_min is not None and hr_bpm >= hrvt1_min - MARG:
-        return 'regiao_hrvt1'
-    return 'abaixo_hrvt1'
+    if hrvt2 is not None and hr_bpm >= hrvt2:
+        return 'acima_HRVT2'
+    if hrvt1s is not None and hr_bpm >= hrvt1s:
+        return 'entre_HRVT1_HRVT2'
+    if hrvt1c is not None and hr_bpm >= hrvt1c:
+        return 'transicao_HRVT1' if hrvt1s is not None else 'entre_HRVT1_HRVT2'
+    return 'abaixo_HRVT1'
 
 
-def _classificar_potencia(watts, bp1_w, bp2_w):
-    """Classifica a potência em relação a BP1 e BP2 MOXY.
-    Retorna string com a posição fisiológica.
-    """
+def _classificar_potencia(watts, bp_ref_w, bp2_w=None):
+    """Classifica potencia sem margens. Com bp2_w: 3 niveis. Sem: 2 niveis."""
     if watts is None:
         return 'sem_dados'
-    MARG_W = 5  # ±5 W como zona de fronteira
-    if bp2_w is not None and watts >= bp2_w + MARG_W:
-        return 'acima_bp2'
-    if bp2_w is not None and watts >= bp2_w - MARG_W:
-        return 'regiao_bp2'
-    if bp1_w is not None and watts > bp1_w + MARG_W:
-        return 'entre_bp1_bp2'
-    if bp1_w is not None and watts >= bp1_w - MARG_W:
-        return 'regiao_bp1'
-    return 'abaixo_bp1'
+    if bp2_w is not None:
+        if watts >= bp2_w:
+            return 'acima_BP2'
+        if bp_ref_w is not None and watts >= bp_ref_w:
+            return 'entre_BP1_BP2'
+        return 'abaixo_BP1'
+    if bp_ref_w is not None and watts >= bp_ref_w:
+        return 'acima_BP'
+    return 'abaixo_BP'
 
 
-def _classificar_rpe(rpe_obs, rpe_esp):
-    """Classifica RPE observado vs esperado para aquela potência."""
-    if rpe_obs is None or rpe_esp is None:
+def _classificar_rpe(rpe):
+    """baixo(<=3)|moderado(4-5)|alto(6-7)|muito_alto(8-10)|sem_dados."""
+    if rpe is None:
         return 'sem_dados'
-    delta = rpe_obs - rpe_esp
-    if delta <= 0.5:
-        return 'abaixo_esperado' if delta < -1.0 else 'compativel'
-    if delta <= 1.5:
-        return 'elevado'
-    return 'muito_elevado'
+    if rpe <= 3:
+        return 'baixo'
+    if rpe <= 5:
+        return 'moderado'
+    if rpe <= 7:
+        return 'alto'
+    return 'muito_alto'
 
 
-def _coerencia_intervalo(pos_pot, fc_class, rpe_class):
-    """Determina a coerência global de um intervalo VST.
-    Regras fisiológicas compostas — não regras arbitrárias.
-    """
-    # Potência abaixo BP1 + FC abaixo HRVT1 + RPE normal → coerente
-    if (pos_pot == 'abaixo_bp1'
-            and fc_class == 'abaixo_hrvt1'
-            and rpe_class in ('compativel', 'abaixo_esperado', 'sem_dados')):
+def _coerencia_intervalo(pos_pot, fc_class, rpe_class, rpe=None):
+    """Coerencia fisiologica: coerente|rpe_alto_para_potencia|fc_alta_para_potencia
+    |dissociacao_forte_potencia_fc_rpe|fc_baixa_para_potencia|atencao."""
+    abaixo  = pos_pot in ('abaixo_BP1', 'abaixo_BP')
+    acima   = pos_pot in ('acima_BP2', 'acima_BP')
+    fc_mt   = fc_class == 'acima_HRVT2'
+    fc_alta = fc_class in ('acima_HRVT2', 'entre_HRVT1_HRVT2')
+    fc_baixa= fc_class == 'abaixo_HRVT1'
+    rpe_alt = rpe_class in ('alto', 'muito_alto')
+    rpe_mb  = rpe_class in ('baixo', 'moderado')
+    if abaixo and fc_mt and rpe_alt:
+        return 'dissociacao_forte_potencia_fc_rpe'
+    if abaixo and fc_mt:
+        return 'fc_alta_para_potencia'
+    if abaixo and not fc_alta and rpe_alt:
+        return 'rpe_alto_para_potencia'
+    if acima and fc_baixa:
+        return 'fc_baixa_para_potencia'
+    if acima and fc_mt and rpe_alt:
         return 'coerente'
-    # Potência acima BP2 + FC acima/perto HRVT2 + RPE elevado → coerente
-    if (pos_pot in ('acima_bp2', 'regiao_bp2')
-            and fc_class in ('acima_hrvt2', 'regiao_hrvt2')
-            and rpe_class in ('elevado', 'muito_elevado', 'compativel', 'sem_dados')):
+    if abaixo and fc_baixa and rpe_mb:
         return 'coerente'
-    # FC muito elevada para a potência — discrepância relevante
-    if (pos_pot == 'abaixo_bp1'
-            and fc_class in ('regiao_hrvt2', 'acima_hrvt2')):
-        return 'discrepancia'
-    # RPE muito elevado para FC/potência baixa
-    if pos_pot == 'abaixo_bp1' and rpe_class == 'muito_elevado':
-        return 'atencao'
-    # Geral: FC ou RPE ligeiramente elevados
-    if rpe_class in ('elevado', 'muito_elevado') or fc_class in ('regiao_hrvt2', 'acima_hrvt2'):
+    if pos_pot == 'entre_BP1_BP2' and fc_class == 'entre_HRVT1_HRVT2':
+        return 'coerente'
+    if rpe_alt or fc_alta:
         return 'atencao'
     return 'coerente'
+
+
+def _classificacao_global_bp(coerencias):
+    """Classificacao global: COERENTE|ATENCAO_FC_RPE_ELEVADOS
+    |DISSOCIACAO_POTENCIA_FC_RPE|DADOS_INSUFICIENTES."""
+    if not coerencias:
+        return 'DADOS_INSUFICIENTES'
+    n = len(coerencias)
+    n_diss = sum(1 for c in coerencias if c == 'dissociacao_forte_potencia_fc_rpe')
+    n_fc_a = sum(1 for c in coerencias if c == 'fc_alta_para_potencia')
+    n_rpe_a= sum(1 for c in coerencias if c == 'rpe_alto_para_potencia')
+    n_coer = sum(1 for c in coerencias if c == 'coerente')
+    if n_diss >= max(1, n // 2):
+        return 'DISSOCIACAO_POTENCIA_FC_RPE'
+    if (n_fc_a + n_rpe_a + n_diss) > n // 2:
+        return 'ATENCAO_FC_RPE_ELEVADOS'
+    if n_coer >= n // 2:
+        return 'COERENTE'
+    return 'ATENCAO_FC_RPE_ELEVADOS'
+
+
+def _stats(vals):
+    """(min, max, mean, median) ou (None,)*4."""
+    vs = [v for v in vals if v is not None]
+    if not vs:
+        return None, None, None, None
+    sv = sorted(vs)
+    mid = len(sv) // 2
+    med = sv[mid] if len(sv) % 2 else (sv[mid - 1] + sv[mid]) / 2
+    return round(min(vs),1), round(max(vs),1), round(sum(vs)/len(vs),1), round(med,1)
 
 
 def validar_fisiologica_vst(
@@ -2327,102 +2346,108 @@ def validar_fisiologica_vst(
     rpe_vst_bp1=None,
     rpe_vst_bp2=None,
 ):
-    """Validação fisiológica complementar MOXY × VST.
-
-    Parâmetros
-    ----------
-    bp1_w, bp2_w : float | None
-        Watts dos breakpoints MOXY. Não são alterados.
-    moxy_bp1_bpm, moxy_bp2_bpm : float | None
-        FC observada no bloco mais próximo ao breakpoint (moxy_bpm_observado).
-        NÃO são a FC fisiológica do limiar — são dados complementares.
-    dfa1 : dict
-        Output de hrv_limiares.calcular() — contém HRVT1c, HRVT1s, HRVT2.
-    bp1_metricas_lista, bp2_metricas_lista : list[dict]
-        Métricas dos intervalos VST (de metricas_intervalo).
-    curva_moxy_watts_rpe : list[(watts, rpe)] | None
-        Curva potência→RPE dos blocos MOXY para interpolação.
-    rpe_vst_bp1, rpe_vst_bp2 : list[int|None] | None
-        RPE dos intervalos VST para BP1 e BP2 respectivamente.
-
-    Retorna
-    -------
-    dict com 'referencias_fisiologicas', 'bp1', 'bp2'.
-    """
-    # ── Extrair referências HRVT ──────────────────────────────────────────
-    def _bpm_do_limiar(nome):
+    """Validacao fisiologica MOXY x VST. NAO altera bp1_w/bp2_w/bpm."""
+    def _bpm_lim(nome):
         try:
             v = ((dfa1 or {}).get('limiares') or {}).get(nome, {})
-            hr = v.get('heartrate') or {}
-            return hr.get('intensidade')
+            return (v.get('heartrate') or {}).get('intensidade')
         except Exception:
             return None
 
-    hrvt1c = _bpm_do_limiar('HRVT1c')  # individualizado
-    hrvt1s = _bpm_do_limiar('HRVT1s')  # clássico (a1=0.75)
-    hrvt2  = _bpm_do_limiar('HRVT2')
+    def _w_lim(nome):
+        try:
+            v = ((dfa1 or {}).get('limiares') or {}).get(nome, {})
+            return (v.get('watts') or {}).get('intensidade')
+        except Exception:
+            return None
 
-    # min/max do HRVT1 (banda individualizado ↔ clássico)
-    vs_hrvt1 = [v for v in (hrvt1c, hrvt1s) if v is not None]
-    hrvt1_min = min(vs_hrvt1) if vs_hrvt1 else None
-    hrvt1_max = max(vs_hrvt1) if vs_hrvt1 else None
+    hrvt1c = _bpm_lim('HRVT1c')
+    hrvt1s = _bpm_lim('HRVT1s')
+    hrvt2  = _bpm_lim('HRVT2')
 
     refs = {
-        'hrvt1_individualizado_bpm': round(hrvt1c, 1) if hrvt1c else None,
-        'hrvt1_classico_bpm':        round(hrvt1s, 1) if hrvt1s else None,
-        'hrvt1_min_bpm':             round(hrvt1_min, 1) if hrvt1_min else None,
-        'hrvt1_max_bpm':             round(hrvt1_max, 1) if hrvt1_max else None,
-        'hrvt2_bpm':                 round(hrvt2, 1) if hrvt2 else None,
+        'hrvt1_individualizado_bpm': round(hrvt1c,1) if hrvt1c else None,
+        'hrvt1_individualizado_w':   round(_w_lim('HRVT1c'),1) if _w_lim('HRVT1c') else None,
+        'hrvt1_classico_bpm':        round(hrvt1s,1) if hrvt1s else None,
+        'hrvt1_classico_w':          round(_w_lim('HRVT1s'),1) if _w_lim('HRVT1s') else None,
+        'hrvt2_bpm':                 round(hrvt2,1)  if hrvt2  else None,
+        'hrvt2_w':                   round(_w_lim('HRVT2'),1)  if _w_lim('HRVT2')  else None,
     }
 
-    # RPE esperado em BP1 e BP2 por interpolação
     rpe_bp1_esp = (_interp_rpe(curva_moxy_watts_rpe, bp1_w)
                    if curva_moxy_watts_rpe and bp1_w else None)
     rpe_bp2_esp = (_interp_rpe(curva_moxy_watts_rpe, bp2_w)
                    if curva_moxy_watts_rpe and bp2_w else None)
 
-    def _processar_bp(label, watts_bp, moxy_bpm, metricas, rpe_lista):
-        resultado = {
-            'moxy_watts':       round(watts_bp, 1) if watts_bp else None,
-            'moxy_bpm_observado': round(moxy_bpm, 1) if moxy_bpm else None,
-            'rpe_esperado':     rpe_bp1_esp if label == 'bp1' else rpe_bp2_esp,
-            'intervalos':       [],
-        }
+    def _proc(label, watts_bp, moxy_bpm, metricas, rpe_lista, rpe_esp, ref2_w):
         rpe_lista = rpe_lista or []
+        ivs=[]; coers=[]; fcf=[]; fcm=[]; rpes=[]
         for idx_iv, m in enumerate(metricas or []):
-            w_info  = m.get('potencia') or {}
-            hr_info = m.get('hr') or {}
-            watts   = w_info.get('media') if w_info.get('ok') else None
-            hr_final= hr_info.get('final') if hr_info.get('ok') else None
-            rpe_obs = rpe_lista[idx_iv] if idx_iv < len(rpe_lista) else None
-            rpe_esp = (_interp_rpe(curva_moxy_watts_rpe, watts)
-                       if curva_moxy_watts_rpe and watts else None)
-
-            pos_pot  = _classificar_potencia(watts, bp1_w, bp2_w)
-            fc_class = _classificar_fc(hr_final, hrvt1_min, hrvt1_max, hrvt2)
-            rpe_class= _classificar_rpe(rpe_obs, rpe_esp)
-            coer     = _coerencia_intervalo(pos_pot, fc_class, rpe_class)
-
-            resultado['intervalos'].append({
-                'ordem':              idx_iv + 1,
-                'potencia_media':     round(watts, 1) if watts else None,
-                'posicao_potencia':   pos_pot,
-                'hr_final':           round(hr_final, 1) if hr_final else None,
-                'fc_classificacao':   fc_class,
-                'rpe':                rpe_obs,
-                'rpe_esperado_potencia': rpe_esp,
-                'rpe_diferenca':      round(rpe_obs - rpe_esp, 1)
-                                      if rpe_obs is not None and rpe_esp is not None
-                                      else None,
-                'coerencia':          coer,
+            wi = m.get('potencia') or {}
+            hi = m.get('hr') or {}
+            ok_h = hi.get('ok', False)
+            watts    = wi.get('media') if wi.get('ok') else None
+            hr_final = hi.get('final') if ok_h else None
+            hr_media = hi.get('media') if ok_h else None
+            hr_min   = hi.get('minimo') if ok_h else None
+            hr_max   = hi.get('maximo') if ok_h else None
+            rpe_obs  = rpe_lista[idx_iv] if idx_iv < len(rpe_lista) else None
+            pct_bp   = (round((watts / watts_bp - 1)*100, 1)
+                        if watts and watts_bp else None)
+            rpe_esp_w= (_interp_rpe(curva_moxy_watts_rpe, watts)
+                        if curva_moxy_watts_rpe and watts else None)
+            pos_pot  = _classificar_potencia(watts, watts_bp, ref2_w)
+            fc_class = _classificar_fc(hr_final, hrvt1c, hrvt1s, hrvt2)
+            rpe_class= _classificar_rpe(rpe_obs)
+            coer     = _coerencia_intervalo(pos_pot, fc_class, rpe_class, rpe_obs)
+            coers.append(coer)
+            if hr_final is not None: fcf.append(hr_final)
+            if hr_media is not None: fcm.append(hr_media)
+            if rpe_obs  is not None: rpes.append(float(rpe_obs))
+            ivs.append({
+                'ordem':                  idx_iv+1,
+                'potencia_media':         round(watts,1) if watts else None,
+                'potencia_pct_bp':        pct_bp,
+                'potencia_classificacao': pos_pot,
+                'hr_final':               round(hr_final,1) if hr_final else None,
+                'hr_media':               round(hr_media,1) if hr_media else None,
+                'hr_minimo':              round(hr_min,1) if hr_min else None,
+                'hr_maximo':              round(hr_max,1) if hr_max else None,
+                'fc_classificacao':       fc_class,
+                'rpe':                    rpe_obs,
+                'rpe_classificacao':      rpe_class,
+                'rpe_esperado_potencia':  rpe_esp_w,
+                'rpe_diferenca':          (round(rpe_obs-rpe_esp_w,1)
+                                           if rpe_obs is not None and rpe_esp_w is not None
+                                           else None),
+                'coerencia':              coer,
             })
-        return resultado
+        fc_min,fc_max,fc_mean,fc_med = _stats(fcf)
+        fm_min,fm_max,fm_mean,fm_med = _stats(fcm)
+        rm,rx,rmean,rmed = _stats(rpes)
+        return {
+            'moxy_watts':               round(watts_bp,1) if watts_bp else None,
+            'moxy_bpm_observado':       round(moxy_bpm,1) if moxy_bpm else None,
+            'rpe_esperado_bp':          rpe_esp,
+            'intervalos':               ivs,
+            'n_intervalos':             len(ivs),
+            'n_coerentes':              sum(1 for c in coers if c=='coerente'),
+            'n_fc_alta_para_potencia':  sum(1 for c in coers if c=='fc_alta_para_potencia'),
+            'n_rpe_alto_para_potencia': sum(1 for c in coers if c=='rpe_alto_para_potencia'),
+            'n_dissociacoes_fortes':    sum(1 for c in coers if c=='dissociacao_forte_potencia_fc_rpe'),
+            'n_fc_baixa_para_potencia': sum(1 for c in coers if c=='fc_baixa_para_potencia'),
+            'fc_final_min': fc_min, 'fc_final_max': fc_max,
+            'fc_final_mean': fc_mean, 'fc_final_median': fc_med,
+            'fc_media_min': fm_min, 'fc_media_max': fm_max,
+            'fc_media_mean': fm_mean, 'fc_media_median': fm_med,
+            'rpe_min': rm, 'rpe_max': rx, 'rpe_mean': rmean, 'rpe_median': rmed,
+            'classificacao_global': _classificacao_global_bp(coers),
+        }
 
-    bp1_out = _processar_bp('bp1', bp1_w, moxy_bp1_bpm,
-                            bp1_metricas_lista, rpe_vst_bp1)
-    bp2_out = _processar_bp('bp2', bp2_w, moxy_bp2_bpm,
-                            bp2_metricas_lista, rpe_vst_bp2)
-
+    bp1_out = _proc('bp1', bp1_w, moxy_bp1_bpm,
+                    bp1_metricas_lista, rpe_vst_bp1, rpe_bp1_esp, bp2_w)
+    bp2_out = _proc('bp2', bp2_w, moxy_bp2_bpm,
+                    bp2_metricas_lista, rpe_vst_bp2, rpe_bp2_esp, None)
     return {
         'referencias_fisiologicas': refs,
         'bp1': bp1_out,

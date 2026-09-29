@@ -3160,6 +3160,17 @@ def registar(app):
                     "rpe, gravado_em) VALUES (?,?,?,?,?,?,?)",
                     (vid, int(b['bloco_indice']), b.get('watts_medio'),
                      b.get('t0_s'), b.get('t1_s'), int(b['rpe']), agora))
+                # Gravar também em activity_interval_rpe (fonte primária de leitura),
+                # usando t0_s como start_time. A leitura (_rpe_interval_resolver)
+                # procura aqui primeiro; moxy_rpe continua como fallback.
+                if b.get('t0_s') is not None:
+                    _rpe_interval_upsert(cn, vid, [{
+                        'start_time':  float(b['t0_s']),
+                        'interval_type': 'WORK',
+                        'elapsed_time': (float(b['t1_s']) - float(b['t0_s'])
+                                         if b.get('t1_s') is not None else None),
+                        'rpe': int(b['rpe']),
+                    }])
             cn.commit()
             ok_up, det_up = ddp.upload()
             return jsonify({'status': 'ok' if ok_up else 'gravado_sem_upload',

@@ -2927,6 +2927,54 @@ def registar(app):
                 import traceback as _tb_val
                 print(f'[gravar_analise][bpm_val] {_e_val}\n{_tb_val.format_exc()}')
 
+            # ── Validação fisiológica complementar (HRVT + RPE) ─────────
+            _val_fisio_resultado = None
+            try:
+                # Ler bp1_bpm/bp2_bpm e bp1_w/bp2_w de moxy_analises
+                _ma2 = cn.execute(
+                    "SELECT bp1_bpm, bp2_bpm, bp1_w, bp2_w "
+                    "FROM moxy_analises WHERE activity_id=? LIMIT 1", (mid,)).fetchone()
+                # dfa1: obtido via api_moxy_limiares do mesmo mid
+                _lim_resp = api_moxy_limiares(mid)
+                _lim = (_lim_resp[0].get_json()
+                        if isinstance(_lim_resp, tuple)
+                        else _lim_resp.get_json())
+                if (_lim or {}).get('status') == 'ok':
+                    _dfa1 = _lim.get('dfa1') or {}
+                    _bp1w = (_ma2[2] if _ma2 else None) or _lim.get('bp_moxy', {}).get('bp1_w')
+                    _bp2w = (_ma2[3] if _ma2 else None) or _lim.get('bp_moxy', {}).get('bp2_w')
+                    _bp1bpm = _ma2[0] if _ma2 else None
+                    _bp2bpm = _ma2[1] if _ma2 else None
+                    # Curva watts→RPE dos blocos MOXY
+                    _blocos_moxy = _lim.get('blocos_usados') or []
+                    _curva_rpe = [(b['watts'], None) for b in _blocos_moxy
+                                  if b.get('watts') is not None]  # RPE MOXY sem DB
+                    # Intervalos BP1/BP2 do Dia 2 (já calculados acima)
+                    _bp1_m2 = (_analise.get('bp1') or {}).get('metricas') or []
+                    _bp2_m2 = (_analise.get('bp2') or {}).get('metricas') or []
+                    _val_fisio = _nbk_val.validar_fisiologica_vst(
+                        _bp1w, _bp2w,
+                        _bp1bpm, _bp2bpm,
+                        _dfa1,
+                        _bp1_m2, _bp2_m2,
+                        curva_moxy_watts_rpe=_curva_rpe or None,
+                    )
+                    _val_fisio_json = json.dumps(_val_fisio, ensure_ascii=False)
+                    _val_fisio_resultado = _val_fisio
+                    try:
+                        cn.execute(
+                            "UPDATE vst_conjuntos "
+                            "SET validacao_fisiologica_json=? "
+                            "WHERE vst_activity_id=?",
+                            (_val_fisio_json, vid))
+                        cn.commit()
+                        ddp.upload()
+                    except Exception as _e_col2:
+                        print(f'[gravar_analise][val_fisio][col] {_e_col2}')
+            except Exception as _e_fisio:
+                import traceback as _tb_f
+                print(f'[gravar_analise][val_fisio] {_e_fisio}\n{_tb_f.format_exc()}')
+
             return jsonify({
                 'status': 'ok' if ok_up else 'gravado_sem_upload',
                 'vst_activity_id': vid,
@@ -2934,6 +2982,7 @@ def registar(app):
                 'upload_ok': ok_up,
                 'upload_detalhe': None if ok_up else det_up,
                 'bpm_vst_validacao': _bpm_val_resultado,
+                'validacao_fisiologica': _val_fisio_resultado,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
@@ -3426,7 +3475,8 @@ def registar(app):
                 "bp2_status, recovery_bp1_status, recovery_bp2_status, "
                 "dia1_bp1_w, dia2_bp1_w, dia1_bp2_w, dia2_bp2_w, "
                 "analisado_em, actualizado_em, "
-                "bpm_vst_validacao_json FROM vst_conjuntos "
+                "bpm_vst_validacao_json, "
+                "validacao_fisiologica_json FROM vst_conjuntos "
                 "ORDER BY actualizado_em DESC").fetchall()
             # buscar modalidade de cada sessao Moxy da tabela activities
             # (campo type, ja' mapeado por TYPE_MAP) -- so' uma query
@@ -3450,6 +3500,8 @@ def registar(app):
                 'analisado_em': r[10], 'actualizado_em': r[11],
                 'bpm_vst_validacao': (_json.loads(r[12])
                     if r[12] else None),
+                'validacao_fisiologica': (_json.loads(r[13])
+                    if r[13] else None),
             } for r in rows]
             return jsonify({'status': 'ok', 'conjuntos': conjuntos})
         except Exception as e:

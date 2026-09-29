@@ -2058,16 +2058,23 @@ def validar_bpm_vst(bp1_bpm, bp2_bpm,
 
 
 def _validar_bp(chave, moxy_bpm, metricas_lista, n_min_validos):
-    """Valida um único breakpoint."""
+    """Valida um único breakpoint.
+
+    Comparação principal: hr.final (FC do fim do degrau — mesma janela
+    que nirs_breakpoints._hr_interp usa para o BPM MOXY).
+    hr.media é guardada apenas como informação contextual.
+    """
     # sem BPM MOXY — não há nada para comparar
     if moxy_bpm is None:
         return {
             'moxy_bpm': None,
             'intervalos': [],
             'n_validos': 0, 'n_excluidos': 0,
-            'vst_bpm_min': None, 'vst_bpm_max': None,
-            'vst_bpm_mean': None, 'vst_bpm_median': None,
-            'difference_mean': None, 'difference_abs': None,
+            'vst_hr_final_min': None, 'vst_hr_final_max': None,
+            'vst_hr_final_mean': None, 'vst_hr_final_median': None,
+            'vst_hr_media_min': None, 'vst_hr_media_max': None,
+            'vst_hr_media_mean': None, 'vst_hr_media_median': None,
+            'diferenca_median': None, 'diferenca_para_range': None,
             'status': 'sem_bpm_moxy',
         }
 
@@ -2077,17 +2084,20 @@ def _validar_bp(chave, moxy_bpm, metricas_lista, n_min_validos):
             'moxy_bpm': moxy_bpm,
             'intervalos': [],
             'n_validos': 0, 'n_excluidos': 0,
-            'vst_bpm_min': None, 'vst_bpm_max': None,
-            'vst_bpm_mean': None, 'vst_bpm_median': None,
-            'difference_mean': None, 'difference_abs': None,
+            'vst_hr_final_min': None, 'vst_hr_final_max': None,
+            'vst_hr_final_mean': None, 'vst_hr_final_median': None,
+            'vst_hr_media_min': None, 'vst_hr_media_max': None,
+            'vst_hr_media_mean': None, 'vst_hr_media_median': None,
+            'diferenca_median': None, 'diferenca_para_range': None,
             'status': 'nao_validado',
         }
 
     # processar cada intervalo
     intervalos_out = []
-    validos = []
+    validos_final  = []   # hr.final — comparação principal
+    validos_media  = []   # hr.media — contexto
 
-    for m in metricas_lista:
+    for ordem, m in enumerate(metricas_lista, start=1):
         w_info = m.get('potencia') or {}
         hr_info = m.get('hr') or {}
 
@@ -2096,40 +2106,50 @@ def _validar_bp(chave, moxy_bpm, metricas_lista, n_min_validos):
 
         if not hr_ok:
             intervalos_out.append({
-                'watts': watts,
+                'ordem': ordem,
+                'potencia_media': round(watts, 1) if watts is not None else None,
                 'hr_media': None,
-                'hr_min': None,
-                'hr_max': None,
+                'hr_final': None,
+                'hr_minimo': None,
+                'hr_maximo': None,
                 'valido': False,
                 'motivo_exclusao': hr_info.get('motivo', 'FC indisponível'),
             })
             continue
 
+        hr_final  = hr_info.get('final')
         hr_media  = hr_info.get('media')
         hr_min    = hr_info.get('minimo')
         hr_max    = hr_info.get('maximo')
 
-        if hr_media is None:
+        # excluir se hr.final ausente (FC congelada ou stream curto)
+        if hr_final is None:
             intervalos_out.append({
-                'watts': watts,
-                'hr_media': None,
-                'hr_min': hr_min,
-                'hr_max': hr_max,
+                'ordem': ordem,
+                'potencia_media': round(watts, 1) if watts is not None else None,
+                'hr_media': round(hr_media, 1) if hr_media is not None else None,
+                'hr_final': None,
+                'hr_minimo': round(hr_min, 1) if hr_min is not None else None,
+                'hr_maximo': round(hr_max, 1) if hr_max is not None else None,
                 'valido': False,
-                'motivo_exclusao': 'hr_media ausente',
+                'motivo_exclusao': 'hr.final ausente',
             })
             continue
 
         intervalos_out.append({
-            'watts': round(watts, 1) if watts is not None else None,
-            'hr_media': round(hr_media, 1),
-            'hr_min': round(hr_min, 1) if hr_min is not None else None,
-            'hr_max': round(hr_max, 1) if hr_max is not None else None,
+            'ordem': ordem,
+            'potencia_media': round(watts, 1) if watts is not None else None,
+            'hr_media': round(hr_media, 1) if hr_media is not None else None,
+            'hr_final': round(hr_final, 1),
+            'hr_minimo': round(hr_min, 1) if hr_min is not None else None,
+            'hr_maximo': round(hr_max, 1) if hr_max is not None else None,
             'valido': True,
         })
-        validos.append(hr_media)
+        validos_final.append(hr_final)
+        if hr_media is not None:
+            validos_media.append(hr_media)
 
-    n_validos   = len(validos)
+    n_validos   = len(validos_final)
     n_excluidos = len(intervalos_out) - n_validos
 
     if n_validos < n_min_validos:
@@ -2138,26 +2158,40 @@ def _validar_bp(chave, moxy_bpm, metricas_lista, n_min_validos):
             'intervalos': intervalos_out,
             'n_validos': n_validos,
             'n_excluidos': n_excluidos,
-            'vst_bpm_min': None, 'vst_bpm_max': None,
-            'vst_bpm_mean': None, 'vst_bpm_median': None,
-            'difference_mean': None, 'difference_abs': None,
+            'vst_hr_final_min': None, 'vst_hr_final_max': None,
+            'vst_hr_final_mean': None, 'vst_hr_final_median': None,
+            'vst_hr_media_min': None, 'vst_hr_media_max': None,
+            'vst_hr_media_mean': None, 'vst_hr_media_median': None,
+            'diferenca_median': None, 'diferenca_para_range': None,
             'status': 'insuficiente',
         }
 
-    vst_min    = min(validos)
-    vst_max    = max(validos)
-    vst_mean   = sum(validos) / len(validos)
-    sv         = sorted(validos)
-    mid        = len(sv) // 2
-    vst_median = (sv[mid] if len(sv) % 2 else (sv[mid-1] + sv[mid]) / 2)
+    def _stats(vals):
+        if not vals:
+            return None, None, None, None
+        sv = sorted(vals)
+        mid = len(sv) // 2
+        med = sv[mid] if len(sv) % 2 else (sv[mid-1] + sv[mid]) / 2
+        return min(vals), max(vals), sum(vals)/len(vals), med
 
-    diff_mean  = moxy_bpm - vst_mean
-    diff_abs   = abs(diff_mean)
+    vf_min, vf_max, vf_mean, vf_median = _stats(validos_final)
+    vm_min, vm_max, vm_mean, vm_median  = _stats(validos_media)
 
-    # classificação (regras em cascata)
-    if vst_min <= moxy_bpm <= vst_max:
+    # diferença principal: moxy_bpm − mediana do hr.final VST
+    dif_median = round(moxy_bpm - vf_median, 1)
+
+    # distância ao range: 0 se dentro, senão distância ao limite mais próximo
+    if vf_min <= moxy_bpm <= vf_max:
+        dif_range = 0.0
+    elif moxy_bpm < vf_min:
+        dif_range = round(vf_min - moxy_bpm, 1)
+    else:
+        dif_range = round(moxy_bpm - vf_max, 1)
+
+    # classificação
+    if vf_min <= moxy_bpm <= vf_max:
         status = 'consistente'
-    elif diff_abs <= TOLERANCIA_BPM:
+    elif dif_range <= TOLERANCIA_BPM:
         status = 'proximo'
     else:
         status = 'inconsistente'
@@ -2167,11 +2201,15 @@ def _validar_bp(chave, moxy_bpm, metricas_lista, n_min_validos):
         'intervalos': intervalos_out,
         'n_validos': n_validos,
         'n_excluidos': n_excluidos,
-        'vst_bpm_min': round(vst_min, 1),
-        'vst_bpm_max': round(vst_max, 1),
-        'vst_bpm_mean': round(vst_mean, 1),
-        'vst_bpm_median': round(vst_median, 1),
-        'difference_mean': round(diff_mean, 1),
-        'difference_abs': round(diff_abs, 1),
+        'vst_hr_final_min': round(vf_min, 1),
+        'vst_hr_final_max': round(vf_max, 1),
+        'vst_hr_final_mean': round(vf_mean, 1),
+        'vst_hr_final_median': round(vf_median, 1),
+        'vst_hr_media_min': round(vm_min, 1) if vm_min is not None else None,
+        'vst_hr_media_max': round(vm_max, 1) if vm_max is not None else None,
+        'vst_hr_media_mean': round(vm_mean, 1) if vm_mean is not None else None,
+        'vst_hr_media_median': round(vm_median, 1) if vm_median is not None else None,
+        'diferenca_median': dif_median,
+        'diferenca_para_range': dif_range,
         'status': status,
     }

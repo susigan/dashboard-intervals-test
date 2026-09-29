@@ -2945,19 +2945,53 @@ def registar(app):
                     _bp2w = (_ma2[3] if _ma2 else None) or _lim.get('bp_moxy', {}).get('bp2_w')
                     _bp1bpm = _ma2[0] if _ma2 else None
                     _bp2bpm = _ma2[1] if _ma2 else None
-                    # Curva watts→RPE dos blocos MOXY
+                    # Curva watts→RPE dos blocos MOXY (de moxy_rpe, não blocos_usados)
                     _blocos_moxy = _lim.get('blocos_usados') or []
-                    _curva_rpe = [(b['watts'], None) for b in _blocos_moxy
-                                  if b.get('watts') is not None]  # RPE MOXY sem DB
+                    _rpe_moxy_rows = cn.execute(
+                        "SELECT bloco_indice, watts_medio, rpe FROM moxy_rpe "
+                        "WHERE activity_id=? ORDER BY bloco_indice",
+                        (mid,)).fetchall()
+                    _rpe_moxy_idx = {int(r[0]): (r[1], r[2]) for r in _rpe_moxy_rows}
+                    # Montar curva W→RPE com RPE real dos blocos MOXY
+                    _curva_rpe = []
+                    for _bi, _bm in enumerate(_blocos_moxy):
+                        _bw = _bm.get('watts')
+                        if _bw is None:
+                            continue
+                        # Preferir moxy_rpe; fallback None se não gravado
+                        _br = _rpe_moxy_idx.get(_bi, (None, None))[1]
+                        if _br is not None:
+                            _curva_rpe.append((_bw, _br))
                     # Intervalos BP1/BP2 do Dia 2 (já calculados acima)
                     _bp1_m2 = (_analise.get('bp1') or {}).get('metricas') or []
                     _bp2_m2 = (_analise.get('bp2') or {}).get('metricas') or []
+                    # RPE dos intervalos VST por grupo (de activity_interval_rpe)
+                    # Os intervalos têm t0 em metricas: buscar por start_time=t0
+                    def _rpe_lista_grupo(metricas_lista):
+                        rpes = []
+                        for _m in metricas_lista:
+                            _t0 = (_m.get('t0') or _m.get('t0_s'))
+                            if _t0 is None:
+                                rpes.append(None)
+                                continue
+                            _rv, _rf = _rpe_interval_resolver(cn, vid, float(_t0))
+                            if _rv is None:
+                                # Fallback: moxy_rpe por t0_s
+                                for _row in _rpe_moxy_rows:
+                                    if _row[1] is not None and abs(float(_row[1]) - float(_t0)) <= 1:
+                                        _rv = _row[2]; break
+                            rpes.append(_rv)
+                        return rpes
+                    _rpe_vst_bp1 = _rpe_lista_grupo(_bp1_m2)
+                    _rpe_vst_bp2 = _rpe_lista_grupo(_bp2_m2)
                     _val_fisio = _nbk_val.validar_fisiologica_vst(
                         _bp1w, _bp2w,
                         _bp1bpm, _bp2bpm,
                         _dfa1,
                         _bp1_m2, _bp2_m2,
-                        curva_moxy_watts_rpe=_curva_rpe or None,
+                        curva_moxy_watts_rpe=_curva_rpe if _curva_rpe else None,
+                        rpe_vst_bp1=_rpe_vst_bp1,
+                        rpe_vst_bp2=_rpe_vst_bp2,
                     )
                     _val_fisio_json = json.dumps(_val_fisio, ensure_ascii=False)
                     _val_fisio_resultado = _val_fisio

@@ -1175,9 +1175,9 @@ def upsert_intervals(activity_id, ivs_raw):
         start = iv.get('start_time')
         if start is None:
             continue
-        start = int(start)
+        start = float(start)
         elapsed = iv.get('elapsed_time')
-        end = (start + int(elapsed)) if elapsed is not None else None
+        end = (start + float(elapsed)) if elapsed is not None else None
         raw_val = (json.dumps(iv, ensure_ascii=False)
                    if DRIVER == 'postgres' else None)
         itype = (iv.get('type') or iv.get('interval_type') or '').upper() or None

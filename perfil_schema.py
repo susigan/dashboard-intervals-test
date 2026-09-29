@@ -208,6 +208,11 @@ MIGRACOES = [
     # Produzido por nirs_breakpoints.validar_bpm_vst() após gravar análise MOXY.
     # NULL em registos antigos — o Training e a lógica VST não dependem deste campo.
     ('vst_conjuntos', 'bpm_vst_validacao_json', 'TEXT'),
+    # Validação fisiológica complementar MOXY × VST (JSON).
+    # Contém: referencias_fisiologicas (HRVT), bp1/bp2 com
+    # posição potência, FC classificada, RPE esperado/observado, coerência.
+    # NULL em registos antigos — não afecta Training nem VST.
+    ('vst_conjuntos', 'validacao_fisiologica_json', 'TEXT'),
 ]
 
 

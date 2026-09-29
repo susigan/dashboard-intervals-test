@@ -204,6 +204,10 @@ MIGRACOES = [
     # Necessário para o P1b de /api/training/contexto filtrar por modalidade
     # sem depender de moxy_analises (que pode estar vazio).
     ('vst_conjuntos', 'modalidade', 'TEXT'),
+    # Resultado da validação cruzada BPM MOXY × VST (JSON).
+    # Produzido por nirs_breakpoints.validar_bpm_vst() após gravar análise MOXY.
+    # NULL em registos antigos — o Training e a lógica VST não dependem deste campo.
+    ('vst_conjuntos', 'bpm_vst_validacao_json', 'TEXT'),
 ]
 
 

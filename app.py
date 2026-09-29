@@ -1038,8 +1038,12 @@ def api_activity_interval_rpe_get(activity_id):
             # Lazy-load: buscar os intervalos da API ICU e persistir no DB
             # O DB é cache/armazenamento — a API ICU é sempre a fonte de verdade
             raw_ivs, err = icu_get(f"/activity/{activity_id}/intervals")
-            if not err and isinstance(raw_ivs, list) and raw_ivs:
-                db.upsert_intervals(activity_id, raw_ivs)
+            # A API ICU pode retornar lista directa ou {'icu_intervals': [...]}
+            if not err and raw_ivs is not None:
+                if isinstance(raw_ivs, dict):
+                    raw_ivs = raw_ivs.get('icu_intervals') or []
+                if isinstance(raw_ivs, list) and raw_ivs:
+                    db.upsert_intervals(activity_id, raw_ivs)
                 # Tentar de novo após upsert (pode ter falhado parcialmente)
                 ivs = db.get_intervals_with_rpe(activity_id)
                 if not ivs:
@@ -1103,8 +1107,11 @@ def api_activity_intervals_sync(activity_id):
     raw_ivs, err = icu_get(f"/activity/{activity_id}/intervals")
     if err:
         return jsonify({'erro': err}), 502
+    # A API ICU pode retornar lista directa ou {'icu_intervals': [...]}
+    if isinstance(raw_ivs, dict):
+        raw_ivs = raw_ivs.get('icu_intervals') or []
     if not isinstance(raw_ivs, list):
-        return jsonify({'erro': 'resposta inesperada da API Intervals.icu'}), 502
+        return jsonify({'erro': 'resposta inesperada da API Intervals.icu', 'tipo': type(raw_ivs).__name__}), 50202
     n = db.upsert_intervals(activity_id, raw_ivs)
     return jsonify({'activity_id': activity_id, 'intervals_upserted': n})
 

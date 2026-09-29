@@ -1953,6 +1953,56 @@ def registar(app):
             if not _fc_ok:
                 bp1_bpm = bp2_bpm = None
 
+            # ── Validação cruzada BPM MOXY × VST ──────────────────────
+            # Executada DEPOIS dos filtros de qualidade (fc_valida, etc.)
+            # para que validemos os BPM finais, não os intermediários.
+            # Não altera bp1_bpm / bp2_bpm em moxy_analises.
+            _bpm_validacao_json = None
+            try:
+                import nirs_breakpoints as _nbk_val
+                import drive_db_perfil as _ddp_val
+                _cn_val = _ddp_val.get_conn()
+                # Procurar conjunto VST associado a esta sessão MOXY
+                _vst_row = _cn_val.execute(
+                    "SELECT vst_activity_id FROM vst_conjuntos "
+                    "WHERE moxy_activity_id=? ORDER BY analisado_em DESC LIMIT 1",
+                    (aid,)).fetchone()
+                if _vst_row and (bp1_bpm is not None or bp2_bpm is not None):
+                    _vid = _vst_row[0]
+                    # Obter os intervalos BP1/BP2 do Dia 2 via a mesma
+                    # função usada por api_moxy_vst_comparar, sem recalcular
+                    _dia2_resp = api_moxy_vst_analise(_vid)
+                    _dia2 = (_dia2_resp[0].get_json()
+                             if isinstance(_dia2_resp, tuple)
+                             else _dia2_resp.get_json())
+                    if (_dia2 or {}).get('status') == 'ok':
+                        # metricas: lista de dicts de metricas_intervalo()
+                        _bp1_m = (_dia2.get('bp1') or {}).get('metricas') or []
+                        _bp2_m = (_dia2.get('bp2') or {}).get('metricas') or []
+                        _val = _nbk_val.validar_bpm_vst(
+                            bp1_bpm, bp2_bpm, _bp1_m, _bp2_m)
+                        _bpm_validacao_json = json.dumps(_val, ensure_ascii=False)
+                        # Gravar em vst_conjuntos (migração segura: coluna pode
+                        # não existir em bancos antigos → ignorar erro de coluna)
+                        try:
+                            _cn_val.execute(
+                                "UPDATE vst_conjuntos "
+                                "SET bpm_vst_validacao_json=?, actualizado_em=? "
+                                "WHERE vst_activity_id=?",
+                                (_bpm_validacao_json,
+                                 datetime.now().isoformat(timespec='seconds'),
+                                 _vid))
+                            _cn_val.commit()
+                        except Exception as _e_col:
+                            # Coluna ainda não existe (banco não migrado)
+                            print(f'[guardar_analise][bpm_validacao][col] {_e_col}')
+                _cn_val.close()
+            except Exception as _e_val:
+                import traceback as _tb_val
+                print(f'[guardar_analise][bpm_validacao] {_e_val}\n'
+                      f'{_tb_val.format_exc()}')
+                _bpm_validacao_json = None
+
             s2 = MX_SESSOES_CACHE.get(aid, {})
             _vo2 = lim.get('vo2max_previsto') or {}
             linha = (
@@ -3362,13 +3412,15 @@ def registar(app):
         try:
             import drive_db_perfil as ddp
             import db as _db
+            import json as _json
             from config import TYPE_MAP
             cn = ddp.get_conn()
             rows = cn.execute(
                 "SELECT vst_activity_id, moxy_activity_id, bp1_status, "
                 "bp2_status, recovery_bp1_status, recovery_bp2_status, "
                 "dia1_bp1_w, dia2_bp1_w, dia1_bp2_w, dia2_bp2_w, "
-                "analisado_em, actualizado_em FROM vst_conjuntos "
+                "analisado_em, actualizado_em, "
+                "bpm_vst_validacao_json FROM vst_conjuntos "
                 "ORDER BY actualizado_em DESC").fetchall()
             # buscar modalidade de cada sessao Moxy da tabela activities
             # (campo type, ja' mapeado por TYPE_MAP) -- so' uma query
@@ -3390,6 +3442,8 @@ def registar(app):
                 'dia1_bp1_w': r[6], 'dia2_bp1_w': r[7],
                 'dia1_bp2_w': r[8], 'dia2_bp2_w': r[9],
                 'analisado_em': r[10], 'actualizado_em': r[11],
+                'bpm_vst_validacao': (_json.loads(r[12])
+                    if r[12] else None),
             } for r in rows]
             return jsonify({'status': 'ok', 'conjuntos': conjuntos})
         except Exception as e:

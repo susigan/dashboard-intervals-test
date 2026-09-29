@@ -724,17 +724,8 @@ function fmtv(v){
 }
 
 async function load(){
- let d;
- try{
-  d=await fetch('/api/activity/'+AID+'/full').then(r=>r.json());
- }catch(e){
-  document.getElementById('title').textContent='Erro ao carregar: '+e.message;
-  return;
- }
- if(!d||d.error||d.status==='error'){
-  document.getElementById('title').textContent='Erro: '+(d&&(d.error||d.message))||'falha ao carregar';
-  return;
- }
+ const d=await fetch('/api/activity/'+AID+'/full').then(r=>r.json());
+ if(d.error){document.getElementById('title').textContent='Erro: '+d.error;return;}
  DATA=d;
  const a=d.activity||{},cf=d.custom_fields||{};
  window.__ELAPSED__=a.elapsed_time||a.moving_time||0;
@@ -877,10 +868,10 @@ async function load(){
  const ivs=(d.intervals&&(d.intervals.icu_intervals||d.intervals))||[];
  if(Array.isArray(ivs)&&ivs.length){
   // Carregar RPE existentes antes de renderizar a tabela
-  fetch('/api/activities/'+AID+'/interval-rpe').then(r=>r.json()).then(function(rpeData){
+  fetch('/api/activity/'+AID+'/interval_rpe').then(r=>r.json()).then(function(rpeData){
    const rpeMap={};
    ((rpeData||{}).intervals||[]).forEach(function(iv){
-    if(iv.interval_id!=null) rpeMap[String(iv.interval_id)]=iv.rpe;
+    rpeMap[String(iv.start_time)]=iv.rpe; // 0=apagado, 1-10=valor
    });
    // Aviso quando RPE vem de snapshot de ID anterior (atividade reimportada)
    if((rpeData||{}).fonte==='snapshot_legado'){
@@ -889,48 +880,29 @@ async function load(){
      +' <a href="#" onclick="mxSalvarAtividade();return false;" style="color:#5DADE2;">Salvar agora</a></span>';
    }
 
-   // RPE GLOBAL DA SESSÃO — vem de activities.rpe, separado do RPE por WORK
-   const sessionRpe=(rpeData||{}).session_rpe;
-   const sessionRpeBox=document.getElementById('mxSessionRpe');
-   if(sessionRpeBox){
-    sessionRpeBox.innerHTML=sessionRpe!=null
-     ?'<span style="color:#5DADE2;font-weight:600;">'+sessionRpe+'</span> <span style="color:#6e7681;font-size:10px;">(RPE global da sessão — activities.rpe)</span>'
-     :'<span style="color:#6e7681;">não registado</span>';
-   }
-
-   // Tabela de intervalos: coluna RPE WORK só aparece em linhas WORK
-   const cols=['label','type','rpe_work_col','start_time','elapsed_time','distance','average_watts','max_watts',
+   const cols=['label','type','rpe_col','start_time','elapsed_time','distance','average_watts','max_watts',
     'weighted_average_watts','average_heartrate','max_heartrate','average_cadence','intensity','joules','decoupling'];
    document.getElementById('ivHead').innerHTML=cols.map(function(c){
-    if(c==='rpe_work_col') return '<th style="color:#5DADE2;">RPE WORK</th>';
+    if(c==='rpe_col') return '<th style="color:#5DADE2;">RPE</th>';
     return '<th>'+c+'</th>';
    }).join('');
-
-   // Construir mapa por interval_id (BD) e por start_time (legado)
-   const rpeById={};
-   const ivBdList=((rpeData||{}).intervals)||[];
-   ivBdList.forEach(function(iv){ if(iv.id) rpeById[iv.id]=iv.rpe; });
-
    document.getElementById('ivBody').innerHTML=ivs.map(function(iv,idx){
-    const isWork=(iv.type||'').toUpperCase()==='WORK';
     return '<tr>'+cols.map(function(c){
-     if(c==='rpe_work_col'){
-      if(!isWork) return '<td style="text-align:center;color:#484f58;">—</td>';
-      // interval_id vem da BD via /api/activities/<id>/interval-rpe
-      const iid=String(iv.interval_id!=null?iv.interval_id:'');
-      const rpeStored=iid?rpeMap[iid]:undefined;
-      const rpeVal=(rpeStored==null||rpeStored===0)?'':(rpeStored);
+     if(c==='rpe_col'){
+      const st=String(iv.start_time);
+      const rpeStored=rpeMap[st]; // undefined=sem linha; 0=apagado; 1-10=valor
+      const rpeVal=(rpeStored===undefined||rpeStored===0)?'':(rpeStored);
       return '<td style="text-align:center;padding:2px;">'
        +'<input type="number" min="1" max="10" step="1" '
        +'value="'+rpeVal+'" '
        +'style="width:44px;background:#0d1117;border:1px solid #30363d;'
        +'color:#c9d1d9;border-radius:4px;padding:2px 4px;text-align:center;" '
-       +'data-iid="'+iid+'" '
+       +'data-start="'+iv.start_time+'" '
        +'data-type="'+(iv.type||'')+'" '
-       +'title="RPE WORK (1-10). Separado do RPE global da sessão." '
-       +'oninput="this.dataset.dirty='1'" '
+       +'data-elapsed="'+(iv.elapsed_time||'')+'" '
+       +'oninput="this.dataset.dirty=\'1\'" '
        +'onblur="mxSalvarRpe(this)" '
-       +'onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}" '
+       +'onkeydown="if(event.key===\'Enter\'){event.preventDefault();this.blur();}" '
        +'/></td>';
      }
      var v=iv[c];return '<td class="num">'+(v==null?'-':(typeof v==='number'?Math.round(v*10)/10:v))+'</td>';
@@ -978,25 +950,32 @@ function _pintarBotoesModo(modoActivo){
 // rpe vazio → grava 0 (apagado explicitamente, impede fallback para moxy_rpe legado).
 // rpe 1-10  → grava o valor.
 function mxSalvarRpe(input){
- if(!input.dataset.dirty) return;
+ if(!input.dataset.dirty) return; // campo não foi editado — ignorar
  input.dataset.dirty='';
- const iid=parseInt(input.dataset.iid,10);
- if(!iid||isNaN(iid)) return; // sem interval_id, nao e possivel salvar
+ const st=parseFloat(input.dataset.start);
+ if(isNaN(st)) return;
  const raw=input.value.trim();
- if(raw==='') return; // campo vazio — nao apagar (remover usa DELETE explicitamente)
- const rpe=parseInt(raw,10);
- if(isNaN(rpe)||rpe<1||rpe>10){
-  input.style.borderColor='#E74C3C';
-  setTimeout(function(){input.style.borderColor='#30363d';},1500);
-  return;
+ let rpe=0; // default: apagado
+ if(raw!==''){
+  rpe=parseInt(raw,10);
+  if(isNaN(rpe)||rpe<1||rpe>10){
+   input.style.borderColor='#E74C3C';
+   setTimeout(function(){input.style.borderColor='#30363d';},1500);
+   return;
+  }
  }
- input.style.borderColor='#F4D03F';
- fetch('/api/intervals/'+iid+'/rpe',{
-  method:'PUT',
+ input.style.borderColor='#F4D03F'; // a gravar
+ fetch('/api/activity/'+AID+'/interval_rpe',{
+  method:'POST',
   headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({rpe:rpe})
+  body:JSON.stringify({intervals:[{
+   start_time:st,
+   interval_type:input.dataset.type||null,
+   elapsed_time:input.dataset.elapsed?parseFloat(input.dataset.elapsed):null,
+   rpe:rpe
+  }]})
  }).then(r=>r.json()).then(function(d){
-  if(d.success||d.status==='ok'||d.status==='gravado_sem_upload'){
+  if(d.status==='ok'||d.status==='gravado_sem_upload'){
    input.style.borderColor='#3FB950';
    input.value=rpe===0?'':String(rpe);
    // Se o upload para o Drive falhou, mostrar botão de download do DB
@@ -1006,7 +985,7 @@ function mxSalvarRpe(input){
    setTimeout(function(){input.style.borderColor='#30363d';},1800);
   } else {
    input.style.borderColor='#E74C3C';
-   console.error('[mxSalvarRpe]', d.erro||d.mensagem);
+   console.error('[mxSalvarRpe]',d.mensagem);
    setTimeout(function(){input.style.borderColor='#30363d';},2500);
   }
  }).catch(function(e){

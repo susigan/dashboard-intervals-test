@@ -1953,56 +1953,6 @@ def registar(app):
             if not _fc_ok:
                 bp1_bpm = bp2_bpm = None
 
-            # ── Validação cruzada BPM MOXY × VST ──────────────────────
-            # Executada DEPOIS dos filtros de qualidade (fc_valida, etc.)
-            # para que validemos os BPM finais, não os intermediários.
-            # Não altera bp1_bpm / bp2_bpm em moxy_analises.
-            _bpm_validacao_json = None
-            try:
-                import nirs_breakpoints as _nbk_val
-                import drive_db_perfil as _ddp_val
-                _cn_val = _ddp_val.get_conn()
-                # Procurar conjunto VST associado a esta sessão MOXY
-                _vst_row = _cn_val.execute(
-                    "SELECT vst_activity_id FROM vst_conjuntos "
-                    "WHERE moxy_activity_id=? ORDER BY analisado_em DESC LIMIT 1",
-                    (aid,)).fetchone()
-                if _vst_row and (bp1_bpm is not None or bp2_bpm is not None):
-                    _vid = _vst_row[0]
-                    # Obter os intervalos BP1/BP2 do Dia 2 via a mesma
-                    # função usada por api_moxy_vst_comparar, sem recalcular
-                    _dia2_resp = api_moxy_vst_analise(_vid)
-                    _dia2 = (_dia2_resp[0].get_json()
-                             if isinstance(_dia2_resp, tuple)
-                             else _dia2_resp.get_json())
-                    if (_dia2 or {}).get('status') == 'ok':
-                        # metricas: lista de dicts de metricas_intervalo()
-                        _bp1_m = (_dia2.get('bp1') or {}).get('metricas') or []
-                        _bp2_m = (_dia2.get('bp2') or {}).get('metricas') or []
-                        _val = _nbk_val.validar_bpm_vst(
-                            bp1_bpm, bp2_bpm, _bp1_m, _bp2_m)
-                        _bpm_validacao_json = json.dumps(_val, ensure_ascii=False)
-                        # Gravar em vst_conjuntos (migração segura: coluna pode
-                        # não existir em bancos antigos → ignorar erro de coluna)
-                        try:
-                            _cn_val.execute(
-                                "UPDATE vst_conjuntos "
-                                "SET bpm_vst_validacao_json=?, actualizado_em=? "
-                                "WHERE vst_activity_id=?",
-                                (_bpm_validacao_json,
-                                 datetime.now().isoformat(timespec='seconds'),
-                                 _vid))
-                            _cn_val.commit()
-                        except Exception as _e_col:
-                            # Coluna ainda não existe (banco não migrado)
-                            print(f'[guardar_analise][bpm_validacao][col] {_e_col}')
-                _cn_val.close()
-            except Exception as _e_val:
-                import traceback as _tb_val
-                print(f'[guardar_analise][bpm_validacao] {_e_val}\n'
-                      f'{_tb_val.format_exc()}')
-                _bpm_validacao_json = None
-
             s2 = MX_SESSOES_CACHE.get(aid, {})
             _vo2 = lim.get('vo2max_previsto') or {}
             linha = (
@@ -2901,6 +2851,7 @@ def registar(app):
                                 'mensagem': 'resultado_json obrigatório'}), 400
 
             import drive_db_perfil as ddp
+            import json
             cn = ddp.get_conn()
 
             # Extrair campos do resultado_json (mesmo formato de /vst/comparar)
@@ -2922,12 +2873,67 @@ def registar(app):
                                 'mensagem': f'falha na persistência: {det}'}), 500
 
             ok_up, det_up = ddp.upload()
+
+            # ── Validação cruzada BPM MOXY × VST ─────────────────────────
+            # Executada AQUI porque a sessão VST acabou de ser usada
+            # (dados em cache) e os BPM já estão gravados em moxy_analises.
+            _bpm_val_resultado = None
+            try:
+                import nirs_breakpoints as _nbk_val
+                # Ler bp1_bpm/bp2_bpm de moxy_analises (gravados na aba Limiar)
+                _ma = cn.execute(
+                    "SELECT bp1_bpm, bp2_bpm FROM moxy_analises "
+                    "WHERE activity_id=? LIMIT 1", (mid,)).fetchone()
+                _bp1_bpm_val = _ma[0] if _ma else None
+                _bp2_bpm_val = _ma[1] if _ma else None
+                # Obter métricas dos intervalos BP1/BP2 via api_moxy_vst_analise
+                # (a sessão VST está em cache — acabou de ser usada)
+                _analise_resp = api_moxy_vst_analise(vid)
+                _analise = (_analise_resp[0].get_json()
+                            if isinstance(_analise_resp, tuple)
+                            else _analise_resp.get_json())
+                if (_analise or {}).get('status') == 'ok':
+                    _bp1_m = (_analise.get('bp1') or {}).get('metricas') or []
+                    _bp2_m = (_analise.get('bp2') or {}).get('metricas') or []
+                    _val = _nbk_val.validar_bpm_vst(
+                        _bp1_bpm_val, _bp2_bpm_val, _bp1_m, _bp2_m)
+                    _bpm_val_json = json.dumps(_val, ensure_ascii=False)
+                    try:
+                        cn.execute(
+                            "UPDATE vst_conjuntos "
+                            "SET bpm_vst_validacao_json=?, actualizado_em=? "
+                            "WHERE vst_activity_id=?",
+                            (_bpm_val_json,
+                             datetime.now().isoformat(timespec='seconds'), vid))
+                        cn.commit()
+                        ddp.upload()  # subir com o novo campo
+                        _bpm_val_resultado = _val
+                    except Exception as _e_col:
+                        print(f'[gravar_analise][bpm_val][col] {_e_col}')
+                else:
+                    # sessão VST sem streams → guardar nao_validado
+                    _val_empty = _nbk_val.validar_bpm_vst(
+                        _bp1_bpm_val, _bp2_bpm_val, [], [])
+                    try:
+                        cn.execute(
+                            "UPDATE vst_conjuntos "
+                            "SET bpm_vst_validacao_json=? "
+                            "WHERE vst_activity_id=?",
+                            (json.dumps(_val_empty, ensure_ascii=False), vid))
+                        cn.commit()
+                    except Exception:
+                        pass
+            except Exception as _e_val:
+                import traceback as _tb_val
+                print(f'[gravar_analise][bpm_val] {_e_val}\n{_tb_val.format_exc()}')
+
             return jsonify({
                 'status': 'ok' if ok_up else 'gravado_sem_upload',
                 'vst_activity_id': vid,
                 'moxy_activity_id': mid,
                 'upload_ok': ok_up,
                 'upload_detalhe': None if ok_up else det_up,
+                'bpm_vst_validacao': _bpm_val_resultado,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

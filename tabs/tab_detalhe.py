@@ -871,7 +871,7 @@ async function load(){
   fetch('/api/activities/'+AID+'/interval-rpe').then(r=>r.json()).then(function(rpeData){
    const rpeMap={};
    ((rpeData||{}).intervals||[]).forEach(function(iv){
-    rpeMap[String(iv.start_time)]=iv.rpe; // 0=apagado, 1-10=valor
+    if(iv.interval_id!=null) rpeMap[String(iv.interval_id)]=iv.rpe;
    });
    // Aviso quando RPE vem de snapshot de ID anterior (atividade reimportada)
    if((rpeData||{}).fonte==='snapshot_legado'){
@@ -985,7 +985,7 @@ function mxSalvarRpe(input){
  fetch('/api/intervals/'+iid+'/rpe',{
   method:'PUT',
   headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({rpe:rpe}))
+  body:JSON.stringify({rpe:rpe})
  }).then(r=>r.json()).then(function(d){
   if(d.success||d.status==='ok'||d.status==='gravado_sem_upload'){
    input.style.borderColor='#3FB950';

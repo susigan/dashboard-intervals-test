@@ -2713,7 +2713,7 @@ def registar(app):
                 try:
                     import db as _db
                     row_act = _db._exec(
-                        "SELECT name, start_date_local FROM activities WHERE id=?",
+                        "SELECT name, start_local FROM activities WHERE id=?",
                         (aid,), fetch='one')
                     if row_act:
                         nome_act = str(row_act[0] or '').strip()
@@ -3451,8 +3451,8 @@ def registar(app):
                                 cn, moxy_id, vid,
                                 _bp1w_od, _bp2w_od, _bp1bpm_od, _bp2bpm_od,
                                 _dfa_od, _bp1_mod, _bp2_mod,
-                                rpe_vst_bp1=_rpe_od1, rpe_vst_bp2=_rpe_od2,
-                                ddp=__import__('drive_db_perfil'))
+                                rpe_vst_bp1=_rpe_od1, rpe_vst_bp2=_rpe_od2)
+                            # GET não faz upload — ver regra em _fisio_calcular_e_persistir
                             if _vf_new:
                                 _val_fisio_obj = _vf_new
                         except Exception as _e_od:
@@ -3492,8 +3492,8 @@ def registar(app):
                             cn, moxy_id, vid,
                             _bp1w_new, _bp2w_new, _bp1bpm_new, _bp2bpm_new,
                             _dfa_new, _bp1_mn, _bp2_mn,
-                            rpe_vst_bp1=_rpe_n1, rpe_vst_bp2=_rpe_n2,
-                            ddp=__import__('drive_db_perfil'))
+                            rpe_vst_bp1=_rpe_n1, rpe_vst_bp2=_rpe_n2)
+                        # GET não faz upload — ver regra em _fisio_calcular_e_persistir
                         if _vf_novo:
                             _val_fisio_obj = _vf_novo
                     except Exception as _e_new:
@@ -4148,12 +4148,11 @@ def registar(app):
     def _fisio_calcular_e_persistir(cn, moxy_id, vst_id,
                                     bp1_w, bp2_w, bp1_bpm, bp2_bpm,
                                     dfa1, bp1_m, bp2_m,
-                                    curva_rpe=None, rpe_vst_bp1=None, rpe_vst_bp2=None,
-                                    ddp=None):
+                                    curva_rpe=None, rpe_vst_bp1=None, rpe_vst_bp2=None):
         """Única fonte de verdade para:
           1. Calcular validacao_fisiologica via validar_fisiologica_vst()
           2. Gerar fisio_version + fisio_data_hash
-          3. Persistir em vst_conjuntos
+          3. Persistir em vst_conjuntos (commit local)
           4. Retornar o resultado
 
         Chamada por:
@@ -4162,6 +4161,12 @@ def registar(app):
           - api_moxy_vst_resultado (quando detect outdated)
 
         Nunca recalcula calc. DFA/HRVT — apenas usa o dfa1 já calculado.
+
+        REGRA ARQUITECTURAL:
+          Esta função NÃO faz upload para o Google Drive.
+          O upload é responsabilidade exclusiva do fluxo de gravação
+          que recebeu/modificou dados do utilizador (endpoints POST).
+          Funções de análise apenas lêem, calculam e fazem commit local.
         """
         try:
             import utils.nirs_breakpoints as _nbk
@@ -4192,11 +4197,7 @@ def registar(app):
                 "WHERE vst_activity_id=?",
                 (val_json, FISIO_ANALYSIS_VERSION, data_hash, str(vst_id)))
             cn.commit()
-            if ddp is not None:
-                try:
-                    ddp.upload()
-                except Exception:
-                    pass
+            # NÃO chamar ddp.upload() aqui — ver docstring acima.
             return val_fisio, data_hash
         except Exception as _e_fisio:
             import traceback as _tb_f
@@ -4579,8 +4580,8 @@ def registar(app):
                     _bp1w_c, _bp2w_c, _bp1bpm_c, _bp2bpm_c,
                     _dfa1_c, _bp1_m_c, _bp2_m_c,
                     rpe_vst_bp1=_rpe_c_bp1,
-                    rpe_vst_bp2=_rpe_c_bp2,
-                    ddp=ddp)
+                    rpe_vst_bp2=_rpe_c_bp2)
+                # upload feito pelo bloco _vst_persistir/ddp.upload() acima
             except Exception as _e_fisio_auto:
                 import traceback as _tb_fa
                 print(f'[vst_comparar][fisio auto] AVISO: {_e_fisio_auto}\n'

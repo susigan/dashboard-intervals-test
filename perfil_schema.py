@@ -213,6 +213,13 @@ MIGRACOES = [
     # posição potência, FC classificada, RPE esperado/observado, coerência.
     # NULL em registos antigos — não afecta Training nem VST.
     ('vst_conjuntos', 'validacao_fisiologica_json', 'TEXT'),
+    # Metadados de validade da análise fisiológica (fisio_version + fisio_data_hash).
+    # fisio_version: versão do algoritmo (incrementar quando lógica mudar).
+    # fisio_data_hash: hash dos dados usados (mudar RPE/DFA/etc. → recalcular).
+    # Estes campos são controlo/cache, não fonte de dados.
+    # A fonte continua sendo validacao_fisiologica_json.
+    ('vst_conjuntos', 'fisio_version', 'TEXT'),
+    ('vst_conjuntos', 'fisio_data_hash', 'TEXT'),
 ]
 
 

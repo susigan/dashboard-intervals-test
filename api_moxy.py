@@ -3532,11 +3532,17 @@ def registar(app):
 
     @app.route('/api/moxy/vst/conjunto', methods=['POST'])
     def api_moxy_vst_conjunto_gravar():
-        """Grava/substitui o vínculo VST↔Moxy. Corpo: {vst_activity_id,
-        moxy_activity_id}. Uma sessão VST só pertence a um conjunto de
-        cada vez — gravar de novo substitui o vínculo anterior, nunca
-        acumula (RE-SINCRONIZAR / ALTERAR VÍNCULO usam este mesmo
-        endpoint)."""
+        """Grava/actualiza o vinculo VST↔Moxy. Corpo: {vst_activity_id,
+        moxy_activity_id}. Uma sessao VST so pertence a um conjunto de
+        cada vez - gravar de novo actualiza o vinculo anterior, nunca
+        acumula (RE-SINCRONIZAR / ALTERAR VINCULO usam este mesmo
+        endpoint).
+
+        Usa INSERT OR IGNORE + UPDATE para preservar resultado_json e
+        validacao_fisiologica_json quando o conjunto ja existe.
+        INSERT OR REPLACE apagaria esses campos (equivale a DELETE+INSERT)
+        e perderia os resultados calculados pelo /vst/comparar.
+        """
         try:
             corpo = request.get_json(force=True, silent=True) or {}
             vid = str(corpo.get('vst_activity_id') or '').strip()
@@ -3544,21 +3550,34 @@ def registar(app):
             if not vid or not mid:
                 return jsonify({'status': 'erro',
                                 'mensagem': 'vst_activity_id e '
-                                           'moxy_activity_id são '
-                                           'obrigatórios'}), 200
+                                           'moxy_activity_id sao '
+                                           'obrigatorios'}), 200
 
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
             agora = datetime.now().isoformat(timespec='seconds')
-            existe = cn.execute(
+
+            # Criar linha se nao existir (preserva campos calculados se existir)
+            cn.execute(
+                "INSERT OR IGNORE INTO vst_conjuntos "
+                "(vst_activity_id, moxy_activity_id, criado_em, actualizado_em) "
+                "VALUES (?,?,?,?)",
+                (vid, mid, agora, agora))
+
+            # Actualizar apenas o vinculo e o timestamp -- NAO tocar em
+            # resultado_json, validacao_fisiologica_json nem outros campos
+            # calculados pelo /vst/comparar.
+            cn.execute(
+                "UPDATE vst_conjuntos "
+                "SET moxy_activity_id=?, actualizado_em=? "
+                "WHERE vst_activity_id=?",
+                (mid, agora, vid))
+
+            row = cn.execute(
                 "SELECT criado_em FROM vst_conjuntos WHERE vst_activity_id=?",
                 (vid,)).fetchone()
-            criado_em = existe[0] if existe else agora
-            cn.execute(
-                "INSERT OR REPLACE INTO vst_conjuntos "
-                "(vst_activity_id, moxy_activity_id, criado_em, "
-                "actualizado_em) VALUES (?,?,?,?)",
-                (vid, mid, criado_em, agora))
+            criado_em = row[0] if row else agora
+
             cn.commit()
             ok_up, det_up = ddp.upload()
             return jsonify({'status': 'ok' if ok_up else 'gravado_sem_upload',
@@ -3568,7 +3587,6 @@ def registar(app):
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
-
     @app.route('/api/moxy/vst/conjunto_por_moxy/<path:moxy_activity_id>')
     def api_moxy_vst_conjunto_por_moxy(moxy_activity_id):
         """Procura inversa: dada uma sessão Moxy, encontra a sessão VST

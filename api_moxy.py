@@ -2753,9 +2753,13 @@ def registar(app):
                 except Exception:
                     pass  # fallback silencioso — devolve lista vazia
 
+            import os as _os
+            _local_db = getattr(ddp, '_LOCAL_DB', '/tmp/perfil_historico.db')
             return jsonify({'status': 'ok', 'activity_id': aid,
                             'intervals': intervals, 'n': len(intervals),
-                            'fonte': 'activity_interval_rpe'})
+                            'fonte': 'activity_interval_rpe',
+                            'db_path': _local_db,
+                            'db_existe': _os.path.exists(_local_db)})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
@@ -2800,6 +2804,17 @@ def registar(app):
             cn = ddp.get_conn()
             n = _rpe_interval_upsert(cn, aid, intervals)
             cn.commit()
+            # ── DIAGNÓSTICO: SELECT imediato na mesma conexão ───────────
+            import os as _os
+            _local_db = getattr(ddp, '_LOCAL_DB', '/tmp/perfil_historico.db')
+            _verif = cn.execute(
+                "SELECT activity_id, start_time, rpe, source, updated_at "
+                "FROM activity_interval_rpe WHERE activity_id=? ORDER BY start_time",
+                (aid,)).fetchall()
+            _verif_list = [{'activity_id': r[0], 'start_time': r[1],
+                            'rpe': r[2], 'source': r[3], 'updated_at': r[4]}
+                           for r in _verif]
+            # ── fim diagnóstico ──────────────────────────────────────────
             ok_up, det_up = ddp.upload()
             return jsonify({
                 'status': 'ok' if ok_up else 'gravado_sem_upload',
@@ -2807,6 +2822,9 @@ def registar(app):
                 'n_gravados': n,
                 'upload_ok': ok_up,
                 'upload_detalhe': None if ok_up else det_up,
+                'db_path': _local_db,
+                'db_existe': _os.path.exists(_local_db),
+                'verificacao': _verif_list,
             })
         except ValueError as e:
             return jsonify({'status': 'erro', 'mensagem': str(e)}), 400

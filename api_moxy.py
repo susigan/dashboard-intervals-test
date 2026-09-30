@@ -4605,6 +4605,21 @@ def registar(app):
                 print(f'[vst_comparar][fisio auto] AVISO: {_e_fisio_auto}\n'
                       f'{_tb_fa.format_exc()}')
 
+            # ── Gravar análise MOXY (moxy_analises) automaticamente ───────────
+            # api_moxy_guardar_analise calcula e persiste BP1/BP2/HRVT/
+            # interpretação/rede causal da sessão MOXY (Day 1) em moxy_analises.
+            # Só grava se ainda não estiver na versão actual — melhor esforço.
+            try:
+                _ga_resp = api_moxy_guardar_analise(mid)
+                _ga_d = (_ga_resp[0].get_json() if isinstance(_ga_resp, tuple)
+                         else _ga_resp.get_json()) or {}
+                print(f'[vst_comparar][moxy_analise] mid={mid} '
+                      f'status={_ga_d.get("status")}')
+            except Exception as _e_ga:
+                import traceback as _tb_ga
+                print(f'[vst_comparar][moxy_analise] AVISO: {_e_ga}\n'
+                      f'{_tb_ga.format_exc()}')
+
             return jsonify({
                 'status': 'ok',
                 'dia1_activity_id': mid, 'dia2_activity_id': vid,

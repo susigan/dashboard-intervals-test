@@ -2448,8 +2448,134 @@ def validar_fisiologica_vst(
                     bp1_metricas_lista, rpe_vst_bp1, rpe_bp1_esp, bp2_w)
     bp2_out = _proc('bp2', bp2_w, moxy_bp2_bpm,
                     bp2_metricas_lista, rpe_vst_bp2, rpe_bp2_esp, None)
+    # ── Enriquecimento: candidatos HRVT vs observado ─────────────────
+    def _delta(obs, cand):
+        if obs is None or cand is None:
+            return None
+        return round(obs - cand, 1)
+
+    def _candidatos_hrvt(bp_w_obs, bp_bpm_obs, label):
+        """Para cada candidato HRVT, calcular distância e relevância para este BP."""
+        candidatos = {}
+        if label in ('bp1',):
+            for nome, chave_w, chave_bpm in [
+                ('HRVT1c', 'hrvt1_individualizado_w', 'hrvt1_individualizado_bpm'),
+                ('HRVT1s', 'hrvt1_classico_w',        'hrvt1_classico_bpm'),
+            ]:
+                w   = refs.get(chave_w)
+                bpm = refs.get(chave_bpm)
+                candidatos[nome] = {
+                    'watts': w, 'bpm': bpm,
+                    'delta_w':   _delta(bp_w_obs,  w),
+                    'delta_bpm': _delta(bp_bpm_obs, bpm),
+                }
+        elif label in ('bp2',):
+            w   = refs.get('hrvt2_w')
+            bpm = refs.get('hrvt2_bpm')
+            candidatos['HRVT2'] = {
+                'watts': w, 'bpm': bpm,
+                'delta_w':   _delta(bp_w_obs,  w),
+                'delta_bpm': _delta(bp_bpm_obs, bpm),
+            }
+        return candidatos
+
+    # ── Índice de coerência por BP ────────────────────────────────────
+    def _indice_coerencia(bp_out):
+        """Score 0-1 e nível ALTA/MODERADA/BAIXA/INCONCLUSIVA.
+        Baseado na proporção de intervalos coerentes e na disponibilidade
+        de evidências — sem inventar dados ausentes."""
+        n = bp_out.get('n_intervalos', 0)
+        if n == 0:
+            return {'score': None, 'nivel': 'INCONCLUSIVA', 'motivo': 'sem intervalos'}
+        n_coe = bp_out.get('n_coerentes', 0)
+        n_diss = bp_out.get('n_dissociacoes_fortes', 0)
+        # Evidências disponíveis (degradação graciosa)
+        tem_dfa   = any(iv.get('dfa1', {}).get('ok') for iv in (bp_out.get('intervalos') or []))
+        tem_smo2  = any(iv.get('smo2', {}).get('ok') for iv in (bp_out.get('intervalos') or []))
+        tem_rpe   = bp_out.get('rpe_median') is not None
+        tem_fc    = bp_out.get('fc_final_median') is not None
+        n_evidencias = sum([tem_dfa, tem_smo2, tem_rpe, tem_fc])
+        # Score base: proporção de coerentes, penalizado por dissociações fortes
+        score_base = (n_coe / n) - (n_diss / n) * 0.5
+        score = max(0.0, min(1.0, round(score_base, 2)))
+        if n_evidencias >= 3:
+            nivel = 'ALTA' if score >= 0.75 else 'MODERADA' if score >= 0.45 else 'BAIXA'
+        elif n_evidencias >= 2:
+            nivel = 'MODERADA' if score >= 0.60 else 'BAIXA'
+        elif n_evidencias >= 1:
+            nivel = 'BAIXA'
+        else:
+            nivel = 'INCONCLUSIVA'
+        return {
+            'score': score, 'nivel': nivel,
+            'n_evidencias': n_evidencias,
+            'tem_dfa': tem_dfa, 'tem_smo2': tem_smo2,
+            'tem_rpe': tem_rpe, 'tem_fc': tem_fc,
+        }
+
+    # ── Zonas Z1/Z2/Z3 a partir dos intervalos reais ─────────────────
+    # Usar BP1/BP2 observados como fronteiras (não HRVT como substituto)
+    def _stats_zona(ivs_todos, bp1_w, bp2_w):
+        """Calcular FC, potência, RPE medianos por zona Z1/Z2/Z3
+        a partir de todos os intervalos fornecidos."""
+        def _med(lst):
+            if not lst:
+                return None
+            s = sorted(lst)
+            n = len(s)
+            return round(s[n // 2] if n % 2 else (s[n//2-1] + s[n//2]) / 2, 1)
+
+        z = {'z1': {'fc': [], 'watts': [], 'rpe': [], 'smo2': [], 'dfa': []},
+             'z2': {'fc': [], 'watts': [], 'rpe': [], 'smo2': [], 'dfa': []},
+             'z3': {'fc': [], 'watts': [], 'rpe': [], 'smo2': [], 'dfa': []}}
+
+        for iv in (ivs_todos or []):
+            w = (iv.get('potencia') or {}).get('media')
+            if w is None:
+                continue
+            if bp2_w and w >= bp2_w:
+                key = 'z3'
+            elif bp1_w and w >= bp1_w:
+                key = 'z2'
+            else:
+                key = 'z1'
+            hr = iv.get('hr_final') or iv.get('fc_final')
+            rpe = iv.get('rpe_obs')
+            s2  = (iv.get('smo2') or {}).get('media')
+            d1  = (iv.get('dfa1') or {}).get('media')
+            z[key]['watts'].append(w)
+            if hr  is not None: z[key]['fc'].append(hr)
+            if rpe is not None: z[key]['rpe'].append(rpe)
+            if s2  is not None: z[key]['smo2'].append(s2)
+            if d1  is not None: z[key]['dfa'].append(d1)
+
+        out = {}
+        for k, d in z.items():
+            out[k] = {
+                'n_intervalos': len(d['watts']),
+                'watts_mediana': _med(d['watts']),
+                'watts_media':   round(sum(d['watts'])/len(d['watts']), 1) if d['watts'] else None,
+                'fc_mediana':    _med(d['fc']),
+                'fc_media':      round(sum(d['fc'])/len(d['fc']), 1) if d['fc'] else None,
+                'rpe_mediana':   _med(d['rpe']),
+                'smo2_mediana':  _med(d['smo2']),
+                'dfa_mediana':   _med(d['dfa']),
+            }
+        return out
+
+    # Juntar todos os intervalos de bp1 + bp2 para calcular zonas
+    _todos_ivs = (bp1_out.get('intervalos') or []) + (bp2_out.get('intervalos') or [])
+    zonas = _stats_zona(_todos_ivs, bp1_w, bp2_w)
+
+    # Enriquecer bp1_out e bp2_out com candidatos HRVT + coerência
+    bp1_out['hrvt_candidatos']    = _candidatos_hrvt(bp1_w, moxy_bp1_bpm, 'bp1')
+    bp1_out['indice_coerencia']   = _indice_coerencia(bp1_out)
+    bp2_out['hrvt_candidatos']    = _candidatos_hrvt(bp2_w, moxy_bp2_bpm, 'bp2')
+    bp2_out['indice_coerencia']   = _indice_coerencia(bp2_out)
+
     return {
         'referencias_fisiologicas': refs,
         'bp1': bp1_out,
         'bp2': bp2_out,
+        'zonas': zonas,
     }

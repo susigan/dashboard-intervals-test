@@ -2245,8 +2245,7 @@ function mxVstCarregarConjuntosSalvos(){
     +((c.recovery_bp1_status||c.recovery_bp2_status)?'Recovery <span style="color:'+_vstCorGeral(c.recovery_bp1_status||c.recovery_bp2_status)+';">'
       +(c.recovery_bp1_status||c.recovery_bp2_status)+'</span>':'')
     +'</div>'
-    +(c.bpm_vst_validacao ? _mxVstBpmValidacaoCard(c.bpm_vst_validacao) : '')
-    +(c.validacao_fisiologica ? _mxVstFisioCard(c.validacao_fisiologica) : '')
+    // Detalhes (bpm_vst_validacao, validacao_fisiologica) omitidos aqui — aparecem apenas no card da verificação activa.
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
     +'<button style="font-size:11px;" onclick="mxVstAbrirVerificacao('+ix+')">ABRIR</button>'
     +'<button style="font-size:11px;background:#1c2331;border:1px solid #3FB950;color:#3FB950;border-radius:4px;padding:2px 8px;cursor:pointer;" onclick="mxVstGravarVerificacaoSalva('+ix+')">💾 GRAVAR</button>'

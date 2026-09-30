@@ -3374,17 +3374,137 @@ def registar(app):
                 print(f'[vst_resultado][RPE live] AVISO: {_e_rpe}\n{_tb_rpe.format_exc()}')
                 # Não sobrescrever: manter o que está no cache
 
-            # ── Recuperar validação fisiológica persistida (HRVT + coerência) ─
-            # val_fisio_json é gravado por /vst/gravar_analise e contém
-            # referencias_fisiologicas (HRVT1c/s, HRVT2, watts e bpm).
-            # Adicioná-lo ao resultado permite que o frontend reconstrua o
-            # card fisiológico após reload, sem recalcular.
+            # ── Recuperar validação fisiológica persistida ─────────────
+            # Se a versão ou hash estiver desactualizado, recalcular usando
+            # _fisio_calcular_e_persistir (função central) e persistir.
+            # O GET pode disparar o recálculo porque _fisio_calcular_e_persistir
+            # é a única função responsável por isto — evitando duplicação.
+            _val_fisio_obj = None
             try:
                 if val_fisio_json:
-                    resultado['validacao_fisiologica'] = json.loads(val_fisio_json)
+                    _vf_parsed = json.loads(val_fisio_json)
+                    _vf_version = _vf_parsed.get('analysis_version')
+                    _vf_hash    = _vf_parsed.get('data_hash')
+                    # Verificar versão
+                    _outdated = (_vf_version != FISIO_ANALYSIS_VERSION)
+                    if not _outdated:
+                        # Verificar hash — recalcular hash actual para comparar
+                        try:
+                            # Obter dados actuais para hash
+                            _lim_r = api_moxy_limiares(moxy_id)
+                            _lim_r = (_lim_r[0].get_json() if isinstance(_lim_r, tuple)
+                                      else _lim_r.get_json()) or {}
+                            _lc_r = (_lim_r.get('limiares_consenso') or {})
+                            _bp1w_r = ((_lim_r.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
+                                       or (_lc_r.get('primeiro') or {}).get('mediana'))
+                            _bp2w_r = ((_lim_r.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
+                                       or (_lc_r.get('segundo') or {}).get('mediana'))
+                            _analise_r = api_moxy_vst_analise(vid)
+                            _analise_r = (_analise_r[0].get_json() if isinstance(_analise_r, tuple)
+                                          else _analise_r.get_json()) or {}
+                            _bp1_mr = (_analise_r.get('bp1') or {}).get('metricas') or []
+                            _bp2_mr = (_analise_r.get('bp2') or {}).get('metricas') or []
+                            def _rpe_cr(metricas_lista, aid):
+                                rpes = []
+                                for _m in metricas_lista:
+                                    _t0 = _m.get('t0') or _m.get('t0_s')
+                                    _rv, _ = _rpe_interval_resolver(cn, aid, _t0) if _t0 is not None else (None, None)
+                                    rpes.append(_rv)
+                                return rpes
+                            _rpe_r1 = _rpe_cr(_bp1_mr, vid)
+                            _rpe_r2 = _rpe_cr(_bp2_mr, vid)
+                            _hash_actual = _fisio_hash(
+                                moxy_id, vid, _bp1w_r, _bp2w_r,
+                                _bp1_mr, _bp2_mr, _rpe_r1, _rpe_r2)
+                            _outdated = (_vf_hash != _hash_actual)
+                        except Exception:
+                            _outdated = False  # erro no hash → não forçar recálculo
+                    if _outdated:
+                        print(f'[vst_resultado] validacao_fisiologica outdated '
+                              f'(version={_vf_version} vs {FISIO_ANALYSIS_VERSION}, '
+                              f'hash diferente={_vf_hash != _hash_actual if "_hash_actual" in dir() else "?"}) '
+                              f'→ recalcular')
+                        try:
+                            _lim_od = api_moxy_limiares(moxy_id)
+                            _lim_od = (_lim_od[0].get_json() if isinstance(_lim_od, tuple)
+                                       else _lim_od.get_json()) or {}
+                            _lc_od = (_lim_od.get('limiares_consenso') or {})
+                            _bp1w_od = ((_lim_od.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
+                                        or (_lc_od.get('primeiro') or {}).get('mediana'))
+                            _bp2w_od = ((_lim_od.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
+                                        or (_lc_od.get('segundo') or {}).get('mediana'))
+                            _bp1bpm_od = (_lim_od.get('bp_moxy_sem_restricao') or {}).get('bp1_bpm')
+                            _bp2bpm_od = (_lim_od.get('bp_moxy_sem_restricao') or {}).get('bp2_bpm')
+                            _dfa_od  = _lim_od.get('dfa1') or {}
+                            _analise_od = api_moxy_vst_analise(vid)
+                            _analise_od = (_analise_od[0].get_json() if isinstance(_analise_od, tuple)
+                                           else _analise_od.get_json()) or {}
+                            _bp1_mod = (_analise_od.get('bp1') or {}).get('metricas') or []
+                            _bp2_mod = (_analise_od.get('bp2') or {}).get('metricas') or []
+                            _rpe_od1 = [(_rpe_interval_resolver(cn, vid, _m.get('t0') or _m.get('t0_s'))[0]
+                                         if (_m.get('t0') or _m.get('t0_s')) is not None else None)
+                                        for _m in _bp1_mod]
+                            _rpe_od2 = [(_rpe_interval_resolver(cn, vid, _m.get('t0') or _m.get('t0_s'))[0]
+                                         if (_m.get('t0') or _m.get('t0_s')) is not None else None)
+                                        for _m in _bp2_mod]
+                            _vf_new, _ = _fisio_calcular_e_persistir(
+                                cn, moxy_id, vid,
+                                _bp1w_od, _bp2w_od, _bp1bpm_od, _bp2bpm_od,
+                                _dfa_od, _bp1_mod, _bp2_mod,
+                                rpe_vst_bp1=_rpe_od1, rpe_vst_bp2=_rpe_od2,
+                                ddp=__import__('drive_db_perfil'))
+                            if _vf_new:
+                                _val_fisio_obj = _vf_new
+                        except Exception as _e_od:
+                            import traceback as _tb_od
+                            print(f'[vst_resultado] recálculo outdated falhou: {_e_od}\n'
+                                  f'{_tb_od.format_exc()}')
+                            _val_fisio_obj = _vf_parsed  # usar o antigo
+                    else:
+                        _val_fisio_obj = _vf_parsed
+                elif val_fisio_json is None:
+                    # Sem análise fisiológica gravada — calcular agora automaticamente
+                    print(f'[vst_resultado] validacao_fisiologica_json ausente → calcular')
+                    try:
+                        _lim_new = api_moxy_limiares(moxy_id)
+                        _lim_new = (_lim_new[0].get_json() if isinstance(_lim_new, tuple)
+                                    else _lim_new.get_json()) or {}
+                        _lc_new  = (_lim_new.get('limiares_consenso') or {})
+                        _bp1w_new = ((_lim_new.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
+                                     or (_lc_new.get('primeiro') or {}).get('mediana'))
+                        _bp2w_new = ((_lim_new.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
+                                     or (_lc_new.get('segundo') or {}).get('mediana'))
+                        _bp1bpm_new = (_lim_new.get('bp_moxy_sem_restricao') or {}).get('bp1_bpm')
+                        _bp2bpm_new = (_lim_new.get('bp_moxy_sem_restricao') or {}).get('bp2_bpm')
+                        _dfa_new = _lim_new.get('dfa1') or {}
+                        _anal_new = api_moxy_vst_analise(vid)
+                        _anal_new = (_anal_new[0].get_json() if isinstance(_anal_new, tuple)
+                                     else _anal_new.get_json()) or {}
+                        _bp1_mn = (_anal_new.get('bp1') or {}).get('metricas') or []
+                        _bp2_mn = (_anal_new.get('bp2') or {}).get('metricas') or []
+                        _rpe_n1 = [(_rpe_interval_resolver(cn, vid, _m.get('t0') or _m.get('t0_s'))[0]
+                                    if (_m.get('t0') or _m.get('t0_s')) is not None else None)
+                                   for _m in _bp1_mn]
+                        _rpe_n2 = [(_rpe_interval_resolver(cn, vid, _m.get('t0') or _m.get('t0_s'))[0]
+                                    if (_m.get('t0') or _m.get('t0_s')) is not None else None)
+                                   for _m in _bp2_mn]
+                        _vf_novo, _ = _fisio_calcular_e_persistir(
+                            cn, moxy_id, vid,
+                            _bp1w_new, _bp2w_new, _bp1bpm_new, _bp2bpm_new,
+                            _dfa_new, _bp1_mn, _bp2_mn,
+                            rpe_vst_bp1=_rpe_n1, rpe_vst_bp2=_rpe_n2,
+                            ddp=__import__('drive_db_perfil'))
+                        if _vf_novo:
+                            _val_fisio_obj = _vf_novo
+                    except Exception as _e_new:
+                        import traceback as _tb_new
+                        print(f'[vst_resultado] cálculo automático falhou: {_e_new}\n'
+                              f'{_tb_new.format_exc()}')
             except Exception as _e_vf:
                 print(f'[vst_resultado] validacao_fisiologica_json inválido: {_e_vf}')
-                # JSON inválido ou ausente — não derrubar o endpoint
+
+            if _val_fisio_obj is not None:
+                resultado['validacao_fisiologica'] = _val_fisio_obj
 
             return jsonify(resultado)
         except Exception as e:
@@ -3996,6 +4116,94 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    # ── Versão da análise fisiológica ─────────────────────────────────
+    # Incrementar quando a lógica de validar_fisiologica_vst() mudar.
+    # Análises gravadas com versão anterior serão recalculadas automaticamente.
+    FISIO_ANALYSIS_VERSION = 'v1'
+
+    def _fisio_hash(moxy_id, vst_id, bp1_w, bp2_w, bp1_m, bp2_m, rpe_bp1, rpe_bp2):
+        """Hash dos dados que determinam o resultado fisiológico.
+        Mudar RPE, DFA, SmO2, FC, potência → hash diferente → recalcular."""
+        import hashlib, json as _json
+        def _m_digest(metricas):
+            # Extrair apenas os campos que mudam o resultado
+            return [{'w': (m.get('potencia') or {}).get('media'),
+                     'hr': (m.get('hr') or {}).get('media'),
+                     'smo2': (m.get('smo2') or {}).get('media'),
+                     'dfa': (m.get('dfa1') or {}).get('media'),
+                     'thb': (m.get('thb') or {}).get('media'),
+                     'resp': (m.get('respiracao') or {}).get('media')}
+                    for m in (metricas or [])]
+        payload = {
+            'moxy': str(moxy_id), 'vst': str(vst_id),
+            'bp1_w': bp1_w, 'bp2_w': bp2_w,
+            'bp1_m': _m_digest(bp1_m), 'bp2_m': _m_digest(bp2_m),
+            'rpe_bp1': sorted(r for r in (rpe_bp1 or []) if r is not None),
+            'rpe_bp2': sorted(r for r in (rpe_bp2 or []) if r is not None),
+        }
+        return hashlib.sha256(
+            _json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+
+    def _fisio_calcular_e_persistir(cn, moxy_id, vst_id,
+                                    bp1_w, bp2_w, bp1_bpm, bp2_bpm,
+                                    dfa1, bp1_m, bp2_m,
+                                    curva_rpe=None, rpe_vst_bp1=None, rpe_vst_bp2=None,
+                                    ddp=None):
+        """Única fonte de verdade para:
+          1. Calcular validacao_fisiologica via validar_fisiologica_vst()
+          2. Gerar fisio_version + fisio_data_hash
+          3. Persistir em vst_conjuntos
+          4. Retornar o resultado
+
+        Chamada por:
+          - api_moxy_vst_comparar (automático após cada comparação)
+          - api_moxy_vst_gravar_analise (explícito)
+          - api_moxy_vst_resultado (quando detect outdated)
+
+        Nunca recalcula calc. DFA/HRVT — apenas usa o dfa1 já calculado.
+        """
+        try:
+            import utils.nirs_breakpoints as _nbk
+            import json as _json
+
+            val_fisio = _nbk.validar_fisiologica_vst(
+                bp1_w, bp2_w, bp1_bpm, bp2_bpm, dfa1,
+                bp1_m, bp2_m,
+                curva_moxy_watts_rpe=curva_rpe,
+                rpe_vst_bp1=rpe_vst_bp1,
+                rpe_vst_bp2=rpe_vst_bp2,
+            )
+
+            data_hash = _fisio_hash(
+                moxy_id, vst_id, bp1_w, bp2_w, bp1_m, bp2_m,
+                rpe_vst_bp1, rpe_vst_bp2)
+
+            # Adicionar metadados de versão ao resultado
+            val_fisio['analysis_version'] = FISIO_ANALYSIS_VERSION
+            val_fisio['data_hash']        = data_hash
+
+            val_json = _json.dumps(val_fisio, ensure_ascii=False)
+
+            cn.execute(
+                "UPDATE vst_conjuntos "
+                "SET validacao_fisiologica_json=?, fisio_version=?, "
+                "fisio_data_hash=? "
+                "WHERE vst_activity_id=?",
+                (val_json, FISIO_ANALYSIS_VERSION, data_hash, str(vst_id)))
+            cn.commit()
+            if ddp is not None:
+                try:
+                    ddp.upload()
+                except Exception:
+                    pass
+            return val_fisio, data_hash
+        except Exception as _e_fisio:
+            import traceback as _tb_f
+            print(f'[fisio] _fisio_calcular_e_persistir falhou: {_e_fisio}\n'
+                  f'{_tb_f.format_exc()}')
+            return None, None
+
     @app.route('/api/moxy/vst/comparar/<path:vst_activity_id>')
     def api_moxy_vst_comparar(vst_activity_id):
         """Comparação Dia1×Dia2 — Dia 1 é a sessão Moxy vinculada
@@ -4339,6 +4547,44 @@ def registar(app):
                 ddp.upload()
             except Exception:
                 pass
+
+            # ── Validação fisiológica automática ──────────────────────────
+            # Calcular e persistir validacao_fisiologica_json automaticamente
+            # após cada comparação. Não depende do utilizador ir a Gravar análise.
+            try:
+                # Obter dfa1, bp1/bp2 watts e métricas — já disponíveis de dia1_lim
+                _dfa1_c = dia1_lim.get('dfa1') or {}
+                _lc_c   = (dia1_lim.get('limiares_consenso') or {})
+                _bp1w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
+                           or (_lc_c.get('primeiro') or {}).get('mediana'))
+                _bp2w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
+                           or (_lc_c.get('segundo') or {}).get('mediana'))
+                _bp1bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_bpm')
+                _bp2bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_bpm')
+                # Métricas dos blocos do dia 2 — reutilizar dia2 já calculado
+                _bp1_m_c = (dia2.get('bp1') or {}).get('metricas') or []
+                _bp2_m_c = (dia2.get('bp2') or {}).get('metricas') or []
+                # RPE dos blocos (de activity_interval_rpe) — resolver por t0
+                def _rpe_c(metricas_lista, aid):
+                    rpes = []
+                    for _m in metricas_lista:
+                        _t0 = _m.get('t0') or _m.get('t0_s')
+                        _rv, _ = _rpe_interval_resolver(cn, aid, _t0) if _t0 is not None else (None, None)
+                        rpes.append(_rv)
+                    return rpes
+                _rpe_c_bp1 = _rpe_c(_bp1_m_c, vid)
+                _rpe_c_bp2 = _rpe_c(_bp2_m_c, vid)
+                _fisio_calcular_e_persistir(
+                    cn, mid, vid,
+                    _bp1w_c, _bp2w_c, _bp1bpm_c, _bp2bpm_c,
+                    _dfa1_c, _bp1_m_c, _bp2_m_c,
+                    rpe_vst_bp1=_rpe_c_bp1,
+                    rpe_vst_bp2=_rpe_c_bp2,
+                    ddp=ddp)
+            except Exception as _e_fisio_auto:
+                import traceback as _tb_fa
+                print(f'[vst_comparar][fisio auto] AVISO: {_e_fisio_auto}\n'
+                      f'{_tb_fa.format_exc()}')
 
             return jsonify({
                 'status': 'ok',

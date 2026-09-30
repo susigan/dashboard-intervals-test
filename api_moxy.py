@@ -4139,9 +4139,10 @@ def registar(app):
     # Análises gravadas com versão anterior serão recalculadas automaticamente.
     FISIO_ANALYSIS_VERSION = 'v1'
 
-    def _fisio_hash(moxy_id, vst_id, bp1_w, bp2_w, bp1_m, bp2_m, rpe_bp1, rpe_bp2):
+    def _fisio_hash(moxy_id, vst_id, bp1_w, bp2_w, bp1_m, bp2_m, rpe_bp1, rpe_bp2,
+                    curva_rpe=None):
         """Hash dos dados que determinam o resultado fisiológico.
-        Mudar RPE, DFA, SmO2, FC, potência → hash diferente → recalcular."""
+        Mudar RPE (VST ou MOXY), DFA, SmO2, FC, potência → hash diferente → recalcular."""
         import hashlib, json as _json
         def _m_digest(metricas):
             # Extrair apenas os campos que mudam o resultado
@@ -4158,6 +4159,7 @@ def registar(app):
             'bp1_m': _m_digest(bp1_m), 'bp2_m': _m_digest(bp2_m),
             'rpe_bp1': sorted(r for r in (rpe_bp1 or []) if r is not None),
             'rpe_bp2': sorted(r for r in (rpe_bp2 or []) if r is not None),
+            'curva_rpe': sorted(curva_rpe) if curva_rpe else [],
         }
         return hashlib.sha256(
             _json.dumps(payload, sort_keys=True, default=str).encode()
@@ -4200,7 +4202,8 @@ def registar(app):
 
             data_hash = _fisio_hash(
                 moxy_id, vst_id, bp1_w, bp2_w, bp1_m, bp2_m,
-                rpe_vst_bp1, rpe_vst_bp2)
+                rpe_vst_bp1, rpe_vst_bp2,
+                curva_rpe=curva_rpe)
 
             # Adicionar metadados de versão ao resultado
             val_fisio['analysis_version'] = FISIO_ANALYSIS_VERSION
@@ -4583,7 +4586,8 @@ def registar(app):
                 # Métricas dos blocos do dia 2 — reutilizar dia2 já calculado
                 _bp1_m_c = (dia2.get('bp1') or {}).get('metricas') or []
                 _bp2_m_c = (dia2.get('bp2') or {}).get('metricas') or []
-                # RPE dos blocos (de activity_interval_rpe) — resolver por t0
+
+                # RPE do VST (Dia 2) por intervalo — de activity_interval_rpe
                 def _rpe_c(metricas_lista, aid):
                     rpes = []
                     for _m in metricas_lista:
@@ -4593,10 +4597,25 @@ def registar(app):
                     return rpes
                 _rpe_c_bp1 = _rpe_c(_bp1_m_c, vid)
                 _rpe_c_bp2 = _rpe_c(_bp2_m_c, vid)
+
+                # Curva watts->RPE do MOXY (Dia 1) — de activity_interval_rpe.
+                # Usada por validar_fisiologica_vst para calcular rpe_esperado_potencia
+                # e rpe_diferenca em cada intervalo da tabela BP1/BP2.
+                # Tambem entra no hash para invalidar a analise quando o RPE do MOXY mudar.
+                _curva_moxy_rpe = []
+                for _b1 in ons1:
+                    _t0_b1 = _b1.get('t0')
+                    _w_b1  = (_b1.get('watts') or _b1.get('watts_medio_da_api'))
+                    if _t0_b1 is not None and _w_b1 is not None:
+                        _rv_b1, _ = _rpe_interval_resolver(cn, mid, float(_t0_b1))
+                        if _rv_b1 is not None:
+                            _curva_moxy_rpe.append((_w_b1, _rv_b1))
+
                 _fisio_calcular_e_persistir(
                     cn, mid, vid,
                     _bp1w_c, _bp2w_c, _bp1bpm_c, _bp2bpm_c,
                     _dfa1_c, _bp1_m_c, _bp2_m_c,
+                    curva_rpe=_curva_moxy_rpe if _curva_moxy_rpe else None,
                     rpe_vst_bp1=_rpe_c_bp1,
                     rpe_vst_bp2=_rpe_c_bp2)
                 # upload feito pelo bloco _vst_persistir/ddp.upload() acima

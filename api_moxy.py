@@ -4639,6 +4639,20 @@ def registar(app):
                 print(f'[vst_comparar][moxy_analise] AVISO: {_e_ga}\n'
                       f'{_tb_ga.format_exc()}')
 
+            # Ler validacao_fisiologica_json que acabou de ser gravado
+            # e incluir no return para que o frontend renderize imediatamente,
+            # sem precisar de um segundo GET a /vst/resultado.
+            _vf_ret = None
+            try:
+                import json as _json_r
+                _vf_row = cn.execute(
+                    "SELECT validacao_fisiologica_json FROM vst_conjuntos "
+                    "WHERE vst_activity_id=?", (str(vid),)).fetchone()
+                if _vf_row and _vf_row[0]:
+                    _vf_ret = _json_r.loads(_vf_row[0])
+            except Exception:
+                pass
+
             return jsonify({
                 'status': 'ok',
                 'dia1_activity_id': mid, 'dia2_activity_id': vid,
@@ -4651,6 +4665,7 @@ def registar(app):
                 'hipotese_bp1': hipotese_bp1, 'hipotese_bp2': hipotese_bp2,
                 'recuperacao_final_dia2': dia2.get('recuperacao_final'),
                 'rede_causal': rede_causal_d1,
+                'validacao_fisiologica': _vf_ret,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

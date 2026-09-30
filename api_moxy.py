@@ -3216,13 +3216,14 @@ def registar(app):
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
             r = cn.execute(
-                "SELECT moxy_activity_id, resultado_json, analisado_em "
+                "SELECT moxy_activity_id, resultado_json, analisado_em, "
+                "validacao_fisiologica_json "
                 "FROM vst_conjuntos WHERE vst_activity_id=?",
                 (vid,)).fetchone()
             if not r:
                 return jsonify({'status': 'sem_resultado',
                                 'mensagem': 'sem conjunto salvo para esta sessão VST'})
-            moxy_id, rjson, analisado_em = r
+            moxy_id, rjson, analisado_em, val_fisio_json = r
             if not rjson:
                 return jsonify({'status': 'sem_resultado',
                                 'mensagem': 'conjunto existe mas análise ainda não foi gravada'})
@@ -3372,6 +3373,18 @@ def registar(app):
                 import traceback as _tb_rpe
                 print(f'[vst_resultado][RPE live] AVISO: {_e_rpe}\n{_tb_rpe.format_exc()}')
                 # Não sobrescrever: manter o que está no cache
+
+            # ── Recuperar validação fisiológica persistida (HRVT + coerência) ─
+            # val_fisio_json é gravado por /vst/gravar_analise e contém
+            # referencias_fisiologicas (HRVT1c/s, HRVT2, watts e bpm).
+            # Adicioná-lo ao resultado permite que o frontend reconstrua o
+            # card fisiológico após reload, sem recalcular.
+            try:
+                if val_fisio_json:
+                    resultado['validacao_fisiologica'] = json.loads(val_fisio_json)
+            except Exception as _e_vf:
+                print(f'[vst_resultado] validacao_fisiologica_json inválido: {_e_vf}')
+                # JSON inválido ou ausente — não derrubar o endpoint
 
             return jsonify(resultado)
         except Exception as e:

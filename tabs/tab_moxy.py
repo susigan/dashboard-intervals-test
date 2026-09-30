@@ -460,7 +460,8 @@ BODY = """
     <!-- 1. DASHBOARD — BP1/BP2/Recovery/RPE + sistemas ──────────── -->
     <h3 style="font-size:14px;margin-top:16px;">Perfil Fisiológico</h3>
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta análise identifica padrões de resposta fisiológica — não demonstra causalmente qual sistema limita o desempenho.</p>
-    <div id="mxVstDashboard" style="margin-bottom:12px;"></div>
+    <div id="mxVstFisioCardArea" style="margin-bottom:8px;"></div>
+<div id="mxVstDashboard" style="margin-bottom:12px;"></div>
 
     <!-- 3b. LIMITADOR — DAY 1 / MOXY ────────────────────────────  -->
     <h3 style="font-size:14px;margin-top:20px;">Limitador — Day 1 / MOXY</h3>
@@ -2591,6 +2592,18 @@ function _mxVstRenderComparacao(d, vstId){
  mxLimiterMostrar(d);
  mxHipoteseMostrar(d);
  mxHistoricoEstilosMostrar(d);
+ // ── Card de validação fisiológica (HRVT + coerência) ─────────────
+ // Usa validacao_fisiologica persistido: presente após /vst/gravar_analise
+ // e incluído pelo endpoint /vst/resultado desde a correcção da recuperação.
+ // Não recalcula — apenas renderiza o que foi gravado.
+ const fisioDiv=document.getElementById('mxVstFisioCardArea');
+ if(fisioDiv){
+  if(d.validacao_fisiologica){
+   fisioDiv.innerHTML=_mxVstFisioCard(d.validacao_fisiologica);
+  } else {
+   fisioDiv.innerHTML='';
+  }
+ }
 }
 
 // mxVstRenderRedeCausal — mostra o resultado da Rede Causal Day1 na Verificação.

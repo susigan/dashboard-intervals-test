@@ -2061,11 +2061,11 @@ function _mxVstFisioCard(val){
    const pct = iv.potencia_pct_bp!=null?(iv.potencia_pct_bp>0?'+':'')+iv.potencia_pct_bp+'%':'—';
    h+='<tr style="border-bottom:1px solid #161b22;">'
     +'<td style="padding:2px 5px;color:#6e7681;">'+(i+1)+'</td>'
-    +'<td style="padding:2px 5px;font-weight:500;">'+_fv(iv.potencia_watts,'W')+'</td>'
+    +'<td style="padding:2px 5px;font-weight:500;">'+_fv(iv.potencia_media,'W')+'</td>'
     +'<td style="padding:2px 5px;color:#8b949e;">'+pct+'</td>'
     +'<td style="padding:2px 5px;">'+_fv(iv.hr_final,' bpm')+'</td>'
-    +'<td style="padding:2px 5px;color:#8b949e;">'+_hrv_label(iv.fc_class)+'</td>'
-    +'<td style="padding:2px 5px;">'+_fv(iv.rpe_obs)+'</td>'
+    +'<td style="padding:2px 5px;color:#8b949e;">'+_hrv_label(iv.fc_classificacao)+'</td>'
+    +'<td style="padding:2px 5px;">'+_fv(iv.rpe!=null?iv.rpe:iv.rpe_obs)+'</td>'
     +'<td style="padding:2px 5px;color:'+coer_cor+';">'+coer_ico+' '+coer_lbl+'</td>'
     +'</tr>';
   });

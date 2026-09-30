@@ -457,6 +457,16 @@ BODY = """
     </div>
     <div id="mxVstConjuntoEstado" style="margin-top:6px;"></div>
 
+
+    <!-- Botão de gravar análise — topo da área de análise VST -->
+    <div id="mxVstGravarBtnArea" style="margin:10px 0 4px;display:none;">
+      <button onclick="mxVstGravarAnalise()"
+        style="padding:6px 16px;background:#1c2331;border:1px solid #3FB950;
+        color:#3FB950;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
+        💾 Gravar análise VST
+      </button>
+      <span id="mxVstGravarStatus" style="font-size:11px;color:#8b949e;margin-left:10px;"></span>
+    </div>
     <!-- 1. DASHBOARD — BP1/BP2/Recovery/RPE + sistemas ──────────── -->
     <h3 style="font-size:14px;margin-top:16px;">Perfil Fisiológico</h3>
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta análise identifica padrões de resposta fisiológica — não demonstra causalmente qual sistema limita o desempenho.</p>
@@ -582,15 +592,7 @@ BODY = """
         </div>
       </details>
 
-      <!-- Botão de gravar análise + badge de download DB -->
-      <div id="mxVstGravarBtnArea" style="margin:10px 0 4px;display:none;">
-        <button onclick="mxVstGravarAnalise()"
-          style="padding:6px 16px;background:#1c2331;border:1px solid #3FB950;
-          color:#3FB950;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
-          💾 Gravar análise VST
-        </button>
-        <span id="mxVstGravarStatus" style="font-size:11px;color:#8b949e;margin-left:10px;"></span>
-      </div>
+      <!-- botão GRAVAR movido para o topo da área de análise -->
       <div id="mxVstDbBadge" style="margin-bottom:8px;"></div>
 
       <details style="margin-top:6px;margin-left:8px;">
@@ -2258,14 +2260,24 @@ function mxVstCarregarConjuntosSalvos(){
 }
 
 function mxVstAbrirVerificacao(ix){
- // usa o vinculo ja' salvo -- carrega o VST (que ja' auto-carrega a
- // Moxy vinculada via mxVstCarregarConjunto, comportamento existente)
+ // Carrega o conjunto salvo como verificação activa, sem exigir
+ // nova selecção manual. mxVstCarregarConjunto chama /vst/resultado
+ // que usa o vinculo gravado e renderiza tudo directamente.
  const c = MX_VST_CONJUNTOS_SALVOS[ix];
  if(!c) return;
- const selVst=document.getElementById('mxVstSelect');
- if(selVst){ selVst.value=c.vst_activity_id; }
+ // Setar globais antes de qualquer fetch
  MX_VID = c.vst_activity_id;
  MX_MID = c.moxy_activity_id;
+ // Setar selects se os options já existirem (não bloqueia se não existirem)
+ const selVst=document.getElementById('mxVstSelect');
+ if(selVst && selVst.querySelector('option[value="'+c.vst_activity_id+'"]')){
+  selVst.value=c.vst_activity_id;
+ }
+ const selMoxy=document.getElementById('mxVstMoxySelect');
+ if(selMoxy && selMoxy.querySelector('option[value="'+c.moxy_activity_id+'"]')){
+  selMoxy.value=c.moxy_activity_id;
+ }
+ // Carregar análise VST (Dia 2) e em seguida o resultado do conjunto
  mxVstCarregar();
 }
 
@@ -2505,6 +2517,7 @@ function mxVstCarregarConjunto(vstId){
   if(cached.status==='ok'){
    // resultado já em BD — usar directamente, sem recalcular
    if(selMoxy&&cached.dia1_activity_id) selMoxy.value=cached.dia1_activity_id;
+   if(cached.dia1_activity_id) MX_MID=cached.dia1_activity_id;
    const ts=cached.analisado_em?(cached.analisado_em||'').slice(0,16):'';
    box.innerHTML='<div style="border-left:3px solid #3FB950;padding:6px 10px;">'\
     +'<b>CONJUNTO DE VERIFICAÇÃO</b><br>'\
@@ -2516,8 +2529,10 @@ function mxVstCarregarConjunto(vstId){
     +'style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid #58A6FF;'\
     +'background:transparent;color:#58A6FF;cursor:pointer;">↻ Re-sincronizar</button></div>'\
     +'</div>';
-   // usar os dados em cache directamente — zero recálculo
+   // renderizar resultado cacheado
    _mxVstRenderComparacao(cached, vstId);
+   // Se validacao_fisiologica ausente (resultado antigo), recalcular silenciosamente
+   if(!cached.validacao_fisiologica){ mxVstCarregarComparacao(vstId); }
   } else {
    // sem resultado em BD — buscar o vínculo e comparar
    fetch('/api/moxy/vst/conjunto/'+vstId).then(r=>r.json()).then(function(d){

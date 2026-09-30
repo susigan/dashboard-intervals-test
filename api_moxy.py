@@ -1543,6 +1543,19 @@ def registar(app):
             except Exception as _e:
                 dfa1 = {'ok': False, 'motivo': f'{type(_e).__name__}: {_e}'}
 
+            # Enriquecer cada limiar com 'intensidade' = 'valor'.
+            # nirs_breakpoints.validar_fisiologica_vst usa .get('intensidade')
+            # mas hrv_limiares.limiar_por_curva retorna 'valor'.
+            # Este alias resolve HRVT undefined sem alterar os outros ficheiros.
+            try:
+                for _lim in (dfa1.get('limiares') or {}).values():
+                    for _canal in ('watts', 'heartrate'):
+                        _d = _lim.get(_canal)
+                        if isinstance(_d, dict) and 'valor' in _d:
+                            _d.setdefault('intensidade', _d['valor'])
+            except Exception:
+                pass
+
             # Rede causal, so' para o campo do limitador -- a MESMA fonte
             # que ja' se usa ao gravar a analise (linha ~1671). Sem isto,
             # o cartao simples usava classificar_limitador() sozinho, que

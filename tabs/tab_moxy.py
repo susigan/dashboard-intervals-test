@@ -703,16 +703,31 @@ function mxMudarSubTab(nome){
  // grafico ficava em branco ate' o utilizador clicar "actualizar
  // sessao" (que forca um novo mxLimiares() e, de caminho, desenha
  // com o contentor entretanto visivel).
- if(nome==='limiares' && MX_ULT_LIMIARES_D){
-  mxDesenharLimiaresSmo2(MX_ULT_LIMIARES_D);
-  mxDesenharDmax(MX_ULT_LIMIARES_D);
-  mxDesenharDfa1(MX_ULT_LIMIARES_D.dfa1);
+ // Limiares: redesenha se dados em memória; busca banco se não;
+ // só recalcula se nenhuma análise persistida existir.
+ if(nome==='limiares'){
+  requestAnimationFrame(function(){
+   if(MX_ULT_LIMIARES_D){
+    mxDesenharLimiaresSmo2(MX_ULT_LIMIARES_D);
+    mxDesenharDmax(MX_ULT_LIMIARES_D);
+    mxDesenharDfa1(MX_ULT_LIMIARES_D.dfa1);
+   } else {
+    const _id=(Object.keys(MX_DADOS)||[])[0];
+    if(_id) mxCarregarDosBanco(_id, function(){ mxLimiares(); });
+   }
+  });
  }
- // Redesenhar rede causal quando o utilizador entra na aba 'rede'
- // Os canvas estavam display:none durante o cálculo automático
- if(nome==='rede' && MX_ULT_REDE_D){
-  mxDesenharRedeGrafo(MX_ULT_REDE_D);
-  mxDesenharRedePCR(MX_ULT_REDE_D);
+ // Rede causal: idem.
+ if(nome==='rede'){
+  requestAnimationFrame(function(){
+   if(MX_ULT_REDE_D){
+    mxDesenharRedeGrafo(MX_ULT_REDE_D);
+    mxDesenharRedePCR(MX_ULT_REDE_D);
+   } else {
+    const _id=(Object.keys(MX_DADOS)||[])[0];
+    if(_id) mxCarregarDosBanco(_id, function(){ mxRede(); });
+   }
+  });
  }
  if(nome==='intervencoes' && MX_ULT_PLANO){
   mxDesenharZonas(MX_ULT_PLANO, MX_ULT_RPE_D, MX_ULT_ZONAS_D);
@@ -1010,7 +1025,7 @@ function mx515(){
  Object.keys(MX515_EDIT).forEach(function(k){
   q+='&resp_'+k+'='+encodeURIComponent(MX515_EDIT[k]); });
  est.textContent='a avaliar...';
- fetch('/api/moxy/interpretacao/'+id+q).then(r=>r.json()).then(function(d){
+ return fetch('/api/moxy/interpretacao/'+id+q).then(r=>r.json()).then(function(d){
   if(d.status!=='ok'){ est.textContent=d.motivo||d.mensagem||'sem dados';
    box.innerHTML=''; return; }
   const p=d.pontuacao, i=d.interpretacao, m=d.medicoes;
@@ -4897,7 +4912,7 @@ function mxVstMostrarLimitadorDay1(d){
  }
 
  // Sem cache: buscar /limiares (calcula rede em runtime, sem botão)
- fetch('/api/moxy/limiares/'+moxyId).then(r=>r.json()).then(function(ld){
+ return fetch('/api/moxy/limiares/'+moxyId).then(r=>r.json()).then(function(ld){
   if(!ld||ld.status!=='ok'){
    _render('Erro ao carregar dados MOXY',null,{});
    return;
@@ -6692,7 +6707,7 @@ function mxRede(){
   +(document.getElementById('mxRdCond').checked?'':'&condicionar=0')
   +(document.getElementById('mxRdDer').checked?'&derivados=1':'');
  est.textContent='a calcular...';
- fetch('/api/moxy/rede/'+id+q).then(r=>r.json()).then(function(d){
+ return fetch('/api/moxy/rede/'+id+q).then(r=>r.json()).then(function(d){
   if(d.status!=='ok'){ est.textContent=d.mensagem||d.motivo||'sem dados';
    box.innerHTML=''; return; }
   est.textContent=d.n_pares_testados+' pares testados · '+d.n_dirigidas
@@ -6897,6 +6912,94 @@ function mxAlternarSessao(id, on){
  mxCarregar();
 }
 
+// ── Orquestradora automática — cálculo completo + persistência ─────────────
+// Chamada por mxCarregar() ao seleccionar 1 sessão.
+// Garante que limiares, 5-1-5/interpretação e rede causal são calculados
+// em paralelo e que a persistência só acontece depois de TODOS terminarem.
+function mxCalcularTudo(id){
+ const elStatus = document.getElementById('mxLimEstado');
+ if(elStatus) elStatus.textContent = 'a calcular análise completa...';
+ // Disparar os 3 cálculos em paralelo (agora retornam Promise)
+ const pRede = mxRede();
+ const p515  = mx515();
+ const pLim  = mxLimiares();
+ // Aguardar todos antes de persistir
+ const promises = [pRede, p515, pLim].filter(Boolean);
+ Promise.all(promises).then(function(){
+  if(elStatus) elStatus.textContent = 'a gravar análise...';
+  return fetch('/api/moxy/analise/'+id, {method:'POST'})
+   .then(function(r){ return r.json(); })
+   .then(function(resp){
+    if(elStatus){
+     if(resp.status && (resp.status==='ok'||resp.status==='gravado_sem_upload'))
+      elStatus.textContent = '✓ análise gravada' + (resp.versao?' · v'+resp.versao:'');
+     else
+      elStatus.textContent = 'erro ao gravar: '+(resp.mensagem||resp.status||'desconhecido');
+    }
+   })
+   .catch(function(e){
+    if(elStatus) elStatus.textContent = 'erro ao gravar: '+e.message;
+   });
+ }).catch(function(e){
+  if(elStatus) elStatus.textContent = 'erro no cálculo: '+e.message;
+ });
+}
+
+// ── Carregar análise do banco (após reload) ─────────────────────────────────
+// Chama GET /api/moxy/analise/<id> e popula as variáveis globais.
+// Se não existir no banco, recalcula.
+function mxCarregarDosBanco(id, onAusente){
+ return fetch('/api/moxy/analise/'+id)
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+   if(!d || d.status!=='ok' || !d.json_completo){
+    if(typeof onAusente==='function') onAusente();
+    return;
+   }
+   const jc = d.json_completo;
+   if(jc.limiares && jc.limiares.status==='ok'){
+    MX_ULT_LIMIARES_D = jc.limiares;
+    MX_ULT_VALORES    = jc.limiares.limiares_consenso||{};
+    MX_ULT_PERFIL     = (jc.limiares.perfil_resposta||{}).perfil||null;
+    MX_ULT_HIPO       = !!((jc.limiares.hipocapnia||{}).suspeita);
+    MX_BP             = jc.limiares.bp_moxy||null;
+    const lc=jc.limiares.limiares_consenso||{};
+    const el=document.getElementById('mxLimEstado');
+    if(el) el.textContent='✓ carregado do banco';
+    // Redesenhar se a aba estiver visível
+    const bloco=document.getElementById('mxLimiaresBloco');
+    if(bloco && bloco.style.display!=='none'){
+     requestAnimationFrame(function(){
+      mxDesenharLimiaresSmo2(MX_ULT_LIMIARES_D);
+      mxDesenharDmax(MX_ULT_LIMIARES_D);
+      mxDesenharDfa1(MX_ULT_LIMIARES_D.dfa1);
+      mxDraw();
+      mxLimVerificacaoMostrar(id, lc, MX_ULT_VALORES);
+     });
+    } else {
+     mxDraw();
+    }
+   }
+   if(jc.rede && jc.rede.status==='ok'){
+    MX_ULT_REDE   = (jc.rede.limitador||{}).sistema||null;
+    MX_ULT_REDE_D = jc.rede;
+    const redeEl=document.getElementById('mxSubRedeA')||document.getElementById('mxRede');
+    if(redeEl && redeEl.style.display!=='none'){
+     requestAnimationFrame(function(){
+      mxDesenharRedeGrafo(MX_ULT_REDE_D);
+      mxDesenharRedePCR(MX_ULT_REDE_D);
+     });
+    }
+   }
+   if(jc.i515 && jc.i515.status==='ok'){
+    MX_ULT_US = (jc.i515.interpretacao?.us||{}).limitador||null;
+    MX_ULT_PC = (jc.i515.interpretacao?.pc||{}).limitador||null;
+   }
+  })
+  .catch(function(){ if(typeof onAusente==='function') onAusente(); });
+}
+
+
 function mxCarregar(){
  if(!MX_SEL.length){
   MX=null; MX_DADOS={}; mxDraw(); mxDiagnostico(); mxBlocosTabela();
@@ -6943,7 +7046,7 @@ function mxCarregar(){
    MX_ULT_REDE=MX_ULT_REDE_D=MX_ULT_US=MX_ULT_PC=MX_ULT_PERFIL=null; MX_ULT_HIPO=false;
    const _bi=document.getElementById('mxIntervencoes');
    if(_bi) _bi.innerHTML='';
-   mxModoUnico(true); mxRede(); mx515(); mxLimiares(function(){ mxGuardarAnalise(); });
+   mxModoUnico(true); mxCalcularTudo(Object.keys(MX_DADOS)[0]);
   }
   else if(ids.length > 1){ mxModoUnico(false); mxResumo(); }
   mxAnalises();

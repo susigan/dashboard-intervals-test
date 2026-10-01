@@ -2404,6 +2404,14 @@ def validar_fisiologica_vst(
             if hr_final is not None: fcf.append(hr_final)
             if hr_media is not None: fcm.append(hr_media)
             if rpe_obs  is not None: rpes.append(float(rpe_obs))
+            # Deltas quantitativos vs HRVT1/HRVT2 para cada intervalo.
+            # Usam refs (closure do escopo pai) que tem hrvt1/2 em bpm e W.
+            _h2_bpm = refs.get('hrvt2_bpm')
+            _h2_w   = refs.get('hrvt2_w')
+            _h1c_bpm = refs.get('hrvt1_individualizado_bpm')
+            _h1c_w   = refs.get('hrvt1_individualizado_w')
+            _h1s_bpm = refs.get('hrvt1_classico_bpm')
+            _h1s_w   = refs.get('hrvt1_classico_w')
             ivs.append({
                 'ordem':                  idx_iv+1,
                 'potencia_media':         round(watts,1) if watts else None,
@@ -2414,6 +2422,25 @@ def validar_fisiologica_vst(
                 'hr_minimo':              round(hr_min,1) if hr_min else None,
                 'hr_maximo':              round(hr_max,1) if hr_max else None,
                 'fc_classificacao':       fc_class,
+                # Distâncias quantitativas vs HRVT — para exibição na UI
+                'delta_bpm_vs_hrvt2':     (round(hr_final - _h2_bpm, 1)
+                                           if hr_final is not None and _h2_bpm is not None
+                                           else None),
+                'delta_w_vs_hrvt2':       (round(watts - _h2_w, 1)
+                                           if watts is not None and _h2_w is not None
+                                           else None),
+                'delta_bpm_vs_hrvt1c':    (round(hr_final - _h1c_bpm, 1)
+                                           if hr_final is not None and _h1c_bpm is not None
+                                           else None),
+                'delta_w_vs_hrvt1c':      (round(watts - _h1c_w, 1)
+                                           if watts is not None and _h1c_w is not None
+                                           else None),
+                'delta_bpm_vs_hrvt1s':    (round(hr_final - _h1s_bpm, 1)
+                                           if hr_final is not None and _h1s_bpm is not None
+                                           else None),
+                'delta_w_vs_hrvt1s':      (round(watts - _h1s_w, 1)
+                                           if watts is not None and _h1s_w is not None
+                                           else None),
                 'rpe':                    rpe_obs,
                 'rpe_classificacao':      rpe_class,
                 'rpe_esperado_potencia':  rpe_esp_w,

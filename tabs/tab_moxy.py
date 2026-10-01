@@ -2145,6 +2145,39 @@ function _mxVstFisioCard(val){
  if(wctx.length)
   h+='<div style="font-size:9px;color:#484f58;margin-bottom:4px;">'
    +'Watts HRVT (contexto): '+wctx.join(' · ')+'</div>';
+ // -- Card CONSENSO HRVT1
+ (function(){
+  var r=refs;
+  var bp1=val.bp1||{};
+  var cands=bp1.hrvt_candidatos||{};
+  var h1c=cands.HRVT1c||{}; var h1s=cands.HRVT1s||{};
+  var temH1c=h1c.bpm!=null||h1c.watts!=null;
+  var temH1s=h1s.bpm!=null||h1s.watts!=null;
+  if(!temH1c&&!temH1s) return;
+  var hc='<div style="border:1px solid #58A6FF;border-radius:4px;padding:6px 8px;margin-bottom:8px;">';
+  hc+='<div style="font-size:10px;font-weight:700;color:#c9d1d9;margin-bottom:5px;">CONSENSO HRVT1</div>';
+  if(temH1c){
+   hc+='<div style="font-size:9px;color:#8b949e;margin-bottom:2px;"><b style="color:#c9d1d9;">HRVT1c (ind.)</b>: '+(h1c.bpm!=null?h1c.bpm+' bpm':'--')+' / '+(h1c.watts!=null?h1c.watts+'W':'--')+'</div>';
+   if(h1c.delta_bpm!=null||h1c.delta_w!=null){hc+='<div style="font-size:9px;color:#6e7681;padding-left:8px;">D vs BP1: ';if(h1c.delta_bpm!=null)hc+=(h1c.delta_bpm>=0?'+':'')+h1c.delta_bpm+' bpm ';if(h1c.delta_w!=null)hc+=(h1c.delta_w>=0?'+':'')+h1c.delta_w+'W';hc+='</div>';}
+  }
+  if(temH1s){
+   hc+='<div style="font-size:9px;color:#8b949e;margin-bottom:2px;"><b style="color:#c9d1d9;">HRVT1s (clas.)</b>: '+(h1s.bpm!=null?h1s.bpm+' bpm':'--')+' / '+(h1s.watts!=null?h1s.watts+'W':'--')+'</div>';
+   if(h1s.delta_bpm!=null||h1s.delta_w!=null){hc+='<div style="font-size:9px;color:#6e7681;padding-left:8px;">D vs BP1: ';if(h1s.delta_bpm!=null)hc+=(h1s.delta_bpm>=0?'+':'')+h1s.delta_bpm+' bpm ';if(h1s.delta_w!=null)hc+=(h1s.delta_w>=0?'+':'')+h1s.delta_w+'W';hc+='</div>';}
+  }
+  if(bp1.moxy_watts!=null||bp1.moxy_bpm_observado!=null)
+   hc+='<div style="font-size:9px;color:#8b949e;"><b style="color:#c9d1d9;">BP1 obs</b>: '+(bp1.moxy_bpm_observado!=null?bp1.moxy_bpm_observado+' bpm':'--')+' / '+(bp1.moxy_watts!=null?bp1.moxy_watts+'W':'--')+'</div>';
+  if(temH1c&&temH1s&&h1c.bpm!=null&&h1s.bpm!=null){
+   var diffBpm=Math.round(10*Math.abs(h1c.bpm-h1s.bpm))/10;
+   var diffW=h1c.watts!=null&&h1s.watts!=null?Math.round(10*Math.abs(h1c.watts-h1s.watts))/10:null;
+   var conf=diffBpm<=5?'alta':diffBpm<=12?'moderada':'baixa';
+   var cCor={alta:'#3FB950',moderada:'#E3B341',baixa:'#F85149'}[conf];
+   hc+='<div style="font-size:10px;font-weight:600;color:#c9d1d9;margin-top:4px;border-top:1px solid #21262d;padding-top:4px;">D HRVT1c-HRVT1s: '+diffBpm+' bpm'+(diffW!=null?' / '+diffW+'W':'')+' <span style="color:'+cCor+';font-size:9px;">conc.: '+conf+'</span></div>';
+  }
+  if(bp1.rpe_esperado_bp!=null)
+   hc+='<div style="font-size:9px;color:#8b949e;margin-top:2px;">RPE esperado BP1: '+bp1.rpe_esperado_bp+'</div>';
+  hc+='</div>';
+  h+=hc;
+ }());
  // ── Card CONSENSO HRVT2 ─────────────────────────────────────────
  (function(){
   var r=refs;
@@ -5568,7 +5601,7 @@ function mxLimVerificacaoMostrar(moxyId, lc, valores){
  }).catch(function(){ box.innerHTML=''; });
 }
 
-function mxLimiares(){
+function mxLimiares(onComplete){
  const ids=Object.keys(MX_DADOS);
  const est=document.getElementById('mxLimEstado');
  const box=document.getElementById('mxLimiares');
@@ -6129,6 +6162,7 @@ function mxLimiares(){
   box.innerHTML=h;
   mxDraw();
   mxLimVerificacaoMostrar(id, lc, MX_ULT_VALORES);
+  if(typeof onComplete==='function') onComplete();
  }).catch(e=>{ est.textContent='erro: '+e.message; });
 }
 
@@ -6880,7 +6914,7 @@ function mxCarregar(){
    MX_ULT_REDE=MX_ULT_US=MX_ULT_PC=MX_ULT_PERFIL=null; MX_ULT_HIPO=false;
    const _bi=document.getElementById('mxIntervencoes');
    if(_bi) _bi.innerHTML='';
-   mxModoUnico(true); mxRede(); mx515(); mxLimiares();
+   mxModoUnico(true); mxRede(); mx515(); mxLimiares(function(){ mxGuardarAnalise(); });
   }
   else if(ids.length > 1){ mxModoUnico(false); mxResumo(); }
   mxAnalises();

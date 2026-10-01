@@ -3260,13 +3260,13 @@ def registar(app):
             cn = ddp.get_conn()
             r = cn.execute(
                 "SELECT moxy_activity_id, resultado_json, analisado_em, "
-                "validacao_fisiologica_json "
+                "validacao_fisiologica_json, bpm_vst_validacao_json "
                 "FROM vst_conjuntos WHERE vst_activity_id=?",
                 (vid,)).fetchone()
             if not r:
                 return jsonify({'status': 'sem_resultado',
                                 'mensagem': 'sem conjunto salvo para esta sessão VST'})
-            moxy_id, rjson, analisado_em, val_fisio_json = r
+            moxy_id, rjson, analisado_em, val_fisio_json, bpm_vst_json = r
             if not rjson:
                 return jsonify({'status': 'sem_resultado',
                                 'mensagem': 'conjunto existe mas análise ainda não foi gravada'})
@@ -3277,6 +3277,9 @@ def registar(app):
             resultado['vst_activity_id'] = vid
             resultado['analisado_em'] = analisado_em
             resultado['fonte'] = 'cache'
+            # Incluir bpm_vst_validacao se existir no banco
+            if bpm_vst_json:
+                resultado['bpm_vst_validacao'] = json.loads(bpm_vst_json)
 
             # ── Actualizar rede_causal em runtime ──────────────────────────
             # O cache pode ter rede_causal de uma sessão anterior. A rede
@@ -3506,7 +3509,8 @@ def registar(app):
                     else:
                         _val_fisio_obj = _vf_parsed
                 elif val_fisio_json is None:
-                    # Sem análise fisiológica gravada — calcular agora automaticamente
+                    # Sem análise fisiológica gravada — calcular agora automaticamente.
+                    # bpm_vst_validacao_json também será persistido por _fisio_calcular_e_persistir.
                     print(f'[vst_resultado] validacao_fisiologica_json ausente → calcular')
                     try:
                         _lim_new = api_moxy_limiares(moxy_id)
@@ -3539,6 +3543,14 @@ def registar(app):
                         # GET não faz upload — ver regra em _fisio_calcular_e_persistir
                         if _vf_novo:
                             _val_fisio_obj = _vf_novo
+                            # Ler bpm_vst_validacao_json que acabou de ser persistido
+                            try:
+                                _bpm_row = cn.execute(
+                                    "SELECT bpm_vst_validacao_json FROM vst_conjuntos "                                    "WHERE vst_activity_id=?", (str(vid),)).fetchone()
+                                if _bpm_row and _bpm_row[0] and 'bpm_vst_validacao' not in resultado:
+                                    resultado['bpm_vst_validacao'] = json.loads(_bpm_row[0])
+                            except Exception:
+                                pass
                     except Exception as _e_new:
                         import traceback as _tb_new
                         print(f'[vst_resultado] cálculo automático falhou: {_e_new}\n'
@@ -4254,12 +4266,24 @@ def registar(app):
 
             val_json = _json.dumps(val_fisio, ensure_ascii=False)
 
+            # Validação BPM MOXY × VST — executada com os mesmos dados
+            # já disponíveis: bp1_bpm, bp2_bpm, bp1_m, bp2_m.
+            # Persiste no mesmo UPDATE para manter atomicidade.
+            bpm_val_json = None
+            try:
+                bpm_val = _nbk.validar_bpm_vst(
+                    bp1_bpm, bp2_bpm, bp1_m, bp2_m)
+                bpm_val_json = _json.dumps(bpm_val, ensure_ascii=False)
+            except Exception as _e_bpm:
+                print(f'[fisio] validar_bpm_vst falhou: {_e_bpm}')
+
             cn.execute(
                 "UPDATE vst_conjuntos "
                 "SET validacao_fisiologica_json=?, fisio_version=?, "
-                "fisio_data_hash=? "
+                "fisio_data_hash=?, bpm_vst_validacao_json=? "
                 "WHERE vst_activity_id=?",
-                (val_json, FISIO_ANALYSIS_VERSION, data_hash, str(vst_id)))
+                (val_json, FISIO_ANALYSIS_VERSION, data_hash,
+                 bpm_val_json, str(vst_id)))
             cn.commit()
             # NÃO chamar ddp.upload() aqui — ver docstring acima.
             return val_fisio, data_hash
@@ -4682,17 +4706,22 @@ def registar(app):
                 print(f'[vst_comparar][moxy_analise] AVISO: {_e_ga}\n'
                       f'{_tb_ga.format_exc()}')
 
-            # Ler validacao_fisiologica_json que acabou de ser gravado
-            # e incluir no return para que o frontend renderize imediatamente,
-            # sem precisar de um segundo GET a /vst/resultado.
+            # Ler validacao_fisiologica_json e bpm_vst_validacao_json
+            # que acabaram de ser gravados por _fisio_calcular_e_persistir,
+            # e incluir no return para o frontend renderizar imediatamente.
             _vf_ret = None
+            _bpm_vf_ret = None
             try:
                 import json as _json_r
                 _vf_row = cn.execute(
-                    "SELECT validacao_fisiologica_json FROM vst_conjuntos "
+                    "SELECT validacao_fisiologica_json, bpm_vst_validacao_json "
+                    "FROM vst_conjuntos "
                     "WHERE vst_activity_id=?", (str(vid),)).fetchone()
-                if _vf_row and _vf_row[0]:
-                    _vf_ret = _json_r.loads(_vf_row[0])
+                if _vf_row:
+                    if _vf_row[0]:
+                        _vf_ret = _json_r.loads(_vf_row[0])
+                    if _vf_row[1]:
+                        _bpm_vf_ret = _json_r.loads(_vf_row[1])
             except Exception:
                 pass
 
@@ -4709,6 +4738,7 @@ def registar(app):
                 'recuperacao_final_dia2': dia2.get('recuperacao_final'),
                 'rede_causal': rede_causal_d1,
                 'validacao_fisiologica': _vf_ret,
+                'bpm_vst_validacao': _bpm_vf_ret,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

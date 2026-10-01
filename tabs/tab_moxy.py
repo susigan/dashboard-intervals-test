@@ -2064,8 +2064,8 @@ function _mxVstFisioCard(val){
     +'<td style="padding:2px 5px;font-weight:500;">'+_fv(iv.potencia_media,'W')+'</td>'
     +'<td style="padding:2px 5px;color:#8b949e;">'+pct+'</td>'
     +'<td style="padding:2px 5px;">'+_fv(iv.hr_final,' bpm')+'</td>'
-    +'<td style="padding:2px 5px;color:#8b949e;">'+_hrv_label(iv.fc_classificacao)+'</td>'
-    +'<td style="padding:2px 5px;">'+_fv(iv.rpe!=null?iv.rpe:iv.rpe_obs)+'</td>'
+    +'<td style="padding:2px 5px;color:#8b949e;">'   +(function(){    const lbl=_hrv_label(iv.fc_classificacao);    const dBpm=iv.delta_bpm_vs_hrvt2;    const dW=iv.delta_w_vs_hrvt2;    let d=lbl;    if(dBpm!=null)d+=' <span style="font-size:8px;color:#6e7681;">'+(dBpm>=0?'+':'')+dBpm+' bpm</span>';    if(dW!=null)d+='<span style="font-size:8px;color:#484f58;"> / '+(dW>=0?'+':'')+dW+'W</span>';    return d;   }())+'</td>'
+    +'<td style="padding:2px 5px;">'+(function(){    const ro=(iv.rpe!=null?iv.rpe:iv.rpe_obs);    const re=iv.rpe_esperado_potencia;    const rd=iv.rpe_diferenca;    if(ro==null) return '—';    let s=String(ro);    if(re!=null) s+=' <span style="font-size:8px;color:#6e7681;">esp '+re+'</span>';    if(rd!=null) s+='<span style="font-size:8px;color:#484f58;"> Δ'+(rd>=0?'+':'')+rd+'</span>';    return s;   }())+'</td>'
     +'<td style="padding:2px 5px;color:'+coer_cor+';">'+coer_ico+' '+coer_lbl+'</td>'
     +'</tr>';
   });
@@ -2145,6 +2145,48 @@ function _mxVstFisioCard(val){
  if(wctx.length)
   h+='<div style="font-size:9px;color:#484f58;margin-bottom:4px;">'
    +'Watts HRVT (contexto): '+wctx.join(' · ')+'</div>';
+ // ── Card CONSENSO HRVT2 ─────────────────────────────────────────
+ (function(){
+  var r=refs;
+  var bp2=val.bp2||{};
+  var cand=(bp2.hrvt_candidatos||{}).HRVT2||{};
+  var temDFA=r.hrvt2_bpm!=null||r.hrvt2_w!=null;
+  var temMOXY=bp2.moxy_bpm_observado!=null||bp2.moxy_watts!=null;
+  if(!temDFA&&!temMOXY) return;
+  var bpms=[]; var ws=[];
+  if(r.hrvt2_bpm!=null)              bpms.push({v:r.hrvt2_bpm,f:'HRV/DFA'});
+  if(bp2.moxy_bpm_observado!=null)   bpms.push({v:bp2.moxy_bpm_observado,f:'MOXY'});
+  if(r.hrvt2_w!=null)                ws.push({v:r.hrvt2_w,f:'HRV/DFA'});
+  if(bp2.moxy_watts!=null)           ws.push({v:bp2.moxy_watts,f:'MOXY'});
+  var bpmMed=bpms.length?Math.round(10*bpms.reduce(function(a,x){return a+x.v;},0)/bpms.length)/10:null;
+  var wMed=ws.length?Math.round(10*ws.reduce(function(a,x){return a+x.v;},0)/ws.length)/10:null;
+  var diffBpm=bpms.length>=2?Math.abs(bpms[0].v-bpms[1].v):null;
+  var diffW=ws.length>=2?Math.abs(ws[0].v-ws[1].v):null;
+  var conf=diffBpm!=null?(diffBpm<=5?'alta':diffBpm<=12?'moderada':'baixa'):(bpms.length===1?'limitada':'—');
+  var cCor={alta:'#3FB950',moderada:'#E3B341',baixa:'#F85149',limitada:'#8b949e'}[conf]||'#8b949e';
+  var hc='<div style="border:1px solid #3FB950;border-radius:4px;padding:6px 8px;margin-bottom:8px;">';
+  hc+='<div style="font-size:10px;font-weight:700;color:#c9d1d9;margin-bottom:5px;">CONSENSO HRVT2</div>';
+  bpms.forEach(function(x){ hc+='<div style="font-size:9px;color:#8b949e;margin-bottom:2px;"><b style="color:#c9d1d9;">'+x.f+'</b>: '+x.v+' bpm'+(ws.find(function(w){return w.f===x.f;})?(' / '+ws.find(function(w){return w.f===x.f;}).v+'W'):'')+'</div>'; });
+  if(bp2.rpe_esperado_bp!=null) hc+='<div style="font-size:9px;color:#8b949e;margin-bottom:2px;"><b style="color:#c9d1d9;">RPE esp</b>: '+bp2.rpe_esperado_bp+'</div>';
+  if(cand.delta_bpm!=null||cand.delta_w!=null){
+   hc+='<div style="font-size:9px;color:#8b949e;margin-bottom:2px;"><b style="color:#c9d1d9;">Δ MOXY-HRV</b>: ';
+   if(cand.delta_bpm!=null)hc+=(cand.delta_bpm>=0?'+':'')+cand.delta_bpm+' bpm ';
+   if(cand.delta_w!=null)hc+=(cand.delta_w>=0?'+':'')+cand.delta_w+'W';
+   hc+='</div>';
+  }
+  if(bpmMed!=null||wMed!=null){
+   hc+='<div style="font-size:10px;font-weight:600;color:#c9d1d9;margin-top:4px;border-top:1px solid #21262d;padding-top:4px;">Estimativa: '+(bpmMed!=null?bpmMed+' bpm':'—')+' / '+(wMed!=null?wMed+'W':'—')+' <span style="color:'+cCor+';font-size:9px;">confiança: '+conf+'</span></div>';
+   if(bpms.length>=2&&diffBpm!=null){var lo=Math.round(10*Math.min.apply(null,bpms.map(function(x){return x.v;})))/10;var hi=Math.round(10*Math.max.apply(null,bpms.map(function(x){return x.v;})))/10;hc+='<div style="font-size:9px;color:#6e7681;">faixa bpm: '+lo+'–'+hi+'</div>';}
+   if(ws.length>=2&&diffW!=null){var loW=Math.round(10*Math.min.apply(null,ws.map(function(x){return x.v;})))/10;var hiW=Math.round(10*Math.max.apply(null,ws.map(function(x){return x.v;})))/10;hc+='<div style="font-size:9px;color:#6e7681;">faixa W: '+loW+'–'+hiW+'</div>';}
+  }
+  var evC=[],evD=[];
+  if(diffBpm!=null)(diffBpm<=5?evC:evD).push('FC: '+(diffBpm<=5?'concordam':'divergem')+' Δ'+diffBpm+' bpm');
+  if(diffW!=null)(diffW<=15?evC:evD).push('W: '+(diffW<=15?'concordam':'divergem')+' Δ'+diffW);
+  if(evC.length)hc+='<div style="font-size:9px;color:#3FB950;margin-top:3px;">✓ '+evC.join(' · ')+'</div>';
+  if(evD.length)hc+='<div style="font-size:9px;color:#F85149;">✗ '+evD.join(' · ')+'</div>';
+  hc+='</div>';
+  h+=hc;
+ }());
  h+=_renderBpFisio('BP1', val.bp1);
  h+=_renderBpFisio('BP2', val.bp2);
  h+=_zonasHtml();

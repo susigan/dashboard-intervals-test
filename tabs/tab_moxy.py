@@ -711,10 +711,19 @@ function mxMudarSubTab(nome){
     mxDesenharLimiaresSmo2(MX_ULT_LIMIARES_D);
     mxDesenharDmax(MX_ULT_LIMIARES_D);
     mxDesenharDfa1(MX_ULT_LIMIARES_D.dfa1);
+    if(MX_ULT_515_D) mxRender515(MX_ULT_515_D);
    } else {
     const _id=(Object.keys(MX_DADOS)||[])[0];
-    if(_id) mxCarregarDosBanco(_id, function(){ mxLimiares(); });
+    if(_id) mxCarregarDosBanco(_id, function(){ mxLimiares(); mx515(); });
    }
+  });
+ }
+ // Principal: redesenhar grafico ao voltar
+ if(nome==='principal'){
+  requestAnimationFrame(function(){
+   mxDraw();
+   if(typeof mxDiagnostico==='function') mxDiagnostico();
+   if(typeof mxBlocosTabela==='function') mxBlocosTabela();
   });
  }
  // Rede causal: idem.
@@ -729,8 +738,9 @@ function mxMudarSubTab(nome){
    }
   });
  }
- if(nome==='intervencoes' && MX_ULT_PLANO){
-  mxDesenharZonas(MX_ULT_PLANO, MX_ULT_RPE_D, MX_ULT_ZONAS_D);
+ if(nome==='intervencoes'){
+  if(MX_ULT_PLANO) mxDesenharZonas(MX_ULT_PLANO, MX_ULT_RPE_D, MX_ULT_ZONAS_D);
+  if(typeof mxSintese==='function') mxSintese();
  }
  if(nome==='verificacao' && !MX_VST_LISTA_CARREGADA){
   MX_VST_LISTA_CARREGADA = true;
@@ -1025,100 +1035,69 @@ function mx515(){
  Object.keys(MX515_EDIT).forEach(function(k){
   q+='&resp_'+k+'='+encodeURIComponent(MX515_EDIT[k]); });
  est.textContent='a avaliar...';
- return fetch('/api/moxy/interpretacao/'+id+q).then(r=>r.json()).then(function(d){
-  if(d.status!=='ok'){ est.textContent=d.motivo||d.mensagem||'sem dados';
-   box.innerHTML=''; return; }
-  const p=d.pontuacao, i=d.interpretacao, m=d.medicoes;
-  // guardar os dois eixos para a síntese os cruzar com a rede causal
-  MX_ULT_US=(i.us||{}).limitador||null;
-  MX_ULT_PC=(i.pc||{}).limitador||null;
-  if(typeof mxSintese==='function') mxSintese();
-  est.textContent=m.n_blocos_usados+' de '+m.n_blocos_trabalho
-   +' blocos usados'+(d.respostas_editadas?' · com respostas editadas':'');
+  return fetch('/api/moxy/interpretacao/'+id+q).then(r=>r.json()).then(function(d){
+   if(d.status!=='ok'){ est.textContent=d.motivo||d.mensagem||'sem dados';
+    box.innerHTML=''; return; }
+   MX_ULT_515_D = d;
+   MX_ULT_US = (d.interpretacao.us||{}).limitador||null;
+   MX_ULT_PC = (d.interpretacao.pc||{}).limitador||null;
+   if(typeof mxSintese==='function') mxSintese();
+   est.textContent = d.medicoes.n_blocos_usados+' de '+d.medicoes.n_blocos_trabalho
+    +' blocos usados'+(d.respostas_editadas?' · com respostas editadas':'');
+   mxRender515(d);
+  }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
 
-  const cor=v=>v==='Utilização'||v==='Pulmonar'?'#58A6FF'
-    :v==='Fornecimento'||v==='Cardíaco'?'#F85149':'#8b949e';
-  let h='<div style="display:flex;flex-wrap:wrap;gap:12px;">';
-  [['Utilização vs Fornecimento',p.us,i.us],
-   ['Pulmonar vs Cardíaco',p.pc,i.pc]].forEach(function(bl){
-   if(!bl[2]) return;
-   h+='<div style="flex:1;min-width:280px;border-left:3px solid '
-    +cor(bl[2].limitador)+';padding:6px 10px;">'
-    +'<span style="color:#8b949e;font-size:11px;">'+bl[0]+'</span><br>'
-    +'<b style="color:'+cor(bl[2].limitador)+';font-size:15px;">'
-    +bl[2].limitador+'</b> '
-    +'<span style="color:#8b949e;font-size:11px;">'+bl[1].pontos+'/'
-    +bl[1].max+' = '+(bl[1].score!=null?bl[1].score:'—')+'</span>'
-    +'<br><span style="font-size:11px;">'+bl[2].texto+'</span></div>';
+// Renderizar resultado 5-1-5 a partir de objecto ja calculado (sem fetch).
+// Usada por mx515(), mxMudarSubTab() e mxCarregarDosBanco().
+function mxRender515(d){
+ if(!d||d.status!=='ok') return;
+ const box=document.getElementById('mx515');
+ if(!box) return;
+ const p=d.pontuacao, it=d.interpretacao, m=d.medicoes;
+ const cor=function(v){
+  return v==='Utilizacao'||v==='Pulmonar'?'#58A6FF'
+   :v==='Fornecimento'||v==='Cardiaco'?'#F85149':'#8b949e'; };
+ let h='<div style="display:flex;flex-wrap:wrap;gap:12px;">';
+ [['Utilizacao vs Fornecimento',p.us,it.us],['Pulmonar vs Cardiaco',p.pc,it.pc]]
+  .forEach(function(bl){
+  if(!bl[2]) return;
+  h+='<div style="flex:1;min-width:280px;border-left:3px solid '+cor(bl[2].limitador)+';padding:6px 10px;">'
+   +'<span style="color:#8b949e;font-size:11px;">'+bl[0]+'</span><br>'
+   +'<b style="color:'+cor(bl[2].limitador)+';font-size:15px;">'+bl[2].limitador+'</b> '
+   +'<span style="color:#8b949e;font-size:11px;">'+bl[1].pontos+'/'+bl[1].max+' = '+(bl[1].score!=null?bl[1].score:'--')+'</span>'
+   +'<br><span style="font-size:11px;">'+bl[2].texto+'</span></div>';
+ });
+ h+='</div>';
+ (it.reservas||[]).forEach(function(r2){ h+='<p style="color:#F0883E;font-size:11px;margin:4px 0;">'+r2+'</p>'; });
+ (d.avisos||[]).forEach(function(a){ h+='<p style="color:#F85149;font-size:11px;margin:4px 0;">'+a+'</p>'; });
+ h+='<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:#8b949e;">As 13 perguntas</summary><div style="margin-top:6px;">';
+ h+='<table style="width:100%;border-collapse:collapse;font-size:11px;"><tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;"><th style="padding:4px;">#</th><th>Pergunta</th><th>Padrao</th><th>Medido</th><th>Resposta</th><th>Pontos</th><th>Eixo</th></tr>';
+ [['us',p.us.detalhe],['pc',p.pc.detalhe]].forEach(function(par){
+  par[1].forEach(function(dd){
+   const md=(m.respostas||{})[dd.pergunta]||{};
+   const opcoes=dd.pergunta==='2A'?d.faixas_2A:dd.pergunta==='9'?d.faixas_9:d.niveis;
+   const val=md.valor!=null?String(md.valor)
+     :md.declive_pct_da_amplitude!=null?(md.declive_pct_da_amplitude>0?'+':'')+md.declive_pct_da_amplitude+'%'
+     :md.atraso_mediano_s!=null?md.atraso_mediano_s+'s':'--';
+   h+='<tr style="border-bottom:1px solid #161b22;'+(md.editada?'background:rgba(227,179,65,0.07);':'')+'">'
+    +'<td style="padding:4px;color:#8b949e;">'+dd.pergunta+'</td>'
+    +'<td style="color:#8b949e;">'+dd.texto+((d.onde_mede||{})[dd.pergunta]?'<br><span style="font-size:10px;color:#6e7681;">medido no '+d.onde_mede[dd.pergunta]+'</span>':'')+'</td>'
+    +'<td>'+(((d.figuras||{})[dd.pergunta]||{})[dd.resposta]||'--')+'</td>'
+    +'<td style="color:#8b949e;">'+val+'</td>'
+    +'<td><select class="mx515R" data-q="'+dd.pergunta+'" style="font-size:11px;max-width:150px;">'
+    +(opcoes||[]).map(function(o){ return '<option'+(o===dd.resposta?' selected':'')+'>'+o+'</option>'; }).join('')
+    +(dd.resposta==null?'<option selected>--</option>':'')+'</select></td>'
+    +'<td style="color:'+(dd.nao_aplicavel?'#6e7681':dd.pontos==null?'#F0883E':dd.pontos<0?'#F85149':'#c9d1d9')+';">'
+    +(dd.nao_aplicavel?'nao se aplica':dd.pontos!=null?dd.pontos+' / '+dd.max:'sem resposta / '+dd.max)+'</td>'
+    +'<td style="color:#8b949e;">'+par[0].toUpperCase()+'</td></tr>';
   });
-  h+='</div>';
-  (i.reservas||[]).forEach(function(r2){
-   h+='<p style="color:#F0883E;font-size:11px;margin:4px 0;">⚠ '+r2+'</p>'; });
-  (d.avisos||[]).forEach(function(a){
-   h+='<p style="color:#F85149;font-size:11px;margin:4px 0;">⚠ '+a+'</p>'; });
-
-  // as 13 perguntas com as figuras ficam em dropdown: os dois cartões
-  // acima são a resposta, isto é a auditoria de como se lá chegou
-  h+='<details style="margin-top:8px;"><summary style="cursor:pointer;'
-   +'font-size:12px;color:#8b949e;padding:4px 0;">As 13 perguntas, com o '
-   +'padrão de cada resposta</summary><div style="margin-top:6px;">';
-  h+='<table style="width:100%;border-collapse:collapse;font-size:11px;'
-   +'"><tr style="color:#8b949e;text-align:left;'
-   +'border-bottom:1px solid #21262d;"><th style="padding:5px;">#</th>'
-   +'<th>Pergunta</th><th>Padrão</th><th>Medido</th><th>Resposta</th><th>Pontos</th>'
-   +'<th>Eixo</th></tr>';
-  [['us',p.us.detalhe],['pc',p.pc.detalhe]].forEach(function(par){
-   par[1].forEach(function(dd){
-    const md=(m.respostas||{})[dd.pergunta]||{};
-    const opcoes = dd.pergunta==='2A' ? d.faixas_2A
-                 : dd.pergunta==='9' ? d.faixas_9 : d.niveis;
-    const val = md.valor!=null ? md.valor
-      : md.declive_pct_da_amplitude!=null
-        ? (md.declive_pct_da_amplitude>0?'+':'')+md.declive_pct_da_amplitude+'%'
-      : md.atraso_mediano_s!=null ? md.atraso_mediano_s+'s' : '—';
-    h+='<tr style="border-bottom:1px solid #161b22;'
-     +(md.editada?'background:rgba(227,179,65,0.07);':'')+'">'
-     +'<td style="padding:5px;color:#8b949e;">'+dd.pergunta+'</td>'
-     +'<td style="color:#8b949e;">'+dd.texto
-     +((d.onde_mede||{})[dd.pergunta]
-       ? '<br><span style="color:#6e7681;font-size:10px;">medido no '
-         +d.onde_mede[dd.pergunta]+'</span>' : '')+'</td>'
-     +'<td>'+(((d.figuras||{})[dd.pergunta]||{})[dd.resposta]
-              || '<span style="color:#484f58;font-size:10px;">—</span>')+'</td>'
-     +'<td style="color:#8b949e;">'+val+'</td>'
-     +'<td><select class="mx515R" data-q="'+dd.pergunta+'" '
-     +'style="font-size:11px;max-width:150px;">'
-     + (opcoes||[]).map(function(o){
-        return '<option'+(o===dd.resposta?' selected':'')+'>'+o+'</option>';
-       }).join('')
-     + (dd.resposta==null?'<option selected>—</option>':'')
-     +'</select></td>'
-     +'<td style="color:'+(dd.nao_aplicavel?'#6e7681'
-        :dd.pontos==null?'#F0883E'
-        :dd.pontos<0?'#F85149':'#c9d1d9')+';">'
-     +(dd.nao_aplicavel?'não se aplica'
-       :dd.pontos!=null?dd.pontos+' / '+dd.max:'sem resposta / '+dd.max)+'</td>'
-     +'<td style="color:#8b949e;">'+par[0].toUpperCase()+'</td></tr>';
-   });
-  });
-  h+='</table>';
-  h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
-   +'Alterar uma resposta recalcula tudo. "Medido" mostra o valor ou o '
-   +'declive em % da amplitude do canal na sessão — é isso que decide entre '
-   +'"clear" e "slight". Cortes actuais: claro acima de '
-   +d.cortes.claro_pct+'%, ligeiro acima de '+d.cortes.ligeiro_pct+'%. '
-   +'Valores de repouso e de trabalho medidos nos últimos '
-   +(m.repouso_seg||30)+' s de cada bloco — o início ainda está em '
-   +'transição, e o patamar é o que a pergunta procura. Na figura, os '
-   +'pontos cinzentos marcam exactamente onde a tendência foi tirada: em '
-   +'cima nas perguntas de repouso, em baixo nas de trabalho.</p>';
-  h+='</div></details>';
-  box.innerHTML=h;
-  Array.prototype.forEach.call(box.querySelectorAll('.mx515R'), function(el){
-   el.addEventListener('change', function(){
-    MX515_EDIT[el.getAttribute('data-q')]=el.value; mx515(); });
-  });
- }).catch(e=>{ est.textContent='erro: '+e.message; });
+ });
+ h+='</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">Cortes: claro &gt; '+d.cortes.claro_pct+'%, ligeiro &gt; '+d.cortes.ligeiro_pct+'%.</p></div></details>';
+ box.innerHTML=h;
+ Array.prototype.forEach.call(box.querySelectorAll('.mx515R'),function(el){
+  el.addEventListener('change',function(){ MX515_EDIT[el.getAttribute('data-q')]=el.value; mx515(); });
+ });
 }
 
 // Em comparacao esconde-se o detalhe: com 4 sessoes seriam 4 tabelas de
@@ -1376,7 +1355,7 @@ let MX_ULT_ORIGEM_BP = {bp1:'métodos existentes', bp2:'métodos existentes'};
 let MX_RESERVAS = null;  // W′ e M′ balance ao longo da sessão
 // resultados dos três métodos, para a síntese os poder cruzar
 let MX_ULT_REDE=null, MX_ULT_REDE_D=null, MX_ULT_US=null, MX_ULT_PC=null,
-    MX_ULT_PERFIL=null, MX_ULT_HIPO=false;
+    MX_ULT_PERFIL=null, MX_ULT_HIPO=false, MX_ULT_515_D=null;
 // valores concretos do teste actual (watts, bpm, smo2, limitador
 // fisiológico), para as intervenções mostrarem "a que carga" e não só
 // receitas genéricas
@@ -6918,30 +6897,43 @@ function mxAlternarSessao(id, on){
 // em paralelo e que a persistência só acontece depois de TODOS terminarem.
 function mxCalcularTudo(id){
  const elStatus = document.getElementById('mxLimEstado');
- if(elStatus) elStatus.textContent = 'a calcular análise completa...';
- // Disparar os 3 cálculos em paralelo (agora retornam Promise)
+ if(elStatus) elStatus.textContent = 'a calcular analise completa...';
+ // Disparar os 3 calculos em paralelo (retornam Promise)
  const pRede = mxRede();
  const p515  = mx515();
  const pLim  = mxLimiares();
- // Aguardar todos antes de persistir
  const promises = [pRede, p515, pLim].filter(Boolean);
  Promise.all(promises).then(function(){
-  if(elStatus) elStatus.textContent = 'a gravar análise...';
+  // Todos terminaram — actualizar sintese e redesenhar
+  if(typeof mxSintese==='function') mxSintese();
+  requestAnimationFrame(function(){
+   mxDraw();
+   if(MX_ULT_LIMIARES_D){
+    mxDesenharLimiaresSmo2(MX_ULT_LIMIARES_D);
+    mxDesenharDmax(MX_ULT_LIMIARES_D);
+    mxDesenharDfa1(MX_ULT_LIMIARES_D.dfa1);
+   }
+   if(MX_ULT_515_D) mxRender515(MX_ULT_515_D);
+   if(MX_ULT_REDE_D){
+    mxDesenharRedeGrafo(MX_ULT_REDE_D);
+    mxDesenharRedePCR(MX_ULT_REDE_D);
+   }
+  });
+  // Persistir somente apos todos calcularem
+  if(elStatus) elStatus.textContent = 'a gravar analise...';
   return fetch('/api/moxy/analise/'+id, {method:'POST'})
    .then(function(r){ return r.json(); })
    .then(function(resp){
     if(elStatus){
      if(resp.status && (resp.status==='ok'||resp.status==='gravado_sem_upload'))
-      elStatus.textContent = '✓ análise gravada' + (resp.versao?' · v'+resp.versao:'');
+      elStatus.textContent = '✓ analise gravada' + (resp.versao?' · v'+resp.versao:'');
      else
       elStatus.textContent = 'erro ao gravar: '+(resp.mensagem||resp.status||'desconhecido');
     }
    })
-   .catch(function(e){
-    if(elStatus) elStatus.textContent = 'erro ao gravar: '+e.message;
-   });
+   .catch(function(e){ if(elStatus) elStatus.textContent = 'erro ao gravar: '+e.message; });
  }).catch(function(e){
-  if(elStatus) elStatus.textContent = 'erro no cálculo: '+e.message;
+  if(elStatus) elStatus.textContent = 'erro no calculo: '+e.message;
  });
 }
 
@@ -6992,8 +6984,15 @@ function mxCarregarDosBanco(id, onAusente){
     }
    }
    if(jc.i515 && jc.i515.status==='ok'){
+    MX_ULT_515_D = jc.i515;
     MX_ULT_US = (jc.i515.interpretacao?.us||{}).limitador||null;
     MX_ULT_PC = (jc.i515.interpretacao?.pc||{}).limitador||null;
+    if(typeof mxSintese==='function') mxSintese();
+    // Renderizar 5-1-5 se a aba estiver visível
+    const sub515=document.getElementById('mxSub515A');
+    if(sub515 && sub515.style.display!=='none'){
+     requestAnimationFrame(function(){ mxRender515(MX_ULT_515_D); });
+    }
    }
   })
   .catch(function(){ if(typeof onAusente==='function') onAusente(); });
@@ -7043,7 +7042,7 @@ function mxCarregar(){
   if(ids.length === 1){
    // limpar os resultados da sessão anterior: sem isto, o cartão mostrava
    // o limitador da sessão que estava seleccionada antes
-   MX_ULT_REDE=MX_ULT_REDE_D=MX_ULT_US=MX_ULT_PC=MX_ULT_PERFIL=null; MX_ULT_HIPO=false;
+   MX_ULT_REDE=MX_ULT_REDE_D=MX_ULT_US=MX_ULT_PC=MX_ULT_PERFIL=MX_ULT_515_D=null; MX_ULT_HIPO=false;
    const _bi=document.getElementById('mxIntervencoes');
    if(_bi) _bi.innerHTML='';
    mxModoUnico(true); mxCalcularTudo(Object.keys(MX_DADOS)[0]);

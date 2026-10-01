@@ -708,6 +708,12 @@ function mxMudarSubTab(nome){
   mxDesenharDmax(MX_ULT_LIMIARES_D);
   mxDesenharDfa1(MX_ULT_LIMIARES_D.dfa1);
  }
+ // Redesenhar rede causal quando o utilizador entra na aba 'rede'
+ // Os canvas estavam display:none durante o cálculo automático
+ if(nome==='rede' && MX_ULT_REDE_D){
+  mxDesenharRedeGrafo(MX_ULT_REDE_D);
+  mxDesenharRedePCR(MX_ULT_REDE_D);
+ }
  if(nome==='intervencoes' && MX_ULT_PLANO){
   mxDesenharZonas(MX_ULT_PLANO, MX_ULT_RPE_D, MX_ULT_ZONAS_D);
  }
@@ -1354,7 +1360,7 @@ let MX_ULT_PLANO = null, MX_ULT_RPE_D = null, MX_ULT_ZONAS_D = null;
 let MX_ULT_ORIGEM_BP = {bp1:'métodos existentes', bp2:'métodos existentes'};
 let MX_RESERVAS = null;  // W′ e M′ balance ao longo da sessão
 // resultados dos três métodos, para a síntese os poder cruzar
-let MX_ULT_REDE=null, MX_ULT_US=null, MX_ULT_PC=null,
+let MX_ULT_REDE=null, MX_ULT_REDE_D=null, MX_ULT_US=null, MX_ULT_PC=null,
     MX_ULT_PERFIL=null, MX_ULT_HIPO=false;
 // valores concretos do teste actual (watts, bpm, smo2, limitador
 // fisiológico), para as intervenções mostrarem "a que carga" e não só
@@ -2173,6 +2179,25 @@ function _mxVstFisioCard(val){
    var cCor={alta:'#3FB950',moderada:'#E3B341',baixa:'#F85149'}[conf];
    hc+='<div style="font-size:10px;font-weight:600;color:#c9d1d9;margin-top:4px;border-top:1px solid #21262d;padding-top:4px;">D HRVT1c-HRVT1s: '+diffBpm+' bpm'+(diffW!=null?' / '+diffW+'W':'')+' <span style="color:'+cCor+';font-size:9px;">conc.: '+conf+'</span></div>';
   }
+  if(temVST){
+   var fcsBP2=ivsBP2.map(function(iv){return iv.hr_final;}).filter(function(v){return v!=null;});
+   var wsBP2=ivsBP2.map(function(iv){return iv.potencia_media;}).filter(function(v){return v!=null;});
+   var rpesBP2=ivsBP2.map(function(iv){return iv.rpe!=null?iv.rpe:null;}).filter(function(v){return v!=null;});
+   var fcMin2=fcsBP2.length?Math.min.apply(null,fcsBP2):null;
+   var fcMax2=fcsBP2.length?Math.max.apply(null,fcsBP2):null;
+   var wMin2=wsBP2.length?Math.min.apply(null,wsBP2):null;
+   var wMax2=wsBP2.length?Math.max.apply(null,wsBP2):null;
+   var fcRng2=fcMin2!=null?(Math.abs((fcMax2||fcMin2)-fcMin2)>0.5?Math.round(10*fcMin2)/10+'–'+Math.round(10*fcMax2)/10:String(Math.round(10*fcMin2)/10)):null;
+   var wRng2=wMin2!=null?(Math.abs((wMax2||wMin2)-wMin2)>1?Math.round(10*wMin2)/10+'–'+Math.round(10*wMax2)/10:String(Math.round(10*wMin2)/10)):null;
+   var rpeMin=rpesBP2.length?Math.min.apply(null,rpesBP2):null;
+   var rpeMax=rpesBP2.length?Math.max.apply(null,rpesBP2):null;
+   var rpeRng2=rpeMin!=null?(rpeMin===rpeMax?String(rpeMin):rpeMin+'–'+rpeMax):null;
+   hc+='<div style="font-size:9px;color:#8b949e;margin-bottom:2px;"><b style="color:#c9d1d9;">VST BP2 obs</b>: FC '+(fcRng2||'--')+' bpm / '+(wRng2||'--')+'W'+(rpeRng2?' / RPE '+rpeRng2:'')+'</div>';
+   if(r.hrvt2_bpm!=null&&fcMin2!=null){
+    var difVstHrv2=Math.round(10*(fcMin2-r.hrvt2_bpm))/10;
+    if(Math.abs(difVstHrv2)>3) hc+='<div style="font-size:9px;color:#E3B341;">⚠ FC VST vs HRV/DFA: '+(difVstHrv2>=0?'+':'')+difVstHrv2+' bpm</div>';
+   }
+  }
   if(bp1.rpe_esperado_bp!=null)
    hc+='<div style="font-size:9px;color:#8b949e;margin-top:2px;">RPE esperado BP1: '+bp1.rpe_esperado_bp+'</div>';
   hc+='</div>';
@@ -2185,7 +2210,10 @@ function _mxVstFisioCard(val){
   var cand=(bp2.hrvt_candidatos||{}).HRVT2||{};
   var temDFA=r.hrvt2_bpm!=null||r.hrvt2_w!=null;
   var temMOXY=bp2.moxy_bpm_observado!=null||bp2.moxy_watts!=null;
-  if(!temDFA&&!temMOXY) return;
+  // Evidencia VST: intervalos BP2 reais
+  var ivsBP2=(bp2.intervalos||[]).filter(function(iv){return iv.hr_final!=null||iv.potencia_media!=null;});
+  var temVST=ivsBP2.length>0;
+  if(!temDFA&&!temMOXY&&!temVST) return;
   var bpms=[]; var ws=[];
   if(r.hrvt2_bpm!=null)              bpms.push({v:r.hrvt2_bpm,f:'HRV/DFA'});
   if(bp2.moxy_bpm_observado!=null)   bpms.push({v:bp2.moxy_bpm_observado,f:'MOXY'});
@@ -6764,6 +6792,7 @@ function mxRede(){
   // ANTES da rede -- e nessa altura o elemento ainda não existia, portanto
   // o cartão nunca aparecia numa sessão única
   MX_ULT_REDE=(d.limitador||{}).sistema||null;
+ MX_ULT_REDE_D=d; // JSON completo para redesenho ao entrar na aba
   if(typeof mxSintese==='function') mxSintese();
   const dg=d.diagnostico||{};
   const dif=Object.keys(dg).filter(k=>dg[k] && dg[k].diferenciada);
@@ -6911,7 +6940,7 @@ function mxCarregar(){
   if(ids.length === 1){
    // limpar os resultados da sessão anterior: sem isto, o cartão mostrava
    // o limitador da sessão que estava seleccionada antes
-   MX_ULT_REDE=MX_ULT_US=MX_ULT_PC=MX_ULT_PERFIL=null; MX_ULT_HIPO=false;
+   MX_ULT_REDE=MX_ULT_REDE_D=MX_ULT_US=MX_ULT_PC=MX_ULT_PERFIL=null; MX_ULT_HIPO=false;
    const _bi=document.getElementById('mxIntervencoes');
    if(_bi) _bi.innerHTML='';
    mxModoUnico(true); mxRede(); mx515(); mxLimiares(function(){ mxGuardarAnalise(); });

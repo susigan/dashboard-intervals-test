@@ -1872,6 +1872,36 @@ def registar(app):
 
     VERSAO_ANALISE = '2026-08-30'
 
+    @app.route('/api/moxy/analise/<path:activity_id>', methods=['GET'])
+    def api_moxy_analise_ler(activity_id):
+        """Ler analise persistida do banco — frontend usa para recarregar
+        sem recalcular apos reload. Retorna json_completo (limiares+i515+rede).
+        """
+        try:
+            import json as _json
+            import drive_db_perfil as ddp
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            cn = ddp.get_conn()
+            row = cn.execute(
+                'SELECT json_completo, versao_analise, data_gravacao '
+                'FROM moxy_analises WHERE activity_id=?',
+                (aid,)).fetchone()
+            cn.close()
+            if not row or not row[0]:
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': 'sem analise persistida'}), 200
+            jc = _json.loads(row[0])
+            return jsonify({
+                'status': 'ok',
+                'activity_id': aid,
+                'versao_analise': row[1],
+                'data_gravacao': row[2],
+                'json_completo': jc,
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+
     @app.route('/api/moxy/analise/<path:activity_id>', methods=['POST'])
     def api_moxy_guardar_analise(activity_id):
         """Corre tudo e grava o resultado.

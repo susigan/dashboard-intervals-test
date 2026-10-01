@@ -470,6 +470,9 @@ BODY = """
     <!-- 1. DASHBOARD — BP1/BP2/Recovery/RPE + sistemas ──────────── -->
     <h3 style="font-size:14px;margin-top:16px;">Perfil Fisiológico</h3>
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta análise identifica padrões de resposta fisiológica — não demonstra causalmente qual sistema limita o desempenho.</p>
+    <!-- Validação BPM MOXY × VST: comparação entre BPM MOXY e FC real dos intervalos VST -->
+    <div id="mxVstBpmCardArea" style="margin-bottom:8px;"></div>
+    <!-- Validação fisiológica: potência × FC/HRVT × RPE -->
     <div id="mxVstFisioCardArea" style="margin-bottom:8px;"></div>
 <div id="mxVstDashboard" style="margin-bottom:12px;"></div>
 

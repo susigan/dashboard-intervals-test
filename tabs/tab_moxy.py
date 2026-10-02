@@ -3675,9 +3675,14 @@ function _vstCartaoDia1Dia2Recovery(titulo, comp){
 function mxVstRpeTabela(d){
  const box=document.getElementById('mxVstRpeTabela');
  if(!box) return;
+ // Fallback para MX_VST_ULT quando d (cached de /vst/resultado) não tem bp1/bp2.metricas.
+ // MX_VST_ULT é carregado por mxVstCarregar via /api/moxy/vst/<id> que SEMPRE tem metricas.
+ const _ult = (typeof MX_VST_ULT !== 'undefined' && MX_VST_ULT) ? MX_VST_ULT : {};
+ const _bp1m = (d.bp1&&d.bp1.metricas) || (_ult.bp1&&_ult.bp1.metricas) || [];
+ const _bp2m = (d.bp2&&d.bp2.metricas) || (_ult.bp2&&_ult.bp2.metricas) || [];
  const linhas=[];
- [['BP1', (d.bp1&&d.bp1.metricas)||[], d.comparacao_rpe_bp1],
-  ['BP2', (d.bp2&&d.bp2.metricas)||[], d.comparacao_rpe_bp2]]
+ [['BP1', _bp1m, d.comparacao_rpe_bp1],
+  ['BP2', _bp2m, d.comparacao_rpe_bp2]]
  .forEach(function(t){
   const bloco=t[0], metricas=t[1], compRpe=t[2];
   const valores = compRpe && compRpe.dia2 ? compRpe.dia2.valores : null;

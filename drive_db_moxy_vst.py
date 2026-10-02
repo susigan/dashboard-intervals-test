@@ -317,16 +317,251 @@ def resolver_rpe(conn, activity_id, start_time):
 
 # ─── Diagnóstico ─────────────────────────────────────────────────────────────
 
+def upsert_activity(conn, activity_id, kind, name=None, date=None,
+                    sport=None, tag=None, raw_metadata=None,
+                    intervals_available=True):
+    """Grava ou actualiza uma atividade MOXY ou VST.
+
+    kind: 'moxy' → moxy_activities | 'vst' → vst_activities
+    intervals_available=False: atividade desapareceu da Intervals.icu mas
+      o histórico é preservado — nunca apagado.
+    UPSERT seguro: nunca apaga, nunca faz DELETE.
+    """
+    agora = datetime.datetime.now().isoformat(timespec='seconds')
+    table = 'moxy_activities' if kind == 'moxy' else 'vst_activities'
+    conn.execute(
+        f"""INSERT INTO {table}
+               (activity_id, activity_name, activity_date, sport, tag,
+                raw_metadata_json, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON CONFLICT(activity_id) DO UPDATE SET
+             activity_name   = COALESCE(excluded.activity_name, activity_name),
+             activity_date   = COALESCE(excluded.activity_date, activity_date),
+             sport           = COALESCE(excluded.sport, sport),
+             tag             = COALESCE(excluded.tag, tag),
+             raw_metadata_json = COALESCE(excluded.raw_metadata_json, raw_metadata_json),
+             updated_at      = excluded.updated_at
+        """,
+        (str(activity_id), name, date, sport, tag,
+         raw_metadata if isinstance(raw_metadata, str)
+         else (json.dumps(raw_metadata) if raw_metadata else None),
+         agora, agora)
+    )
+
+
+def upsert_stream(conn, activity_id, stream_name, stream_data):
+    """Grava ou actualiza UM stream de uma atividade.
+
+    stream_name: chave do stream (ex: 'watts', 'heartrate', 'smo2', ...)
+    stream_data: lista, dict ou qualquer valor serializável em JSON.
+    Arquitetura dinâmica: nenhum DDL necessário para novos tipos de stream.
+    UPSERT: se existir, actualiza; se não existir, insere.
+    NUNCA apaga streams existentes.
+    """
+    agora = datetime.datetime.now().isoformat(timespec='seconds')
+    raw = (stream_data if isinstance(stream_data, str)
+           else json.dumps(stream_data, ensure_ascii=False))
+    conn.execute(
+        """INSERT INTO activity_streams (activity_id, stream_name, stream_json, updated_at)
+           VALUES (?,?,?,?)
+           ON CONFLICT(activity_id, stream_name) DO UPDATE SET
+             stream_json = excluded.stream_json,
+             updated_at  = excluded.updated_at
+        """,
+        (str(activity_id), str(stream_name), raw, agora)
+    )
+
+
+def upsert_all_streams(conn, activity_id, streams_dict):
+    """Grava TODOS os streams de uma atividade a partir de um dict.
+
+    streams_dict: {stream_name: data, ...} — ex: {'watts': [...], 'heartrate': [...]}
+    Itera sobre TODAS as chaves — nunca filtra por whitelist.
+    Streams existentes são actualizados; streams novos são inseridos.
+    Streams que deixaram de aparecer na API NÃO são apagados.
+    """
+    for stream_name, data in (streams_dict or {}).items():
+        if data is not None:
+            upsert_stream(conn, activity_id, stream_name, data)
+
+
+def get_streams(conn, activity_id):
+    """Devolve dict {stream_name: data_parsed} para uma atividade.
+    Retorna o que está no DB — nunca vai à API.
+    """
+    rows = conn.execute(
+        "SELECT stream_name, stream_json FROM activity_streams WHERE activity_id=?",
+        (str(activity_id),)
+    ).fetchall()
+    result = {}
+    for name, raw in rows:
+        try:
+            result[name] = json.loads(raw)
+        except Exception:
+            result[name] = raw
+    return result
+
+
+def upsert_vst_interval(conn, vst_activity_id, interval_index, grupo=None,
+                         start_time=None, end_time=None, duration_s=None,
+                         power_w=None, heart_rate_bpm=None, respiration=None,
+                         smo2_pct=None, thb_gdl=None, dfa1=None,
+                         raw_interval=None):
+    """Grava ou actualiza um intervalo VST. UPSERT por (activity_id, interval_index)."""
+    agora = datetime.datetime.now().isoformat(timespec='seconds')
+    raw = (raw_interval if isinstance(raw_interval, str)
+           else (json.dumps(raw_interval) if raw_interval else None))
+    conn.execute(
+        """INSERT INTO vst_intervals
+               (activity_id, interval_index, grupo, start_time, end_time,
+                duration_s, power_w, heart_rate_bpm, respiration,
+                smo2_pct, thb_gdl, dfa1, raw_interval_json, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(activity_id, interval_index) DO UPDATE SET
+             grupo          = COALESCE(excluded.grupo, grupo),
+             start_time     = COALESCE(excluded.start_time, start_time),
+             end_time       = COALESCE(excluded.end_time, end_time),
+             duration_s     = COALESCE(excluded.duration_s, duration_s),
+             power_w        = COALESCE(excluded.power_w, power_w),
+             heart_rate_bpm = COALESCE(excluded.heart_rate_bpm, heart_rate_bpm),
+             smo2_pct       = COALESCE(excluded.smo2_pct, smo2_pct),
+             thb_gdl        = COALESCE(excluded.thb_gdl, thb_gdl),
+             dfa1           = COALESCE(excluded.dfa1, dfa1),
+             raw_interval_json = COALESCE(excluded.raw_interval_json, raw_interval_json),
+             updated_at     = excluded.updated_at
+        """,
+        (str(vst_activity_id), interval_index, grupo, start_time, end_time,
+         duration_s, power_w, heart_rate_bpm, respiration,
+         smo2_pct, thb_gdl, dfa1, raw, agora)
+    )
+
+
+def upsert_conjunto(conn, moxy_activity_id, vst_activity_id,
+                    bp1_status=None, bp2_status=None,
+                    dia1_bp1_w=None, dia2_bp1_w=None,
+                    dia1_bp2_w=None, dia2_bp2_w=None,
+                    recovery_bp1_status=None, recovery_bp2_status=None):
+    """Grava ou actualiza um conjunto MOXY × VST. Devolve o id do registo."""
+    agora = datetime.datetime.now().isoformat(timespec='seconds')
+    conn.execute(
+        """INSERT INTO vst_conjuntos
+               (moxy_activity_id, vst_activity_id,
+                bp1_status, bp2_status,
+                dia1_bp1_w, dia2_bp1_w, dia1_bp2_w, dia2_bp2_w,
+                recovery_bp1_status, recovery_bp2_status,
+                created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(moxy_activity_id, vst_activity_id) DO UPDATE SET
+             bp1_status           = COALESCE(excluded.bp1_status, bp1_status),
+             bp2_status           = COALESCE(excluded.bp2_status, bp2_status),
+             dia1_bp1_w           = COALESCE(excluded.dia1_bp1_w, dia1_bp1_w),
+             dia2_bp1_w           = COALESCE(excluded.dia2_bp1_w, dia2_bp1_w),
+             dia1_bp2_w           = COALESCE(excluded.dia1_bp2_w, dia1_bp2_w),
+             dia2_bp2_w           = COALESCE(excluded.dia2_bp2_w, dia2_bp2_w),
+             recovery_bp1_status  = COALESCE(excluded.recovery_bp1_status, recovery_bp1_status),
+             recovery_bp2_status  = COALESCE(excluded.recovery_bp2_status, recovery_bp2_status),
+             updated_at           = excluded.updated_at
+        """,
+        (str(moxy_activity_id), str(vst_activity_id),
+         bp1_status, bp2_status,
+         dia1_bp1_w, dia2_bp1_w, dia1_bp2_w, dia2_bp2_w,
+         recovery_bp1_status, recovery_bp2_status,
+         agora, agora)
+    )
+    row = conn.execute(
+        "SELECT id FROM vst_conjuntos WHERE moxy_activity_id=? AND vst_activity_id=?",
+        (str(moxy_activity_id), str(vst_activity_id))
+    ).fetchone()
+    return row[0] if row else None
+
+
+def insert_resultado(conn, conjunto_id, resultado_json=None,
+                     validacao_fisiologica_json=None, bpm_vst_validacao_json=None,
+                     bp1_w=None, bp2_w=None, bp1_bpm=None, bp2_bpm=None,
+                     bp1_json=None, bp2_json=None,
+                     comparacao_rpe_bp1=None, comparacao_rpe_bp2=None,
+                     limiter_sintese=None, recuperacao_final_dia2=None,
+                     analysis_version=None, analysis_hash=None):
+    """Insere uma NOVA versão do resultado — nunca sobrescreve versões anteriores.
+
+    O número de versão é calculado automaticamente como MAX(version)+1.
+    Regra anti-destruição: se algum campo for None mas o resultado anterior
+    tinha dados, a nova versão mantém None (o histórico fica na versão anterior).
+    """
+    agora = datetime.datetime.now().isoformat(timespec='seconds')
+
+    def _j(v):
+        if v is None: return None
+        return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+
+    # Calcular próxima versão
+    row = conn.execute(
+        "SELECT COALESCE(MAX(version), 0) FROM vst_results WHERE vst_conjunto_id=?",
+        (conjunto_id,)
+    ).fetchone()
+    next_version = (row[0] or 0) + 1
+
+    rpe_bp1_ok = int(bool(comparacao_rpe_bp1 or
+                     (resultado_json and 'rpe' in str(resultado_json))))
+    rpe_bp2_ok = int(bool(comparacao_rpe_bp2))
+
+    conn.execute(
+        """INSERT INTO vst_results
+               (vst_conjunto_id, version, analysis_version, analysis_hash,
+                analyzed_at, resultado_json, validacao_fisiologica_json,
+                bpm_vst_validacao_json, bp1_w, bp2_w, bp1_bpm, bp2_bpm,
+                bp1_json, bp2_json, comparacao_rpe_bp1, comparacao_rpe_bp2,
+                limiter_sintese, recuperacao_final_dia2,
+                rpe_bp1_disponivel, rpe_bp2_disponivel, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (conjunto_id, next_version, analysis_version, analysis_hash,
+         agora, _j(resultado_json), _j(validacao_fisiologica_json),
+         _j(bpm_vst_validacao_json), bp1_w, bp2_w, bp1_bpm, bp2_bpm,
+         _j(bp1_json), _j(bp2_json), _j(comparacao_rpe_bp1), _j(comparacao_rpe_bp2),
+         _j(limiter_sintese), _j(recuperacao_final_dia2),
+         rpe_bp1_ok, rpe_bp2_ok, agora)
+    )
+    return next_version
+
+
+def get_resultado_atual(conn, moxy_activity_id, vst_activity_id):
+    """Devolve o resultado mais recente (maior version) para um conjunto.
+    Retorna dict ou None.
+    """
+    row = conn.execute(
+        """SELECT r.*
+           FROM vst_results r
+           JOIN vst_conjuntos c ON r.vst_conjunto_id = c.id
+           WHERE c.moxy_activity_id=? AND c.vst_activity_id=?
+           ORDER BY r.version DESC LIMIT 1
+        """,
+        (str(moxy_activity_id), str(vst_activity_id))
+    ).fetchone()
+    if not row:
+        return None
+    cols = [d[0] for d in conn.execute(
+        "SELECT * FROM vst_results LIMIT 0").description or []]
+    if not cols:
+        # fallback via cursor description
+        conn.execute("SELECT * FROM vst_results LIMIT 0")
+    # Usar sqlite3 row_factory
+    try:
+        return dict(row)
+    except Exception:
+        return None
+
+
 def diagnostico():
     """Estado completo do moxy_vst_historico.db. Não altera nada."""
     import os
     info = {
-        'db_name':              _DB_NAME,
-        'local_path':           _LOCAL_DB,
-        'local_existe':         os.path.exists(_LOCAL_DB),
-        'local_bytes':          os.path.getsize(_LOCAL_DB) if os.path.exists(_LOCAL_DB) else None,
-        'folder_id':            _FOLDER_ID,
-        'service_account':      _email_sa(),
+        'db_name':    _DB_NAME,
+        'local_path': _LOCAL_DB,
+        'local_existe': os.path.exists(_LOCAL_DB),
+        'local_bytes': os.path.getsize(_LOCAL_DB) if os.path.exists(_LOCAL_DB) else None,
+        'folder_id':  _FOLDER_ID,
+        'service_account': _email_sa(),
     }
 
     try:
@@ -344,24 +579,46 @@ def diagnostico():
     if os.path.exists(_LOCAL_DB):
         try:
             conn = sqlite3.connect(_LOCAL_DB)
+            conn.row_factory = sqlite3.Row
             aplicar_schema(conn)
+
             def _count(t):
                 return conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+
             info['contagens'] = {
-                'moxy_activities':      _count('moxy_activities'),
-                'vst_activities':       _count('vst_activities'),
+                'moxy_activities':       _count('moxy_activities'),
+                'vst_activities':        _count('vst_activities'),
                 'activity_interval_rpe': _count('activity_interval_rpe'),
-                'vst_intervals':        _count('vst_intervals'),
-                'vst_conjuntos':        _count('vst_conjuntos'),
-                'vst_results':          _count('vst_results'),
-                'moxy_analyses':        _count('moxy_analyses'),
-                'activity_streams':     _count('activity_streams'),
+                'vst_intervals':         _count('vst_intervals'),
+                'vst_conjuntos':         _count('vst_conjuntos'),
+                'vst_results':           _count('vst_results'),
+                'moxy_analyses':         _count('moxy_analyses'),
+                'activity_streams':      _count('activity_streams'),
             }
+
+            # Stream keys únicas
+            stream_keys = [r[0] for r in conn.execute(
+                "SELECT DISTINCT stream_name FROM activity_streams ORDER BY stream_name"
+            ).fetchall()]
+            info['stream_keys'] = stream_keys
+            info['activities_with_streams'] = conn.execute(
+                "SELECT COUNT(DISTINCT activity_id) FROM activity_streams"
+            ).fetchone()[0]
+
+            # Metadados de sync
             meta = {r[0]: r[1] for r in conn.execute(
-                "SELECT key, value FROM db_metadata").fetchall()}
-            info['schema_version']            = meta.get('schema_version')
-            info['last_successful_upload_at'] = meta.get('last_successful_upload_at')
-            info['db_created_at']             = meta.get('db_created_at')
+                "SELECT key, value FROM db_metadata"
+            ).fetchall()}
+            info['schema_version']              = meta.get('schema_version')
+            info['last_successful_upload_at']   = meta.get('last_successful_upload_at')
+            info['db_created_at']               = meta.get('db_created_at')
+            info['last_rpe_update_at']          = conn.execute(
+                "SELECT MAX(updated_at) FROM activity_interval_rpe"
+            ).fetchone()[0]
+            info['last_stream_sync_at']         = conn.execute(
+                "SELECT MAX(updated_at) FROM activity_streams"
+            ).fetchone()[0]
+
             conn.close()
         except Exception as e:
             info['erro_leitura'] = f"{type(e).__name__}: {e}"

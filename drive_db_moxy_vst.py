@@ -372,17 +372,72 @@ def upsert_stream(conn, activity_id, stream_name, stream_data):
     )
 
 
-def upsert_all_streams(conn, activity_id, streams_dict):
-    """Grava TODOS os streams de uma atividade a partir de um dict.
+def _parse_streams_api(raw):
+    """Converte a resposta bruta da API /activity/{id}/streams
+    para {stream_name: data} independentemente do formato devolvido.
 
-    streams_dict: {stream_name: data, ...} — ex: {'watts': [...], 'heartrate': [...]}
-    Itera sobre TODAS as chaves — nunca filtra por whitelist.
-    Streams existentes são actualizados; streams novos são inseridos.
-    Streams que deixaram de aparecer na API NÃO são apagados.
+    A Intervals.icu pode devolver:
+      A) Lista directa: [{type: 'heartrate', data: [...]}, ...]
+      B) Wrapper dict:  {'streams': [{type:..., data:...}, ...], ...}
+      C) Dict directo:  {'heartrate': [...], 'watts': [...]}   (improvável)
+
+    Retorna sempre {stream_name: data_original_completo}.
+    O 'data_original_completo' preserva o sub-dict completo do stream
+    (não apenas o campo 'data') para não perder metadados futuros.
+    Nunca filtra por nome — zero whitelist.
     """
-    for stream_name, data in (streams_dict or {}).items():
-        if data is not None:
-            upsert_stream(conn, activity_id, stream_name, data)
+    if not raw:
+        return {}
+    # Formato B: wrapper dict com chave 'streams' ou 'content'
+    lista = raw
+    if isinstance(raw, dict):
+        if 'streams' in raw or 'content' in raw:
+            lista = raw.get('streams') or raw.get('content') or []
+        else:
+            # Formato C: já é {name: data}
+            return {k: v for k, v in raw.items() if v is not None}
+    # Formato A (e B após extrair lista): lista de dicts com 'type'/'name' e 'data'
+    result = {}
+    for st in (lista or []):
+        if not isinstance(st, dict):
+            continue
+        name = st.get('type') or st.get('name')
+        if not name:
+            continue
+        # Guardar o sub-dict completo, não só st['data']
+        # Assim: {'type':'heartrate','data':[...],'unit':'bpm',...} tudo preservado
+        result[str(name)] = st
+    return result
+
+
+def upsert_all_streams(conn, activity_id, streams_raw):
+    """Grava TODOS os streams de uma atividade a partir da resposta bruta da API.
+
+    streams_raw: resposta directa de icu_get('/activity/{id}/streams')
+      (lista, wrapper dict ou dict) — parseado internamente por _parse_streams_api.
+
+    Regras:
+      - Zero whitelist: qualquer chave retornada pela API é guardada.
+      - Streams existentes → UPDATE.
+      - Streams novos → INSERT.
+      - Streams ausentes numa chamada → NÃO apagados (preservação histórica).
+
+    Retorna (inserted, updated, preserved).
+    """
+    parsed = _parse_streams_api(streams_raw)
+    existing = set(r[0] for r in conn.execute(
+        "SELECT stream_name FROM activity_streams WHERE activity_id=?",
+        (str(activity_id),)).fetchall())
+
+    inserted = updated = 0
+    for name, data in parsed.items():
+        upsert_stream(conn, activity_id, name, data)
+        if name in existing:
+            updated += 1
+        else:
+            inserted += 1
+    preserved = len(existing) - updated  # streams que já existiam mas não vieram agora
+    return inserted, updated, preserved
 
 
 def get_streams(conn, activity_id):
@@ -615,9 +670,57 @@ def diagnostico():
             info['last_rpe_update_at']          = conn.execute(
                 "SELECT MAX(updated_at) FROM activity_interval_rpe"
             ).fetchone()[0]
-            info['last_stream_sync_at']         = conn.execute(
+            info['last_stream_sync_at'] = conn.execute(
                 "SELECT MAX(updated_at) FROM activity_streams"
             ).fetchone()[0]
+
+            # stream_sync_status — diagnóstico explícito
+            _n_streams = info['contagens']['activity_streams']
+            _last_sync  = info['last_stream_sync_at']
+            _last_meta  = {r[0]: r[1] for r in conn.execute(
+                "SELECT key, value FROM db_metadata WHERE key LIKE 'stream_sync%'"
+            ).fetchall()}
+            if _n_streams > 0:
+                info['stream_sync_status'] = 'success'
+                info['stream_sync_message'] = (
+                    f"{_n_streams} streams em {info['activities_with_streams']} atividades. "
+                    f"Última sync: {_last_sync}.")
+            elif _last_meta.get('stream_sync_last_status') == 'api_empty':
+                info['stream_sync_status'] = 'api_empty'
+                info['stream_sync_message'] = 'API retornou 0 streams na última chamada.'
+            elif _last_meta.get('stream_sync_last_status') == 'api_error':
+                info['stream_sync_status'] = 'api_error'
+                info['stream_sync_message'] = (
+                    f"Erro na última chamada: {_last_meta.get('stream_sync_last_error','?')}")
+            elif _last_meta.get('stream_sync_last_status') == 'persist_error':
+                info['stream_sync_status'] = 'persist_error'
+                info['stream_sync_message'] = (
+                    f"Erro ao persistir: {_last_meta.get('stream_sync_last_error','?')}")
+            else:
+                info['stream_sync_status'] = 'never_run'
+                info['stream_sync_message'] = (
+                    'Sincronização de streams nunca executada. '
+                    'Execute COMPARAR/SINCRONIZAR numa verificação MOXY×VST.')
+
+            # Detalhe por atividade
+            _acts_detail = conn.execute(
+                """SELECT s.activity_id,
+                          COUNT(*) as stream_count,
+                          GROUP_CONCAT(s.stream_name, ',') as keys,
+                          CASE WHEN m.activity_id IS NOT NULL THEN 'moxy'
+                               WHEN v.activity_id IS NOT NULL THEN 'vst'
+                               ELSE 'unknown' END as activity_type
+                   FROM activity_streams s
+                   LEFT JOIN moxy_activities m ON s.activity_id = m.activity_id
+                   LEFT JOIN vst_activities  v ON s.activity_id = v.activity_id
+                   GROUP BY s.activity_id"""
+            ).fetchall()
+            info['activities_with_streams_detail'] = [
+                {'activity_id': r[0], 'stream_count': r[1],
+                 'stream_keys': sorted(r[2].split(',')) if r[2] else [],
+                 'activity_type': r[3]}
+                for r in _acts_detail
+            ]
 
             conn.close()
         except Exception as e:

@@ -224,7 +224,9 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
                    comp_recovery_bp1, comp_recovery_bp2,
                    limiter_bp1, limiter_bp2,
                    hipotese_bp1, hipotese_bp2,
-                   rede_causal_d1=None, modalidade=None):
+                   rede_causal_d1=None, modalidade=None,
+                   comp_rpe_bp1=None, comp_rpe_bp2=None,
+                   limiter_sintese=None, recuperacao_final_dia2=None):
     """Persiste o resultado de uma verificação VST em vst_conjuntos.
 
     Chamada por /api/moxy/vst/comparar  (melhor esforço, em try/except pass)
@@ -264,10 +266,14 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
                  'comparacao_bp2': comp_bp2,
                  'comparacao_recovery_bp1': comp_recovery_bp1,
                  'comparacao_recovery_bp2': comp_recovery_bp2,
+                 'comparacao_rpe_bp1': comp_rpe_bp1,
+                 'comparacao_rpe_bp2': comp_rpe_bp2,
                  'limiter_bp1': limiter_bp1,
                  'limiter_bp2': limiter_bp2,
+                 'limiter_sintese': limiter_sintese,
                  'hipotese_bp1': hipotese_bp1,
                  'hipotese_bp2': hipotese_bp2,
+                 'recuperacao_final_dia2': recuperacao_final_dia2,
              }, **({'rede_causal': rede_causal_d1} if rede_causal_d1 is not None else {})},
              ensure_ascii=False),
              agora, agora, vid))
@@ -2859,6 +2865,13 @@ def registar(app):
                            for r in _verif]
             # ── fim diagnóstico ──────────────────────────────────────────
             ok_up, det_up = ddp.upload()
+            if not ok_up:
+                # Registar no log do servidor — o Drive não foi actualizado.
+                # O RPE está no /tmp local mas pode não estar disponível
+                # após reinício do container. O utilizador deve ser informado
+                # pelo badge de download que aparece no frontend.
+                print(f'[activity_interval_rpe][UPLOAD FALHOU] aid={aid} '
+                      f'n_gravados={n} detalhe={det_up}')
             return jsonify({
                 'status': 'ok' if ok_up else 'gravado_sem_upload',
                 'activity_id': aid,
@@ -4725,7 +4738,11 @@ def registar(app):
                     comp_recovery_bp1, comp_recovery_bp2,
                     limiter_bp1, limiter_bp2,
                     hipotese_bp1, hipotese_bp2,
-                    rede_causal_d1=rede_causal_d1)
+                    rede_causal_d1=rede_causal_d1,
+                    comp_rpe_bp1=comp_rpe_bp1,
+                    comp_rpe_bp2=comp_rpe_bp2,
+                    limiter_sintese=limiter_sintese,
+                    recuperacao_final_dia2=dia2.get('recuperacao_final'))
                 ddp.upload()
             except Exception:
                 pass

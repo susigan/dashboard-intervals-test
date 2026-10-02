@@ -189,6 +189,49 @@ def migrar(
     except Exception as e:
         print(f"[migrate] moxy_analises erro: {e}")
 
+    # ── 5. resultado_json dos vst_conjuntos antigos → vst_results ──
+    try:
+        rows = cn_orig.execute(
+            """SELECT vst_activity_id, moxy_activity_id,
+                      resultado_json, validacao_fisiologica_json,
+                      bpm_vst_validacao_json, dia1_bp1_w, dia2_bp1_w,
+                      dia1_bp2_w, dia2_bp2_w, actualizado_em
+               FROM vst_conjuntos
+               WHERE resultado_json IS NOT NULL"""
+        ).fetchall()
+        contagens['vst_results_migrados'] = 0
+        if not dry_run and rows:
+            for r in rows:
+                # Garantir que o conjunto existe no destino
+                _moxy_id = r['moxy_activity_id']
+                _vst_id  = r['vst_activity_id']
+                if _moxy_id and _vst_id:
+                    import drive_db_moxy_vst as _mvdb_mig
+                    _cj_id = _mvdb_mig.upsert_conjunto(
+                        cn_dest, _moxy_id, _vst_id,
+                        dia1_bp1_w=r['dia1_bp1_w'], dia2_bp1_w=r['dia2_bp1_w'],
+                        dia1_bp2_w=r['dia1_bp2_w'], dia2_bp2_w=r['dia2_bp2_w'])
+                    cn_dest.commit()
+                    if _cj_id:
+                        # Verificar se já existe resultado para este conjunto
+                        _existing = cn_dest.execute(
+                            "SELECT COUNT(*) FROM vst_results WHERE vst_conjunto_id=?",
+                            (_cj_id,)).fetchone()[0]
+                        if _existing == 0:
+                            _mvdb_mig.insert_resultado(
+                                cn_dest, _cj_id,
+                                resultado_json=r['resultado_json'],
+                                validacao_fisiologica_json=r['validacao_fisiologica_json'],
+                                bpm_vst_validacao_json=r['bpm_vst_validacao_json'],
+                                bp1_w=r['dia1_bp1_w'],
+                                bp2_w=r['dia1_bp2_w'],
+                                analysis_version='legacy')
+                            cn_dest.commit()
+                            contagens['vst_results_migrados'] += 1
+        print(f"[migrate] vst_results: {contagens.get('vst_results_migrados', 0)} novos")
+    except Exception as e:
+        print(f"[migrate] vst_results erro: {e}")
+
     cn_orig.close()
     if cn_dest:
         cn_dest.close()

@@ -4120,6 +4120,65 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # moxy_vst_historico.db — gestão do banco canônico MOXY/VST
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @app.route('/api/moxy/vst/db/status')
+    def api_moxy_vst_db_status():
+        """Estado completo do moxy_vst_historico.db. Não altera nada."""
+        try:
+            import drive_db_moxy_vst as _mvdb_st
+            info = _mvdb_st.diagnostico()
+            info['status'] = 'ok'
+            return jsonify(info)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/db/download')
+    def api_moxy_vst_db_download():
+        """Gera o moxy_vst_historico.db vazio e oferece para download.
+
+        Usado para criar o ficheiro inicial que o utilizador faz upload
+        manual para o Google Drive. Se o DB local já existir com dados,
+        faz download do ficheiro actual (backup do utilizador).
+        """
+        try:
+            import os as _os_dl
+            import drive_db_moxy_vst as _mvdb_dl
+            local = _mvdb_dl._LOCAL_DB
+            if not _os_dl.path.exists(local):
+                # DB não existe localmente — tentar download do Drive primeiro
+                ok_dl, det_dl = _mvdb_dl.download()
+                if not ok_dl:
+                    # Drive sem DB → criar vazio para que o utilizador faça upload manual
+                    _mvdb_dl._criar_db_local_vazio()
+            from flask import send_file
+            return send_file(local,
+                             as_attachment=True,
+                             download_name='moxy_vst_historico.db',
+                             mimetype='application/x-sqlite3')
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/db/migrate', methods=['POST'])
+    def api_moxy_vst_db_migrate():
+        """Migra dados de perfil_historico.db para moxy_vst_historico.db.
+        Operação não-destrutiva: UPSERT. Nunca apaga dados existentes.
+        """
+        try:
+            import migrate_moxy_vst as _mig
+            dry = request.args.get('dry_run', '0') == '1'
+            contagens = _mig.migrar(dry_run=dry)
+            return jsonify({'status': 'ok', 'dry_run': dry,
+                            'migrados': contagens})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+
     @app.route('/api/moxy/vst/<path:activity_id>')
     def api_moxy_vst_analise(activity_id):
         """Análise completa do protocolo VST para uma sessão — estrutura
@@ -5224,59 +5283,6 @@ def registar(app):
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # moxy_vst_historico.db — gestão do banco canônico MOXY/VST
-    # ═══════════════════════════════════════════════════════════════════════
-
-    @app.route('/api/moxy/vst/db/status')
-    def api_moxy_vst_db_status():
-        """Estado completo do moxy_vst_historico.db. Não altera nada."""
-        try:
-            import drive_db_moxy_vst as _mvdb_st
-            info = _mvdb_st.diagnostico()
-            info['status'] = 'ok'
-            return jsonify(info)
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
-    @app.route('/api/moxy/vst/db/download')
-    def api_moxy_vst_db_download():
-        """Gera o moxy_vst_historico.db vazio e oferece para download.
-
-        Usado para criar o ficheiro inicial que o utilizador faz upload
-        manual para o Google Drive. Se o DB local já existir com dados,
-        faz download do ficheiro actual (backup do utilizador).
-        """
-        try:
-            import drive_db_moxy_vst as _mvdb_dl
-            local = _mvdb_dl._LOCAL_DB
-            if not os.path.exists(local):
-                _mvdb_dl._criar_db_local_vazio()
-            from flask import send_file
-            return send_file(local,
-                             as_attachment=True,
-                             download_name='moxy_vst_historico.db',
-                             mimetype='application/x-sqlite3')
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
-
-    @app.route('/api/moxy/vst/db/migrate', methods=['POST'])
-    def api_moxy_vst_db_migrate():
-        """Migra dados de perfil_historico.db para moxy_vst_historico.db.
-        Operação não-destrutiva: UPSERT. Nunca apaga dados existentes.
-        """
-        try:
-            import migrate_moxy_vst as _mig
-            dry = request.args.get('dry_run', '0') == '1'
-            contagens = _mig.migrar(dry_run=dry)
-            return jsonify({'status': 'ok', 'dry_run': dry,
-                            'migrados': contagens})
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
-
 
     @app.route('/api/moxy/corte', methods=['POST'])
     def api_moxy_corte():

@@ -4124,6 +4124,8 @@ def registar(app):
     # moxy_vst_historico.db — gestão do banco canônico MOXY/VST
     # ═══════════════════════════════════════════════════════════════════════
 
+    # ─── moxy_vst_historico.db — gestão ─────────────────────────────────────
+
     @app.route('/api/moxy/vst/db/status')
     def api_moxy_vst_db_status():
         """Estado completo do moxy_vst_historico.db. Não altera nada."""
@@ -4138,21 +4140,19 @@ def registar(app):
 
     @app.route('/api/moxy/vst/db/download')
     def api_moxy_vst_db_download():
-        """Gera o moxy_vst_historico.db vazio e oferece para download.
+        """Oferece o moxy_vst_historico.db para download.
 
-        Usado para criar o ficheiro inicial que o utilizador faz upload
-        manual para o Google Drive. Se o DB local já existir com dados,
-        faz download do ficheiro actual (backup do utilizador).
+        Cenário A — DB existe no Drive: baixa e serve.
+        Cenário B — DB não existe: cria vazio (para o utilizador fazer
+          o upload manual inicial), nunca substitui um DB existente.
         """
         try:
             import os as _os_dl
             import drive_db_moxy_vst as _mvdb_dl
             local = _mvdb_dl._LOCAL_DB
             if not _os_dl.path.exists(local):
-                # DB não existe localmente — tentar download do Drive primeiro
                 ok_dl, det_dl = _mvdb_dl.download()
                 if not ok_dl:
-                    # Drive sem DB → criar vazio para que o utilizador faça upload manual
                     _mvdb_dl._criar_db_local_vazio()
             from flask import send_file
             return send_file(local,
@@ -4165,8 +4165,9 @@ def registar(app):
 
     @app.route('/api/moxy/vst/db/migrate', methods=['POST'])
     def api_moxy_vst_db_migrate():
-        """Migra dados de perfil_historico.db para moxy_vst_historico.db.
-        Operação não-destrutiva: UPSERT. Nunca apaga dados existentes.
+        """Migra dados de perfil_historico.db → moxy_vst_historico.db.
+        UPSERT não-destrutivo. Nunca apaga dados no destino.
+        Atividades que deixaram de existir na Intervals.icu são preservadas.
         """
         try:
             import migrate_moxy_vst as _mig
@@ -4174,6 +4175,45 @@ def registar(app):
             contagens = _mig.migrar(dry_run=dry)
             return jsonify({'status': 'ok', 'dry_run': dry,
                             'migrados': contagens})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/db/activity/<path:activity_id>')
+    def api_moxy_vst_db_activity(activity_id):
+        """Diagnóstico de uma actividade específica no moxy_vst_historico.db."""
+        try:
+            import drive_db_moxy_vst as _mvdb_act
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            cn = _mvdb_act.get_moxy_vst_conn()
+            cn.row_factory = __import__('sqlite3').Row
+            streams = [r[0] for r in cn.execute(
+                "SELECT stream_name FROM activity_streams WHERE activity_id=? ORDER BY stream_name",
+                (aid,)).fetchall()]
+            rpe_count = cn.execute(
+                "SELECT COUNT(*) FROM activity_interval_rpe WHERE activity_id=?",
+                (aid,)).fetchone()[0]
+            last_rpe = cn.execute(
+                "SELECT MAX(updated_at) FROM activity_interval_rpe WHERE activity_id=?",
+                (aid,)).fetchone()[0]
+            last_stream = cn.execute(
+                "SELECT MAX(updated_at) FROM activity_streams WHERE activity_id=?",
+                (aid,)).fetchone()[0]
+            results_count = cn.execute(
+                """SELECT COUNT(*) FROM vst_results r
+                   JOIN vst_conjuntos c ON r.vst_conjunto_id=c.id
+                   WHERE c.moxy_activity_id=? OR c.vst_activity_id=?""",
+                (aid, aid)).fetchone()[0]
+            cn.close()
+            return jsonify({
+                'status': 'ok', 'activity_id': aid,
+                'streams_count': len(streams),
+                'streams': streams,
+                'rpe_count': rpe_count,
+                'results_count': results_count,
+                'last_stream_sync': last_stream,
+                'last_rpe_update': last_rpe,
+            })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
@@ -4867,6 +4907,91 @@ def registar(app):
                     limiter_sintese=limiter_sintese,
                     recuperacao_final_dia2=dia2.get('recuperacao_final'))
                 ddp.upload()
+
+                # ── Persistir no moxy_vst_historico.db (banco canônico) ──────
+                try:
+                    import drive_db_moxy_vst as _mvdb_c
+                    _cn_c = _mvdb_c.get_moxy_vst_conn()
+                    _cn_c.row_factory = __import__('sqlite3').Row
+
+                    # 1. Atividades
+                    _mvdb_c.upsert_activity(_cn_c, mid, 'moxy')
+                    _mvdb_c.upsert_activity(_cn_c, vid, 'vst')
+
+                    # 2. Streams da atividade VST — TODOS os retornados pela API
+                    try:
+                        import api_client as _api_c
+                        _st_raw, _st_err = _api_c.icu_get(
+                            f'/activity/{vid}/streams')
+                        if not _st_err and isinstance(_st_raw, dict):
+                            _mvdb_c.upsert_all_streams(_cn_c, vid, _st_raw)
+                    except Exception as _e_str:
+                        print(f'[comparar][streams VST] {_e_str}')
+
+                    # 3. Streams da atividade MOXY — TODOS
+                    try:
+                        _st_mx_raw, _st_mx_err = _api_c.icu_get(
+                            f'/activity/{mid}/streams')
+                        if not _st_mx_err and isinstance(_st_mx_raw, dict):
+                            _mvdb_c.upsert_all_streams(_cn_c, mid, _st_mx_raw)
+                    except Exception as _e_str2:
+                        print(f'[comparar][streams MOXY] {_e_str2}')
+
+                    # 4. Intervalos VST (BP1 + BP2)
+                    for _grp, _ivs in [('bp1', (dia2.get('bp1') or {}).get('metricas') or []),
+                                        ('bp2', (dia2.get('bp2') or {}).get('metricas') or [])]:
+                        for _idx, _iv in enumerate(_ivs):
+                            _mvdb_c.upsert_vst_interval(
+                                _cn_c, vid, _idx if _grp == 'bp1' else _idx + 100,
+                                grupo=_grp,
+                                start_time=_iv.get('t0') or _iv.get('t0_s'),
+                                end_time=_iv.get('t1') or _iv.get('t1_s'),
+                                power_w=(_iv.get('potencia') or {}).get('media'),
+                                heart_rate_bpm=(_iv.get('hr') or {}).get('media'),
+                                smo2_pct=(_iv.get('smo2') or {}).get('media'),
+                                thb_gdl=(_iv.get('thb') or {}).get('media'),
+                                dfa1=(_iv.get('dfa1') or {}).get('media'),
+                                raw_interval=_iv)
+
+                    # 5. Conjunto MOXY × VST
+                    _cj_id = _mvdb_c.upsert_conjunto(
+                        _cn_c, mid, vid,
+                        bp1_status=comp_bp1.get('status') if comp_bp1 else None,
+                        bp2_status=comp_bp2.get('status') if comp_bp2 else None,
+                        dia1_bp1_w=comp_bp1.get('dia1_bp1_w') if comp_bp1 else None,
+                        dia2_bp1_w=comp_bp1.get('dia2_bp1_w') if comp_bp1 else None,
+                        dia1_bp2_w=comp_bp2.get('dia1_bp2_w') if comp_bp2 else None,
+                        dia2_bp2_w=comp_bp2.get('dia2_bp2_w') if comp_bp2 else None)
+
+                    # 6. Resultado (nova versão — nunca sobrescreve versões anteriores)
+                    if _cj_id:
+                        import json as _json_c
+                        _mvdb_c.insert_resultado(
+                            _cn_c, _cj_id,
+                            resultado_json={
+                                'comparacao_bp1': comp_bp1,
+                                'comparacao_bp2': comp_bp2,
+                                'comparacao_rpe_bp1': comp_rpe_bp1,
+                                'comparacao_rpe_bp2': comp_rpe_bp2,
+                                'limiter_bp1': limiter_bp1,
+                                'limiter_bp2': limiter_bp2,
+                                'limiter_sintese': limiter_sintese,
+                                'hipotese_bp1': hipotese_bp1,
+                                'hipotese_bp2': hipotese_bp2,
+                                'recuperacao_final_dia2': dia2.get('recuperacao_final'),
+                            },
+                            bp1_w=(comp_bp1 or {}).get('dia2_bp1_w'),
+                            bp2_w=(comp_bp2 or {}).get('dia2_bp2_w'),
+                            comparacao_rpe_bp1=comp_rpe_bp1,
+                            comparacao_rpe_bp2=comp_rpe_bp2,
+                            limiter_sintese=limiter_sintese,
+                            recuperacao_final_dia2=dia2.get('recuperacao_final'))
+
+                    _cn_c.commit()
+                    _mvdb_c.upload()
+                    _cn_c.close()
+                except Exception as _e_mvdb_c:
+                    print(f'[comparar][moxy_vst_historico.db] {_e_mvdb_c}')
             except Exception:
                 pass
 
@@ -4894,30 +5019,41 @@ def registar(app):
                     "WHERE activity_id=? AND t0_s IS NOT NULL",
                     (vid,)).fetchall()}
 
+                # Pré-carregar RPE do moxy_vst_historico.db para toda a atividade
+                _rpe_mv_cache = {}
+                try:
+                    import drive_db_moxy_vst as _mvdb_rpe_pre
+                    _cn_rpe_pre = _mvdb_rpe_pre.get_moxy_vst_conn()
+                    for _r in _cn_rpe_pre.execute(
+                        "SELECT start_time, rpe, rpe_status FROM activity_interval_rpe "
+                        "WHERE activity_id=?", (vid,)).fetchall():
+                        _rpe_mv_cache[float(_r[0])] = (_r[1], _r[2])
+                    _cn_rpe_pre.close()
+                except Exception:
+                    pass
+
                 def _rpe_c(metricas_lista, aid):
                     rpes = []
                     for _m in metricas_lista:
                         _t0 = _m.get('t0') or _m.get('t0_s')
                         if _t0 is None:
                             rpes.append(None); continue
-                        _rv, _fonte = _rpe_interval_resolver(cn, aid, _t0)
-                        if _rv is None and _fonte == 'absent':
-                            # Fallback 1: moxy_rpe por t0_s (legado)
+                        _t0f = float(_t0)
+                        # Fonte 1: moxy_vst_historico.db (banco canônico)
+                        _rv = None
+                        for _t0_mv, (_rpe_mv, _stat_mv) in _rpe_mv_cache.items():
+                            if abs(_t0_mv - _t0f) <= 1 and _stat_mv != 'deleted':
+                                _rv = _rpe_mv; break
+                        # Fonte 2: activity_interval_rpe do perfil_historico.db
+                        if _rv is None:
+                            _rv_pf, _fonte_pf = _rpe_interval_resolver(cn, aid, _t0f)
+                            if _fonte_pf == 'new':
+                                _rv = _rv_pf
+                        # Fonte 3: moxy_rpe (legado) por t0_s
+                        if _rv is None:
                             for _t0_leg, _rpe_leg in _rpe_legacy_t0.items():
-                                if abs(_t0_leg - float(_t0)) <= 1:
+                                if abs(_t0_leg - _t0f) <= 1:
                                     _rv = _rpe_leg; break
-                            # Fallback 2: moxy_vst_historico.db
-                            if _rv is None:
-                                try:
-                                    import drive_db_moxy_vst as _mvdb_rc
-                                    _cn_rc = _mvdb_rc.get_moxy_vst_conn()
-                                    _rv_mv, _f_mv = _mvdb_rc.resolver_rpe(
-                                        _cn_rc, aid, float(_t0))
-                                    _cn_rc.close()
-                                    if _f_mv == 'new':
-                                        _rv = _rv_mv
-                                except Exception:
-                                    pass
                         rpes.append(_rv)
                     return rpes
                 _rpe_c_bp1 = _rpe_c(_bp1_m_c, vid)

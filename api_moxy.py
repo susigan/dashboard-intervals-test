@@ -3241,6 +3241,25 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
 
+
+        def _has_real_rpe(vf_obj):
+            """Retorna True se validacao_fisiologica contém pelo menos um RPE
+            real (1..10) nos intervalos de BP1 ou BP2.
+
+            Usado para decidir se um resultado persistido possui informação de
+            RPE que vale a pena preservar contra uma releitura que retornou
+            apenas ausências temporárias.
+            """
+            if not vf_obj:
+                return False
+            for bp_key in ('bp1', 'bp2'):
+                bp = vf_obj.get(bp_key) or {}
+                for iv in (bp.get('intervalos') or []):
+                    rpe = iv.get('rpe')
+                    if rpe is not None and 1 <= rpe <= 10:
+                        return True
+            return False
+
     @app.route('/api/moxy/vst/resultado/<path:vst_activity_id>')
     def api_moxy_vst_resultado(vst_activity_id):
         """Resultado já persistido da comparação VST — lê directamente o
@@ -3500,31 +3519,64 @@ def registar(app):
                                 _rpe_od2 = [(_rpe_interval_resolver(cn, vid, _m.get('t0') or _m.get('t0_s'))[0]
                                              if (_m.get('t0') or _m.get('t0_s')) is not None else None)
                                             for _m in _bp2_mod]
-                                # Curva watts→RPE do MOXY (Dia 1) para rpe_esperado_potencia.
-                                # Mesmo mecanismo que /vst/comparar usa.
-                                _curva_od = []
-                                try:
-                                    _rd_od = api_moxy_rpe_degraus(moxy_id)
-                                    _rd_od = (_rd_od[0].get_json() if isinstance(_rd_od, tuple)
-                                              else _rd_od.get_json()) or {}
-                                    for _b_od in (_rd_od.get('blocos') or []):
-                                        _t0_b_od = _b_od.get('t0')
-                                        _w_b_od  = (_b_od.get('watts') or _b_od.get('watts_medio_da_api'))
-                                        if _t0_b_od is not None and _w_b_od is not None:
-                                            _rv_b_od, _ = _rpe_interval_resolver(cn, moxy_id, float(_t0_b_od))
-                                            if _rv_b_od is not None:
-                                                _curva_od.append((_w_b_od, _rv_b_od))
-                                except Exception:
-                                    pass
-                                _vf_new, _ = _fisio_calcular_e_persistir(
-                                    cn, moxy_id, vid,
-                                    _bp1w_od, _bp2w_od, _bp1bpm_od, _bp2bpm_od,
-                                    _dfa_od, _bp1_mod, _bp2_mod,
-                                    curva_rpe=_curva_od if _curva_od else None,
-                                    rpe_vst_bp1=_rpe_od1, rpe_vst_bp2=_rpe_od2)
-                                # GET não faz upload — ver regra em _fisio_calcular_e_persistir
-                                if _vf_new:
-                                    _val_fisio_obj = _vf_new
+
+                                # ── Protecção contra perda de RPE por dessincronização ──────────────
+                                # Se o banco/container actual não devolveu nenhum RPE real (todos
+                                # None / ausentes) MAS o JSON já persistido possui RPE reais
+                                # (1..10), não substituir a análise mais rica pela mais pobre.
+                                # Causa: upload falhou numa sessão anterior → container novo lê
+                                # Drive sem activity_interval_rpe → hash diverge → recálculo sem
+                                # RPE sobrescreveria um resultado bom.
+                                _rpe_od1_real = [r for r in _rpe_od1 if r is not None]
+                                _rpe_od2_real = [r for r in _rpe_od2 if r is not None]
+                                _persistido_tem_rpe = _has_real_rpe(_vf_parsed)
+                                _novo_tem_rpe       = bool(_rpe_od1_real or _rpe_od2_real)
+
+                                if _persistido_tem_rpe and not _novo_tem_rpe:
+                                    # Não sobrescrever análise VST persistida com resultado sem RPE
+                                    # quando a fonte actual não disponibilizou os RPE.
+                                    print(
+                                        f'[VST RPE PRESERVE] vid={vid} '
+                                        f'persisted_rpe_bp1='
+                                        f'{[iv.get("rpe") for iv in (_vf_parsed.get("bp1") or {}).get("intervalos", [])]} '
+                                        f'persisted_rpe_bp2='
+                                        f'{[iv.get("rpe") for iv in (_vf_parsed.get("bp2") or {}).get("intervalos", [])]} '
+                                        f'current_rpe_bp1={_rpe_od1} current_rpe_bp2={_rpe_od2} '
+                                        f'action=KEEP_PERSISTED_ANALYSIS'
+                                    )
+                                    _val_fisio_obj = _vf_parsed
+                                else:
+                                    # Tem RPE novo (ou análise anterior também não tinha) → recalcular.
+                                    print(
+                                        f'[VST RPE RECALCULATE] vid={vid} '
+                                        f'current_rpe_bp1={_rpe_od1} current_rpe_bp2={_rpe_od2} '
+                                        f'action=RECALCULATE'
+                                    )
+                                    # Curva watts→RPE do MOXY (Dia 1) para rpe_esperado_potencia.
+                                    # Mesmo mecanismo que /vst/comparar usa.
+                                    _curva_od = []
+                                    try:
+                                        _rd_od = api_moxy_rpe_degraus(moxy_id)
+                                        _rd_od = (_rd_od[0].get_json() if isinstance(_rd_od, tuple)
+                                                  else _rd_od.get_json()) or {}
+                                        for _b_od in (_rd_od.get('blocos') or []):
+                                            _t0_b_od = _b_od.get('t0')
+                                            _w_b_od  = (_b_od.get('watts') or _b_od.get('watts_medio_da_api'))
+                                            if _t0_b_od is not None and _w_b_od is not None:
+                                                _rv_b_od, _ = _rpe_interval_resolver(cn, moxy_id, float(_t0_b_od))
+                                                if _rv_b_od is not None:
+                                                    _curva_od.append((_w_b_od, _rv_b_od))
+                                    except Exception:
+                                        pass
+                                    _vf_new, _ = _fisio_calcular_e_persistir(
+                                        cn, moxy_id, vid,
+                                        _bp1w_od, _bp2w_od, _bp1bpm_od, _bp2bpm_od,
+                                        _dfa_od, _bp1_mod, _bp2_mod,
+                                        curva_rpe=_curva_od if _curva_od else None,
+                                        rpe_vst_bp1=_rpe_od1, rpe_vst_bp2=_rpe_od2)
+                                    # GET não faz upload — ver regra em _fisio_calcular_e_persistir
+                                    if _vf_new:
+                                        _val_fisio_obj = _vf_new
                         except Exception as _e_od:
                             import traceback as _tb_od
                             print(f'[vst_resultado] recálculo outdated falhou: {_e_od}\n'

@@ -3667,6 +3667,22 @@ def registar(app):
             if _val_fisio_obj is not None:
                 resultado['validacao_fisiologica'] = _val_fisio_obj
 
+            # Adicionar bp1/bp2 com metricas para que mxVstRpeTabela funcione
+            # sem depender de MX_VST_ULT (que só existe quando o utilizador
+            # navegou para a actividade VST na sessão actual).
+            if 'bp1' not in resultado or 'bp2' not in resultado:
+                try:
+                    _analise_abrir = api_moxy_vst_analise(vid)
+                    _analise_abrir = (_analise_abrir[0].get_json()
+                                      if isinstance(_analise_abrir, tuple)
+                                      else _analise_abrir.get_json()) or {}
+                    if _analise_abrir.get('status') == 'ok':
+                        resultado['bp1'] = _analise_abrir.get('bp1') or {}
+                        resultado['bp2'] = _analise_abrir.get('bp2') or {}
+                        resultado['n_intervalos_encontrados'] = _analise_abrir.get('n_intervalos_encontrados')
+                except Exception:
+                    pass  # melhor esforço — mxVstRpeTabela usa fallback MX_VST_ULT
+
             return jsonify(resultado)
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

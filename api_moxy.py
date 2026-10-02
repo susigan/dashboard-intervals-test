@@ -4918,24 +4918,65 @@ def registar(app):
                     _mvdb_c.upsert_activity(_cn_c, mid, 'moxy')
                     _mvdb_c.upsert_activity(_cn_c, vid, 'vst')
 
-                    # 2. Streams da atividade VST — TODOS os retornados pela API
-                    try:
-                        import api_client as _api_c
-                        _st_raw, _st_err = _api_c.icu_get(
-                            f'/activity/{vid}/streams')
-                        if not _st_err and isinstance(_st_raw, dict):
-                            _mvdb_c.upsert_all_streams(_cn_c, vid, _st_raw)
-                    except Exception as _e_str:
-                        print(f'[comparar][streams VST] {_e_str}')
+                    # 2+3. Streams — TODOS os retornados pela API (sem whitelist)
+                    import api_client as _api_c
+                    import datetime as _dt_s
 
-                    # 3. Streams da atividade MOXY — TODOS
-                    try:
-                        _st_mx_raw, _st_mx_err = _api_c.icu_get(
-                            f'/activity/{mid}/streams')
-                        if not _st_mx_err and isinstance(_st_mx_raw, dict):
-                            _mvdb_c.upsert_all_streams(_cn_c, mid, _st_mx_raw)
-                    except Exception as _e_str2:
-                        print(f'[comparar][streams MOXY] {_e_str2}')
+                    def _sync_streams(aid_s, label):
+                        agora_s = _dt_s.datetime.now().isoformat(timespec='seconds')
+                        try:
+                            print(f'[MOXY_VST_STREAMS] activity_id={aid_s} ({label})')
+                            _raw, _err = _api_c.icu_get(f'/activity/{aid_s}/streams')
+                            if _err:
+                                print(f'[MOXY_VST_STREAMS] ERROR api {label}: {_err}')
+                                _cn_c.execute(
+                                    "INSERT INTO db_metadata(key,value,updated_at)"
+                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                    " value=excluded.value,updated_at=excluded.updated_at",
+                                    ('stream_sync_last_status', 'api_error', agora_s))
+                                _cn_c.execute(
+                                    "INSERT INTO db_metadata(key,value,updated_at)"
+                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                    " value=excluded.value,updated_at=excluded.updated_at",
+                                    ('stream_sync_last_error', str(_err)[:500], agora_s))
+                                return
+                            parsed = _mvdb_c._parse_streams_api(_raw)
+                            if not parsed:
+                                print(f'[MOXY_VST_STREAMS] API retornou 0 streams ({label})')
+                                _cn_c.execute(
+                                    "INSERT INTO db_metadata(key,value,updated_at)"
+                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                    " value=excluded.value,updated_at=excluded.updated_at",
+                                    ('stream_sync_last_status', 'api_empty', agora_s))
+                                return
+                            keys = sorted(parsed.keys())
+                            print(f'[MOXY_VST_STREAMS] API retornou {len(parsed)} streams')
+                            print(f'[MOXY_VST_STREAMS] keys={keys}')
+                            ins, upd, pres = _mvdb_c.upsert_all_streams(_cn_c, aid_s, _raw)
+                            print(f'[MOXY_VST_STREAMS] inserted={ins} updated={upd} preserved={pres}')
+                            _cn_c.execute(
+                                "INSERT INTO db_metadata(key,value,updated_at)"
+                                " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                " value=excluded.value,updated_at=excluded.updated_at",
+                                ('stream_sync_last_status', 'success', agora_s))
+                        except Exception as _e_str_i:
+                            print(f'[MOXY_VST_STREAMS] ERROR persist {label}: {_e_str_i}')
+                            try:
+                                _cn_c.execute(
+                                    "INSERT INTO db_metadata(key,value,updated_at)"
+                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                    " value=excluded.value,updated_at=excluded.updated_at",
+                                    ('stream_sync_last_status', 'persist_error', agora_s))
+                                _cn_c.execute(
+                                    "INSERT INTO db_metadata(key,value,updated_at)"
+                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                    " value=excluded.value,updated_at=excluded.updated_at",
+                                    ('stream_sync_last_error', str(_e_str_i)[:500], agora_s))
+                            except Exception:
+                                pass
+
+                    _sync_streams(vid, 'VST')
+                    _sync_streams(mid, 'MOXY')
 
                     # 4. Intervalos VST (BP1 + BP2)
                     for _grp, _ivs in [('bp1', (dia2.get('bp1') or {}).get('metricas') or []),
@@ -4988,7 +5029,8 @@ def registar(app):
                             recuperacao_final_dia2=dia2.get('recuperacao_final'))
 
                     _cn_c.commit()
-                    _mvdb_c.upload()
+                    _ok_up_mv, _det_up_mv = _mvdb_c.upload()
+                    print(f'[MOXY_VST_STREAMS] upload={"success" if _ok_up_mv else "fail: " + str(_det_up_mv)[:80]}')
                     _cn_c.close()
                 except Exception as _e_mvdb_c:
                     print(f'[comparar][moxy_vst_historico.db] {_e_mvdb_c}')

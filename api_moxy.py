@@ -2864,6 +2864,27 @@ def registar(app):
                             'rpe': r[2], 'source': r[3], 'updated_at': r[4]}
                            for r in _verif]
             # ── fim diagnóstico ──────────────────────────────────────────
+            # Espelhar para moxy_vst_historico.db (novo DB canônico)
+            try:
+                import drive_db_moxy_vst as _mvdb2
+                cn_mv2 = _mvdb2.get_moxy_vst_conn()
+                for iv in intervals:
+                    st = iv.get('start_time')
+                    rpe_iv = iv.get('rpe')
+                    if st is not None:
+                        source_iv = 'deleted' if rpe_iv == 0 else 'manual'
+                        rpe_real = None if rpe_iv == 0 else rpe_iv
+                        _mvdb2.upsert_rpe(
+                            cn_mv2, aid, float(st), rpe_real,
+                            end_time=None,
+                            interval_type=iv.get('interval_type'),
+                            elapsed_time=iv.get('elapsed_time'),
+                            source=source_iv)
+                cn_mv2.commit()
+                _mvdb2.upload()
+                cn_mv2.close()
+            except Exception as _e_mv2:
+                print(f'[activity_interval_rpe_gravar] moxy_vst_historico.db: {_e_mv2}')
             ok_up, det_up = ddp.upload()
             if not ok_up:
                 # Registar no log do servidor — o Drive não foi actualizado.
@@ -3133,7 +3154,34 @@ def registar(app):
                     "rpe, gravado_em) VALUES (?,?,?,?,?,?,?)",
                     (aid, int(b['bloco_indice']), b.get('watts_medio'),
                      b.get('t0_s'), b.get('t1_s'), int(b['rpe']), agora))
+                # Espelhar para activity_interval_rpe (nova fonte canônica)
+                # para que _rpe_interval_resolver o encontre sem fallback.
+                if b.get('t0_s') is not None:
+                    _rpe_interval_upsert(cn, aid, [{
+                        'start_time':   float(b['t0_s']),
+                        'interval_type': 'WORK',
+                        'elapsed_time': (float(b['t1_s']) - float(b['t0_s'])
+                                         if b.get('t1_s') is not None else None),
+                        'rpe': int(b['rpe']),
+                    }])
             cn.commit()
+            # Espelhar também para o novo moxy_vst_historico.db
+            try:
+                import drive_db_moxy_vst as _mvdb
+                cn_mv = _mvdb.get_moxy_vst_conn()
+                for b in blocos:
+                    if b.get('t0_s') is not None:
+                        _mvdb.upsert_rpe(cn_mv, aid, float(b['t0_s']),
+                                         int(b['rpe']),
+                                         end_time=float(b['t1_s']) if b.get('t1_s') else None,
+                                         interval_type='WORK',
+                                         elapsed_time=(float(b['t1_s']) - float(b['t0_s'])
+                                                       if b.get('t1_s') else None))
+                cn_mv.commit()
+                _mvdb.upload()
+                cn_mv.close()
+            except Exception as _e_mv:
+                print(f'[moxy_rpe_gravar] moxy_vst_historico.db: {_e_mv}')
             ok_up, det_up = ddp.upload()
             return jsonify({'status': 'ok' if ok_up else 'gravado_sem_upload',
                             'n_gravados': len(blocos), 'gravado_em': agora,
@@ -4781,11 +4829,36 @@ def registar(app):
                 _bp2_m_c = (dia2.get('bp2') or {}).get('metricas') or []
 
                 # RPE do VST (Dia 2) por intervalo — de activity_interval_rpe
+                # Cache de moxy_rpe para fallback (evita N queries)
+                _rpe_legacy_t0 = {float(r[0]): r[1] for r in cn.execute(
+                    "SELECT t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? AND t0_s IS NOT NULL",
+                    (vid,)).fetchall()}
+
                 def _rpe_c(metricas_lista, aid):
                     rpes = []
                     for _m in metricas_lista:
                         _t0 = _m.get('t0') or _m.get('t0_s')
-                        _rv, _ = _rpe_interval_resolver(cn, aid, _t0) if _t0 is not None else (None, None)
+                        if _t0 is None:
+                            rpes.append(None); continue
+                        _rv, _fonte = _rpe_interval_resolver(cn, aid, _t0)
+                        if _rv is None and _fonte == 'absent':
+                            # Fallback 1: moxy_rpe por t0_s (legado)
+                            for _t0_leg, _rpe_leg in _rpe_legacy_t0.items():
+                                if abs(_t0_leg - float(_t0)) <= 1:
+                                    _rv = _rpe_leg; break
+                            # Fallback 2: moxy_vst_historico.db
+                            if _rv is None:
+                                try:
+                                    import drive_db_moxy_vst as _mvdb_rc
+                                    _cn_rc = _mvdb_rc.get_moxy_vst_conn()
+                                    _rv_mv, _f_mv = _mvdb_rc.resolver_rpe(
+                                        _cn_rc, aid, float(_t0))
+                                    _cn_rc.close()
+                                    if _f_mv == 'new':
+                                        _rv = _rv_mv
+                                except Exception:
+                                    pass
                         rpes.append(_rv)
                     return rpes
                 _rpe_c_bp1 = _rpe_c(_bp1_m_c, vid)
@@ -5151,6 +5224,59 @@ def registar(app):
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # moxy_vst_historico.db — gestão do banco canônico MOXY/VST
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @app.route('/api/moxy/vst/db/status')
+    def api_moxy_vst_db_status():
+        """Estado completo do moxy_vst_historico.db. Não altera nada."""
+        try:
+            import drive_db_moxy_vst as _mvdb_st
+            info = _mvdb_st.diagnostico()
+            info['status'] = 'ok'
+            return jsonify(info)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/db/download')
+    def api_moxy_vst_db_download():
+        """Gera o moxy_vst_historico.db vazio e oferece para download.
+
+        Usado para criar o ficheiro inicial que o utilizador faz upload
+        manual para o Google Drive. Se o DB local já existir com dados,
+        faz download do ficheiro actual (backup do utilizador).
+        """
+        try:
+            import drive_db_moxy_vst as _mvdb_dl
+            local = _mvdb_dl._LOCAL_DB
+            if not os.path.exists(local):
+                _mvdb_dl._criar_db_local_vazio()
+            from flask import send_file
+            return send_file(local,
+                             as_attachment=True,
+                             download_name='moxy_vst_historico.db',
+                             mimetype='application/x-sqlite3')
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+    @app.route('/api/moxy/vst/db/migrate', methods=['POST'])
+    def api_moxy_vst_db_migrate():
+        """Migra dados de perfil_historico.db para moxy_vst_historico.db.
+        Operação não-destrutiva: UPSERT. Nunca apaga dados existentes.
+        """
+        try:
+            import migrate_moxy_vst as _mig
+            dry = request.args.get('dry_run', '0') == '1'
+            contagens = _mig.migrar(dry_run=dry)
+            return jsonify({'status': 'ok', 'dry_run': dry,
+                            'migrados': contagens})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
 
     @app.route('/api/moxy/corte', methods=['POST'])
     def api_moxy_corte():

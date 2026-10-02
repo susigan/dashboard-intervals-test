@@ -39,8 +39,14 @@ def migrar(
     cn_orig.row_factory = sqlite3.Row
 
     if not dry_run:
-        cn_dest = sqlite3.connect(destino)
-        aplicar_schema(cn_dest)
+        # Usar get_moxy_vst_conn() para garantir download+schema correctos
+        # Se não existir no Drive, cria local e continua
+        try:
+            cn_dest = mvdb.get_moxy_vst_conn()
+        except Exception:
+            # Fallback: sqlite3 directo com schema manual
+            cn_dest = sqlite3.connect(destino)
+            aplicar_schema(cn_dest)
     else:
         cn_dest = None
 

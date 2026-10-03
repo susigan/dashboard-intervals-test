@@ -1,419 +1,241 @@
-"""perfil_schema.py — schema do perfil_historico.db.
+"""moxy_vst_schema.py — Schema do moxy_vst_historico.db.
 
-Guarda instantaneos do CP e do perfil metabolico ao longo do tempo, para se
-poder ver se os valores e os intervalos mudaram. Tres tabelas:
-
-  cp_resultados        um instantaneo por gravacao: todos os modelos
-                       corridos, mais qual foi escolhido
-  perfil_snapshots     um instantaneo do perfil metabolico
-  limiares_snapshots   os quartis dos campos externos nessa data, para se
-                       ver o intervalo a mover-se e nao so' a mediana
-
-A data e' dada por quem grava (data_referencia), nao pelo relogio: um
-instantaneo pode dizer respeito a uma season passada e ser gravado hoje.
-data_gravacao guarda quando foi de facto escrito, para se distinguirem os
-dois. A chave unica e' (tipo/modalidade, season, data_referencia), com
-REPLACE, para que voltar a gravar o mesmo dia corrija em vez de duplicar.
+Princípio: CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN.
+Nunca DROP, nunca DELETE, nunca recria tabelas existentes.
+Cada chamada a aplicar_schema() é idempotente.
 """
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS cp_resultados (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    data_referencia     TEXT NOT NULL,
-    data_gravacao       TEXT NOT NULL,
-    modalidade          TEXT NOT NULL,
-    season              TEXT,
-    modelo_escolhido    TEXT,
-    cp_w                REAL,
-    wp_j                REAL,
-    see_pct             REAL,
-    n_pts               INTEGER,
-    k_params            INTEGER,
-    pmax_w              REAL,
-    mmp60_validacao_w   REAL,
-    mmp_pts_json        TEXT,
-    modelos_json        TEXT,
-    veloclinic_json     TEXT,
-    origem              TEXT,
-    nota                TEXT,
-    UNIQUE (modalidade, season, data_referencia)
-);
+SCHEMA_VERSION = 4  # v4: rpe REAL — aceita qualquer decimal
 
-CREATE TABLE IF NOT EXISTS perfil_snapshots (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    data_referencia     TEXT NOT NULL,
-    data_gravacao       TEXT NOT NULL,
-    modalidade          TEXT NOT NULL,
-    season              TEXT,
-    vo2max              REAL,
-    vlamax              REAL,
-    lt1_w               REAL,
-    lt1_convencao_w     REAL,
-    lt2_w               REAL,
-    mlss_w              REAL,
-    fatmax_w            REAL,
-    pvo2max_w           REAL,
-    frac_utilizacao_pct REAL,
-    cp_w                REAL,
-    wp_j                REAL,
-    peso_kg             REAL,
-    bf_pct              REAL,
-    mmp_json            TEXT,
-    zonas_json          TEXT,
-    entradas_json       TEXT,
-    avisos              TEXT,
-    origem              TEXT,
-    UNIQUE (modalidade, season, data_referencia)
-);
+_TABELAS = [
 
-CREATE TABLE IF NOT EXISTS limiares_snapshots (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    data_referencia     TEXT NOT NULL,
-    data_gravacao       TEXT NOT NULL,
-    modalidade          TEXT NOT NULL,
-    season              TEXT,
-    campo               TEXT NOT NULL,
-    grupo               TEXT,
-    unidade             TEXT,
-    n                   INTEGER,
-    p25                 REAL,
-    p50                 REAL,
-    p75                 REAL,
-    minimo              REAL,
-    maximo              REAL,
-    watts_equivalente   REAL,
-    hr_equivalente      REAL,
-    constante           INTEGER,
-    UNIQUE (modalidade, season, data_referencia, campo)
-);
+    # ──────────────────────────────────────────────────────────────
+    # Metadados do próprio banco
+    # ──────────────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS db_metadata (
+        key         TEXT PRIMARY KEY,
+        value       TEXT,
+        updated_at  TEXT
+    )""",
 
-CREATE TABLE IF NOT EXISTS moxy_cortes (
-    activity_id     TEXT PRIMARY KEY,
-    modalidade      TEXT,
-    data            TEXT,
-    inicio_s        REAL,
-    fim_s           REAL,
-    origem          TEXT,
-    proposto_s      REAL,
-    nota            TEXT,
-    data_gravacao   TEXT
-);
+    # ──────────────────────────────────────────────────────────────
+    # Atividades MOXY
+    # ──────────────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS moxy_activities (
+        activity_id         TEXT PRIMARY KEY,
+        activity_name       TEXT,
+        activity_date       TEXT,
+        sport               TEXT,
+        tag                 TEXT,
+        source              TEXT DEFAULT 'intervals_icu',
+        raw_metadata_json   TEXT,
+        created_at          TEXT,
+        updated_at          TEXT
+    )""",
 
-CREATE TABLE IF NOT EXISTS moxy_analises (
-    activity_id     TEXT PRIMARY KEY,
-    modalidade      TEXT,
-    data            TEXT,
-    -- limiares
-    perfil          TEXT,
-    bp1_w           REAL,
-    bp1_bpm         REAL,
-    bp2_w           REAL,
-    bp2_bpm         REAL,
-    bp2_origem      TEXT,
-    smo2max         REAL,
-    smo2min         REAL,
-    n_degraus       INTEGER,
-    -- 5-1-5
-    us_score        REAL,
-    us_limitador    TEXT,
-    pc_score        REAL,
-    pc_limitador    TEXT,
-    -- rede causal
-    rede_limitador  TEXT,
-    rede_pct        TEXT,
-    -- qualidade e proveniencia
-    pct_artefacto   REAL,
-    corte_inicio_s  REAL,
-    corte_fim_s     REAL,
-    -- limiares pelo protocolo de degraus (Yogev/Rogers): as duas
-    -- transicoes do mesmo teste, medidas opticamente
-    lt1_reox_w      REAL,
-    lt1_reox_de     REAL,
-    lt1_reox_ate    REAL,
-    mlss_dessat_w   REAL,
-    mlss_dessat_de  REAL,
-    mlss_dessat_ate REAL,
-    versao_analise  TEXT,
-    json_completo   TEXT,
-    data_gravacao   TEXT
-);
+    # ──────────────────────────────────────────────────────────────
+    # Atividades VST
+    # ──────────────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS vst_activities (
+        activity_id         TEXT PRIMARY KEY,
+        activity_name       TEXT,
+        activity_date       TEXT,
+        sport               TEXT,
+        tag                 TEXT,
+        raw_metadata_json   TEXT,
+        created_at          TEXT,
+        updated_at          TEXT
+    )""",
 
-CREATE INDEX IF NOT EXISTS ix_moxy_mod_data
-    ON moxy_analises (modalidade, data);
+    # ──────────────────────────────────────────────────────────────
+    # Streams brutos (uma linha por stream por atividade)
+    # stream_name: 'heartrate', 'watts', 'smo2', 'thb', 'dfa1',
+    #              'respiration', 'velocity', 'cadence', etc.
+    # stream_json: lista JSON [[t0, v0], [t1, v1], ...]
+    #              ou {"time":[...], "data":[...]}
+    # Arquitetura extensível: novos streams → nova linha, zero DDL.
+    # ──────────────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS activity_streams (
+        activity_id     TEXT    NOT NULL,
+        stream_name     TEXT    NOT NULL,
+        stream_json     TEXT    NOT NULL,
+        updated_at      TEXT,
+        PRIMARY KEY (activity_id, stream_name)
+    )""",
 
-CREATE INDEX IF NOT EXISTS ix_cp_mod_data
-    ON cp_resultados (modalidade, data_referencia);
-CREATE INDEX IF NOT EXISTS ix_perfil_mod_data
-    ON perfil_snapshots (modalidade, data_referencia);
-CREATE INDEX IF NOT EXISTS ix_lim_mod_campo_data
-    ON limiares_snapshots (modalidade, campo, data_referencia);
+    # ──────────────────────────────────────────────────────────────
+    # RPE por intervalo — fonte canônica e permanente
+    # rpe=NULL + source='deleted' → apagado explicitamente pelo utilizador
+    # rpe=1..10 + source='manual' → valor real gravado
+    # Nunca 0 como fallback. Nunca apagar fisicamente.
+    # ──────────────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS activity_interval_rpe (
+        activity_id     TEXT    NOT NULL,
+        start_time      REAL    NOT NULL,
+        end_time        REAL,
+        interval_index  INTEGER,
+        interval_type   TEXT,
+        elapsed_time    REAL,
+        rpe             REAL,
+        rpe_status      TEXT    DEFAULT 'recorded',
+        source          TEXT    DEFAULT 'manual',
+        created_at      TEXT,
+        updated_at      TEXT,
+        PRIMARY KEY (activity_id, start_time)
+    )""",
 
--- RPE (esforço percebido, 1-10) por bloco de TRABALHO de uma sessão.
---
--- Um bloco pode ser regravado: o atleta engana-se a escrever o RPE, ou
--- quer corrigir depois de reflectir. Por isso a chave e' (activity_id,
--- bloco_indice), nao um id proprio -- gravar outra vez SUBSTITUI a
--- entrada anterior desse bloco, nunca acumula duplicados.
-CREATE TABLE IF NOT EXISTS moxy_rpe (
-    activity_id     TEXT NOT NULL,
-    bloco_indice    INTEGER NOT NULL,
-    watts_medio     REAL,
-    t0_s            REAL,
-    t1_s            REAL,
-    rpe             INTEGER NOT NULL,
-    gravado_em      TEXT,
-    PRIMARY KEY (activity_id, bloco_indice)
-);
-"""
+    # ──────────────────────────────────────────────────────────────
+    # Intervalos VST (blocos de trabalho BP1/BP2)
+    # raw_interval_json preserva o bloco original completo
+    # ──────────────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS vst_intervals (
+        activity_id         TEXT    NOT NULL,
+        interval_index      INTEGER NOT NULL,
+        grupo               TEXT,
+        start_time          REAL,
+        end_time            REAL,
+        duration_s          REAL,
+        power_w             REAL,
+        heart_rate_bpm      REAL,
+        respiration         REAL,
+        smo2_pct            REAL,
+        thb_gdl             REAL,
+        dfa1                REAL,
+        raw_interval_json   TEXT,
+        updated_at          TEXT,
+        PRIMARY KEY (activity_id, interval_index)
+    )""",
 
+    # ──────────────────────────────────────────────────────────────
+    # Conjuntos MOXY × VST
+    # ──────────────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS vst_conjuntos (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        moxy_activity_id        TEXT    NOT NULL,
+        vst_activity_id         TEXT    NOT NULL,
+        status                  TEXT    DEFAULT 'active',
+        bp1_status              TEXT,
+        bp2_status              TEXT,
+        dia1_bp1_w              REAL,
+        dia2_bp1_w              REAL,
+        dia1_bp2_w              REAL,
+        dia2_bp2_w              REAL,
+        recovery_bp1_status     TEXT,
+        recovery_bp2_status     TEXT,
+        created_at              TEXT,
+        updated_at              TEXT,
+        UNIQUE (moxy_activity_id, vst_activity_id)
+    )""",
 
-# Colunas acrescentadas depois de a tabela ja' existir em producao.
-#
-# O "CREATE TABLE IF NOT EXISTS" nao toca numa tabela que ja' existe: se o
-# ficheiro no Drive foi criado antes destas colunas, elas nunca aparecem e
-# o INSERT rebenta com "table moxy_analises has no column named ...".
-#
-# Formato: (tabela, coluna, tipo). Correr ALTER TABLE para cada uma que
-# falte e' barato e idempotente.
-MIGRACOES = [
-    ('moxy_analises', 'lt1_reox_w', 'REAL'),
-    ('moxy_analises', 'lt1_reox_de', 'REAL'),
-    ('moxy_analises', 'lt1_reox_ate', 'REAL'),
-    ('moxy_analises', 'mlss_dessat_w', 'REAL'),
-    ('moxy_analises', 'mlss_dessat_de', 'REAL'),
-    ('moxy_analises', 'mlss_dessat_ate', 'REAL'),
-    # VO2max previsto pela regressão SmO2×FC (Peikon, NNOXX) — para
-    # cruzar no Perfil Metabólico com o VO2max do modelo de Hawley.
-    ('moxy_analises', 'vo2max_previsto', 'REAL'),
-    ('moxy_analises', 'vo2max_plausivel', 'INTEGER'),
-    # Snapshot do ultimo resultado da comparacao Dia1xDia2, para nao
-    # ter de recalcular so' para mostrar a lista "verificacoes salvas".
-    # Os valores estruturados sao os que ja vem de comparar_bp/
-    # comparar_recovery -- nunca recalculados aqui, so' guardados.
-    ('vst_conjuntos', 'bp1_status', 'TEXT'),
-    ('vst_conjuntos', 'bp2_status', 'TEXT'),
-    ('vst_conjuntos', 'recovery_bp1_status', 'TEXT'),
-    ('vst_conjuntos', 'recovery_bp2_status', 'TEXT'),
-    ('vst_conjuntos', 'dia1_bp1_w', 'REAL'),
-    ('vst_conjuntos', 'dia2_bp1_w', 'REAL'),
-    ('vst_conjuntos', 'dia1_bp2_w', 'REAL'),
-    ('vst_conjuntos', 'dia2_bp2_w', 'REAL'),
-    ('vst_conjuntos', 'resultado_json', 'TEXT'),
-    ('vst_conjuntos', 'analisado_em', 'TEXT'),
-    # Modalidade da sessão VST/MOXY (ex: 'Ski', 'Bike', 'Row', 'Run')
-    # Necessário para o P1b de /api/training/contexto filtrar por modalidade
-    # sem depender de moxy_analises (que pode estar vazio).
-    ('vst_conjuntos', 'modalidade', 'TEXT'),
-    # Resultado da validação cruzada BPM MOXY × VST (JSON).
-    # Produzido por nirs_breakpoints.validar_bpm_vst() após gravar análise MOXY.
-    # NULL em registos antigos — o Training e a lógica VST não dependem deste campo.
-    ('vst_conjuntos', 'bpm_vst_validacao_json', 'TEXT'),
-    # Validação fisiológica complementar MOXY × VST (JSON).
-    # Contém: referencias_fisiologicas (HRVT), bp1/bp2 com
-    # posição potência, FC classificada, RPE esperado/observado, coerência.
-    # NULL em registos antigos — não afecta Training nem VST.
-    ('vst_conjuntos', 'validacao_fisiologica_json', 'TEXT'),
-    # Metadados de validade da análise fisiológica (fisio_version + fisio_data_hash).
-    # fisio_version: versão do algoritmo (incrementar quando lógica mudar).
-    # fisio_data_hash: hash dos dados usados (mudar RPE/DFA/etc. → recalcular).
-    # Estes campos são controlo/cache, não fonte de dados.
-    # A fonte continua sendo validacao_fisiologica_json.
-    ('vst_conjuntos', 'fisio_version', 'TEXT'),
-    ('vst_conjuntos', 'fisio_data_hash', 'TEXT'),
+    # ──────────────────────────────────────────────────────────────
+    # Resultados de verificação (um registo por versão de análise)
+    # Nunca apagar versões antigas — só adicionar novas linhas.
+    # ──────────────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS vst_results (
+        id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+        vst_conjunto_id             INTEGER NOT NULL
+                                    REFERENCES vst_conjuntos(id),
+        version                     INTEGER NOT NULL DEFAULT 1,
+        analysis_version            TEXT,
+        analysis_hash               TEXT,
+        analyzed_at                 TEXT,
+
+        -- JSONs completos (fonte de verdade)
+        resultado_json              TEXT,
+        validacao_fisiologica_json  TEXT,
+        bpm_vst_validacao_json      TEXT,
+
+        -- Campos explícitos de BP (redundância deliberada para queries simples)
+        bp1_w                       REAL,
+        bp2_w                       REAL,
+        bp1_bpm                     REAL,
+        bp2_bpm                     REAL,
+        bp1_json                    TEXT,
+        bp2_json                    TEXT,
+
+        -- Campos de análise cruzada
+        comparacao_rpe_bp1          TEXT,
+        comparacao_rpe_bp2          TEXT,
+        limiter_sintese             TEXT,
+        recuperacao_final_dia2      TEXT,
+
+        -- Flags de qualidade de dados
+        rpe_bp1_disponivel          INTEGER DEFAULT 0,
+        rpe_bp2_disponivel          INTEGER DEFAULT 0,
+
+        created_at                  TEXT
+    )""",
+
+    # ──────────────────────────────────────────────────────────────
+    # Análises MOXY (bp1_w, bp2_w, limiares calculados)
+    # ──────────────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS moxy_analyses (
+        activity_id         TEXT    NOT NULL,
+        version             INTEGER NOT NULL DEFAULT 1,
+        bp1_w               REAL,
+        bp1_bpm             REAL,
+        bp2_w               REAL,
+        bp2_bpm             REAL,
+        json_completo       TEXT,
+        analysis_version    TEXT,
+        analyzed_at         TEXT,
+        PRIMARY KEY (activity_id, version)
+    )""",
 ]
 
+# Colunas a adicionar em tabelas existentes (migrações não destrutivas)
+_MIGRATIONS = []
 
-# ── Snapshot de actividade com intervalos + RPE ───────────────────────────
-# Guarda os dados essenciais de uma actividade MOXY/VST para não depender
-# de icu_get() ao reabrir (útil quando a API key expira ou muda).
-# Não duplica os streams completos — guarda só o essencial para o Training.
-SCHEMA_ACTIVITY_SNAPSHOT = """
-CREATE TABLE IF NOT EXISTS activity_snapshot (
-    activity_id          TEXT    PRIMARY KEY,
-    nome                 TEXT,
-    data                 TEXT,
-    modalidade           TEXT,
-    elapsed_time         INTEGER,
-    avg_watts            REAL,
-    avg_hr               REAL,
-    rpe_sessao           REAL,
-    z1_sec               REAL,
-    z2_sec               REAL,
-    z3_sec               REAL,
-    icu_intervals_json   TEXT,   -- JSON de icu_intervals (label/type/watts/hr/start_time/elapsed)
-    rpe_intervalos_json  TEXT,   -- JSON do RPE por intervalo (start_time → rpe)
-    gravado_em           TEXT    NOT NULL
-);
-"""
+# Migrações de dados (executadas em aplicar_schema, idempotentes)
+def _migrar_rpe_real(conn):
+    """v4: converte rpe INTEGER -> REAL no banco existente.
 
-
-# ── Biblioteca mestre de treinos ──────────────────────────────────────────
-# Protocolo planificado — independente das actividades reais.
-# Campos de intensidade aceitam NULL quando não aplicáveis (FC-only, RPE-only).
-SCHEMA_TRAINING_LIBRARY = """
-CREATE TABLE IF NOT EXISTS training_library (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome                 TEXT    NOT NULL,
-    modalidade           TEXT    NOT NULL,     -- Bike|Row|Ski|Run
-    tipo_treino          TEXT,                 -- Threshold|VO2|SIT|HIIT|Z2|...
-    objetivo             TEXT,
-    limitador            TEXT,                 -- cardiaco|periferico|respiratorio|...
-    zona                 TEXT,                 -- Z1|Z2|Z3
-    series               INTEGER,
-    work_seconds         INTEGER,
-    recovery_seconds     INTEGER,
-    work_total_seconds   INTEGER,              -- series × work_seconds (calculado ou manual)
-    duration_total_seconds INTEGER,
-    intensidade_min      REAL,
-    intensidade_max      REAL,
-    intensidade_unidade  TEXT,                 -- W|%CP|%FTP|%FC|RPE|min/500m
-    alvo_power_min       REAL,
-    alvo_power_max       REAL,
-    alvo_hr_min          REAL,
-    alvo_hr_max          REAL,
-    alvo_rpe_min         REAL,
-    alvo_rpe_max         REAL,
-    descricao            TEXT,
-    instrucoes           TEXT,
-    progressao           TEXT,
-    prioridade           TEXT    DEFAULT 'principal',  -- principal|possível|complementar
-    ativo                INTEGER DEFAULT 1,
-    criado_em            TEXT    NOT NULL,
-    atualizado_em        TEXT    NOT NULL
-);
-"""
-
-# Blocos internos de um protocolo (filha de training_library).
-# Permite representar treinos multi-fase:
-#   BLOCO 1: Warm-up 10 min
-#   BLOCO 2: 4 × 8 min Work / 3 min Recovery
-#   BLOCO 3: Cool-down 10 min
-SCHEMA_TRAINING_LIBRARY_BLOCKS = """
-CREATE TABLE IF NOT EXISTS training_library_blocks (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    training_id          INTEGER NOT NULL REFERENCES training_library(id),
-    ordem                INTEGER NOT NULL DEFAULT 0,
-    tipo_bloco           TEXT,                 -- warmup|work|recovery|cooldown|Z2
-    nome                 TEXT,
-    series               INTEGER,
-    duration_seconds     INTEGER,
-    work_seconds         INTEGER,
-    recovery_seconds     INTEGER,
-    intensidade_min      REAL,
-    intensidade_max      REAL,
-    intensidade_unidade  TEXT,
-    zona                 TEXT,
-    alvo_power_min       REAL,
-    alvo_power_max       REAL,
-    alvo_hr_min          REAL,
-    alvo_hr_max          REAL,
-    observacoes          TEXT
-);
-CREATE INDEX IF NOT EXISTS ix_tlb_training ON training_library_blocks(training_id);
-"""
-
-# Registo de execuções — histórico planejado×realizado.
-# Permite saber "este protocolo foi realizado antes?" e análise de progressão.
-SCHEMA_TRAINING_EXECUTIONS = """
-CREATE TABLE IF NOT EXISTS training_executions (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    training_id          INTEGER REFERENCES training_library(id),
-    activity_id          TEXT    NOT NULL,
-    modalidade           TEXT,
-    analisado_em         TEXT    NOT NULL,
-    percentual_execucao  REAL,
-    classificacao        TEXT,   -- executado_conforme|parcialmente|fora_protocolo|nao_avaliavel
-    resultado_json       TEXT,   -- JSON com detalhes da análise
-    limitador_contexto   TEXT    -- limitador activo no momento da execução
-);
-CREATE INDEX IF NOT EXISTS ix_te_training ON training_executions(training_id);
-CREATE INDEX IF NOT EXISTS ix_te_activity ON training_executions(activity_id);
-"""
-
-
-# Escolha do atleta: usar os blocos WORK/RECOVERY da Intervals.icu
-# (icu_intervals) ou a detecção automática nossa, quando a API falha ou
-# dá blocos que o atleta não confia. Por omissão ('automatico' quando
-# não há registo) mantém-se o comportamento actual: tenta icu_intervals,
-# cai para detecção automática só se aquele falhar.
-
-# RPE manual por intervalo de qualquer actividade.
-# Fonte de verdade universal: uma anotação por (activity_id, start_time).
-# start_time = icu_interval.start_time = bloco.t0 (via blocos_de_laps).
-# rpe=0   → apagado explicitamente; NÃO fazer fallback para moxy_rpe.
-# rpe=1..10 → valor real.
-# Sem linha → sem anotação nova; fallback para moxy_rpe (legado).
-SCHEMA_ACTIVITY_INTERVAL_RPE = """
-CREATE TABLE IF NOT EXISTS activity_interval_rpe (
-    activity_id     TEXT    NOT NULL,
-    start_time      REAL    NOT NULL,
-    interval_type   TEXT,
-    elapsed_time    REAL,
-    rpe             INTEGER NOT NULL CHECK (rpe BETWEEN 0 AND 10),
-    source          TEXT    NOT NULL DEFAULT 'manual',
-    updated_at      TEXT    NOT NULL,
-    PRIMARY KEY (activity_id, start_time)
-);
-"""
-
-SCHEMA_MODO_BLOCOS = """
-CREATE TABLE IF NOT EXISTS moxy_modo_blocos (
-    activity_id   TEXT PRIMARY KEY,
-    modo          TEXT NOT NULL,   -- 'automatico' | 'sincronizado'
-    gravado_em    TEXT NOT NULL
-)
-"""
-
-# Vinculo persistente entre uma sessao VST e a sessao correspondente da
-# tab Moxy -- um "conjunto de verificacao". Chave primaria e' o proprio
-# id da sessao VST (uma sessao VST pertence no maximo a um conjunto de
-# cada vez; escolher outra Moxy para a mesma VST substitui o vinculo,
-# nunca acumula). moxy_activity_id tem indice proprio para a procura
-# inversa (abrir pela sessao Moxy).
-SCHEMA_VST_CONJUNTO = """
-CREATE TABLE IF NOT EXISTS vst_conjuntos (
-    vst_activity_id    TEXT PRIMARY KEY,
-    moxy_activity_id   TEXT NOT NULL,
-    criado_em          TEXT NOT NULL,
-    actualizado_em     TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_vst_conjuntos_moxy
-    ON vst_conjuntos(moxy_activity_id)
-"""
-
-
-def migrar(conn):
-    """Acrescenta colunas em falta a tabelas que ja' existem."""
-    feitas, erros = [], []
-    for tabela, coluna, tipo in MIGRACOES:
-        try:
-            existe = conn.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name=?", (tabela,)).fetchone()
-            if not existe:
-                continue
-            cols = {r[1] for r in
-                    conn.execute(f"PRAGMA table_info({tabela})")}
-            if coluna in cols:
-                continue
-            conn.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {tipo}")
-            feitas.append(f'{tabela}.{coluna}')
-        except Exception as e:
-            erros.append(f'{tabela}.{coluna}: {e}')
-    if feitas:
+    SQLite aceita REAL mesmo em coluna declarada INTEGER (duck typing),
+    mas este UPDATE garante que o tipo de armazenamento interno seja REAL.
+    UPDATE ... * 1.0 nao altera valores: 6 -> 6.0, 4.2 -> 4.2.
+    Idempotente: pode ser re-executada sem danos.
+    """
+    try:
+        conn.execute(
+            "UPDATE activity_interval_rpe "
+            "SET rpe = rpe * 1.0 WHERE rpe IS NOT NULL")
         conn.commit()
-    return {'acrescentadas': feitas, 'erros': erros}
+    except Exception:
+        pass  # tabela pode nao existir ainda
 
 
 def aplicar_schema(conn):
-    conn.executescript(SCHEMA)
-    conn.execute(SCHEMA_MODO_BLOCOS)
-    conn.executescript(SCHEMA_VST_CONJUNTO)
-    conn.executescript(SCHEMA_ACTIVITY_INTERVAL_RPE)
-    conn.executescript(SCHEMA_TRAINING_LIBRARY)
-    conn.executescript(SCHEMA_TRAINING_LIBRARY_BLOCKS)
-    conn.executescript(SCHEMA_TRAINING_EXECUTIONS)
-    conn.executescript(SCHEMA_ACTIVITY_SNAPSHOT)
+    """Aplica todas as tabelas e migrações. Idempotente e não-destrutivo."""
+    cur = conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA foreign_keys=ON")
+
+    for ddl in _TABELAS:
+        cur.execute(ddl)
+
+    # Migrações: ALTER TABLE ADD COLUMN (ignora se já existe)
+    for tabela, coluna, tipo, default in _MIGRATIONS:
+        try:
+            cur.execute(
+                f"ALTER TABLE {tabela} ADD COLUMN {coluna} {tipo} DEFAULT {default}"
+            )
+        except Exception:
+            pass  # coluna já existe
+
+    # Migracoes de dados (idempotentes)
+    _migrar_rpe_real(conn)
+
+    # Atualizar metadados do schema
+    import datetime
+    agora = datetime.datetime.now().isoformat(timespec='seconds')
+    cur.execute(
+        "INSERT INTO db_metadata(key, value, updated_at) VALUES(?,?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        ('schema_version', str(SCHEMA_VERSION), agora)
+    )
+    cur.execute(
+        "INSERT INTO db_metadata(key, value, updated_at) VALUES(?,?,?) "
+        "ON CONFLICT(key) DO UPDATE SET updated_at=excluded.updated_at",
+        ('db_created_at', agora, agora)
+    )
     conn.commit()
-    migrar(conn)
-    return conn

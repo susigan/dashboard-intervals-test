@@ -94,3 +94,5590 @@ def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
     if bp_mx.get('bp1_w') is not None:
         _add(p1, 'BP1 da curva SmO2 × potência', bp_mx['bp1_w'],
              'regressão por troços, 2 degraus por troço',
+             bp_mx.get('bp1_bpm'),
+             (bp_mx.get('bp1_fc_origem') or {}).get('nota'))
+    if bp_livre.get('bp1_w') is not None:
+        _add(p1, 'BP1, critério do script Intervals.icu', bp_livre['bp1_w'],
+             'regressão por troços, sem mínimo', bp_livre.get('bp1_bpm'),
+             (bp_livre.get('bp1_fc_origem') or {}).get('nota'))
+    # o breakpoint do deoxy-Hb aproxima o FatMax, que fica no dominio
+    # moderado -- entra no PRIMEIRO limiar
+    if (bp_hhb or {}).get('bp1_w') is not None:
+        _add(p1, 'BP1 do deoxy-Hb (≈ FatMax)', bp_hhb['bp1_w'],
+             'HHb calculado de SmO2 e THb', bp_hhb.get('bp1_bpm'))
+    if (bp_hhb or {}).get('bp2_w') is not None:
+        _add(p2, 'BP2 do deoxy-Hb', bp_hhb['bp2_w'],
+             'HHb calculado de SmO2 e THb', bp_hhb.get('bp2_bpm'))
+
+    # ── segundo limiar: LT2 / VT2 / RCP / MLSS ───────────────────────
+    if mlss.get('ok'):
+        _add(p2, 'MLSS por padrão de dessaturação', mlss['mlss_estimado'],
+             'forma dentro de cada bloco, no tempo',
+             (mlss.get('fc') or {}).get('bpm'),
+             (mlss.get('fc') or {}).get('nota'))
+    if bp_mx.get('bp2_w') is not None:
+        _add(p2, 'BP2 da curva SmO2 × potência', bp_mx['bp2_w'],
+             'regressão por troços, 2 degraus por troço', bp_mx.get('bp2_bpm'))
+    if bp_livre.get('bp2_w') is not None:
+        _add(p2, 'BP2, critério do script Intervals.icu', bp_livre['bp2_w'],
+             'regressão por troços, sem mínimo', bp_livre.get('bp2_bpm'),
+             (bp_livre.get('bp2_fc_origem') or {}).get('nota'))
+    if bp_taxa.get('ok'):
+        _add(p2, 'Quebra na taxa de dessaturação', bp_taxa['bp_watts'],
+             'velocidade de queda por degrau',
+             (bp_taxa.get('fc') or {}).get('bpm'),
+             (bp_taxa.get('fc') or {}).get('nota'))
+
+    def _resumo(lista, nome):
+        if not lista:
+            return {'ok': False, 'n': 0}
+        # marcar os implausíveis antes de calcular o consenso: um valor
+        # fora do que a sessão testou desloca a mediana sem que se veja
+        try:
+            import nirs_breakpoints as _nbk
+            _ctx = {}
+            _ws = [b.get('watts_medio') for b in (blocos or [])
+                   if b.get('on') and b.get('watts_medio')]
+            if _ws:
+                _ctx['watts_max_da_sessao'] = max(_ws)
+                _ctx['watts_min_da_sessao'] = min(_ws)
+            _m = _nbk.marcar_implausiveis(lista, 'watts', _ctx)
+            lista_marcada = _m['estimativas']
+            validas = _m['validas'] or lista_marcada
+        except Exception:
+            lista_marcada, validas, _m = lista, lista, {'n_marcadas': 0}
+
+        vs = [x['watts'] for x in validas]
+        lo, hi = min(vs), max(vs)
+        med = sorted(vs)[len(vs) // 2]
+        amp = hi - lo
+        return {'ok': True, 'nome': nome, 'n': len(validas),
+                'n_marcadas': _m.get('n_marcadas', 0),
+                'nota_marcadas': _m.get('nota'),
+                'de': lo, 'ate': hi, 'mediana': med,
+                'dispersao_w': round(amp, 1),
+                'dispersao_pct': round(amp / med * 100) if med else None,
+                'estimativas': sorted(lista_marcada,
+                                      key=lambda x: x['watts'])}
+
+    r1 = _resumo(p1, 'Primeiro limiar (LT1 / VT1 / FatMax)')
+    r2 = _resumo(p2, 'Segundo limiar (LT2 / VT2 / RCP / MLSS)')
+
+    avisos = []
+    if r1.get('ok') and r2.get('ok') and r1['de'] > r2['de']:
+        avisos.append(
+            f"a estimativa mais baixa do primeiro limiar ({r1['de']} W) fica "
+            f"ACIMA da mais baixa do segundo ({r2['de']} W). Os métodos "
+            'estão a discordar sobre qual limiar encontraram — com poucos '
+            'degraus isso acontece, e significa que nenhum dos dois está '
+            'bem determinado')
+    for r in (r1, r2):
+        if r.get('ok') and (r.get('dispersao_pct') or 0) > 20:
+            avisos.append(
+                f"{r['nome']}: {r['dispersao_pct']}% de dispersão entre "
+                f"métodos ({r['de']}–{r['ate']} W). Acima de 20% não há "
+                'estimativa utilizável — são precisos mais degraus')
+    return {
+        'primeiro': r1, 'segundo': r2, 'avisos': avisos,
+        'nota': ('cada limiar tem várias estimativas porque há várias rotas '
+                 'para lá chegar: umas leem a forma dentro de cada bloco ao '
+                 'longo do tempo, outras a curva SmO2 × potência entre '
+                 'blocos. A distância entre elas é a incerteza real, não um '
+                 'erro de cálculo'),
+    }
+
+
+# Mapeamento canónico: sistema da Rede Causal → chave de limitador.
+# Único em todo o projecto — reutilizado em Python e espelhado no JS
+# (SISTEMA_PARA_CHAVE em tab_moxy.py). Não criar mapa paralelo.
+_SISTEMA_PARA_CHAVE = {
+    'cardiaco': 'entrega',
+    'cardíaco': 'entrega',
+    'periferico': 'utilizacao',
+    'periférico': 'utilizacao',
+    'respiratorio': 'respiratorio',
+    'respiratório': 'respiratorio',
+}
+
+
+def _zona(watts, bp1_w, bp2_w):
+    """Classifica um valor de potência em Z1/Z2/Z3.
+
+    Usa SEMPRE os BP da própria sessão histórica — nunca os da sessão actual.
+    Z1 = watts < bp1_w
+    Z2 = bp1_w <= watts < bp2_w
+    Z3 = watts >= bp2_w
+    Retorna None se qualquer argumento for None ou inválido.
+    """
+    try:
+        w, b1, b2 = float(watts), float(bp1_w), float(bp2_w)
+    except (TypeError, ValueError):
+        return None
+    if w < b1:
+        return 'Z1'
+    if b1 <= w < b2:
+        return 'Z2'
+    return 'Z3'
+
+
+def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
+                   comp_recovery_bp1, comp_recovery_bp2,
+                   limiter_bp1, limiter_bp2,
+                   hipotese_bp1, hipotese_bp2,
+                   rede_causal_d1=None, modalidade=None,
+                   comp_rpe_bp1=None, comp_rpe_bp2=None,
+                   limiter_sintese=None, recuperacao_final_dia2=None,
+                   rpe_fisiologia=None):
+    """Persiste o resultado de uma verificação VST em vst_conjuntos.
+
+    Chamada por /api/moxy/vst/comparar  (melhor esforço, em try/except pass)
+    e por /api/moxy/vst/gravar_analise  (explícito, com feedback de erro).
+
+    Retorna (ok: bool, detalhe: str|None).
+    Não faz upload() — responsabilidade do chamador.
+    """
+    try:
+        pot1 = (comp_bp1 or {}).get('potencia') or {}
+        pot2 = (comp_bp2 or {}).get('potencia') or {}
+        agora = datetime.now().isoformat(timespec='seconds')
+        cn.execute(
+            "INSERT OR IGNORE INTO vst_conjuntos "
+            "(vst_activity_id, moxy_activity_id, criado_em, actualizado_em) "
+            "VALUES (?,?,?,?)",
+            (vid, mid, agora, agora))
+        # Actualizar modalidade se fornecida (e não já preenchida)
+        if modalidade:
+            cn.execute(
+                "UPDATE vst_conjuntos SET modalidade=? "
+                "WHERE vst_activity_id=? AND (modalidade IS NULL OR modalidade='')",
+                (modalidade, vid))
+        cn.execute(
+            "UPDATE vst_conjuntos SET bp1_status=?, bp2_status=?, "
+            "recovery_bp1_status=?, recovery_bp2_status=?, "
+            "dia1_bp1_w=?, dia2_bp1_w=?, dia1_bp2_w=?, dia2_bp2_w=?, "
+            "resultado_json=?, analisado_em=?, actualizado_em=? "
+            "WHERE vst_activity_id=?",
+            ((comp_bp1 or {}).get('status'), (comp_bp2 or {}).get('status'),
+             (comp_recovery_bp1 or {}).get('status'),
+             (comp_recovery_bp2 or {}).get('status'),
+             pot1.get('dia1_w'), pot1.get('dia2_w'),
+             pot2.get('dia1_w'), pot2.get('dia2_w'),
+             json.dumps({**{
+                 'comparacao_bp1': comp_bp1,
+                 'comparacao_bp2': comp_bp2,
+                 'comparacao_recovery_bp1': comp_recovery_bp1,
+                 'comparacao_recovery_bp2': comp_recovery_bp2,
+                 'comparacao_rpe_bp1': comp_rpe_bp1,
+                 'comparacao_rpe_bp2': comp_rpe_bp2,
+                 'limiter_bp1': limiter_bp1,
+                 'limiter_bp2': limiter_bp2,
+                 'limiter_sintese': limiter_sintese,
+                 'hipotese_bp1': hipotese_bp1,
+                 'hipotese_bp2': hipotese_bp2,
+                 'recuperacao_final_dia2': recuperacao_final_dia2,
+                 'rpe_fisiologia': rpe_fisiologia,
+             }, **({'rede_causal': rede_causal_d1} if rede_causal_d1 is not None else {})},
+             ensure_ascii=False),
+             agora, agora, vid))
+        cn.commit()
+        return True, None
+    except Exception as e:
+        return False, f'{type(e).__name__}: {e}'
+
+
+def _rpe_interval_resolver(cn, activity_id, start_time):
+    """Resolve o RPE para um intervalo específico.
+
+    Ordem de prioridade:
+      1. activity_interval_rpe (nova fonte)
+         rpe=0  → apagado explicitamente; retorna (None, 'deleted')
+         rpe=1..10 → retorna (rpe, 'new')
+      2. moxy_rpe (legado) — só quando não há linha nova
+         retorna (rpe, 'legacy') ou (None, 'absent')
+    """
+    import drive_db_perfil as ddp
+    row = cn.execute(
+        "SELECT rpe FROM activity_interval_rpe "
+        "WHERE activity_id=? AND start_time=?",
+        (str(activity_id), float(start_time))).fetchone()
+    if row is not None:
+        rpe_val = row[0]
+        if rpe_val == 0:
+            return None, 'deleted'
+        return rpe_val, 'new'
+    return None, 'absent'   # chamador faz fallback para moxy_rpe
+
+
+def _rpe_to_float(rpe_raw):
+    """Converte RPE para float. Aceita qualquer decimal valido em 0..10.
+
+    Nao restringe a multiplos de 0.5 nem a inteiros.
+    Exemplos validos: 1, 2.7, 4.2, 4.5, 7.8, 8.9, 9.99.
+    Lanca ValueError se fora do intervalo 0..10 ou nao numerico.
+    Nunca usa int() — preserva casas decimais.
+    """
+    try:
+        v = float(rpe_raw)
+    except (TypeError, ValueError):
+        raise ValueError(f'rpe deve ser numerico, recebeu: {rpe_raw!r}')
+    if v < 0 or v > 10:
+        raise ValueError(f'rpe {v} fora do intervalo 0..10')
+    return v
+
+
+def _rpe_interval_upsert(cn, activity_id, intervals):
+    """UPSERT de uma lista de intervalos em activity_interval_rpe.
+
+    Cada item da lista deve ter: start_time, rpe (0..10, qualquer decimal).
+    Campos opcionais: interval_type, elapsed_time.
+    Retorna numero de linhas afectadas.
+
+    rpe e armazenado como float (REAL). Nunca usa int().
+    """
+    agora = datetime.now().isoformat(timespec='seconds')
+    n = 0
+    for iv in (intervals or []):
+        st = iv.get('start_time')
+        rpe_raw = iv.get('rpe')
+        if st is None or rpe_raw is None:
+            continue
+        rpe = _rpe_to_float(rpe_raw)
+        print(f'[RPE SAVE] activity={activity_id} start_time={st} '
+              f'received={rpe_raw!r} type={type(rpe_raw).__name__} saved={rpe}')
+        cn.execute(
+            "INSERT INTO activity_interval_rpe "
+            "(activity_id, start_time, interval_type, elapsed_time, "
+            " rpe, source, updated_at) "
+            "VALUES (?,?,?,?,?,'manual',?) "
+            "ON CONFLICT(activity_id, start_time) DO UPDATE SET "
+            "  interval_type=excluded.interval_type, "
+            "  elapsed_time=excluded.elapsed_time, "
+            "  rpe=excluded.rpe, "
+            "  source=excluded.source, "
+            "  updated_at=excluded.updated_at",
+            (str(activity_id), float(st),
+             iv.get('interval_type'), iv.get('elapsed_time'),
+             rpe, agora))
+        n += 1
+    return n
+
+
+def registar(app):
+
+    @app.route('/api/moxy/limitador/<modalidade>')
+    def api_moxy_limitador_modalidade(modalidade):
+        """Devolve o limitador MOXY (US e PC) da sessão mais recente para
+        esta modalidade, independentemente de existir um conjunto VST
+        vinculado. Usado pela camada de estilos para mostrar evidência
+        complementar mesmo quando a sessão VST não tem moxy_id próprio.
+        """
+        try:
+            import db as _db
+            from config import TYPE_MAP
+            variantes = [k for k, v in TYPE_MAP.items() if v == modalidade]
+            if not variantes:
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': f'Modalidade "{modalidade}" não reconhecida.'}), 200
+            ph = ','.join('?' * len(variantes))
+            linhas = _db._exec(
+                f"SELECT id FROM activities WHERE raw IS NOT NULL "
+                f"AND type IN ({ph}) ORDER BY date DESC LIMIT 20",
+                variantes, fetch='all') or []
+            for (aid,) in linhas:
+                try:
+                    itp_resp = api_moxy_interpretacao(aid)
+                    itp_data = (itp_resp[0].get_json() if isinstance(itp_resp, tuple)
+                                else itp_resp.get_json())
+                    if itp_data and itp_data.get('status') == 'ok':
+                        intr = itp_data.get('interpretacao') or {}
+                        lus = (intr.get('us') or {}).get('limitador')
+                        lpc = (intr.get('pc') or {}).get('limitador')
+                        if lus or lpc:
+                            return jsonify({
+                                'status': 'ok',
+                                'modalidade': modalidade,
+                                'activity_id': str(aid),
+                                'limitador_us': lus,
+                                'limitador_pc': lpc,
+                                'label': ' / '.join(filter(None, [lus, lpc])),
+                            })
+                except Exception:
+                    continue
+            return jsonify({'status': 'sem_dados',
+                            'mensagem': f'Sem interpretação MOXY disponível para {modalidade}.'}), 200
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/sessoes')
+    def api_moxy_sessoes():
+        """Sessoes marcadas como Moxy.  ?modalidade=Bike&dias=3650&n=300"""
+        try:
+            import db as _db
+            from config import TYPE_MAP
+            # todo o historico por omissao. O limite de 365 dias
+            # escondia as sessoes de 2024 e anteriores.
+            dias = request.args.get('dias', type=int) or 3650
+            n = min(request.args.get('n', type=int) or 300, 500)
+            modalidade = request.args.get('modalidade')
+            corte = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+
+            cond, args = ["raw IS NOT NULL", "date >= ?"], [corte]
+            if modalidade:
+                variantes = [k for k, v in TYPE_MAP.items() if v == modalidade]
+                if variantes:
+                    cond.append(f"type IN ({','.join('?' * len(variantes))})")
+                    args += variantes
+            linhas = _db._exec(
+                f"""SELECT id, type, date, name, raw FROM activities
+                     WHERE {' AND '.join(cond)} ORDER BY date DESC""",
+                tuple(args), fetch='all') or []
+
+            fora, sem_tag = [], 0
+            tags_vistas = {}
+            for aid, tipo, data, nome, raw in linhas:
+                try:
+                    j = raw if isinstance(raw, dict) else json.loads(raw)
+                except Exception:
+                    continue
+                tt = _tags(j)
+                for x in tt:
+                    tags_vistas[x] = tags_vistas.get(x, 0) + 1
+                if not _tem_tag_moxy(j):
+                    sem_tag += 1
+                    continue
+                fora.append({
+                    'id': aid, 'tipo': tipo, 'modalidade': TYPE_MAP.get(tipo),
+                    'data': str(data)[:10], 'nome': (nome or '')[:70],
+                    'tags': tt,
+                    'smo2_no_sumario': (j or {}).get('Smo2'),
+                    'duracao_min': (round((j or {}).get('moving_time', 0) / 60)
+                                    if (j or {}).get('moving_time') else None),
+                    'streams': f'/api/moxy/dados/{aid}',
+                })
+                MX_SESSOES_CACHE[str(aid)] = fora[-1]
+                if len(fora) >= n:
+                    break
+            return jsonify({
+                'status': 'ok', 'n': len(fora), 'dias': dias,
+                'modalidade': modalidade,
+                'sessoes_sem_tag': sem_tag,
+                'sessoes': fora,
+                'ultima': fora[0] if fora else None,
+                'tags_existentes': dict(sorted(tags_vistas.items(),
+                                               key=lambda kv: -kv[1])),
+                'nota': ('so entram actividades com a tag "Moxy". O nome da '
+                         'sessao e ignorado, e ter Smo2 no sumario tambem nao '
+                         'chega -- a tag e uma decisao explicita, o resto e '
+                         'coincidencia. tags_existentes lista o que ha na '
+                         'base, para se confirmar a grafia')})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    def _dados_sessao(activity_id, args):
+        """Streams NIRS limpos de uma sessao.
+
+        ?fc=0.02  frequencia de corte   ?outlier=3   ?acima=95
+        ?normalizar=deslocar|reescalar
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import mnirs as mn
+            import api_client as api
+
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            bruto, err = api.icu_get(f'/activity/{aid}/streams')
+            if err:
+                # 404 = a actividade ja' nao existe na Intervals.icu, mas
+                # continua na base local. Acontece sempre que se apaga e
+                # volta a carregar uma sessao: o id muda e o sync
+                # incremental so' acrescenta, nunca remove. Limpa-se aqui,
+                # para o registo morto nao voltar a aparecer na lista.
+                if '404' in str(err):
+                    removidas = _remover_orfa(aid)
+                    return ({
+                        'status': 'removida',
+                        'mensagem': ('esta actividade ja nao existe na '
+                                     'Intervals.icu e foi removida da base '
+                                     'local. Provavelmente foi apagada e '
+                                     'recarregada com outro id -- carrega em '
+                                     '"Actualizar sessões" para apanhar a nova'),
+                        'id_usado': aid, 'linhas_removidas': removidas})
+                return ({'status': 'erro', 'mensagem': f'API: {err}',
+                                'id_usado': aid})
+            lista = bruto
+            if isinstance(lista, dict):
+                lista = lista.get('streams') or lista.get('content') or []
+
+            streams = {}
+            for st in (lista or []):
+                if isinstance(st, dict) and (st.get('type') or st.get('name')):
+                    streams[st.get('type') or st.get('name')] = st.get('data') or []
+
+            def _norm(x):
+                return ''.join(c for c in str(x).lower() if c.isalnum())
+
+            def _achar(nomes):
+                """Nome do stream, tolerante a variantes.
+
+                O ficheiro FIT declara o campo como "SmO2 (%)" com id
+                dev_field_0_34, e a Intervals.icu pode expo-lo com o nome
+                do dev field, com a unidade colada, ou com sufixo de
+                sensor. Comparacao exacta falhava nesses casos e a sessao
+                aparecia como "sem streams de SmO2" tendo-os.
+                """
+                alvos = [_norm(a) for a in nomes]
+                for k in streams:                      # exacto
+                    if _norm(k) in alvos:
+                        return k
+                for k in streams:                      # comeca por
+                    nk = _norm(k)
+                    if any(nk.startswith(a) or a.startswith(nk)
+                           for a in alvos if a):
+                        return k
+                for k in streams:                      # contem
+                    nk = _norm(k)
+                    if any(a and a in nk for a in alvos):
+                        return k
+                return None
+
+            canais, mapa = {}, {}
+            for alvo, nomes in CANAIS.items():
+                k = _achar(nomes)
+                if k and streams[k]:
+                    canais[alvo] = streams[k]
+                    mapa[alvo] = k
+            if not canais:
+                # Sem adivinhar: devolve-se tudo o que a sessao tem, com o
+                # numero de pontos, para se ver qual e' o canal do sensor.
+                # Um dev field pode chegar como 'dev_field_0_34' sem nome
+                # legivel, e nesse caso so' o utilizador sabe qual e'.
+                detalhe = sorted(
+                    ({'stream': k, 'n_pontos': len(v),
+                      'amostra': [x for x in (v or [])[:5]]}
+                     for k, v in streams.items()),
+                    key=lambda x: -x['n_pontos'])
+                return ({
+                    'status': 'sem_dados', 'id': aid,
+                    'mensagem': ('sem streams de SmO2 ou THb reconhecidos. '
+                                 'Se algum dos streams abaixo for o sensor '
+                                 '(pode chegar como dev_field_N sem nome), '
+                                 'acrescenta o nome em CANAIS no api_moxy.py'),
+                    'streams_na_actividade': sorted(streams),
+                    'detalhe_dos_streams': detalhe})
+
+            n = len(next(iter(canais.values())))
+            tempo = streams.get('time') or list(range(n))
+
+            res = mn.processar(
+                tempo, canais, hz=1.0,
+                acima=args.get('acima', type=float) or 95.0,
+                corte_outlier=args.get('outlier', type=float) or 3.0,
+                fc=args.get('fc', type=float) or 0.02,
+                normalizar=args.get('normalizar'))
+
+            # todos os outros canais que a sessao tenha: entram sem
+            # filtragem NIRS, so' reamostrados, para se poder ver o SmO2
+            # contra a intensidade, a respiracao ou a cadencia
+            extras = {
+                'watts': ['watts', 'power'],
+                'heartrate': ['heartrate', 'hr'],
+                'cadence': ['cadence'],
+                'respiration': ['respiration', 'RespirationRateAlphaHRV'],
+                'dfa_a1': ['dfa_a1', 'dfaa1'],
+                'velocity_smooth': ['velocity_smooth', 'Speed'],
+                'torque': ['torque'],
+            }
+            # Canais que dependem da cinta peitoral levam o mesmo
+            # tratamento que os NIRS. A serie de RR e' o que produz o
+            # DFA-a1 e a frequencia respiratoria: se a cinta falha, os tres
+            # herdam os buracos, e nas sessoes deste atleta o stream de
+            # artefactos chegou a marcar 97% dos pontos. Deixa-los brutos ao
+            # lado de um SmO2 filtrado dava a impressao errada de que o
+            # ruido era do musculo.
+            DA_CINTA = {'heartrate', 'dfa_a1', 'respiration'}
+            art_k = _achar(['artifacts', 'artifact'])
+            artefactos = streams.get(art_k) if art_k else None
+            art_max = args.get('artefacto_max', type=float) or 5.0
+            n_art = 0
+
+            for alvo, nomes in extras.items():
+                k = _achar(nomes)
+                if not k:
+                    continue
+                serie = list(streams[k])
+                if alvo in DA_CINTA and artefactos:
+                    for i in range(min(len(serie), len(artefactos))):
+                        a = artefactos[i]
+                        if a is not None and a > art_max:
+                            serie[i] = None
+                            n_art += 1
+                t2, v2 = mn.resample(tempo, serie, hz=1.0)
+                if alvo in DA_CINTA:
+                    v2, d_rep = mn.replace(
+                        v2, invalidos=(0,),
+                        corte_outlier=args.get('outlier', type=float) or 3.0,
+                        largura=15)
+                    v2 = mn.media_movel(v2, 15)
+                    res['diagnostico'][alvo] = {
+                        **d_rep, 'n_pontos': len(v2),
+                        'filtro': {'metodo': 'media movel', 'largura': 15},
+                        'fonte': 'cinta peitoral'}
+                res['canais'][alvo] = [
+                    round(x, 2) if x is not None else None for x in v2]
+                mapa[alvo] = k
+                if alvo not in res['diagnostico']:
+                    vv = [x for x in v2 if x is not None]
+                    res['diagnostico'][alvo] = {
+                        'n_pontos': len(v2),
+                        'invalidos': sum(1 for x in v2 if x is None),
+                        'outliers': 0, 'pct_substituido': None,
+                        'minimo': round(min(vv), 1) if vv else None,
+                        'maximo': round(max(vv), 1) if vv else None,
+                        'filtro': {'metodo': 'nenhum',
+                                   'motivo': 'canal de contexto, so reamostrado'},
+                        'fonte': 'stream original'}
+
+            if artefactos:
+                validos = [a for a in artefactos if a is not None]
+                res['artefactos'] = {
+                    'stream': art_k, 'limiar_usado': art_max,
+                    'pontos_descartados': n_art,
+                    'pct_acima_do_limiar': (
+                        round(sum(1 for a in validos if a > art_max)
+                              / len(validos) * 100, 1) if validos else None),
+                    'nota': ('aplicado so aos canais que vem da cinta '
+                             '(FC, DFA-a1, respiracao). O SmO2 e o THb vem '
+                             'do Moxy e nao sao afectados')}
+
+            # Blocos: por omissao, pelos LAPS (icu_intervals), que sao a
+            # estrutura marcada pelo atleta/pela Intervals.icu. So' na
+            # falta deles se deduz da potencia -- deduzir e' sempre pior
+            # do que ler. O atleta pode forcar 'automatico' explicitamente
+            # (o botao na tab da actividade) quando desconfia dos
+            # icu_intervals para esta sessao em concreto.
+            modo_blocos = 'automatico_por_falta_de_laps'
+            try:
+                import drive_db_perfil as ddp
+                cn_mb = ddp.get_conn()
+                r_mb = cn_mb.execute(
+                    "SELECT modo FROM moxy_modo_blocos WHERE activity_id=?",
+                    (aid,)).fetchone()
+                modo_forcado = r_mb[0] if r_mb else None
+            except Exception:
+                modo_forcado = None
+
+            bl = None
+            if modo_forcado != 'automatico':
+                laps, err_l = api.icu_get(f'/activity/{aid}/intervals')
+                if isinstance(laps, dict):
+                    laps = laps.get('icu_intervals') or laps.get('intervals') or []
+                bl = mn.blocos_de_laps(laps or [],
+                                       watts_stream=res['canais'].get('watts'),
+                                       tempo_stream=res.get('tempo'))
+                if bl.get('ok'):
+                    modo_blocos = 'sincronizado' if modo_forcado == 'sincronizado' else 'icu_intervals'
+
+            if not bl or not bl.get('ok'):
+                wt = res['canais'].get('watts')
+                if wt:
+                    bl = mn.detectar_blocos(res['tempo'], wt, hz=1.0)
+                    bl['fonte'] = ('potencia (automático, escolhido)'
+                                   if modo_forcado == 'automatico'
+                                   else 'potencia (sem laps)')
+                    modo_blocos = ('automatico' if modo_forcado == 'automatico'
+                                   else 'automatico_por_falta_de_laps')
+                    res['blocos'] = bl
+                    res['corte_proposto'] = mn.propor_corte(bl)
+                else:
+                    res['blocos'] = {'ok': False,
+                                     'motivo': 'sem laps nem potencia'}
+                    res['corte_proposto'] = {'ok': False,
+                                             'motivo': 'sem laps nem potencia'}
+            else:
+                res['blocos'] = bl
+                res['corte_proposto'] = mn.propor_corte_laps(bl)
+            res['modo_blocos'] = modo_blocos
+            res['modo_blocos_forcado'] = modo_forcado
+            if err_l:
+                res['erro_laps'] = err_l
+            # laps reduzidos, para o classificador de protocolo: precisa do
+            # tipo, dos tempos e da DISTANCIA, que e' o que distingue um
+            # intervalado por tempo de um por distancia
+            # Canais congelados: uma cinta presa devolve o mesmo valor
+            # repetido, e todos os cálculos a jusante aceitam isso como
+            # medição. Apaga-se antes de qualquer análise.
+            try:
+                res['congelados'] = mn.detectar_congelados(
+                    res['canais'], res.get('tempo'))
+                # UMA fonte de verdade para o que é inválido:
+                # mnirs.canais_invalidos. Havia duas implementações aqui,
+                # com limiares diferentes (40% e "qualquer congelamento"),
+                # e a segunda sobrescrevia a primeira em silêncio.
+                _ci = mn.canais_invalidos(res)
+                res['canais_invalidos'] = _ci['canais']
+                res['fc_valida'] = not _ci['fc_invalida']
+                res['motivo_invalidos'] = _ci.get('consequencia')
+                res['detalhe_invalidos'] = _ci
+            except Exception as e:
+                res['congelados'] = {'ok': False,
+                                     'erro': f'{type(e).__name__}: {e}'}
+                res['canais_invalidos'] = []
+                res['fc_valida'] = True
+
+
+            try:
+                res['fc_utilizavel'] = mn.fc_utilizavel(
+                    res.get('congelados'), res.get('artefactos'))
+            except Exception as e:
+                res['fc_utilizavel'] = {'utilizavel': True,
+                                        'erro': str(e)[:90]}
+
+            # deoxy-Hb: o canal que a literatura prefere para breakpoints,
+            # e o unico dos derivados que sobe quando o SmO2 desce
+            try:
+                _k, _orig = mn.hhb_disponivel(res['canais'])
+                res['hhb'] = {'canal': _k, 'origem': _orig,
+                              'formula': 'HHb = ((100 − SmO2)/100) × THb'}
+                if _k == 'hhb_calc':
+                    res.setdefault('canais_contexto', [])
+                    if 'hhb_calc' not in res['canais_contexto']:
+                        res['canais_contexto'].append('hhb_calc')
+            except Exception as e:
+                res['hhb'] = {'erro': f'{type(e).__name__}: {e}'}
+
+            res['laps'] = [
+                {'type': lp.get('type'),
+                 'start_time': lp.get('start_time'),
+                 'end_time': lp.get('end_time'),
+                 'distance': lp.get('distance'),
+                 'average_watts': lp.get('average_watts')}
+                for lp in (laps or []) if isinstance(lp, dict)]
+            res['n_laps'] = len(res['laps'])
+
+            # corte gravado pelo utilizador tem prioridade
+            try:
+                import drive_db_perfil as ddp
+                cn = ddp.get_conn()
+                r = cn.execute(
+                    """SELECT inicio_s, fim_s, origem, nota, data_gravacao
+                         FROM moxy_cortes WHERE activity_id = ?""",
+                    (aid,)).fetchone()
+                cn.close()
+                if r:
+                    res['corte_guardado'] = {
+                        'inicio_s': r[0], 'fim_s': r[1], 'origem': r[2],
+                        'nota': r[3], 'data_gravacao': r[4]}
+            except Exception as e:
+                res['corte_guardado'] = None
+                res['erro_corte'] = f'{type(e).__name__}: {e}'
+
+            res['status'] = 'ok'
+            res['activity_id'] = aid
+            res['streams_usados'] = mapa
+            res['canais_nirs'] = sorted(canais)
+            res['canais_contexto'] = sorted(
+                k for k in res['canais'] if k not in canais)
+            res['streams_na_actividade'] = sorted(streams)
+            return (res)
+        except Exception as e:
+            return ({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()})
+
+
+    @app.route('/api/moxy/dados/<path:activity_id>')
+    def api_moxy_dados(activity_id):
+        """Streams NIRS limpos de uma sessao.
+
+        ?fc=0.02  ?outlier=3  ?acima=95  ?normalizar=deslocar|reescalar
+        """
+        return jsonify(_dados_sessao(activity_id, request.args))
+
+    @app.route('/api/moxy/actualizar')
+    def api_moxy_actualizar():
+        """Reconcilia a base local com a Intervals.icu.
+
+        Tres coisas que o sync incremental nao faz:
+
+          1. Remove o que ja' nao existe la'. Uma sessao apagada fica para
+             sempre na base local.
+          2. Volta atras no tempo. O incremental arranca da ultima data
+             sincronizada e so' avanca, portanto uma sessao recarregada com
+             data de 2025 nunca entra.
+          3. Actualiza o que mudou. Uma sessao reprocessada mantem o id mas
+             muda de conteudo, e o incremental ignora-a por ja' existir.
+
+        A API e' consultada em blocos de 180 dias em vez de um pedido
+        unico, porque um intervalo de tres anos pode ser truncado sem
+        aviso. O numero devolvido por bloco vai na resposta, para se ver se
+        isso acontece.
+
+        ?dias=1095   ?bloco=180   ?so_diagnostico=1
+        """
+        try:
+            import db as _db
+            import api_client as api
+            import sync as _sync
+
+            dias = request.args.get('dias', type=int) or 1095
+            bloco = request.args.get('bloco', type=int) or 180
+            so_diag = request.args.get('so_diagnostico') in ('1', 'true')
+            hoje = datetime.now()
+            oldest_geral = (hoje - timedelta(days=dias)).strftime('%Y-%m-%d')
+
+            todas, chunks, erros = {}, [], []
+            fim = hoje
+            while True:
+                ini = fim - timedelta(days=bloco)
+                if ini < hoje - timedelta(days=dias):
+                    ini = hoje - timedelta(days=dias)
+                bruto, err = api.icu_get(
+                    f'/athlete/{api.ATHLETE_ID}/activities',
+                    {'oldest': ini.strftime('%Y-%m-%d'),
+                     'newest': fim.strftime('%Y-%m-%d')})
+                if err:
+                    erros.append({'de': ini.strftime('%Y-%m-%d'), 'erro': err})
+                else:
+                    acts = bruto or []
+                    if isinstance(acts, dict):
+                        acts = acts.get('content') or []
+                    planas = []
+                    for x in acts:
+                        if isinstance(x, dict):
+                            planas.append(x)
+                        elif isinstance(x, list):
+                            planas.extend(y for y in x if isinstance(y, dict))
+                    for a in planas:
+                        if a.get('id'):
+                            todas[str(a['id'])] = a
+                    chunks.append({'de': ini.strftime('%Y-%m-%d'),
+                                   'ate': fim.strftime('%Y-%m-%d'),
+                                   'n': len(planas)})
+                if ini <= hoje - timedelta(days=dias):
+                    break
+                fim = ini
+
+            ids_api = set(todas)
+            locais = _db._exec(
+                "SELECT id FROM activities WHERE date >= ?",
+                (oldest_geral,), fetch='all') or []
+            ids_locais = {str(r[0]) for r in locais}
+            orfas = sorted(ids_locais - ids_api)
+            novas = sorted(ids_api - ids_locais)
+
+            resumo = {
+                'status': 'ok', 'dias': dias, 'bloco_dias': bloco,
+                'janela': [oldest_geral, hoje.strftime('%Y-%m-%d')],
+                'blocos_pedidos': chunks, 'erros_api': erros,
+                'na_api': len(ids_api), 'na_base_local': len(ids_locais),
+                'n_orfas': len(orfas), 'orfas': orfas[:50],
+                'n_novas': len(novas), 'novas': novas[:50],
+            }
+            if so_diag:
+                resumo['nota'] = ('so_diagnostico=1: nada foi alterado. '
+                                  'Retira o parametro para aplicar')
+                return jsonify(resumo)
+
+            for aid in orfas:
+                _remover_orfa(aid)
+
+            # Grava TODAS as que a API tem, nao so' as novas: uma sessao
+            # reprocessada mantem o id e muda de conteudo, e ficaria com o
+            # JSON antigo se so' se tratassem as novas.
+            gravadas = 0
+            try:
+                rows = [r for r in (_sync.to_row(a) for a in todas.values())
+                        if r]
+                sem_data = len(todas) - len(rows)
+                if rows:
+                    ins, upd = _db.upsert_activities(rows)
+                    gravadas = ins + upd
+                resumo['gravadas'] = gravadas
+                resumo['inseridas'] = ins if rows else 0
+                resumo['actualizadas'] = upd if rows else 0
+                resumo['descartadas_sem_data'] = sem_data
+            except Exception as e:
+                resumo['erro_gravar'] = f'{type(e).__name__}: {e}'
+
+            try:
+                # a cache vive no app.py; importado aqui para nao criar
+                # dependencia circular no topo do modulo
+                from app import invalidar_cache
+                invalidar_cache()
+            except Exception as e:
+                resumo['aviso_cache'] = f'{type(e).__name__}: {e}'
+
+            resumo['nota'] = (
+                'orfas = existiam localmente e ja nao estao na API (apagadas '
+                'la). novas = estao na API e nao estavam ca. Todas as da API '
+                'sao regravadas, para apanhar as que mudaram de conteudo sem '
+                'mudar de id')
+            return jsonify(resumo)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/comparar')
+    def api_moxy_comparar():
+        """Compara varias sessoes, alinhadas pela potencia de cada degrau.
+
+        ?ids=i1,i2,i3   ?tolerancia=15   ?aparar=30
+        Alem dos parametros de /api/moxy/dados.
+
+        Os canais vem sufixados com o indice da sessao -- smo2_1, smo2_2 --
+        e os degraus vem emparelhados por potencia, nao por tempo: assim
+        nao e preciso sincronizar sessoes com aquecimentos diferentes.
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import mnirs as mn
+
+            ids = [x.strip() for x in (request.args.get('ids') or '').split(',')
+                   if x.strip()]
+            if not ids:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'passa ?ids=i1,i2'}), 400
+            if len(ids) > 4:
+                ids = ids[:4]
+
+            sessoes, canais_comb, degraus_por_sessao = [], {}, []
+            for n, aid in enumerate(ids, start=1):
+                d = _dados_sessao(aid, request.args)
+                if d.get('status') != 'ok':
+                    sessoes.append({'indice': n, 'id': aid,
+                                    'status': d.get('status'),
+                                    'mensagem': d.get('mensagem')})
+                    degraus_por_sessao.append([])
+                    continue
+
+                # corte guardado ou proposto: comparar aquecimentos nao
+                # tem sentido nenhum
+                corte = d.get('corte_guardado') or (
+                    d.get('corte_proposto') if (d.get('corte_proposto') or {})
+                    .get('ok') else None)
+                t = d.get('tempo') or []
+                i0, i1 = 0, len(t) - 1
+                if corte and t:
+                    for i, x in enumerate(t):
+                        if x >= corte['inicio_s']:
+                            i0 = i
+                            break
+                    for i in range(len(t) - 1, -1, -1):
+                        if t[i] <= corte['fim_s']:
+                            i1 = i
+                            break
+
+                canais_cortados = {k: v[i0:i1 + 1]
+                                   for k, v in (d.get('canais') or {}).items()}
+                tempo_cortado = t[i0:i1 + 1]
+                for k, v in canais_cortados.items():
+                    canais_comb[f'{k}_{n}'] = v
+
+                bl = mn.detectar_blocos(tempo_cortado,
+                                        canais_cortados.get('watts') or [],
+                                        hz=1.0)
+                dg = mn.resumir_degraus(
+                    tempo_cortado, canais_cortados, bl,
+                    aparar=request.args.get('aparar', type=int) or 30)
+                degraus_por_sessao.append(dg)
+
+                sessoes.append({
+                    'indice': n, 'id': aid, 'status': 'ok',
+                    'tempo': tempo_cortado,
+                    'canais_nirs': d.get('canais_nirs'),
+                    'canais_contexto': d.get('canais_contexto'),
+                    'corte_usado': corte,
+                    'origem_do_corte': ('guardado' if d.get('corte_guardado')
+                                        else 'proposto' if corte else 'nenhum'),
+                    'n_degraus': len(dg),
+                    'degraus': dg,
+                    'diagnostico': d.get('diagnostico'),
+                    'artefactos': d.get('artefactos')})
+
+            pares = mn.emparelhar_degraus(
+                degraus_por_sessao,
+                tolerancia=request.args.get('tolerancia', type=float) or 15.0)
+
+            return jsonify({
+                'status': 'ok', 'n_sessoes': len(ids), 'ids': ids,
+                'sessoes': sessoes,
+                'canais': canais_comb,
+                'degraus_emparelhados': pares,
+                'n_degraus_comuns': sum(1 for p in pares
+                                        if p['n_sessoes'] == len(ids)),
+                'nota': ('degraus emparelhados por potencia, com tolerancia. '
+                         'Alinhar por tempo exigiria sincronizar sessoes com '
+                         'aquecimentos diferentes; por potencia, o degrau de '
+                         '200 W compara-se com o de 200 W seja quando for. '
+                         'Cada sessao entra ja cortada pelo intervalo '
+                         'guardado ou proposto')})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/rede/<path:activity_id>')
+    def api_moxy_rede(activity_id):
+        """Rede causal entre os canais desta sessao.
+
+        ?lag=5  ?corr=0.30  ?alfa=0.05  ?controlo=watts
+        ?diferenciar=0  ?condicionar=0   (para comparar com o metodo cru)
+        ?derivados=1    incluir O2Hb e HHb (componentes do SmO2)
+        ?inicio=900&fim=2100   restringir ao intervalo analisado
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import rede_causal as rc
+
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            with app.test_request_context(f'/api/moxy/dados/{aid}'):
+                pass
+            corpo = api_moxy_dados(aid)
+            dados = corpo[0].get_json() if isinstance(corpo, tuple) \
+                else corpo.get_json()
+            if not dados or dados.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': (dados or {}).get('mensagem')}), 200
+
+            t = dados.get('tempo') or []
+            canais = dict(dados.get('canais') or {})
+            ini = request.args.get('inicio', type=float)
+            fim = request.args.get('fim', type=float)
+            if ini is not None or fim is not None:
+                a = 0 if ini is None else next(
+                    (i for i, x in enumerate(t) if x >= ini), 0)
+                b = len(t) - 1 if fim is None else next(
+                    (i for i in range(len(t) - 1, -1, -1) if t[i] <= fim),
+                    len(t) - 1)
+                canais = {k: v[a:b + 1] for k, v in canais.items()}
+
+            res = rc.rede(
+                canais,
+                controlo=request.args.get('controlo') or 'watts',
+                max_lag=request.args.get('lag', type=int) or rc.MAX_LAG,
+                corr_minima=request.args.get('corr', type=float) or rc.CORR_MINIMA,
+                alfa=request.args.get('alfa', type=float) or rc.P_MAXIMO,
+                diferenciar=request.args.get('diferenciar') != '0',
+                condicionar=request.args.get('condicionar') != '0',
+                incluir_derivados=request.args.get('derivados') == '1')
+            res['status'] = 'ok' if res.get('ok') else 'sem_dados'
+            res['activity_id'] = aid
+            return jsonify(res)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/interpretacao/<path:activity_id>')
+    def api_moxy_interpretacao(activity_id):
+        """5-1-5 Interpretation Tool automatizado.
+
+        ?inicio=&fim=  intervalo   ?claro=10&ligeiro=3  cortes em % da amplitude
+        ?fraccao=0.5   fraccao final da sessao usada
+        ?resp_2A=...   sobrepor a resposta medida de qualquer pergunta
+        ?repetida=0    excluir as perguntas de carga repetida (8A, 13)
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import interpretacao_515 as it
+
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            corpo = api_moxy_dados(aid)
+            dados = corpo[0].get_json() if isinstance(corpo, tuple) \
+                else corpo.get_json()
+            if not dados or dados.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': (dados or {}).get('mensagem')}), 200
+
+            t = dados.get('tempo') or []
+            canais = dados.get('canais') or {}
+            blocos = ((dados.get('blocos') or {}).get('blocos')) or []
+            ini = request.args.get('inicio', type=float)
+            fim = request.args.get('fim', type=float)
+            if ini is not None or fim is not None:
+                a = ini if ini is not None else (t[0] if t else 0)
+                b = fim if fim is not None else (t[-1] if t else 0)
+                blocos = [x for x in blocos if x['t1'] >= a and x['t0'] <= b]
+
+            art = (dados.get('artefactos') or {}).get('pct_acima_do_limiar')
+            res = it.avaliar(
+                t, canais, blocos, pct_artefacto=art,
+                fraccao_final=request.args.get('fraccao', type=float)
+                or it.FRACCAO_FINAL,
+                corte_claro=(request.args.get('claro', type=float) or
+                             it.CORTE_CLARO * 100) / 100.0,
+                corte_ligeiro=(request.args.get('ligeiro', type=float) or
+                               it.CORTE_LIGEIRO * 100) / 100.0,
+                excluir_carga_repetida=(
+                    None if request.args.get('repetida') is None
+                    else request.args.get('repetida') == '0'))
+            if not res.get('ok'):
+                return jsonify({'status': 'sem_dados', **res}), 200
+
+            # respostas sobrepostas pelo utilizador
+            sobrepostas = {}
+            for k, v in request.args.items():
+                if k.startswith('resp_') and v:
+                    q = k[5:]
+                    if q in res['medicoes']['respostas']:
+                        res['medicoes']['respostas'][q]['resposta'] = v
+                        res['medicoes']['respostas'][q]['editada'] = True
+                        sobrepostas[q] = v
+            if sobrepostas:
+                m = res['medicoes']
+                pt = it.pontuar(m['respostas'], tem_thb=m['tem_thb'],
+                                tem_hr=m['tem_hr'])
+                res['pontuacao'] = pt
+                res['interpretacao'] = it.interpretar(
+                    pt['us']['score'], pt['pc']['score'],
+                    pt['sem_resposta'], res.get('avisos'))
+                res['respostas_editadas'] = sobrepostas
+
+            res['status'] = 'ok'
+            res['activity_id'] = aid
+            res['niveis'] = it.NIVEIS
+            res['figuras'] = it.figuras_das_perguntas()
+            res['onde_mede'] = it.onde_mede_texto()
+            res['faixas_2A'] = list(it.ESCALA_US['2A'])
+            res['faixas_9'] = list(it.ESCALA_PC['9'])
+            return jsonify(res)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/resumo')
+    def api_moxy_resumo():
+        """Rede causal + 5-1-5 para varias sessoes, com o consenso.
+
+        ?ids=a,b,c   ?lag=5  ?corr=0.30  ?claro=10  ?fraccao=0.5
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import rede_causal as rc
+            import interpretacao_515 as it
+
+            ids = [x.strip() for x in (request.args.get('ids') or '').split(',')
+                   if x.strip()]
+            if not ids:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'sem ids'}), 400
+
+            fora = []
+            for aid in ids[:12]:
+                linha = {'activity_id': aid}
+                corpo = api_moxy_dados(aid)
+                d = corpo[0].get_json() if isinstance(corpo, tuple) \
+                    else corpo.get_json()
+                if not d or d.get('status') != 'ok':
+                    linha['erro'] = (d or {}).get('mensagem') or 'sem dados'
+                    fora.append(linha)
+                    continue
+
+                t = d.get('tempo') or []
+                canais = d.get('canais') or {}
+                blocos = ((d.get('blocos') or {}).get('blocos')) or []
+                g = d.get('corte_guardado') or {}
+                pr = d.get('corte_proposto') or {}
+                a = g.get('inicio_s') if g.get('inicio_s') is not None else (
+                    pr.get('inicio_s') if pr.get('ok') else (t[0] if t else 0))
+                b = g.get('fim_s') if g.get('fim_s') is not None else (
+                    pr.get('fim_s') if pr.get('ok') else (t[-1] if t else 0))
+                linha['corte'] = [a, b]
+                bl = [x for x in blocos if x['t1'] >= a and x['t0'] <= b]
+                idx = [i for i in range(len(t)) if a <= t[i] <= b]
+                cj = {k: [v[i] for i in idx if i < len(v)]
+                      for k, v in canais.items()}
+                art = (d.get('artefactos') or {}).get('pct_acima_do_limiar')
+                linha['pct_artefacto'] = art
+
+                try:
+                    r = rc.rede(
+                        cj,
+                        max_lag=request.args.get('lag', type=int) or rc.MAX_LAG,
+                        corr_minima=request.args.get('corr', type=float)
+                        or rc.CORR_MINIMA)
+                    linha['rede'] = ({'limitador': r.get('limitador'),
+                                      'n_dirigidas': r.get('n_dirigidas'),
+                                      'canais': r.get('canais_usados')}
+                                     if r.get('ok')
+                                     else {'motivo': r.get('motivo')})
+                except Exception as e:
+                    linha['rede'] = {'erro': str(e)[:90]}
+
+                # limiares por SmO2, para a comparacao longitudinal
+                try:
+                    import nirs_breakpoints as nbk
+                    sm = canais.get('smo2_sem_filtro') or canais.get('smo2') or []
+                    hr_s = canais.get('heartrate') or []
+                    pf = nbk.perfil_de_resposta(t, sm, bl) if sm else {}
+                    mls = nbk.mlss_por_dessaturacao(t, sm, bl) if sm else {}
+                    btx = nbk.bp_por_taxa(t, sm, bl) if sm else {}
+                    # mesma prioridade da gravacao: o script primeiro
+                    bmoxy = nbk.bp_moxy(
+                        [x for x in bl if x.get('on')], t, sm, hr_s,
+                        degraus_por_troco=1)
+                    bp1_w = (bmoxy.get('bp1_w')
+                             or (pf.get('bp1_watts') if pf.get('ok') else None))
+                    bp2_w = (bmoxy.get('bp2_w')
+                             or (mls.get('mlss_estimado') if mls.get('ok')
+                                 else (btx.get('bp_watts') if btx.get('ok')
+                                       else None)))
+                    linha['limiares'] = {
+                        'perfil': pf.get('perfil'),
+                        'perfil_ok': pf.get('ok'),
+                        'perfil_motivo': pf.get('motivo'),
+                        'smo2max': pf.get('smo2max'),
+                        'smo2min': pf.get('smo2min'),
+                        'amplitude': pf.get('amplitude'),
+                        'bp1_w': bp1_w,
+                        'bp1_bpm': (bmoxy.get('bp1_bpm')
+                                    or nbk.fc_na_carga(bl, t, hr_s, bp1_w)),
+                        'bp2_w': bp2_w,
+                        'bp2_bpm': (bmoxy.get('bp2_bpm')
+                                    or nbk.fc_na_carga(bl, t, hr_s, bp2_w)),
+                        'bp2_origem': ('script Intervals.icu'
+                                       if bmoxy.get('bp2_w') else
+                                       'padrão de dessaturação'
+                                       if mls.get('ok') else
+                                       'quebra na taxa' if btx.get('ok')
+                                       else None),
+                        'bp2_motivo': (None if bp2_w is not None else
+                                       (mls.get('motivo')
+                                        or btx.get('motivo'))),
+                        'n_degraus': len([x for x in bl if x.get('on')]),
+                        'leitura': (nbk.LEITURA_DO_PERFIL.get(
+                            pf.get('perfil') or '') or {}),
+                    }
+                except Exception as e:
+                    linha['limiares'] = {'erro': f'{type(e).__name__}: {e}'}
+
+                try:
+                    v = it.avaliar(
+                        t, canais, bl, pct_artefacto=art,
+                        fraccao_final=request.args.get('fraccao', type=float)
+                        or it.FRACCAO_FINAL,
+                        corte_claro=(request.args.get('claro', type=float)
+                                     or it.CORTE_CLARO * 100) / 100.0)
+                    linha['i515'] = ({'pontuacao': {
+                        'us': {k: v['pontuacao']['us'][k]
+                               for k in ('pontos', 'max', 'score')},
+                        'pc': {k: v['pontuacao']['pc'][k]
+                               for k in ('pontos', 'max', 'score')}},
+                        'interpretacao': v['interpretacao'],
+                        'avisos': v.get('avisos')}
+                        if v.get('ok') else {'motivo': v.get('motivo')})
+                except Exception as e:
+                    linha['i515'] = {'erro': str(e)[:90]}
+                fora.append(linha)
+
+            # ── consenso ────────────────────────────────────────────────
+            # Contagem simples do limitador por eixo. Ponderar por qualidade
+            # seria mais fino, mas escondia quantas sessoes ha' de cada
+            # lado, que e' o que interessa saber primeiro.
+            def _contar(chave, caminho):
+                c = {}
+                for x in fora:
+                    v = x.get(caminho[0]) or {}
+                    for k in caminho[1:]:
+                        v = (v or {}).get(k) or {}
+                    n = v.get('limitador') or v.get('sistema')
+                    if n:
+                        c[n] = c.get(n, 0) + 1
+                return c
+
+            cons = {
+                'rede': _contar('rede', ['rede', 'limitador']),
+                'us': _contar('us', ['i515', 'interpretacao', 'us']),
+                'pc': _contar('pc', ['i515', 'interpretacao', 'pc']),
+            }
+            # limitador por sessão, para a tabela de intervenções
+            try:
+                import intervencoes as _ivm
+                _ss = []
+                for x in fora:
+                    s2 = MX_SESSOES_CACHE.get(str(x.get('activity_id')), {})
+                    _ss.append({
+                        'id': x.get('activity_id'), 'data': s2.get('data'),
+                        'rede': ((x.get('rede') or {}).get('limitador')
+                                 or {}).get('sistema'),
+                        'us': (((x.get('i515') or {}).get('interpretacao')
+                                or {}).get('us') or {}).get('limitador'),
+                        'pc': (((x.get('i515') or {}).get('interpretacao')
+                                or {}).get('pc') or {}).get('limitador'),
+                        'perfil': (x.get('limiares') or {}).get('perfil'),
+                    })
+                intervencao = _ivm.consenso_entre_sessoes(_ss)
+            except Exception as e:
+                intervencao = {'ok': False, 'erro': str(e)[:120]}
+
+            resumo = {}
+            for eixo, c in cons.items():
+                if not c:
+                    resumo[eixo] = {'mais_comum': None, 'contagem': {}}
+                    continue
+                top = max(c, key=c.get)
+                n_tot = sum(c.values())
+                resumo[eixo] = {
+                    'mais_comum': top, 'n': c[top], 'de': n_tot,
+                    'concordancia_pct': round(c[top] / n_tot * 100),
+                    'contagem': c,
+                    'unanime': len(c) == 1 and n_tot > 1}
+
+            n_maus = sum(1 for x in fora
+                         if (x.get('pct_artefacto') or 0) > 30)
+            return jsonify({
+                'status': 'ok', 'n_sessoes': len(fora),
+                'sessoes': fora, 'consenso': resumo,
+                'intervencao': intervencao,
+                'n_com_artefacto_alto': n_maus,
+                'nota': ('o consenso e uma contagem, nao uma media: com 3 '
+                         'sessoes a dizer periferico e 2 cardiaco, o que '
+                         'interessa e que ha 2 a discordar, nao que 60% '
+                         'ganha. Concordancia abaixo de 70% significa que '
+                         'nao ha padrao estavel'
+                         + (f'. {n_maus} sessao(oes) com mais de 30% de '
+                            'artefacto na cinta -- as leituras de FC dessas '
+                            'nao sao de confianca' if n_maus else ''))})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/limiares/<path:activity_id>')
+    def api_moxy_limiares(activity_id):
+        """Breakpoints de SmO2, CER e detector de hipocapnia.
+
+        ?inicio=&fim=   ?corte_plato=5   ?janela_plato=30
+        ?estavel=0.5    declive de SmO2 abaixo do qual e' estavel
+        ?exaustao=1     os blocos terminaram por exaustao
+        """
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import nirs_breakpoints as nbk
+            import mnirs as nbk_mn
+
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            corpo = api_moxy_dados(aid)
+            d = corpo[0].get_json() if isinstance(corpo, tuple) \
+                else corpo.get_json()
+            if not d or d.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': (d or {}).get('mensagem')}), 200
+
+            t = d.get('tempo') or []
+            canais = d.get('canais') or {}
+            blocos = ((d.get('blocos') or {}).get('blocos')) or []
+            ini = request.args.get('inicio', type=float)
+            fim = request.args.get('fim', type=float)
+            if ini is not None or fim is not None:
+                a = ini if ini is not None else (t[0] if t else 0)
+                b = fim if fim is not None else (t[-1] if t else 0)
+                blocos = [x for x in blocos if x['t1'] >= a and x['t0'] <= b]
+
+            # SmO2 SEM filtro para os blocos que alimentam o bp_moxy --
+            # o script oficial usa o sinal em bruto (average_smo2, ou o
+            # stream sem qualquer suavização). O nosso filtro Butterworth
+            # (fc=0.02Hz) e' bom para os graficos e o SmO2', mas borra a
+            # transicao nas fronteiras dos blocos, o que desloca a media
+            # de cada troco -- e por isso desloca o breakpoint. Usa-se a
+            # versao filtrada só se a sem filtro não vier disponível.
+            smo2 = canais.get('smo2_sem_filtro') or canais.get('smo2') or []
+            # min e delta de SmO2 por bloco de trabalho
+            ons = []
+            for b in blocos:
+                if not b.get('on'):
+                    continue
+                # PRIMÁRIO: average_smo2 da própria Intervals.icu — a
+                # mesma fonte que o script oficial usa primeiro
+                # (iv.average_smo2). RECURSO: recalcular do stream local
+                # por tempo, só quando aquele não vem preenchido. Antes
+                # disto, recalculávamos SEMPRE do stream — nunca líamos
+                # o valor da API, ao contrário do script.
+                smo2_api = b.get('average_smo2_da_api')
+                if smo2_api is not None:
+                    bb = dict(b)
+                    bb['smo2_medio'] = float(smo2_api)
+                    bb['smo2_fonte'] = 'average_smo2 da API'
+                    vs = [smo2[i] for i in range(min(len(t), len(smo2)))
+                         if b['t0'] <= t[i] <= b['t1']
+                         and smo2[i] is not None]
+                    bb['smo2_min'] = min(vs) if vs else None
+                    bb['delta_smo2'] = nbk.delta_smo2_do_bloco(
+                        t, smo2, b['t0'], b['t1'])
+                    ons.append(bb)
+                    continue
+
+                vs = [smo2[i] for i in range(min(len(t), len(smo2)))
+                      if b['t0'] <= t[i] <= b['t1'] and smo2[i] is not None]
+                if not vs:
+                    continue
+                bb = dict(b)
+                bb['smo2_min'] = min(vs)
+                bb['smo2_medio'] = sum(vs) / len(vs)
+                bb['smo2_fonte'] = 'stream local (sem average_smo2 na API)'
+                bb['delta_smo2'] = nbk.delta_smo2_do_bloco(
+                    t, smo2, b['t0'], b['t1'])
+                ons.append(bb)
+
+            # Modalidade: primeiro a base local, depois a API.
+            #
+            # Lia-se so' da base local, e uma sessao que ainda nao esteja
+            # sincronizada -- ou cujo 'type' nao esteja no TYPE_MAP --
+            # deixava o mod a None. Com mod=None a rota
+            # /api/cp/actual/None nao devolve CP nenhum, e o W' aparecia
+            # como "sem CP gravado" mesmo havendo CP. Na tab Atividades
+            # funcionava porque la' a modalidade vem do JSON da API.
+            mod = None
+            origem_mod = None
+            try:
+                import db as _db
+                from config import TYPE_MAP
+                r = _db._exec("SELECT type FROM activities WHERE id = ?",
+                              (aid,), fetch='one')
+                if r and TYPE_MAP.get(r[0]):
+                    mod = TYPE_MAP.get(r[0])
+                    origem_mod = 'base local'
+            except Exception:
+                pass
+            if not mod:
+                try:
+                    from config import TYPE_MAP
+                    import api_client as api
+                    _act, _e = api.icu_get(f'/activity/{aid}')
+                    if not _e and isinstance(_act, dict):
+                        mod = TYPE_MAP.get(_act.get('type'))
+                        origem_mod = 'API (não estava na base local)'
+                except Exception as e:
+                    origem_mod = f'{type(e).__name__}: {e}'
+
+            # Metodo principal: padrao de dessaturacao por bloco. E' o que
+            # corresponde a este protocolo. A regressao segmentada fica como
+            # secundaria, porque foi desenhada para rampa continua.
+            # Primeiro limiar pela transicao da reoxigenacao (Yogev). Usa
+            # o padrao "sobe" que o mlss ja' detectava mas descartava.
+            lt1_reox = nbk.lt1_por_reoxigenacao(t, smo2, blocos) if smo2 \
+                else {'ok': False, 'motivo': 'sem SmO2'}
+
+            mlss = nbk.mlss_por_dessaturacao(
+                t, smo2, blocos,
+                estavel=request.args.get('estavel', type=float)
+                or nbk.ESTAVEL_POR_MIN)
+            # Breakpoint pela TAXA de dessaturacao: e' o metodo que serve a
+            # blocos curtos e a poucos degraus, e o que o Rogers usa nas
+            # escadas. A regressao sobre os minimos fica como terceira via.
+            # Que protocolo foi este. Corre DEPOIS do corte, portanto os
+            # degraus de aquecimento nao contam -- inclui-los fazia uma
+            # escada de 5 parecer uma de 8.
+            tipo = nbk_mn.classificar_sessao(
+                blocos,
+                corte=(ini if ini is not None else (t[0] if t else 0),
+                       fim if fim is not None else (t[-1] if t else 0)),
+                laps=d.get('laps'))
+
+            # FC média do degrau para os métodos que só olham ao SmO2.
+            # Sem isto ficavam com "— bpm" e parecia falta de medição.
+            _hrs = None if 'heartrate' in set(d.get('canais_invalidos') or []) \
+                else canais.get('heartrate')
+            for _obj, _chave in ((lt1_reox, 'lt1_estimado'),
+                                 (mlss, 'mlss_estimado')):
+                if isinstance(_obj, dict) and _obj.get('ok'):
+                    _obj['fc'] = nbk.fc_media_do_bloco(
+                        t, _hrs, blocos, _obj.get(_chave))
+
+            # Metodo canonico do Arnold para este protocolo: media do
+            # ultimo minuto de cada degrau, e classificacao do perfil.
+            perfil = nbk.perfil_de_resposta(t, smo2, blocos)
+            bp_taxa = nbk.bp_por_taxa(t, smo2, blocos)
+            if bp_taxa.get('ok'):
+                bp_taxa['fc'] = nbk.fc_media_do_bloco(
+                    t, _hrs, blocos, bp_taxa.get('bp_watts'))
+            # Metodo do script oficial da Moxy, com o teste F acrescentado
+            # se a FC estiver invalida, nao se passa o canal: as
+            # estimativas em bpm sairiam de dados congelados
+            _inval = set(d.get('canais_invalidos') or [])
+            _hr = None if 'heartrate' in _inval else canais.get('heartrate')
+            bp_mx = nbk.bp_moxy(ons, t, smo2, _hr,
+                                modalidade=mod, degraus_por_troco=2)
+
+            # Mesmo ajuste sobre o HHb. Zurbuchen 2020: o breakpoint do
+            # deoxy-Hb cai no FatMax, o que da' uma segunda via para o
+            # PRIMEIRO limiar -- que e' onde temos menos medicoes.
+            bp_hhb = {'ok': False, 'motivo': 'sem canal de HHb'}
+            _hhb = (d.get('canais') or {}).get('hhb_calc') or \
+                   (d.get('canais') or {}).get('HHb')
+            if _hhb:
+                _ons_h = []
+                for b in blocos:
+                    if not b.get('on'):
+                        continue
+                    vs = [_hhb[i] for i in range(min(len(t), len(_hhb)))
+                          if b['t0'] <= t[i] <= b['t1'] and _hhb[i] is not None]
+                    if vs:
+                        bb = dict(b)
+                        bb['smo2_medio'] = sum(vs) / len(vs)
+                        _ons_h.append(bb)
+                if len(_ons_h) >= 3:
+                    bp_hhb = nbk.bp_moxy(
+                        _ons_h, t, _hhb, _hr,
+                        modalidade=mod, degraus_por_troco=1)
+                    bp_hhb['canal'] = 'HHb (deoxy-hemoglobina)'
+                    bp_hhb['leitura_bp1'] = (
+                        'Zurbuchen 2020: o breakpoint do deoxy-Hb cai no '
+                        'FatMax, à mesma percentagem do VO2pico. Serve como '
+                        'segunda via para o primeiro limiar')
+                    # o HHb SOBE com o esforco: os declives invertem-se
+                    bp_hhb['nota_sinal'] = (
+                        'ao contrário do SmO2, o HHb sobe com o esforço. Os '
+                        'declives vêm positivos, e a quebra é onde a subida '
+                        'muda de ritmo')
+            # o mesmo sem restricao de degraus por troco: reproduz o
+            # script da Intervals.icu, para se poder comparar
+            bp_mx_livre = nbk.bp_moxy(
+                ons, t, smo2, _hr, modalidade=mod,
+                degraus_por_troco=1)
+            try:
+                bp_dmax = nbk.dmax(ons)
+            except Exception as _e:
+                bp_dmax = {'ok': False, 'motivo': f'{type(_e).__name__}: {_e}'}
+
+            # DFA-a1 (Rogers 2024, HRVT1c individualizado) -- reaproveita
+            # os mesmos canais ja lidos/filtrados nesta sessao
+            try:
+                import hrv_limiares as hvl
+                dfa1 = hvl.calcular({
+                    'dfa_a1': canais.get('dfa_a1') or [],
+                    'respiration': canais.get('respiration') or [],
+                    'watts': canais.get('watts') or [],
+                    'heartrate': canais.get('heartrate') or [],
+                    'artifacts': canais.get('artifacts') or [],
+                }, hz=1.0)
+            except Exception as _e:
+                dfa1 = {'ok': False, 'motivo': f'{type(_e).__name__}: {_e}'}
+
+            # Enriquecer cada limiar com 'intensidade' = 'valor'.
+            # nirs_breakpoints.validar_fisiologica_vst usa .get('intensidade')
+            # mas hrv_limiares.limiar_por_curva retorna 'valor'.
+            # Este alias resolve HRVT undefined sem alterar os outros ficheiros.
+            try:
+                for _lim in (dfa1.get('limiares') or {}).values():
+                    for _canal in ('watts', 'heartrate'):
+                        _d = _lim.get(_canal)
+                        if isinstance(_d, dict) and 'valor' in _d:
+                            _d.setdefault('intensidade', _d['valor'])
+            except Exception:
+                pass
+
+            # Rede causal, so' para o campo do limitador -- a MESMA fonte
+            # que ja' se usa ao gravar a analise (linha ~1671). Sem isto,
+            # o cartao simples usava classificar_limitador() sozinho, que
+            # e' um metodo DIFERENTE (padrao SmO2/FC por degrau) e podia
+            # discordar do que a rede e a 5-1-5 mostram.
+            try:
+                _rd = api_moxy_rede(aid)
+                _rd = _rd[0].get_json() if isinstance(_rd, tuple) else _rd.get_json()
+                rede_limitador = (_rd or {}).get('limitador') or {}
+            except Exception as _e:
+                rede_limitador = {'ok': False,
+                                  'motivo': f'{type(_e).__name__}: {_e}'}
+
+            bp = nbk.breakpoints(ons, mod)
+            pl = nbk.plato(t, smo2,
+                           janela=request.args.get('janela_plato', type=int)
+                           or nbk.PLATO_JANELA_S,
+                           corte=request.args.get('corte_plato', type=float)
+                           or nbk.PLATO_CORTE) if smo2 else None
+            ensaios = [(b['delta_smo2'], b['t1'] - b['t0']) for b in ons
+                       if b.get('delta_smo2') is not None]
+            # Quais blocos terminaram por exaustao. O CER so' e' valido
+            # com ensaios ate' a falha, e so' o atleta sabe quais foram.
+            #
+            #   ?exaustao=1            todos os blocos
+            #   ?exaustao=ultimos:3    os 3 ultimos
+            #   ?exaustao=3,5,6        por indice (1 = primeiro bloco)
+            #
+            # Com duracoes todas iguais continua a ser impossivel, mas
+            # varias sessoes deste atleta TEM duracoes distintas
+            # suficientes -- estava a recusar sem sequer olhar.
+            _ex = (request.args.get('exaustao') or '').strip()
+            _sel = None
+            if _ex in ('1', 'todos', 'true'):
+                _sel = list(range(len(ensaios)))
+            elif _ex.startswith('ultimos:'):
+                try:
+                    _k = int(_ex.split(':')[1])
+                    _sel = list(range(max(0, len(ensaios) - _k), len(ensaios)))
+                except Exception:
+                    _sel = None
+            elif _ex:
+                try:
+                    _sel = [int(x) - 1 for x in _ex.replace(' ', '').split(',')
+                            if x.strip().isdigit()]
+                    _sel = [i for i in _sel if 0 <= i < len(ensaios)]
+                except Exception:
+                    _sel = None
+
+            if _sel:
+                ce = nbk.cer([ensaios[i] for i in _sel], ate_exaustao=True)
+                ce['blocos_usados'] = [i + 1 for i in _sel]
+                ce['de_um_total_de'] = len(ensaios)
+            else:
+                ce = nbk.cer(ensaios, ate_exaustao=False)
+                _durs = sorted({round(t) for _d, t in ensaios})
+                ce['possivel_com_estes_blocos'] = len(_durs) >= 3
+                ce['duracoes_distintas'] = _durs
+                ce['como_activar'] = (
+                    'esta sessão tem ' + str(len(_durs)) + ' durações '
+                    'distintas' + (' — chega para o ajuste. Marca quais '
+                                   'terminaram por exaustão: ?exaustao=1, '
+                                   '?exaustao=ultimos:3 ou ?exaustao=4,5,6'
+                                   if len(_durs) >= 3 else
+                                   ' — são precisas 3 para ajustar a '
+                                   'hipérbole'))
+            # a hipocapnia compara FR com FC: sem uma das duas valida, o
+            # teste nao pode correr
+            if _inval & {'heartrate', 'respiration'}:
+                hp = {'ok': False,
+                      'motivo': ('a FC ou a respiração estão inválidas '
+                                 'nesta sessão (sensor preso) — o teste '
+                                 'compara as duas e não pode correr')}
+            else:
+                hp = nbk.hipocapnia(blocos, t, canais)
+
+            # ── coerencia PARADA a pedido ────────────────────────────
+            # Estava a passar lt1_campos=None e lt2_campos=None, portanto
+            # os dois testes de concordancia com os campos NUNCA corriam
+            # com dados reais. Os avisos de "+86%" e "+20%" que apareceram
+            # numa demonstracao vinham de valores escritos a mao num teste
+            # meu, nao da base de dados. Fica desligada ate' a fonte estar
+            # ligada a serio -- melhor nenhum veredicto do que um veredicto
+            # sobre numeros inventados.
+            coer = {
+                'ok': False,
+                'motivo': ('verificação de coerência desligada: a comparação '
+                           'com os campos da Intervals.icu ainda não está '
+                           'ligada à fonte de dados'),
+                'o_que_falta': ('passar lt1_campos e lt2_campos a partir do '
+                                'limiares_externos_dados, em vez de None'),
+            }
+
+            lim_cons = _consenso_limiares(
+                mlss, bp_mx, bp_mx_livre, bp_taxa, perfil, bp_hhb, lt1_reox,
+                blocos)
+
+            # ── reservas: W' em qualquer sessao, M' so' com SmO2 ──
+            reservas = {}
+            try:
+                import balance as _bal
+                # O CP vive no MODELO CP, nao no perfil metabolico. Estava
+                # a ler 'cp_w' e 'w_prime_j' do perfil, chaves que la' nao
+                # existem -- por isso vinha sempre None e o W' nunca era
+                # desenhado. O mesmo erro estava no tab_detalhe.
+                _cp = _wp = None
+                _origem_cp = None
+                try:
+                    from flask import current_app
+                    with current_app.test_request_context(
+                            f'/api/cp/actual/{mod}'):
+                        _r = current_app.view_functions['api_cp_actual'](mod)
+                    _d = (_r.get_json() if hasattr(_r, 'get_json')
+                          else (_r[0].get_json() if isinstance(_r, tuple)
+                                else {})) or {}
+                    if _d.get('status') == 'ok':
+                        _cp, _wp = _d.get('cp_w'), _d.get('wp_j')
+                        _origem_cp = _d.get('origem')
+                except Exception as e:
+                    _origem_cp = f'{type(e).__name__}: {e}'
+                reservas['cp'] = _cp
+                reservas['w_prime'] = _wp
+                reservas['origem_do_cp'] = _origem_cp
+                reservas['modalidade_usada'] = mod
+                reservas['origem_da_modalidade'] = origem_mod
+                wt2 = canais.get('watts')
+                if wt2 and _cp and _wp:
+                    reservas['wprime'] = _bal.wprime_balance(t, wt2, _cp, _wp)
+                elif wt2:
+                    reservas['wprime'] = {
+                        'ok': False,
+                        'motivo': (
+                            f'sem CP e W′ para {mod or "modalidade "
+                            "desconhecida"}'
+                            + ('' if mod else
+                               ' — a modalidade não foi determinada, o que '
+                               'impede ir buscar o CP')
+                            + (f' (origem do CP: {_origem_cp})'
+                               if _origem_cp else ''))}
+                # M' precisa do CER, que so' e' valido com ensaios de
+                # duracoes diferentes ate' a exaustao
+                if ce.get('ok') and ce.get('valido'):
+                    reservas['mprime'] = _bal.mprime_balance(
+                        t, smo2, ce.get('cer_pct_por_s'),
+                        abs(ce.get('m_linha') or 0))
+                else:
+                    # Explicar o que ESTA sessao tem, em vez de repetir a
+                    # regra geral. Numa sessao por distancia o CER e'
+                    # impossivel por construcao: os blocos acabam quando a
+                    # distancia acaba, nao quando o atleta nao aguenta.
+                    _por_dist = (tipo.get('tipo') or '').startswith(
+                        'intervalado por distância')
+                    _dist = (tipo.get('distancia') or {}).get('media_m')
+                    _diag = None
+                    if _por_dist or (_dist and
+                                     (tipo.get('distancia') or {}).get('cv',
+                                                                       1) < 0.1):
+                        _diag = (
+                            f'esta sessão é por DISTÂNCIA (~{round(_dist)} m '
+                            'por bloco). Cada bloco acaba quando a distância '
+                            'acaba, não quando não aguentas mais — por isso '
+                            'nenhuma duração é uma duração até à exaustão. O '
+                            'CER é impossível aqui, não por falta de código')
+                    reservas['mprime'] = {
+                        'ok': False,
+                        'motivo': ('o CER não é válido nesta sessão: '
+                                   + (ce.get('motivo') or ce.get('aviso')
+                                      or 'sem ajuste')),
+                        'diagnostico_desta_sessao': _diag,
+                        'o_que_seria_preciso': (
+                            '3 ou mais esforços máximos de durações '
+                            'DIFERENTES, cada um até não conseguires '
+                            'continuar — por exemplo 2, 5 e 12 min. É o '
+                            'mesmo protocolo que o CP exige'),
+                        'porque_importa': (
+                            'o M′ balance é aritmética correcta sobre os '
+                            'parâmetros que receber. Com um CER inválido '
+                            'daria uma curva bonita e errada')}
+            except Exception as e:
+                reservas = {'erro': f'{type(e).__name__}: {e}'}
+
+            # limpar os bpm quando a FC não é de confiança
+            fc_ok = d.get('fc_valida', True)
+            if not fc_ok:
+                for _b in (bp_mx, bp_mx_livre, bp_hhb):
+                    if isinstance(_b, dict):
+                        _b['bp1_bpm'] = _b['bp2_bpm'] = None
+                        _b['fc_descartada'] = True
+                        for _p in (_b.get('pontos') or []):
+                            _p['hr'] = None
+                for _g in ('primeiro', 'segundo'):
+                    _bloco = (lim_cons or {}).get(_g) or {}
+                    for _e in (_bloco.get('estimativas') or []):
+                        _e['bpm'] = None
+                hp = {'ok': False,
+                      'motivo': ('a cinta congelou: sem FC fiável não há '
+                                 'como testar hipocapnia')}
+
+            # ── FC não utilizável: apagar TODOS os bpm ───────────────
+            #
+            # Não basta apagar a série: os breakpoints já calcularam um
+            # bpm para cada limiar, e esse número sai de uma cinta presa.
+            # Mostrar 104 bpm porque a cinta travou é pior do que não
+            # mostrar bpm nenhum — e foi o que aconteceu.
+            fcu = d.get('fc_utilizavel') or {'utilizavel': True}
+            if not fcu.get('utilizavel'):
+                for _b in (bp_mx, bp_mx_livre, bp_hhb):
+                    if isinstance(_b, dict):
+                        _b['bp1_bpm'] = None
+                        _b['bp2_bpm'] = None
+                        for _p in (_b.get('pontos') or []):
+                            _p['hr'] = None
+                for _lst in ((lt1_reox or {}).get('blocos'),
+                             (mlss or {}).get('blocos')):
+                    for _x in (_lst or []):
+                        _x.pop('bpm', None)
+                hp = {'ok': False,
+                      'motivo': ('a frequência respiratória e a FC vêm da '
+                                 'mesma cinta, que falhou nesta sessão')}
+
+            # ── limitador (Peikon/NNOXX), derivadas e VO2max previsto ──
+            try:
+                def _fc_media_bloco(b):
+                    if not _hrs:
+                        return None
+                    vs = [_hrs[i] for i in range(min(len(t), len(_hrs)))
+                          if b['t0'] <= t[i] <= b['t1']
+                          and _hrs[i] is not None]
+                    return sum(vs) / len(vs) if vs else None
+                _smo2_deg = [b.get('smo2_min') for b in (ons or [])]
+                _fc_deg = [_fc_media_bloco(b) for b in (ons or [])]
+                lim_fisio = nbk.classificar_limitador(_smo2_deg, _fc_deg)
+            except Exception as e:
+                lim_fisio = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+            try:
+                deriv = nbk.smo2_derivadas(t, smo2)
+            except Exception as e:
+                deriv = {'ok': False, 'erro': f'{type(e).__name__}: {e}',
+                        'motivo': f'{type(e).__name__}: {e}'}
+            try:
+                _smo2_min_sessao = min((v for v in smo2 if v is not None),
+                                       default=None)
+                # FC de repouso A SÉRIO, não o mínimo dentro da sessão.
+                #
+                # O mínimo da FC durante um teste de degraus pode ficar
+                # 30-40 bpm acima do repouso real, se não houver nenhum
+                # troço realmente fácil — e a fórmula do VO2max amplifica
+                # esse erro (1 bpm a mais tira 1.129 ml/kg/min). Foi isto
+                # que deu 2.5 ml/kg/min num teste de ski.
+                #
+                # Vai-se buscar o restingHR/avgSleepingHR da Intervals.icu
+                # para o dia da sessão — a mesma fonte que já usamos na
+                # tab Recovery. Sem isso, o VO2max não se calcula: um
+                # valor de má qualidade não é melhor que nenhum valor.
+                _fc_repouso = None
+                _dia = MX_SESSOES_CACHE.get(aid, {}).get('data')
+                if _dia:
+                    import api_client as api
+                    _w, _werr = api.icu_get(
+                        f'/athlete/{api.ATHLETE_ID}/wellness/{_dia}')
+                    if not _werr and isinstance(_w, dict):
+                        _fc_repouso = (_w.get('restingHR')
+                                       or _w.get('avgSleepingHR'))
+                if _fc_repouso is not None:
+                    vo2 = nbk.vo2max_previsto(_smo2_min_sessao, _fc_repouso)
+                    vo2['fc_repouso_origem'] = 'wellness da Intervals.icu'
+                else:
+                    vo2 = {'ok': False,
+                          'motivo': ('sem FC de repouso da Intervals.icu '
+                                     'para este dia — não se usa o mínimo '
+                                     'da sessão como substituto, porque '
+                                     'num teste sem troço fácil isso não é '
+                                     'repouso e produz valores impossíveis')}
+            except Exception as e:
+                # o 'erro' sozinho não chegava à interface: a tab só lia
+                # 'motivo'. Sem isto, qualquer excepção aqui (endpoint da
+                # Intervals.icu fora do ar, wellness sem esse dia, etc.)
+                # fazia o painel do VO2max desaparecer sem explicação.
+                vo2 = {'ok': False, 'erro': f'{type(e).__name__}: {e}',
+                      'motivo': f'falha ao calcular: {type(e).__name__}: {e}'}
+
+            return jsonify({
+                'status': 'ok', 'activity_id': aid, 'modalidade': mod,
+                'fc_utilizavel': fcu,
+                'fc_valida': fc_ok,
+                'aviso_fc': d.get('aviso_fc'),
+                'canais_invalidos': d.get('canais_invalidos') or [],
+                'reservas': reservas,
+                'coerencia': coer,
+                'tipo_sessao': tipo,
+                'perfil_resposta': perfil,
+                'lt1_reoxigenacao': lt1_reox,
+                'mlss_dessaturacao': mlss,
+                'bp_taxa': bp_taxa,
+                'bp_moxy': bp_mx,
+                'bp_hhb': bp_hhb,
+                'bp_moxy_sem_restricao': bp_mx_livre,
+                'bp_dmax': bp_dmax,
+                'dfa1': dfa1,
+                'rede_limitador': rede_limitador,
+                'limiares_consenso': lim_cons,
+                'limitador_fisiologico': lim_fisio,
+                'smo2_derivadas': deriv,
+                'vo2max_previsto': vo2,
+                'breakpoints': bp, 'plato': pl, 'cer': ce, 'hipocapnia': hp,
+                'blocos_usados': [
+                    {'watts': b.get('watts_medio'),
+                     'smo2_min': round(b['smo2_min'], 1),
+                     'delta_smo2': b.get('delta_smo2'),
+                     'duracao_s': round(b['t1'] - b['t0'])} for b in ons]})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    VERSAO_ANALISE = '2026-08-30'
+
+    @app.route('/api/moxy/analise/<path:activity_id>', methods=['GET'])
+    def api_moxy_analise_ler(activity_id):
+        """Ler analise persistida do banco — frontend usa para recarregar
+        sem recalcular apos reload. Retorna json_completo (limiares+i515+rede).
+        """
+        try:
+            import json as _json
+            import drive_db_perfil as ddp
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            cn = ddp.get_conn()
+            row = cn.execute(
+                'SELECT json_completo, versao_analise, data_gravacao '
+                'FROM moxy_analises WHERE activity_id=?',
+                (aid,)).fetchone()
+            cn.close()
+            if not row or not row[0]:
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': 'sem analise persistida'}), 200
+            jc = _json.loads(row[0])
+            return jsonify({
+                'status': 'ok',
+                'activity_id': aid,
+                'versao_analise': row[1],
+                'data_gravacao': row[2],
+                'json_completo': jc,
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+
+    @app.route('/api/moxy/analise/<path:activity_id>', methods=['POST'])
+    def api_moxy_guardar_analise(activity_id):
+        """Corre tudo e grava o resultado.
+
+        Gravar de novo a mesma actividade SUBSTITUI: quando o método
+        melhora, basta voltar a correr e o registo fica com a versão nova.
+        A versao_analise diz com que código o valor foi calculado, para
+        nao se comparar um BP de hoje com um de um método antigo.
+        """
+        try:
+            import drive_db_perfil as ddp
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+
+            lim = api_moxy_limiares(aid)
+            lim = lim[0].get_json() if isinstance(lim, tuple) else lim.get_json()
+            itp = api_moxy_interpretacao(aid)
+            itp = itp[0].get_json() if isinstance(itp, tuple) else itp.get_json()
+            rd = api_moxy_rede(aid)
+            rd = rd[0].get_json() if isinstance(rd, tuple) else rd.get_json()
+
+            if (lim or {}).get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': (lim or {}).get('mensagem')}), 200
+
+            pf = lim.get('perfil_resposta') or {}
+            ml = lim.get('mlss_dessaturacao') or {}
+            bt = lim.get('bp_taxa') or {}
+            ip = (itp or {}).get('interpretacao') or {}
+            pt = (itp or {}).get('pontuacao') or {}
+            rl = (rd or {}).get('limitador') or {}
+
+            # BP1 e BP2 do SCRIPT do Intervals.icu, que e' o que se mostra
+            # no grafico da tab Moxy e o que da' os dois de uma vez.
+            #
+            # Antes o BP1 vinha do perfil_resposta, que so' o tem quando a
+            # curva e' parabolica -- num perfil monotonico ficava None e
+            # gravava-se BP2 sem BP1, que era o que estavas a ver.
+            bls = lim.get('bp_moxy_sem_restricao') or {}
+            bmx = lim.get('bp_moxy') or {}
+            bp1 = bp1_bpm = bp2_bpm = None
+            origem1 = origem2 = None
+            for fonte, nome in ((bls, 'script Intervals.icu'),
+                                (bmx, 'regressão, 2 degraus por troço')):
+                if bp1 is None and fonte.get('bp1_w') is not None:
+                    bp1, bp1_bpm, origem1 = (fonte['bp1_w'],
+                                             fonte.get('bp1_bpm'), nome)
+            if bp1 is None and pf.get('ok') and pf.get('bp1_watts') is not None:
+                bp1, origem1 = pf['bp1_watts'], 'topo da parábola (SmO2max)'
+
+            bp2 = bls.get('bp2_w') or bmx.get('bp2_w')
+            bp2_bpm = bls.get('bp2_bpm') or bmx.get('bp2_bpm')
+            origem2 = 'script Intervals.icu' if bls.get('bp2_w') else (
+                'regressão, 2 degraus por troço' if bmx.get('bp2_w') else None)
+            if bp2 is None:
+                bp2 = (ml.get('mlss_estimado') if ml.get('ok')
+                       else bt.get('bp_watts') if bt.get('ok') else None)
+                origem2 = ('padrão de dessaturação' if ml.get('ok')
+                           else 'quebra na taxa' if bt.get('ok') else None)
+
+            # limiares opticos das duas transicoes de Yogev
+            lr = lim.get('lt1_reoxigenacao') or {}
+            md = lim.get('mlss_dessaturacao') or {}
+            _lr = lr.get('lt1_entre') or [None, None]
+            _md = md.get('mlss_entre') or [None, None]
+
+            # se a FC não é fiável, não se grava bpm nenhum. Gravar um
+            # valor errado é pior do que não gravar: fica no histórico e
+            # ninguém se lembra porquê
+            if not lim.get('fc_valida', True):
+                bp1_bpm = bp2_bpm = None
+
+            # NAO gravar bpm de uma sessao com a FC congelada: gravado
+            # uma vez, esse valor entra no consenso do perfil metabolico
+            # e passa a contaminar tudo o resto sem deixar rasto
+            if 'heartrate' in set(lim.get('canais_invalidos') or []):
+                bp1_bpm = bp2_bpm = None
+                _fc_descartada = True
+            else:
+                _fc_descartada = False
+
+            # não gravar bpm de uma cinta que falhou: ficaria na base e
+            # contaminava o perfil metabólico e a comparação longitudinal
+            if not (lim.get('fc_utilizavel') or {}).get('utilizavel', True):
+                bp1_bpm = bp2_bpm = None
+
+            # A FC inválida não se grava. O endpoint já apaga os bpm da
+            # RESPOSTA, mas a gravação lê as variáveis locais — sem esta
+            # guarda, o 104 bpm de uma cinta presa ia para a base e depois
+            # aparecia no perfil metabólico como se fosse medição.
+            _fc_ok = (lim.get('fc_valida') if lim.get('fc_valida') is not None
+                      else True)
+            if not _fc_ok:
+                bp1_bpm = bp2_bpm = None
+
+            s2 = MX_SESSOES_CACHE.get(aid, {})
+            _vo2 = lim.get('vo2max_previsto') or {}
+            linha = (
+                aid, lim.get('modalidade'), s2.get('data'),
+                pf.get('perfil'), bp1, bp1_bpm,
+                bp2, bp2_bpm,
+                origem2,
+                (lr.get('lt1_estimado') if lr.get('ok') else None),
+                _lr[0], _lr[1],
+                (md.get('mlss_estimado') if md.get('ok') else None),
+                _md[0], _md[1],
+                pf.get('smo2max'), pf.get('smo2min'),
+                len([x for x in ((lim.get('blocos_usados')) or [])]),
+                (pt.get('us') or {}).get('score'),
+                (ip.get('us') or {}).get('limitador'),
+                (pt.get('pc') or {}).get('score'),
+                (ip.get('pc') or {}).get('limitador'),
+                rl.get('sistema'),
+                json.dumps(rl.get('controlo_pct') or {}, ensure_ascii=False),
+                ((lim.get('hipocapnia') or {}).get('z_maximo')),
+                None, None, VERSAO_ANALISE,
+                json.dumps({'limiares': lim, 'i515': itp, 'rede': rd},
+                           ensure_ascii=False)[:400000],
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                (_vo2.get('vo2max_estimado') if _vo2.get('ok') else None),
+                (1 if _vo2.get('plausivel') else
+                 (0 if _vo2.get('ok') else None)))
+
+            cn = ddp.get_conn()
+            cn.execute(
+                """INSERT OR REPLACE INTO moxy_analises
+                   (activity_id, modalidade, data, perfil, bp1_w, bp1_bpm,
+                    bp2_w, bp2_bpm, bp2_origem,
+                    lt1_reox_w, lt1_reox_de, lt1_reox_ate,
+                    mlss_dessat_w, mlss_dessat_de, mlss_dessat_ate,
+                    smo2max, smo2min, n_degraus,
+                    us_score, us_limitador, pc_score, pc_limitador,
+                    rede_limitador, rede_pct, pct_artefacto, corte_inicio_s,
+                    corte_fim_s, versao_analise, json_completo, data_gravacao,
+                    vo2max_previsto, vo2max_plausivel)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                           ?,?,?,?,?,?,?,?)""",
+                linha)
+            cn.commit()
+            ok, det = ddp.upload()
+            cn.close()
+            return jsonify({
+                'status': 'ok' if ok else 'gravado_sem_upload',
+                'activity_id': aid, 'versao': VERSAO_ANALISE,
+                'fc_descartada': _fc_descartada,
+                'nota_fc': ('a FC estava congelada nesta sessão: os valores '
+                            'em bpm não foram gravados, para não entrarem '
+                            'no consenso do perfil metabólico'
+                            if _fc_descartada else None),
+                'drive': det})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/gravar_todas', methods=['POST'])
+    def api_moxy_gravar_todas():
+        """Grava a análise de TODAS as sessões com Moxy.
+
+        Re-grava por omissão as que foram calculadas com uma versão
+        anterior do método: é o que permite mudar um cálculo e pôr o
+        histórico todo em dia sem carregar sessão a sessão.
+
+        ?modalidade=Row   ?forcar=1   (forcar re-grava mesmo as actuais)
+        """
+        try:
+            import drive_db_perfil as ddp
+            forcar = request.args.get('forcar') == '1'
+            mods = ([request.args['modalidade']]
+                    if request.args.get('modalidade')
+                    else ['Bike', 'Row', 'Ski', 'Run'])
+
+            # que versões já estão gravadas
+            ja = {}
+            try:
+                cn = ddp.get_conn()
+                for r in cn.execute(
+                        'SELECT activity_id, versao_analise FROM '
+                        'moxy_analises').fetchall():
+                    ja[str(r[0])] = r[1]
+                cn.close()
+            except Exception:
+                pass
+
+            feitas, saltadas, erros = [], [], []
+            for mod in mods:
+                with app.test_request_context(
+                        f'/api/moxy/sessoes?modalidade={mod}'):
+                    ses = api_moxy_sessoes().get_json() or {}
+                for s2 in (ses.get('sessoes') or []):
+                    aid = str(s2.get('id'))
+                    versao = ja.get(aid)
+                    if versao == VERSAO_ANALISE and not forcar:
+                        saltadas.append({'id': aid, 'data': s2.get('data'),
+                                         'modalidade': mod,
+                                         'motivo': 'já na versão actual'})
+                        continue
+                    try:
+                        r = api_moxy_guardar_analise(aid)
+                        d = (r[0].get_json() if isinstance(r, tuple)
+                             else r.get_json()) or {}
+                        if str(d.get('status', '')).startswith(('ok',
+                                                                'gravado')):
+                            feitas.append({
+                                'id': aid, 'data': s2.get('data'),
+                                'modalidade': mod,
+                                'versao_anterior': versao,
+                                'motivo': ('versão antiga' if versao
+                                           else 'nunca gravada')})
+                        else:
+                            erros.append({'id': aid, 'data': s2.get('data'),
+                                          'motivo': d.get('mensagem')})
+                    except Exception as e:
+                        erros.append({'id': aid, 'data': s2.get('data'),
+                                      'erro': str(e)[:120]})
+
+            return jsonify({
+                'status': 'ok',
+                'versao_actual': VERSAO_ANALISE,
+                'n_gravadas': len(feitas), 'n_saltadas': len(saltadas),
+                'n_erros': len(erros),
+                'gravadas': feitas, 'saltadas': saltadas, 'erros': erros,
+                'nota': (
+                    'só se re-grava o que está numa versão anterior do '
+                    'método. A versao_analise é o que permite isso — sem '
+                    'ela não se saberia o que está por actualizar. Usa '
+                    '?forcar=1 para re-gravar tudo'),
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/analises')
+    def api_moxy_analises():
+        """Análises gravadas.  ?modalidade=Row"""
+        try:
+            import drive_db_perfil as ddp
+            cond, args = [], []
+            if request.args.get('modalidade'):
+                cond.append('modalidade = ?')
+                args.append(request.args['modalidade'])
+            w = ('WHERE ' + ' AND '.join(cond)) if cond else ''
+            cn = ddp.get_conn()
+            cols = ('activity_id, modalidade, data, perfil, bp1_w, bp2_w, '
+                    'bp2_origem, smo2max, smo2min, n_degraus, us_limitador, '
+                    'pc_limitador, rede_limitador, versao_analise, '
+                    'data_gravacao')
+            rows = cn.execute(
+                f'SELECT {cols} FROM moxy_analises {w} ORDER BY data DESC',
+                tuple(args)).fetchall()
+            cn.close()
+            nomes = [c.strip() for c in cols.split(',')]
+            return jsonify({'status': 'ok', 'n': len(rows),
+                            'analises': [dict(zip(nomes, r)) for r in rows]})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+
+    @app.route('/api/moxy/debug/<path:activity_id>')
+    def api_moxy_debug(activity_id):
+        """Tudo em bruto de uma sessão, para diagnóstico.
+
+        Existe para poder pedir-se o output e ver o que se passou, em vez
+        de adivinhar a partir do que aparece no ecrã.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            fora = {'activity_id': aid, 'versao': VERSAO_ANALISE}
+            for nome, fn in (('dados', api_moxy_dados),
+                             ('limiares', api_moxy_limiares),
+                             ('interpretacao', api_moxy_interpretacao),
+                             ('rede', api_moxy_rede)):
+                try:
+                    r = fn(aid)
+                    j = r[0].get_json() if isinstance(r, tuple) else r.get_json()
+                    if nome == 'dados' and isinstance(j, dict):
+                        # streams inteiros nao servem para nada aqui
+                        j = {k: v for k, v in j.items() if k != 'canais'}
+                        j['canais_resumo'] = {
+                            k: {'n': len(v),
+                                'min': min([x for x in v if x is not None],
+                                           default=None),
+                                'max': max([x for x in v if x is not None],
+                                           default=None)}
+                            for k, v in ((r[0].get_json() if isinstance(r, tuple)
+                                          else r.get_json()).get('canais')
+                                         or {}).items()}
+                    fora[nome] = j
+                except Exception as e:
+                    fora[nome] = {'erro': f'{type(e).__name__}: {e}',
+                                  'trace': traceback.format_exc()[-1200:]}
+            return jsonify(fora)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/cer/<modalidade>')
+    def api_moxy_cer(modalidade):
+        """CER a partir do ÚLTIMO degrau de várias sessões.
+
+        Numa escada, o último degrau termina por exaustão: o atleta para
+        porque não sustenta mais, não porque o relógio tocou. Esse ponto é
+        um tempo-até-à-exaustão legítimo.
+
+        Os degraus anteriores não são: acabam aos 5 min porque o protocolo
+        diz 5 min, e se continuasse aguentaria mais.
+
+        Logo cada sessão dá UM ponto. O CER precisa de três — e por isso
+        junta-se o último degrau de VÁRIAS sessões da mesma modalidade,
+        que é onde as durações diferem a sério.
+
+        ?dias=1095   ?min_pontos=3
+        """
+        try:
+            import os as _o
+            import sys as _s
+            _s.path.insert(0, _o.path.join(
+                _o.path.dirname(_o.path.abspath(__file__)), 'utils'))
+            import nirs_breakpoints as nbk
+
+            with app.test_request_context(
+                    f'/api/moxy/sessoes?modalidade={modalidade}'):
+                ses = api_moxy_sessoes().get_json() or {}
+            if ses.get('status') != 'ok':
+                return jsonify({'status': 'erro',
+                                'mensagem': ses.get('mensagem')}), 200
+
+            pontos, detalhe = [], []
+            for s2 in (ses.get('sessoes') or [])[:12]:
+                aid = str(s2.get('id'))
+                try:
+                    r = api_moxy_limiares(aid)
+                    d = (r[0].get_json() if isinstance(r, tuple)
+                         else r.get_json()) or {}
+                except Exception as e:
+                    detalhe.append({'id': aid, 'data': s2.get('data'),
+                                    'erro': str(e)[:90]})
+                    continue
+                if d.get('status') != 'ok':
+                    detalhe.append({'id': aid, 'data': s2.get('data'),
+                                    'motivo': d.get('mensagem')})
+                    continue
+                blocos = d.get('blocos_usados') or []
+                if not blocos:
+                    detalhe.append({'id': aid, 'data': s2.get('data'),
+                                    'motivo': 'sem blocos com SmO2'})
+                    continue
+                # o ULTIMO bloco de trabalho, por ordem de tempo
+                ult = blocos[-1]
+                delta = ult.get('delta_smo2')
+                dur = ult.get('duracao_s')
+                tipo = (d.get('tipo_sessao') or {}).get('tipo')
+                if delta is None or not dur:
+                    detalhe.append({'id': aid, 'data': s2.get('data'),
+                                    'motivo': 'último bloco sem taxa de SmO2'})
+                    continue
+                pontos.append((delta, dur))
+                detalhe.append({
+                    'id': aid, 'data': s2.get('data'), 'tipo_sessao': tipo,
+                    'watts_do_ultimo': ult.get('watts'),
+                    'duracao_s': dur, 'delta_smo2_por_s': delta})
+
+            minimo = request.args.get('min_pontos', type=int) or 3
+            if len(pontos) < minimo:
+                return jsonify({
+                    'status': 'sem_dados', 'modalidade': modalidade,
+                    'n_pontos': len(pontos), 'minimo': minimo,
+                    'sessoes': detalhe,
+                    'motivo': (f'só {len(pontos)} sessões deram um último '
+                               f'degrau utilizável; são precisas {minimo}'),
+                    'nota': ('cada sessão contribui com UM ponto — o último '
+                             'degrau, que é o único que termina por '
+                             'exaustão')}), 200
+
+            durs = sorted({round(d) for _x, d in pontos})
+            res = nbk.cer(pontos, ate_exaustao=True)
+            res.update({
+                'status': 'ok', 'modalidade': modalidade,
+                'n_sessoes': len(pontos), 'sessoes': detalhe,
+                'duracoes_s': durs,
+                'aviso_duracoes': (
+                    None if len(durs) >= 3 else
+                    f'só {len(durs)} duração(ões) distinta(s) ({durs} s). O '
+                    'ajuste precisa de durações diferentes para ter '
+                    'inclinação — com todas iguais o r² é enganador'),
+                'como_foi_feito': (
+                    'último degrau de cada sessão, que é o que termina por '
+                    'exaustão. Os degraus anteriores acabam pelo relógio e '
+                    'não servem'),
+            })
+            return jsonify(res)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/limitadores')
+    def api_moxy_limitadores():
+        """Limitador de cada análise GRAVADA, para a página de intervenções.
+
+        Lê da base, não recalcula: a página serve para escolher sessões e
+        procurar padrão, e recalcular dez sessões a cada clique tornaria
+        isso insuportável.
+
+        ?modalidade=Row   (sem modalidade, devolve todas)
+        """
+        try:
+            import json as _j
+            import drive_db_perfil as ddp
+            cond, args = [], []
+            if request.args.get('modalidade'):
+                cond.append('modalidade = ?')
+                args.append(request.args['modalidade'])
+            w = ('WHERE ' + ' AND '.join(cond)) if cond else ''
+            cn = ddp.get_conn()
+            rows = cn.execute(
+                f"""SELECT activity_id, modalidade, data, perfil,
+                           us_limitador, pc_limitador, rede_limitador,
+                           bp1_w, bp2_w, lt1_reox_w, mlss_dessat_w,
+                           versao_analise, json_completo
+                      FROM moxy_analises {w} ORDER BY data DESC""",
+                tuple(args)).fetchall()
+            cn.close()
+
+            fora = []
+            for r in rows:
+                hipo = None
+                try:
+                    d = _j.loads(r[12]) if r[12] else {}
+                    hipo = ((d.get('limiares') or {})
+                            .get('hipocapnia') or {}).get('suspeita')
+                except Exception:
+                    pass
+                fora.append({
+                    'id': r[0], 'modalidade': r[1], 'data': r[2],
+                    'perfil': r[3],
+                    'us': r[4], 'pc': r[5], 'rede': r[6],
+                    'bp1_w': r[7], 'bp2_w': r[8],
+                    'lt1_reox_w': r[9], 'mlss_dessat_w': r[10],
+                    'versao': r[11], 'hipocapnia': hipo,
+                })
+            return jsonify({'status': 'ok', 'n': len(fora),
+                            'sessoes': fora,
+                            'nota': ('vem da base: são as análises já '
+                                     'gravadas. Para incluir uma sessão '
+                                     'nova, gravá-la primeiro na tab Moxy')})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/rpe/<path:activity_id>')
+    def api_moxy_rpe_ver(activity_id):
+        """Blocos de trabalho da sessão, com o RPE já gravado (se houver).
+
+        Devolve um item por bloco ON, com watts_medio e o RPE gravado ou
+        None. O frontend decide, por bloco, se mostra a caixa de escrever
+        ou o botão de "re-gravar".
+
+        Resolução de RPE (nova arquitectura):
+          1. activity_interval_rpe por (activity_id, start_time=bloco.t0)
+             rpe=0  → campo vazio, sem fallback (apagado explicitamente)
+             rpe=1..10 → valor real
+          2. moxy_rpe por bloco_indice (legado) — só quando sem linha nova
+          3. sem nenhum → None
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            dd = api_moxy_dados(aid)
+            d = (dd[0].get_json() if isinstance(dd, tuple)
+                 else dd.get_json()) or {}
+            blocos = ((d.get('blocos') or {}).get('blocos')) or []
+            trabalho = [b for b in blocos if b.get('on')
+                       and b.get('watts_medio') is not None]
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            # Fallback legado
+            linhas = cn.execute(
+                "SELECT bloco_indice, rpe FROM moxy_rpe "
+                "WHERE activity_id=?", (aid,)).fetchall()
+            rpe_legacy = {int(r[0]): r[1] for r in linhas}
+
+            fora = []
+            for i, b in enumerate(trabalho):
+                t0 = float(b['t0'])
+                rpe_val, rpe_fonte = _rpe_interval_resolver(cn, aid, t0)
+                if rpe_fonte == 'absent':
+                    rpe_val = rpe_legacy.get(i)
+                    rpe_fonte = 'legacy' if rpe_val is not None else 'absent'
+                fora.append({
+                    'bloco_indice': i,
+                    'watts_medio': round(b['watts_medio']),
+                    't0_s': round(t0), 't1_s': round(b['t1']),
+                    'duracao_s': round(b['t1'] - t0),
+                    'rpe': rpe_val,
+                    'rpe_fonte': rpe_fonte,
+                })
+            return jsonify({
+                'status': 'ok', 'activity_id': aid,
+                'blocos': fora,
+                'todos_gravados': bool(fora) and all(
+                    b['rpe'] is not None for b in fora),
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/rpe_degraus/<path:activity_id>')
+    def api_moxy_rpe_degraus(activity_id):
+        """Blocos de trabalho de uma sessão MOXY com RPE + médias de
+        HR, RF e SmO2 por bloco — para o gráfico RPE×Potência Day1.
+
+        Usa a mesma fonte que mxBlocosTabelaUnica no frontend:
+        api_moxy_dados() para os streams + moxy_rpe para os RPEs.
+        Zero recálculo — apenas leitura e junção dos dados existentes.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            # dados completos da sessão (streams + blocos)
+            dd = api_moxy_dados(aid)
+            d = (dd[0].get_json() if isinstance(dd, tuple)
+                 else dd.get_json()) or {}
+            if d.get('status') != 'ok':
+                return jsonify({'status': 'erro',
+                                'mensagem': d.get('mensagem') or 'sem dados'}), 200
+
+            blocos_raw = ((d.get('blocos') or {}).get('blocos')) or []
+            ons = [b for b in blocos_raw if b.get('on')
+                   and b.get('watts_medio') is not None]
+            tempo = d.get('tempo') or []
+            canais = d.get('canais') or {}
+
+            def _media(canal, t0, t1):
+                """Média do canal no intervalo [t0,t1] — mesma lógica
+                que _mxMedia no frontend."""
+                serie = canais.get(canal) or []
+                if not serie or not tempo:
+                    return None
+                vals = [serie[i] for i, t in enumerate(tempo)
+                        if t0 <= t <= t1 and i < len(serie)
+                        and serie[i] is not None]
+                return round(sum(vals) / len(vals), 1) if vals else None
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            # Mapa legado de fallback (moxy_rpe) — usado apenas quando
+            # não existe registo em activity_interval_rpe para aquele bloco.
+            rpe_map_legacy = {int(r[0]): r[1] for r in cn.execute(
+                "SELECT bloco_indice, rpe FROM moxy_rpe "
+                "WHERE activity_id=?", (aid,)).fetchall()}
+
+            fora = []
+            for i, b in enumerate(ons):
+                t0, t1 = float(b['t0']), float(b['t1'])
+                # Resolução de RPE:
+                # 1. activity_interval_rpe por (activity_id, start_time)
+                # 2. se ausente → moxy_rpe pelo índice (legado)
+                # 3. rpe=0 em activity_interval_rpe → campo vazio, sem fallback
+                rpe_val, rpe_fonte = _rpe_interval_resolver(cn, aid, t0)
+                if rpe_fonte == 'absent':
+                    # sem linha nova → tentar legado
+                    rpe_val = rpe_map_legacy.get(i)
+                    rpe_fonte = 'legacy' if rpe_val is not None else 'absent'
+                fora.append({
+                    'bloco_indice': i,
+                    'degrau': i + 1,
+                    'watts_medio': round(b.get('watts_medio_da_api')
+                                         or b.get('watts_medio') or 0),
+                    't0_s': round(t0), 't1_s': round(t1),
+                    'duracao_s': round(t1 - t0),
+                    'rpe': rpe_val,
+                    'rpe_fonte': rpe_fonte,   # 'new'|'deleted'|'legacy'|'absent'
+                    'hr_medio': _media('heartrate', t0, t1),
+                    'rf_medio': _media('respiration', t0, t1),
+                    'smo2_medio': _media('smo2', t0, t1),
+                })
+            return jsonify({
+                'status': 'ok',
+                'activity_id': aid,
+                'blocos': fora,
+                'todos_gravados': bool(fora) and all(
+                    b['rpe'] is not None for b in fora),
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/historico_zones/<modalidade>')
+    def api_moxy_historico_zones(modalidade):
+        """Referências históricas por zona para o Training Engine.
+
+        Devolve, por sessão histórica da modalidade, as médias de potência,
+        HR, RF, SmO2, RPE e split por zona (Z1/Z2/Z3) — classificadas usando
+        os BP1/BP2 da PRÓPRIA sessão, nunca os da sessão actual.
+
+        Sessões sem BP1 ou BP2 próprios são excluídas e declaradas.
+
+        ?modo=leve     Sem chamada à API externa. Usa apenas moxy_analises +
+                        moxy_rpe (potência e RPE por bloco já gravados).
+        ?modo=completo Chama api_moxy_rpe_degraus() por sessão para obter
+                        HR, RF e SmO2 por bloco (chama a API Intervals.icu).
+        ?n=12          Máximo de sessões a processar (cap técnico: 20).
+
+        O endpoint fornece dados agregados brutos.
+        training.py é responsável por threshold_calculation, runtime_value_type
+        e selecção das sessões comparáveis.
+        """
+        try:
+            import os as _os, sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            from cp_model import split_de_watts
+            import drive_db_perfil as ddp
+
+            modo = (request.args.get('modo') or 'leve').strip().lower()
+            n_max = min(int(request.args.get('n') or 12), 20)
+
+            cn = ddp.get_conn()
+            rows = cn.execute(
+                "SELECT activity_id, data, bp1_w, bp2_w "
+                "FROM moxy_analises "
+                "WHERE modalidade = ? AND bp1_w IS NOT NULL AND bp2_w IS NOT NULL "
+                "ORDER BY data DESC LIMIT ?",
+                (modalidade, n_max)).fetchall()
+
+            # Também registar as excluídas (sem BP) para transparência
+            excluidas_rows = cn.execute(
+                "SELECT activity_id, data "
+                "FROM moxy_analises "
+                "WHERE modalidade = ? AND (bp1_w IS NULL OR bp2_w IS NULL) "
+                "ORDER BY data DESC LIMIT 20",
+                (modalidade,)).fetchall()
+
+            excluidas = [
+                {'activity_id': r[0], 'data': r[1],
+                 'motivo': 'BP1 ou BP2 ausente — zona indeterminável'}
+                for r in excluidas_rows
+            ]
+
+            # ── Modo LEVE: só moxy_rpe (já persistido, zero chamada API) ──
+            def _processar_leve(activity_id, bp1_w, bp2_w):
+                """Agrega potência e RPE por zona usando moxy_rpe."""
+                blocos_db = cn.execute(
+                    "SELECT bloco_indice, watts_medio, t0_s, t1_s, rpe "
+                    "FROM moxy_rpe WHERE activity_id = ? ORDER BY bloco_indice",
+                    (activity_id,)).fetchall()
+
+                if not blocos_db:
+                    return None, ['moxy_rpe: sem blocos gravados']
+
+                por_zona = {'Z1': [], 'Z2': [], 'Z3': []}
+                for _, watts, t0, t1, rpe in blocos_db:
+                    if watts is None:
+                        continue
+                    z = _zona(watts, bp1_w, bp2_w)
+                    if z:
+                        por_zona[z].append({
+                            'watts': watts, 'rpe': rpe,
+                            't0': t0, 't1': t1,
+                        })
+
+                campos_ausentes = []
+                resultado = {'dados_por_bloco': {'tem_dados_por_bloco': False}}
+                for z, blocos in por_zona.items():
+                    if not blocos:
+                        resultado[f'potencia_por_zona_{z}'] = None
+                        resultado[f'rpe_por_zona_{z}'] = None
+                        continue
+                    w_vals = [b['watts'] for b in blocos if b['watts'] is not None]
+                    rpe_vals = [b['rpe'] for b in blocos if b['rpe'] is not None]
+                    resultado[f'potencia_por_zona_{z}'] = (
+                        round(sum(w_vals) / len(w_vals), 1) if w_vals else None)
+                    resultado[f'rpe_por_zona_{z}'] = (
+                        round(sum(rpe_vals) / len(rpe_vals), 1) if rpe_vals else None)
+                    if not rpe_vals:
+                        campos_ausentes.append(f'rpe em {z}: sem RPE gravado')
+                return resultado, campos_ausentes
+
+            # ── Modo COMPLETO: usa api_moxy_rpe_degraus (chama API) ────────
+            def _processar_completo(activity_id, bp1_w, bp2_w, modalidade_s):
+                """Agrega HR, RF, SmO2, potência, RPE, split por zona."""
+                # Reutilizar api_moxy_rpe_degraus que já tem toda a lógica
+                # de streams + blocos + _media(canal, t0, t1)
+                rpe_resp = api_moxy_rpe_degraus(activity_id)
+                rpe_d = (rpe_resp[0].get_json()
+                         if isinstance(rpe_resp, tuple)
+                         else rpe_resp.get_json()) or {}
+
+                if rpe_d.get('status') != 'ok':
+                    return None, [f'api_moxy_rpe_degraus: {rpe_d.get("mensagem","erro")}']
+
+                blocos = rpe_d.get('blocos') or []
+                if not blocos:
+                    return None, ['sem blocos de trabalho na sessão']
+
+                # Necessitamos também de velocity_smooth para split.
+                # _dados_sessao já processou isso em api_moxy_rpe_degraus,
+                # mas não expôs. Precisamos de um fetch adicional do canal.
+                # Para não duplicar, chamamos api_moxy_dados para o canal
+                # de velocidade apenas se modalidade não for Bike.
+                vel_por_bloco = {}  # bloco_indice → split_s_por_500m
+                if modalidade_s in ('Row', 'Ski', 'Run'):
+                    try:
+                        dd = api_moxy_dados(activity_id)
+                        dj = (dd[0].get_json() if isinstance(dd, tuple)
+                              else dd.get_json()) or {}
+                        if dj.get('status') == 'ok':
+                            tempo_s = dj.get('tempo') or []
+                            canais_s = dj.get('canais') or {}
+                            vel = canais_s.get('velocity_smooth') or []
+                            # média de velocity_smooth por intervalo de bloco
+                            def _vel_media(t0, t1):
+                                if not vel or not tempo_s:
+                                    return None
+                                vs = [vel[i] for i, t in enumerate(tempo_s)
+                                      if t0 <= t <= t1 and i < len(vel)
+                                      and vel[i] is not None and vel[i] > 0]
+                                return round(sum(vs) / len(vs), 3) if vs else None
+
+                            for b in blocos:
+                                t0 = float(b.get('t0_s') or 0)
+                                t1 = float(b.get('t1_s') or 0)
+                                v_ms = _vel_media(t0, t1)
+                                if v_ms is not None and v_ms > 0:
+                                    # velocity_smooth é em m/s
+                                    # split s/500m = 500 / v_ms
+                                    split_s = round(500.0 / v_ms, 1)
+                                    vel_por_bloco[b['bloco_indice']] = split_s
+                    except Exception:
+                        pass  # velocity_smooth indisponível — declarar ausência
+
+                # Classificar cada bloco na zona e agregar
+                por_zona = {'Z1': [], 'Z2': [], 'Z3': []}
+                for b in blocos:
+                    watts = b.get('watts_medio')
+                    if watts is None:
+                        continue
+                    z = _zona(float(watts), bp1_w, bp2_w)
+                    if z:
+                        por_zona[z].append({
+                            'watts': watts,
+                            'hr':    b.get('hr_medio'),
+                            'rf':    b.get('rf_medio'),
+                            'smo2':  b.get('smo2_medio'),
+                            'rpe':   b.get('rpe'),
+                            'split': vel_por_bloco.get(b['bloco_indice']),
+                        })
+
+                def _med(lst, k):
+                    vs = [x[k] for x in lst if x.get(k) is not None]
+                    return round(sum(vs) / len(vs), 1) if vs else None
+
+                campos_ausentes = []
+                resultado = {
+                    'dados_por_bloco': {'tem_dados_por_bloco': True},
+                }
+                for z, blocos_z in por_zona.items():
+                    if not blocos_z:
+                        for campo in ('potencia', 'hr', 'rf', 'smo2', 'rpe', 'split'):
+                            resultado.setdefault(f'{campo}_por_zona', {})[z] = None
+                        continue
+                    for campo, key in (('potencia','watts'),('hr','hr'),('rf','rf'),
+                                       ('smo2','smo2'),('rpe','rpe'),('split','split')):
+                        val = _med(blocos_z, key)
+                        resultado.setdefault(f'{campo}_por_zona', {})[z] = val
+                        if val is None:
+                            campos_ausentes.append(f'{campo} em {z}: indisponível')
+
+                # n_blocos por zona (diagnóstico)
+                resultado['n_blocos_por_zona'] = {
+                    z: len(bz) for z, bz in por_zona.items()}
+
+                return resultado, campos_ausentes
+
+            # ── Iterar sessões ─────────────────────────────────────────────
+            sessoes = []
+            for aid, data, bp1_w, bp2_w in rows:
+                if modo == 'completo':
+                    dados, ausentes = _processar_completo(
+                        aid, bp1_w, bp2_w, modalidade)
+                else:
+                    dados, ausentes = _processar_leve(aid, bp1_w, bp2_w)
+
+                entrada = {
+                    'activity_id': aid,
+                    'data': data,
+                    'bp1_w': bp1_w,
+                    'bp2_w': bp2_w,
+                    'campos_ausentes': ausentes or [],
+                }
+                if dados:
+                    entrada.update(dados)
+                    # Normalizar para o formato esperado por training.py
+                    # (campos planos → dicts por zona, conforme o modo leve)
+                    if modo == 'leve':
+                        # modo leve usa chaves planas; converter para dicts
+                        for campo in ('potencia', 'rpe'):
+                            entrada[f'{campo}_por_zona'] = {
+                                z: entrada.pop(f'{campo}_por_zona_{z}', None)
+                                for z in ('Z1', 'Z2', 'Z3')
+                            }
+                        # campos não calculados no modo leve
+                        for campo in ('hr', 'rf', 'smo2', 'split'):
+                            entrada[f'{campo}_por_zona'] = None
+                else:
+                    entrada['erro'] = True
+                    for campo in ('potencia','hr','rf','smo2','rpe','split'):
+                        entrada[f'{campo}_por_zona'] = None
+
+                sessoes.append(entrada)
+
+            return jsonify({
+                'status': 'ok',
+                'modalidade': modalidade,
+                'modo': modo,
+                'n_sessoes': len(sessoes),
+                'sessoes': sessoes,
+                'excluidas_sem_bp': excluidas,
+                'nota': (
+                    'sessões sem BP1/BP2 próprios foram excluídas. '
+                    'training.py é responsável por seleccionar sessões '
+                    'comparáveis e calcular referências individuais.'
+                ),
+            })
+
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    # ── activity_interval_rpe: GET ────────────────────────────────────────
+    @app.route('/api/activity/<path:activity_id>/interval_rpe')
+    def api_activity_interval_rpe_ler(activity_id):
+        """Devolve anotações de RPE por intervalo.
+
+        Fallback: se o ID da atividade mudou (reimportada na Intervals.icu),
+        procura em activity_snapshot uma atividade com o mesmo nome+data
+        e devolve o rpe_intervalos_json salvo, marcando fonte='snapshot_legado'.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp, json as _json
+            cn = ddp.get_conn()
+            rows = cn.execute(
+                "SELECT start_time, interval_type, elapsed_time, rpe, source, updated_at "
+                "FROM activity_interval_rpe WHERE activity_id=? ORDER BY start_time",
+                (aid,)).fetchall()
+            intervals = [
+                {'start_time': r[0], 'interval_type': r[1],
+                 'elapsed_time': r[2], 'rpe': r[3],
+                 'source': r[4], 'updated_at': r[5]}
+                for r in rows
+            ]
+
+            # ── Fallback quando o ID da atividade mudou ───────────────────
+            if not intervals:
+                try:
+                    import db as _db
+                    row_act = _db._exec(
+                        "SELECT name, start_local FROM activities WHERE id=?",
+                        (aid,), fetch='one')
+                    if row_act:
+                        nome_act = str(row_act[0] or '').strip()
+                        data_act = str(row_act[1] or '')[:10]
+                        snap = cn.execute(
+                            "SELECT activity_id, rpe_intervalos_json, icu_intervals_json "
+                            "FROM activity_snapshot "
+                            "WHERE nome=? AND data=? AND rpe_intervalos_json IS NOT NULL",
+                            (nome_act, data_act)).fetchone()
+                        if snap:
+                            old_aid, rpe_json_str, ivs_json_str = snap
+                            rpe_map = _json.loads(rpe_json_str or '{}')
+                            ivs     = _json.loads(ivs_json_str or '[]')
+                            snap_ivs = []
+                            for iv in ivs:
+                                st = iv.get('start_time')
+                                if st is None: continue
+                                rpe_val = rpe_map.get(str(st)) or rpe_map.get(str(float(st)))
+                                if rpe_val is not None and float(rpe_val) > 0:
+                                    snap_ivs.append({
+                                        'start_time': float(st),
+                                        'interval_type': iv.get('type'),
+                                        'elapsed_time': iv.get('elapsed_time'),
+                                        'rpe': float(rpe_val),
+                                        'source': 'snapshot_legado',
+                                        'updated_at': None,
+                                    })
+                            if snap_ivs:
+                                return jsonify({
+                                    'status': 'ok', 'activity_id': aid,
+                                    'intervals': snap_ivs, 'n': len(snap_ivs),
+                                    'fonte': 'snapshot_legado',
+                                    'aviso': (f'RPE recuperado do snapshot anterior '
+                                              f'(id anterior: {old_aid}). '
+                                              f'Salve novamente para guardar com o ID actual.'),
+                                })
+                except Exception:
+                    pass  # fallback silencioso — devolve lista vazia
+
+            import os as _os
+            _local_db = getattr(ddp, '_LOCAL_DB', '/tmp/perfil_historico.db')
+            return jsonify({'status': 'ok', 'activity_id': aid,
+                            'intervals': intervals, 'n': len(intervals),
+                            'fonte': 'activity_interval_rpe',
+                            'db_path': _local_db,
+                            'db_existe': _os.path.exists(_local_db)})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+    # ── activity_interval_rpe: POST (UPSERT) ─────────────────────────────
+    @app.route('/api/activity/<path:activity_id>/interval_rpe', methods=['POST'])
+    def api_activity_interval_rpe_gravar(activity_id):
+        """Grava (UPSERT) anotações de RPE por intervalo.
+
+        Corpo: {"intervals": [{"start_time": 901, "rpe": 6,
+                               "interval_type": "WORK",
+                               "elapsed_time": 360}, ...]}
+
+        rpe=0   → marca como apagado explicitamente (impede fallback legado)
+        rpe=1..10 → valor real
+        Não aceitar valores fora de 0..10.
+        Chave de identidade: (activity_id, start_time)
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            if not aid:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'activity_id em falta'}), 400
+            corpo = request.get_json(force=True, silent=True) or {}
+            intervals = corpo.get('intervals') or []
+            if not intervals:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'corpo sem intervalos'}), 400
+            # Validar
+            for iv in intervals:
+                st = iv.get('start_time')
+                rpe = iv.get('rpe')
+                if st is None:
+                    return jsonify({'status': 'erro',
+                                    'mensagem': 'start_time obrigatório'}), 400
+                if rpe is None or not isinstance(rpe, (int, float)):
+                    return jsonify({'status': 'erro',
+                                    'mensagem': f'rpe invalido: {rpe!r}'}), 400
+                try:
+                    _rpe_to_float(rpe)
+                except ValueError as _ve:
+                    return jsonify({'status': 'erro', 'mensagem': str(_ve)}), 400
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            n = _rpe_interval_upsert(cn, aid, intervals)
+            cn.commit()
+            # ── DIAGNÓSTICO: SELECT imediato na mesma conexão ───────────
+            import os as _os
+            _local_db = getattr(ddp, '_LOCAL_DB', '/tmp/perfil_historico.db')
+            _verif = cn.execute(
+                "SELECT activity_id, start_time, rpe, source, updated_at "
+                "FROM activity_interval_rpe WHERE activity_id=? ORDER BY start_time",
+                (aid,)).fetchall()
+            _verif_list = [{'activity_id': r[0], 'start_time': r[1],
+                            'rpe': r[2], 'source': r[3], 'updated_at': r[4]}
+                           for r in _verif]
+            # ── fim diagnóstico ──────────────────────────────────────────
+            # Espelhar para moxy_vst_historico.db (novo DB canônico)
+            try:
+                import drive_db_moxy_vst as _mvdb2
+                cn_mv2 = _mvdb2.get_moxy_vst_conn()
+                for iv in intervals:
+                    st = iv.get('start_time')
+                    rpe_iv = iv.get('rpe')
+                    if st is not None:
+                        source_iv = 'deleted' if rpe_iv == 0 else 'manual'
+                        rpe_real = None if rpe_iv == 0 else rpe_iv
+                        _mvdb2.upsert_rpe(
+                            cn_mv2, aid, float(st), rpe_real,
+                            end_time=None,
+                            interval_type=iv.get('interval_type'),
+                            elapsed_time=iv.get('elapsed_time'),
+                            source=source_iv)
+                cn_mv2.commit()
+                _mvdb2.upload()
+                cn_mv2.close()
+            except Exception as _e_mv2:
+                print(f'[activity_interval_rpe_gravar] moxy_vst_historico.db: {_e_mv2}')
+            ok_up, det_up = ddp.upload()
+            if not ok_up:
+                # Registar no log do servidor — o Drive não foi actualizado.
+                # O RPE está no /tmp local mas pode não estar disponível
+                # após reinício do container. O utilizador deve ser informado
+                # pelo badge de download que aparece no frontend.
+                print(f'[activity_interval_rpe][UPLOAD FALHOU] aid={aid} '
+                      f'n_gravados={n} detalhe={det_up}')
+            return jsonify({
+                'status': 'ok' if ok_up else 'gravado_sem_upload',
+                'activity_id': aid,
+                'n_gravados': n,
+                'upload_ok': ok_up,
+                'upload_detalhe': None if ok_up else det_up,
+                'db_path': _local_db,
+                'db_existe': _os.path.exists(_local_db),
+                'verificacao': _verif_list,
+            })
+        except ValueError as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e)}), 400
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    # ── gravar_analise: persiste explicitamente uma análise VST ──────────
+    @app.route('/api/moxy/vst/gravar_analise', methods=['POST'])
+    def api_moxy_vst_gravar_analise():
+        """Persiste explicitamente o resultado de uma análise VST.
+
+        Usa _vst_persistir() — a mesma função que /vst/comparar usa
+        internamente. Não duplica a lógica de persistência.
+
+        Difere de /vst/comparar em dois aspectos:
+          1. Não recalcula nada — usa o resultado_json já calculado pelo
+             frontend (passado no corpo).
+          2. Informa claramente se a persistência ou o upload falharam;
+             não usa try/except pass.
+
+        Corpo: {
+          "vst_activity_id": "...",
+          "moxy_activity_id": "...",
+          "resultado_json": { ... }   (output de /vst/comparar)
+        }
+        """
+        try:
+            corpo = request.get_json(force=True, silent=True) or {}
+            vid = str(corpo.get('vst_activity_id') or '').strip()
+            mid = str(corpo.get('moxy_activity_id') or '').strip()
+            rjson = corpo.get('resultado_json') or {}
+            modalidade = str(corpo.get('modalidade') or '').strip() or None
+            if not vid:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'vst_activity_id obrigatório'}), 400
+            if not mid:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'moxy_activity_id obrigatório'}), 400
+            if not rjson:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'resultado_json obrigatório'}), 400
+
+            import drive_db_perfil as ddp
+            import json
+            cn = ddp.get_conn()
+
+            # Extrair campos do resultado_json (mesmo formato de /vst/comparar)
+            ok, det = _vst_persistir(
+                cn, vid, mid,
+                rjson.get('comparacao_bp1') or {},
+                rjson.get('comparacao_bp2') or {},
+                rjson.get('comparacao_recovery_bp1') or {},
+                rjson.get('comparacao_recovery_bp2') or {},
+                rjson.get('limiter_bp1'),
+                rjson.get('limiter_bp2'),
+                rjson.get('hipotese_bp1'),
+                rjson.get('hipotese_bp2'),
+                rede_causal_d1=rjson.get('rede_causal'),
+                modalidade=modalidade,
+            )
+            if not ok:
+                return jsonify({'status': 'erro',
+                                'mensagem': f'falha na persistência: {det}'}), 500
+
+            ok_up, det_up = ddp.upload()
+
+            # ── Validação cruzada BPM MOXY × VST ─────────────────────────
+            # Executada AQUI porque a sessão VST acabou de ser usada
+            # (dados em cache) e os BPM já estão gravados em moxy_analises.
+            _bpm_val_resultado = None
+            try:
+                import nirs_breakpoints as _nbk_val
+                # Ler bp1_bpm/bp2_bpm de moxy_analises (gravados na aba Limiar)
+                _ma = cn.execute(
+                    "SELECT bp1_bpm, bp2_bpm FROM moxy_analises "
+                    "WHERE activity_id=? LIMIT 1", (mid,)).fetchone()
+                _bp1_bpm_val = _ma[0] if _ma else None
+                _bp2_bpm_val = _ma[1] if _ma else None
+                # Obter métricas dos intervalos BP1/BP2 via api_moxy_vst_analise
+                # (a sessão VST está em cache — acabou de ser usada)
+                _analise_resp = api_moxy_vst_analise(vid)
+                _analise = (_analise_resp[0].get_json()
+                            if isinstance(_analise_resp, tuple)
+                            else _analise_resp.get_json())
+                if (_analise or {}).get('status') == 'ok':
+                    _bp1_m = (_analise.get('bp1') or {}).get('metricas') or []
+                    _bp2_m = (_analise.get('bp2') or {}).get('metricas') or []
+                    _val = _nbk_val.validar_bpm_vst(
+                        _bp1_bpm_val, _bp2_bpm_val, _bp1_m, _bp2_m)
+                    _bpm_val_json = json.dumps(_val, ensure_ascii=False)
+                    try:
+                        cn.execute(
+                            "UPDATE vst_conjuntos "
+                            "SET bpm_vst_validacao_json=?, actualizado_em=? "
+                            "WHERE vst_activity_id=?",
+                            (_bpm_val_json,
+                             datetime.now().isoformat(timespec='seconds'), vid))
+                        cn.commit()
+                        ddp.upload()  # subir com o novo campo
+                        _bpm_val_resultado = _val
+                    except Exception as _e_col:
+                        print(f'[gravar_analise][bpm_val][col] {_e_col}')
+                else:
+                    # sessão VST sem streams → guardar nao_validado
+                    _val_empty = _nbk_val.validar_bpm_vst(
+                        _bp1_bpm_val, _bp2_bpm_val, [], [])
+                    try:
+                        cn.execute(
+                            "UPDATE vst_conjuntos "
+                            "SET bpm_vst_validacao_json=? "
+                            "WHERE vst_activity_id=?",
+                            (json.dumps(_val_empty, ensure_ascii=False), vid))
+                        cn.commit()
+                    except Exception:
+                        pass
+            except Exception as _e_val:
+                import traceback as _tb_val
+                print(f'[gravar_analise][bpm_val] {_e_val}\n{_tb_val.format_exc()}')
+
+            # ── Validação fisiológica complementar (HRVT + RPE) ─────────
+            _val_fisio_resultado = None
+            try:
+                # Ler bp1_bpm/bp2_bpm e bp1_w/bp2_w de moxy_analises
+                _ma2 = cn.execute(
+                    "SELECT bp1_bpm, bp2_bpm, bp1_w, bp2_w "
+                    "FROM moxy_analises WHERE activity_id=? LIMIT 1", (mid,)).fetchone()
+                # dfa1: obtido via api_moxy_limiares do mesmo mid
+                _lim_resp = api_moxy_limiares(mid)
+                _lim = (_lim_resp[0].get_json()
+                        if isinstance(_lim_resp, tuple)
+                        else _lim_resp.get_json())
+                if (_lim or {}).get('status') == 'ok':
+                    _dfa1 = _lim.get('dfa1') or {}
+                    _bp1w = (_ma2[2] if _ma2 else None) or _lim.get('bp_moxy', {}).get('bp1_w')
+                    _bp2w = (_ma2[3] if _ma2 else None) or _lim.get('bp_moxy', {}).get('bp2_w')
+                    _bp1bpm = _ma2[0] if _ma2 else None
+                    _bp2bpm = _ma2[1] if _ma2 else None
+                    # Curva watts→RPE dos blocos MOXY (de moxy_rpe, não blocos_usados)
+                    _blocos_moxy = _lim.get('blocos_usados') or []
+                    _rpe_moxy_rows = cn.execute(
+                        "SELECT bloco_indice, watts_medio, rpe FROM moxy_rpe "
+                        "WHERE activity_id=? ORDER BY bloco_indice",
+                        (mid,)).fetchall()
+                    _rpe_moxy_idx = {int(r[0]): (r[1], r[2]) for r in _rpe_moxy_rows}
+                    # Montar curva W→RPE com RPE real dos blocos MOXY
+                    _curva_rpe = []
+                    for _bi, _bm in enumerate(_blocos_moxy):
+                        _bw = _bm.get('watts')
+                        if _bw is None:
+                            continue
+                        # Preferir moxy_rpe; fallback None se não gravado
+                        _br = _rpe_moxy_idx.get(_bi, (None, None))[1]
+                        if _br is not None:
+                            _curva_rpe.append((_bw, _br))
+                    # Intervalos BP1/BP2 do Dia 2 (já calculados acima)
+                    _bp1_m2 = (_analise.get('bp1') or {}).get('metricas') or []
+                    _bp2_m2 = (_analise.get('bp2') or {}).get('metricas') or []
+                    # RPE dos intervalos VST por grupo (de activity_interval_rpe)
+                    # Os intervalos têm t0 em metricas: buscar por start_time=t0
+                    def _rpe_lista_grupo(metricas_lista):
+                        rpes = []
+                        for _m in metricas_lista:
+                            _t0 = (_m.get('t0') or _m.get('t0_s'))
+                            if _t0 is None:
+                                rpes.append(None)
+                                continue
+                            _rv, _rf = _rpe_interval_resolver(cn, vid, float(_t0))
+                            if _rv is None:
+                                # Fallback: moxy_rpe por t0_s
+                                for _row in _rpe_moxy_rows:
+                                    if _row[1] is not None and abs(float(_row[1]) - float(_t0)) <= 1:
+                                        _rv = _row[2]; break
+                            rpes.append(_rv)
+                        return rpes
+                    _rpe_vst_bp1 = _rpe_lista_grupo(_bp1_m2)
+                    _rpe_vst_bp2 = _rpe_lista_grupo(_bp2_m2)
+                    _val_fisio = _nbk_val.validar_fisiologica_vst(
+                        _bp1w, _bp2w,
+                        _bp1bpm, _bp2bpm,
+                        _dfa1,
+                        _bp1_m2, _bp2_m2,
+                        curva_moxy_watts_rpe=_curva_rpe if _curva_rpe else None,
+                        rpe_vst_bp1=_rpe_vst_bp1,
+                        rpe_vst_bp2=_rpe_vst_bp2,
+                    )
+                    _val_fisio_json = json.dumps(_val_fisio, ensure_ascii=False)
+                    _val_fisio_resultado = _val_fisio
+                    try:
+                        cn.execute(
+                            "UPDATE vst_conjuntos "
+                            "SET validacao_fisiologica_json=? "
+                            "WHERE vst_activity_id=?",
+                            (_val_fisio_json, vid))
+                        cn.commit()
+                        ddp.upload()
+                    except Exception as _e_col2:
+                        print(f'[gravar_analise][val_fisio][col] {_e_col2}')
+            except Exception as _e_fisio:
+                import traceback as _tb_f
+                print(f'[gravar_analise][val_fisio] {_e_fisio}\n{_tb_f.format_exc()}')
+
+            return jsonify({
+                'status': 'ok' if ok_up else 'gravado_sem_upload',
+                'vst_activity_id': vid,
+                'moxy_activity_id': mid,
+                'upload_ok': ok_up,
+                'upload_detalhe': None if ok_up else det_up,
+                'bpm_vst_validacao': _bpm_val_resultado,
+                'validacao_fisiologica': _val_fisio_resultado,
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/rpe/<path:activity_id>', methods=['POST'])
+    def api_moxy_rpe_gravar(activity_id):
+        """Grava (ou substitui) o RPE de cada bloco enviado.
+
+        Corpo: {"blocos": [{"bloco_indice":0,"watts_medio":170,
+                            "t0_s":0,"t1_s":180,"rpe":7}, ...]}
+
+        INSERT OR REPLACE pela chave (activity_id, bloco_indice): gravar
+        outra vez sobrepõe o valor antigo, nunca acumula.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            corpo = request.get_json(force=True, silent=True) or {}
+            blocos = corpo.get('blocos') or []
+            if not blocos:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'sem blocos para gravar'}), 200
+
+            for b in blocos:
+                rpe = b.get('rpe')
+                if not isinstance(rpe, (int, float)) or not (1 <= rpe <= 10):
+                    return jsonify({
+                        'status': 'erro',
+                        'mensagem': (f'RPE inválido no bloco '
+                                     f'{b.get("bloco_indice")}: {rpe!r} — '
+                                     'tem de ser 1 a 10')}), 200
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            agora = datetime.now().isoformat(timespec='seconds')
+            for b in blocos:
+                cn.execute(
+                    "INSERT OR REPLACE INTO moxy_rpe "
+                    "(activity_id, bloco_indice, watts_medio, t0_s, t1_s, "
+                    "rpe, gravado_em) VALUES (?,?,?,?,?,?,?)",
+                    (aid, int(b['bloco_indice']), b.get('watts_medio'),
+                     b.get('t0_s'), b.get('t1_s'), int(b['rpe']), agora))
+                # Espelhar para activity_interval_rpe (nova fonte canônica)
+                # para que _rpe_interval_resolver o encontre sem fallback.
+                if b.get('t0_s') is not None:
+                    _rpe_interval_upsert(cn, aid, [{
+                        'start_time':   float(b['t0_s']),
+                        'interval_type': 'WORK',
+                        'elapsed_time': (float(b['t1_s']) - float(b['t0_s'])
+                                         if b.get('t1_s') is not None else None),
+                        'rpe': int(b['rpe']),
+                    }])
+            cn.commit()
+            # Espelhar também para o novo moxy_vst_historico.db
+            try:
+                import drive_db_moxy_vst as _mvdb
+                cn_mv = _mvdb.get_moxy_vst_conn()
+                for b in blocos:
+                    if b.get('t0_s') is not None:
+                        _mvdb.upsert_rpe(cn_mv, aid, float(b['t0_s']),
+                                         int(b['rpe']),
+                                         end_time=float(b['t1_s']) if b.get('t1_s') else None,
+                                         interval_type='WORK',
+                                         elapsed_time=(float(b['t1_s']) - float(b['t0_s'])
+                                                       if b.get('t1_s') else None))
+                cn_mv.commit()
+                _mvdb.upload()
+                cn_mv.close()
+            except Exception as _e_mv:
+                print(f'[moxy_rpe_gravar] moxy_vst_historico.db: {_e_mv}')
+            ok_up, det_up = ddp.upload()
+            return jsonify({'status': 'ok' if ok_up else 'gravado_sem_upload',
+                            'n_gravados': len(blocos), 'gravado_em': agora,
+                            'upload_detalhe': None if ok_up else det_up})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/rpe/<path:vst_activity_id>')
+    def api_moxy_vst_rpe_ver(vst_activity_id):
+        """RPE do Dia 2 (VST) — WORKs de BP1 e BP2 com o RPE já gravado.
+
+        Resolução de RPE (nova arquitectura):
+          1. activity_interval_rpe por (activity_id, start_time=bloco.t0)
+             rpe=0  → campo vazio, sem fallback
+             rpe=1..10 → valor real
+          2. moxy_rpe por bloco_indice (legado) — só quando sem linha nova
+          3. sem nenhum → None
+        """
+        try:
+            vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
+            dd = api_moxy_vst_analise(vid)
+            d = (dd[0].get_json() if isinstance(dd, tuple) else dd.get_json()) or {}
+            if d.get('status') != 'ok':
+                return jsonify({'status': 'erro',
+                                'mensagem': d.get('mensagem') or 'sem análise VST'}), 200
+
+            trabalho = []
+            for grupo in ('bp1', 'bp2'):
+                for b in ((d.get(grupo) or {}).get('blocos') or []):
+                    trabalho.append({'grupo': grupo, 'bloco': b})
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            # Fallback legado (moxy_rpe por índice)
+            linhas = cn.execute(
+                "SELECT bloco_indice, rpe FROM moxy_rpe "
+                "WHERE activity_id=?", (vid,)).fetchall()
+            rpe_legacy = {int(r[0]): r[1] for r in linhas}
+
+            fora = []
+            contagem = {'bp1': 0, 'bp2': 0}
+            for i, item in enumerate(trabalho):
+                b, grupo = item['bloco'], item['grupo']
+                contagem[grupo] += 1
+                t0 = float(b['t0'])
+                # Resolver via activity_interval_rpe primeiro
+                rpe_val, rpe_fonte = _rpe_interval_resolver(cn, vid, t0)
+                if rpe_fonte == 'absent':
+                    rpe_val = rpe_legacy.get(i)
+                    rpe_fonte = 'legacy' if rpe_val is not None else 'absent'
+                fora.append({
+                    'bloco_indice': i, 'grupo': grupo, 'numero': contagem[grupo],
+                    'watts_medio': round(b.get('watts_medio_da_api') or b.get('watts_medio') or 0),
+                    't0_s': round(t0), 't1_s': round(b['t1']),
+                    'rpe': rpe_val,
+                    'rpe_fonte': rpe_fonte,
+                })
+            return jsonify({
+                'status': 'ok', 'activity_id': vid,
+                'blocos': fora,
+                'todos_gravados': bool(fora) and all(
+                    b['rpe'] is not None for b in fora),
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/rpe/<path:vst_activity_id>', methods=['POST'])
+    def api_moxy_vst_rpe_gravar(vst_activity_id):
+        """Grava (ou substitui) o RPE de cada WORK do VST -- MESMA tabela
+        e MESMO INSERT OR REPLACE por (activity_id, bloco_indice) já
+        usados pela Principal; gravar outra vez sobrepõe, nunca duplica.
+        """
+        try:
+            vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
+            corpo = request.get_json(force=True, silent=True) or {}
+            blocos = corpo.get('blocos') or []
+            if not blocos:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'sem blocos para gravar'}), 200
+            for b in blocos:
+                rpe = b.get('rpe')
+                if not isinstance(rpe, (int, float)) or not (1 <= rpe <= 10):
+                    return jsonify({
+                        'status': 'erro',
+                        'mensagem': (f'RPE inválido no bloco '
+                                     f'{b.get("bloco_indice")}: {rpe!r} — '
+                                     'tem de ser 1 a 10')}), 200
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            agora = datetime.now().isoformat(timespec='seconds')
+            for b in blocos:
+                cn.execute(
+                    "INSERT OR REPLACE INTO moxy_rpe "
+                    "(activity_id, bloco_indice, watts_medio, t0_s, t1_s, "
+                    "rpe, gravado_em) VALUES (?,?,?,?,?,?,?)",
+                    (vid, int(b['bloco_indice']), b.get('watts_medio'),
+                     b.get('t0_s'), b.get('t1_s'), int(b['rpe']), agora))
+                # Gravar também em activity_interval_rpe (fonte primária de leitura),
+                # usando t0_s como start_time. A leitura (_rpe_interval_resolver)
+                # procura aqui primeiro; moxy_rpe continua como fallback.
+                if b.get('t0_s') is not None:
+                    _rpe_interval_upsert(cn, vid, [{
+                        'start_time':  float(b['t0_s']),
+                        'interval_type': 'WORK',
+                        'elapsed_time': (float(b['t1_s']) - float(b['t0_s'])
+                                         if b.get('t1_s') is not None else None),
+                        'rpe': int(b['rpe']),
+                    }])
+            cn.commit()
+            ok_up, det_up = ddp.upload()
+            return jsonify({'status': 'ok' if ok_up else 'gravado_sem_upload',
+                            'n_gravados': len(blocos), 'gravado_em': agora,
+                            'upload_detalhe': None if ok_up else det_up})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+
+        def _has_real_rpe(vf_obj):
+            """Retorna True se validacao_fisiologica contém pelo menos um RPE
+            real (1..10) nos intervalos de BP1 ou BP2.
+
+            Usado para decidir se um resultado persistido possui informação de
+            RPE que vale a pena preservar contra uma releitura que retornou
+            apenas ausências temporárias.
+            """
+            if not vf_obj:
+                return False
+            for bp_key in ('bp1', 'bp2'):
+                bp = vf_obj.get(bp_key) or {}
+                for iv in (bp.get('intervalos') or []):
+                    rpe = iv.get('rpe')
+                    if rpe is not None and 1 <= rpe <= 10:
+                        return True
+            return False
+
+    @app.route('/api/moxy/vst/resultado/<path:vst_activity_id>')
+    def api_moxy_vst_resultado(vst_activity_id):
+        """Resultado já persistido da comparação VST — lê directamente o
+        resultado_json de vst_conjuntos sem recalcular nada.
+
+        Devolve o mesmo objecto que /vst/comparar, mas instantaneamente,
+        porque vem da BD. Se não houver resultado gravado (sessão nova ou
+        nunca comparada), devolve status='sem_resultado' para que o
+        frontend saiba que precisa de chamar /vst/comparar.
+
+        Inclui também os campos de moxy_rpe mais recentes (RPE já gravado)
+        para que o dashboard os possa mostrar sem fetch adicional.
+        """
+        try:
+            vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT moxy_activity_id, resultado_json, analisado_em, "
+                "validacao_fisiologica_json, bpm_vst_validacao_json "
+                "FROM vst_conjuntos WHERE vst_activity_id=?",
+                (vid,)).fetchone()
+            if not r:
+                return jsonify({'status': 'sem_resultado',
+                                'mensagem': 'sem conjunto salvo para esta sessão VST'})
+            moxy_id, rjson, analisado_em, val_fisio_json, bpm_vst_json = r
+            if not rjson:
+                return jsonify({'status': 'sem_resultado',
+                                'mensagem': 'conjunto existe mas análise ainda não foi gravada'})
+            resultado = json.loads(rjson)
+            resultado['status'] = 'ok'
+            resultado['dia1_activity_id'] = moxy_id
+            resultado['dia2_activity_id'] = vid
+            resultado['vst_activity_id'] = vid
+            resultado['analisado_em'] = analisado_em
+            resultado['fonte'] = 'cache'
+            # Incluir bpm_vst_validacao se existir no banco
+            if bpm_vst_json:
+                resultado['bpm_vst_validacao'] = json.loads(bpm_vst_json)
+
+            # ── Actualizar rede_causal em runtime ──────────────────────────
+            # O cache pode ter rede_causal de uma sessão anterior. A rede
+            # da sessão MOXY actual é recalculada aqui para garantir que
+            # a Verificação mostra o sistema/limitador ACTUAL, nunca um
+            # resultado obsoleto de comparações anteriores.
+            try:
+                _rd_live = api_moxy_rede(moxy_id)
+                _rd_live = (_rd_live[0].get_json() if isinstance(_rd_live, tuple)
+                            else _rd_live.get_json())
+                if _rd_live and _rd_live.get('status') == 'ok':
+                    resultado['rede_causal'] = {
+                        'status': 'ok',
+                        'limitador': _rd_live.get('limitador'),
+                        'canais_usados': _rd_live.get('canais_usados'),
+                        'motivo_ausencia': None,
+                    }
+                else:
+                    resultado['rede_causal'] = {
+                        'status': 'sem_dados',
+                        'limitador': None,
+                        'motivo_ausencia': (_rd_live or {}).get('mensagem') or 'sem dados',
+                    }
+            except Exception as _e_rc:
+                resultado['rede_causal'] = {
+                    'status': 'erro', 'limitador': None,
+                    'motivo_ausencia': f'{type(_e_rc).__name__}: {_e_rc}',
+                }
+
+            # ── Recalcular comparação RPE em runtime ───────────────────────
+            # O cache pode ter comparacao_rpe_bp1/bp2 = DADOS INSUFICIENTES
+            # gravado quando o RPE ainda não existia. Os RPEs podem ter sido
+            # gravados entretanto em activity_interval_rpe ou moxy_rpe.
+            # Recalcular a partir dos RPEs actuais sem tocar na fisiologia.
+            try:
+                import vst_verificacao as _vst_live
+
+                # Carregar legado moxy_rpe para fallback
+                _rpe_d1_leg_idx = {int(r[0]): r[2] for r in cn.execute(
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? ORDER BY bloco_indice", (moxy_id,)).fetchall()}
+                _rpe_d1_leg_t0  = {float(r[1]): r[2] for r in cn.execute(
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? AND t0_s IS NOT NULL", (moxy_id,)).fetchall()}
+                _rpe_d2_leg_idx = {int(r[0]): r[2] for r in cn.execute(
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? ORDER BY bloco_indice", (vid,)).fetchall()}
+                _rpe_d2_leg_t0  = {float(r[1]): r[2] for r in cn.execute(
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? AND t0_s IS NOT NULL", (vid,)).fetchall()}
+
+                def _res_rpe(aid, t0_val, idx_fb, leg_idx, leg_t0):
+                    val, fonte = _rpe_interval_resolver(cn, aid, t0_val)
+                    if fonte in ('new', 'deleted'):
+                        return val
+                    for t0_l, rpe_l in (leg_t0 or {}).items():
+                        if abs(t0_l - t0_val) <= 1:
+                            return rpe_l
+                    return (leg_idx or {}).get(idx_fb)
+
+                # Reconstruir blocos Day1 a partir do cache (dia1_* já gravados)
+                # Usar os blocos do comparacao_bp1/bp2 que têm potência → t0 implícito
+                # A abordagem mais segura: re-resolver pelo rpe_degraus do Day1
+                _rd1 = api_moxy_rpe_degraus(moxy_id)
+                _rd1 = (_rd1[0].get_json() if isinstance(_rd1, tuple)
+                        else _rd1.get_json()) or {}
+                _ons1_live = [b for b in (_rd1.get('blocos') or [])
+                              if b.get('watts_medio', 0) > 0]
+
+                # Obter BP1/BP2 do resultado gravado
+                _bp1w = resultado.get('dia1_bp1_w') or resultado.get('dia2_bp1_w')
+                _bp2w = resultado.get('dia1_bp2_w') or resultado.get('dia2_bp2_w')
+                # Fallback: usar limiares_consenso se disponível
+                if not _bp1w or not _bp2w:
+                    _lim_r = api_moxy_limiares(moxy_id)
+                    _lim_r = (_lim_r[0].get_json() if isinstance(_lim_r, tuple)
+                              else _lim_r.get_json()) or {}
+                    _lc = (_lim_r.get('limiares_consenso') or {})
+                    _bp1w = (_lc.get('primeiro') or {}).get('mediana') or _bp1w
+                    _bp2w = (_lc.get('segundo') or {}).get('mediana') or _bp2w
+
+                def _mais_proximo(alvo, blocos):
+                    if alvo is None or not blocos:
+                        return None
+                    return min(blocos, key=lambda b: abs(
+                        (b.get('watts_medio') or 1e9) - alvo))
+
+                _b1_bp1 = _mais_proximo(_bp1w, _ons1_live)
+                _b1_bp2 = _mais_proximo(_bp2w, _ons1_live)
+
+                def _idx_live(bloco):
+                    if not bloco:
+                        return 0
+                    t0 = float(bloco.get('t0_s', 0))
+                    for i, b in enumerate(_ons1_live):
+                        if abs(float(b.get('t0_s', -999)) - t0) <= 0.5:
+                            return i
+                    return 0
+
+                _i_bp1 = _idx_live(_b1_bp1)
+                _i_bp2 = _idx_live(_b1_bp2)
+                _t0_b1 = float((_b1_bp1 or {}).get('t0_s', -1))
+                _t0_b2 = float((_b1_bp2 or {}).get('t0_s', -1))
+                _t0_base = float(_ons1_live[0]['t0_s']) if _ons1_live else -1
+
+                _rpe_d1_base = _res_rpe(moxy_id, _t0_base, 0,
+                                        _rpe_d1_leg_idx, _rpe_d1_leg_t0)
+                _rpe_d1_bp1  = _res_rpe(moxy_id, _t0_b1, _i_bp1,
+                                        _rpe_d1_leg_idx, _rpe_d1_leg_t0)
+                _rpe_d1_bp2  = _res_rpe(moxy_id, _t0_b2, _i_bp2,
+                                        _rpe_d1_leg_idx, _rpe_d1_leg_t0)
+
+                # Day2: obter WORKs do VST
+                _rd2 = api_moxy_vst_rpe_ver(vid)
+                _rd2 = (_rd2[0].get_json() if isinstance(_rd2, tuple)
+                        else _rd2.get_json()) or {}
+                _work_d2 = _rd2.get('blocos') or []
+
+                # Separar por grupo bp1/bp2
+                _rpe_d2_bp1 = [b['rpe'] for b in _work_d2 if b.get('grupo') == 'bp1']
+                _rpe_d2_bp2 = [b['rpe'] for b in _work_d2 if b.get('grupo') == 'bp2']
+
+                _comp_bp1 = _vst_live.comparar_rpe(_rpe_d1_base, _rpe_d1_bp1, _rpe_d2_bp1)
+                _comp_bp2 = _vst_live.comparar_rpe(_rpe_d1_base, _rpe_d1_bp2, _rpe_d2_bp2)
+
+                # Só sobrescrever se o recálculo produziu resultado real
+                if _comp_bp1.get('status') != 'DADOS INSUFICIENTES':
+                    resultado['comparacao_rpe_bp1'] = _comp_bp1
+                if _comp_bp2.get('status') != 'DADOS INSUFICIENTES':
+                    resultado['comparacao_rpe_bp2'] = _comp_bp2
+
+                print(f'[vst_resultado][RPE live] bp1={_comp_bp1.get("status")} '
+                      f'bp2={_comp_bp2.get("status")} '
+                      f'd1_base={_rpe_d1_base} d1_bp1={_rpe_d1_bp1} '
+                      f'd2_bp1={_rpe_d2_bp1} d2_bp2={_rpe_d2_bp2}')
+            except Exception as _e_rpe:
+                import traceback as _tb_rpe
+                print(f'[vst_resultado][RPE live] AVISO: {_e_rpe}\n{_tb_rpe.format_exc()}')
+                # Não sobrescrever: manter o que está no cache
+
+            # ── Recuperar validação fisiológica persistida ─────────────
+            # Se a versão ou hash estiver desactualizado, recalcular usando
+            # _fisio_calcular_e_persistir (função central) e persistir.
+            # O GET pode disparar o recálculo porque _fisio_calcular_e_persistir
+            # é a única função responsável por isto — evitando duplicação.
+            _val_fisio_obj = None
+            try:
+                if val_fisio_json:
+                    _vf_parsed = json.loads(val_fisio_json)
+                    _vf_version = _vf_parsed.get('analysis_version')
+                    _vf_hash    = _vf_parsed.get('data_hash')
+                    # Verificar versão
+                    _outdated = (_vf_version != FISIO_ANALYSIS_VERSION)
+                    if not _outdated:
+                        # Verificar hash — recalcular hash actual para comparar
+                        try:
+                            # Obter dados actuais para hash
+                            _lim_r = api_moxy_limiares(moxy_id)
+                            _lim_r = (_lim_r[0].get_json() if isinstance(_lim_r, tuple)
+                                      else _lim_r.get_json()) or {}
+                            _lc_r = (_lim_r.get('limiares_consenso') or {})
+                            _bp1w_r = ((_lim_r.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
+                                       or (_lc_r.get('primeiro') or {}).get('mediana'))
+                            _bp2w_r = ((_lim_r.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
+                                       or (_lc_r.get('segundo') or {}).get('mediana'))
+                            _analise_r = api_moxy_vst_analise(vid)
+                            _analise_r = (_analise_r[0].get_json() if isinstance(_analise_r, tuple)
+                                          else _analise_r.get_json()) or {}
+                            _bp1_mr = (_analise_r.get('bp1') or {}).get('metricas') or []
+                            _bp2_mr = (_analise_r.get('bp2') or {}).get('metricas') or []
+                            def _rpe_cr(metricas_lista, aid):
+                                rpes = []
+                                for _m in metricas_lista:
+                                    _t0 = _m.get('t0') or _m.get('t0_s')
+                                    _rv, _ = _rpe_interval_resolver(cn, aid, _t0) if _t0 is not None else (None, None)
+                                    rpes.append(_rv)
+                                return rpes
+                            _rpe_r1 = _rpe_cr(_bp1_mr, vid)
+                            _rpe_r2 = _rpe_cr(_bp2_mr, vid)
+                            _hash_actual = _fisio_hash(
+                                moxy_id, vid, _bp1w_r, _bp2w_r,
+                                _bp1_mr, _bp2_mr, _rpe_r1, _rpe_r2)
+                            _outdated = (_vf_hash != _hash_actual)
+                        except Exception:
+                            _outdated = False  # erro no hash → não forçar recálculo
+                    if _outdated:
+                        print(f'[vst_resultado] validacao_fisiologica outdated '
+                              f'(version={_vf_version} vs {FISIO_ANALYSIS_VERSION}, '
+                              f'hash diferente={_vf_hash != _hash_actual if "_hash_actual" in dir() else "?"}) '
+                              f'→ recalcular')
+                        try:
+                            _lim_od = api_moxy_limiares(moxy_id)
+                            _lim_od = (_lim_od[0].get_json() if isinstance(_lim_od, tuple)
+                                       else _lim_od.get_json()) or {}
+                            _lc_od = (_lim_od.get('limiares_consenso') or {})
+                            _bp1w_od = ((_lim_od.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
+                                        or (_lc_od.get('primeiro') or {}).get('mediana'))
+                            _bp2w_od = ((_lim_od.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
+                                        or (_lc_od.get('segundo') or {}).get('mediana'))
+                            _bp1bpm_od = (_lim_od.get('bp_moxy_sem_restricao') or {}).get('bp1_bpm')
+                            _bp2bpm_od = (_lim_od.get('bp_moxy_sem_restricao') or {}).get('bp2_bpm')
+                            _dfa_od  = _lim_od.get('dfa1') or {}
+                            _analise_od = api_moxy_vst_analise(vid)
+                            _analise_od = (_analise_od[0].get_json() if isinstance(_analise_od, tuple)
+                                           else _analise_od.get_json()) or {}
+                            _bp1_mod = (_analise_od.get('bp1') or {}).get('metricas') or []
+                            _bp2_mod = (_analise_od.get('bp2') or {}).get('metricas') or []
+                            # Se a API VST não retornou métricas (sessão antiga, API indisponível),
+                            # não persistir um resultado vazio — usar o JSON já gravado no banco.
+                            if not _bp1_mod and not _bp2_mod:
+                                print('[vst_resultado] outdated: sem métricas VST da API'
+                                      ' → manter JSON existente sem recalcular')
+                                _val_fisio_obj = _vf_parsed
+                            else:
+                                _rpe_od1 = [(_rpe_interval_resolver(cn, vid, _m.get('t0') or _m.get('t0_s'))[0]
+                                             if (_m.get('t0') or _m.get('t0_s')) is not None else None)
+                                            for _m in _bp1_mod]
+                                _rpe_od2 = [(_rpe_interval_resolver(cn, vid, _m.get('t0') or _m.get('t0_s'))[0]
+                                             if (_m.get('t0') or _m.get('t0_s')) is not None else None)
+                                            for _m in _bp2_mod]
+
+                                # ── Protecção contra perda de RPE por dessincronização ──────────────
+                                # Se o banco/container actual não devolveu nenhum RPE real (todos
+                                # None / ausentes) MAS o JSON já persistido possui RPE reais
+                                # (1..10), não substituir a análise mais rica pela mais pobre.
+                                # Causa: upload falhou numa sessão anterior → container novo lê
+                                # Drive sem activity_interval_rpe → hash diverge → recálculo sem
+                                # RPE sobrescreveria um resultado bom.
+                                _rpe_od1_real = [r for r in _rpe_od1 if r is not None]
+                                _rpe_od2_real = [r for r in _rpe_od2 if r is not None]
+                                _persistido_tem_rpe = _has_real_rpe(_vf_parsed)
+                                _novo_tem_rpe       = bool(_rpe_od1_real or _rpe_od2_real)
+
+                                if _persistido_tem_rpe and not _novo_tem_rpe:
+                                    # Não sobrescrever análise VST persistida com resultado sem RPE
+                                    # quando a fonte actual não disponibilizou os RPE.
+                                    print(
+                                        f'[VST RPE PRESERVE] vid={vid} '
+                                        f'persisted_rpe_bp1='
+                                        f'{[iv.get("rpe") for iv in (_vf_parsed.get("bp1") or {}).get("intervalos", [])]} '
+                                        f'persisted_rpe_bp2='
+                                        f'{[iv.get("rpe") for iv in (_vf_parsed.get("bp2") or {}).get("intervalos", [])]} '
+                                        f'current_rpe_bp1={_rpe_od1} current_rpe_bp2={_rpe_od2} '
+                                        f'action=KEEP_PERSISTED_ANALYSIS'
+                                    )
+                                    _val_fisio_obj = _vf_parsed
+                                else:
+                                    # Tem RPE novo (ou análise anterior também não tinha) → recalcular.
+                                    print(
+                                        f'[VST RPE RECALCULATE] vid={vid} '
+                                        f'current_rpe_bp1={_rpe_od1} current_rpe_bp2={_rpe_od2} '
+                                        f'action=RECALCULATE'
+                                    )
+                                    # Curva watts→RPE do MOXY (Dia 1) para rpe_esperado_potencia.
+                                    # Mesmo mecanismo que /vst/comparar usa.
+                                    _curva_od = []
+                                    try:
+                                        _rd_od = api_moxy_rpe_degraus(moxy_id)
+                                        _rd_od = (_rd_od[0].get_json() if isinstance(_rd_od, tuple)
+                                                  else _rd_od.get_json()) or {}
+                                        for _b_od in (_rd_od.get('blocos') or []):
+                                            _t0_b_od = _b_od.get('t0')
+                                            _w_b_od  = (_b_od.get('watts') or _b_od.get('watts_medio_da_api'))
+                                            if _t0_b_od is not None and _w_b_od is not None:
+                                                _rv_b_od, _ = _rpe_interval_resolver(cn, moxy_id, float(_t0_b_od))
+                                                if _rv_b_od is not None:
+                                                    _curva_od.append((_w_b_od, _rv_b_od))
+                                    except Exception:
+                                        pass
+                                    _vf_new, _ = _fisio_calcular_e_persistir(
+                                        cn, moxy_id, vid,
+                                        _bp1w_od, _bp2w_od, _bp1bpm_od, _bp2bpm_od,
+                                        _dfa_od, _bp1_mod, _bp2_mod,
+                                        curva_rpe=_curva_od if _curva_od else None,
+                                        rpe_vst_bp1=_rpe_od1, rpe_vst_bp2=_rpe_od2)
+                                    # GET não faz upload — ver regra em _fisio_calcular_e_persistir
+                                    if _vf_new:
+                                        _val_fisio_obj = _vf_new
+                        except Exception as _e_od:
+                            import traceback as _tb_od
+                            print(f'[vst_resultado] recálculo outdated falhou: {_e_od}\n'
+                                  f'{_tb_od.format_exc()}')
+                            _val_fisio_obj = _vf_parsed  # usar o antigo
+                    else:
+                        _val_fisio_obj = _vf_parsed
+                elif val_fisio_json is None:
+                    # Sem análise fisiológica gravada — calcular agora automaticamente.
+                    # bpm_vst_validacao_json também será persistido por _fisio_calcular_e_persistir.
+                    print(f'[vst_resultado] validacao_fisiologica_json ausente → calcular')
+                    try:
+                        _lim_new = api_moxy_limiares(moxy_id)
+                        _lim_new = (_lim_new[0].get_json() if isinstance(_lim_new, tuple)
+                                    else _lim_new.get_json()) or {}
+                        _lc_new  = (_lim_new.get('limiares_consenso') or {})
+                        _bp1w_new = ((_lim_new.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
+                                     or (_lc_new.get('primeiro') or {}).get('mediana'))
+                        _bp2w_new = ((_lim_new.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
+                                     or (_lc_new.get('segundo') or {}).get('mediana'))
+                        _bp1bpm_new = (_lim_new.get('bp_moxy_sem_restricao') or {}).get('bp1_bpm')
+                        _bp2bpm_new = (_lim_new.get('bp_moxy_sem_restricao') or {}).get('bp2_bpm')
+                        _dfa_new = _lim_new.get('dfa1') or {}
+                        _anal_new = api_moxy_vst_analise(vid)
+                        _anal_new = (_anal_new[0].get_json() if isinstance(_anal_new, tuple)
+                                     else _anal_new.get_json()) or {}
+                        _bp1_mn = (_anal_new.get('bp1') or {}).get('metricas') or []
+                        _bp2_mn = (_anal_new.get('bp2') or {}).get('metricas') or []
+                        _rpe_n1 = [(_rpe_interval_resolver(cn, vid, _m.get('t0') or _m.get('t0_s'))[0]
+                                    if (_m.get('t0') or _m.get('t0_s')) is not None else None)
+                                   for _m in _bp1_mn]
+                        _rpe_n2 = [(_rpe_interval_resolver(cn, vid, _m.get('t0') or _m.get('t0_s'))[0]
+                                    if (_m.get('t0') or _m.get('t0_s')) is not None else None)
+                                   for _m in _bp2_mn]
+
+                        # Curva watts→RPE do MOXY (Dia 1) para rpe_esperado_potencia.
+                        _curva_nn = []
+                        try:
+                            _rd_nn = api_moxy_rpe_degraus(moxy_id)
+                            _rd_nn = (_rd_nn[0].get_json() if isinstance(_rd_nn, tuple)
+                                      else _rd_nn.get_json()) or {}
+                            for _b_nn in (_rd_nn.get('blocos') or []):
+                                _t0_b_nn = _b_nn.get('t0')
+                                _w_b_nn  = (_b_nn.get('watts') or _b_nn.get('watts_medio_da_api'))
+                                if _t0_b_nn is not None and _w_b_nn is not None:
+                                    _rv_b_nn, _ = _rpe_interval_resolver(cn, moxy_id, float(_t0_b_nn))
+                                    if _rv_b_nn is not None:
+                                        _curva_nn.append((_w_b_nn, _rv_b_nn))
+                        except Exception:
+                            pass
+                        _vf_novo, _ = _fisio_calcular_e_persistir(
+                            cn, moxy_id, vid,
+                            _bp1w_new, _bp2w_new, _bp1bpm_new, _bp2bpm_new,
+                            _dfa_new, _bp1_mn, _bp2_mn,
+                            curva_rpe=_curva_nn if _curva_nn else None,
+                            rpe_vst_bp1=_rpe_n1, rpe_vst_bp2=_rpe_n2)
+                        # GET não faz upload — ver regra em _fisio_calcular_e_persistir
+                        if _vf_novo:
+                            _val_fisio_obj = _vf_novo
+                            # Ler bpm_vst_validacao_json que acabou de ser persistido
+                            try:
+                                _bpm_row = cn.execute(
+                                    "SELECT bpm_vst_validacao_json FROM vst_conjuntos "                                    "WHERE vst_activity_id=?", (str(vid),)).fetchone()
+                                if _bpm_row and _bpm_row[0] and 'bpm_vst_validacao' not in resultado:
+                                    resultado['bpm_vst_validacao'] = json.loads(_bpm_row[0])
+                            except Exception:
+                                pass
+                    except Exception as _e_new:
+                        import traceback as _tb_new
+                        print(f'[vst_resultado] cálculo automático falhou: {_e_new}\n'
+                              f'{_tb_new.format_exc()}')
+            except Exception as _e_vf:
+                print(f'[vst_resultado] validacao_fisiologica_json inválido: {_e_vf}')
+
+            if _val_fisio_obj is not None:
+                resultado['validacao_fisiologica'] = _val_fisio_obj
+
+            # Adicionar bp1/bp2 com metricas para que mxVstRpeTabela funcione
+            # sem depender de MX_VST_ULT (que só existe quando o utilizador
+            # navegou para a actividade VST na sessão actual).
+            if 'bp1' not in resultado or 'bp2' not in resultado:
+                try:
+                    _analise_abrir = api_moxy_vst_analise(vid)
+                    _analise_abrir = (_analise_abrir[0].get_json()
+                                      if isinstance(_analise_abrir, tuple)
+                                      else _analise_abrir.get_json()) or {}
+                    if _analise_abrir.get('status') == 'ok':
+                        resultado['bp1'] = _analise_abrir.get('bp1') or {}
+                        resultado['bp2'] = _analise_abrir.get('bp2') or {}
+                        resultado['n_intervalos_encontrados'] = _analise_abrir.get('n_intervalos_encontrados')
+                except Exception:
+                    pass  # melhor esforço — mxVstRpeTabela usa fallback MX_VST_ULT
+
+            return jsonify(resultado)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/conjunto/<path:vst_activity_id>')
+    def api_moxy_vst_conjunto_ler(vst_activity_id):
+        """Vínculo já gravado para esta sessão VST, se existir."""
+        try:
+            vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT moxy_activity_id, criado_em, actualizado_em "
+                "FROM vst_conjuntos WHERE vst_activity_id=?", (vid,)).fetchone()
+            if not r:
+                return jsonify({'status': 'ok', 'sincronizado': False})
+            return jsonify({'status': 'ok', 'sincronizado': True,
+                            'vst_activity_id': vid, 'moxy_activity_id': r[0],
+                            'criado_em': r[1], 'actualizado_em': r[2]})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/conjunto', methods=['POST'])
+    def api_moxy_vst_conjunto_gravar():
+        """Grava/actualiza o vinculo VST↔Moxy. Corpo: {vst_activity_id,
+        moxy_activity_id}. Uma sessao VST so pertence a um conjunto de
+        cada vez - gravar de novo actualiza o vinculo anterior, nunca
+        acumula (RE-SINCRONIZAR / ALTERAR VINCULO usam este mesmo
+        endpoint).
+
+        Usa INSERT OR IGNORE + UPDATE para preservar resultado_json e
+        validacao_fisiologica_json quando o conjunto ja existe.
+        INSERT OR REPLACE apagaria esses campos (equivale a DELETE+INSERT)
+        e perderia os resultados calculados pelo /vst/comparar.
+        """
+        try:
+            corpo = request.get_json(force=True, silent=True) or {}
+            vid = str(corpo.get('vst_activity_id') or '').strip()
+            mid = str(corpo.get('moxy_activity_id') or '').strip()
+            if not vid or not mid:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'vst_activity_id e '
+                                           'moxy_activity_id sao '
+                                           'obrigatorios'}), 200
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            agora = datetime.now().isoformat(timespec='seconds')
+
+            # Criar linha se nao existir (preserva campos calculados se existir)
+            cn.execute(
+                "INSERT OR IGNORE INTO vst_conjuntos "
+                "(vst_activity_id, moxy_activity_id, criado_em, actualizado_em) "
+                "VALUES (?,?,?,?)",
+                (vid, mid, agora, agora))
+
+            # Actualizar apenas o vinculo e o timestamp -- NAO tocar em
+            # resultado_json, validacao_fisiologica_json nem outros campos
+            # calculados pelo /vst/comparar.
+            cn.execute(
+                "UPDATE vst_conjuntos "
+                "SET moxy_activity_id=?, actualizado_em=? "
+                "WHERE vst_activity_id=?",
+                (mid, agora, vid))
+
+            row = cn.execute(
+                "SELECT criado_em FROM vst_conjuntos WHERE vst_activity_id=?",
+                (vid,)).fetchone()
+            criado_em = row[0] if row else agora
+
+            cn.commit()
+            ok_up, det_up = ddp.upload()
+            return jsonify({'status': 'ok' if ok_up else 'gravado_sem_upload',
+                            'vst_activity_id': vid, 'moxy_activity_id': mid,
+                            'criado_em': criado_em, 'actualizado_em': agora,
+                            'upload_detalhe': None if ok_up else det_up})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+    @app.route('/api/moxy/vst/conjunto_por_moxy/<path:moxy_activity_id>')
+    def api_moxy_vst_conjunto_por_moxy(moxy_activity_id):
+        """Procura inversa: dada uma sessão Moxy, encontra a sessão VST
+        vinculada — usa o índice já existente (ix_vst_conjuntos_moxy),
+        não uma tabela nova. Uma Moxy pode, em teoria, estar vinculada a
+        mais de um VST ao longo do tempo (cada VST só aponta para UMA
+        Moxy, mas o inverso não é garantido) — devolve o vínculo mais
+        recente por actualizado_em.
+        """
+        try:
+            mid = str(moxy_activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT vst_activity_id, criado_em, actualizado_em "
+                "FROM vst_conjuntos WHERE moxy_activity_id=? "
+                "ORDER BY actualizado_em DESC LIMIT 1", (mid,)).fetchone()
+            if not r:
+                return jsonify({'status': 'ok', 'sincronizado': False})
+            return jsonify({'status': 'ok', 'sincronizado': True,
+                            'moxy_activity_id': mid, 'vst_activity_id': r[0],
+                            'criado_em': r[1], 'actualizado_em': r[2]})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/verificacao_ativa/<path:moxy_activity_id>')
+    def api_moxy_vst_verificacao_ativa(moxy_activity_id):
+        """Fonte ÚNICA que Limiares/Principal/Intervenções consultam para
+        saber se esta sessão Moxy tem uma verificação VST associada — lê
+        directamente o snapshot já gravado em vst_conjuntos (pelo
+        endpoint /comparar), NUNCA recalcula nada. Se não houver
+        conjunto, ou o conjunto ainda não foi analisado (sem
+        analisado_em), devolve 'sincronizado': False / 'analisado':
+        False, para as tabs caírem no comportamento actual sem
+        verificação.
+
+        range_verificado, por BP: [min(dia1_w, dia2_w), max(dia1_w,
+        dia2_w)] -- nao e' um novo calculo, e' so' ordenar os DOIS
+        numeros que ja' estao gravados (a potencia encontrada no Dia 1 e
+        a potencia realmente executada no Dia 2 para aquele BP).
+        """
+        try:
+            mid = str(moxy_activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT vst_activity_id, bp1_status, bp2_status, "
+                "recovery_bp1_status, recovery_bp2_status, "
+                "dia1_bp1_w, dia2_bp1_w, dia1_bp2_w, dia2_bp2_w, "
+                "analisado_em FROM vst_conjuntos WHERE moxy_activity_id=? "
+                "ORDER BY actualizado_em DESC LIMIT 1", (mid,)).fetchone()
+            if not r:
+                return jsonify({'status': 'ok', 'sincronizado': False,
+                                'analisado': False,
+                                'mensagem': 'Nenhuma verificação VST associada'})
+            if not r[9]:
+                return jsonify({'status': 'ok', 'sincronizado': True,
+                                'analisado': False,
+                                'vst_activity_id': r[0],
+                                'mensagem': 'Conjunto sincronizado, mas ainda '
+                                           'sem análise — abre a Verificação '
+                                           'para calcular'})
+
+            def _range(v1, v2):
+                if v1 is None or v2 is None:
+                    return None
+                return [round(min(v1, v2), 1), round(max(v1, v2), 1)]
+
+            return jsonify({
+                'status': 'ok', 'sincronizado': True, 'analisado': True,
+                'vst_activity_id': r[0],
+                'bp1': {'status': r[1], 'dia1_w': r[5], 'dia2_w': r[6],
+                        'range_verificado': _range(r[5], r[6])},
+                'bp2': {'status': r[2], 'dia1_w': r[7], 'dia2_w': r[8],
+                        'range_verificado': _range(r[7], r[8])},
+                'recovery_bp1_status': r[3], 'recovery_bp2_status': r[4],
+                'analisado_em': r[9],
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/conjuntos_salvos')
+    def api_moxy_vst_conjuntos_salvos():
+        """Lista de "VERIFICAÇÕES SALVAS" -- le' so' o que ja' esta'
+        gravado (snapshot da ultima analise), nunca recalcula.
+        A modalidade vem do campo 'type' da sessao Moxy vinculada
+        (tabela activities) atraves de um LEFT JOIN -- sem nova coluna
+        em vst_conjuntos, so' o TYPE_MAP ja' existente em config.
+        """
+        try:
+            import drive_db_perfil as ddp
+            import db as _db
+            import json as _json
+            from config import TYPE_MAP
+            cn = ddp.get_conn()
+            rows = cn.execute(
+                "SELECT vst_activity_id, moxy_activity_id, bp1_status, "
+                "bp2_status, recovery_bp1_status, recovery_bp2_status, "
+                "dia1_bp1_w, dia2_bp1_w, dia1_bp2_w, dia2_bp2_w, "
+                "analisado_em, actualizado_em, "
+                "bpm_vst_validacao_json, "
+                "validacao_fisiologica_json FROM vst_conjuntos "
+                "ORDER BY actualizado_em DESC").fetchall()
+            # buscar modalidade de cada sessao Moxy da tabela activities
+            # (campo type, ja' mapeado por TYPE_MAP) -- so' uma query
+            # em lote, nao N queries
+            moxy_ids = [r[1] for r in rows if r[1]]
+            tipo_por_id = {}
+            if moxy_ids:
+                placeholders = ','.join('?' * len(moxy_ids))
+                act_rows = _db._exec(
+                    f"SELECT id, type FROM activities WHERE id IN ({placeholders})",
+                    moxy_ids, fetch='all') or []
+                tipo_por_id = {str(r[0]): TYPE_MAP.get(r[1]) or r[1]
+                               for r in act_rows if r[1]}
+            conjuntos = [{
+                'vst_activity_id': r[0], 'moxy_activity_id': r[1],
+                'modalidade': tipo_por_id.get(str(r[1])),
+                'bp1_status': r[2], 'bp2_status': r[3],
+                'recovery_bp1_status': r[4], 'recovery_bp2_status': r[5],
+                'dia1_bp1_w': r[6], 'dia2_bp1_w': r[7],
+                'dia1_bp2_w': r[8], 'dia2_bp2_w': r[9],
+                'analisado_em': r[10], 'actualizado_em': r[11],
+                'bpm_vst_validacao': (_json.loads(r[12])
+                    if r[12] else None),
+                'validacao_fisiologica': (_json.loads(r[13])
+                    if r[13] else None),
+            } for r in rows]
+            return jsonify({'status': 'ok', 'conjuntos': conjuntos})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/historico_estilos')
+    def api_moxy_vst_historico_estilos():
+        """Le' todas as verificacoes salvas e devolve:
+        - padroes recorrentes por BP e modalidade (histório global);
+        - limitador MOXY real da sessao actual (buscado directamente do
+          backend -- nao depende de MX_ULT_US no frontend, que so existe
+          se a aba Intervencoes foi carregada);
+        - estilos parametrizados com watts reais de BP1/BP2/CP.
+        """
+        try:
+            import drive_db_perfil as ddp
+            import vst_verificacao as vst
+            from config import TYPE_MAP
+            import db as _db
+            cn = ddp.get_conn()
+            rows = cn.execute(
+                "SELECT vst_activity_id, moxy_activity_id, "
+                "analisado_em, resultado_json FROM vst_conjuntos "
+                "ORDER BY analisado_em DESC").fetchall()
+            # modalidade de cada sessao Moxy, em lote
+            mids = [r[1] for r in rows if r[1]]
+            tipo_por_id = {}
+            if mids:
+                ph = ','.join('?' * len(mids))
+                ars = _db._exec(
+                    f"SELECT id, type FROM activities WHERE id IN ({ph})",
+                    mids, fetch='all') or []
+                tipo_por_id = {str(r[0]): TYPE_MAP.get(r[1]) or r[1] for r in ars if r[1]}
+            entradas = []
+            for vst_id, moxy_id, analisado_em, rjson in rows:
+                if not rjson:
+                    continue
+                try:
+                    rdata = json.loads(rjson)
+                except Exception:
+                    continue
+                modalidade = tipo_por_id.get(str(moxy_id))
+                lbp1 = rdata.get('limiter_bp1') or {}
+                lbp2 = rdata.get('limiter_bp2') or {}
+                entradas.append({
+                    'vst_activity_id': vst_id,
+                    'moxy_activity_id': moxy_id,
+                    'modalidade': modalidade,
+                    'analisado_em': (analisado_em or '')[:10],
+                    'padrao_bp1': lbp1.get('padrao'),
+                    'padrao_bp2': lbp2.get('padrao'),
+                    'recovery_bp1': lbp1.get('recovery_coerencia'),
+                    'recovery_bp2': lbp2.get('recovery_coerencia'),
+                })
+
+            # --- sessão actual: moxy_id e vst_id passados pelo frontend ---
+            moxy_id_atual = request.args.get('moxy_id') or ''
+            modalidade_atual = request.args.get('modalidade') or ''
+
+            # BP1/BP2 do resultado_json já persistido da verificação actual
+            # (prioridade): mais fiáveis que qualquer variável do frontend
+            # porque foram calculados e guardados no momento da análise.
+            def _w(k): return request.args.get(k, type=float) or None
+            bp1_w = _w('bp1_w'); bp2_w = _w('bp2_w'); cp_w = _w('cp_w')
+            # complementar com o resultado_json da entrada mais recente
+            # da mesma sessão Moxy (quando os watts não vieram do frontend)
+            if bp1_w is None and bp2_w is None and moxy_id_atual:
+                for ent in entradas:
+                    if str(ent.get('moxy_activity_id')) == str(moxy_id_atual):
+                        row2 = cn.execute(
+                            "SELECT resultado_json FROM vst_conjuntos "
+                            "WHERE moxy_activity_id=? ORDER BY analisado_em DESC LIMIT 1",
+                            (moxy_id_atual,)).fetchone()
+                        if row2 and row2[0]:
+                            rdata2 = json.loads(row2[0])
+                            comp1 = rdata2.get('comparacao_bp1') or {}
+                            comp2 = rdata2.get('comparacao_bp2') or {}
+                            pot1 = (comp1.get('potencia') or {})
+                            pot2 = (comp2.get('potencia') or {})
+                            bp1_w = bp1_w or pot1.get('dia2_w') or pot1.get('dia1_w')
+                            bp2_w = bp2_w or pot2.get('dia2_w') or pot2.get('dia1_w')
+                        break
+
+            # --- limitador MOXY real: buscar do backend directamente ---
+            # Evita dependência de MX_ULT_US no frontend (que só existe
+            # se a aba Intervenções foi aberta na mesma sessão de browser).
+            limitador_moxy_us = request.args.get('limitador_moxy') or None
+            limitador_moxy_pc = request.args.get('limitador_moxy_pc') or None
+            if (not limitador_moxy_us) and moxy_id_atual:
+                # Nível 1: 5-1-5 (mais precisa, exige que tenha sido executada)
+                try:
+                    itp_resp = api_moxy_interpretacao(moxy_id_atual)
+                    itp_data = (itp_resp[0].get_json() if isinstance(itp_resp, tuple)
+                                else itp_resp.get_json())
+                    if itp_data and itp_data.get('status') == 'ok':
+                        intr = itp_data.get('interpretacao') or {}
+                        limitador_moxy_us = (intr.get('us') or {}).get('limitador')
+                        limitador_moxy_pc = (intr.get('pc') or {}).get('limitador')
+                except Exception:
+                    pass
+            # Nível 2 (fallback): Rede Causal — disponível sem 5-1-5
+            # Mapeamento: sistema rede → rotulo que para_limitador() aceita
+            _REDE_PARA_US = {
+                'cardiaco': 'Fornecimento', 'cardíaco': 'Fornecimento',
+                'periferico': 'Utilização', 'periférico': 'Utilização',
+                'respiratorio': 'Pulmonar', 'respiratório': 'Pulmonar',
+            }
+            if (not limitador_moxy_us) and moxy_id_atual:
+                try:
+                    rd_resp = api_moxy_rede(moxy_id_atual)
+                    rd_data = (rd_resp[0].get_json() if isinstance(rd_resp, tuple)
+                               else rd_resp.get_json())
+                    rl = (rd_data or {}).get('limitador') or {}
+                    sistema = rl.get('sistema') or ''
+                    if sistema in _REDE_PARA_US:
+                        limitador_moxy_us = _REDE_PARA_US[sistema]
+                except Exception:
+                    pass  # sem dados de rede -- continuar sem limitador
+
+            resultado = vst.profilage_historico_estilos(entradas, limitador_moxy_us)
+
+            # --- estilos parametrizados: usar o padrão da verificação
+            # ACTUAL (BP passado pelo frontend), não o padrão histórico --
+            # o histórico é evidência de recorrência, não o padrão de hoje.
+            padrao_atual = request.args.get('padrao_atual') or None
+            padrao_recorrente = (resultado.get('recorrencia_global') or [{}])[0].get('padrao')
+            rec_estado = (resultado.get('recorrencia_global') or [{}])[0].get('recorrencia', 'OBSERVADO UMA VEZ')
+            n_mod_hist = (resultado.get('recorrencia_global') or [{}])[0].get('n_modalidades', 1)
+            padrao_para_estilos = padrao_atual or padrao_recorrente
+            if padrao_para_estilos:
+                estilos_param = vst.profilage_estilos_parametrizados(
+                    padrao_para_estilos, limitador_moxy_us, limitador_moxy_pc,
+                    bp1_w, bp2_w, cp_w, rec_estado, n_mod_hist, modalidade_atual)
+            else:
+                estilos_param = None
+
+            return jsonify({'status': 'ok', **resultado,
+                           'estilos_parametrizados': estilos_param,
+                           'limitador_moxy_us': limitador_moxy_us,
+                           'limitador_moxy_pc': limitador_moxy_pc,
+                           'bp1_w_usado': bp1_w, 'bp2_w_usado': bp2_w,
+                           'cp_w_usado': cp_w})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/lista')
+    def api_moxy_vst_lista():
+        """Actividades com a tag VST — só essas, nunca as sem a tag."""
+        try:
+            import db as _db
+            import vst_verificacao as vst
+            linhas = _db._exec(
+                "SELECT id, date, type, raw FROM activities "
+                "WHERE raw IS NOT NULL ORDER BY date DESC", fetch='all') or []
+            fora = []
+            for aid, data, tipo, raw in linhas:
+                try:
+                    j = raw if isinstance(raw, dict) else json.loads(raw)
+                except Exception:
+                    continue
+                tt = j.get('tags')
+                tags = ([x.strip() for x in tt.split(',') if x.strip()]
+                       if isinstance(tt, str)
+                       else [str(x).strip() for x in (tt or []) if x])
+                if not vst.tem_tag_vst(tags):
+                    continue
+                fora.append({'id': aid, 'date': str(data)[:10], 'type': tipo,
+                            'name': j.get('name')})
+            return jsonify({'status': 'ok', 'actividades': fora,
+                            'n': len(fora),
+                            'mensagem': (None if fora else
+                                        'nenhuma actividade com a tag VST '
+                                        'foi encontrada')})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # moxy_vst_historico.db — gestão do banco canônico MOXY/VST
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # ─── moxy_vst_historico.db — gestão ─────────────────────────────────────
+
+    @app.route('/api/moxy/vst/db/status')
+    def api_moxy_vst_db_status():
+        """Estado completo do moxy_vst_historico.db. Não altera nada."""
+        try:
+            import drive_db_moxy_vst as _mvdb_st
+            info = _mvdb_st.diagnostico()
+            info['status'] = 'ok'
+            return jsonify(info)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/db/download')
+    def api_moxy_vst_db_download():
+        """Oferece o moxy_vst_historico.db para download.
+
+        Cenário A — DB existe no Drive: baixa e serve.
+        Cenário B — DB não existe: cria vazio (para o utilizador fazer
+          o upload manual inicial), nunca substitui um DB existente.
+        """
+        try:
+            import os as _os_dl
+            import drive_db_moxy_vst as _mvdb_dl
+            local = _mvdb_dl._LOCAL_DB
+            if not _os_dl.path.exists(local):
+                ok_dl, det_dl = _mvdb_dl.download()
+                if not ok_dl:
+                    _mvdb_dl._criar_db_local_vazio()
+            from flask import send_file
+            return send_file(local,
+                             as_attachment=True,
+                             download_name='moxy_vst_historico.db',
+                             mimetype='application/x-sqlite3')
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/db/migrate', methods=['POST'])
+    def api_moxy_vst_db_migrate():
+        """Migra dados de perfil_historico.db → moxy_vst_historico.db.
+        UPSERT não-destrutivo. Nunca apaga dados no destino.
+        Atividades que deixaram de existir na Intervals.icu são preservadas.
+        """
+        try:
+            import migrate_moxy_vst as _mig
+            dry = request.args.get('dry_run', '0') == '1'
+            contagens = _mig.migrar(dry_run=dry)
+            return jsonify({'status': 'ok', 'dry_run': dry,
+                            'migrados': contagens})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/vst/db/activity/<path:activity_id>')
+    def api_moxy_vst_db_activity(activity_id):
+        """Diagnóstico de uma actividade específica no moxy_vst_historico.db."""
+        try:
+            import drive_db_moxy_vst as _mvdb_act
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            cn = _mvdb_act.get_moxy_vst_conn()
+            cn.row_factory = __import__('sqlite3').Row
+            streams = [r[0] for r in cn.execute(
+                "SELECT stream_name FROM activity_streams WHERE activity_id=? ORDER BY stream_name",
+                (aid,)).fetchall()]
+            rpe_count = cn.execute(
+                "SELECT COUNT(*) FROM activity_interval_rpe WHERE activity_id=?",
+                (aid,)).fetchone()[0]
+            last_rpe = cn.execute(
+                "SELECT MAX(updated_at) FROM activity_interval_rpe WHERE activity_id=?",
+                (aid,)).fetchone()[0]
+            last_stream = cn.execute(
+                "SELECT MAX(updated_at) FROM activity_streams WHERE activity_id=?",
+                (aid,)).fetchone()[0]
+            results_count = cn.execute(
+                """SELECT COUNT(*) FROM vst_results r
+                   JOIN vst_conjuntos c ON r.vst_conjunto_id=c.id
+                   WHERE c.moxy_activity_id=? OR c.vst_activity_id=?""",
+                (aid, aid)).fetchone()[0]
+            cn.close()
+            return jsonify({
+                'status': 'ok', 'activity_id': aid,
+                'streams_count': len(streams),
+                'streams': streams,
+                'rpe_count': rpe_count,
+                'results_count': results_count,
+                'last_stream_sync': last_stream,
+                'last_rpe_update': last_rpe,
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+
+    @app.route('/api/moxy/vst/<path:activity_id>')
+    def api_moxy_vst_analise(activity_id):
+        """Análise completa do protocolo VST para uma sessão — estrutura
+        (aquecimento/BP1/BP2), métricas por intervalo, recuperações, e a
+        verificação por convergência de cada bloco. Tudo a partir dos
+        intervalos REAIS (WORK/RECOVERY da Intervals.icu, via
+        blocos_de_laps — o mesmo que o resto da tab Moxy já usa)."""
+        try:
+            import os as _os
+            import sys as _sys
+            _sys.path.insert(0, _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
+            import mnirs as mn
+            import vst_verificacao as vst
+            import api_client as api
+
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            corpo = api_moxy_dados(aid)
+            d = corpo[0].get_json() if isinstance(corpo, tuple) \
+                else corpo.get_json()
+            if not d or d.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': (d or {}).get('mensagem')}), 200
+
+            raw = j = None
+            try:
+                import db as _db
+                r = _db._exec("SELECT raw FROM activities WHERE id=?",
+                              (aid,), fetch='one')
+                raw = r[0] if r else None
+                j = raw if isinstance(raw, dict) else json.loads(raw or '{}')
+            except Exception:
+                j = {}
+            tt = (j or {}).get('tags')
+            tags = ([x.strip() for x in tt.split(',') if x.strip()]
+                   if isinstance(tt, str)
+                   else [str(x).strip() for x in (tt or []) if x])
+            if not vst.tem_tag_vst(tags):
+                return jsonify({'status': 'erro',
+                                'mensagem': 'esta actividade não tem a '
+                                           'tag VST'}), 200
+
+            t = d.get('tempo') or []
+            canais = d.get('canais') or {}
+            laps, err_l = api.icu_get(f'/activity/{aid}/intervals')
+            if isinstance(laps, dict):
+                laps = laps.get('icu_intervals') or laps.get('intervals') or []
+            bl = mn.blocos_de_laps(laps or [],
+                                   watts_stream=canais.get('watts'),
+                                   tempo_stream=t)
+            if not bl.get('ok'):
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': 'sem intervalos (WORK/RECOVERY) '
+                                           'da Intervals.icu para esta '
+                                           'sessão — o VST precisa deles '
+                                           'para separar aquecimento/BP1/'
+                                           'BP2'}), 200
+
+            estrutura = vst.estruturar_protocolo(bl['blocos'])
+            aquecimento = estrutura['aquecimento']
+
+            # PROFILAGE — auditoria + ENTRY/EXIT por WORK (nova secao,
+            # nao toca em bp1/bp2 nem em nada do que ja existia acima;
+            # so' reaproveita a mesma 'estrutura' e os mesmos canais/t
+            # ja carregados para esta sessao)
+            try:
+                profilage = vst.profilage_estrutura_works(estrutura, canais, t)
+            except Exception as e:
+                profilage = {'linhas': [], 'erro': f'{type(e).__name__}: {e}'}
+
+            # DRIFT INTRA-WORK -- so' classifica a direccao das linhas ja
+            # calculadas acima (profilage['linhas']); nao recalcula
+            # ENTRY/EXIT/delta, nao toca em bp1/bp2/estrutura.
+            try:
+                drift = vst.profilage_drift_intra_work(profilage['linhas'])
+            except Exception as e:
+                drift = {'linhas': [], 'erro': f'{type(e).__name__}: {e}'}
+
+            # ACCUMULATION -- progressao de ENTRY/EXIT entre WORKs, dentro
+            # de cada bloco (BP1 e BP2 separados). So' le' profilage['linhas'];
+            # nao toca em drift, estrutura, bp1/bp2.
+            try:
+                accumulation = vst.profilage_accumulation(profilage['linhas'])
+            except Exception as e:
+                accumulation = {'bp1': None, 'bp2': None,
+                                'erro': f'{type(e).__name__}: {e}'}
+
+            # PRIMEIRA DIVERGENCIA TEMPORAL -- usa os MESMOS canais/t ja
+            # carregados para esta sessao (os mesmos dos graficos
+            # Power x metrica); nao toca em drift/accumulation/estrutura.
+            try:
+                divergencia = vst.profilage_primeira_divergencia(estrutura, canais, t)
+            except Exception as e:
+                divergencia = {'bp1': None, 'bp2': None,
+                               'erro': f'{type(e).__name__}: {e}'}
+
+            # CONVERGENCIA TEMPORAL -- so' le' 'divergencia' ja calculada
+            # acima; nao recalcula primeira divergencia com outra logica.
+            try:
+                convergencia = vst.profilage_convergencia_temporal(divergencia)
+            except Exception as e:
+                convergencia = {'works': [], 'erro': f'{type(e).__name__}: {e}'}
+
+            # diagnostico de cobertura: o stream (t) cobre mesmo o
+            # intervalo de cada bloco? Um "—" na aquecimento ou no ultimo
+            # bloco costuma ser isto -- o sensor ainda a estabilizar no
+            # inicio, ou a desligar mesmo antes do fim oficial do lap --
+            # e nao um bug de indexacao dos blocos.
+            cobertura_stream = None
+            if t:
+                t_min, t_max = t[0], t[-1]
+                def _cobertura(bloco, nome):
+                    if not bloco:
+                        return None
+                    dentro = t_min <= bloco['t0'] and bloco['t1'] <= t_max
+                    return {'nome': nome, 't0': bloco['t0'], 't1': bloco['t1'],
+                            'coberto_pelo_stream': dentro,
+                            'nota': (None if dentro else
+                                    f'o stream desta sessão só cobre '
+                                    f'{t_min:.0f}s–{t_max:.0f}s; este bloco '
+                                    f'({bloco["t0"]:.0f}s–{bloco["t1"]:.0f}s) '
+                                    f'fica parcial ou totalmente fora disso '
+                                    f'— por isso a fisiologia sai vazia, '
+                                    f'mesmo com a potência da API a '
+                                    f'aparecer')}
+                cobertura_stream = list(filter(None, [
+                    _cobertura(aquecimento, 'aquecimento')]
+                    + [_cobertura(b, f'bp1#{i+1}') for i, b in enumerate(estrutura['bp1'])]
+                    + [_cobertura(b, f'bp2#{i+1}') for i, b in enumerate(estrutura['bp2'])]))
+
+            def _analisar(bloco):
+                return vst.metricas_intervalo(
+                    canais, t, bloco['t0'], bloco['t1'],
+                    watts_medio_api=bloco.get('watts_medio_da_api'))
+
+            aquecimento_m = _analisar(aquecimento) if aquecimento else None
+            bp1_m = [_analisar(b) for b in estrutura['bp1']]
+            bp2_m = [_analisar(b) for b in estrutura['bp2']]
+
+            # recuperacoes: entre cada par de blocos WORK consecutivos
+            # (aquecimento->bp1[0], bp1[i]->bp1[i+1], ..., bp1[-1]->bp2[0],
+            # bp2[i]->bp2[i+1]) -- usando o TEMPO REAL entre eles, nunca
+            # um numero fixo
+            sequencia = ([aquecimento] if aquecimento else []) \
+                + estrutura['bp1'] + estrutura['bp2']
+            recuperacoes = []
+            recuperacoes_1min = []
+            for i in range(len(sequencia) - 1):
+                inicio_rec = sequencia[i]['t1']
+                fim_rec = sequencia[i + 1]['t0']
+                r = vst.metricas_recuperacao(canais, t, inicio_rec, fim_rec)
+                recuperacoes.append(r)
+                # a mesma funcao, a MESMA metodologia -- so' com a janela
+                # cortada aos primeiros ~60s (ou menos, se o recovery
+                # real for mais curto do que isso). O Dia 1 e' uma rampa
+                # com transicoes de ~1min; comparar o recovery inteiro do
+                # Dia 2 (que pode durar 5-8min) contra uma transicao de
+                # 1min do Dia 1 nao seria uma janela temporal comparavel.
+                fim_1min = min(fim_rec, inicio_rec + 60.0)
+                r_1min = vst.metricas_recuperacao(canais, t, inicio_rec, fim_1min)
+                recuperacoes_1min.append(r_1min)
+
+            # RECOVERY FINAL: depois do ultimo bloco de BP2 nao ha' um
+            # proximo WORK para testar se a recuperacao terminou antes de
+            # nova carga -- mas o periodo pode existir na sessao (ex.:
+            # arrefecimento) e vale a pena analisa-lo à parte, marcado,
+            # nunca comparado directamente com as recuperacoes normais.
+            recuperacao_final = None
+            if sequencia:
+                fim_ultimo = sequencia[-1]['t1']
+                seguinte_off = next(
+                    (b for b in sorted(bl['blocos'], key=lambda x: x.get('t0', 0))
+                    if not b.get('on') and b.get('t0') is not None
+                    and b['t0'] >= fim_ultimo - 1e-6), None)
+                if seguinte_off:
+                    recuperacao_final = vst.metricas_recuperacao(
+                        canais, t, fim_ultimo, seguinte_off['t1'])
+                    if recuperacao_final:
+                        recuperacao_final['tipo'] = 'RECOVERY FINAL'
+                        recuperacao_final['nota'] = (
+                            'depois do último WORK — não há próximo '
+                            'esforço para testar se a recuperação '
+                            'terminou antes de nova carga')
+
+            # etiquetar cada recuperacao pelo bloco a que pertence, para
+            # nao misturar BP1 e BP2 (pedido explicito) -- as internas de
+            # BP1 sao as que ligam dois blocos de BP1 entre si, e o mesmo
+            # para BP2; a que liga aquecimento->bp1 e bp1->bp2 fica
+            # marcada como transicao, nao pertence a nenhum dos dois
+            n_bp1 = len(estrutura['bp1'])
+            i_aq = 1 if aquecimento else 0
+            for i, r in enumerate(recuperacoes):
+                if r is None:
+                    continue
+                if aquecimento and i == 0:
+                    r['bloco'] = 'transicao_aquecimento_bp1'
+                elif i_aq <= i < i_aq + n_bp1 - 1:
+                    r['bloco'] = 'bp1'
+                elif i == i_aq + n_bp1 - 1:
+                    r['bloco'] = 'transicao_bp1_bp2'
+                else:
+                    r['bloco'] = 'bp2'
+                if i < len(recuperacoes_1min) and recuperacoes_1min[i] is not None:
+                    recuperacoes_1min[i]['bloco'] = r['bloco']
+
+            r_bp1 = vst.verificar_bloco(bp1_m) if bp1_m else \
+                {'status': 'DADOS INSUFICIENTES', 'motivo': 'sem intervalos BP1'}
+            r_bp2 = vst.verificar_bloco(bp2_m) if bp2_m else \
+                {'status': 'DADOS INSUFICIENTES', 'motivo': 'sem intervalos BP2'}
+
+            return jsonify({
+                'status': 'ok', 'activity_id': aid,
+                'nome': (j or {}).get('name'),
+                'data': (j or {}).get('start_date_local', '')[:10],
+                'modalidade': d.get('modalidade'),
+                'tags': tags,
+                'aviso_estrutura': estrutura['aviso'],
+                'duracao_curta': estrutura.get('duracao_curta'),
+                'cobertura_stream': cobertura_stream,
+                'n_intervalos_encontrados': estrutura.get('n_total_encontrados'),
+                'aquecimento': {'bloco': aquecimento, 'metricas': aquecimento_m}
+                    if aquecimento else None,
+                'bp1': {'blocos': estrutura['bp1'], 'metricas': bp1_m,
+                       'verificacao': r_bp1},
+                'bp2': {'blocos': estrutura['bp2'], 'metricas': bp2_m,
+                       'verificacao': r_bp2},
+                'profilage': profilage,
+                'profilage_drift': drift,
+                'profilage_accumulation': accumulation,
+                'profilage_divergencia': divergencia,
+                'profilage_convergencia': convergencia,
+                'recuperacoes': recuperacoes,
+                'recuperacoes_1min': recuperacoes_1min,
+                'recuperacao_final': recuperacao_final,
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    # ── Versão da análise fisiológica ─────────────────────────────────
+    # Incrementar quando a lógica de validar_fisiologica_vst() mudar.
+    # Análises gravadas com versão anterior serão recalculadas automaticamente.
+    FISIO_ANALYSIS_VERSION = 'v1'
+
+    def _fisio_hash(moxy_id, vst_id, bp1_w, bp2_w, bp1_m, bp2_m, rpe_bp1, rpe_bp2,
+                    curva_rpe=None):
+        """Hash dos dados que determinam o resultado fisiológico.
+        Mudar RPE (VST ou MOXY), DFA, SmO2, FC, potência → hash diferente → recalcular."""
+        import hashlib, json as _json
+        def _m_digest(metricas):
+            # Extrair apenas os campos que mudam o resultado
+            return [{'w': (m.get('potencia') or {}).get('media'),
+                     'hr': (m.get('hr') or {}).get('media'),
+                     'smo2': (m.get('smo2') or {}).get('media'),
+                     'dfa': (m.get('dfa1') or {}).get('media'),
+                     'thb': (m.get('thb') or {}).get('media'),
+                     'resp': (m.get('respiracao') or {}).get('media')}
+                    for m in (metricas or [])]
+        payload = {
+            'moxy': str(moxy_id), 'vst': str(vst_id),
+            'bp1_w': bp1_w, 'bp2_w': bp2_w,
+            'bp1_m': _m_digest(bp1_m), 'bp2_m': _m_digest(bp2_m),
+            'rpe_bp1': sorted(r for r in (rpe_bp1 or []) if r is not None),
+            'rpe_bp2': sorted(r for r in (rpe_bp2 or []) if r is not None),
+            'curva_rpe': sorted(curva_rpe) if curva_rpe else [],
+        }
+        return hashlib.sha256(
+            _json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+
+    def _fisio_calcular_e_persistir(cn, moxy_id, vst_id,
+                                    bp1_w, bp2_w, bp1_bpm, bp2_bpm,
+                                    dfa1, bp1_m, bp2_m,
+                                    curva_rpe=None, rpe_vst_bp1=None, rpe_vst_bp2=None):
+        """Única fonte de verdade para:
+          1. Calcular validacao_fisiologica via validar_fisiologica_vst()
+          2. Gerar fisio_version + fisio_data_hash
+          3. Persistir em vst_conjuntos (commit local)
+          4. Retornar o resultado
+
+        Chamada por:
+          - api_moxy_vst_comparar (automático após cada comparação)
+          - api_moxy_vst_gravar_analise (explícito)
+          - api_moxy_vst_resultado (quando detect outdated)
+
+        Nunca recalcula calc. DFA/HRVT — apenas usa o dfa1 já calculado.
+
+        REGRA ARQUITECTURAL:
+          Esta função NÃO faz upload para o Google Drive.
+          O upload é responsabilidade exclusiva do fluxo de gravação
+          que recebeu/modificou dados do utilizador (endpoints POST).
+          Funções de análise apenas lêem, calculam e fazem commit local.
+        """
+        try:
+            import utils.nirs_breakpoints as _nbk
+            import json as _json
+
+            val_fisio = _nbk.validar_fisiologica_vst(
+                bp1_w, bp2_w, bp1_bpm, bp2_bpm, dfa1,
+                bp1_m, bp2_m,
+                curva_moxy_watts_rpe=curva_rpe,
+                rpe_vst_bp1=rpe_vst_bp1,
+                rpe_vst_bp2=rpe_vst_bp2,
+            )
+
+            data_hash = _fisio_hash(
+                moxy_id, vst_id, bp1_w, bp2_w, bp1_m, bp2_m,
+                rpe_vst_bp1, rpe_vst_bp2,
+                curva_rpe=curva_rpe)
+
+            # Adicionar metadados de versão ao resultado
+            val_fisio['analysis_version'] = FISIO_ANALYSIS_VERSION
+            val_fisio['data_hash']        = data_hash
+
+            val_json = _json.dumps(val_fisio, ensure_ascii=False)
+
+            # Validação BPM MOXY × VST — executada com os mesmos dados
+            # já disponíveis: bp1_bpm, bp2_bpm, bp1_m, bp2_m.
+            # Persiste no mesmo UPDATE para manter atomicidade.
+            bpm_val_json = None
+            try:
+                bpm_val = _nbk.validar_bpm_vst(
+                    bp1_bpm, bp2_bpm, bp1_m, bp2_m)
+                bpm_val_json = _json.dumps(bpm_val, ensure_ascii=False)
+            except Exception as _e_bpm:
+                print(f'[fisio] validar_bpm_vst falhou: {_e_bpm}')
+
+            cn.execute(
+                "UPDATE vst_conjuntos "
+                "SET validacao_fisiologica_json=?, fisio_version=?, "
+                "fisio_data_hash=?, bpm_vst_validacao_json=? "
+                "WHERE vst_activity_id=?",
+                (val_json, FISIO_ANALYSIS_VERSION, data_hash,
+                 bpm_val_json, str(vst_id)))
+            cn.commit()
+            # NÃO chamar ddp.upload() aqui — ver docstring acima.
+            return val_fisio, data_hash
+        except Exception as _e_fisio:
+            import traceback as _tb_f
+            print(f'[fisio] _fisio_calcular_e_persistir falhou: {_e_fisio}\n'
+                  f'{_tb_f.format_exc()}')
+            return None, None
+
+
+        def _analisar_rpe_fisiologia(metricas_lista, rpes, label):
+            """Analise integrada RPE x resposta fisiologica por BP.
+
+            Parametros
+            ----------
+            metricas_lista : list[dict]  -- metricas_intervalo() de cada WORK do BP
+            rpes           : list[float] -- RPE de cada intervalo (mesmo tamanho)
+            label          : str         -- 'BP1' ou 'BP2'
+
+            Retorna dict com:
+              intervalos  -- dados por intervalo (RPE + fisiologia + deltas)
+              deltas_bp   -- delta entre o primeiro e o ultimo intervalo do BP
+              padrao      -- classificacao do padrao observado
+              explicacao  -- texto descritivo
+            """
+            def _safe(m, canal):
+                c = (m or {}).get(canal) or {}
+                return {'media': c.get('media'), 'inicial': c.get('inicial'),
+                        'final': c.get('final'), 'delta': c.get('delta'),
+                        'ok': bool(c.get('ok'))}
+
+            ivs = []
+            for idx_i, (m, rpe) in enumerate(zip(metricas_lista or [], rpes or [])):
+                iv = {
+                    'ordem': idx_i + 1,
+                    'rpe': float(rpe) if rpe is not None else None,
+                    't0': m.get('t0'), 't1': m.get('t1'),
+                    'duracao_s': m.get('duracao_s'),
+                    'potencia':   _safe(m, 'potencia'),
+                    'hr':         _safe(m, 'hr'),
+                    'respiracao': _safe(m, 'respiracao'),
+                    'smo2':       _safe(m, 'smo2'),
+                    'thb':        _safe(m, 'thb'),
+                    'dfa1':       _safe(m, 'dfa1'),
+                }
+                if idx_i > 0 and ivs:
+                    prev = ivs[-1]
+                    def _dv(campo):
+                        a = (prev.get(campo) or {}).get('media')
+                        b = (iv.get(campo) or {}).get('media')
+                        return round(b - a, 4) if a is not None and b is not None else None
+                    iv['delta_vs_anterior'] = {
+                        'rpe': round(float(rpe) - float(prev['rpe']), 4)
+                               if rpe is not None and prev['rpe'] is not None else None,
+                        'potencia': _dv('potencia'), 'hr': _dv('hr'),
+                        'respiracao': _dv('respiracao'), 'smo2': _dv('smo2'),
+                        'thb': _dv('thb'), 'dfa1': _dv('dfa1'),
+                    }
+                else:
+                    iv['delta_vs_anterior'] = None
+                ivs.append(iv)
+
+            rpes_v = [float(r) for r in (rpes or []) if r is not None]
+
+            def _delta_bp(campo):
+                vals = [(iv.get(campo) or {}).get('media') for iv in ivs]
+                ok = [v for v in vals if v is not None]
+                return round(ok[-1] - ok[0], 4) if len(ok) >= 2 else None
+
+            deltas = {
+                'rpe': round(rpes_v[-1] - rpes_v[0], 4) if len(rpes_v) >= 2 else None,
+                'potencia': _delta_bp('potencia'), 'hr': _delta_bp('hr'),
+                'respiracao': _delta_bp('respiracao'), 'smo2': _delta_bp('smo2'),
+                'thb': _delta_bp('thb'), 'dfa1': _delta_bp('dfa1'),
+            }
+
+            def _dir(v, tol=0.5):
+                if v is None: return None
+                return 'up' if v > tol else ('down' if v < -tol else 'stable')
+
+            rpe_dir  = _dir(deltas.get('rpe'), 0.3)
+            hr_dir   = _dir(deltas.get('hr'), 2)
+            resp_dir = _dir(deltas.get('respiracao'), 0.5)
+            smo2_dir = _dir(deltas.get('smo2'), 1)
+            dfa1_dir = _dir(deltas.get('dfa1'), 0.02)
+            thb_dir  = _dir(deltas.get('thb'), 0.1)
+
+            if not rpes_v:
+                padrao = 'SEM_DADOS_RPE'
+                expl = f'{label}: RPE nao disponivel para analise integrada.'
+            else:
+                n_fisio = sum(deltas.get(c) is not None for c in ['hr','respiracao','smo2','dfa1'])
+                cardio  = sum([rpe_dir == 'up', hr_dir == 'up', resp_dir == 'up'])
+                periferico = sum([rpe_dir == 'up', smo2_dir == 'down'])
+                autonomico = sum([rpe_dir == 'up', dfa1_dir == 'down'])
+
+                if rpe_dir == 'stable':
+                    padrao = 'RPE_ESTAVEL'
+                    expl = (f'{label}: RPE estavel (delta={deltas.get("rpe"):.2f}). '
+                            f'HR: {hr_dir}, SmO2: {smo2_dir}.')
+                elif n_fisio < 2:
+                    padrao = 'DADOS_INSUFICIENTES'
+                    expl = f'{label}: Dados fisiologicos insuficientes para classificar padrao.'
+                elif cardio >= 2 and periferico < 2:
+                    padrao = 'CARDIORRESPIRATORIO'
+                    expl = (f'{label}: RPE crescente associado a resposta cardiorrespiratoria '
+                            f'(HR {hr_dir}, Resp {resp_dir}). '
+                            f'Compativel com carga cardiorrespiratoria crescente.')
+                elif periferico >= 2 and cardio < 2:
+                    padrao = 'PERIFERICO'
+                    expl = (f'{label}: RPE crescente associado a reducao de SmO2 '
+                            f'(SmO2 {smo2_dir}). Compativel com demanda periferica muscular.')
+                elif cardio >= 2 and periferico >= 2:
+                    padrao = 'MISTO'
+                    expl = (f'{label}: RPE crescente com sinais cardiorrespiratorios '
+                            f'(HR {hr_dir}) e perifericos (SmO2 {smo2_dir}). '
+                            f'Padrao multissistemico observado.')
+                elif autonomico >= 2:
+                    padrao = 'AUTONOMICO'
+                    expl = (f'{label}: RPE crescente associado a reducao de DFA1 '
+                            f'(DFA1 {dfa1_dir}). Compativel com resposta autonomica.')
+                else:
+                    padrao = 'SEM_PADRAO_CONCLUSIVO'
+                    expl = (f'{label}: Sinais fisiologicos inconsistentes. '
+                            f'RPE {rpe_dir}, HR {hr_dir}, SmO2 {smo2_dir}, '
+                            f'DFA1 {dfa1_dir}. Sem padrao conclusivo.')
+
+            return {
+                'label': label,
+                'intervalos': ivs,
+                'deltas_bp': deltas,
+                'rpe_inicial': rpes_v[0] if rpes_v else None,
+                'rpe_final':   rpes_v[-1] if rpes_v else None,
+                'rpe_media':   round(sum(rpes_v)/len(rpes_v), 4) if rpes_v else None,
+                'n_rpe_validos': len(rpes_v),
+                'direcao': {'rpe': rpe_dir, 'hr': hr_dir, 'respiracao': resp_dir,
+                            'smo2': smo2_dir, 'thb': thb_dir, 'dfa1': dfa1_dir},
+                'padrao': padrao,
+                'explicacao': expl,
+                'nota': ('Esta analise identifica padroes de resposta fisiologica '
+                         'associados ao WORK. Nao demonstra causalidade. '
+                         'Linguagem: compativel com, associado a, padrao observado.'),
+            }
+
+    @app.route('/api/moxy/vst/comparar/<path:vst_activity_id>')
+    def api_moxy_vst_comparar(vst_activity_id):
+        """Comparação Dia1×Dia2 — Dia 1 é a sessão Moxy vinculada
+        (limiar por SmO2, um valor de watts por BP); Dia 2 é a própria
+        sessão VST (estruturada, WORK sustentados). Nunca exige
+        igualdade de valores — compara direcção e convergência entre
+        várias respostas fisiológicas, não um número só.
+        """
+        try:
+            import vst_verificacao as vst
+            vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT moxy_activity_id FROM vst_conjuntos "
+                "WHERE vst_activity_id=?", (vid,)).fetchone()
+            if not r:
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': 'esta sessão VST ainda não '
+                                           'está sincronizada com nenhuma '
+                                           'sessão Moxy — usa "Comparar / '
+                                           'Sincronizar" primeiro'}), 200
+            mid = r[0]
+
+            # Dia 2: a analise VST completa, ja' pronta
+            dia2 = api_moxy_vst_analise(vid)
+            dia2 = dia2[0].get_json() if isinstance(dia2, tuple) else dia2.get_json()
+            if dia2.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': 'Dia 2 (VST): ' +
+                                           (dia2.get('mensagem') or
+                                            'sem dados suficientes')}), 200
+
+            # Dia 1: os limiares Moxy (watts do BP1/BP2), e depois o
+            # bloco REAL dessa sessao mais proximo de cada um, para lhe
+            # calcular a mesma riqueza de metricas que o Dia 2 tem.
+            dia1_lim = api_moxy_limiares(mid)
+            dia1_lim = dia1_lim[0].get_json() if isinstance(dia1_lim, tuple) \
+                else dia1_lim.get_json()
+            if dia1_lim.get('status') != 'ok':
+                return jsonify({'status': 'sem_dados',
+                                'mensagem': 'Dia 1 (Moxy): ' +
+                                           (dia1_lim.get('mensagem') or
+                                            'sem dados suficientes')}), 200
+
+            corpo1 = api_moxy_dados(mid)
+            d1 = corpo1[0].get_json() if isinstance(corpo1, tuple) else corpo1.get_json()
+            t1 = d1.get('tempo') or []
+            canais1 = d1.get('canais') or {}
+            blocos1 = ((d1.get('blocos') or {}).get('blocos')) or []
+            ons1 = [b for b in blocos1 if b.get('on')]
+
+            lc = dia1_lim.get('limiares_consenso') or {}
+            bp1_alvo = (lc.get('primeiro') or {}).get('mediana')
+            bp2_alvo = (lc.get('segundo') or {}).get('mediana')
+
+            def _bloco_mais_proximo(alvo):
+                if alvo is None or not ons1:
+                    return None
+                return min(ons1, key=lambda b: abs(
+                    (b.get('watts_medio_da_api') or b.get('watts_medio') or 1e9)
+                    - alvo))
+
+            b1_bp1 = _bloco_mais_proximo(bp1_alvo)
+            b1_bp2 = _bloco_mais_proximo(bp2_alvo)
+            m_dia1_bp1 = (vst.metricas_intervalo(
+                canais1, t1, b1_bp1['t0'], b1_bp1['t1'],
+                watts_medio_api=b1_bp1.get('watts_medio_da_api'))
+                if b1_bp1 else None)
+            m_dia1_bp2 = (vst.metricas_intervalo(
+                canais1, t1, b1_bp2['t0'], b1_bp2['t1'],
+                watts_medio_api=b1_bp2.get('watts_medio_da_api'))
+                if b1_bp2 else None)
+
+            comp_bp1 = vst.comparar_bp(
+                m_dia1_bp1, (dia2.get('bp1') or {}).get('metricas') or [],
+                dia1_vizinhos=[vst.metricas_intervalo(
+                    canais1, t1, b['t0'], b['t1'],
+                    watts_medio_api=b.get('watts_medio_da_api'))
+                    for b in ons1 if b is not b1_bp1],
+                verificacao_dia2=(dia2.get('bp1') or {}).get('verificacao'))
+            comp_bp2 = vst.comparar_bp(
+                m_dia1_bp2, (dia2.get('bp2') or {}).get('metricas') or [],
+                dia1_vizinhos=[vst.metricas_intervalo(
+                    canais1, t1, b['t0'], b['t1'],
+                    watts_medio_api=b.get('watts_medio_da_api'))
+                    for b in ons1 if b is not b1_bp2],
+                verificacao_dia2=(dia2.get('bp2') or {}).get('verificacao'))
+
+            # recovery: Dia 1 = a recuperacao logo a seguir ao bloco
+            # escolhido (resposta imediata a' mudanca de carga, secao 13
+            # do pedido); Dia 2 = as recuperacoes JA' etiquetadas 'bp1'/
+            # 'bp2' dentro de 'recuperacoes' (nao recalculadas aqui)
+            def _recovery_dia1_apos(bloco1):
+                if not bloco1:
+                    return None, 'sem bloco1 (b1_bp1/b1_bp2 é None)'
+                seguinte = next(
+                    (b for b in sorted(blocos1, key=lambda x: x.get('t0', 0))
+                    if not b.get('on') and b.get('t0') is not None
+                    and b['t0'] >= bloco1['t1'] - 1e-6), None)
+                if not seguinte:
+                    return None, 'sem bloco RECOVERY a seguir a este WORK do Dia 1'
+                r = vst.metricas_recuperacao(
+                    canais1, t1, bloco1['t1'], seguinte['t1'])
+                if not (r or {}).get('ok'):
+                    return None, f"metricas_recuperacao ok=False: {(r or {}).get('motivo')}"
+                return (r or {}).get('por_canal'), 'ok'
+
+            recs_dia2 = dia2.get('recuperacoes') or []
+            recs_bp1_dia2 = [r for r in recs_dia2 if r and r.get('bloco') == 'bp1']
+            recs_bp2_dia2 = [r for r in recs_dia2 if r and r.get('bloco') == 'bp2']
+
+            recs_1min_dia2 = dia2.get('recuperacoes_1min') or []
+            recs_bp1_1min = [r for r in recs_1min_dia2 if r and r.get('bloco') == 'bp1']
+            recs_bp2_1min = [r for r in recs_1min_dia2 if r and r.get('bloco') == 'bp2']
+
+            dia1_rec_bp1, motivo_dia1_rec_bp1 = _recovery_dia1_apos(b1_bp1)
+            dia1_rec_bp2, motivo_dia1_rec_bp2 = _recovery_dia1_apos(b1_bp2)
+
+            comp_recovery_bp1 = vst.comparar_recovery(
+                dia1_rec_bp1,
+                (dia2.get('bp1') or {}).get('metricas') or [], recs_bp1_dia2,
+                dia2_recuperacoes_1min=recs_bp1_1min)
+            comp_recovery_bp2 = vst.comparar_recovery(
+                dia1_rec_bp2,
+                (dia2.get('bp2') or {}).get('metricas') or [], recs_bp2_dia2,
+                dia2_recuperacoes_1min=recs_bp2_1min)
+
+            # RPE -- evidencia perceptiva complementar.
+            # Resolução defensiva: activity_interval_rpe (start_time) primeiro,
+            # fallback moxy_rpe (bloco_indice) se não houver linha nova.
+            # rpe=0 = apagado explicitamente, sem fallback para moxy_rpe.
+            # Erro de código ≠ DADOS INSUFICIENTES — exceptions propagam com log.
+            # ── Legado Day1 e Day2 (fallback) ────────────────────────────────
+            rpe_d1_legacy = {}
+            rpe_d2_legacy = {}
+            try:
+                rpe_rows_d1 = cn.execute(
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? ORDER BY bloco_indice", (mid,)).fetchall()
+                rpe_d1_legacy_idx = {int(r[0]): r[2] for r in rpe_rows_d1}
+                # índice → (t0_s, rpe) para fallback por proximidade de t0
+                rpe_d1_legacy_t0  = {(r[1] or -1): r[2] for r in rpe_rows_d1 if r[1] is not None}
+                rpe_d1_legacy = rpe_d1_legacy_idx   # fallback principal por índice
+
+                rpe_rows_d2 = cn.execute(
+                    "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? ORDER BY bloco_indice", (vid,)).fetchall()
+                rpe_d2_legacy_idx = {int(r[0]): r[2] for r in rpe_rows_d2}
+                rpe_d2_legacy_t0  = {(r[1] or -1): r[2] for r in rpe_rows_d2 if r[1] is not None}
+                rpe_d2_legacy = rpe_d2_legacy_idx
+            except Exception as _e_leg:
+                import traceback as _tb
+                print(f'[vst_comparar] AVISO legado moxy_rpe: {_e_leg}\n{_tb.format_exc()}')
+
+            def _resolver_rpe_bloco(activity_id, t0_val, idx_fallback, legacy_idx, legacy_t0):
+                """Resolve RPE para um bloco por (activity_id, start_time).
+
+                1. activity_interval_rpe por start_time exacto
+                2. moxy_rpe pelo t0_s gravado (tolerância ≤1 s para rounding)
+                3. moxy_rpe pelo bloco_indice (fallback posicional legado)
+                4. None
+
+                rpe=0 em activity_interval_rpe = apagado; não fazer fallback.
+                Erro de código propaga — não se converte em None silencioso.
+                """
+                # 1. activity_interval_rpe por start_time
+                val, fonte = _rpe_interval_resolver(cn, activity_id, t0_val)
+                if fonte in ('new', 'deleted'):
+                    return val, fonte  # None se deleted (sem fallback)
+
+                # 2. moxy_rpe por t0_s (mesmo valor gravado, tolerância 1s)
+                for t0_leg, rpe_leg in (legacy_t0 or {}).items():
+                    if abs(t0_leg - t0_val) <= 1:
+                        return rpe_leg, 'legacy_t0'
+
+                # 3. moxy_rpe por índice posicional
+                rpe_idx = (legacy_idx or {}).get(idx_fallback)
+                if rpe_idx is not None:
+                    return rpe_idx, 'legacy_idx'
+
+                return None, 'absent'
+
+            # ── Day1: RPE base (bloco 0 de ons1) e RPE alvo (b1_bp1 / b1_bp2) ──
+            # Resolução defensiva: usa t0 do bloco, não identidade do objecto.
+            _d1_rpe_log = {'mid': mid, 'vid': vid}
+            rpe_d1_base = None
+            if ons1:
+                _b0_t0 = float(ons1[0].get('t0', -1))
+                rpe_d1_base, _src = _resolver_rpe_bloco(mid, _b0_t0, 0,
+                                                         rpe_d1_legacy_idx,
+                                                         rpe_d1_legacy_t0)
+                _d1_rpe_log['base'] = {'t0': _b0_t0, 'rpe': rpe_d1_base, 'fonte': _src}
+
+            def _rpe_d1_de_bloco(bloco_alvo, idx_em_ons1):
+                """RPE de um bloco Day1 pelo t0 e índice (defensivo)."""
+                if not bloco_alvo:
+                    return None, 'absent'
+                t0 = float(bloco_alvo.get('t0', -1))
+                return _resolver_rpe_bloco(mid, t0, idx_em_ons1,
+                                           rpe_d1_legacy_idx, rpe_d1_legacy_t0)
+
+            # índice de b1_bp1 e b1_bp2 em ons1 (por comparação de t0, não identidade)
+            def _idx_em_ons1(bloco):
+                if not bloco:
+                    return 0
+                t0 = float(bloco.get('t0', -1))
+                for i, b in enumerate(ons1):
+                    if abs(float(b.get('t0', -999)) - t0) <= 0.5:
+                        return i
+                return 0
+
+            _i_bp1 = _idx_em_ons1(b1_bp1)
+            _i_bp2 = _idx_em_ons1(b1_bp2)
+            rpe_d1_alvo_bp1, _src_bp1 = _rpe_d1_de_bloco(b1_bp1, _i_bp1)
+            rpe_d1_alvo_bp2, _src_bp2 = _rpe_d1_de_bloco(b1_bp2, _i_bp2)
+            _d1_rpe_log.update({
+                'alvo_bp1': {'t0': float((b1_bp1 or {}).get('t0', -1)),
+                             'rpe': rpe_d1_alvo_bp1, 'fonte': _src_bp1},
+                'alvo_bp2': {'t0': float((b1_bp2 or {}).get('t0', -1)),
+                             'rpe': rpe_d1_alvo_bp2, 'fonte': _src_bp2},
+            })
+            print(f'[vst_comparar][RPE Day1] {_d1_rpe_log}')
+
+            # ── Day2: RPE de cada WORK de BP1 e BP2 ────────────────────────────
+            # Sem correspondência 1:1 com Day1. Cada bloco independente.
+            n_bp1_works = len((dia2.get('bp1') or {}).get('blocos') or [])
+            n_bp2_works = len((dia2.get('bp2') or {}).get('blocos') or [])
+            trabalho_d2 = []
+            for grp in ('bp1', 'bp2'):
+                for bk in ((dia2.get(grp) or {}).get('blocos') or []):
+                    trabalho_d2.append(bk)
+
+            rpe_d2_all = []
+            _d2_rpe_log = []
+            for i, bk in enumerate(trabalho_d2):
+                t0 = float(bk.get('t0', -1))
+                val, fonte = _resolver_rpe_bloco(vid, t0, i,
+                                                  rpe_d2_legacy_idx,
+                                                  rpe_d2_legacy_t0)
+                rpe_d2_all.append(val)
+                _d2_rpe_log.append({'i': i, 't0': t0, 'rpe': val, 'fonte': fonte})
+            print(f'[vst_comparar][RPE Day2] n_bp1={n_bp1_works} n_bp2={n_bp2_works} '
+                  f'blocos={_d2_rpe_log}')
+
+            rpe_d2_bp1 = rpe_d2_all[:n_bp1_works]
+            rpe_d2_bp2 = rpe_d2_all[n_bp1_works:n_bp1_works + n_bp2_works]
+
+            # comparar_rpe: erro de código propaga — não é mascarado como DADOS INSUFICIENTES
+            comp_rpe_bp1 = vst.comparar_rpe(rpe_d1_base, rpe_d1_alvo_bp1, rpe_d2_bp1)
+            comp_rpe_bp2 = vst.comparar_rpe(rpe_d1_base, rpe_d1_alvo_bp2, rpe_d2_bp2)
+            print(f'[vst_comparar][RPE comp] BP1={comp_rpe_bp1.get("status")} '
+                  f'BP2={comp_rpe_bp2.get("status")}')
+
+            # Análise integrada RPE × fisiologia (v5)
+            try:
+                _bp1_m_fi = (dia2.get('bp1') or {}).get('metricas') or []
+                _bp2_m_fi = (dia2.get('bp2') or {}).get('metricas') or []
+                _rpe_fi_bp1 = _analisar_rpe_fisiologia(_bp1_m_fi, rpe_d2_bp1, 'BP1')
+                _rpe_fi_bp2 = _analisar_rpe_fisiologia(_bp2_m_fi, rpe_d2_bp2, 'BP2')
+                rpe_fisiologia = {
+                    'bp1': _rpe_fi_bp1,
+                    'bp2': _rpe_fi_bp2,
+                    'nota_geral': (
+                        'Analise RPE x fisiologia do Dia 2 (protocolo VST). '
+                        'RPE preservado como float — sem arredondamento. '
+                        'Padroes: CARDIORRESPIRATORIO, PERIFERICO, MISTO, '
+                        'AUTONOMICO, RPE_ESTAVEL, SEM_PADRAO_CONCLUSIVO, '
+                        'DADOS_INSUFICIENTES, SEM_DADOS_RPE.'
+                    ),
+                }
+                print(f'[vst_comparar][RPE fisio] BP1={_rpe_fi_bp1.get("padrao")} '
+                      f'BP2={_rpe_fi_bp2.get("padrao")}')
+            except Exception as _e_fi:
+                rpe_fisiologia = {'erro': str(_e_fi)}
+                print(f'[vst_comparar][RPE fisio] ERRO: {_e_fi}')
+
+
+            # LIMITER / PADRAO FISIOLOGICO -- camada de integracao pura,
+            # so' LE resultados ja' calculados: divergencia/convergencia/
+            # accumulation ja' vem dentro de 'dia2' (api_moxy_vst_analise
+            # ja' os calcula), recovery/rpe ja' foram calculados acima
+            # nesta mesma funcao. Nada fisiologico e' recalculado aqui.
+            try:
+                divergencia_completa = dia2.get('profilage_divergencia') or {}
+                convergencia_completa = dia2.get('profilage_convergencia') or {}
+                accumulation_completa = dia2.get('profilage_accumulation') or {}
+                conv_works = convergencia_completa.get('works') or []
+                limiter_bp1 = vst.profilage_limiter(
+                    'BP1', divergencia_completa.get('bp1'),
+                    [w for w in conv_works if w.get('bp') == 'BP1'],
+                    convergencia_completa.get('sintese_bp1'),
+                    accumulation_completa.get('bp1'),
+                    comp_recovery_bp1, comp_rpe_bp1)
+                limiter_bp2 = vst.profilage_limiter(
+                    'BP2', divergencia_completa.get('bp2'),
+                    [w for w in conv_works if w.get('bp') == 'BP2'],
+                    convergencia_completa.get('sintese_bp2'),
+                    accumulation_completa.get('bp2'),
+                    comp_recovery_bp2, comp_rpe_bp2)
+                limiter_sintese = vst.profilage_limiter_sintese(limiter_bp1, limiter_bp2)
+                modalidade = dia2.get('modalidade') or ''
+                hipotese_bp1 = vst.profilage_hipotese_intervencao(
+                    'BP1', modalidade, limiter_bp1,
+                    divergencia_completa.get('bp1'),
+                    comp_recovery_bp1, comp_rpe_bp1)
+                hipotese_bp2 = vst.profilage_hipotese_intervencao(
+                    'BP2', modalidade, limiter_bp2,
+                    divergencia_completa.get('bp2'),
+                    comp_recovery_bp2, comp_rpe_bp2)
+            except Exception as e:
+                limiter_bp1 = limiter_bp2 = {'padrao': 'EVIDÊNCIA INSUFICIENTE',
+                                             'motivo': f'{type(e).__name__}: {e}'}
+                limiter_sintese = None
+                hipotese_bp1 = hipotese_bp2 = None
+
+            # ── Rede Causal Day1 (MOXY) ─────────────────────────────────────
+            # Reutiliza api_moxy_rede() existente — a mesma função da aba
+            # Rede Causal. Não cria nova análise.
+            # Inclusa aqui para que a Verificação nunca fique sem limitador
+            # só porque o utilizador não abriu a aba Rede Causal primeiro.
+            rede_causal_d1 = None
+            try:
+                _rd = api_moxy_rede(mid)
+                _rd = _rd[0].get_json() if isinstance(_rd, tuple) else _rd.get_json()
+                if _rd and _rd.get('status') == 'ok':
+                    rede_causal_d1 = {
+                        'status': 'ok',
+                        'limitador': _rd.get('limitador'),
+                        'canais_usados': _rd.get('canais_usados'),
+                        'motivo_ausencia': None,
+                    }
+                    print(f'[vst_comparar][Rede] sistema='
+                          f'{(_rd.get("limitador") or {}).get("sistema")} '
+                          f'pct={((_rd.get("limitador") or {}).get("pct") or "?")}')
+                else:
+                    rede_causal_d1 = {
+                        'status': 'sem_dados',
+                        'limitador': None,
+                        'motivo_ausencia': (_rd or {}).get('mensagem') or 'sem dados suficientes',
+                    }
+            except Exception as _e_rede:
+                import traceback as _tb_r
+                print(f'[vst_comparar][Rede] AVISO: {_e_rede}\n{_tb_r.format_exc()}')
+                rede_causal_d1 = {
+                    'status': 'erro',
+                    'limitador': None,
+                    'motivo_ausencia': f'{type(_e_rede).__name__}: {_e_rede}',
+                }
+
+            # snapshot do resultado -- so' os campos ja' calculados
+            # acima, nada recalculado; falha aqui nao deve derrubar a
+            # resposta (melhor esforco, como o resto da persistencia
+            # deste projecto). _vst_persistir é partilhada com
+            # /api/moxy/vst/gravar_analise para não duplicar lógica.
+            try:
+                _vst_persistir(
+                    cn, vid, mid,
+                    comp_bp1, comp_bp2,
+                    comp_recovery_bp1, comp_recovery_bp2,
+                    limiter_bp1, limiter_bp2,
+                    hipotese_bp1, hipotese_bp2,
+                    rede_causal_d1=rede_causal_d1,
+                    comp_rpe_bp1=comp_rpe_bp1,
+                    comp_rpe_bp2=comp_rpe_bp2,
+                    limiter_sintese=limiter_sintese,
+                    recuperacao_final_dia2=dia2.get('recuperacao_final'),
+                    rpe_fisiologia=rpe_fisiologia)
+                ddp.upload()
+
+                # ── Persistir no moxy_vst_historico.db (banco canônico) ──────
+                try:
+                    import drive_db_moxy_vst as _mvdb_c
+                    _cn_c = _mvdb_c.get_moxy_vst_conn()
+                    _cn_c.row_factory = __import__('sqlite3').Row
+
+                    # 1. Atividades
+                    _mvdb_c.upsert_activity(_cn_c, mid, 'moxy')
+                    _mvdb_c.upsert_activity(_cn_c, vid, 'vst')
+
+                    # 2+3. Streams — TODOS os retornados pela API (sem whitelist)
+                    import api_client as _api_c
+                    import datetime as _dt_s
+
+                    def _sync_streams(aid_s, label):
+                        agora_s = _dt_s.datetime.now().isoformat(timespec='seconds')
+                        try:
+                            print(f'[MOXY_VST_STREAMS] activity_id={aid_s} ({label})')
+                            _raw, _err = _api_c.icu_get(f'/activity/{aid_s}/streams')
+                            if _err:
+                                print(f'[MOXY_VST_STREAMS] ERROR api {label}: {_err}')
+                                _cn_c.execute(
+                                    "INSERT INTO db_metadata(key,value,updated_at)"
+                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                    " value=excluded.value,updated_at=excluded.updated_at",
+                                    ('stream_sync_last_status', 'api_error', agora_s))
+                                _cn_c.execute(
+                                    "INSERT INTO db_metadata(key,value,updated_at)"
+                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                    " value=excluded.value,updated_at=excluded.updated_at",
+                                    ('stream_sync_last_error', str(_err)[:500], agora_s))
+                                return
+                            parsed = _mvdb_c._parse_streams_api(_raw)
+                            if not parsed:
+                                print(f'[MOXY_VST_STREAMS] API retornou 0 streams ({label})')
+                                _cn_c.execute(
+                                    "INSERT INTO db_metadata(key,value,updated_at)"
+                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                    " value=excluded.value,updated_at=excluded.updated_at",
+                                    ('stream_sync_last_status', 'api_empty', agora_s))
+                                return
+                            keys = sorted(parsed.keys())
+                            print(f'[MOXY_VST_STREAMS] API retornou {len(parsed)} streams')
+                            print(f'[MOXY_VST_STREAMS] keys={keys}')
+                            ins, upd, pres = _mvdb_c.upsert_all_streams(_cn_c, aid_s, _raw)
+                            print(f'[MOXY_VST_STREAMS] inserted={ins} updated={upd} preserved={pres}')
+                            _cn_c.execute(
+                                "INSERT INTO db_metadata(key,value,updated_at)"
+                                " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                " value=excluded.value,updated_at=excluded.updated_at",
+                                ('stream_sync_last_status', 'success', agora_s))
+                        except Exception as _e_str_i:
+                            print(f'[MOXY_VST_STREAMS] ERROR persist {label}: {_e_str_i}')
+                            try:
+                                _cn_c.execute(
+                                    "INSERT INTO db_metadata(key,value,updated_at)"
+                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                    " value=excluded.value,updated_at=excluded.updated_at",
+                                    ('stream_sync_last_status', 'persist_error', agora_s))
+                                _cn_c.execute(
+                                    "INSERT INTO db_metadata(key,value,updated_at)"
+                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                    " value=excluded.value,updated_at=excluded.updated_at",
+                                    ('stream_sync_last_error', str(_e_str_i)[:500], agora_s))
+                            except Exception:
+                                pass
+
+                    _sync_streams(vid, 'VST')
+                    _sync_streams(mid, 'MOXY')
+
+                    # 4. Intervalos VST (BP1 + BP2)
+                    for _grp, _ivs in [('bp1', (dia2.get('bp1') or {}).get('metricas') or []),
+                                        ('bp2', (dia2.get('bp2') or {}).get('metricas') or [])]:
+                        for _idx, _iv in enumerate(_ivs):
+                            _mvdb_c.upsert_vst_interval(
+                                _cn_c, vid, _idx if _grp == 'bp1' else _idx + 100,
+                                grupo=_grp,
+                                start_time=_iv.get('t0') or _iv.get('t0_s'),
+                                end_time=_iv.get('t1') or _iv.get('t1_s'),
+                                power_w=(_iv.get('potencia') or {}).get('media'),
+                                heart_rate_bpm=(_iv.get('hr') or {}).get('media'),
+                                smo2_pct=(_iv.get('smo2') or {}).get('media'),
+                                thb_gdl=(_iv.get('thb') or {}).get('media'),
+                                dfa1=(_iv.get('dfa1') or {}).get('media'),
+                                raw_interval=_iv)
+
+                    # 5. Conjunto MOXY × VST
+                    _cj_id = _mvdb_c.upsert_conjunto(
+                        _cn_c, mid, vid,
+                        bp1_status=comp_bp1.get('status') if comp_bp1 else None,
+                        bp2_status=comp_bp2.get('status') if comp_bp2 else None,
+                        dia1_bp1_w=comp_bp1.get('dia1_bp1_w') if comp_bp1 else None,
+                        dia2_bp1_w=comp_bp1.get('dia2_bp1_w') if comp_bp1 else None,
+                        dia1_bp2_w=comp_bp2.get('dia1_bp2_w') if comp_bp2 else None,
+                        dia2_bp2_w=comp_bp2.get('dia2_bp2_w') if comp_bp2 else None)
+
+                    # 6. Resultado (nova versão — nunca sobrescreve versões anteriores)
+                    if _cj_id:
+                        import json as _json_c
+                        _mvdb_c.insert_resultado(
+                            _cn_c, _cj_id,
+                            resultado_json={
+                                'comparacao_bp1': comp_bp1,
+                                'comparacao_bp2': comp_bp2,
+                                'comparacao_rpe_bp1': comp_rpe_bp1,
+                                'comparacao_rpe_bp2': comp_rpe_bp2,
+                                'limiter_bp1': limiter_bp1,
+                                'limiter_bp2': limiter_bp2,
+                                'limiter_sintese': limiter_sintese,
+                                'hipotese_bp1': hipotese_bp1,
+                                'hipotese_bp2': hipotese_bp2,
+                                'recuperacao_final_dia2': dia2.get('recuperacao_final'),
+                                'rpe_fisiologia': rpe_fisiologia,
+                            },
+                            bp1_w=(comp_bp1 or {}).get('dia2_bp1_w'),
+                            bp2_w=(comp_bp2 or {}).get('dia2_bp2_w'),
+                            comparacao_rpe_bp1=comp_rpe_bp1,
+                            comparacao_rpe_bp2=comp_rpe_bp2,
+                            limiter_sintese=limiter_sintese,
+                            recuperacao_final_dia2=dia2.get('recuperacao_final'),
+                            rpe_fisiologia_json=rpe_fisiologia)
+
+                    _cn_c.commit()
+                    _ok_up_mv, _det_up_mv = _mvdb_c.upload()
+                    print(f'[MOXY_VST_STREAMS] upload={"success" if _ok_up_mv else "fail: " + str(_det_up_mv)[:80]}')
+                    _cn_c.close()
+                except Exception as _e_mvdb_c:
+                    print(f'[comparar][moxy_vst_historico.db] {_e_mvdb_c}')
+            except Exception:
+                pass
+
+            # ── Validação fisiológica automática ──────────────────────────
+            # Calcular e persistir validacao_fisiologica_json automaticamente
+            # após cada comparação. Não depende do utilizador ir a Gravar análise.
+            try:
+                # Obter dfa1, bp1/bp2 watts e métricas — já disponíveis de dia1_lim
+                _dfa1_c = dia1_lim.get('dfa1') or {}
+                _lc_c   = (dia1_lim.get('limiares_consenso') or {})
+                _bp1w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
+                           or (_lc_c.get('primeiro') or {}).get('mediana'))
+                _bp2w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
+                           or (_lc_c.get('segundo') or {}).get('mediana'))
+                _bp1bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_bpm')
+                _bp2bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_bpm')
+                # Métricas dos blocos do dia 2 — reutilizar dia2 já calculado
+                _bp1_m_c = (dia2.get('bp1') or {}).get('metricas') or []
+                _bp2_m_c = (dia2.get('bp2') or {}).get('metricas') or []
+
+                # RPE do VST (Dia 2) por intervalo — de activity_interval_rpe
+                # Cache de moxy_rpe para fallback (evita N queries)
+                _rpe_legacy_t0 = {float(r[0]): r[1] for r in cn.execute(
+                    "SELECT t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? AND t0_s IS NOT NULL",
+                    (vid,)).fetchall()}
+
+                # Pré-carregar RPE do moxy_vst_historico.db para toda a atividade
+                _rpe_mv_cache = {}
+                try:
+                    import drive_db_moxy_vst as _mvdb_rpe_pre
+                    _cn_rpe_pre = _mvdb_rpe_pre.get_moxy_vst_conn()
+                    for _r in _cn_rpe_pre.execute(
+                        "SELECT start_time, rpe, rpe_status FROM activity_interval_rpe "
+                        "WHERE activity_id=?", (vid,)).fetchall():
+                        _rpe_mv_cache[float(_r[0])] = (_r[1], _r[2])
+                    _cn_rpe_pre.close()
+                except Exception:
+                    pass
+
+                def _rpe_c(metricas_lista, aid):
+                    rpes = []
+                    for _m in metricas_lista:
+                        _t0 = _m.get('t0') or _m.get('t0_s')
+                        if _t0 is None:
+                            rpes.append(None); continue
+                        _t0f = float(_t0)
+                        # Fonte 1: moxy_vst_historico.db (banco canônico)
+                        _rv = None
+                        for _t0_mv, (_rpe_mv, _stat_mv) in _rpe_mv_cache.items():
+                            if abs(_t0_mv - _t0f) <= 1 and _stat_mv != 'deleted':
+                                _rv = _rpe_mv; break
+                        # Fonte 2: activity_interval_rpe do perfil_historico.db
+                        if _rv is None:
+                            _rv_pf, _fonte_pf = _rpe_interval_resolver(cn, aid, _t0f)
+                            if _fonte_pf == 'new':
+                                _rv = _rv_pf
+                        # Fonte 3: moxy_rpe (legado) por t0_s
+                        if _rv is None:
+                            for _t0_leg, _rpe_leg in _rpe_legacy_t0.items():
+                                if abs(_t0_leg - _t0f) <= 1:
+                                    _rv = _rpe_leg; break
+                        rpes.append(_rv)
+                    return rpes
+                _rpe_c_bp1 = _rpe_c(_bp1_m_c, vid)
+                _rpe_c_bp2 = _rpe_c(_bp2_m_c, vid)
+
+                # Curva watts->RPE do MOXY (Dia 1) — de activity_interval_rpe.
+                # Usada por validar_fisiologica_vst para calcular rpe_esperado_potencia
+                # e rpe_diferenca em cada intervalo da tabela BP1/BP2.
+                # Tambem entra no hash para invalidar a analise quando o RPE do MOXY mudar.
+                _curva_moxy_rpe = []
+                for _b1 in ons1:
+                    _t0_b1 = _b1.get('t0')
+                    _w_b1  = (_b1.get('watts') or _b1.get('watts_medio_da_api'))
+                    if _t0_b1 is not None and _w_b1 is not None:
+                        _rv_b1, _ = _rpe_interval_resolver(cn, mid, float(_t0_b1))
+                        if _rv_b1 is not None:
+                            _curva_moxy_rpe.append((_w_b1, _rv_b1))
+
+                _fisio_calcular_e_persistir(
+                    cn, mid, vid,
+                    _bp1w_c, _bp2w_c, _bp1bpm_c, _bp2bpm_c,
+                    _dfa1_c, _bp1_m_c, _bp2_m_c,
+                    curva_rpe=_curva_moxy_rpe if _curva_moxy_rpe else None,
+                    rpe_vst_bp1=_rpe_c_bp1,
+                    rpe_vst_bp2=_rpe_c_bp2)
+                # upload feito pelo bloco _vst_persistir/ddp.upload() acima
+            except Exception as _e_fisio_auto:
+                import traceback as _tb_fa
+                print(f'[vst_comparar][fisio auto] AVISO: {_e_fisio_auto}\n'
+                      f'{_tb_fa.format_exc()}')
+
+            # ── Gravar análise MOXY (moxy_analises) automaticamente ───────────
+            # api_moxy_guardar_analise calcula e persiste BP1/BP2/HRVT/
+            # interpretação/rede causal da sessão MOXY (Day 1) em moxy_analises.
+            # Só grava se ainda não estiver na versão actual — melhor esforço.
+            try:
+                _ga_resp = api_moxy_guardar_analise(mid)
+                _ga_d = (_ga_resp[0].get_json() if isinstance(_ga_resp, tuple)
+                         else _ga_resp.get_json()) or {}
+                print(f'[vst_comparar][moxy_analise] mid={mid} '
+                      f'status={_ga_d.get("status")}')
+            except Exception as _e_ga:
+                import traceback as _tb_ga
+                print(f'[vst_comparar][moxy_analise] AVISO: {_e_ga}\n'
+                      f'{_tb_ga.format_exc()}')
+
+            # Ler validacao_fisiologica_json e bpm_vst_validacao_json
+            # que acabaram de ser gravados por _fisio_calcular_e_persistir,
+            # e incluir no return para o frontend renderizar imediatamente.
+            _vf_ret = None
+            _bpm_vf_ret = None
+            try:
+                import json as _json_r
+                _vf_row = cn.execute(
+                    "SELECT validacao_fisiologica_json, bpm_vst_validacao_json "
+                    "FROM vst_conjuntos "
+                    "WHERE vst_activity_id=?", (str(vid),)).fetchone()
+                if _vf_row:
+                    if _vf_row[0]:
+                        _vf_ret = _json_r.loads(_vf_row[0])
+                    if _vf_row[1]:
+                        _bpm_vf_ret = _json_r.loads(_vf_row[1])
+            except Exception:
+                pass
+
+            return jsonify({
+                'status': 'ok',
+                'dia1_activity_id': mid, 'dia2_activity_id': vid,
+                'comparacao_bp1': comp_bp1, 'comparacao_bp2': comp_bp2,
+                'comparacao_recovery_bp1': comp_recovery_bp1,
+                'comparacao_recovery_bp2': comp_recovery_bp2,
+                'comparacao_rpe_bp1': comp_rpe_bp1, 'comparacao_rpe_bp2': comp_rpe_bp2,
+                'limiter_bp1': limiter_bp1, 'limiter_bp2': limiter_bp2,
+                'limiter_sintese': limiter_sintese,
+                'hipotese_bp1': hipotese_bp1, 'hipotese_bp2': hipotese_bp2,
+                'recuperacao_final_dia2': dia2.get('recuperacao_final'),
+                'rede_causal': rede_causal_d1,
+                'validacao_fisiologica': _vf_ret,
+                'bpm_vst_validacao': _bpm_vf_ret,
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/modo_blocos/<path:activity_id>')
+    def api_moxy_modo_blocos_ler(activity_id):
+        """Modo de blocos gravado para esta actividade — 'automatico' ou
+        'sincronizado' (icu_intervals). Sem registo, devolve 'automatico'
+        (o comportamento actual: tenta icu_intervals, cai para detecção
+        automática só se aquilo falhar)."""
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            r = cn.execute(
+                "SELECT modo, gravado_em FROM moxy_modo_blocos "
+                "WHERE activity_id=?", (aid,)).fetchone()
+            if r:
+                return jsonify({'status': 'ok', 'modo': r[0],
+                                'gravado_em': r[1], 'explicito': True})
+            return jsonify({'status': 'ok', 'modo': 'automatico',
+                            'gravado_em': None, 'explicito': False})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/modo_blocos/<path:activity_id>', methods=['POST'])
+    def api_moxy_modo_blocos_gravar(activity_id):
+        """Grava a escolha do atleta: 'automatico' (detecção nossa, do
+        stream de potência) ou 'sincronizado' (força usar icu_intervals
+        da Intervals.icu, mesmo que já houvesse uma análise automática
+        gravada). Fica assim até o atleta clicar no outro botão.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            corpo = request.get_json(force=True, silent=True) or {}
+            modo = corpo.get('modo')
+            if modo not in ('automatico', 'sincronizado'):
+                return jsonify({
+                    'status': 'erro',
+                    'mensagem': f'modo inválido: {modo!r} — '
+                               'tem de ser "automatico" ou "sincronizado"'
+                    }), 200
+
+            import drive_db_perfil as ddp
+            cn = ddp.get_conn()
+            agora = datetime.now().isoformat(timespec='seconds')
+            cn.execute(
+                "INSERT OR REPLACE INTO moxy_modo_blocos "
+                "(activity_id, modo, gravado_em) VALUES (?,?,?)",
+                (aid, modo, agora))
+            cn.commit()
+            ok_up, det_up = ddp.upload()
+
+            aviso_cache = None
+            try:
+                # a cache vive no app.py; importado aqui para nao criar
+                # dependencia circular no topo do modulo. Sem isto, a
+                # proxima leitura podia continuar a servir os blocos
+                # antigos, gravados antes da troca de modo.
+                from app import invalidar_cache
+                invalidar_cache()
+            except Exception as e:
+                aviso_cache = f'{type(e).__name__}: {e}'
+
+            fora = {'status': 'ok' if ok_up else 'gravado_sem_upload',
+                   'modo': modo, 'gravado_em': agora}
+            if not ok_up:
+                fora['upload_detalhe'] = det_up
+            if aviso_cache:
+                fora['aviso_cache'] = aviso_cache
+            return jsonify(fora)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/estilos_recentes')
+    def api_moxy_estilos_recentes():
+        """O que o atleta tem treinado, por modalidade, nos últimos N dias.
+
+        Não filtra por Moxy — lê TODAS as actividades, porque a pergunta é
+        sobre o estilo de treino em geral, não só as sessões com sensor.
+        ?dias=60
+        """
+        try:
+            import db as _db
+            import intervencoes as _iv
+            from config import TYPE_MAP
+            dias = request.args.get('dias', type=int) or 60
+            corte = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+            linhas = _db._exec(
+                "SELECT type, date, raw FROM activities "
+                "WHERE raw IS NOT NULL AND date >= ? ORDER BY date DESC",
+                (corte,), fetch='all') or []
+            sessoes = []
+            for tipo, data, raw in linhas:
+                mod = TYPE_MAP.get(tipo)
+                if not mod:
+                    continue
+                try:
+                    j = raw if isinstance(raw, dict) else json.loads(raw)
+                except Exception:
+                    continue
+                isum = j.get('interval_summary')
+                if isum:
+                    sessoes.append({'modalidade': mod, 'data': str(data)[:10],
+                                    'interval_summary': isum})
+            r = _iv.estilos_recentes(sessoes, dias=dias)
+            r['status'] = 'ok' if r.get('ok') else 'sem_dados'
+            return jsonify(r)
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/intervencoes')
+    def api_moxy_intervencoes():
+        """O que treinar, conforme o limitador.  ?limitador=Fornecimento"""
+        try:
+            import os as _o
+            import sys as _s
+            _s.path.insert(0, _o.path.join(
+                _o.path.dirname(_o.path.abspath(__file__)), 'utils'))
+            import intervencoes as _iv
+            # plano por zona com os NÚMEROS REAIS do teste
+            if request.args.get('plano_limitador'):
+                def _f(nome):
+                    v = request.args.get(nome, type=float)
+                    return v
+                r = _iv.plano_personalizado(
+                    request.args['plano_limitador'],
+                    bp1_w=_f('bp1_w'), bp2_w=_f('bp2_w'),
+                    bp1_bpm=_f('bp1_bpm'), bp2_bpm=_f('bp2_bpm'),
+                    smo2_min=_f('smo2_min'), fc_max=_f('fc_max'))
+                r['status'] = 'ok' if r.get('ok') else 'sem_plano'
+                return jsonify(r)
+
+            # consenso ENTRE sessões, quando vem uma lista
+            if request.args.get('sessoes'):
+                import json as _j
+                try:
+                    ss = _j.loads(request.args['sessoes'])
+                except Exception as e:
+                    return jsonify({'status': 'erro',
+                                    'mensagem': f'sessoes inválido: {e}'}), 200
+                r = _iv.consenso_entre_sessoes(ss)
+                r['fundacoes'] = _iv.FUNDACOES
+                r['status'] = 'ok' if r.get('ok') else 'sem_dados'
+                return jsonify(r)
+
+            # síntese dos TRÊS resultados quando são dados
+            if request.args.get('rede') or request.args.get('us'):
+                r = _iv.sintetizar(
+                    rede=request.args.get('rede'),
+                    us=request.args.get('us'),
+                    pc=request.args.get('pc'),
+                    perfil=request.args.get('perfil'),
+                    hipocapnia=request.args.get('hipocapnia') == '1')
+                r['fundacoes'] = _iv.FUNDACOES
+                r['status'] = 'ok'
+                return jsonify(r)
+
+            alvo = request.args.get('limitador')
+            if alvo:
+                r = _iv.para_limitador(alvo)
+                if not r:
+                    return jsonify({
+                        'status': 'sem_correspondencia', 'limitador': alvo,
+                        'motivo': (f'"{alvo}" não corresponde a nenhum dos '
+                                   'três limitadores. Um resultado misto '
+                                   'não tem intervenção própria: significa '
+                                   'que nenhum sistema domina'),
+                        'disponiveis': list(_iv.INTERVENCOES)}), 200
+                return jsonify({'status': 'ok', 'limitador': alvo,
+                                'intervencao': r,
+                                'fundacoes': _iv.FUNDACOES,
+                                'aviso': _iv.tudo()['aviso']})
+            return jsonify({'status': 'ok', **_iv.tudo()})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/debug_bp/<path:activity_id>')
+    def api_moxy_debug_bp(activity_id):
+        """Como cada BP foi calculado, passo a passo.
+
+        Existe para responder a "porque é que este número saiu assim" sem
+        ter de adivinhar a partir do ecrã. Mostra o degrau de onde cada
+        valor veio e a FC nesse degrau — que é onde os erros aparecem.
+        """
+        try:
+            aid = str(activity_id).strip().strip('/').split('/')[-1]
+            dd = api_moxy_dados(aid)
+            d = (dd[0].get_json() if isinstance(dd, tuple)
+                 else dd.get_json()) or {}
+            ll = api_moxy_limiares(aid)
+            lim = (ll[0].get_json() if isinstance(ll, tuple)
+                   else ll.get_json()) or {}
+
+            t = d.get('tempo') or []
+            canais = d.get('canais') or {}
+            hr = canais.get('heartrate') or []
+            wt = canais.get('watts') or []
+            sm = canais.get('smo2_sem_filtro') or canais.get('smo2') or []
+            blocos = ((d.get('blocos') or {}).get('blocos')) or []
+
+            def _stat(serie, a, b):
+                vs = [serie[i] for i in range(min(len(t), len(serie)))
+                      if a <= t[i] <= b and serie[i] is not None]
+                if not vs:
+                    return None
+                return {'n': len(vs), 'media': round(sum(vs) / len(vs), 1),
+                        'min': round(min(vs), 1), 'max': round(max(vs), 1)}
+
+            # cada bloco, ON e OFF, com o que lá está
+            detalhe = []
+            for b in blocos:
+                detalhe.append({
+                    'tipo': 'TRABALHO' if b.get('on') else 'recuperação',
+                    'de_s': round(b['t0']), 'ate_s': round(b['t1']),
+                    'duracao_s': round(b['t1'] - b['t0']),
+                    'watts_do_lap': b.get('watts_medio'),
+                    'watts_do_stream': _stat(wt, b['t0'], b['t1']),
+                    'fc': _stat(hr, b['t0'], b['t1']),
+                    'smo2': _stat(sm, b['t0'], b['t1']),
+                })
+
+            # de onde vem cada BP
+            bls = lim.get('bp_moxy_sem_restricao') or {}
+            bmx = lim.get('bp_moxy') or {}
+            origem = []
+            for nome, fonte in (('script Intervals.icu', bls),
+                                ('2 degraus por troço', bmx)):
+                if fonte.get('bp1_w') is None:
+                    continue
+                o = {'metodo': nome,
+                     'bp1_w': fonte.get('bp1_w'),
+                     'bp1_bpm': fonte.get('bp1_bpm'),
+                     'bp2_w': fonte.get('bp2_w'),
+                     'bp2_bpm': fonte.get('bp2_bpm'),
+                     'pontos_usados': fonte.get('pontos'),
+                     'fc_descartada': fonte.get('fc_descartada')}
+                # a FC do BP é INTERPOLADA entre degraus: mostrar quais
+                for chave, w in (('bp1', fonte.get('bp1_w')),
+                                 ('bp2', fonte.get('bp2_w'))):
+                    if w is None:
+                        continue
+                    ps = sorted((p for p in (fonte.get('pontos') or [])
+                                 if p.get('hr') is not None),
+                                key=lambda p: p['watts'])
+                    ab = [p for p in ps if p['watts'] <= w]
+                    ac = [p for p in ps if p['watts'] > w]
+                    o[f'{chave}_fc_interpolada_entre'] = {
+                        'abaixo': ab[-1] if ab else None,
+                        'acima': ac[0] if ac else None,
+                    }
+                origem.append(o)
+
+            return jsonify({
+                'status': 'ok', 'activity_id': aid,
+                'modalidade': lim.get('modalidade'),
+                'fc_valida': d.get('fc_valida'),
+                'canais_invalidos': d.get('canais_invalidos'),
+                'detalhe_invalidos': d.get('detalhe_invalidos'),
+                'congelados': d.get('congelados'),
+                'artefactos': d.get('artefactos'),
+                'corte_usado': [lim.get('corte_inicio_s'),
+                                lim.get('corte_fim_s')],
+                'blocos': detalhe,
+                'origem_dos_breakpoints': origem,
+                'blocos_usados_no_ajuste': lim.get('blocos_usados'),
+                'fc_global': _stat(hr, t[0] if t else 0,
+                                   t[-1] if t else 0),
+                'watts_global': _stat(wt, t[0] if t else 0,
+                                      t[-1] if t else 0),
+                'como_ler': (
+                    'watts_do_lap vem da Intervals.icu; watts_do_stream é '
+                    'calculado dos dados em bruto. Se diferirem muito num '
+                    'bloco de recuperação, o lap está a incluir tempo de '
+                    'transição. A FC do BP é INTERPOLADA entre os dois '
+                    'degraus vizinhos — se um deles tiver FC errada, o BP '
+                    'herda-a'),
+            })
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/moxy/corte', methods=['POST'])
+    def api_moxy_corte():
+        """Grava o intervalo a analisar de uma sessao.
+
+        Corpo: activity_id, inicio_s, fim_s, modalidade, data, nota.
+        Gravar de novo a mesma actividade substitui -- a chave e' o id.
+        """
+        try:
+            import drive_db_perfil as ddp
+            c = request.get_json(silent=True) or {}
+            aid = str(c.get('activity_id') or '').strip()
+            if not aid:
+                return jsonify({'status': 'erro',
+                                'mensagem': 'activity_id em falta'}), 400
+            cn = ddp.get_conn()
+            cn.execute(
+                """INSERT OR REPLACE INTO moxy_cortes
+                   (activity_id, modalidade, data, inicio_s, fim_s, origem,
+                    proposto_s, nota, data_gravacao)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (aid, c.get('modalidade'), c.get('data'),
+                 c.get('inicio_s'), c.get('fim_s'),
+                 c.get('origem') or 'utilizador', c.get('proposto_s'),
+                 c.get('nota'),
+                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            cn.commit()
+            ok, det = ddp.upload()
+            cn.close()
+            return jsonify({'status': 'ok' if ok else 'gravado_sem_upload',
+                            'activity_id': aid, 'drive': det})
+        except Exception as e:
+            return jsonify({'status': 'erro', 'mensagem': str(e),
+                            'trace': traceback.format_exc()}), 500
+
+    return app

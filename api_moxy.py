@@ -306,23 +306,42 @@ def _rpe_interval_resolver(cn, activity_id, start_time):
     return None, 'absent'   # chamador faz fallback para moxy_rpe
 
 
+def _rpe_to_float(rpe_raw):
+    """Converte RPE para float. Aceita qualquer decimal valido em 0..10.
+
+    Nao restringe a multiplos de 0.5 nem a inteiros.
+    Exemplos validos: 1, 2.7, 4.2, 4.5, 7.8, 8.9, 9.99.
+    Lanca ValueError se fora do intervalo 0..10 ou nao numerico.
+    Nunca usa int() — preserva casas decimais.
+    """
+    try:
+        v = float(rpe_raw)
+    except (TypeError, ValueError):
+        raise ValueError(f'rpe deve ser numerico, recebeu: {rpe_raw!r}')
+    if v < 0 or v > 10:
+        raise ValueError(f'rpe {v} fora do intervalo 0..10')
+    return v
+
+
 def _rpe_interval_upsert(cn, activity_id, intervals):
     """UPSERT de uma lista de intervalos em activity_interval_rpe.
 
-    Cada item da lista deve ter: start_time, rpe (0..10).
+    Cada item da lista deve ter: start_time, rpe (0..10, qualquer decimal).
     Campos opcionais: interval_type, elapsed_time.
-    Retorna número de linhas afectadas.
+    Retorna numero de linhas afectadas.
+
+    rpe e armazenado como float (REAL). Nunca usa int().
     """
     agora = datetime.now().isoformat(timespec='seconds')
     n = 0
     for iv in (intervals or []):
         st = iv.get('start_time')
-        rpe = iv.get('rpe')
-        if st is None or rpe is None:
+        rpe_raw = iv.get('rpe')
+        if st is None or rpe_raw is None:
             continue
-        rpe = int(rpe)
-        if not (0 <= rpe <= 10):
-            raise ValueError(f'rpe inválido: {rpe!r} — tem de ser 0 a 10')
+        rpe = _rpe_to_float(rpe_raw)
+        print(f'[RPE SAVE] activity={activity_id} start_time={st} '
+              f'received={rpe_raw!r} type={type(rpe_raw).__name__} saved={rpe}')
         cn.execute(
             "INSERT INTO activity_interval_rpe "
             "(activity_id, start_time, interval_type, elapsed_time, "
@@ -2781,12 +2800,12 @@ def registar(app):
                                 st = iv.get('start_time')
                                 if st is None: continue
                                 rpe_val = rpe_map.get(str(st)) or rpe_map.get(str(float(st)))
-                                if rpe_val is not None and int(rpe_val) > 0:
+                                if rpe_val is not None and float(rpe_val) > 0:
                                     snap_ivs.append({
                                         'start_time': float(st),
                                         'interval_type': iv.get('type'),
                                         'elapsed_time': iv.get('elapsed_time'),
-                                        'rpe': int(rpe_val),
+                                        'rpe': float(rpe_val),
                                         'source': 'snapshot_legado',
                                         'updated_at': None,
                                     })
@@ -2845,10 +2864,11 @@ def registar(app):
                                     'mensagem': 'start_time obrigatório'}), 400
                 if rpe is None or not isinstance(rpe, (int, float)):
                     return jsonify({'status': 'erro',
-                                    'mensagem': f'rpe inválido: {rpe!r}'}), 400
-                if not (0 <= int(rpe) <= 10):
-                    return jsonify({'status': 'erro',
-                                    'mensagem': f'rpe {rpe} fora do intervalo 0..10'}), 400
+                                    'mensagem': f'rpe invalido: {rpe!r}'}), 400
+                try:
+                    _rpe_to_float(rpe)
+                except ValueError as _ve:
+                    return jsonify({'status': 'erro', 'mensagem': str(_ve)}), 400
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
             n = _rpe_interval_upsert(cn, aid, intervals)

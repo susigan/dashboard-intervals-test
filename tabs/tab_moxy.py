@@ -474,6 +474,8 @@ BODY = """
     <div id="mxVstBpmCardArea" style="margin-bottom:8px;"></div>
     <!-- Validação fisiológica: potência × FC/HRVT × RPE -->
     <div id="mxVstFisioCardArea" style="margin-bottom:8px;"></div>
+    <!-- Análise RPE × Fisiologia (rpe_fisiologia_json) -->
+    <div id="mxVstRpeFisioCardArea" style="margin-bottom:8px;"></div>
 <div id="mxVstDashboard" style="margin-bottom:12px;"></div>
 
     <!-- 3b. LIMITADOR — DAY 1 / MOXY ────────────────────────────  -->
@@ -2683,6 +2685,118 @@ function mxVstSincronizar(){
 
 // _mxVstRenderComparacao — renderiza o resultado (cache ou recalculado)
 // nos divs existentes. Centraliza toda a renderização para evitar duplicação.
+function _mxVstRpeFisioCard(fi){
+ // Renderiza a análise integrada RPE × Fisiologia.
+ // fi = d.rpe_fisiologia do response do /vst/comparar ou /vst/resultado.
+ // Valores decimais preservados: parseFloat, nunca parseInt ou toFixed(0).
+
+ const PADROES={
+  CARDIORRESPIRATORIO:'🫀 Cardiorrespiratório',
+  PERIFERICO:'💪 Periférico',
+  MISTO:'🔀 Misto (multissistêmico)',
+  AUTONOMICO:'⚡ Autonômico',
+  RPE_ESTAVEL:'📊 RPE Estável',
+  SEM_PADRAO_CONCLUSIVO:'❓ Sem padrão conclusivo',
+  DADOS_INSUFICIENTES:'📉 Dados insuficientes',
+  SEM_DADOS_RPE:'— Sem dados de RPE',
+ };
+ const CORES={
+  CARDIORRESPIRATORIO:'#e3b341',PERIFERICO:'#f78166',MISTO:'#a5d6ff',
+  AUTONOMICO:'#d2a8ff',RPE_ESTAVEL:'#56d364',
+  SEM_PADRAO_CONCLUSIVO:'#8b949e',DADOS_INSUFICIENTES:'#8b949e',SEM_DADOS_RPE:'#6e7681',
+ };
+ const DEMOJI={up:'↑',down:'↓',stable:'→'};
+
+ function _fmt(v){
+  if(v===null||v===undefined) return '—';
+  const n=parseFloat(v);
+  if(isNaN(n)) return String(v);
+  // Preservar decimais como gravados — sem arredondamento para inteiro
+  const parts=String(n).split('.');
+  return parts[1] ? n.toFixed(Math.min(4,parts[1].length)) : String(n);
+ }
+ function _d(v){return DEMOJI[v]||v||'—';}
+
+ function _bpSection(bp,label){
+  if(!bp) return '<p style="color:#8b949e;font-size:12px;">'+label+': sem dados.</p>';
+  const pad=bp.padrao||'',cor=CORES[pad]||'#8b949e',padL=PADROES[pad]||pad||'—';
+  const dir=bp.direcao||{};
+  let h='<div style="border:1px solid #30363d;border-radius:6px;padding:10px 12px;margin-bottom:10px;">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:8px;">';
+  h+='<strong style="font-size:13px;color:#c9d1d9;">'+label+'</strong>';
+  h+='<span style="font-size:11px;font-weight:600;color:'+cor+';background:#0d1117;'
+   +'padding:2px 8px;border-radius:12px;border:1px solid '+cor+';">'+padL+'</span></div>';
+  // Métricas resumo em chips
+  const chips=[
+   ['RPE ini',_fmt(bp.rpe_inicial)],['RPE fim',_fmt(bp.rpe_final)],
+   ['RPE médio',_fmt(bp.rpe_media)],['Δ RPE',_fmt((bp.deltas_bp||{}).rpe)],
+   ['↕ RPE',_d(dir.rpe)],['↕ FC',_d(dir.hr)],
+   ['↕ RF',_d(dir.respiracao)],['↕ SmO2',_d(dir.smo2)],['↕ DFA1',_d(dir.dfa1)],
+  ];
+  h+='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">';
+  chips.forEach(([k,v])=>{
+   h+='<span style="font-size:11px;background:#161b22;padding:2px 7px;border-radius:4px;'
+    +'border:1px solid #30363d;color:#c9d1d9;white-space:nowrap;">'
+    +'<span style="color:#8b949e;">'+k+':</span> <b>'+v+'</b></span>';
+  });
+  h+='</div>';
+  if(bp.explicacao) h+='<p style="font-size:11px;color:#8b949e;margin:0 0 8px;font-style:italic;">'+bp.explicacao+'</p>';
+  // Tabela por intervalo
+  const ivs=bp.intervalos||[];
+  if(ivs.length){
+   h+='<div style="overflow-x:auto;">';
+   h+='<table style="width:100%;border-collapse:collapse;font-size:11px;min-width:500px;">';
+   h+='<thead><tr style="border-bottom:1px solid #30363d;">';
+   ['#','RPE','W','FC','RF','SmO2','THb','DFA1','Δ RPE'].forEach(c=>{
+    h+='<th style="padding:3px 7px;text-align:right;color:#8b949e;font-weight:500;">'+c+'</th>';
+   });
+   h+='</tr></thead><tbody>';
+   ivs.forEach(iv=>{
+    const dv=iv.delta_vs_anterior||{};
+    const drpe=dv.rpe!=null?(dv.rpe>0?'+':'')+_fmt(dv.rpe):'—';
+    const row=[
+     String(iv.ordem||''),
+     _fmt(iv.rpe),
+     _fmt((iv.potencia||{}).media),
+     _fmt((iv.hr||{}).media),
+     _fmt((iv.respiracao||{}).media),
+     _fmt((iv.smo2||{}).media),
+     _fmt((iv.thb||{}).media),
+     _fmt((iv.dfa1||{}).media),
+     drpe,
+    ];
+    h+='<tr style="border-bottom:1px solid #21262d;">';
+    row.forEach((c,ci)=>{
+     const clr=ci===1?'#e3b341':'#c9d1d9';
+     h+='<td style="padding:3px 7px;text-align:right;color:'+clr+';">'+c+'</td>';
+    });
+    h+='</tr>';
+   });
+   h+='</tbody></table></div>';
+  }
+  if(bp.nota) h+='<p style="font-size:10px;color:#6e7681;margin:6px 0 0;font-style:italic;">'+bp.nota+'</p>';
+  h+='</div>';
+  return h;
+ }
+
+ let html='<div style="margin-top:16px;">';
+ html+='<h3 style="font-size:14px;margin:0 0 4px;color:#c9d1d9;">Análise RPE × Fisiologia</h3>';
+ html+='<p style="font-size:10px;color:#8b949e;margin:0 0 10px;">'
+     +'Padrões de resposta fisiológica por bloco de trabalho. '
+     +'Não implica causalidade — use: <em>compatível com / associado a</em>.</p>';
+ if(!fi||(!fi.bp1&&!fi.bp2)){
+  html+='<div style="color:#8b949e;font-size:12px;padding:10px;border:1px solid #30363d;border-radius:6px;">'
+      +'Análise RPE × Fisiologia indisponível para esta versão. '
+      +'Execute novamente Comparar / Sincronizar para gerar a análise.</div>';
+ } else {
+  if(fi.bp1) html+=_bpSection(fi.bp1,'BP1');
+  if(fi.bp2) html+=_bpSection(fi.bp2,'BP2');
+  if(fi.nota_geral) html+='<p style="font-size:10px;color:#6e7681;margin:4px 0 0;font-style:italic;">'+fi.nota_geral+'</p>';
+ }
+ html+='</div>';
+ return html;
+}
+
 function _mxVstRenderComparacao(d, vstId){
  const box=document.getElementById('mxVstComparacao');
  if(box) box.innerHTML=_vstTabelaComparacao('BP1', d.comparacao_bp1, d.comparacao_rpe_bp1)
@@ -2727,6 +2841,11 @@ function _mxVstRenderComparacao(d, vstId){
   } else {
    bpmDiv.innerHTML='';
   }
+ }
+ // Análise RPE × Fisiologia — sempre visível, estado inicial aberto
+ const rpeFisioDiv=document.getElementById('mxVstRpeFisioCardArea');
+ if(rpeFisioDiv){
+  rpeFisioDiv.innerHTML=_mxVstRpeFisioCard(d.rpe_fisiologia||null);
  }
 }
 

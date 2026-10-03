@@ -5,7 +5,7 @@ Nunca DROP, nunca DELETE, nunca recria tabelas existentes.
 Cada chamada a aplicar_schema() é idempotente.
 """
 
-SCHEMA_VERSION = 3  # incrementar ao adicionar tabelas/colunas
+SCHEMA_VERSION = 4  # v4: rpe REAL — aceita qualquer decimal
 
 _TABELAS = [
 
@@ -76,7 +76,7 @@ _TABELAS = [
         interval_index  INTEGER,
         interval_type   TEXT,
         elapsed_time    REAL,
-        rpe             INTEGER,
+        rpe             REAL,
         rpe_status      TEXT    DEFAULT 'recorded',
         source          TEXT    DEFAULT 'manual',
         created_at      TEXT,
@@ -184,11 +184,24 @@ _TABELAS = [
 ]
 
 # Colunas a adicionar em tabelas existentes (migrações não destrutivas)
-_MIGRATIONS = [
-    # (tabela, coluna, tipo, default)
-    # Exemplo de migração futura:
-    # ("activity_interval_rpe", "notes", "TEXT", "NULL"),
-]
+_MIGRATIONS = []
+
+# Migrações de dados (executadas em aplicar_schema, idempotentes)
+def _migrar_rpe_real(conn):
+    """v4: converte rpe INTEGER -> REAL no banco existente.
+
+    SQLite aceita REAL mesmo em coluna declarada INTEGER (duck typing),
+    mas este UPDATE garante que o tipo de armazenamento interno seja REAL.
+    UPDATE ... * 1.0 nao altera valores: 6 -> 6.0, 4.2 -> 4.2.
+    Idempotente: pode ser re-executada sem danos.
+    """
+    try:
+        conn.execute(
+            "UPDATE activity_interval_rpe "
+            "SET rpe = rpe * 1.0 WHERE rpe IS NOT NULL")
+        conn.commit()
+    except Exception:
+        pass  # tabela pode nao existir ainda
 
 
 def aplicar_schema(conn):
@@ -208,6 +221,9 @@ def aplicar_schema(conn):
             )
         except Exception:
             pass  # coluna já existe
+
+    # Migracoes de dados (idempotentes)
+    _migrar_rpe_real(conn)
 
     # Atualizar metadados do schema
     import datetime

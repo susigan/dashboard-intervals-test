@@ -5,7 +5,7 @@ Nunca DROP, nunca DELETE, nunca recria tabelas existentes.
 Cada chamada a aplicar_schema() é idempotente.
 """
 
-SCHEMA_VERSION = 4  # v4: rpe REAL — aceita qualquer decimal
+SCHEMA_VERSION = 5  # v5: vst_results.rpe_fisiologia_json
 
 _TABELAS = [
 
@@ -163,6 +163,9 @@ _TABELAS = [
         rpe_bp1_disponivel          INTEGER DEFAULT 0,
         rpe_bp2_disponivel          INTEGER DEFAULT 0,
 
+        -- Análise integrada RPE × fisiologia (v5)
+        rpe_fisiologia_json         TEXT,
+
         created_at                  TEXT
     )""",
 
@@ -187,6 +190,18 @@ _TABELAS = [
 _MIGRATIONS = []
 
 # Migrações de dados (executadas em aplicar_schema, idempotentes)
+def _migrar_v5_rpe_fisiologia(conn):
+    """v5: adicionar coluna rpe_fisiologia_json em vst_results se nao existir."""
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(vst_results)").fetchall()}
+        if 'rpe_fisiologia_json' not in cols:
+            conn.execute(
+                "ALTER TABLE vst_results ADD COLUMN rpe_fisiologia_json TEXT")
+            conn.commit()
+    except Exception:
+        pass
+
+
 def _migrar_rpe_real(conn):
     """v4: converte rpe INTEGER -> REAL no banco existente.
 
@@ -224,6 +239,7 @@ def aplicar_schema(conn):
 
     # Migracoes de dados (idempotentes)
     _migrar_rpe_real(conn)
+    _migrar_v5_rpe_fisiologia(conn)
 
     # Atualizar metadados do schema
     import datetime

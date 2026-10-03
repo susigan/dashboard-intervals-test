@@ -1,115 +1,96 @@
-                vs = [serie[i] for i in range(min(len(t), len(serie)))
-                      if a <= t[i] <= b and serie[i] is not None]
-                if not vs:
-                    return None
-                return {'n': len(vs), 'media': round(sum(vs) / len(vs), 1),
-                        'min': round(min(vs), 1), 'max': round(max(vs), 1)}
+"""api_moxy.py — sessoes com sensor NIRS (Moxy).
 
-            # cada bloco, ON e OFF, com o que lá está
-            detalhe = []
-            for b in blocos:
-                detalhe.append({
-                    'tipo': 'TRABALHO' if b.get('on') else 'recuperação',
-                    'de_s': round(b['t0']), 'ate_s': round(b['t1']),
-                    'duracao_s': round(b['t1'] - b['t0']),
-                    'watts_do_lap': b.get('watts_medio'),
-                    'watts_do_stream': _stat(wt, b['t0'], b['t1']),
-                    'fc': _stat(hr, b['t0'], b['t1']),
-                    'smo2': _stat(sm, b['t0'], b['t1']),
-                })
+Encontra as sessoes marcadas como Moxy e devolve os streams de SmO2 e THb
+ja' limpos pelo pipeline do utils/mnirs.py.
 
-            # de onde vem cada BP
-            bls = lim.get('bp_moxy_sem_restricao') or {}
-            bmx = lim.get('bp_moxy') or {}
-            origem = []
-            for nome, fonte in (('script Intervals.icu', bls),
-                                ('2 degraus por troço', bmx)):
-                if fonte.get('bp1_w') is None:
-                    continue
-                o = {'metodo': nome,
-                     'bp1_w': fonte.get('bp1_w'),
-                     'bp1_bpm': fonte.get('bp1_bpm'),
-                     'bp2_w': fonte.get('bp2_w'),
-                     'bp2_bpm': fonte.get('bp2_bpm'),
-                     'pontos_usados': fonte.get('pontos'),
-                     'fc_descartada': fonte.get('fc_descartada')}
-                # a FC do BP é INTERPOLADA entre degraus: mostrar quais
-                for chave, w in (('bp1', fonte.get('bp1_w')),
-                                 ('bp2', fonte.get('bp2_w'))):
-                    if w is None:
-                        continue
-                    ps = sorted((p for p in (fonte.get('pontos') or [])
-                                 if p.get('hr') is not None),
-                                key=lambda p: p['watts'])
-                    ab = [p for p in ps if p['watts'] <= w]
-                    ac = [p for p in ps if p['watts'] > w]
-                    o[f'{chave}_fc_interpolada_entre'] = {
-                        'abaixo': ab[-1] if ab else None,
-                        'acima': ac[0] if ac else None,
-                    }
-                origem.append(o)
+A marca e' procurada no nome, na descricao e nos campos de texto do JSON da
+actividade, aceitando 'moxy', '#moxy', 'Moxy' e variantes. Nao se assume
+um campo de tags: a Intervals.icu nao expoe um consistentemente, e ja'
+custou caro neste projecto assumir nomes de campos.
 
-            return jsonify({
-                'status': 'ok', 'activity_id': aid,
-                'modalidade': lim.get('modalidade'),
-                'fc_valida': d.get('fc_valida'),
-                'canais_invalidos': d.get('canais_invalidos'),
-                'detalhe_invalidos': d.get('detalhe_invalidos'),
-                'congelados': d.get('congelados'),
-                'artefactos': d.get('artefactos'),
-                'corte_usado': [lim.get('corte_inicio_s'),
-                                lim.get('corte_fim_s')],
-                'blocos': detalhe,
-                'origem_dos_breakpoints': origem,
-                'blocos_usados_no_ajuste': lim.get('blocos_usados'),
-                'fc_global': _stat(hr, t[0] if t else 0,
-                                   t[-1] if t else 0),
-                'watts_global': _stat(wt, t[0] if t else 0,
-                                      t[-1] if t else 0),
-                'como_ler': (
-                    'watts_do_lap vem da Intervals.icu; watts_do_stream é '
-                    'calculado dos dados em bruto. Se diferirem muito num '
-                    'bloco de recuperação, o lap está a incluir tempo de '
-                    'transição. A FC do BP é INTERPOLADA entre os dois '
-                    'degraus vizinhos — se um deles tiver FC errada, o BP '
-                    'herda-a'),
-            })
-        except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
+Registado com:  import api_moxy; api_moxy.registar(app)
+"""
 
-    @app.route('/api/moxy/corte', methods=['POST'])
-    def api_moxy_corte():
-        """Grava o intervalo a analisar de uma sessao.
+import json
+import re
+import traceback
+from datetime import datetime, timedelta
 
-        Corpo: activity_id, inicio_s, fim_s, modalidade, data, nota.
-        Gravar de novo a mesma actividade substitui -- a chave e' o id.
-        """
+from flask import jsonify, request
+
+# So' a tag conta. Antes procurava-se tambem no nome e na descricao, e
+# aceitavam-se sessoes com Smo2 no sumario mesmo sem tag -- isso trazia
+# actividades que nada tinham a ver, porque qualquer sessao com o sensor
+# ligado por acaso entrava. A tag e' uma decisao explicita do atleta; o
+# nome nao e'.
+MX_SESSOES_CACHE = {}
+
+PADRAO_MOXY = re.compile(r'^\s*#?\s*moxy\s*$', re.IGNORECASE)
+
+# Nomes possiveis dos streams NIRS. A Intervals.icu expoe smo2/thb, mas
+# ficheiros com dois sensores acrescentam sufixos.
+CANAIS = {
+    'smo2': ['smo2', 'SmO2', 'smo2_1', 'Smo2'],
+    'thb': ['thb', 'THb', 'thb_1'],
+    'o2hb': ['O2Hb', 'o2hb'],
+    'hhb': ['HHb', 'hhb', 'DiffHb'],
+}
+
+
+def _tags(j):
+    """Lista de tags da actividade. Vem null quando nao ha nenhuma."""
+    t = (j or {}).get('tags')
+    if isinstance(t, str):
+        return [x.strip() for x in t.split(',') if x.strip()]
+    return [str(x).strip() for x in (t or []) if x]
+
+
+def _tem_tag_moxy(j):
+    return any(PADRAO_MOXY.match(t) for t in _tags(j))
+
+
+def _remover_orfa(aid):
+    """Apaga das tabelas locais uma actividade que a API ja' nao tem."""
+    import db as _db
+    fora = {}
+    for tabela, coluna in (('activities', 'id'),
+                           ('power_curves', 'activity_id'),
+                           ('zone_times', 'activity_id')):
         try:
-            import drive_db_perfil as ddp
-            c = request.get_json(silent=True) or {}
-            aid = str(c.get('activity_id') or '').strip()
-            if not aid:
-                return jsonify({'status': 'erro',
-                                'mensagem': 'activity_id em falta'}), 400
-            cn = ddp.get_conn()
-            cn.execute(
-                """INSERT OR REPLACE INTO moxy_cortes
-                   (activity_id, modalidade, data, inicio_s, fim_s, origem,
-                    proposto_s, nota, data_gravacao)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (aid, c.get('modalidade'), c.get('data'),
-                 c.get('inicio_s'), c.get('fim_s'),
-                 c.get('origem') or 'utilizador', c.get('proposto_s'),
-                 c.get('nota'),
-                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-            cn.commit()
-            ok, det = ddp.upload()
-            cn.close()
-            return jsonify({'status': 'ok' if ok else 'gravado_sem_upload',
-                            'activity_id': aid, 'drive': det})
+            _db._exec(f"DELETE FROM {tabela} WHERE {coluna} = ?", (str(aid),))
+            fora[tabela] = 'apagada'
         except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
+            fora[tabela] = f'{type(e).__name__}: {e}'
+    return fora
 
-    return app
+
+def _consenso_limiares(mlss, bp_mx, bp_livre, bp_taxa, perfil,
+                       bp_hhb=None, lt1_reox=None, blocos=None):
+    """Junta as estimativas nos dois limiares e assinala incoerencias.
+
+    Antes havia um painel por metodo -- quatro numeros soltos, sem dizer
+    qual respondia a que pergunta. E o BP1 do metodo Moxy nao entrava em
+    grupo nenhum, o que deixava passar um candidato a PRIMEIRO limiar
+    acima de um candidato a SEGUNDO sem ninguem dar por isso.
+    """
+    p1, p2 = [], []
+
+    def _add(lista, metodo, w, rota, bpm=None, fc_origem=None):
+        if w is not None:
+            lista.append({'metodo': metodo, 'watts': round(float(w), 1),
+                          'bpm': bpm, 'rota': rota,
+                          'fc_origem': fc_origem})
+
+    # ── primeiro limiar: LT1 / VT1 / FatMax ──────────────────────────
+    if (lt1_reox or {}).get('ok'):
+        _add(p1, 'Transição da reoxigenação (Yogev)',
+             lt1_reox['lt1_estimado'],
+             'onde o SmO2 deixa de subir dentro do bloco',
+             (lt1_reox.get('fc') or {}).get('bpm'),
+             (lt1_reox.get('fc') or {}).get('nota'))
+    if perfil.get('ok') and perfil.get('bp1_watts') is not None:
+        _add(p1, 'Topo da parábola (SmO2max)', perfil['bp1_watts'],
+             'média do último minuto por degrau')
+    if bp_mx.get('bp1_w') is not None:
+        _add(p1, 'BP1 da curva SmO2 × potência', bp_mx['bp1_w'],
+             'regressão por troços, 2 degraus por troço',

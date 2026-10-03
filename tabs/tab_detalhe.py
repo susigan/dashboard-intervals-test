@@ -893,7 +893,7 @@ async function load(){
       const rpeStored=rpeMap[st]; // undefined=sem linha; 0=apagado; 1-10=valor
       const rpeVal=(rpeStored===undefined||rpeStored===0)?'':(rpeStored);
       return '<td style="text-align:center;padding:2px;">'
-       +'<input type="number" min="1" max="10" step="1" '
+       +'<input type="number" min="0" max="10" step="any" '
        +'value="'+rpeVal+'" '
        +'style="width:44px;background:#0d1117;border:1px solid #30363d;'
        +'color:#c9d1d9;border-radius:4px;padding:2px 4px;text-align:center;" '
@@ -957,7 +957,7 @@ function mxSalvarRpe(input){
  const raw=input.value.trim();
  let rpe=0; // default: apagado
  if(raw!==''){
-  rpe=parseInt(raw,10);
+  rpe=parseFloat(raw);
   if(isNaN(rpe)||rpe<1||rpe>10){
    input.style.borderColor='#E74C3C';
    setTimeout(function(){input.style.borderColor='#30363d';},1500);
@@ -1010,7 +1010,7 @@ function mxSalvarAtividade(){
  const rpeIntervalos={};
  document.querySelectorAll('#ivBody input[data-start]').forEach(function(inp){
   const v=inp.value.trim();
-  if(v&&v!=='') rpeIntervalos[inp.dataset.start]=parseInt(v,10);
+  if(v&&v!=='') rpeIntervalos[inp.dataset.start]=parseFloat(v);
  });
 
  // 2. Recolher icu_intervals da variável DATA (carregada por load())

@@ -536,7 +536,8 @@ def insert_resultado(conn, conjunto_id, resultado_json=None,
                      bp1_json=None, bp2_json=None,
                      comparacao_rpe_bp1=None, comparacao_rpe_bp2=None,
                      limiter_sintese=None, recuperacao_final_dia2=None,
-                     analysis_version=None, analysis_hash=None):
+                     analysis_version=None, analysis_hash=None,
+                     rpe_fisiologia_json=None):
     """Insere uma NOVA versão do resultado — nunca sobrescreve versões anteriores.
 
     O número de versão é calculado automaticamente como MAX(version)+1.
@@ -567,15 +568,16 @@ def insert_resultado(conn, conjunto_id, resultado_json=None,
                 bpm_vst_validacao_json, bp1_w, bp2_w, bp1_bpm, bp2_bpm,
                 bp1_json, bp2_json, comparacao_rpe_bp1, comparacao_rpe_bp2,
                 limiter_sintese, recuperacao_final_dia2,
-                rpe_bp1_disponivel, rpe_bp2_disponivel, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                rpe_bp1_disponivel, rpe_bp2_disponivel,
+                rpe_fisiologia_json, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (conjunto_id, next_version, analysis_version, analysis_hash,
          agora, _j(resultado_json), _j(validacao_fisiologica_json),
          _j(bpm_vst_validacao_json), bp1_w, bp2_w, bp1_bpm, bp2_bpm,
          _j(bp1_json), _j(bp2_json), _j(comparacao_rpe_bp1), _j(comparacao_rpe_bp2),
          _j(limiter_sintese), _j(recuperacao_final_dia2),
-         rpe_bp1_ok, rpe_bp2_ok, agora)
+         rpe_bp1_ok, rpe_bp2_ok, _j(rpe_fisiologia_json), agora)
     )
     return next_version
 

@@ -470,7 +470,12 @@ BODY = """
     <!-- 1. DASHBOARD — BP1/BP2/Recovery/RPE + sistemas ──────────── -->
     <h3 style="font-size:14px;margin-top:16px;">Perfil Fisiológico</h3>
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta análise identifica padrões de resposta fisiológica — não demonstra causalmente qual sistema limita o desempenho.</p>
+    <!-- Validação BPM MOXY × VST: comparação entre BPM MOXY e FC real dos intervalos VST -->
+    <div id="mxVstBpmCardArea" style="margin-bottom:8px;"></div>
+    <!-- Validação fisiológica: potência × FC/HRVT × RPE -->
     <div id="mxVstFisioCardArea" style="margin-bottom:8px;"></div>
+    <!-- Análise RPE × Fisiologia (rpe_fisiologia_json) -->
+    <div id="mxVstRpeFisioCardArea" style="margin-bottom:8px;"></div>
 <div id="mxVstDashboard" style="margin-bottom:12px;"></div>
 
     <!-- 3b. LIMITADOR — DAY 1 / MOXY ────────────────────────────  -->
@@ -485,7 +490,7 @@ BODY = """
 
     <!-- 4. GRÁFICO RPE × POTÊNCIA ──────────────────────────────── -->
     <h3 style="font-size:14px;margin-top:16px;">RPE × Potência — Day 1 × Day 2</h3>
-    <p class="sub" style="font-size:10px;margin:2px 0 6px;">Zonas Z1/Z2/Z3 vêm exclusivamente dos BP1/BP2 do Day 1 / MOXY; o RPE do VST apenas verifica a resposta percebida dentro dessas zonas.</p>
+    <p class="sub" style="font-size:10px;margin:2px 0 6px;">Consistência entre esforço externo (potência) e esforço percebido (RPE) entre as duas sessões.</p>
     <div id="mxVstRpePotsStatus" style="font-size:11px;color:#8b949e;margin-bottom:4px;"></div>
     <div class="chartbox" style="position:relative;width:100%;max-height:280px;">
       <canvas id="chMxVstRpePots" height="260"></canvas>
@@ -514,10 +519,22 @@ BODY = """
       <div id="mxTipVstTemporal" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
     </div>
 
-    <!-- 4. RPE × FISIOLOGIA — somente verificação VST ---------------- -->
-    <h3 style="font-size:14px;margin-top:20px;">RPE × Fisiologia — Day 2 / VST</h3>
-    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Análise descritiva do RPE com HR, RF, SmO2, THb e DFA-α1 por WORK. Não identifica limitador, intervenção ou zona.</p>
-    <div id="mxVstRpeFisio" style="overflow-x:auto;"></div>
+    <!-- 4. LIMITER ───────────────────────────────────────────────  -->
+    <h3 style="font-size:14px;margin-top:20px;">LIMITER / Padrão fisiológico</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">HR, RF, SmO2, THb e DFA-α1 são marcadores complementares; a convergência aumenta a coerência do padrão, mas não estabelece causalidade.</p>
+    <div id="mxLimiter" style="overflow-x:auto;"></div>
+
+    <!-- 5. HIPÓTESE ─────────────────────────────────────────────── -->
+    <h3 style="font-size:14px;margin-top:20px;">HIPÓTESE DE INTERVENÇÃO / TREINO</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Hipótese para teste — o padrão observado não demonstra causalidade.</p>
+    <div id="mxHipotese" style="overflow-x:auto;"></div>
+
+    <!-- 6. HISTÓRICO E ESTILOS ──────────────────────────────────── -->
+    <h3 style="font-size:14px;margin-top:20px;">Padrões recorrentes — histórico</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Frequência de padrão não demonstra causalidade.</p>
+    <div id="mxHistoricoPatterns" style="overflow-x:auto;margin-top:6px;"></div>
+    <h3 style="font-size:14px;margin-top:16px;">Treinos candidatos</h3>
+    <div id="mxHistoricoEstilos" style="overflow-x:auto;margin-top:6px;"></div>
 
     <!-- 7. COMPARAÇÃO Dia 1 × Dia 2 — cards ────────────────────── -->
     <h3 style="font-size:14px;margin-top:20px;">Comparação — Dia 1 × Dia 2</h3>
@@ -694,31 +711,36 @@ function mxMudarSubTab(nome){
  // Limiares: redesenha se dados em memória; busca banco se não;
  // só recalcula se nenhuma análise persistida existir.
  if(nome==='limiares'){
+  if(MX_ULT_LIMIARES_D){
+   // Dados em memória: renderizar imediatamente (mxRenderLimiares gere rAF para canvas)
+   mxRenderLimiares(MX_ULT_LIMIARES_D, (Object.keys(MX_DADOS)||[])[0]);
+   if(MX_ULT_515_D) mxRender515(MX_ULT_515_D);
+  } else {
+   const _id=(Object.keys(MX_DADOS)||[])[0];
+   if(_id) mxCarregarDosBanco(_id, function(){ mxLimiares(); mx515(); });
+  }
+ }
+ // Principal: redesenhar grafico ao voltar
+ if(nome==='principal'){
   requestAnimationFrame(function(){
-   if(MX_ULT_LIMIARES_D){
-    mxDesenharLimiaresSmo2(MX_ULT_LIMIARES_D);
-    mxDesenharDmax(MX_ULT_LIMIARES_D);
-    mxDesenharDfa1(MX_ULT_LIMIARES_D.dfa1);
-   } else {
-    const _id=(Object.keys(MX_DADOS)||[])[0];
-    if(_id) mxCarregarDosBanco(_id, function(){ mxLimiares(); });
-   }
+   mxDraw();
+   if(typeof mxDiagnostico==='function') mxDiagnostico();
+   if(typeof mxBlocosTabela==='function') mxBlocosTabela();
   });
  }
  // Rede causal: idem.
  if(nome==='rede'){
-  requestAnimationFrame(function(){
-   if(MX_ULT_REDE_D){
-    mxDesenharRedeGrafo(MX_ULT_REDE_D);
-    mxDesenharRedePCR(MX_ULT_REDE_D);
-   } else {
-    const _id=(Object.keys(MX_DADOS)||[])[0];
-    if(_id) mxCarregarDosBanco(_id, function(){ mxRede(); });
-   }
-  });
+  if(MX_ULT_REDE_D){
+   // Dados em memória: mxRenderRede reconstrói HTML (LIMITADOR) + canvas
+   mxRenderRede(MX_ULT_REDE_D);
+  } else {
+   const _id=(Object.keys(MX_DADOS)||[])[0];
+   if(_id) mxCarregarDosBanco(_id, function(){ mxRede(); });
+  }
  }
- if(nome==='intervencoes' && MX_ULT_PLANO){
-  mxDesenharZonas(MX_ULT_PLANO, MX_ULT_RPE_D, MX_ULT_ZONAS_D);
+ if(nome==='intervencoes'){
+  if(MX_ULT_PLANO) mxDesenharZonas(MX_ULT_PLANO, MX_ULT_RPE_D, MX_ULT_ZONAS_D);
+  if(typeof mxSintese==='function') mxSintese();
  }
  if(nome==='verificacao' && !MX_VST_LISTA_CARREGADA){
   MX_VST_LISTA_CARREGADA = true;
@@ -1013,100 +1035,69 @@ function mx515(){
  Object.keys(MX515_EDIT).forEach(function(k){
   q+='&resp_'+k+'='+encodeURIComponent(MX515_EDIT[k]); });
  est.textContent='a avaliar...';
- return fetch('/api/moxy/interpretacao/'+id+q).then(r=>r.json()).then(function(d){
-  if(d.status!=='ok'){ est.textContent=d.motivo||d.mensagem||'sem dados';
-   box.innerHTML=''; return; }
-  const p=d.pontuacao, i=d.interpretacao, m=d.medicoes;
-  // guardar os dois eixos para a síntese os cruzar com a rede causal
-  MX_ULT_US=(i.us||{}).limitador||null;
-  MX_ULT_PC=(i.pc||{}).limitador||null;
-  if(typeof mxSintese==='function') mxSintese();
-  est.textContent=m.n_blocos_usados+' de '+m.n_blocos_trabalho
-   +' blocos usados'+(d.respostas_editadas?' · com respostas editadas':'');
+  return fetch('/api/moxy/interpretacao/'+id+q).then(r=>r.json()).then(function(d){
+   if(d.status!=='ok'){ est.textContent=d.motivo||d.mensagem||'sem dados';
+    box.innerHTML=''; return; }
+   MX_ULT_515_D = d;
+   MX_ULT_US = (d.interpretacao.us||{}).limitador||null;
+   MX_ULT_PC = (d.interpretacao.pc||{}).limitador||null;
+   if(typeof mxSintese==='function') mxSintese();
+   est.textContent = d.medicoes.n_blocos_usados+' de '+d.medicoes.n_blocos_trabalho
+    +' blocos usados'+(d.respostas_editadas?' · com respostas editadas':'');
+   mxRender515(d);
+  }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
 
-  const cor=v=>v==='Utilização'||v==='Pulmonar'?'#58A6FF'
-    :v==='Fornecimento'||v==='Cardíaco'?'#F85149':'#8b949e';
-  let h='<div style="display:flex;flex-wrap:wrap;gap:12px;">';
-  [['Utilização vs Fornecimento',p.us,i.us],
-   ['Pulmonar vs Cardíaco',p.pc,i.pc]].forEach(function(bl){
-   if(!bl[2]) return;
-   h+='<div style="flex:1;min-width:280px;border-left:3px solid '
-    +cor(bl[2].limitador)+';padding:6px 10px;">'
-    +'<span style="color:#8b949e;font-size:11px;">'+bl[0]+'</span><br>'
-    +'<b style="color:'+cor(bl[2].limitador)+';font-size:15px;">'
-    +bl[2].limitador+'</b> '
-    +'<span style="color:#8b949e;font-size:11px;">'+bl[1].pontos+'/'
-    +bl[1].max+' = '+(bl[1].score!=null?bl[1].score:'—')+'</span>'
-    +'<br><span style="font-size:11px;">'+bl[2].texto+'</span></div>';
+// Renderizar resultado 5-1-5 a partir de objecto ja calculado (sem fetch).
+// Usada por mx515(), mxMudarSubTab() e mxCarregarDosBanco().
+function mxRender515(d){
+ if(!d||d.status!=='ok') return;
+ const box=document.getElementById('mx515');
+ if(!box) return;
+ const p=d.pontuacao, it=d.interpretacao, m=d.medicoes;
+ const cor=function(v){
+  return v==='Utilizacao'||v==='Pulmonar'?'#58A6FF'
+   :v==='Fornecimento'||v==='Cardiaco'?'#F85149':'#8b949e'; };
+ let h='<div style="display:flex;flex-wrap:wrap;gap:12px;">';
+ [['Utilizacao vs Fornecimento',p.us,it.us],['Pulmonar vs Cardiaco',p.pc,it.pc]]
+  .forEach(function(bl){
+  if(!bl[2]) return;
+  h+='<div style="flex:1;min-width:280px;border-left:3px solid '+cor(bl[2].limitador)+';padding:6px 10px;">'
+   +'<span style="color:#8b949e;font-size:11px;">'+bl[0]+'</span><br>'
+   +'<b style="color:'+cor(bl[2].limitador)+';font-size:15px;">'+bl[2].limitador+'</b> '
+   +'<span style="color:#8b949e;font-size:11px;">'+bl[1].pontos+'/'+bl[1].max+' = '+(bl[1].score!=null?bl[1].score:'--')+'</span>'
+   +'<br><span style="font-size:11px;">'+bl[2].texto+'</span></div>';
+ });
+ h+='</div>';
+ (it.reservas||[]).forEach(function(r2){ h+='<p style="color:#F0883E;font-size:11px;margin:4px 0;">'+r2+'</p>'; });
+ (d.avisos||[]).forEach(function(a){ h+='<p style="color:#F85149;font-size:11px;margin:4px 0;">'+a+'</p>'; });
+ h+='<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:#8b949e;">As 13 perguntas</summary><div style="margin-top:6px;">';
+ h+='<table style="width:100%;border-collapse:collapse;font-size:11px;"><tr style="color:#8b949e;text-align:left;border-bottom:1px solid #21262d;"><th style="padding:4px;">#</th><th>Pergunta</th><th>Padrao</th><th>Medido</th><th>Resposta</th><th>Pontos</th><th>Eixo</th></tr>';
+ [['us',p.us.detalhe],['pc',p.pc.detalhe]].forEach(function(par){
+  par[1].forEach(function(dd){
+   const md=(m.respostas||{})[dd.pergunta]||{};
+   const opcoes=dd.pergunta==='2A'?d.faixas_2A:dd.pergunta==='9'?d.faixas_9:d.niveis;
+   const val=md.valor!=null?String(md.valor)
+     :md.declive_pct_da_amplitude!=null?(md.declive_pct_da_amplitude>0?'+':'')+md.declive_pct_da_amplitude+'%'
+     :md.atraso_mediano_s!=null?md.atraso_mediano_s+'s':'--';
+   h+='<tr style="border-bottom:1px solid #161b22;'+(md.editada?'background:rgba(227,179,65,0.07);':'')+'">'
+    +'<td style="padding:4px;color:#8b949e;">'+dd.pergunta+'</td>'
+    +'<td style="color:#8b949e;">'+dd.texto+((d.onde_mede||{})[dd.pergunta]?'<br><span style="font-size:10px;color:#6e7681;">medido no '+d.onde_mede[dd.pergunta]+'</span>':'')+'</td>'
+    +'<td>'+(((d.figuras||{})[dd.pergunta]||{})[dd.resposta]||'--')+'</td>'
+    +'<td style="color:#8b949e;">'+val+'</td>'
+    +'<td><select class="mx515R" data-q="'+dd.pergunta+'" style="font-size:11px;max-width:150px;">'
+    +(opcoes||[]).map(function(o){ return '<option'+(o===dd.resposta?' selected':'')+'>'+o+'</option>'; }).join('')
+    +(dd.resposta==null?'<option selected>--</option>':'')+'</select></td>'
+    +'<td style="color:'+(dd.nao_aplicavel?'#6e7681':dd.pontos==null?'#F0883E':dd.pontos<0?'#F85149':'#c9d1d9')+';">'
+    +(dd.nao_aplicavel?'nao se aplica':dd.pontos!=null?dd.pontos+' / '+dd.max:'sem resposta / '+dd.max)+'</td>'
+    +'<td style="color:#8b949e;">'+par[0].toUpperCase()+'</td></tr>';
   });
-  h+='</div>';
-  (i.reservas||[]).forEach(function(r2){
-   h+='<p style="color:#F0883E;font-size:11px;margin:4px 0;">⚠ '+r2+'</p>'; });
-  (d.avisos||[]).forEach(function(a){
-   h+='<p style="color:#F85149;font-size:11px;margin:4px 0;">⚠ '+a+'</p>'; });
-
-  // as 13 perguntas com as figuras ficam em dropdown: os dois cartões
-  // acima são a resposta, isto é a auditoria de como se lá chegou
-  h+='<details style="margin-top:8px;"><summary style="cursor:pointer;'
-   +'font-size:12px;color:#8b949e;padding:4px 0;">As 13 perguntas, com o '
-   +'padrão de cada resposta</summary><div style="margin-top:6px;">';
-  h+='<table style="width:100%;border-collapse:collapse;font-size:11px;'
-   +'"><tr style="color:#8b949e;text-align:left;'
-   +'border-bottom:1px solid #21262d;"><th style="padding:5px;">#</th>'
-   +'<th>Pergunta</th><th>Padrão</th><th>Medido</th><th>Resposta</th><th>Pontos</th>'
-   +'<th>Eixo</th></tr>';
-  [['us',p.us.detalhe],['pc',p.pc.detalhe]].forEach(function(par){
-   par[1].forEach(function(dd){
-    const md=(m.respostas||{})[dd.pergunta]||{};
-    const opcoes = dd.pergunta==='2A' ? d.faixas_2A
-                 : dd.pergunta==='9' ? d.faixas_9 : d.niveis;
-    const val = md.valor!=null ? md.valor
-      : md.declive_pct_da_amplitude!=null
-        ? (md.declive_pct_da_amplitude>0?'+':'')+md.declive_pct_da_amplitude+'%'
-      : md.atraso_mediano_s!=null ? md.atraso_mediano_s+'s' : '—';
-    h+='<tr style="border-bottom:1px solid #161b22;'
-     +(md.editada?'background:rgba(227,179,65,0.07);':'')+'">'
-     +'<td style="padding:5px;color:#8b949e;">'+dd.pergunta+'</td>'
-     +'<td style="color:#8b949e;">'+dd.texto
-     +((d.onde_mede||{})[dd.pergunta]
-       ? '<br><span style="color:#6e7681;font-size:10px;">medido no '
-         +d.onde_mede[dd.pergunta]+'</span>' : '')+'</td>'
-     +'<td>'+(((d.figuras||{})[dd.pergunta]||{})[dd.resposta]
-              || '<span style="color:#484f58;font-size:10px;">—</span>')+'</td>'
-     +'<td style="color:#8b949e;">'+val+'</td>'
-     +'<td><select class="mx515R" data-q="'+dd.pergunta+'" '
-     +'style="font-size:11px;max-width:150px;">'
-     + (opcoes||[]).map(function(o){
-        return '<option'+(o===dd.resposta?' selected':'')+'>'+o+'</option>';
-       }).join('')
-     + (dd.resposta==null?'<option selected>—</option>':'')
-     +'</select></td>'
-     +'<td style="color:'+(dd.nao_aplicavel?'#6e7681'
-        :dd.pontos==null?'#F0883E'
-        :dd.pontos<0?'#F85149':'#c9d1d9')+';">'
-     +(dd.nao_aplicavel?'não se aplica'
-       :dd.pontos!=null?dd.pontos+' / '+dd.max:'sem resposta / '+dd.max)+'</td>'
-     +'<td style="color:#8b949e;">'+par[0].toUpperCase()+'</td></tr>';
-   });
-  });
-  h+='</table>';
-  h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
-   +'Alterar uma resposta recalcula tudo. "Medido" mostra o valor ou o '
-   +'declive em % da amplitude do canal na sessão — é isso que decide entre '
-   +'"clear" e "slight". Cortes actuais: claro acima de '
-   +d.cortes.claro_pct+'%, ligeiro acima de '+d.cortes.ligeiro_pct+'%. '
-   +'Valores de repouso e de trabalho medidos nos últimos '
-   +(m.repouso_seg||30)+' s de cada bloco — o início ainda está em '
-   +'transição, e o patamar é o que a pergunta procura. Na figura, os '
-   +'pontos cinzentos marcam exactamente onde a tendência foi tirada: em '
-   +'cima nas perguntas de repouso, em baixo nas de trabalho.</p>';
-  h+='</div></details>';
-  box.innerHTML=h;
-  Array.prototype.forEach.call(box.querySelectorAll('.mx515R'), function(el){
-   el.addEventListener('change', function(){
-    MX515_EDIT[el.getAttribute('data-q')]=el.value; mx515(); });
-  });
- }).catch(e=>{ est.textContent='erro: '+e.message; });
+ });
+ h+='</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">Cortes: claro &gt; '+d.cortes.claro_pct+'%, ligeiro &gt; '+d.cortes.ligeiro_pct+'%.</p></div></details>';
+ box.innerHTML=h;
+ Array.prototype.forEach.call(box.querySelectorAll('.mx515R'),function(el){
+  el.addEventListener('change',function(){ MX515_EDIT[el.getAttribute('data-q')]=el.value; mx515(); });
+ });
 }
 
 // Em comparacao esconde-se o detalhe: com 4 sessoes seriam 4 tabelas de
@@ -1364,7 +1355,7 @@ let MX_ULT_ORIGEM_BP = {bp1:'métodos existentes', bp2:'métodos existentes'};
 let MX_RESERVAS = null;  // W′ e M′ balance ao longo da sessão
 // resultados dos três métodos, para a síntese os poder cruzar
 let MX_ULT_REDE=null, MX_ULT_REDE_D=null, MX_ULT_US=null, MX_ULT_PC=null,
-    MX_ULT_PERFIL=null, MX_ULT_HIPO=false;
+    MX_ULT_PERFIL=null, MX_ULT_HIPO=false, MX_ULT_515_D=null;
 // valores concretos do teste actual (watts, bpm, smo2, limitador
 // fisiológico), para as intervenções mostrarem "a que carga" e não só
 // receitas genéricas
@@ -2694,6 +2685,118 @@ function mxVstSincronizar(){
 
 // _mxVstRenderComparacao — renderiza o resultado (cache ou recalculado)
 // nos divs existentes. Centraliza toda a renderização para evitar duplicação.
+function _mxVstRpeFisioCard(fi){
+ // Renderiza a análise integrada RPE × Fisiologia.
+ // fi = d.rpe_fisiologia do response do /vst/comparar ou /vst/resultado.
+ // Valores decimais preservados: parseFloat, nunca parseInt ou toFixed(0).
+
+ const PADROES={
+  CARDIORRESPIRATORIO:'🫀 Cardiorrespiratório',
+  PERIFERICO:'💪 Periférico',
+  MISTO:'🔀 Misto (multissistêmico)',
+  AUTONOMICO:'⚡ Autonômico',
+  RPE_ESTAVEL:'📊 RPE Estável',
+  SEM_PADRAO_CONCLUSIVO:'❓ Sem padrão conclusivo',
+  DADOS_INSUFICIENTES:'📉 Dados insuficientes',
+  SEM_DADOS_RPE:'— Sem dados de RPE',
+ };
+ const CORES={
+  CARDIORRESPIRATORIO:'#e3b341',PERIFERICO:'#f78166',MISTO:'#a5d6ff',
+  AUTONOMICO:'#d2a8ff',RPE_ESTAVEL:'#56d364',
+  SEM_PADRAO_CONCLUSIVO:'#8b949e',DADOS_INSUFICIENTES:'#8b949e',SEM_DADOS_RPE:'#6e7681',
+ };
+ const DEMOJI={up:'↑',down:'↓',stable:'→'};
+
+ function _fmt(v){
+  if(v===null||v===undefined) return '—';
+  const n=parseFloat(v);
+  if(isNaN(n)) return String(v);
+  // Preservar decimais como gravados — sem arredondamento para inteiro
+  const parts=String(n).split('.');
+  return parts[1] ? n.toFixed(Math.min(4,parts[1].length)) : String(n);
+ }
+ function _d(v){return DEMOJI[v]||v||'—';}
+
+ function _bpSection(bp,label){
+  if(!bp) return '<p style="color:#8b949e;font-size:12px;">'+label+': sem dados.</p>';
+  const pad=bp.padrao||'',cor=CORES[pad]||'#8b949e',padL=PADROES[pad]||pad||'—';
+  const dir=bp.direcao||{};
+  let h='<div style="border:1px solid #30363d;border-radius:6px;padding:10px 12px;margin-bottom:10px;">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:8px;">';
+  h+='<strong style="font-size:13px;color:#c9d1d9;">'+label+'</strong>';
+  h+='<span style="font-size:11px;font-weight:600;color:'+cor+';background:#0d1117;'
+   +'padding:2px 8px;border-radius:12px;border:1px solid '+cor+';">'+padL+'</span></div>';
+  // Métricas resumo em chips
+  const chips=[
+   ['RPE ini',_fmt(bp.rpe_inicial)],['RPE fim',_fmt(bp.rpe_final)],
+   ['RPE médio',_fmt(bp.rpe_media)],['Δ RPE',_fmt((bp.deltas_bp||{}).rpe)],
+   ['↕ RPE',_d(dir.rpe)],['↕ FC',_d(dir.hr)],
+   ['↕ RF',_d(dir.respiracao)],['↕ SmO2',_d(dir.smo2)],['↕ DFA1',_d(dir.dfa1)],
+  ];
+  h+='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">';
+  chips.forEach(([k,v])=>{
+   h+='<span style="font-size:11px;background:#161b22;padding:2px 7px;border-radius:4px;'
+    +'border:1px solid #30363d;color:#c9d1d9;white-space:nowrap;">'
+    +'<span style="color:#8b949e;">'+k+':</span> <b>'+v+'</b></span>';
+  });
+  h+='</div>';
+  if(bp.explicacao) h+='<p style="font-size:11px;color:#8b949e;margin:0 0 8px;font-style:italic;">'+bp.explicacao+'</p>';
+  // Tabela por intervalo
+  const ivs=bp.intervalos||[];
+  if(ivs.length){
+   h+='<div style="overflow-x:auto;">';
+   h+='<table style="width:100%;border-collapse:collapse;font-size:11px;min-width:500px;">';
+   h+='<thead><tr style="border-bottom:1px solid #30363d;">';
+   ['#','RPE','W','FC','RF','SmO2','THb','DFA1','Δ RPE'].forEach(c=>{
+    h+='<th style="padding:3px 7px;text-align:right;color:#8b949e;font-weight:500;">'+c+'</th>';
+   });
+   h+='</tr></thead><tbody>';
+   ivs.forEach(iv=>{
+    const dv=iv.delta_vs_anterior||{};
+    const drpe=dv.rpe!=null?(dv.rpe>0?'+':'')+_fmt(dv.rpe):'—';
+    const row=[
+     String(iv.ordem||''),
+     _fmt(iv.rpe),
+     _fmt((iv.potencia||{}).media),
+     _fmt((iv.hr||{}).media),
+     _fmt((iv.respiracao||{}).media),
+     _fmt((iv.smo2||{}).media),
+     _fmt((iv.thb||{}).media),
+     _fmt((iv.dfa1||{}).media),
+     drpe,
+    ];
+    h+='<tr style="border-bottom:1px solid #21262d;">';
+    row.forEach((c,ci)=>{
+     const clr=ci===1?'#e3b341':'#c9d1d9';
+     h+='<td style="padding:3px 7px;text-align:right;color:'+clr+';">'+c+'</td>';
+    });
+    h+='</tr>';
+   });
+   h+='</tbody></table></div>';
+  }
+  if(bp.nota) h+='<p style="font-size:10px;color:#6e7681;margin:6px 0 0;font-style:italic;">'+bp.nota+'</p>';
+  h+='</div>';
+  return h;
+ }
+
+ let html='<div style="margin-top:16px;">';
+ html+='<h3 style="font-size:14px;margin:0 0 4px;color:#c9d1d9;">Análise RPE × Fisiologia</h3>';
+ html+='<p style="font-size:10px;color:#8b949e;margin:0 0 10px;">'
+     +'Padrões de resposta fisiológica por bloco de trabalho. '
+     +'Não implica causalidade — use: <em>compatível com / associado a</em>.</p>';
+ if(!fi||(!fi.bp1&&!fi.bp2)){
+  html+='<div style="color:#8b949e;font-size:12px;padding:10px;border:1px solid #30363d;border-radius:6px;">'
+      +'Análise RPE × Fisiologia indisponível para esta versão. '
+      +'Execute novamente Comparar / Sincronizar para gerar a análise.</div>';
+ } else {
+  if(fi.bp1) html+=_bpSection(fi.bp1,'BP1');
+  if(fi.bp2) html+=_bpSection(fi.bp2,'BP2');
+  if(fi.nota_geral) html+='<p style="font-size:10px;color:#6e7681;margin:4px 0 0;font-style:italic;">'+fi.nota_geral+'</p>';
+ }
+ html+='</div>';
+ return html;
+}
+
 function _mxVstRenderComparacao(d, vstId){
  const box=document.getElementById('mxVstComparacao');
  if(box) box.innerHTML=_vstTabelaComparacao('BP1', d.comparacao_bp1, d.comparacao_rpe_bp1)
@@ -2712,10 +2815,12 @@ function _mxVstRenderComparacao(d, vstId){
  if(typeof DEBUG_VST_VERIFICACAO!=='undefined' && DEBUG_VST_VERIFICACAO) mxVstRevisaoCritica(d);
  mxVstLimitacoes(d);
  mxVstDashboard(d);
- mxVstRpeFisiologiaMostrar(d);
  mxVstMostrarLimitadorDay1(d);
  mxVstRenderRedeCausal(d);
  mxVstDesenharRpePots(d);
+ mxLimiterMostrar(d);
+ mxHipoteseMostrar(d);
+ mxHistoricoEstilosMostrar(d);
  // ── Card de validação fisiológica (HRVT + coerência) ─────────────
  // Usa validacao_fisiologica persistido: presente após /vst/gravar_analise
  // e incluído pelo endpoint /vst/resultado desde a correcção da recuperação.
@@ -2727,6 +2832,20 @@ function _mxVstRenderComparacao(d, vstId){
   } else {
    fisioDiv.innerHTML='';
   }
+ }
+ // Card de validacao BPM MOXY x VST
+ const bpmDiv=document.getElementById('mxVstBpmCardArea');
+ if(bpmDiv){
+  if(d.bpm_vst_validacao){
+   bpmDiv.innerHTML=_mxVstBpmValidacaoCard(d.bpm_vst_validacao);
+  } else {
+   bpmDiv.innerHTML='';
+  }
+ }
+ // Análise RPE × Fisiologia — sempre visível, estado inicial aberto
+ const rpeFisioDiv=document.getElementById('mxVstRpeFisioCardArea');
+ if(rpeFisioDiv){
+  rpeFisioDiv.innerHTML=_mxVstRpeFisioCard(d.rpe_fisiologia||null);
  }
 }
 
@@ -2836,14 +2955,7 @@ function mxVstCarregarComparacao(vstId){
     +'background:transparent;color:#58A6FF;cursor:pointer;">↻ Re-sincronizar</button></div>'\
     +'</div>';
   }
-  if(!d.rpe_fisiologia){
-   fetch('/api/moxy/vst/resultado/'+vstId).then(r=>r.json()).then(function(cached){
-    if(cached&&cached.status==='ok'&&cached.rpe_fisiologia) _mxVstRenderComparacao(cached, vstId);
-    else _mxVstRenderComparacao(d, vstId);
-   }).catch(function(){ _mxVstRenderComparacao(d, vstId); });
-  } else {
-   _mxVstRenderComparacao(d, vstId);
-  }
+  _mxVstRenderComparacao(d, vstId);
  }).catch(function(e){
   if(box) box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
  });
@@ -3682,9 +3794,14 @@ function _vstCartaoDia1Dia2Recovery(titulo, comp){
 function mxVstRpeTabela(d){
  const box=document.getElementById('mxVstRpeTabela');
  if(!box) return;
+ // Fallback para MX_VST_ULT quando d (cached de /vst/resultado) não tem bp1/bp2.metricas.
+ // MX_VST_ULT é carregado por mxVstCarregar via /api/moxy/vst/<id> que SEMPRE tem metricas.
+ const _ult = (typeof MX_VST_ULT !== 'undefined' && MX_VST_ULT) ? MX_VST_ULT : {};
+ const _bp1m = (d.bp1&&d.bp1.metricas) || (_ult.bp1&&_ult.bp1.metricas) || [];
+ const _bp2m = (d.bp2&&d.bp2.metricas) || (_ult.bp2&&_ult.bp2.metricas) || [];
  const linhas=[];
- [['BP1', (d.bp1&&d.bp1.metricas)||[], d.comparacao_rpe_bp1],
-  ['BP2', (d.bp2&&d.bp2.metricas)||[], d.comparacao_rpe_bp2]]
+ [['BP1', _bp1m, d.comparacao_rpe_bp1],
+  ['BP2', _bp2m, d.comparacao_rpe_bp2]]
  .forEach(function(t){
   const bloco=t[0], metricas=t[1], compRpe=t[2];
   const valores = compRpe && compRpe.dia2 ? compRpe.dia2.valores : null;
@@ -4494,8 +4611,8 @@ function mxVstDashboard(d){
 
  const bp1c=d.comparacao_bp1||{}, bp2c=d.comparacao_bp2||{};
  const rec1=d.comparacao_recovery_bp1||{}, rec2=d.comparacao_recovery_bp2||{};
- const lbp1=(d.rpe_fisiologia||{}).bp1||{}, lbp2=(d.rpe_fisiologia||{}).bp2||{};
- const sint={};
+ const lbp1=d.limiter_bp1||{}, lbp2=d.limiter_bp2||{};
+ const sint=d.limiter_sintese||{};
  const mod=(document.getElementById('mxModalidade')||{}).value||'';
  // vid para buscar o RPE persistido
  const vid = d.vst_activity_id || (d.dia2_activity_id) || '';
@@ -4570,7 +4687,7 @@ function mxVstDashboard(d){
  const recBest=(recOrd[rec1.status]??1)<=(recOrd[rec2.status]??1)?rec1.status:rec2.status;
  const recAmig=_amig(recBest);
  const padraoMain=lbp1.padrao&&lbp1.padrao!=='EVIDÊNCIA INSUFICIENTE'?lbp1.padrao:(lbp2.padrao||'—');
- const ivKey=null; // VST não define intervenção; somente MOXY Day 1 pode fazê-lo.
+ const ivKey=lbp1.intervencao_chave||lbp2.intervencao_chave||null;
 
  // ── HEADER ───────────────────────────────────────────────────────
  let html='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;">'
@@ -4636,7 +4753,7 @@ function mxVstDashboard(d){
 
  // ── C. LIMITADOR ─────────────────────────────────────────────────
  html+='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:10px;">'
-  +_secLbl('🔎 Padrão VST observado')
+  +_secLbl('🎯 Limitador identificado')
   +'<div style="display:flex;gap:20px;flex-wrap:wrap;">'
   +'<div>'+_secLbl('BP1')
   +'<div style="font-size:13px;font-weight:700;color:'+_corPad(lbp1.padrao)+';">'+(lbp1.padrao||'—')+'</div>'
@@ -4779,56 +4896,6 @@ function mxVstDashboard(d){
 
 
 
-// RPE × fisiologia — apresentação do resultado já calculado no backend.
-// Não identifica limitador, não escolhe intervenção e não calcula zonas.
-function mxVstRpeFisiologiaMostrar(d){
- const box=document.getElementById('mxVstRpeFisio');
- if(!box) return;
- const rf=d&&d.rpe_fisiologia;
- if(!rf){
-  box.innerHTML='<div style="border:1px solid #30363d;border-radius:6px;padding:8px 10px;font-size:11px;color:#8b949e;">Análise RPE × Fisiologia indisponível neste resultado. O backend precisa ter a análise persistida; após isso, re-sincronize.</div>';
-  return;
- }
- if(rf.erro){
-  box.innerHTML='<div style="border:1px solid #F0883E;border-radius:6px;padding:8px 10px;font-size:11px;color:#F0883E;">Erro na análise RPE × Fisiologia: '+rf.erro+'</div>';
-  return;
- }
- function n(v){ return v==null?'—':String(v); }
- function dir(v){ return {up:'↑',down:'↓',stable:'↔'}[v]||'—'; }
- function card(f,label){
-  if(!f) return '';
-  const dlt=f.deltas_bp||{}, di=f.direcao||{};
-  let h='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 12px;margin-bottom:10px;">'
-   +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
-   +'<b style="font-size:13px;">'+label+'</b>'
-   +'<span style="font-size:12px;font-weight:700;color:#A371F7;">'+(f.padrao_descritivo||f.padrao||'—')+'</span>'
-   +'<span style="font-size:10px;color:#8b949e;margin-left:auto;">RPE '+n(f.rpe_inicial)+' → '+n(f.rpe_final)+' · média '+n(f.rpe_media)+'</span>'
-   +'</div>'
-   +(f.explicacao?'<div style="font-size:10px;color:#8b949e;margin-top:4px;">'+f.explicacao+'</div>':'')
-   +'<table style="border-collapse:collapse;font-size:10px;margin-top:7px;width:100%;">'
-   +'<tr class="sub" style="text-align:left;"><th style="padding:3px 7px 3px 0;">WORK</th><th style="padding:3px 7px;">W</th><th style="padding:3px 7px;">RPE</th><th style="padding:3px 7px;">HR</th><th style="padding:3px 7px;">RF</th><th style="padding:3px 7px;">SmO2</th><th style="padding:3px 7px;">THb</th><th style="padding:3px 7px;">DFA-α1</th></tr>';
-  (f.intervalos||[]).forEach(function(iv){
-   const p=iv.potencia||{}, hr=iv.hr||{}, rf2=iv.respiracao||{}, sm=iv.smo2||{}, th=iv.thb||{}, df=iv.dfa1||{};
-   h+='<tr style="border-top:1px solid #21262d;">'
-    +'<td style="padding:3px 7px 3px 0;">#'+iv.ordem+'</td>'
-    +'<td style="padding:3px 7px;">'+n(p.media)+'</td>'
-    +'<td style="padding:3px 7px;font-weight:600;color:#58A6FF;">'+n(iv.rpe)+'</td>'
-    +'<td style="padding:3px 7px;">'+n(hr.media)+'</td>'
-    +'<td style="padding:3px 7px;">'+n(rf2.media)+'</td>'
-    +'<td style="padding:3px 7px;">'+n(sm.media)+'</td>'
-    +'<td style="padding:3px 7px;">'+n(th.media)+'</td>'
-    +'<td style="padding:3px 7px;">'+n(df.media)+'</td></tr>';
-  });
-  h+='</table>'
-   +'<div style="font-size:10px;color:#8b949e;margin-top:5px;">Δ BP: RPE '+n(dlt.rpe)+' · HR '+n(dlt.hr)+' · RF '+n(dlt.respiracao)+' · SmO2 '+n(dlt.smo2)+' · THb '+n(dlt.thb)+' · DFA-α1 '+n(dlt.dfa1)+'</div>'
-   +'<div style="font-size:10px;color:#6e7681;margin-top:3px;">Direção: RPE '+dir(di.rpe)+' · HR '+dir(di.hr)+' · RF '+dir(di.respiracao)+' · SmO2 '+dir(di.smo2)+' · DFA-α1 '+dir(di.dfa1)+'</div>'
-   +'<div style="font-size:9px;color:#6e7681;margin-top:5px;font-style:italic;">Somente verificação do padrão do VST. Não define limitador, intervenção ou zona.</div>'
-   +'</div>';
-  return h;
- }
- box.innerHTML=card(rf.bp1,'BP1')+card(rf.bp2,'BP2');
-}
-
 // mxVstDesenharRpePots — gráfico RPE × Potência Dia1 × Dia2.
 // Lê o RPE de /api/moxy/vst/rpe/<vid> (independente de quando foi
 // gravado) e cruza com d.comparacao_bp1/bp2 para obter potência,
@@ -4913,9 +4980,9 @@ function mxVstMostrarLimitadorDay1(d){
    +'<div style="font-size:9px;color:#8b949e;text-transform:uppercase;'
    +'letter-spacing:.5px;margin-bottom:3px;">VST Day 2 — Padrão observado</div>'
    +'<div style="font-size:12px;color:#c9d1d9;">'
-   +((d.padrao_vst_bp1||((d.rpe_fisiologia||{}).bp1||{}).padrao||'—'))+'</div>'
-   +((d.padrao_vst_bp2||((d.rpe_fisiologia||{}).bp2||{}).padrao) && (d.padrao_vst_bp2||((d.rpe_fisiologia||{}).bp2||{}).padrao)!==(d.padrao_vst_bp1||((d.rpe_fisiologia||{}).bp1||{}).padrao)
-    ?'<div style="font-size:10px;color:#8b949e;">BP2: '+(d.padrao_vst_bp2||((d.rpe_fisiologia||{}).bp2||{}).padrao)+'</div>':'')
+   +(d.limiter_bp1&&d.limiter_bp1.padrao?d.limiter_bp1.padrao:'—')+'</div>'
+   +(d.limiter_bp2&&d.limiter_bp2.padrao&&d.limiter_bp2.padrao!==d.limiter_bp1.padrao
+    ?'<div style="font-size:10px;color:#8b949e;">BP2: '+d.limiter_bp2.padrao+'</div>':'')
    +'<div style="font-size:9px;color:#6e7681;margin-top:3px;font-style:italic;">'
    +'Padrão observado no Day 2 — não confirma nem nega o limitador do Day 1.</div>'
    +'</div></div>';
@@ -5811,445 +5878,466 @@ function mxLimiares(onComplete){
    mxDraw();
   }
 
-  let h='';
-  if(d.fc_valida===false)
-   h+='<p style="border-left:3px solid #F85149;padding-left:8px;'
-    +'font-size:11px;margin:0 0 8px 0;">'
-    +'<b style="color:#F85149;">FC descartada nesta sessão</b> — '
-    +(d.aviso_fc||'')
-    +(d.canais_invalidos&&d.canais_invalidos.length
-      ? '<br><span style="color:#8b949e;">apagados: '
-        +d.canais_invalidos.join(', ')+'</span>' : '')
-    +'</p>';
+   mxRenderLimiares(d, id);
+   mxDraw();
+   if(typeof onComplete==='function') onComplete();
+  }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
 
-  // ── que protocolo foi este ────────────────────────────────────────
-  const ts=d.tipo_sessao||{};
-  if(ts.ok){
-   const serve=ts.serve_para_breakpoints;
-   h+='<div style="border-left:3px solid '+(serve?'#3FB950':'#F0883E')
-    +';padding:6px 10px;margin-bottom:10px;">'
-    +'<b style="color:'+(serve?'#3FB950':'#F0883E')+';font-size:14px;">'
-    +ts.tipo+'</b> <span style="color:#8b949e;font-size:11px;">'
-    +ts.n_blocos_trabalho+' blocos de trabalho'
-    +(ts.blocos_fora_do_corte?' · '+ts.blocos_fora_do_corte
-      +' fora do corte (aquecimento)':'')+'</span>'
-    +'<br><span style="font-size:11px;">'+ts.descricao+'</span>'
-    +'<br><span style="font-size:11px;color:'+(serve?'#8b949e':'#F0883E')+';">'
-    +(serve?'✓ ':'⚠ ')+ts.porque+'</span>';
-   const tr=ts.trabalho||{}, rc=ts.recuperacao||{};
-   h+='<br><span style="font-size:10px;color:#8b949e;">trabalho '
-    +tr.duracao_min_s+'–'+tr.duracao_max_s+' s (cv '+tr.cv+')'
-    +(rc.duracao_media_s!=null
-      ? ' · recuperação '+rc.duracao_min_s+'–'+rc.duracao_max_s+' s (cv '
-        +rc.cv+')' : '')
-    +((ts.carga||{}).subida_pct!=null
-      ? ' · carga sobe '+ts.carga.subida_pct+'%' : '')
-    +((ts.distancia||{}).media_m
-      ? ' · ~'+ts.distancia.media_m+' m por repetição' : '')
-    +'</span></div>';
-  }
+// Renderizar os resultados de Limiares a partir de um objecto d ja calculado.
+// Chamada por mxLimiares() após fetch, por mxCarregarDosBanco() e por
+// mxMudarSubTab() quando MX_ULT_LIMIARES_D ja existe.
+// Recebe d = JSON completo de /api/moxy/limiares/<id>.
+// id = activity_id, necessario para mxLimVerificacaoMostrar.
+function mxRenderLimiares(d, id){
+ if(!d || d.status!=='ok') return;
+ const box=document.getElementById('mxLimiares');
+ if(!box) return;
+ const lc=d.limiares_consenso||{};
+ let h='';
+ if(d.fc_valida===false)
+ h+='<p style="border-left:3px solid #F85149;padding-left:8px;'
+  +'font-size:11px;margin:0 0 8px 0;">'
+  +'<b style="color:#F85149;">FC descartada nesta sessão</b> — '
+  +(d.aviso_fc||'')
+  +(d.canais_invalidos&&d.canais_invalidos.length
+    ? '<br><span style="color:#8b949e;">apagados: '
+      +d.canais_invalidos.join(', ')+'</span>' : '')
+  +'</p>';
 
-  // ── coerencia com o resto do perfil ───────────────────────────────
-  const co=d.coerencia||{};
-  if(co.motivo && !co.ok){
-   h+='<p style="color:#8b949e;font-size:11px;">'+co.motivo+'</p>';
-  } else if(co.ok){
-   const bom=!(co.avisos||[]).length;
-   h+='<div style="border:1px solid '+(bom?'#3FB950':'#F0883E')
-    +';border-radius:6px;padding:8px 10px;margin-bottom:10px;">'
-    +'<b style="color:'+(bom?'#3FB950':'#F0883E')+';">Coerência: '
-    +co.veredicto+'</b> <span style="color:#8b949e;font-size:11px;">'
-    +co.n_passou+' de '+co.n_testes+' testes</span>';
-   if(Object.keys(co.zona_de||{}).length)
-    h+='<br><span style="font-size:11px;">'
-     +Object.keys(co.zona_de).map(function(k){
-       const z=co.zona_de[k];
-       return '<b>'+k+'</b> cai em <b>'+z.zona+'</b> ('+z.de_w+'–'+z.ate_w
-        +' W)'; }).join(' · ')+'</span>';
-   h+='<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
-    +(co.testes||[]).map(function(t){
-      return '<tr><td style="padding-right:8px;color:'
-       +(t.ok?'#3FB950':'#F0883E')+';">'+(t.ok?'✓':'⚠')+'</td>'
-       +'<td style="color:'+(t.ok?'#8b949e':'#c9d1d9')+';">'+t.detalhe
-       +'</td></tr>'; }).join('')
-    +'</table>'
-    +'<span style="font-size:10px;color:#8b949e;">'+(co.nota||'')+'</span>'
-    +'</div>';
-  }
+ // ── que protocolo foi este ────────────────────────────────────────
+ const ts=d.tipo_sessao||{};
+ if(ts.ok){
+ const serve=ts.serve_para_breakpoints;
+ h+='<div style="border-left:3px solid '+(serve?'#3FB950':'#F0883E')
+  +';padding:6px 10px;margin-bottom:10px;">'
+  +'<b style="color:'+(serve?'#3FB950':'#F0883E')+';font-size:14px;">'
+  +ts.tipo+'</b> <span style="color:#8b949e;font-size:11px;">'
+  +ts.n_blocos_trabalho+' blocos de trabalho'
+  +(ts.blocos_fora_do_corte?' · '+ts.blocos_fora_do_corte
+    +' fora do corte (aquecimento)':'')+'</span>'
+  +'<br><span style="font-size:11px;">'+ts.descricao+'</span>'
+  +'<br><span style="font-size:11px;color:'+(serve?'#8b949e':'#F0883E')+';">'
+  +(serve?'✓ ':'⚠ ')+ts.porque+'</span>';
+ const tr=ts.trabalho||{}, rc=ts.recuperacao||{};
+ h+='<br><span style="font-size:10px;color:#8b949e;">trabalho '
+  +tr.duracao_min_s+'–'+tr.duracao_max_s+' s (cv '+tr.cv+')'
+  +(rc.duracao_media_s!=null
+    ? ' · recuperação '+rc.duracao_min_s+'–'+rc.duracao_max_s+' s (cv '
+      +rc.cv+')' : '')
+  +((ts.carga||{}).subida_pct!=null
+    ? ' · carga sobe '+ts.carga.subida_pct+'%' : '')
+  +((ts.distancia||{}).media_m
+    ? ' · ~'+ts.distancia.media_m+' m por repetição' : '')
+  +'</span></div>';
+ }
 
-  // ── dois cartoes: um por limiar ───────────────────────────────────
-  // Antes era um painel por metodo -- quatro numeros soltos sem dizer qual
-  // respondia a que pergunta. Agora cada limiar tem um cartao com todas as
-  // suas estimativas, e o detalhe de cada metodo fica recolhido.
-  [['primeiro','#A371F7'],['segundo','#3FB950']].forEach(function(par){
-   const r=lc[par[0]];
-   if(!r || !r.ok) return;
-   const disp=r.dispersao_pct||0;
-   const cor = disp<10 ? par[1] : disp<20 ? '#F0883E' : '#F85149';
-   h+='<div style="border:1px solid '+cor+';border-radius:6px;'
-    +'padding:8px 10px;margin-bottom:10px;">'
-    +'<span style="color:#8b949e;font-size:11px;">'+r.nome+'</span><br>'
-    +'<b style="font-size:18px;color:'+cor+';">'+Math.round(r.mediana)
-    +' W</b> <span style="color:#8b949e;font-size:12px;">'
-    +(r.n>1 ? '('+Math.round(r.de)+'–'+Math.round(r.ate)+' W · '
-      +r.n+' métodos · dispersão '+disp+'%)' : '(1 método)')
-    +(r.n_marcadas ? ' <span style="color:#F0883E;">· '+r.n_marcadas
-      +' fora por implausível</span>' : '')+'</span>'
-    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
-    +r.estimativas.map(function(x){
-      // implausíveis ficam VISÍVEIS com asterisco: apagar esconderia que
-      // houve medição; o asterisco diz que houve e que não é de confiança
-      const mau = x.plausivel===false;
-      return '<tr'+(mau?' style="opacity:.55;"':'')+'>'
-       +'<td style="padding-right:14px;'+(mau?'color:#F0883E;':'')+'"><b>'
-       +Math.round(x.watts)+' W'+(mau?' *':'')+'</b></td>'
-       +'<td style="padding-right:14px;color:#8b949e;"'
-       +(x.fc_origem?' title="'+x.fc_origem+'"':'')+'>'
-       +(x.bpm?x.bpm+' bpm':'—')+'</td>'
-       +'<td style="padding-right:14px;">'+x.metodo+'</td>'
-       +'<td style="color:#6e7681;">'
-       +(mau ? '<span style="color:#F0883E;">'+x.motivo_implausivel+'</span>'
-             : x.rota)+'</td></tr>'; }).join('')
-    +'</table></div>';
-  });
-  (lc.avisos||[]).forEach(function(a){
-   h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '+a
-    +'</p>'; });
-  if(lc.nota) h+='<p style="color:#8b949e;font-size:11px;">'+lc.nota+'</p>';
+ // ── coerencia com o resto do perfil ───────────────────────────────
+ const co=d.coerencia||{};
+ if(co.motivo && !co.ok){
+ h+='<p style="color:#8b949e;font-size:11px;">'+co.motivo+'</p>';
+ } else if(co.ok){
+ const bom=!(co.avisos||[]).length;
+ h+='<div style="border:1px solid '+(bom?'#3FB950':'#F0883E')
+  +';border-radius:6px;padding:8px 10px;margin-bottom:10px;">'
+  +'<b style="color:'+(bom?'#3FB950':'#F0883E')+';">Coerência: '
+  +co.veredicto+'</b> <span style="color:#8b949e;font-size:11px;">'
+  +co.n_passou+' de '+co.n_testes+' testes</span>';
+ if(Object.keys(co.zona_de||{}).length)
+  h+='<br><span style="font-size:11px;">'
+   +Object.keys(co.zona_de).map(function(k){
+     const z=co.zona_de[k];
+     return '<b>'+k+'</b> cai em <b>'+z.zona+'</b> ('+z.de_w+'–'+z.ate_w
+      +' W)'; }).join(' · ')+'</span>';
+ h+='<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+  +(co.testes||[]).map(function(t){
+    return '<tr><td style="padding-right:8px;color:'
+     +(t.ok?'#3FB950':'#F0883E')+';">'+(t.ok?'✓':'⚠')+'</td>'
+     +'<td style="color:'+(t.ok?'#8b949e':'#c9d1d9')+';">'+t.detalhe
+     +'</td></tr>'; }).join('')
+  +'</table>'
+  +'<span style="font-size:10px;color:#8b949e;">'+(co.nota||'')+'</span>'
+  +'</div>';
+ }
 
-  h+='<div id="mxLimVstBox" style="margin:4px 0 10px;"></div>';
+ // ── dois cartoes: um por limiar ───────────────────────────────────
+ // Antes era um painel por metodo -- quatro numeros soltos sem dizer qual
+ // respondia a que pergunta. Agora cada limiar tem um cartao com todas as
+ // suas estimativas, e o detalhe de cada metodo fica recolhido.
+ [['primeiro','#A371F7'],['segundo','#3FB950']].forEach(function(par){
+ const r=lc[par[0]];
+ if(!r || !r.ok) return;
+ const disp=r.dispersao_pct||0;
+ const cor = disp<10 ? par[1] : disp<20 ? '#F0883E' : '#F85149';
+ h+='<div style="border:1px solid '+cor+';border-radius:6px;'
+  +'padding:8px 10px;margin-bottom:10px;">'
+  +'<span style="color:#8b949e;font-size:11px;">'+r.nome+'</span><br>'
+  +'<b style="font-size:18px;color:'+cor+';">'+Math.round(r.mediana)
+  +' W</b> <span style="color:#8b949e;font-size:12px;">'
+  +(r.n>1 ? '('+Math.round(r.de)+'–'+Math.round(r.ate)+' W · '
+    +r.n+' métodos · dispersão '+disp+'%)' : '(1 método)')
+  +(r.n_marcadas ? ' <span style="color:#F0883E;">· '+r.n_marcadas
+    +' fora por implausível</span>' : '')+'</span>'
+  +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+  +r.estimativas.map(function(x){
+    // implausíveis ficam VISÍVEIS com asterisco: apagar esconderia que
+    // houve medição; o asterisco diz que houve e que não é de confiança
+    const mau = x.plausivel===false;
+    return '<tr'+(mau?' style="opacity:.55;"':'')+'>'
+     +'<td style="padding-right:14px;'+(mau?'color:#F0883E;':'')+'"><b>'
+     +Math.round(x.watts)+' W'+(mau?' *':'')+'</b></td>'
+     +'<td style="padding-right:14px;color:#8b949e;"'
+     +(x.fc_origem?' title="'+x.fc_origem+'"':'')+'>'
+     +(x.bpm?x.bpm+' bpm':'—')+'</td>'
+     +'<td style="padding-right:14px;">'+x.metodo+'</td>'
+     +'<td style="color:#6e7681;">'
+     +(mau ? '<span style="color:#F0883E;">'+x.motivo_implausivel+'</span>'
+           : x.rota)+'</td></tr>'; }).join('')
+  +'</table></div>';
+ });
+ (lc.avisos||[]).forEach(function(a){
+ h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '+a
+  +'</p>'; });
+ if(lc.nota) h+='<p style="color:#8b949e;font-size:11px;">'+lc.nota+'</p>';
 
-  // tudo o resto vai para dentro de um dropdown
-  h+='<details style="margin-top:10px;"><summary style="cursor:pointer;'
-   +'font-size:12px;color:#8b949e;padding:4px 0;">Detalhe de cada método'
-   +'</summary><div style="margin-top:6px;">';
-  const fecharDetalhe=true;
+ h+='<div id="mxLimVstBox" style="margin:4px 0 10px;"></div>';
 
-  const pf=d.perfil_resposta||{};
-  if(pf.ok){
-   const par = pf.perfil==='parabólico';
-   h+='<div style="border-left:3px solid '+(par?'#A371F7':'#79C0FF')
-    +';padding:6px 10px;margin-bottom:10px;">'
-    +'<b style="font-size:15px;color:'+(par?'#A371F7':'#79C0FF')+';">'
-    +'Perfil '+pf.perfil+'</b> '
-    +'<span style="color:#8b949e;font-size:11px;">SmO2 de '+pf.smo2min
-    +'% a '+pf.smo2max+'% · amplitude '+pf.amplitude+'</span>'
-    +'<br><span style="font-size:11px;color:#8b949e;">'+pf.metodo+'</span>';
-   if(pf.bp1_watts!=null)
-    h+='<br><b style="color:#A371F7;">BP1 '+pf.bp1_watts+' W</b> '
-     +'<span style="color:#8b949e;font-size:11px;">≈ FatMax / LT1 · o '
-     +'PRIMEIRO limiar</span>';
-   h+='<br><span style="font-size:11px;">'+pf.bp1_leitura+'</span>'
-    +'<br><span style="font-size:10px;color:#8b949e;">'+pf.fenotipo+'</span>'
-    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
-    +'<tr style="color:#8b949e;text-align:left;">'
-    +'<th style="padding-right:12px;">Carga</th>'
-    +'<th>SmO2 no último minuto</th></tr>'
-    +(pf.degraus||[]).map(function(x){
-      const top = x.watts===pf.smo2max_watts;
-      return '<tr><td style="padding-right:12px;">'+x.watts+' W</td>'
-       +'<td style="color:'+(top?'#A371F7':'#c9d1d9')+';">'+x.smo2_fim+'%'
-       +(top?' ← máximo':'')+'</td></tr>'; }).join('')
-    +'</table></div>';
-  } else if(pf.motivo){
-   h+='<p style="color:#8b949e;font-size:11px;">Perfil: '+pf.motivo+'</p>';
-  }
-  // ── primeiro limiar pela reoxigenação ─────────────────────────────
-  const lr=d.lt1_reoxigenacao||{};
-  if(lr.ok){
-   h+='<div style="border-left:3px solid #A371F7;padding:6px 10px;'
-    +'margin-bottom:10px;">'
-    +'<b style="font-size:16px;color:#A371F7;">LT1 '+lr.lt1_estimado+' W</b>'
-    +' <span style="color:#8b949e;font-size:11px;">entre '
-    +lr.lt1_entre.join(' e ')+' W · ±'+lr.incerteza+' · '+lr.metodo+'</span>'
-    +'<br><span style="font-size:11px;">'+lr.leitura+'</span>'
-    +'<br><span style="font-size:10px;color:#3FB950;">'+lr.independente
-    +'</span>'
-    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
-    +'<tr style="color:#8b949e;text-align:left;">'
-    +'<th style="padding-right:12px;">Carga</th>'
-    +'<th style="padding-right:12px;">2.ª metade</th>'
-    +'<th style="padding-right:12px;">Padrão</th><th>Domínio</th></tr>'
-    +(lr.blocos||[]).map(function(x){
-      if(!x.padrao) return '';
-      const c2 = x.padrao==='reoxigena' ? '#3FB950'
-               : x.padrao==='estabiliza' ? '#F0883E' : '#F85149';
-      return '<tr><td style="padding-right:12px;">'+Math.round(x.watts)
-       +' W</td><td style="padding-right:12px;color:#8b949e;">'
-       +x.declive_2a_metade+'</td>'
-       +'<td style="padding-right:12px;color:'+c2+';">'+x.padrao+'</td>'
-       +'<td style="color:#8b949e;">'+x.dominio+'</td></tr>'; }).join('')
-    +'</table>'
-    +'<span style="font-size:10px;color:#8b949e;">'+lr.nota+'</span>'
-    +'</div>';
-  } else if(lr.motivo){
-   h+='<p style="color:#8b949e;font-size:11px;">LT1 por reoxigenação: '
-    +lr.motivo+'</p>';
-  }
+ // tudo o resto vai para dentro de um dropdown
+ h+='<details style="margin-top:10px;"><summary style="cursor:pointer;'
+ +'font-size:12px;color:#8b949e;padding:4px 0;">Detalhe de cada método'
+ +'</summary><div style="margin-top:6px;">';
+ const fecharDetalhe=true;
 
-  const ml=d.mlss_dessaturacao||{};
-  if(ml.ok){
-   h+='<div style="border-left:3px solid #3FB950;padding:6px 10px;'
-    +'margin-bottom:10px;">'
-    +'<b style="font-size:16px;color:#3FB950;">MLSS '+ml.mlss_estimado
-    +' W</b> <span style="color:#8b949e;font-size:11px;">≈ VT2 / RCP / LT2 · '
-    +'o SEGUNDO limiar</span> <span style="color:#8b949e;font-size:11px;">entre '
-    +ml.mlss_entre.join(' e ')+' W · ±'+ml.incerteza+'</span>'
-    +'<br><span style="font-size:11px;color:#8b949e;">'+ml.metodo+'</span>'
-    +'<br><span style="font-size:11px;color:#8b949e;">'+ml.nota+'</span>'
-    +(ml.aviso_sequencia
-      ? '<br><span style="font-size:11px;color:#F0883E;">⚠ '
-        +ml.aviso_sequencia+'</span>' : '')
-    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
-    +'<tr style="color:#8b949e;text-align:left;">'
-    +'<th style="padding-right:12px;">Carga</th>'
-    +'<th style="padding-right:12px;">Declive total</th>'
-    +'<th style="padding-right:12px;">2.ª metade</th><th>Padrão</th></tr>'
-    +(ml.blocos||[]).map(function(x){
-      if(!x.padrao) return '<tr><td style="padding-right:12px;">'
-       +(x.watts!=null?Math.round(x.watts)+' W':'—')+'</td>'
-       +'<td colspan="3" style="color:#6e7681;">'+(x.motivo||'')+'</td></tr>';
-      const c2=x.acima_do_mlss?'#F85149':'#3FB950';
-      return '<tr'+(x.contradiz?' style="background:rgba(240,136,62,0.08);"':'')
-       +'><td style="padding-right:12px;">'+Math.round(x.watts)
-       +' W</td><td style="padding-right:12px;color:#8b949e;">'
-       +x.declive_total+'</td><td style="padding-right:12px;color:#8b949e;">'
-       +x.declive_2a_metade+'</td><td style="color:'+c2+';">'+x.padrao
-       +(x.contradiz?' <span style="color:#F0883E;font-size:10px;">⚠ '
-         +x.contradiz+'</span>':'')
-       +'</td></tr>';
-     }).join('')
-    +'</table><span style="font-size:10px;color:#8b949e;">declives em % de '
-    +'SmO2 por minuto, ignorando os primeiros '
-    +(ml.criterio||{}).transiente_ignorado_pct+'% do bloco (transiente de '
-    +'arranque). Estável = |declive| abaixo de '
-    +(ml.criterio||{}).estavel_abaixo_de+'</span></div>';
-  } else if(ml.motivo){
-   h+='<p style="color:#F0883E;font-size:12px;">MLSS: '+ml.motivo+'</p>';
-  }
-  if(ml.aviso_duracao)
-   h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '
-    +ml.aviso_duracao+'</p>';
+ const pf=d.perfil_resposta||{};
+ if(pf.ok){
+ const par = pf.perfil==='parabólico';
+ h+='<div style="border-left:3px solid '+(par?'#A371F7':'#79C0FF')
+  +';padding:6px 10px;margin-bottom:10px;">'
+  +'<b style="font-size:15px;color:'+(par?'#A371F7':'#79C0FF')+';">'
+  +'Perfil '+pf.perfil+'</b> '
+  +'<span style="color:#8b949e;font-size:11px;">SmO2 de '+pf.smo2min
+  +'% a '+pf.smo2max+'% · amplitude '+pf.amplitude+'</span>'
+  +'<br><span style="font-size:11px;color:#8b949e;">'+pf.metodo+'</span>';
+ if(pf.bp1_watts!=null)
+  h+='<br><b style="color:#A371F7;">BP1 '+pf.bp1_watts+' W</b> '
+   +'<span style="color:#8b949e;font-size:11px;">≈ FatMax / LT1 · o '
+   +'PRIMEIRO limiar</span>';
+ h+='<br><span style="font-size:11px;">'+pf.bp1_leitura+'</span>'
+  +'<br><span style="font-size:10px;color:#8b949e;">'+pf.fenotipo+'</span>'
+  +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+  +'<tr style="color:#8b949e;text-align:left;">'
+  +'<th style="padding-right:12px;">Carga</th>'
+  +'<th>SmO2 no último minuto</th></tr>'
+  +(pf.degraus||[]).map(function(x){
+    const top = x.watts===pf.smo2max_watts;
+    return '<tr><td style="padding-right:12px;">'+x.watts+' W</td>'
+     +'<td style="color:'+(top?'#A371F7':'#c9d1d9')+';">'+x.smo2_fim+'%'
+     +(top?' ← máximo':'')+'</td></tr>'; }).join('')
+  +'</table></div>';
+ } else if(pf.motivo){
+ h+='<p style="color:#8b949e;font-size:11px;">Perfil: '+pf.motivo+'</p>';
+ }
+ // ── primeiro limiar pela reoxigenação ─────────────────────────────
+ const lr=d.lt1_reoxigenacao||{};
+ if(lr.ok){
+ h+='<div style="border-left:3px solid #A371F7;padding:6px 10px;'
+  +'margin-bottom:10px;">'
+  +'<b style="font-size:16px;color:#A371F7;">LT1 '+lr.lt1_estimado+' W</b>'
+  +' <span style="color:#8b949e;font-size:11px;">entre '
+  +lr.lt1_entre.join(' e ')+' W · ±'+lr.incerteza+' · '+lr.metodo+'</span>'
+  +'<br><span style="font-size:11px;">'+lr.leitura+'</span>'
+  +'<br><span style="font-size:10px;color:#3FB950;">'+lr.independente
+  +'</span>'
+  +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+  +'<tr style="color:#8b949e;text-align:left;">'
+  +'<th style="padding-right:12px;">Carga</th>'
+  +'<th style="padding-right:12px;">2.ª metade</th>'
+  +'<th style="padding-right:12px;">Padrão</th><th>Domínio</th></tr>'
+  +(lr.blocos||[]).map(function(x){
+    if(!x.padrao) return '';
+    const c2 = x.padrao==='reoxigena' ? '#3FB950'
+             : x.padrao==='estabiliza' ? '#F0883E' : '#F85149';
+    return '<tr><td style="padding-right:12px;">'+Math.round(x.watts)
+     +' W</td><td style="padding-right:12px;color:#8b949e;">'
+     +x.declive_2a_metade+'</td>'
+     +'<td style="padding-right:12px;color:'+c2+';">'+x.padrao+'</td>'
+     +'<td style="color:#8b949e;">'+x.dominio+'</td></tr>'; }).join('')
+  +'</table>'
+  +'<span style="font-size:10px;color:#8b949e;">'+lr.nota+'</span>'
+  +'</div>';
+ } else if(lr.motivo){
+ h+='<p style="color:#8b949e;font-size:11px;">LT1 por reoxigenação: '
+  +lr.motivo+'</p>';
+ }
 
-  // ── reservas W′ e M′ ──────────────────────────────────────────────
-  const rv=d.reservas||{};
-  ['wprime','mprime'].forEach(function(k){
-   const r=rv[k];
-   if(!r) return;
-   const nome = k==='wprime' ? 'W′ (potência)' : 'M′ (SmO2)';
-   if(!r.ok){
-    h+='<p style="font-size:11px;color:#8b949e;">'+nome+': '
-     +(r.motivo||r.erro||'indisponível')+'</p>';
-    if(r.diagnostico_desta_sessao)
-     h+='<p style="font-size:11px;color:#F0883E;margin:-4px 0 4px 0;">⚠ '
-      +r.diagnostico_desta_sessao+'</p>';
-    if(r.o_que_seria_preciso)
-     h+='<p style="font-size:11px;color:#8b949e;margin:-2px 0 6px 0;">'
-      +'<b>Para o obter:</b> '+r.o_que_seria_preciso+'</p>';
-    return;
-   }
-   const pct=r.minimo_pct;
-   const cor = r.vezes_esgotado ? '#F85149' : pct<15 ? '#F0883E' : '#3FB950';
-   h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
-    +'margin-bottom:8px;">'
-    +'<b style="color:'+cor+';">'+nome+' — mínimo '+pct+'%</b> '
-    +'<span style="color:#8b949e;font-size:11px;">'
-    +(r.vezes_esgotado?r.vezes_esgotado+'× a zero · ':'')
-    +'aos '+Math.floor((r.instante_do_minimo_s||0)/60)+' min</span>'
-    +'<br><span style="font-size:11px;">'+r.leitura+'</span>'
-    +'<br><span style="font-size:10px;color:#8b949e;">'+r.modelo
-    +(r.nota?' · '+r.nota:'')+(r.limite?' · '+r.limite:'')+'</span></div>';
-  });
+ const ml=d.mlss_dessaturacao||{};
+ if(ml.ok){
+ h+='<div style="border-left:3px solid #3FB950;padding:6px 10px;'
+  +'margin-bottom:10px;">'
+  +'<b style="font-size:16px;color:#3FB950;">MLSS '+ml.mlss_estimado
+  +' W</b> <span style="color:#8b949e;font-size:11px;">≈ VT2 / RCP / LT2 · '
+  +'o SEGUNDO limiar</span> <span style="color:#8b949e;font-size:11px;">entre '
+  +ml.mlss_entre.join(' e ')+' W · ±'+ml.incerteza+'</span>'
+  +'<br><span style="font-size:11px;color:#8b949e;">'+ml.metodo+'</span>'
+  +'<br><span style="font-size:11px;color:#8b949e;">'+ml.nota+'</span>'
+  +(ml.aviso_sequencia
+    ? '<br><span style="font-size:11px;color:#F0883E;">⚠ '
+      +ml.aviso_sequencia+'</span>' : '')
+  +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+  +'<tr style="color:#8b949e;text-align:left;">'
+  +'<th style="padding-right:12px;">Carga</th>'
+  +'<th style="padding-right:12px;">Declive total</th>'
+  +'<th style="padding-right:12px;">2.ª metade</th><th>Padrão</th></tr>'
+  +(ml.blocos||[]).map(function(x){
+    if(!x.padrao) return '<tr><td style="padding-right:12px;">'
+     +(x.watts!=null?Math.round(x.watts)+' W':'—')+'</td>'
+     +'<td colspan="3" style="color:#6e7681;">'+(x.motivo||'')+'</td></tr>';
+    const c2=x.acima_do_mlss?'#F85149':'#3FB950';
+    return '<tr'+(x.contradiz?' style="background:rgba(240,136,62,0.08);"':'')
+     +'><td style="padding-right:12px;">'+Math.round(x.watts)
+     +' W</td><td style="padding-right:12px;color:#8b949e;">'
+     +x.declive_total+'</td><td style="padding-right:12px;color:#8b949e;">'
+     +x.declive_2a_metade+'</td><td style="color:'+c2+';">'+x.padrao
+     +(x.contradiz?' <span style="color:#F0883E;font-size:10px;">⚠ '
+       +x.contradiz+'</span>':'')
+     +'</td></tr>';
+   }).join('')
+  +'</table><span style="font-size:10px;color:#8b949e;">declives em % de '
+  +'SmO2 por minuto, ignorando os primeiros '
+  +(ml.criterio||{}).transiente_ignorado_pct+'% do bloco (transiente de '
+  +'arranque). Estável = |declive| abaixo de '
+  +(ml.criterio||{}).estavel_abaixo_de+'</span></div>';
+ } else if(ml.motivo){
+ h+='<p style="color:#F0883E;font-size:12px;">MLSS: '+ml.motivo+'</p>';
+ }
+ if(ml.aviso_duracao)
+ h+='<p style="color:#F0883E;font-size:11px;margin:-4px 0 8px 0;">⚠ '
+  +ml.aviso_duracao+'</p>';
 
-  const bm=d.bp_moxy||{};
-  if(bm.ok || bm.bp1_w!=null){
-   const val=bm.ok;
-   h+='<div style="border-left:3px solid '+(val?'#3FB950':'#F0883E')
-    +';padding:6px 10px;margin-bottom:10px;">'
-    +'<b style="font-size:16px;color:'+(val?'#3FB950':'#F0883E')+';">'
-    +'BP1 '+bm.bp1_w+' W'+(bm.bp1_bpm?' · '+bm.bp1_bpm+' bpm':'')
-    +(bm.bp2_w!=null?'  ·  BP2 '+bm.bp2_w+' W'
-      +(bm.bp2_bpm?' · '+bm.bp2_bpm+' bpm':''):'')+'</b>'
-    +((bm.bp1_fc_origem||bm.bp2_fc_origem)
-      ? '<br><span style="font-size:10px;color:#8b949e;">FC: '
-        +[bm.bp1_fc_origem,bm.bp2_fc_origem].filter(Boolean)
-          .map(function(o,i2){ return (i2?'BP2':'BP1')+' — '+o.nota; })
-          .join(' · ')+'</span>' : '')
-    +' <span style="color:#8b949e;font-size:11px;">F='+(bm.f_vs_recta||'—')
-    +(bm.p_vs_recta!=null?' p='+bm.p_vs_recta:'')
-    +' · '+bm.n_intervalos+' intervalos</span>'
-    +'<br><span style="font-size:11px;color:#8b949e;">'+bm.metodo+'</span>'
-    +'<br><span style="font-size:10px;color:#8b949e;">'
-    +bm.nota_interpolacao+'</span>'
-    +(bm.aviso_gl?'<br><span style="font-size:11px;color:#F0883E;">⚠ '
-      +bm.aviso_gl+'</span>':'')
-    +(!val&&bm.motivo?'<br><span style="font-size:11px;color:#F0883E;">⚠ '
-      +bm.motivo+'</span>':'')
-    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
-    +'<tr style="color:#8b949e;text-align:left;">'
-    +'<th style="padding-right:12px;">Carga</th>'
-    +'<th style="padding-right:12px;">SmO2 médio</th><th>FC</th></tr>'
-    +(bm.pontos||[]).map(function(x){
-      return '<tr><td style="padding-right:12px;">'+Math.round(x.watts)
-       +' W</td><td style="padding-right:12px;">'+x.smo2.toFixed(1)+'%</td>'
-       +'<td style="color:#8b949e;">'+(x.hr!=null?x.hr+' bpm':'—')
-       +'</td></tr>'; }).join('')
-    +'</table></div>';
-  } else if(bm.motivo){
-   h+='<p style="color:#8b949e;font-size:11px;">Método Moxy: '+bm.motivo
-    +'</p>';
-  }
-  const bl2=d.bp_moxy_sem_restricao||{};
-  if(bl2.bp1_w!=null){
-   h+='<p style="font-size:11px;color:#8b949e;margin:-6px 0 10px 0;">'
-    +'<b>Sem mínimo por troço</b> (reproduz o script do Intervals.icu): '
-    +'BP1 <b>'+bl2.bp1_w+' W</b>'+(bl2.bp1_bpm?' · '+bl2.bp1_bpm+' bpm':'')
-    +(bl2.bp2_w!=null?' · BP2 <b>'+bl2.bp2_w+' W</b>'
-      +(bl2.bp2_bpm?' · '+bl2.bp2_bpm+' bpm':''):'')
-    +'. A diferença para o valor acima é só o critério: eu exijo 2 degraus '
-    +'medidos por troço, o script não exige nenhum, e por isso o breakpoint '
-    +'dele pode cair entre dois degraus quaisquer. Com poucos degraus a '
-    +'diferença chega a 10 W.</p>';
-  }
+ // ── reservas W′ e M′ ──────────────────────────────────────────────
+ const rv=d.reservas||{};
+ ['wprime','mprime'].forEach(function(k){
+ const r=rv[k];
+ if(!r) return;
+ const nome = k==='wprime' ? 'W′ (potência)' : 'M′ (SmO2)';
+ if(!r.ok){
+  h+='<p style="font-size:11px;color:#8b949e;">'+nome+': '
+   +(r.motivo||r.erro||'indisponível')+'</p>';
+  if(r.diagnostico_desta_sessao)
+   h+='<p style="font-size:11px;color:#F0883E;margin:-4px 0 4px 0;">⚠ '
+    +r.diagnostico_desta_sessao+'</p>';
+  if(r.o_que_seria_preciso)
+   h+='<p style="font-size:11px;color:#8b949e;margin:-2px 0 6px 0;">'
+    +'<b>Para o obter:</b> '+r.o_que_seria_preciso+'</p>';
+  return;
+ }
+ const pct=r.minimo_pct;
+ const cor = r.vezes_esgotado ? '#F85149' : pct<15 ? '#F0883E' : '#3FB950';
+ h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
+  +'margin-bottom:8px;">'
+  +'<b style="color:'+cor+';">'+nome+' — mínimo '+pct+'%</b> '
+  +'<span style="color:#8b949e;font-size:11px;">'
+  +(r.vezes_esgotado?r.vezes_esgotado+'× a zero · ':'')
+  +'aos '+Math.floor((r.instante_do_minimo_s||0)/60)+' min</span>'
+  +'<br><span style="font-size:11px;">'+r.leitura+'</span>'
+  +'<br><span style="font-size:10px;color:#8b949e;">'+r.modelo
+  +(r.nota?' · '+r.nota:'')+(r.limite?' · '+r.limite:'')+'</span></div>';
+ });
 
-  // ── deoxy-Hb ──────────────────────────────────────────────────────
-  const bh=d.bp_hhb||{}, hh=d.hhb||{};
-  if(bh.ok || bh.bp1_w!=null){
-   h+='<div style="border-left:3px solid #A371F7;padding:6px 10px;'
-    +'margin-bottom:10px;">'
-    +'<b style="color:#A371F7;font-size:15px;">deoxy-Hb: BP1 '+bh.bp1_w+' W'
-    +(bh.bp1_bpm?' · '+bh.bp1_bpm+' bpm':'')
-    +(bh.bp2_w!=null?'  ·  BP2 '+bh.bp2_w+' W':'')+'</b>'
-    +' <span style="color:#8b949e;font-size:11px;">F='+(bh.f_vs_recta||'—')
-    +' · '+bh.n_intervalos+' degraus</span>'
-    +(bh.leitura_bp1
-      ? '<br><span style="font-size:11px;">'+bh.leitura_bp1+'</span>':'')
-    +(hh.formula
-      ? '<br><span style="font-size:10px;color:#8b949e;">'+hh.formula
-        +' · '+(hh.origem||'')+'</span>':'')
-    +(bh.nota_sinal
-      ? '<br><span style="font-size:10px;color:#8b949e;">'+bh.nota_sinal
-        +'</span>':'')
-    +'</div>';
-  } else if(bh.motivo){
-   h+='<p style="font-size:11px;color:#8b949e;">deoxy-Hb: '+bh.motivo+'</p>';
-  }
+ const bm=d.bp_moxy||{};
+ if(bm.ok || bm.bp1_w!=null){
+ const val=bm.ok;
+ h+='<div style="border-left:3px solid '+(val?'#3FB950':'#F0883E')
+  +';padding:6px 10px;margin-bottom:10px;">'
+  +'<b style="font-size:16px;color:'+(val?'#3FB950':'#F0883E')+';">'
+  +'BP1 '+bm.bp1_w+' W'+(bm.bp1_bpm?' · '+bm.bp1_bpm+' bpm':'')
+  +(bm.bp2_w!=null?'  ·  BP2 '+bm.bp2_w+' W'
+    +(bm.bp2_bpm?' · '+bm.bp2_bpm+' bpm':''):'')+'</b>'
+  +((bm.bp1_fc_origem||bm.bp2_fc_origem)
+    ? '<br><span style="font-size:10px;color:#8b949e;">FC: '
+      +[bm.bp1_fc_origem,bm.bp2_fc_origem].filter(Boolean)
+        .map(function(o,i2){ return (i2?'BP2':'BP1')+' — '+o.nota; })
+        .join(' · ')+'</span>' : '')
+  +' <span style="color:#8b949e;font-size:11px;">F='+(bm.f_vs_recta||'—')
+  +(bm.p_vs_recta!=null?' p='+bm.p_vs_recta:'')
+  +' · '+bm.n_intervalos+' intervalos</span>'
+  +'<br><span style="font-size:11px;color:#8b949e;">'+bm.metodo+'</span>'
+  +'<br><span style="font-size:10px;color:#8b949e;">'
+  +bm.nota_interpolacao+'</span>'
+  +(bm.aviso_gl?'<br><span style="font-size:11px;color:#F0883E;">⚠ '
+    +bm.aviso_gl+'</span>':'')
+  +(!val&&bm.motivo?'<br><span style="font-size:11px;color:#F0883E;">⚠ '
+    +bm.motivo+'</span>':'')
+  +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+  +'<tr style="color:#8b949e;text-align:left;">'
+  +'<th style="padding-right:12px;">Carga</th>'
+  +'<th style="padding-right:12px;">SmO2 médio</th><th>FC</th></tr>'
+  +(bm.pontos||[]).map(function(x){
+    return '<tr><td style="padding-right:12px;">'+Math.round(x.watts)
+     +' W</td><td style="padding-right:12px;">'+x.smo2.toFixed(1)+'%</td>'
+     +'<td style="color:#8b949e;">'+(x.hr!=null?x.hr+' bpm':'—')
+     +'</td></tr>'; }).join('')
+  +'</table></div>';
+ } else if(bm.motivo){
+ h+='<p style="color:#8b949e;font-size:11px;">Método Moxy: '+bm.motivo
+  +'</p>';
+ }
+ const bl2=d.bp_moxy_sem_restricao||{};
+ if(bl2.bp1_w!=null){
+ h+='<p style="font-size:11px;color:#8b949e;margin:-6px 0 10px 0;">'
+  +'<b>Sem mínimo por troço</b> (reproduz o script do Intervals.icu): '
+  +'BP1 <b>'+bl2.bp1_w+' W</b>'+(bl2.bp1_bpm?' · '+bl2.bp1_bpm+' bpm':'')
+  +(bl2.bp2_w!=null?' · BP2 <b>'+bl2.bp2_w+' W</b>'
+    +(bl2.bp2_bpm?' · '+bl2.bp2_bpm+' bpm':''):'')
+  +'. A diferença para o valor acima é só o critério: eu exijo 2 degraus '
+  +'medidos por troço, o script não exige nenhum, e por isso o breakpoint '
+  +'dele pode cair entre dois degraus quaisquer. Com poucos degraus a '
+  +'diferença chega a 10 W.</p>';
+ }
 
-  const bt=d.bp_taxa||{};
-  if(bt.ok){
-   h+='<div style="border-left:3px solid #58A6FF;padding:6px 10px;'
-    +'margin-bottom:10px;">'
-    +'<b style="font-size:16px;color:#58A6FF;">Breakpoint na taxa '
-    +bt.bp_watts+' W</b>'
-    +' <span style="color:#8b949e;font-size:11px;">≈ VT2 / RCP · F='
-    +bt.f_vs_recta+' · '+bt.n_degraus+' degraus · '+(bt.padrao||'')+'</span>'
-    +'<br><span style="font-size:11px;color:#8b949e;">'
-    +(bt.plateia
-      ? 'a queda deixa de se agravar aqui: a extracção chegou ao limite'
-      : 'a queda agrava-se aqui')
-    +' — declive da taxa '+bt.taxa_antes+' → '+bt.taxa_depois
-    +' %/min por watt</span>'
-    +'<br><span style="font-size:11px;color:#8b949e;">'+bt.nota+'</span>'
-    +(bt.nota_padrao
-      ? '<br><span style="font-size:10px;color:#8b949e;">'+bt.nota_padrao
-        +'</span>' : '')
-    +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
-    +'<tr style="color:#8b949e;text-align:left;">'
-    +'<th style="padding-right:12px;">Carga</th><th>Taxa (%/min)</th>'
-    +'<th style="padding-left:12px;">Δ</th></tr>'
-    +(bt.degraus||[]).map(function(x, i){
-      const acima = bt.bp_watts!=null && x.watts>=bt.bp_watts;
-      return '<tr><td style="padding-right:12px;">'+x.watts+' W</td>'
-       +'<td style="color:'+(acima?'#F85149':'#3FB950')+';">'+x.taxa
-       +'</td><td style="padding-left:12px;color:#6e7681;">'
-       +(i>0 ? ((x.taxa-bt.degraus[i-1].taxa)>0?'+':'')
-               +(x.taxa-bt.degraus[i-1].taxa).toFixed(2) : '')
-       +'</td></tr>'; }).join('')
-    +'</table></div>';
-  } else if(bt.motivo){
-   h+='<p style="color:#8b949e;font-size:11px;">Breakpoint na taxa: '
-    +bt.motivo
-    +((bt.degraus||[]).length
-      ? '<br>taxas por degrau: '+bt.degraus.map(function(x){
-          return x.watts+'W '+x.taxa; }).join(' · ') : '')
-    +'</p>';
-  }
-  if(bp.ok){
-   const conf = f.usar_para_prescrever===false ? '#F0883E' : '#3FB950';
-   h+='<div style="border-left:3px solid '+conf+';padding:6px 10px;">'
-    +'<b style="font-size:15px;">BP1 '+bp.bp1.tau+' W'
-    +(bp.bp1.smo2!=null?' <span style="color:#8b949e;font-size:11px;">SmO2 '
-      +bp.bp1.smo2+'%</span>':'')
-    +(bp.bp2&&bp.bp2.ok?' · BP2 '+bp.bp2.tau+' W'
-      +(bp.bp2.smo2!=null?' <span style="color:#8b949e;font-size:11px;">SmO2 '
-        +bp.bp2.smo2+'%</span>':''):'')+'</b>'
-    +'<br><span style="font-size:11px;color:#8b949e;">'+bp.metodo
-    +' · declives '+(bp.declives||[]).join(' → ')
-    +' · F vs recta '+(bp.f_vs_recta||'—')
-    +(bp.p_vs_recta!=null?' (p='+bp.p_vs_recta+')':'')+'</span>'
-    +'<br><span style="font-size:11px;color:'+conf+';">Fiabilidade '
-    +(f.nivel||'?')+(f.fonte?' · '+f.fonte:'')+'</span>'
-    +(f.vies?'<br><span style="font-size:11px;color:#8b949e;">'+f.vies
+ // ── deoxy-Hb ──────────────────────────────────────────────────────
+ const bh=d.bp_hhb||{}, hh=d.hhb||{};
+ if(bh.ok || bh.bp1_w!=null){
+ h+='<div style="border-left:3px solid #A371F7;padding:6px 10px;'
+  +'margin-bottom:10px;">'
+  +'<b style="color:#A371F7;font-size:15px;">deoxy-Hb: BP1 '+bh.bp1_w+' W'
+  +(bh.bp1_bpm?' · '+bh.bp1_bpm+' bpm':'')
+  +(bh.bp2_w!=null?'  ·  BP2 '+bh.bp2_w+' W':'')+'</b>'
+  +' <span style="color:#8b949e;font-size:11px;">F='+(bh.f_vs_recta||'—')
+  +' · '+bh.n_intervalos+' degraus</span>'
+  +(bh.leitura_bp1
+    ? '<br><span style="font-size:11px;">'+bh.leitura_bp1+'</span>':'')
+  +(hh.formula
+    ? '<br><span style="font-size:10px;color:#8b949e;">'+hh.formula
+      +' · '+(hh.origem||'')+'</span>':'')
+  +(bh.nota_sinal
+    ? '<br><span style="font-size:10px;color:#8b949e;">'+bh.nota_sinal
       +'</span>':'')
-    +(f.aviso_n?'<br><span style="font-size:11px;color:#8b949e;">'+f.aviso_n
-      +'</span>':'')
-    +(f.usar_para_prescrever===false
-      ? '<br><span style="font-size:11px;color:#F0883E;">⚠ o cálculo é o '
-        +'mesmo de todas as modalidades; o que muda é a confiança. Nesta, '
-        +'a literatura desaconselha usar o valor para prescrever zonas '
-        +'sem o confirmar contra CP ou MLSS</span>':'')
-    +'</div>';
-  } else {
-   h+='<p style="color:#8b949e;font-size:11px;">Breakpoints por regressão: '
-    +(bp.motivo||'sem quebra')
-    +' — este método foi desenhado para <b>rampa contínua</b>, onde a queda '
-    +'do SmO2 acelera. Num protocolo de blocos com descanso, a informação '
-    +'está na forma de cada bloco, não na envolvente dos mínimos. É esperado '
-    +'que falhe aqui.</p>';
-  }
-  const pl=d.plato;
-  if(pl&&pl.ok) h+='<p style="font-size:11px;color:#8b949e;">Platô de SmO2 a '
-   +pl.x+' s ('+pl.janelas_planas+' janelas de '+pl.janela_s+' s abaixo de '
-   +pl.corte+' unidades).</p>';
+  +'</div>';
+ } else if(bh.motivo){
+ h+='<p style="font-size:11px;color:#8b949e;">deoxy-Hb: '+bh.motivo+'</p>';
+ }
 
-  const hp=d.hipocapnia||{};
-  if(hp.ok){
-   const cor=hp.suspeita?'#F85149':'#3FB950';
-   h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
-    +'margin-top:8px;"><b style="color:'+cor+';">Hipocapnia: '
-    +(hp.suspeita?'SUSPEITA':'sem sinal')+'</b> '
-    +'<span style="color:#8b949e;font-size:11px;">z='+hp.z_maximo
-    +' (limiar '+hp.limiar_z+')</span>'
-    +'<br><span style="font-size:11px;">'+hp.leitura+'</span>'
-    +'<br><span style="font-size:10px;color:#8b949e;">'+hp.limite
-    +'</span></div>';
-  }
-  const ce=d.cer||{};
-  if(ce.ok){
-   h+='<div style="border-left:3px solid '+(ce.valido?'#3FB950':'#F0883E')
-    +';padding:6px 10px;margin-top:8px;">'
-    +'<b>CER '+ce.cer_pct_por_s+' %/s</b> '
-    +'<span style="color:#8b949e;font-size:11px;">M′='+ce.m_linha
-    +' · r²='+ce.r2+' · '+ce.n_ensaios+' ensaios</span>'
-    +(ce.aviso?'<br><span style="font-size:11px;color:#F0883E;">⚠ '+ce.aviso
-      +'</span>':'')
-    +'<br><span style="font-size:10px;color:#8b949e;">'+ce.nota+'</span></div>';
-  } else if(ce.motivo){
-   h+='<p style="font-size:11px;color:#8b949e;">CER: '+ce.motivo
-    +(ce.como_activar
-      ? '<br><b style="color:'+(ce.possivel_com_estes_blocos?'#3FB950':'#F0883E')
-        +';">'+ce.como_activar+'</b>' : '')
-    +((ce.duracoes_distintas||[]).length
-      ? '<br><span style="color:#8b949e;">durações dos blocos: '
-        +ce.duracoes_distintas.join('s, ')+'s</span>' : '')
-    +'</p>';
-  }
-  if(fecharDetalhe) h+='</div></details>';
-  box.innerHTML=h;
-  mxDraw();
+ const bt=d.bp_taxa||{};
+ if(bt.ok){
+ h+='<div style="border-left:3px solid #58A6FF;padding:6px 10px;'
+  +'margin-bottom:10px;">'
+  +'<b style="font-size:16px;color:#58A6FF;">Breakpoint na taxa '
+  +bt.bp_watts+' W</b>'
+  +' <span style="color:#8b949e;font-size:11px;">≈ VT2 / RCP · F='
+  +bt.f_vs_recta+' · '+bt.n_degraus+' degraus · '+(bt.padrao||'')+'</span>'
+  +'<br><span style="font-size:11px;color:#8b949e;">'
+  +(bt.plateia
+    ? 'a queda deixa de se agravar aqui: a extracção chegou ao limite'
+    : 'a queda agrava-se aqui')
+  +' — declive da taxa '+bt.taxa_antes+' → '+bt.taxa_depois
+  +' %/min por watt</span>'
+  +'<br><span style="font-size:11px;color:#8b949e;">'+bt.nota+'</span>'
+  +(bt.nota_padrao
+    ? '<br><span style="font-size:10px;color:#8b949e;">'+bt.nota_padrao
+      +'</span>' : '')
+  +'<table style="border-collapse:collapse;font-size:11px;margin-top:6px;">'
+  +'<tr style="color:#8b949e;text-align:left;">'
+  +'<th style="padding-right:12px;">Carga</th><th>Taxa (%/min)</th>'
+  +'<th style="padding-left:12px;">Δ</th></tr>'
+  +(bt.degraus||[]).map(function(x, i){
+    const acima = bt.bp_watts!=null && x.watts>=bt.bp_watts;
+    return '<tr><td style="padding-right:12px;">'+x.watts+' W</td>'
+     +'<td style="color:'+(acima?'#F85149':'#3FB950')+';">'+x.taxa
+     +'</td><td style="padding-left:12px;color:#6e7681;">'
+     +(i>0 ? ((x.taxa-bt.degraus[i-1].taxa)>0?'+':'')
+             +(x.taxa-bt.degraus[i-1].taxa).toFixed(2) : '')
+     +'</td></tr>'; }).join('')
+  +'</table></div>';
+ } else if(bt.motivo){
+ h+='<p style="color:#8b949e;font-size:11px;">Breakpoint na taxa: '
+  +bt.motivo
+  +((bt.degraus||[]).length
+    ? '<br>taxas por degrau: '+bt.degraus.map(function(x){
+        return x.watts+'W '+x.taxa; }).join(' · ') : '')
+  +'</p>';
+ }
+ if(bp.ok){
+ const conf = f.usar_para_prescrever===false ? '#F0883E' : '#3FB950';
+ h+='<div style="border-left:3px solid '+conf+';padding:6px 10px;">'
+  +'<b style="font-size:15px;">BP1 '+bp.bp1.tau+' W'
+  +(bp.bp1.smo2!=null?' <span style="color:#8b949e;font-size:11px;">SmO2 '
+    +bp.bp1.smo2+'%</span>':'')
+  +(bp.bp2&&bp.bp2.ok?' · BP2 '+bp.bp2.tau+' W'
+    +(bp.bp2.smo2!=null?' <span style="color:#8b949e;font-size:11px;">SmO2 '
+      +bp.bp2.smo2+'%</span>':''):'')+'</b>'
+  +'<br><span style="font-size:11px;color:#8b949e;">'+bp.metodo
+  +' · declives '+(bp.declives||[]).join(' → ')
+  +' · F vs recta '+(bp.f_vs_recta||'—')
+  +(bp.p_vs_recta!=null?' (p='+bp.p_vs_recta+')':'')+'</span>'
+  +'<br><span style="font-size:11px;color:'+conf+';">Fiabilidade '
+  +(f.nivel||'?')+(f.fonte?' · '+f.fonte:'')+'</span>'
+  +(f.vies?'<br><span style="font-size:11px;color:#8b949e;">'+f.vies
+    +'</span>':'')
+  +(f.aviso_n?'<br><span style="font-size:11px;color:#8b949e;">'+f.aviso_n
+    +'</span>':'')
+  +(f.usar_para_prescrever===false
+    ? '<br><span style="font-size:11px;color:#F0883E;">⚠ o cálculo é o '
+      +'mesmo de todas as modalidades; o que muda é a confiança. Nesta, '
+      +'a literatura desaconselha usar o valor para prescrever zonas '
+      +'sem o confirmar contra CP ou MLSS</span>':'')
+  +'</div>';
+ } else {
+ h+='<p style="color:#8b949e;font-size:11px;">Breakpoints por regressão: '
+  +(bp.motivo||'sem quebra')
+  +' — este método foi desenhado para <b>rampa contínua</b>, onde a queda '
+  +'do SmO2 acelera. Num protocolo de blocos com descanso, a informação '
+  +'está na forma de cada bloco, não na envolvente dos mínimos. É esperado '
+  +'que falhe aqui.</p>';
+ }
+ const pl=d.plato;
+ if(pl&&pl.ok) h+='<p style="font-size:11px;color:#8b949e;">Platô de SmO2 a '
+ +pl.x+' s ('+pl.janelas_planas+' janelas de '+pl.janela_s+' s abaixo de '
+ +pl.corte+' unidades).</p>';
+
+ const hp=d.hipocapnia||{};
+ if(hp.ok){
+ const cor=hp.suspeita?'#F85149':'#3FB950';
+ h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
+  +'margin-top:8px;"><b style="color:'+cor+';">Hipocapnia: '
+  +(hp.suspeita?'SUSPEITA':'sem sinal')+'</b> '
+  +'<span style="color:#8b949e;font-size:11px;">z='+hp.z_maximo
+  +' (limiar '+hp.limiar_z+')</span>'
+  +'<br><span style="font-size:11px;">'+hp.leitura+'</span>'
+  +'<br><span style="font-size:10px;color:#8b949e;">'+hp.limite
+  +'</span></div>';
+ }
+ const ce=d.cer||{};
+ if(ce.ok){
+ h+='<div style="border-left:3px solid '+(ce.valido?'#3FB950':'#F0883E')
+  +';padding:6px 10px;margin-top:8px;">'
+  +'<b>CER '+ce.cer_pct_por_s+' %/s</b> '
+  +'<span style="color:#8b949e;font-size:11px;">M′='+ce.m_linha
+  +' · r²='+ce.r2+' · '+ce.n_ensaios+' ensaios</span>'
+  +(ce.aviso?'<br><span style="font-size:11px;color:#F0883E;">⚠ '+ce.aviso
+    +'</span>':'')
+  +'<br><span style="font-size:10px;color:#8b949e;">'+ce.nota+'</span></div>';
+ } else if(ce.motivo){
+ h+='<p style="font-size:11px;color:#8b949e;">CER: '+ce.motivo
+  +(ce.como_activar
+    ? '<br><b style="color:'+(ce.possivel_com_estes_blocos?'#3FB950':'#F0883E')
+      +';">'+ce.como_activar+'</b>' : '')
+  +((ce.duracoes_distintas||[]).length
+    ? '<br><span style="color:#8b949e;">durações dos blocos: '
+      +ce.duracoes_distintas.join('s, ')+'s</span>' : '')
+  +'</p>';
+ }
+ if(fecharDetalhe) h+='</div></details>';
+ box.innerHTML=h;
+ // Canvas precisam de container visivel: usar requestAnimationFrame
+ requestAnimationFrame(function(){
+  mxDesenharLimiaresSmo2(d);
+  mxDesenharDmax(d);
+  mxMostrarDfa1(d.dfa1);
+  mxDesenharDfa1(d.dfa1);
+  mxMostrarCartoesSimples(d);
   mxLimVerificacaoMostrar(id, lc, MX_ULT_VALORES);
-  if(typeof onComplete==='function') onComplete();
- }).catch(e=>{ est.textContent='erro: '+e.message; });
+ });
 }
 
 // O que treinar, conforme o limitador encontrado. Fica em dropdown e
@@ -6756,115 +6844,132 @@ function mxRede(){
   est.textContent=d.n_pares_testados+' pares testados · '+d.n_dirigidas
    +' com direcção · '+d.n_indecisas+' ambíguos'
    +(d.controlo?' · condicionado a '+d.controlo:' · SEM condicionar');
-  let h='';
-  const L=d.limitador||{};
-  if(L.sistema||L.leitura){
-   const cores={periferico:'#F85149',cardiaco:'#58A6FF',
-                respiratorio:'#3FB950',autonomico:'#A371F7'};
-   const cor=cores[L.sistema]||'#8b949e';
-   h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
-    +'margin-bottom:10px;">'
-    +'<b style="color:'+cor+';">LIMITADOR: '
-    +(L.sistema?L.sistema.toUpperCase():'indeterminado')+'</b><br>'
-    +'<span style="font-size:12px;">'+(L.leitura||'')+'</span>';
-   const cp=L.controlo_pct||{};
-   const ks=Object.keys(cp).sort(function(a,b){ return cp[b]-cp[a]; });
-   if(ks.length) h+='<br><span style="font-size:11px;color:#8b949e;">'
-    +ks.map(function(k){ return k+' '+cp[k]+'%'; }).join(' · ')
-    +' &nbsp;(peso pelo F das arestas que partem de cada sistema)</span>';
-   h+='<br><span style="font-size:10px;color:#8b949e;">'+(L.aviso||'')
-    +'</span></div>';
-  }
-  if(d.fontes && d.fontes.length)
-   h+='<p style="font-size:12px;"><b style="color:#3FB950;">Fontes:</b> '
-    +d.fontes.join(', ')+' &nbsp; <b style="color:#F0883E;">Sumidouros:</b> '
-    +(d.sumidouros||[]).join(', ')+'</p>';
-  // Centralidade de grau e de intermediacao (Brandes) -- adaptado do
-  // PhysioNexus (Evan Peikon). Out-degree/in-degree ja tinhamos em
-  // d.graus; isto acrescenta as duas metricas que faltavam.
-  if(d.metricas && Object.keys(d.metricas.centralidade_grau||{}).length){
-   const mg=d.metricas.centralidade_grau, mb=d.metricas.centralidade_intermediacao;
-   const nos=Object.keys(mg).sort(function(a,b){ return mg[b]-mg[a]; });
-   h+='<details style="margin-top:8px;"><summary style="cursor:pointer;'
-    +'font-size:12px;color:#8b949e;padding:4px 0;">Centralidade de rede '
-    +'(grau e intermediação)</summary>'
-    +'<table style="font-size:11px;border-collapse:collapse;margin-top:4px;">'
-    +'<tr class="sub" style="text-align:left;"><th style="padding-right:14px;">Canal</th>'
-    +'<th style="padding-right:14px;">Saídas</th><th style="padding-right:14px;">Entradas</th>'
-    +'<th style="padding-right:14px;">Centralidade de grau</th><th>Intermediação</th></tr>'
-    +nos.map(function(k){
-      const gr=(d.graus||{})[k]||{saidas:0,entradas:0};
-      return '<tr><td style="padding-right:14px;"><b>'+k+'</b></td>'
-       +'<td style="padding-right:14px;">'+gr.saidas+'</td>'
-       +'<td style="padding-right:14px;">'+gr.entradas+'</td>'
-       +'<td style="padding-right:14px;">'+mg[k]+'</td>'
-       +'<td>'+(mb[k]!=null?mb[k]:'—')+'</td></tr>';
-    }).join('')
-    +'</table>'
-    +'<p style="font-size:10px;color:#8b949e;margin-top:4px;">Centralidade de '
-    +'grau: quantas ligações tem, no total, sobre o máximo possível. '
-    +'Intermediação: em quantos caminhos mais curtos entre OUTROS dois canais '
-    +'este aparece pelo meio — um valor alto identifica um canal por onde a '
-    +'influência tem de passar, mesmo que não seja a fonte nem o destino '
-    +'final.</p></details>';
-  }
-  if(d.mecanicos_excluidos && d.mecanicos_excluidos.length)
-   h+='<p style="font-size:11px;color:#8b949e;">Mecânicos usados só como '
-    +'controlo, nunca testados como causa: <b>'
-    +d.mecanicos_excluidos.join(', ')+'</b>. "A potência precede a subida da '
-    +'FC" não é um achado — é a definição de treinar.</p>';
-  h+='<details style="margin-top:6px;"><summary style="cursor:pointer;'
-   +'font-size:12px;color:#8b949e;padding:4px 0;">Arestas da rede ('
-   +((d.arestas||[]).length)+' com direcção, '
-   +((d.indecisas||[]).filter(e=>e.direccao==='ambigua').length)
-   +' ambíguas)</summary><div style="margin-top:6px;">';
-  h+='<table style="border-collapse:collapse;font-size:11px;">'
-   +'<tr style="color:#8b949e;text-align:left;">'
-   +'<th style="padding-right:14px;">De</th><th style="padding-right:14px;">Para</th>'
-   +'<th style="padding-right:14px;">F</th><th style="padding-right:14px;">p</th>'
-   +'<th style="padding-right:14px;">Lag</th><th style="padding-right:14px;">r</th>'
-   +'<th>Direcção</th></tr>';
-  (d.arestas||[]).forEach(function(e){
-   h+='<tr><td style="padding-right:14px;color:#3FB950;">'+e.de+'</td>'
-    +'<td style="padding-right:14px;">'+e.para+'</td>'
-    +'<td style="padding-right:14px;">'+e.f+'</td>'
-    +'<td style="padding-right:14px;color:#8b949e;">'+e.p+'</td>'
-    +'<td style="padding-right:14px;color:#8b949e;">'+e.lag+'s</td>'
-    +'<td style="padding-right:14px;color:'
-    +(e.sinal==='-'?'#F0883E':'#3FB950')+';">'+e.correlacao+'</td>'
-    +'<td style="color:#8b949e;">'+(e.direccao||'')
-    +(e.racio_f?' ('+e.racio_f+'×)':'')+'</td></tr>';
-  });
-  (d.indecisas||[]).filter(e=>e.direccao==='ambigua').forEach(function(e){
-   h+='<tr style="opacity:.6;"><td style="padding-right:14px;">'+e.de+'</td>'
-    +'<td style="padding-right:14px;">'+e.para+'</td>'
-    +'<td style="padding-right:14px;">'+e.f+'</td>'
-    +'<td style="padding-right:14px;color:#8b949e;">'+e.p+'</td>'
-    +'<td style="padding-right:14px;color:#8b949e;">'+e.lag+'s</td>'
-    +'<td style="padding-right:14px;color:#8b949e;">'+e.correlacao+'</td>'
-    +'<td style="color:#F0883E;">ambíguo</td></tr>';
-  });
-  h+='</table></div></details>';
-  // o div do mxIntervencoes vive no BODY e não aqui: era criado no fim do
-  // mxRede, mas o mxSintese corre a partir do mx515, que pode terminar
-  // ANTES da rede -- e nessa altura o elemento ainda não existia, portanto
-  // o cartão nunca aparecia numa sessão única
-  MX_ULT_REDE=(d.limitador||{}).sistema||null;
+   MX_ULT_REDE=(d.limitador||{}).sistema||null;
+   MX_ULT_REDE_D=d;
+   mxRenderRede(d);
+  }).catch(e=>{ est.textContent='erro: '+e.message; });
+}
+
+// Renderizar todos os resultados da Rede Causal a partir de objecto d ja calculado.
+// Chamada por mxRede() apos fetch, mxCarregarDosBanco() e mxMudarSubTab().
+// Popula o HTML completo (LIMITADOR, sistemas, arestas) + canvas (requestAnimationFrame).
+function mxRenderRede(d){
+ if(!d||d.status!=='ok') return;
+ const box=document.getElementById('mxSubRedeDetalhe')||document.getElementById('mxRedeDetalhe');
+ if(!box) return;
+ MX_ULT_REDE   = (d.limitador||{}).sistema||null;
+ MX_ULT_REDE_D = d;
+ let h='';
+ const L=d.limitador||{};
+ if(L.sistema||L.leitura){
+ const cores={periferico:'#F85149',cardiaco:'#58A6FF',
+              respiratorio:'#3FB950',autonomico:'#A371F7'};
+ const cor=cores[L.sistema]||'#8b949e';
+ h+='<div style="border-left:3px solid '+cor+';padding:6px 10px;'
+  +'margin-bottom:10px;">'
+  +'<b style="color:'+cor+';">LIMITADOR: '
+  +(L.sistema?L.sistema.toUpperCase():'indeterminado')+'</b><br>'
+  +'<span style="font-size:12px;">'+(L.leitura||'')+'</span>';
+ const cp=L.controlo_pct||{};
+ const ks=Object.keys(cp).sort(function(a,b){ return cp[b]-cp[a]; });
+ if(ks.length) h+='<br><span style="font-size:11px;color:#8b949e;">'
+  +ks.map(function(k){ return k+' '+cp[k]+'%'; }).join(' · ')
+  +' &nbsp;(peso pelo F das arestas que partem de cada sistema)</span>';
+ h+='<br><span style="font-size:10px;color:#8b949e;">'+(L.aviso||'')
+  +'</span></div>';
+ }
+ if(d.fontes && d.fontes.length)
+ h+='<p style="font-size:12px;"><b style="color:#3FB950;">Fontes:</b> '
+  +d.fontes.join(', ')+' &nbsp; <b style="color:#F0883E;">Sumidouros:</b> '
+  +(d.sumidouros||[]).join(', ')+'</p>';
+ // Centralidade de grau e de intermediacao (Brandes) -- adaptado do
+ // PhysioNexus (Evan Peikon). Out-degree/in-degree ja tinhamos em
+ // d.graus; isto acrescenta as duas metricas que faltavam.
+ if(d.metricas && Object.keys(d.metricas.centralidade_grau||{}).length){
+ const mg=d.metricas.centralidade_grau, mb=d.metricas.centralidade_intermediacao;
+ const nos=Object.keys(mg).sort(function(a,b){ return mg[b]-mg[a]; });
+ h+='<details style="margin-top:8px;"><summary style="cursor:pointer;'
+  +'font-size:12px;color:#8b949e;padding:4px 0;">Centralidade de rede '
+  +'(grau e intermediação)</summary>'
+  +'<table style="font-size:11px;border-collapse:collapse;margin-top:4px;">'
+  +'<tr class="sub" style="text-align:left;"><th style="padding-right:14px;">Canal</th>'
+  +'<th style="padding-right:14px;">Saídas</th><th style="padding-right:14px;">Entradas</th>'
+  +'<th style="padding-right:14px;">Centralidade de grau</th><th>Intermediação</th></tr>'
+  +nos.map(function(k){
+    const gr=(d.graus||{})[k]||{saidas:0,entradas:0};
+    return '<tr><td style="padding-right:14px;"><b>'+k+'</b></td>'
+     +'<td style="padding-right:14px;">'+gr.saidas+'</td>'
+     +'<td style="padding-right:14px;">'+gr.entradas+'</td>'
+     +'<td style="padding-right:14px;">'+mg[k]+'</td>'
+     +'<td>'+(mb[k]!=null?mb[k]:'—')+'</td></tr>';
+  }).join('')
+  +'</table>'
+  +'<p style="font-size:10px;color:#8b949e;margin-top:4px;">Centralidade de '
+  +'grau: quantas ligações tem, no total, sobre o máximo possível. '
+  +'Intermediação: em quantos caminhos mais curtos entre OUTROS dois canais '
+  +'este aparece pelo meio — um valor alto identifica um canal por onde a '
+  +'influência tem de passar, mesmo que não seja a fonte nem o destino '
+  +'final.</p></details>';
+ }
+ if(d.mecanicos_excluidos && d.mecanicos_excluidos.length)
+ h+='<p style="font-size:11px;color:#8b949e;">Mecânicos usados só como '
+  +'controlo, nunca testados como causa: <b>'
+  +d.mecanicos_excluidos.join(', ')+'</b>. "A potência precede a subida da '
+  +'FC" não é um achado — é a definição de treinar.</p>';
+ h+='<details style="margin-top:6px;"><summary style="cursor:pointer;'
+ +'font-size:12px;color:#8b949e;padding:4px 0;">Arestas da rede ('
+ +((d.arestas||[]).length)+' com direcção, '
+ +((d.indecisas||[]).filter(e=>e.direccao==='ambigua').length)
+ +' ambíguas)</summary><div style="margin-top:6px;">';
+ h+='<table style="border-collapse:collapse;font-size:11px;">'
+ +'<tr style="color:#8b949e;text-align:left;">'
+ +'<th style="padding-right:14px;">De</th><th style="padding-right:14px;">Para</th>'
+ +'<th style="padding-right:14px;">F</th><th style="padding-right:14px;">p</th>'
+ +'<th style="padding-right:14px;">Lag</th><th style="padding-right:14px;">r</th>'
+ +'<th>Direcção</th></tr>';
+ (d.arestas||[]).forEach(function(e){
+ h+='<tr><td style="padding-right:14px;color:#3FB950;">'+e.de+'</td>'
+  +'<td style="padding-right:14px;">'+e.para+'</td>'
+  +'<td style="padding-right:14px;">'+e.f+'</td>'
+  +'<td style="padding-right:14px;color:#8b949e;">'+e.p+'</td>'
+  +'<td style="padding-right:14px;color:#8b949e;">'+e.lag+'s</td>'
+  +'<td style="padding-right:14px;color:'
+  +(e.sinal==='-'?'#F0883E':'#3FB950')+';">'+e.correlacao+'</td>'
+  +'<td style="color:#8b949e;">'+(e.direccao||'')
+  +(e.racio_f?' ('+e.racio_f+'×)':'')+'</td></tr>';
+ });
+ (d.indecisas||[]).filter(e=>e.direccao==='ambigua').forEach(function(e){
+ h+='<tr style="opacity:.6;"><td style="padding-right:14px;">'+e.de+'</td>'
+  +'<td style="padding-right:14px;">'+e.para+'</td>'
+  +'<td style="padding-right:14px;">'+e.f+'</td>'
+  +'<td style="padding-right:14px;color:#8b949e;">'+e.p+'</td>'
+  +'<td style="padding-right:14px;color:#8b949e;">'+e.lag+'s</td>'
+  +'<td style="padding-right:14px;color:#8b949e;">'+e.correlacao+'</td>'
+  +'<td style="color:#F0883E;">ambíguo</td></tr>';
+ });
+ h+='</table></div></details>';
+ // o div do mxIntervencoes vive no BODY e não aqui: era criado no fim do
+ // mxRede, mas o mxSintese corre a partir do mx515, que pode terminar
+ // ANTES da rede -- e nessa altura o elemento ainda não existia, portanto
+ // o cartão nunca aparecia numa sessão única
+ MX_ULT_REDE=(d.limitador||{}).sistema||null;
  MX_ULT_REDE_D=d; // JSON completo para redesenho ao entrar na aba
-  if(typeof mxSintese==='function') mxSintese();
-  const dg=d.diagnostico||{};
-  const dif=Object.keys(dg).filter(k=>dg[k] && dg[k].diferenciada);
-  const exc=Object.keys(dg).filter(k=>dg[k] && dg[k].excluido);
-  h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
-   +'Corte de p corrigido: '+(d.p_corte_bh!=null?d.p_corte_bh:'nenhum par passou')
-   +' · lag até '+d.max_lag+'s'
-   +(dif.length?' · diferenciadas: '+dif.join(', '):' · nenhuma diferenciada')
-   +(exc.length?' · excluídas: '+exc.map(k=>k+' ('+dg[k].excluido+')').join(', '):'')
-   +'</p>';
-  box.innerHTML=h;
+ if(typeof mxSintese==='function') mxSintese();
+ const dg=d.diagnostico||{};
+ const dif=Object.keys(dg).filter(k=>dg[k] && dg[k].diferenciada);
+ const exc=Object.keys(dg).filter(k=>dg[k] && dg[k].excluido);
+ h+='<p style="color:#8b949e;font-size:11px;margin-top:6px;">'
+ +'Corte de p corrigido: '+(d.p_corte_bh!=null?d.p_corte_bh:'nenhum par passou')
+ +' · lag até '+d.max_lag+'s'
+ +(dif.length?' · diferenciadas: '+dif.join(', '):' · nenhuma diferenciada')
+ +(exc.length?' · excluídas: '+exc.map(k=>k+' ('+dg[k].excluido+')').join(', '):'')
+ +'</p>';
+ box.innerHTML=h;
+ // Canvas: precisam de container visivel
+ requestAnimationFrame(function(){
   mxDesenharRedeGrafo(d);
   mxDesenharRedePCR(d);
- }).catch(e=>{ est.textContent='erro: '+e.message; });
+ });
 }
 
 function mxErro(msg){
@@ -6961,30 +7066,34 @@ function mxAlternarSessao(id, on){
 // em paralelo e que a persistência só acontece depois de TODOS terminarem.
 function mxCalcularTudo(id){
  const elStatus = document.getElementById('mxLimEstado');
- if(elStatus) elStatus.textContent = 'a calcular análise completa...';
- // Disparar os 3 cálculos em paralelo (agora retornam Promise)
+ if(elStatus) elStatus.textContent = 'a calcular analise completa...';
+ // Disparar os 3 calculos em paralelo (retornam Promise)
  const pRede = mxRede();
  const p515  = mx515();
  const pLim  = mxLimiares();
- // Aguardar todos antes de persistir
  const promises = [pRede, p515, pLim].filter(Boolean);
  Promise.all(promises).then(function(){
-  if(elStatus) elStatus.textContent = 'a gravar análise...';
+  // Todos terminaram — actualizar sintese e renderizar tudo
+  if(typeof mxSintese==='function') mxSintese();
+  mxDraw();
+  if(MX_ULT_LIMIARES_D) mxRenderLimiares(MX_ULT_LIMIARES_D, id);
+  if(MX_ULT_515_D) mxRender515(MX_ULT_515_D);
+  if(MX_ULT_REDE_D) mxRenderRede(MX_ULT_REDE_D);
+  // Persistir somente apos todos calcularem
+  if(elStatus) elStatus.textContent = 'a gravar analise...';
   return fetch('/api/moxy/analise/'+id, {method:'POST'})
    .then(function(r){ return r.json(); })
    .then(function(resp){
     if(elStatus){
      if(resp.status && (resp.status==='ok'||resp.status==='gravado_sem_upload'))
-      elStatus.textContent = '✓ análise gravada' + (resp.versao?' · v'+resp.versao:'');
+      elStatus.textContent = '✓ analise gravada' + (resp.versao?' · v'+resp.versao:'');
      else
       elStatus.textContent = 'erro ao gravar: '+(resp.mensagem||resp.status||'desconhecido');
     }
    })
-   .catch(function(e){
-    if(elStatus) elStatus.textContent = 'erro ao gravar: '+e.message;
-   });
+   .catch(function(e){ if(elStatus) elStatus.textContent = 'erro ao gravar: '+e.message; });
  }).catch(function(e){
-  if(elStatus) elStatus.textContent = 'erro no cálculo: '+e.message;
+  if(elStatus) elStatus.textContent = 'erro no calculo: '+e.message;
  });
 }
 
@@ -7010,33 +7119,26 @@ function mxCarregarDosBanco(id, onAusente){
     const el=document.getElementById('mxLimEstado');
     if(el) el.textContent='✓ carregado do banco';
     // Redesenhar se a aba estiver visível
-    const bloco=document.getElementById('mxLimiaresBloco');
-    if(bloco && bloco.style.display!=='none'){
-     requestAnimationFrame(function(){
-      mxDesenharLimiaresSmo2(MX_ULT_LIMIARES_D);
-      mxDesenharDmax(MX_ULT_LIMIARES_D);
-      mxDesenharDfa1(MX_ULT_LIMIARES_D.dfa1);
-      mxDraw();
-      mxLimVerificacaoMostrar(id, lc, MX_ULT_VALORES);
-     });
-    } else {
-     mxDraw();
-    }
+    // Renderizar tudo (HTML + canvas): mxRenderLimiares gere o rAF interno
+    mxRenderLimiares(MX_ULT_LIMIARES_D, id);
+    mxDraw();
    }
    if(jc.rede && jc.rede.status==='ok'){
     MX_ULT_REDE   = (jc.rede.limitador||{}).sistema||null;
     MX_ULT_REDE_D = jc.rede;
-    const redeEl=document.getElementById('mxSubRedeA')||document.getElementById('mxRede');
-    if(redeEl && redeEl.style.display!=='none'){
-     requestAnimationFrame(function(){
-      mxDesenharRedeGrafo(MX_ULT_REDE_D);
-      mxDesenharRedePCR(MX_ULT_REDE_D);
-     });
-    }
+    // Renderizar rede completa (LIMITADOR + HTML + canvas)
+    mxRenderRede(MX_ULT_REDE_D);
    }
    if(jc.i515 && jc.i515.status==='ok'){
+    MX_ULT_515_D = jc.i515;
     MX_ULT_US = (jc.i515.interpretacao?.us||{}).limitador||null;
     MX_ULT_PC = (jc.i515.interpretacao?.pc||{}).limitador||null;
+    if(typeof mxSintese==='function') mxSintese();
+    // Renderizar 5-1-5 se a aba estiver visível
+    const sub515=document.getElementById('mxSub515A');
+    if(sub515 && sub515.style.display!=='none'){
+     requestAnimationFrame(function(){ mxRender515(MX_ULT_515_D); });
+    }
    }
   })
   .catch(function(){ if(typeof onAusente==='function') onAusente(); });
@@ -7086,7 +7188,7 @@ function mxCarregar(){
   if(ids.length === 1){
    // limpar os resultados da sessão anterior: sem isto, o cartão mostrava
    // o limitador da sessão que estava seleccionada antes
-   MX_ULT_REDE=MX_ULT_REDE_D=MX_ULT_US=MX_ULT_PC=MX_ULT_PERFIL=null; MX_ULT_HIPO=false;
+   MX_ULT_REDE=MX_ULT_REDE_D=MX_ULT_US=MX_ULT_PC=MX_ULT_PERFIL=MX_ULT_515_D=null; MX_ULT_HIPO=false;
    const _bi=document.getElementById('mxIntervencoes');
    if(_bi) _bi.innerHTML='';
    mxModoUnico(true); mxCalcularTudo(Object.keys(MX_DADOS)[0]);

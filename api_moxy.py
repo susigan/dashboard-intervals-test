@@ -4585,139 +4585,141 @@ def registar(app):
             return None, None
 
 
-        def _analisar_rpe_fisiologia(metricas_lista, rpes, label):
-            """Analise integrada RPE x resposta fisiologica por BP.
 
-            Parametros
-            ----------
-            metricas_lista : list[dict]  -- metricas_intervalo() de cada WORK do BP
-            rpes           : list[float] -- RPE de cada intervalo (mesmo tamanho)
-            label          : str         -- 'BP1' ou 'BP2'
 
-            Retorna dict com:
-              intervalos  -- dados por intervalo (RPE + fisiologia + deltas)
-              deltas_bp   -- delta entre o primeiro e o ultimo intervalo do BP
-              padrao      -- classificacao do padrao observado
-              explicacao  -- texto descritivo
-            """
-            def _safe(m, canal):
-                c = (m or {}).get(canal) or {}
-                return {'media': c.get('media'), 'inicial': c.get('inicial'),
-                        'final': c.get('final'), 'delta': c.get('delta'),
-                        'ok': bool(c.get('ok'))}
+    def _analisar_rpe_fisiologia(metricas_lista, rpes, label):
+        """Analise integrada RPE x resposta fisiologica por BP.
 
-            ivs = []
-            for idx_i, (m, rpe) in enumerate(zip(metricas_lista or [], rpes or [])):
-                iv = {
-                    'ordem': idx_i + 1,
-                    'rpe': float(rpe) if rpe is not None else None,
-                    't0': m.get('t0'), 't1': m.get('t1'),
-                    'duracao_s': m.get('duracao_s'),
-                    'potencia':   _safe(m, 'potencia'),
-                    'hr':         _safe(m, 'hr'),
-                    'respiracao': _safe(m, 'respiracao'),
-                    'smo2':       _safe(m, 'smo2'),
-                    'thb':        _safe(m, 'thb'),
-                    'dfa1':       _safe(m, 'dfa1'),
+        Parametros
+        ----------
+        metricas_lista : list[dict]  -- metricas_intervalo() de cada WORK do BP
+        rpes           : list[float] -- RPE de cada intervalo (mesmo tamanho)
+        label          : str         -- 'BP1' ou 'BP2'
+
+        Retorna dict com:
+          intervalos  -- dados por intervalo (RPE + fisiologia + deltas)
+          deltas_bp   -- delta entre o primeiro e o ultimo intervalo do BP
+          padrao      -- classificacao do padrao observado
+          explicacao  -- texto descritivo
+        """
+        def _safe(m, canal):
+            c = (m or {}).get(canal) or {}
+            return {'media': c.get('media'), 'inicial': c.get('inicial'),
+                    'final': c.get('final'), 'delta': c.get('delta'),
+                    'ok': bool(c.get('ok'))}
+
+        ivs = []
+        for idx_i, (m, rpe) in enumerate(zip(metricas_lista or [], rpes or [])):
+            iv = {
+                'ordem': idx_i + 1,
+                'rpe': float(rpe) if rpe is not None else None,
+                't0': m.get('t0'), 't1': m.get('t1'),
+                'duracao_s': m.get('duracao_s'),
+                'potencia':   _safe(m, 'potencia'),
+                'hr':         _safe(m, 'hr'),
+                'respiracao': _safe(m, 'respiracao'),
+                'smo2':       _safe(m, 'smo2'),
+                'thb':        _safe(m, 'thb'),
+                'dfa1':       _safe(m, 'dfa1'),
+            }
+            if idx_i > 0 and ivs:
+                prev = ivs[-1]
+                def _dv(campo):
+                    a = (prev.get(campo) or {}).get('media')
+                    b = (iv.get(campo) or {}).get('media')
+                    return round(b - a, 4) if a is not None and b is not None else None
+                iv['delta_vs_anterior'] = {
+                    'rpe': round(float(rpe) - float(prev['rpe']), 4)
+                           if rpe is not None and prev['rpe'] is not None else None,
+                    'potencia': _dv('potencia'), 'hr': _dv('hr'),
+                    'respiracao': _dv('respiracao'), 'smo2': _dv('smo2'),
+                    'thb': _dv('thb'), 'dfa1': _dv('dfa1'),
                 }
-                if idx_i > 0 and ivs:
-                    prev = ivs[-1]
-                    def _dv(campo):
-                        a = (prev.get(campo) or {}).get('media')
-                        b = (iv.get(campo) or {}).get('media')
-                        return round(b - a, 4) if a is not None and b is not None else None
-                    iv['delta_vs_anterior'] = {
-                        'rpe': round(float(rpe) - float(prev['rpe']), 4)
-                               if rpe is not None and prev['rpe'] is not None else None,
-                        'potencia': _dv('potencia'), 'hr': _dv('hr'),
-                        'respiracao': _dv('respiracao'), 'smo2': _dv('smo2'),
-                        'thb': _dv('thb'), 'dfa1': _dv('dfa1'),
-                    }
-                else:
-                    iv['delta_vs_anterior'] = None
-                ivs.append(iv)
-
-            rpes_v = [float(r) for r in (rpes or []) if r is not None]
-
-            def _delta_bp(campo):
-                vals = [(iv.get(campo) or {}).get('media') for iv in ivs]
-                ok = [v for v in vals if v is not None]
-                return round(ok[-1] - ok[0], 4) if len(ok) >= 2 else None
-
-            deltas = {
-                'rpe': round(rpes_v[-1] - rpes_v[0], 4) if len(rpes_v) >= 2 else None,
-                'potencia': _delta_bp('potencia'), 'hr': _delta_bp('hr'),
-                'respiracao': _delta_bp('respiracao'), 'smo2': _delta_bp('smo2'),
-                'thb': _delta_bp('thb'), 'dfa1': _delta_bp('dfa1'),
-            }
-
-            def _dir(v, tol=0.5):
-                if v is None: return None
-                return 'up' if v > tol else ('down' if v < -tol else 'stable')
-
-            rpe_dir  = _dir(deltas.get('rpe'), 0.3)
-            hr_dir   = _dir(deltas.get('hr'), 2)
-            resp_dir = _dir(deltas.get('respiracao'), 0.5)
-            smo2_dir = _dir(deltas.get('smo2'), 1)
-            dfa1_dir = _dir(deltas.get('dfa1'), 0.02)
-            thb_dir  = _dir(deltas.get('thb'), 0.1)
-
-            if not rpes_v:
-                padrao = 'SEM_DADOS_RPE'
-                expl = f'{label}: RPE nao disponivel para analise integrada.'
             else:
-                n_fisio = sum(deltas.get(c) is not None for c in ['hr','respiracao','smo2','dfa1'])
-                cardio  = sum([rpe_dir == 'up', hr_dir == 'up', resp_dir == 'up'])
-                periferico = sum([rpe_dir == 'up', smo2_dir == 'down'])
-                autonomico = sum([rpe_dir == 'up', dfa1_dir == 'down'])
+                iv['delta_vs_anterior'] = None
+            ivs.append(iv)
 
-                if rpe_dir == 'stable':
-                    padrao = 'RPE_ESTAVEL'
-                    expl = (f'{label}: RPE estavel (delta={deltas.get("rpe"):.2f}). '
-                            f'HR: {hr_dir}, SmO2: {smo2_dir}.')
-                elif n_fisio < 2:
-                    padrao = 'DADOS_INSUFICIENTES'
-                    expl = f'{label}: Dados fisiologicos insuficientes para classificar padrao.'
-                elif cardio >= 2 and periferico < 2:
-                    padrao = 'CARDIORRESPIRATORIO'
-                    expl = (f'{label}: RPE crescente associado a resposta cardiorrespiratoria '
-                            f'(HR {hr_dir}, Resp {resp_dir}). '
-                            f'Compativel com carga cardiorrespiratoria crescente.')
-                elif periferico >= 2 and cardio < 2:
-                    padrao = 'PERIFERICO'
-                    expl = (f'{label}: RPE crescente associado a reducao de SmO2 '
-                            f'(SmO2 {smo2_dir}). Compativel com demanda periferica muscular.')
-                elif cardio >= 2 and periferico >= 2:
-                    padrao = 'MISTO'
-                    expl = (f'{label}: RPE crescente com sinais cardiorrespiratorios '
-                            f'(HR {hr_dir}) e perifericos (SmO2 {smo2_dir}). '
-                            f'Padrao multissistemico observado.')
-                elif autonomico >= 2:
-                    padrao = 'AUTONOMICO'
-                    expl = (f'{label}: RPE crescente associado a reducao de DFA1 '
-                            f'(DFA1 {dfa1_dir}). Compativel com resposta autonomica.')
-                else:
-                    padrao = 'SEM_PADRAO_CONCLUSIVO'
-                    expl = (f'{label}: Sinais fisiologicos inconsistentes. '
-                            f'RPE {rpe_dir}, HR {hr_dir}, SmO2 {smo2_dir}, '
-                            f'DFA1 {dfa1_dir}. Sem padrao conclusivo.')
+        rpes_v = [float(r) for r in (rpes or []) if r is not None]
 
-            return {
-                'label': label,
-                'intervalos': ivs,
-                'deltas_bp': deltas,
-                'rpe_inicial': rpes_v[0] if rpes_v else None,
-                'rpe_final':   rpes_v[-1] if rpes_v else None,
-                'rpe_media':   round(sum(rpes_v)/len(rpes_v), 4) if rpes_v else None,
-                'n_rpe_validos': len(rpes_v),
-                'direcao': {'rpe': rpe_dir, 'hr': hr_dir, 'respiracao': resp_dir,
-                            'smo2': smo2_dir, 'thb': thb_dir, 'dfa1': dfa1_dir},
-                'padrao': padrao,
-                'explicacao': expl,
-                'nota': ('Esta analise identifica padroes de resposta fisiologica '
-                         'associados ao WORK. Nao demonstra causalidade. '
-                         'Linguagem: compativel com, associado a, padrao observado.'),
-            }
+        def _delta_bp(campo):
+            vals = [(iv.get(campo) or {}).get('media') for iv in ivs]
+            ok = [v for v in vals if v is not None]
+            return round(ok[-1] - ok[0], 4) if len(ok) >= 2 else None
+
+        deltas = {
+            'rpe': round(rpes_v[-1] - rpes_v[0], 4) if len(rpes_v) >= 2 else None,
+            'potencia': _delta_bp('potencia'), 'hr': _delta_bp('hr'),
+            'respiracao': _delta_bp('respiracao'), 'smo2': _delta_bp('smo2'),
+            'thb': _delta_bp('thb'), 'dfa1': _delta_bp('dfa1'),
+        }
+
+        def _dir(v, tol=0.5):
+            if v is None: return None
+            return 'up' if v > tol else ('down' if v < -tol else 'stable')
+
+        rpe_dir  = _dir(deltas.get('rpe'), 0.3)
+        hr_dir   = _dir(deltas.get('hr'), 2)
+        resp_dir = _dir(deltas.get('respiracao'), 0.5)
+        smo2_dir = _dir(deltas.get('smo2'), 1)
+        dfa1_dir = _dir(deltas.get('dfa1'), 0.02)
+        thb_dir  = _dir(deltas.get('thb'), 0.1)
+
+        if not rpes_v:
+            padrao = 'SEM_DADOS_RPE'
+            expl = f'{label}: RPE nao disponivel para analise integrada.'
+        else:
+            n_fisio = sum(deltas.get(c) is not None for c in ['hr','respiracao','smo2','dfa1'])
+            cardio  = sum([rpe_dir == 'up', hr_dir == 'up', resp_dir == 'up'])
+            periferico = sum([rpe_dir == 'up', smo2_dir == 'down'])
+            autonomico = sum([rpe_dir == 'up', dfa1_dir == 'down'])
+
+            if rpe_dir == 'stable':
+                padrao = 'RPE_ESTAVEL'
+                expl = (f'{label}: RPE estavel (delta={deltas.get("rpe"):.2f}). '
+                        f'HR: {hr_dir}, SmO2: {smo2_dir}.')
+            elif n_fisio < 2:
+                padrao = 'DADOS_INSUFICIENTES'
+                expl = f'{label}: Dados fisiologicos insuficientes para classificar padrao.'
+            elif cardio >= 2 and periferico < 2:
+                padrao = 'CARDIORRESPIRATORIO'
+                expl = (f'{label}: RPE crescente associado a resposta cardiorrespiratoria '
+                        f'(HR {hr_dir}, Resp {resp_dir}). '
+                        f'Compativel com carga cardiorrespiratoria crescente.')
+            elif periferico >= 2 and cardio < 2:
+                padrao = 'PERIFERICO'
+                expl = (f'{label}: RPE crescente associado a reducao de SmO2 '
+                        f'(SmO2 {smo2_dir}). Compativel com demanda periferica muscular.')
+            elif cardio >= 2 and periferico >= 2:
+                padrao = 'MISTO'
+                expl = (f'{label}: RPE crescente com sinais cardiorrespiratorios '
+                        f'(HR {hr_dir}) e perifericos (SmO2 {smo2_dir}). '
+                        f'Padrao multissistemico observado.')
+            elif autonomico >= 2:
+                padrao = 'AUTONOMICO'
+                expl = (f'{label}: RPE crescente associado a reducao de DFA1 '
+                        f'(DFA1 {dfa1_dir}). Compativel com resposta autonomica.')
+            else:
+                padrao = 'SEM_PADRAO_CONCLUSIVO'
+                expl = (f'{label}: Sinais fisiologicos inconsistentes. '
+                        f'RPE {rpe_dir}, HR {hr_dir}, SmO2 {smo2_dir}, '
+                        f'DFA1 {dfa1_dir}. Sem padrao conclusivo.')
+
+        return {
+            'label': label,
+            'intervalos': ivs,
+            'deltas_bp': deltas,
+            'rpe_inicial': rpes_v[0] if rpes_v else None,
+            'rpe_final':   rpes_v[-1] if rpes_v else None,
+            'rpe_media':   round(sum(rpes_v)/len(rpes_v), 4) if rpes_v else None,
+            'n_rpe_validos': len(rpes_v),
+            'direcao': {'rpe': rpe_dir, 'hr': hr_dir, 'respiracao': resp_dir,
+                        'smo2': smo2_dir, 'thb': thb_dir, 'dfa1': dfa1_dir},
+            'padrao': padrao,
+            'explicacao': expl,
+            'nota': ('Esta analise identifica padroes de resposta fisiologica '
+                     'associados ao WORK. Nao demonstra causalidade. '
+                     'Linguagem: compativel com, associado a, padrao observado.'),
+        }
 
     @app.route('/api/moxy/vst/comparar/<path:vst_activity_id>')
     def api_moxy_vst_comparar(vst_activity_id):
@@ -4975,6 +4977,7 @@ def registar(app):
                   f'BP2={comp_rpe_bp2.get("status")}')
 
             # Análise integrada RPE × fisiologia (v5)
+            rpe_fisiologia = None
             try:
                 _bp1_m_fi = (dia2.get('bp1') or {}).get('metricas') or []
                 _bp2_m_fi = (dia2.get('bp2') or {}).get('metricas') or []
@@ -4994,8 +4997,10 @@ def registar(app):
                 print(f'[vst_comparar][RPE fisio] BP1={_rpe_fi_bp1.get("padrao")} '
                       f'BP2={_rpe_fi_bp2.get("padrao")}')
             except Exception as _e_fi:
-                rpe_fisiologia = {'erro': str(_e_fi)}
-                print(f'[vst_comparar][RPE fisio] ERRO: {_e_fi}')
+                import traceback as _tb_fi
+                print(f'[vst_comparar][RPE fisio] ERRO (nao persiste): {_e_fi}')
+                print(_tb_fi.format_exc())
+                # NÃO persiste {'erro': ...} — rpe_fisiologia permanece None
 
 
             # LIMITER / PADRAO FISIOLOGICO -- camada de integracao pura,

@@ -242,7 +242,7 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
         agora = datetime.now().isoformat(timespec='seconds')
         cn.execute(
             "INSERT OR IGNORE INTO vst_conjuntos "
-            "(vst_activity_id, moxy_activity_id, criado_em, actualizado_em) "
+            "(vst_activity_id, moxy_activity_id, created_at, updated_at) "
             "VALUES (?,?,?,?)",
             (vid, mid, agora, agora))
         # Actualizar modalidade se fornecida (e não já preenchida)
@@ -255,7 +255,7 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
             "UPDATE vst_conjuntos SET bp1_status=?, bp2_status=?, "
             "recovery_bp1_status=?, recovery_bp2_status=?, "
             "dia1_bp1_w=?, dia2_bp1_w=?, dia1_bp2_w=?, dia2_bp2_w=?, "
-            "resultado_json=?, analisado_em=?, actualizado_em=? "
+            "resultado_json=?, analisado_em=?, updated_at=? "
             "WHERE vst_activity_id=?",
             ((comp_bp1 or {}).get('status'), (comp_bp2 or {}).get('status'),
              (comp_recovery_bp1 or {}).get('status'),
@@ -269,18 +269,11 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
                  'comparacao_recovery_bp2': comp_recovery_bp2,
                  'comparacao_rpe_bp1': comp_rpe_bp1,
                  'comparacao_rpe_bp2': comp_rpe_bp2,
-                 'limiter_bp1': None,
-                 'limiter_bp2': None,
-                 'limiter_sintese': None,
-                 'hipotese_bp1': None,
-                 'hipotese_bp2': None,
-                 'padrao_vst_bp1': ((rpe_fisiologia or {}).get('bp1') or {}).get('padrao'),
-                 'padrao_vst_bp2': ((rpe_fisiologia or {}).get('bp2') or {}).get('padrao'),
-                 'padrao_vst_sintese': {
-                     'bp1': ((rpe_fisiologia or {}).get('bp1') or {}).get('padrao'),
-                     'bp2': ((rpe_fisiologia or {}).get('bp2') or {}).get('padrao'),
-                     'nao_e_limitador': True,
-                 },
+                 'limiter_bp1': limiter_bp1,
+                 'limiter_bp2': limiter_bp2,
+                 'limiter_sintese': limiter_sintese,
+                 'hipotese_bp1': hipotese_bp1,
+                 'hipotese_bp2': hipotese_bp2,
                  'recuperacao_final_dia2': recuperacao_final_dia2,
                  'rpe_fisiologia': rpe_fisiologia,
              }, **({'rede_causal': rede_causal_d1} if rede_causal_d1 is not None else {})},
@@ -303,15 +296,42 @@ def _rpe_interval_resolver(cn, activity_id, start_time):
          retorna (rpe, 'legacy') ou (None, 'absent')
     """
     import drive_db_perfil as ddp
-    row = cn.execute(
-        "SELECT rpe FROM activity_interval_rpe "
-        "WHERE activity_id=? AND start_time=?",
-        (str(activity_id), float(start_time))).fetchone()
-    if row is not None:
-        rpe_val = row[0]
-        if rpe_val == 0:
-            return None, 'deleted'
-        return rpe_val, 'new'
+    # 1) DB da chamada actual (perfil_historico.db / legado).
+    try:
+        row = cn.execute(
+            "SELECT rpe, rpe_status FROM activity_interval_rpe "
+            "WHERE activity_id=? AND start_time=?",
+            (str(activity_id), float(start_time))).fetchone()
+        if row is not None:
+            rpe_val = row[0]
+            status = row[1] if len(row) > 1 else None
+            if status == 'deleted' or rpe_val == 0:
+                return None, 'deleted'
+            if rpe_val is not None:
+                return rpe_val, 'new'
+    except Exception:
+        pass
+
+    # 2) DB canónico moxy_vst_historico.db. Isto é importante porque
+    # RPE gravado pela arquitectura nova pode existir apenas aqui.
+    try:
+        import drive_db_moxy_vst as _mvdb
+        _cn_mv = _mvdb.get_moxy_vst_conn()
+        row_mv = _cn_mv.execute(
+            "SELECT rpe, rpe_status FROM activity_interval_rpe "
+            "WHERE activity_id=? AND start_time=?",
+            (str(activity_id), float(start_time))).fetchone()
+        _cn_mv.close()
+        if row_mv is not None:
+            rpe_val = row_mv[0]
+            status = row_mv[1] if len(row_mv) > 1 else None
+            if status == 'deleted' or rpe_val == 0:
+                return None, 'deleted'
+            if rpe_val is not None:
+                return rpe_val, 'new'
+    except Exception as _e_rpe_mv:
+        print(f'[RPE RESOLVE] canonical DB unavailable: {_e_rpe_mv}')
+
     return None, 'absent'   # chamador faz fallback para moxy_rpe
 
 
@@ -368,6 +388,140 @@ def _rpe_interval_upsert(cn, activity_id, intervals):
         n += 1
     return n
 
+
+def _analisar_rpe_fisiologia(metricas_lista, rpes, label):
+    """Analise integrada RPE x resposta fisiologica por BP.
+
+    Parametros
+    ----------
+    metricas_lista : list[dict]  -- metricas_intervalo() de cada WORK do BP
+    rpes           : list[float] -- RPE de cada intervalo (mesmo tamanho)
+    label          : str         -- 'BP1' ou 'BP2'
+
+    Retorna dict com:
+      intervalos  -- dados por intervalo (RPE + fisiologia + deltas)
+      deltas_bp   -- delta entre o primeiro e o ultimo intervalo do BP
+      padrao      -- classificacao do padrao observado
+      explicacao  -- texto descritivo
+    """
+    def _safe(m, canal):
+        c = (m or {}).get(canal) or {}
+        return {'media': c.get('media'), 'inicial': c.get('inicial'),
+                'final': c.get('final'), 'delta': c.get('delta'),
+                'ok': bool(c.get('ok'))}
+
+    ivs = []
+    for idx_i, (m, rpe) in enumerate(zip(metricas_lista or [], rpes or [])):
+        iv = {
+            'ordem': idx_i + 1,
+            'rpe': float(rpe) if rpe is not None else None,
+            't0': m.get('t0'), 't1': m.get('t1'),
+            'duracao_s': m.get('duracao_s'),
+            'potencia':   _safe(m, 'potencia'),
+            'hr':         _safe(m, 'hr'),
+            'respiracao': _safe(m, 'respiracao'),
+            'smo2':       _safe(m, 'smo2'),
+            'thb':        _safe(m, 'thb'),
+            'dfa1':       _safe(m, 'dfa1'),
+        }
+        if idx_i > 0 and ivs:
+            prev = ivs[-1]
+            def _dv(campo):
+                a = (prev.get(campo) or {}).get('media')
+                b = (iv.get(campo) or {}).get('media')
+                return round(b - a, 4) if a is not None and b is not None else None
+            iv['delta_vs_anterior'] = {
+                'rpe': round(float(rpe) - float(prev['rpe']), 4)
+                       if rpe is not None and prev['rpe'] is not None else None,
+                'potencia': _dv('potencia'), 'hr': _dv('hr'),
+                'respiracao': _dv('respiracao'), 'smo2': _dv('smo2'),
+                'thb': _dv('thb'), 'dfa1': _dv('dfa1'),
+            }
+        else:
+            iv['delta_vs_anterior'] = None
+        ivs.append(iv)
+
+    rpes_v = [float(r) for r in (rpes or []) if r is not None]
+
+    def _delta_bp(campo):
+        vals = [(iv.get(campo) or {}).get('media') for iv in ivs]
+        ok = [v for v in vals if v is not None]
+        return round(ok[-1] - ok[0], 4) if len(ok) >= 2 else None
+
+    deltas = {
+        'rpe': round(rpes_v[-1] - rpes_v[0], 4) if len(rpes_v) >= 2 else None,
+        'potencia': _delta_bp('potencia'), 'hr': _delta_bp('hr'),
+        'respiracao': _delta_bp('respiracao'), 'smo2': _delta_bp('smo2'),
+        'thb': _delta_bp('thb'), 'dfa1': _delta_bp('dfa1'),
+    }
+
+    def _dir(v, tol=0.5):
+        if v is None: return None
+        return 'up' if v > tol else ('down' if v < -tol else 'stable')
+
+    rpe_dir  = _dir(deltas.get('rpe'), 0.3)
+    hr_dir   = _dir(deltas.get('hr'), 2)
+    resp_dir = _dir(deltas.get('respiracao'), 0.5)
+    smo2_dir = _dir(deltas.get('smo2'), 1)
+    dfa1_dir = _dir(deltas.get('dfa1'), 0.02)
+    thb_dir  = _dir(deltas.get('thb'), 0.1)
+
+    if not rpes_v:
+        padrao = 'SEM_DADOS_RPE'
+        expl = f'{label}: RPE nao disponivel para analise integrada.'
+    else:
+        n_fisio = sum(deltas.get(c) is not None for c in ['hr','respiracao','smo2','dfa1'])
+        cardio  = sum([rpe_dir == 'up', hr_dir == 'up', resp_dir == 'up'])
+        periferico = sum([rpe_dir == 'up', smo2_dir == 'down'])
+        autonomico = sum([rpe_dir == 'up', dfa1_dir == 'down'])
+
+        if rpe_dir == 'stable':
+            padrao = 'RPE_ESTAVEL'
+            expl = (f'{label}: RPE estavel (delta={deltas.get("rpe"):.2f}). '
+                    f'HR: {hr_dir}, SmO2: {smo2_dir}.')
+        elif n_fisio < 2:
+            padrao = 'DADOS_INSUFICIENTES'
+            expl = f'{label}: Dados fisiologicos insuficientes para classificar padrao.'
+        elif cardio >= 2 and periferico < 2:
+            padrao = 'CARDIORRESPIRATORIO'
+            expl = (f'{label}: RPE crescente associado a resposta cardiorrespiratoria '
+                    f'(HR {hr_dir}, Resp {resp_dir}). '
+                    f'Compativel com carga cardiorrespiratoria crescente.')
+        elif periferico >= 2 and cardio < 2:
+            padrao = 'PERIFERICO'
+            expl = (f'{label}: RPE crescente associado a reducao de SmO2 '
+                    f'(SmO2 {smo2_dir}). Compativel com demanda periferica muscular.')
+        elif cardio >= 2 and periferico >= 2:
+            padrao = 'MISTO'
+            expl = (f'{label}: RPE crescente com sinais cardiorrespiratorios '
+                    f'(HR {hr_dir}) e perifericos (SmO2 {smo2_dir}). '
+                    f'Padrao multissistemico observado.')
+        elif autonomico >= 2:
+            padrao = 'AUTONOMICO'
+            expl = (f'{label}: RPE crescente associado a reducao de DFA1 '
+                    f'(DFA1 {dfa1_dir}). Compativel com resposta autonomica.')
+        else:
+            padrao = 'SEM_PADRAO_CONCLUSIVO'
+            expl = (f'{label}: Sinais fisiologicos inconsistentes. '
+                    f'RPE {rpe_dir}, HR {hr_dir}, SmO2 {smo2_dir}, '
+                    f'DFA1 {dfa1_dir}. Sem padrao conclusivo.')
+
+    return {
+        'label': label,
+        'intervalos': ivs,
+        'deltas_bp': deltas,
+        'rpe_inicial': rpes_v[0] if rpes_v else None,
+        'rpe_final':   rpes_v[-1] if rpes_v else None,
+        'rpe_media':   round(sum(rpes_v)/len(rpes_v), 4) if rpes_v else None,
+        'n_rpe_validos': len(rpes_v),
+        'direcao': {'rpe': rpe_dir, 'hr': hr_dir, 'respiracao': resp_dir,
+                    'smo2': smo2_dir, 'thb': thb_dir, 'dfa1': dfa1_dir},
+        'padrao': padrao,
+        'explicacao': expl,
+        'nota': ('Esta analise identifica padroes de resposta fisiologica '
+                 'associados ao WORK. Nao demonstra causalidade. '
+                 'Linguagem: compativel com, associado a, padrao observado.'),
+    }
 
 def registar(app):
 
@@ -2871,7 +3025,7 @@ def registar(app):
                 if st is None:
                     return jsonify({'status': 'erro',
                                     'mensagem': 'start_time obrigatório'}), 400
-                if rpe is None:
+                if rpe is None or not isinstance(rpe, (int, float)):
                     return jsonify({'status': 'erro',
                                     'mensagem': f'rpe invalido: {rpe!r}'}), 400
                 try:
@@ -3025,7 +3179,7 @@ def registar(app):
                     try:
                         cn.execute(
                             "UPDATE vst_conjuntos "
-                            "SET bpm_vst_validacao_json=?, actualizado_em=? "
+                            "SET bpm_vst_validacao_json=?, updated_at=? "
                             "WHERE vst_activity_id=?",
                             (_bpm_val_json,
                              datetime.now().isoformat(timespec='seconds'), vid))
@@ -3165,20 +3319,12 @@ def registar(app):
                                 'mensagem': 'sem blocos para gravar'}), 200
 
             for b in blocos:
-                rpe_raw = b.get('rpe')
-                try:
-                    rpe_val = _rpe_to_float(rpe_raw)
-                except ValueError as _ve:
+                rpe = b.get('rpe')
+                if not isinstance(rpe, (int, float)) or not (1 <= rpe <= 10):
                     return jsonify({
                         'status': 'erro',
                         'mensagem': (f'RPE inválido no bloco '
-                                     f'{b.get("bloco_indice")}: {_ve}')
-                    }), 200
-                if not (1 <= rpe_val <= 10):
-                    return jsonify({
-                        'status': 'erro',
-                        'mensagem': (f'RPE inválido no bloco '
-                                     f'{b.get("bloco_indice")}: {rpe_raw!r} — '
+                                     f'{b.get("bloco_indice")}: {rpe!r} — '
                                      'tem de ser 1 a 10')}), 200
 
             import drive_db_perfil as ddp
@@ -3190,7 +3336,7 @@ def registar(app):
                     "(activity_id, bloco_indice, watts_medio, t0_s, t1_s, "
                     "rpe, gravado_em) VALUES (?,?,?,?,?,?,?)",
                     (aid, int(b['bloco_indice']), b.get('watts_medio'),
-                     b.get('t0_s'), b.get('t1_s'), _rpe_to_float(b['rpe']), agora))
+                     b.get('t0_s'), b.get('t1_s'), int(b['rpe']), agora))
                 # Espelhar para activity_interval_rpe (nova fonte canônica)
                 # para que _rpe_interval_resolver o encontre sem fallback.
                 if b.get('t0_s') is not None:
@@ -3199,7 +3345,7 @@ def registar(app):
                         'interval_type': 'WORK',
                         'elapsed_time': (float(b['t1_s']) - float(b['t0_s'])
                                          if b.get('t1_s') is not None else None),
-                        'rpe': _rpe_to_float(b['rpe']),
+                        'rpe': int(b['rpe']),
                     }])
             cn.commit()
             # Espelhar também para o novo moxy_vst_historico.db
@@ -3209,7 +3355,7 @@ def registar(app):
                 for b in blocos:
                     if b.get('t0_s') is not None:
                         _mvdb.upsert_rpe(cn_mv, aid, float(b['t0_s']),
-                                         _rpe_to_float(b['rpe']),
+                                         int(b['rpe']),
                                          end_time=float(b['t1_s']) if b.get('t1_s') else None,
                                          interval_type='WORK',
                                          elapsed_time=(float(b['t1_s']) - float(b['t0_s'])
@@ -3301,20 +3447,12 @@ def registar(app):
                 return jsonify({'status': 'erro',
                                 'mensagem': 'sem blocos para gravar'}), 200
             for b in blocos:
-                rpe_raw = b.get('rpe')
-                try:
-                    rpe_val = _rpe_to_float(rpe_raw)
-                except ValueError as _ve:
+                rpe = b.get('rpe')
+                if not isinstance(rpe, (int, float)) or not (1 <= rpe <= 10):
                     return jsonify({
                         'status': 'erro',
                         'mensagem': (f'RPE inválido no bloco '
-                                     f'{b.get("bloco_indice")}: {_ve}')
-                    }), 200
-                if not (1 <= rpe_val <= 10):
-                    return jsonify({
-                        'status': 'erro',
-                        'mensagem': (f'RPE inválido no bloco '
-                                     f'{b.get("bloco_indice")}: {rpe_raw!r} — '
+                                     f'{b.get("bloco_indice")}: {rpe!r} — '
                                      'tem de ser 1 a 10')}), 200
 
             import drive_db_perfil as ddp
@@ -3326,7 +3464,7 @@ def registar(app):
                     "(activity_id, bloco_indice, watts_medio, t0_s, t1_s, "
                     "rpe, gravado_em) VALUES (?,?,?,?,?,?,?)",
                     (vid, int(b['bloco_indice']), b.get('watts_medio'),
-                     b.get('t0_s'), b.get('t1_s'), _rpe_to_float(b['rpe']), agora))
+                     b.get('t0_s'), b.get('t1_s'), int(b['rpe']), agora))
                 # Gravar também em activity_interval_rpe (fonte primária de leitura),
                 # usando t0_s como start_time. A leitura (_rpe_interval_resolver)
                 # procura aqui primeiro; moxy_rpe continua como fallback.
@@ -3336,13 +3474,51 @@ def registar(app):
                         'interval_type': 'WORK',
                         'elapsed_time': (float(b['t1_s']) - float(b['t0_s'])
                                          if b.get('t1_s') is not None else None),
-                        'rpe': _rpe_to_float(b['rpe']),
+                        'rpe': int(b['rpe']),
                     }])
             cn.commit()
+
+            # A nova fonte canónica é moxy_vst_historico.db. Mantemos o
+            # espelho legado no perfil_historico.db, mas a gravação nova
+            # nunca pode depender apenas dele.
+            _mv_ok, _mv_det = False, None
+            try:
+                import drive_db_moxy_vst as _mvdb
+                _cn_mv = _mvdb.get_moxy_vst_conn()
+                for b in blocos:
+                    if b.get('t0_s') is None:
+                        continue
+                    _mvdb.upsert_rpe(
+                        _cn_mv, vid, float(b['t0_s']), float(b['rpe']),
+                        end_time=(float(b['t1_s']) if b.get('t1_s') is not None else None),
+                        interval_type='WORK',
+                        elapsed_time=(
+                            float(b['t1_s']) - float(b['t0_s'])
+                            if b.get('t1_s') is not None else None))
+                _cn_mv.commit()
+                _mv_ok, _mv_det = _mvdb.upload()
+                _cn_mv.close()
+            except Exception as _e_mv_rpe:
+                _mv_det = f'{type(_e_mv_rpe).__name__}: {_e_mv_rpe}'
+                print(f'[vst_rpe_gravar] canonical DB: {_mv_det}')
+
             ok_up, det_up = ddp.upload()
+            # Se o legado subir mas o canónico falhar, informar claramente
+            # sem apagar o que já foi gravado.
+            if not _mv_ok:
+                return jsonify({
+                    'status': 'gravado_sem_upload',
+                    'n_gravados': len(blocos),
+                    'gravado_em': agora,
+                    'upload_detalhe': det_up,
+                    'canonical_db_ok': False,
+                    'canonical_db_detalhe': _mv_det,
+                })
             return jsonify({'status': 'ok' if ok_up else 'gravado_sem_upload',
                             'n_gravados': len(blocos), 'gravado_em': agora,
-                            'upload_detalhe': None if ok_up else det_up})
+                            'upload_detalhe': None if ok_up else det_up,
+                            'canonical_db_ok': True,
+                            'canonical_db_detalhe': _mv_det})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
@@ -3396,29 +3572,6 @@ def registar(app):
                 return jsonify({'status': 'sem_resultado',
                                 'mensagem': 'conjunto existe mas análise ainda não foi gravada'})
             resultado = json.loads(rjson)
-            # Compatibilidade com versões antigas: limiter_* antigos eram
-            # padrões VST, mas nunca devem voltar a ser tratados como limitador.
-            _rf_old = resultado.get('rpe_fisiologia') or {}
-            resultado['padrao_vst_bp1'] = (
-                resultado.get('padrao_vst_bp1') or
-                ((_rf_old.get('bp1') or {}).get('padrao')) or
-                ((resultado.get('limiter_bp1') or {}).get('padrao')))
-            resultado['padrao_vst_bp2'] = (
-                resultado.get('padrao_vst_bp2') or
-                ((_rf_old.get('bp2') or {}).get('padrao')) or
-                ((resultado.get('limiter_bp2') or {}).get('padrao')))
-            resultado['padrao_vst_sintese'] = {
-                'bp1': resultado.get('padrao_vst_bp1'),
-                'bp2': resultado.get('padrao_vst_bp2'),
-                'nao_e_limitador': True,
-                'nota': 'Padrão VST é somente verificação; não define limitador/intervenção/zona.'
-            }
-            # Nunca expor o padrão VST no contrato antigo como se fosse limitador.
-            resultado['limiter_bp1'] = None
-            resultado['limiter_bp2'] = None
-            resultado['limiter_sintese'] = None
-            resultado['hipotese_bp1'] = None
-            resultado['hipotese_bp2'] = None
             resultado['status'] = 'ok'
             resultado['dia1_activity_id'] = moxy_id
             resultado['dia2_activity_id'] = vid
@@ -3812,7 +3965,7 @@ def registar(app):
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
             r = cn.execute(
-                "SELECT moxy_activity_id, criado_em, actualizado_em "
+                "SELECT moxy_activity_id, created_at, updated_at "
                 "FROM vst_conjuntos WHERE vst_activity_id=?", (vid,)).fetchone()
             if not r:
                 return jsonify({'status': 'ok', 'sincronizado': False})
@@ -3853,7 +4006,7 @@ def registar(app):
             # Criar linha se nao existir (preserva campos calculados se existir)
             cn.execute(
                 "INSERT OR IGNORE INTO vst_conjuntos "
-                "(vst_activity_id, moxy_activity_id, criado_em, actualizado_em) "
+                "(vst_activity_id, moxy_activity_id, created_at, updated_at) "
                 "VALUES (?,?,?,?)",
                 (vid, mid, agora, agora))
 
@@ -3862,12 +4015,12 @@ def registar(app):
             # calculados pelo /vst/comparar.
             cn.execute(
                 "UPDATE vst_conjuntos "
-                "SET moxy_activity_id=?, actualizado_em=? "
+                "SET moxy_activity_id=?, updated_at=? "
                 "WHERE vst_activity_id=?",
                 (mid, agora, vid))
 
             row = cn.execute(
-                "SELECT criado_em FROM vst_conjuntos WHERE vst_activity_id=?",
+                "SELECT created_at FROM vst_conjuntos WHERE vst_activity_id=?",
                 (vid,)).fetchone()
             criado_em = row[0] if row else agora
 
@@ -3894,9 +4047,9 @@ def registar(app):
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
             r = cn.execute(
-                "SELECT vst_activity_id, criado_em, actualizado_em "
+                "SELECT vst_activity_id, created_at, updated_at "
                 "FROM vst_conjuntos WHERE moxy_activity_id=? "
-                "ORDER BY actualizado_em DESC LIMIT 1", (mid,)).fetchone()
+                "ORDER BY updated_at DESC LIMIT 1", (mid,)).fetchone()
             if not r:
                 return jsonify({'status': 'ok', 'sincronizado': False})
             return jsonify({'status': 'ok', 'sincronizado': True,
@@ -3931,7 +4084,7 @@ def registar(app):
                 "recovery_bp1_status, recovery_bp2_status, "
                 "dia1_bp1_w, dia2_bp1_w, dia1_bp2_w, dia2_bp2_w, "
                 "analisado_em FROM vst_conjuntos WHERE moxy_activity_id=? "
-                "ORDER BY actualizado_em DESC LIMIT 1", (mid,)).fetchone()
+                "ORDER BY updated_at DESC LIMIT 1", (mid,)).fetchone()
             if not r:
                 return jsonify({'status': 'ok', 'sincronizado': False,
                                 'analisado': False,
@@ -3981,10 +4134,10 @@ def registar(app):
                 "SELECT vst_activity_id, moxy_activity_id, bp1_status, "
                 "bp2_status, recovery_bp1_status, recovery_bp2_status, "
                 "dia1_bp1_w, dia2_bp1_w, dia1_bp2_w, dia2_bp2_w, "
-                "analisado_em, actualizado_em, "
+                "analisado_em, updated_at, "
                 "bpm_vst_validacao_json, "
                 "validacao_fisiologica_json FROM vst_conjuntos "
-                "ORDER BY actualizado_em DESC").fetchall()
+                "ORDER BY updated_at DESC").fetchall()
             # buscar modalidade de cada sessao Moxy da tabela activities
             # (campo type, ja' mapeado por TYPE_MAP) -- so' uma query
             # em lote, nao N queries
@@ -4529,7 +4682,7 @@ def registar(app):
     # ── Versão da análise fisiológica ─────────────────────────────────
     # Incrementar quando a lógica de validar_fisiologica_vst() mudar.
     # Análises gravadas com versão anterior serão recalculadas automaticamente.
-    FISIO_ANALYSIS_VERSION = 'v2'
+    FISIO_ANALYSIS_VERSION = 'v1'
 
     def _fisio_hash(moxy_id, vst_id, bp1_w, bp2_w, bp1_m, bp2_m, rpe_bp1, rpe_bp2,
                     curva_rpe=None):
@@ -4630,175 +4783,6 @@ def registar(app):
                   f'{_tb_f.format_exc()}')
             return None, None
 
-
-    def _analisar_rpe_fisiologia(metricas_lista, rpes, label):
-        """Analise DESCRITIVA RPE × fisiologia do Dia 2 (VST).
-
-        IMPORTANTE: esta função NÃO identifica limitador, não escolhe
-        intervenção e não prescreve zona. O limitador vem exclusivamente
-        da análise da sessão MOXY Day 1 (Limiar + Rede Causal + Intervenções).
-
-        Aqui o VST serve apenas para verificar o padrão observado no esforço:
-        RPE, HR, respiração, SmO2, THb e DFA1, por intervalo e por BP.
-        """
-        def _safe(m, canal):
-            c = (m or {}).get(canal) or {}
-            return {'media': c.get('media'), 'inicial': c.get('inicial'),
-                    'final': c.get('final'), 'delta': c.get('delta'),
-                    'ok': bool(c.get('ok'))}
-
-        ivs = []
-        for idx_i, (m, rpe) in enumerate(zip(metricas_lista or [], rpes or [])):
-            iv = {
-                'ordem': idx_i + 1,
-                'rpe': float(rpe) if rpe is not None else None,
-                't0': m.get('t0'), 't1': m.get('t1'),
-                'duracao_s': m.get('duracao_s'),
-                'potencia': _safe(m, 'potencia'),
-                'hr': _safe(m, 'hr'),
-                'respiracao': _safe(m, 'respiracao'),
-                'smo2': _safe(m, 'smo2'),
-                'thb': _safe(m, 'thb'),
-                'dfa1': _safe(m, 'dfa1'),
-            }
-            if idx_i > 0 and ivs:
-                prev = ivs[-1]
-                def _dv(campo):
-                    a = (prev.get(campo) or {}).get('media')
-                    b = (iv.get(campo) or {}).get('media')
-                    return round(b - a, 4) if a is not None and b is not None else None
-                iv['delta_vs_anterior'] = {
-                    'rpe': round(float(rpe) - float(prev['rpe']), 4)
-                           if rpe is not None and prev['rpe'] is not None else None,
-                    'potencia': _dv('potencia'), 'hr': _dv('hr'),
-                    'respiracao': _dv('respiracao'), 'smo2': _dv('smo2'),
-                    'thb': _dv('thb'), 'dfa1': _dv('dfa1'),
-                }
-            else:
-                iv['delta_vs_anterior'] = None
-            ivs.append(iv)
-
-        rpes_v = [float(r) for r in (rpes or []) if r is not None]
-
-        def _delta_bp(campo):
-            vals = [(iv.get(campo) or {}).get('media') for iv in ivs]
-            ok = [v for v in vals if v is not None]
-            return round(ok[-1] - ok[0], 4) if len(ok) >= 2 else None
-
-        deltas = {
-            'rpe': round(rpes_v[-1] - rpes_v[0], 4) if len(rpes_v) >= 2 else None,
-            'potencia': _delta_bp('potencia'), 'hr': _delta_bp('hr'),
-            'respiracao': _delta_bp('respiracao'), 'smo2': _delta_bp('smo2'),
-            'thb': _delta_bp('thb'), 'dfa1': _delta_bp('dfa1'),
-        }
-
-        def _dir(v, tol=0.5):
-            if v is None:
-                return None
-            return 'up' if v > tol else ('down' if v < -tol else 'stable')
-
-        rpe_dir = _dir(deltas.get('rpe'), 0.3)
-        hr_dir = _dir(deltas.get('hr'), 2)
-        resp_dir = _dir(deltas.get('respiracao'), 0.5)
-        smo2_dir = _dir(deltas.get('smo2'), 1)
-        dfa1_dir = _dir(deltas.get('dfa1'), 0.02)
-        thb_dir = _dir(deltas.get('thb'), 0.1)
-
-        # Cadeia de evidências: descreve os sinais, mas NÃO os transforma
-        # em limitador. A convergência é uma observação da sessão VST.
-        evidencia = {
-            'perceptiva': {
-                'rpe': rpe_dir,
-                'delta': deltas.get('rpe'),
-                'presente': deltas.get('rpe') is not None,
-            },
-            'cardiorrespiratoria': {
-                'hr': hr_dir,
-                'respiracao': resp_dir,
-                'delta_hr': deltas.get('hr'),
-                'delta_resp': deltas.get('respiracao'),
-                'presente': any(x is not None for x in (deltas.get('hr'), deltas.get('respiracao'))),
-            },
-            'periferica': {
-                'smo2': smo2_dir,
-                'thb': thb_dir,
-                'delta_smo2': deltas.get('smo2'),
-                'delta_thb': deltas.get('thb'),
-                'presente': any(x is not None for x in (deltas.get('smo2'), deltas.get('thb'))),
-            },
-            'autonomica_complementar': {
-                'dfa1': dfa1_dir,
-                'delta_dfa1': deltas.get('dfa1'),
-                'presente': deltas.get('dfa1') is not None,
-            },
-        }
-
-        sinais = []
-        if rpe_dir == 'up': sinais.append('RPE↑')
-        if hr_dir == 'up': sinais.append('HR↑')
-        if resp_dir == 'up': sinais.append('RF↑')
-        if smo2_dir == 'down': sinais.append('SmO2↓')
-        if dfa1_dir == 'down': sinais.append('DFA1↓')
-        if thb_dir == 'up': sinais.append('THb↑')
-
-        # Classificação puramente descritiva do padrão observado.
-        if not rpes_v:
-            padrao = 'SEM_DADOS_RPE'
-            expl = f'{label}: RPE não disponível; não é possível cruzar percepção com a fisiologia.'
-        elif rpe_dir == 'stable':
-            padrao = 'RPE_ESTAVEL'
-            expl = f'{label}: RPE estável (Δ={deltas.get("rpe"):.2f}); fisiologia mostrada como evidência complementar.'
-        else:
-            n_fisio = sum(deltas.get(c) is not None for c in ['hr', 'respiracao', 'smo2', 'dfa1'])
-            cardio = sum([rpe_dir == 'up', hr_dir == 'up', resp_dir == 'up'])
-            periferico = sum([rpe_dir == 'up', smo2_dir == 'down'])
-            autonomico = sum([rpe_dir == 'up', dfa1_dir == 'down'])
-            if n_fisio < 2:
-                padrao = 'DADOS_INSUFICIENTES'
-                expl = f'{label}: poucos sinais fisiológicos disponíveis para descrever um padrão robusto.'
-            elif cardio >= 2 and periferico >= 2:
-                padrao = 'MISTO'
-                expl = (f'{label}: resposta observada simultaneamente nos eixos cardiorrespiratório '
-                        f'(HR={hr_dir}, RF={resp_dir}) e periférico (SmO2={smo2_dir}). '
-                        'Isso descreve convergência de sinais no VST; não identifica limitador.')
-            elif cardio >= 2:
-                padrao = 'CARDIORRESPIRATORIO'
-                expl = (f'{label}: RPE crescente acompanhado por sinais cardiorrespiratórios '
-                        f'(HR={hr_dir}, RF={resp_dir}). Padrão observado no VST.')
-            elif periferico >= 2:
-                padrao = 'PERIFERICO'
-                expl = (f'{label}: RPE crescente acompanhado por redução de SmO2 '
-                        f'(SmO2={smo2_dir}). Padrão observado no VST.')
-            elif autonomico >= 2:
-                padrao = 'AUTONOMICO'
-                expl = (f'{label}: RPE crescente acompanhado por DFA1={dfa1_dir}. '
-                        'DFA1 permanece complementar; não define limitador.')
-            else:
-                padrao = 'SEM_PADRAO_CONCLUSIVO'
-                expl = (f'{label}: sinais sem convergência suficiente para um padrão descritivo único. '
-                        f'RPE={rpe_dir}, HR={hr_dir}, RF={resp_dir}, SmO2={smo2_dir}, DFA1={dfa1_dir}.')
-
-        return {
-            'label': label,
-            'intervalos': ivs,
-            'deltas_bp': deltas,
-            'rpe_inicial': rpes_v[0] if rpes_v else None,
-            'rpe_final': rpes_v[-1] if rpes_v else None,
-            'rpe_media': round(sum(rpes_v) / len(rpes_v), 4) if rpes_v else None,
-            'n_rpe_validos': len(rpes_v),
-            'direcao': {'rpe': rpe_dir, 'hr': hr_dir, 'respiracao': resp_dir,
-                        'smo2': smo2_dir, 'thb': thb_dir, 'dfa1': dfa1_dir},
-            'evidencia': evidencia,
-            'sinais_convergentes': sinais,
-            'padrao': padrao,
-            'padrao_descritivo': padrao,
-            'explicacao': expl,
-            'nao_e_limitador': True,
-            'nota': ('Análise descritiva do VST. O padrão observado não define '
-                     'limitador, intervenção ou zona. Limitador e intervenção '
-                     'devem vir exclusivamente da análise MOXY Day 1: Limiares '
-                     '→ Rede Causal → Intervenções. Zonas usam BP1/BP2 do MOXY.'),
-        }
 
     @app.route('/api/moxy/vst/comparar/<path:vst_activity_id>')
     def api_moxy_vst_comparar(vst_activity_id):
@@ -5079,23 +5063,43 @@ def registar(app):
                 print(f'[vst_comparar][RPE fisio] ERRO: {_e_fi}')
 
 
-            # ── PADRÃO VST — somente verificação descritiva ─────────────
-            # NÃO usar profilage_limiter/profilage_hipotese_intervencao aqui.
-            # O VST não decide limitador, intervenção ou zona.
-            # Esses três vêm exclusivamente do MOXY Day 1.
-            limiter_bp1 = None
-            limiter_bp2 = None
-            limiter_sintese = None
-            hipotese_bp1 = None
-            hipotese_bp2 = None
-            padrao_vst_bp1 = (rpe_fisiologia.get('bp1') or {}).get('padrao') if isinstance(rpe_fisiologia, dict) else None
-            padrao_vst_bp2 = (rpe_fisiologia.get('bp2') or {}).get('padrao') if isinstance(rpe_fisiologia, dict) else None
-            padrao_vst_sintese = {
-                'bp1': padrao_vst_bp1,
-                'bp2': padrao_vst_bp2,
-                'nao_e_limitador': True,
-                'nota': 'Padrão observado no VST; não define o limitador do Day 1/MOXY.'
-            }
+            # LIMITER / PADRAO FISIOLOGICO -- camada de integracao pura,
+            # so' LE resultados ja' calculados: divergencia/convergencia/
+            # accumulation ja' vem dentro de 'dia2' (api_moxy_vst_analise
+            # ja' os calcula), recovery/rpe ja' foram calculados acima
+            # nesta mesma funcao. Nada fisiologico e' recalculado aqui.
+            try:
+                divergencia_completa = dia2.get('profilage_divergencia') or {}
+                convergencia_completa = dia2.get('profilage_convergencia') or {}
+                accumulation_completa = dia2.get('profilage_accumulation') or {}
+                conv_works = convergencia_completa.get('works') or []
+                limiter_bp1 = vst.profilage_limiter(
+                    'BP1', divergencia_completa.get('bp1'),
+                    [w for w in conv_works if w.get('bp') == 'BP1'],
+                    convergencia_completa.get('sintese_bp1'),
+                    accumulation_completa.get('bp1'),
+                    comp_recovery_bp1, comp_rpe_bp1)
+                limiter_bp2 = vst.profilage_limiter(
+                    'BP2', divergencia_completa.get('bp2'),
+                    [w for w in conv_works if w.get('bp') == 'BP2'],
+                    convergencia_completa.get('sintese_bp2'),
+                    accumulation_completa.get('bp2'),
+                    comp_recovery_bp2, comp_rpe_bp2)
+                limiter_sintese = vst.profilage_limiter_sintese(limiter_bp1, limiter_bp2)
+                modalidade = dia2.get('modalidade') or ''
+                hipotese_bp1 = vst.profilage_hipotese_intervencao(
+                    'BP1', modalidade, limiter_bp1,
+                    divergencia_completa.get('bp1'),
+                    comp_recovery_bp1, comp_rpe_bp1)
+                hipotese_bp2 = vst.profilage_hipotese_intervencao(
+                    'BP2', modalidade, limiter_bp2,
+                    divergencia_completa.get('bp2'),
+                    comp_recovery_bp2, comp_rpe_bp2)
+            except Exception as e:
+                limiter_bp1 = limiter_bp2 = {'padrao': 'EVIDÊNCIA INSUFICIENTE',
+                                             'motivo': f'{type(e).__name__}: {e}'}
+                limiter_sintese = None
+                hipotese_bp1 = hipotese_bp2 = None
 
             # ── Rede Causal Day1 (MOXY) ─────────────────────────────────────
             # Reutiliza api_moxy_rede() existente — a mesma função da aba
@@ -5257,14 +5261,11 @@ def registar(app):
                                 'comparacao_bp2': comp_bp2,
                                 'comparacao_rpe_bp1': comp_rpe_bp1,
                                 'comparacao_rpe_bp2': comp_rpe_bp2,
-                                'limiter_bp1': None,
-                                'limiter_bp2': None,
-                                'limiter_sintese': None,
-                                'hipotese_bp1': None,
-                                'hipotese_bp2': None,
-                                'padrao_vst_bp1': ((rpe_fisiologia or {}).get('bp1') or {}).get('padrao'),
-                                'padrao_vst_bp2': ((rpe_fisiologia or {}).get('bp2') or {}).get('padrao'),
-                                'padrao_vst_sintese': padrao_vst_sintese,
+                                'limiter_bp1': limiter_bp1,
+                                'limiter_bp2': limiter_bp2,
+                                'limiter_sintese': limiter_sintese,
+                                'hipotese_bp1': hipotese_bp1,
+                                'hipotese_bp2': hipotese_bp2,
                                 'recuperacao_final_dia2': dia2.get('recuperacao_final'),
                                 'rpe_fisiologia': rpe_fisiologia,
                             },
@@ -5416,12 +5417,9 @@ def registar(app):
                 'comparacao_recovery_bp1': comp_recovery_bp1,
                 'comparacao_recovery_bp2': comp_recovery_bp2,
                 'comparacao_rpe_bp1': comp_rpe_bp1, 'comparacao_rpe_bp2': comp_rpe_bp2,
-                'limiter_bp1': None, 'limiter_bp2': None,
-                'limiter_sintese': None,
-                'hipotese_bp1': None, 'hipotese_bp2': None,
-                'padrao_vst_bp1': padrao_vst_bp1,
-                'padrao_vst_bp2': padrao_vst_bp2,
-                'padrao_vst_sintese': padrao_vst_sintese,
+                'limiter_bp1': limiter_bp1, 'limiter_bp2': limiter_bp2,
+                'limiter_sintese': limiter_sintese,
+                'hipotese_bp1': hipotese_bp1, 'hipotese_bp2': hipotese_bp2,
                 'recuperacao_final_dia2': dia2.get('recuperacao_final'),
                 'rede_causal': rede_causal_d1,
                 'validacao_fisiologica': _vf_ret,

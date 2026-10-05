@@ -4907,8 +4907,12 @@ def registar(app):
             # rpe=0 = apagado explicitamente, sem fallback para moxy_rpe.
             # Erro de código ≠ DADOS INSUFICIENTES — exceptions propagam com log.
             # ── Legado Day1 e Day2 (fallback) ────────────────────────────────
-            rpe_d1_legacy = {}
-            rpe_d2_legacy = {}
+            rpe_d1_legacy     = {}
+            rpe_d1_legacy_idx = {}
+            rpe_d1_legacy_t0  = {}
+            rpe_d2_legacy     = {}
+            rpe_d2_legacy_idx = {}
+            rpe_d2_legacy_t0  = {}
             try:
                 rpe_rows_d1 = cn.execute(
                     "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "

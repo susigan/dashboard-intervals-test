@@ -1,16 +1,30 @@
-"""moxy_vst_schema.py — Schema do moxy_vst_historico.db.
+"""perfil_schema.py — Schema do perfil_historico.db.
 
-Princípio: CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN.
-Nunca DROP, nunca DELETE, nunca recria tabelas existentes.
-Cada chamada a aplicar_schema() é idempotente.
+Princípio:
+    CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN.
+    Nunca DROP.
+    Nunca DELETE.
+    Nunca recria tabelas existentes.
+    Cada chamada a aplicar_schema() é idempotente.
+
+v6:
+    Compatibilidade entre o schema normalizado e o contrato legado
+    ainda utilizado pelo api_moxy.py para vst_conjuntos.
+
+Importante:
+    vst_results continua sendo a fonte de verdade dos resultados/versionamento.
+    As colunas de compatibilidade em vst_conjuntos existem para manter
+    compatibilidade com os endpoints atuais sem obrigar uma refatoração
+    ampla do api_moxy.py nesta etapa.
 """
 
-SCHEMA_VERSION = 4  # v4: rpe REAL — aceita qualquer decimal
+SCHEMA_VERSION = 6
+
 
 _TABELAS = [
 
     # ──────────────────────────────────────────────────────────────
-    # Metadados do próprio banco
+    # Metadados
     # ──────────────────────────────────────────────────────────────
     """CREATE TABLE IF NOT EXISTS db_metadata (
         key         TEXT PRIMARY KEY,
@@ -48,12 +62,7 @@ _TABELAS = [
     )""",
 
     # ──────────────────────────────────────────────────────────────
-    # Streams brutos (uma linha por stream por atividade)
-    # stream_name: 'heartrate', 'watts', 'smo2', 'thb', 'dfa1',
-    #              'respiration', 'velocity', 'cadence', etc.
-    # stream_json: lista JSON [[t0, v0], [t1, v1], ...]
-    #              ou {"time":[...], "data":[...]}
-    # Arquitetura extensível: novos streams → nova linha, zero DDL.
+    # Streams
     # ──────────────────────────────────────────────────────────────
     """CREATE TABLE IF NOT EXISTS activity_streams (
         activity_id     TEXT    NOT NULL,
@@ -64,10 +73,7 @@ _TABELAS = [
     )""",
 
     # ──────────────────────────────────────────────────────────────
-    # RPE por intervalo — fonte canônica e permanente
-    # rpe=NULL + source='deleted' → apagado explicitamente pelo utilizador
-    # rpe=1..10 + source='manual' → valor real gravado
-    # Nunca 0 como fallback. Nunca apagar fisicamente.
+    # RPE por intervalo
     # ──────────────────────────────────────────────────────────────
     """CREATE TABLE IF NOT EXISTS activity_interval_rpe (
         activity_id     TEXT    NOT NULL,
@@ -85,8 +91,7 @@ _TABELAS = [
     )""",
 
     # ──────────────────────────────────────────────────────────────
-    # Intervalos VST (blocos de trabalho BP1/BP2)
-    # raw_interval_json preserva o bloco original completo
+    # Intervalos VST
     # ──────────────────────────────────────────────────────────────
     """CREATE TABLE IF NOT EXISTS vst_intervals (
         activity_id         TEXT    NOT NULL,
@@ -108,66 +113,104 @@ _TABELAS = [
 
     # ──────────────────────────────────────────────────────────────
     # Conjuntos MOXY × VST
+    #
+    # created_at / updated_at:
+    #   schema normalizado.
+    #
+    # criado_em / actualizado_em:
+    #   compatibilidade com api_moxy.py existente.
+    #
+    # resultado_json / analisado_em / validacao...:
+    #   compatibilidade com os endpoints atuais.
+    #
+    # vst_results continua sendo o histórico versionado.
     # ──────────────────────────────────────────────────────────────
     """CREATE TABLE IF NOT EXISTS vst_conjuntos (
-        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-        moxy_activity_id        TEXT    NOT NULL,
-        vst_activity_id         TEXT    NOT NULL,
-        status                  TEXT    DEFAULT 'active',
-        bp1_status              TEXT,
-        bp2_status              TEXT,
-        dia1_bp1_w              REAL,
-        dia2_bp1_w              REAL,
-        dia1_bp2_w              REAL,
-        dia2_bp2_w              REAL,
-        recovery_bp1_status     TEXT,
-        recovery_bp2_status     TEXT,
-        created_at              TEXT,
-        updated_at              TEXT,
+        id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+
+        moxy_activity_id            TEXT    NOT NULL,
+        vst_activity_id             TEXT    NOT NULL,
+
+        status                      TEXT    DEFAULT 'active',
+
+        bp1_status                  TEXT,
+        bp2_status                  TEXT,
+
+        dia1_bp1_w                  REAL,
+        dia2_bp1_w                  REAL,
+        dia1_bp2_w                  REAL,
+        dia2_bp2_w                  REAL,
+
+        recovery_bp1_status         TEXT,
+        recovery_bp2_status         TEXT,
+
+        created_at                  TEXT,
+        updated_at                  TEXT,
+
+        -- Compatibilidade api_moxy.py
+        criado_em                   TEXT,
+        actualizado_em              TEXT,
+        modalidade                  TEXT,
+
+        resultado_json              TEXT,
+        analisado_em                TEXT,
+
+        validacao_fisiologica_json  TEXT,
+        bpm_vst_validacao_json      TEXT,
+
+        fisio_version               TEXT,
+        fisio_data_hash             TEXT,
+
         UNIQUE (moxy_activity_id, vst_activity_id)
     )""",
 
     # ──────────────────────────────────────────────────────────────
-    # Resultados de verificação (um registo por versão de análise)
-    # Nunca apagar versões antigas — só adicionar novas linhas.
+    # Resultados versionados
     # ──────────────────────────────────────────────────────────────
     """CREATE TABLE IF NOT EXISTS vst_results (
         id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+
         vst_conjunto_id             INTEGER NOT NULL
                                     REFERENCES vst_conjuntos(id),
+
         version                     INTEGER NOT NULL DEFAULT 1,
+
         analysis_version            TEXT,
         analysis_hash               TEXT,
-        analyzed_at                 TEXT,
+        analyzed_at                TEXT,
 
-        -- JSONs completos (fonte de verdade)
+        -- JSONs completos
         resultado_json              TEXT,
         validacao_fisiologica_json  TEXT,
         bpm_vst_validacao_json      TEXT,
 
-        -- Campos explícitos de BP (redundância deliberada para queries simples)
+        -- Campos explícitos BP
         bp1_w                       REAL,
         bp2_w                       REAL,
         bp1_bpm                     REAL,
         bp2_bpm                     REAL,
+
         bp1_json                    TEXT,
         bp2_json                    TEXT,
 
-        -- Campos de análise cruzada
+        -- Análise cruzada
         comparacao_rpe_bp1          TEXT,
         comparacao_rpe_bp2          TEXT,
         limiter_sintese             TEXT,
         recuperacao_final_dia2      TEXT,
 
-        -- Flags de qualidade de dados
+        -- Qualidade RPE
         rpe_bp1_disponivel          INTEGER DEFAULT 0,
         rpe_bp2_disponivel          INTEGER DEFAULT 0,
+
+        -- Análise integrada RPE × fisiologia
+        rpe_fisiologia_json         TEXT,
 
         created_at                  TEXT
     )""",
 
     # ──────────────────────────────────────────────────────────────
-    # Análises MOXY (bp1_w, bp2_w, limiares calculados)
+    # Análises MOXY
     # ──────────────────────────────────────────────────────────────
     """CREATE TABLE IF NOT EXISTS moxy_analyses (
         activity_id         TEXT    NOT NULL,
@@ -175,7 +218,7 @@ _TABELAS = [
         bp1_w               REAL,
         bp1_bpm             REAL,
         bp2_w               REAL,
-        bp2_bpm             REAL,
+        bp2_bpm              REAL,
         json_completo       TEXT,
         analysis_version    TEXT,
         analyzed_at         TEXT,
@@ -183,59 +226,266 @@ _TABELAS = [
     )""",
 ]
 
-# Colunas a adicionar em tabelas existentes (migrações não destrutivas)
-_MIGRATIONS = []
 
-# Migrações de dados (executadas em aplicar_schema, idempotentes)
+# ──────────────────────────────────────────────────────────────────────────────
+# Migrações de dados
+# ──────────────────────────────────────────────────────────────────────────────
+
 def _migrar_rpe_real(conn):
-    """v4: converte rpe INTEGER -> REAL no banco existente.
+    """Garante armazenamento REAL do RPE.
 
-    SQLite aceita REAL mesmo em coluna declarada INTEGER (duck typing),
-    mas este UPDATE garante que o tipo de armazenamento interno seja REAL.
-    UPDATE ... * 1.0 nao altera valores: 6 -> 6.0, 4.2 -> 4.2.
-    Idempotente: pode ser re-executada sem danos.
+    Idempotente.
+    Não altera o valor numérico.
     """
     try:
         conn.execute(
             "UPDATE activity_interval_rpe "
-            "SET rpe = rpe * 1.0 WHERE rpe IS NOT NULL")
+            "SET rpe = rpe * 1.0 "
+            "WHERE rpe IS NOT NULL"
+        )
         conn.commit()
     except Exception:
-        pass  # tabela pode nao existir ainda
+        # A tabela pode ainda não existir numa base muito antiga.
+        pass
+
+
+def _adicionar_coluna_se_necessaria(conn, tabela, coluna, tipo):
+    """ALTER TABLE ADD COLUMN idempotente.
+
+    Não usa DROP, não recria tabela e não altera colunas existentes.
+    """
+    try:
+        cols = {
+            row[1]
+            for row in conn.execute(
+                f"PRAGMA table_info({tabela})"
+            ).fetchall()
+        }
+
+        if coluna not in cols:
+            conn.execute(
+                f"ALTER TABLE {tabela} "
+                f"ADD COLUMN {coluna} {tipo}"
+            )
+            conn.commit()
+
+    except Exception:
+        # Compatibilidade com bases extremamente antigas.
+        # A chamada seguinte a aplicar_schema() poderá tentar novamente.
+        pass
+
+
+def _migrar_v6_compatibilidade_vst(conn):
+    """v6 — alinha vst_conjuntos com o contrato atualmente utilizado
+    pelo api_moxy.py.
+
+    Problema corrigido:
+        api_moxy.py ainda lê/grava:
+            criado_em
+            actualizado_em
+            modalidade
+            resultado_json
+            analisado_em
+            validacao_fisiologica_json
+            bpm_vst_validacao_json
+            fisio_version
+            fisio_data_hash
+
+        O schema normalizado possuía apenas:
+            created_at
+            updated_at
+            e os campos estruturais do conjunto.
+
+    A solução é aditiva:
+        - adiciona somente as colunas ausentes;
+        - mantém created_at/updated_at;
+        - não apaga nenhum resultado;
+        - recupera resultados existentes de vst_results quando possível.
+    """
+
+    compat = {
+        'criado_em':                  'TEXT',
+        'actualizado_em':             'TEXT',
+        'modalidade':                 'TEXT',
+        'resultado_json':             'TEXT',
+        'analisado_em':               'TEXT',
+        'validacao_fisiologica_json': 'TEXT',
+        'bpm_vst_validacao_json':     'TEXT',
+        'fisio_version':              'TEXT',
+        'fisio_data_hash':            'TEXT',
+    }
+
+    for coluna, tipo in compat.items():
+        _adicionar_coluna_se_necessaria(
+            conn,
+            'vst_conjuntos',
+            coluna,
+            tipo
+        )
+
+    # Garantir que vst_results antigo também tenha o JSON integrado.
+    _adicionar_coluna_se_necessaria(
+        conn,
+        'vst_results',
+        'rpe_fisiologia_json',
+        'TEXT'
+    )
+
+    # ──────────────────────────────────────────────────────────────
+    # Sincronizar nomes de data antigos com o schema normalizado.
+    # ──────────────────────────────────────────────────────────────
+
+    try:
+        conn.execute(
+            """
+            UPDATE vst_conjuntos
+               SET criado_em = COALESCE(criado_em, created_at)
+             WHERE criado_em IS NULL
+                OR criado_em = ''
+            """
+        )
+
+        conn.execute(
+            """
+            UPDATE vst_conjuntos
+               SET actualizado_em = COALESCE(actualizado_em, updated_at)
+             WHERE actualizado_em IS NULL
+                OR actualizado_em = ''
+            """
+        )
+
+        conn.commit()
+
+    except Exception:
+        pass
+
+    # ──────────────────────────────────────────────────────────────
+    # Recuperar o último resultado versionado para os campos de
+    # compatibilidade usados pelo api_moxy.py.
+    #
+    # IMPORTANTE:
+    #   não cria uma nova versão;
+    #   não apaga versões;
+    #   somente copia o resultado mais recente para o snapshot
+    #   compatível com os endpoints antigos.
+    # ──────────────────────────────────────────────────────────────
+
+    try:
+        conn.execute(
+            """
+            UPDATE vst_conjuntos AS c
+               SET resultado_json = COALESCE(
+                       c.resultado_json,
+                       (
+                           SELECT r.resultado_json
+                             FROM vst_results AS r
+                            WHERE r.vst_conjunto_id = c.id
+                            ORDER BY r.version DESC
+                            LIMIT 1
+                       )
+                   ),
+                   analisado_em = COALESCE(
+                       c.analisado_em,
+                       (
+                           SELECT r.analyzed_at
+                             FROM vst_results AS r
+                            WHERE r.vst_conjunto_id = c.id
+                            ORDER BY r.version DESC
+                            LIMIT 1
+                       )
+                   ),
+                   validacao_fisiologica_json = COALESCE(
+                       c.validacao_fisiologica_json,
+                       (
+                           SELECT r.validacao_fisiologica_json
+                             FROM vst_results AS r
+                            WHERE r.vst_conjunto_id = c.id
+                            ORDER BY r.version DESC
+                            LIMIT 1
+                       )
+                   ),
+                   bpm_vst_validacao_json = COALESCE(
+                       c.bpm_vst_validacao_json,
+                       (
+                           SELECT r.bpm_vst_validacao_json
+                             FROM vst_results AS r
+                            WHERE r.vst_conjunto_id = c.id
+                            ORDER BY r.version DESC
+                            LIMIT 1
+                       )
+                   )
+            """
+        )
+
+        conn.commit()
+
+    except Exception:
+        pass
+
+    # ──────────────────────────────────────────────────────────────
+    # Se resultado_json já existir mas rpe_fisiologia_json estiver
+    # vazio, não fazemos parsing de JSON aqui.
+    #
+    # A análise RPE × fisiologia será gerada novamente pelo fluxo
+    # Comparar / Sincronizar, que é a fonte correta para essa análise.
+    # ──────────────────────────────────────────────────────────────
 
 
 def aplicar_schema(conn):
-    """Aplica todas as tabelas e migrações. Idempotente e não-destrutivo."""
+    """Aplica todas as tabelas e migrações.
+
+    Idempotente e não-destrutivo.
+    """
+
     cur = conn.cursor()
-    cur.execute("PRAGMA journal_mode=WAL")
+
     cur.execute("PRAGMA foreign_keys=ON")
 
+    # Criar somente tabelas inexistentes.
     for ddl in _TABELAS:
         cur.execute(ddl)
 
-    # Migrações: ALTER TABLE ADD COLUMN (ignora se já existe)
-    for tabela, coluna, tipo, default in _MIGRATIONS:
-        try:
-            cur.execute(
-                f"ALTER TABLE {tabela} ADD COLUMN {coluna} {tipo} DEFAULT {default}"
-            )
-        except Exception:
-            pass  # coluna já existe
-
-    # Migracoes de dados (idempotentes)
+    # Migrações de dados.
     _migrar_rpe_real(conn)
+    _migrar_v6_compatibilidade_vst(conn)
 
-    # Atualizar metadados do schema
+    # ──────────────────────────────────────────────────────────────
+    # Metadados
+    # ──────────────────────────────────────────────────────────────
+
     import datetime
-    agora = datetime.datetime.now().isoformat(timespec='seconds')
-    cur.execute(
-        "INSERT INTO db_metadata(key, value, updated_at) VALUES(?,?,?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-        ('schema_version', str(SCHEMA_VERSION), agora)
+
+    agora = datetime.datetime.now().isoformat(
+        timespec='seconds'
     )
+
     cur.execute(
-        "INSERT INTO db_metadata(key, value, updated_at) VALUES(?,?,?) "
-        "ON CONFLICT(key) DO UPDATE SET updated_at=excluded.updated_at",
-        ('db_created_at', agora, agora)
+        """
+        INSERT INTO db_metadata(key, value, updated_at)
+        VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET
+            value=excluded.value,
+            updated_at=excluded.updated_at
+        """,
+        (
+            'schema_version',
+            str(SCHEMA_VERSION),
+            agora
+        )
     )
+
+    cur.execute(
+        """
+        INSERT INTO db_metadata(key, value, updated_at)
+        VALUES(?,?,?)
+        ON CONFLICT(key) DO UPDATE SET
+            updated_at=excluded.updated_at
+        """,
+        (
+            'db_created_at',
+            agora,
+            agora
+        )
+    )
+
     conn.commit()

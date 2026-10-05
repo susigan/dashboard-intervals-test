@@ -3366,14 +3366,51 @@ def registar(app):
                 "FROM vst_conjuntos WHERE vst_activity_id=?",
                 (vid,)).fetchone()
             if not r:
-                return jsonify({'status': 'sem_resultado',
-                                'mensagem': 'sem conjunto salvo para esta sessão VST'})
-            moxy_id, rjson, analisado_em, val_fisio_json, bpm_vst_json = r
+                # Fallback: moxy_vst_historico.db (banco canônico)
+                try:
+                    import drive_db_moxy_vst as _mvdb_res
+                    _cn_mvr = _mvdb_res.get_moxy_vst_conn()
+                    _row_mv = _cn_mvr.execute(
+                        "SELECT vc.moxy_activity_id, vr.resultado_json, "
+                        "       vr.analyzed_at, vr.validacao_fisiologica_json, "
+                        "       vr.bpm_vst_validacao_json, vr.rpe_fisiologia_json "
+                        "FROM vst_conjuntos vc "
+                        "LEFT JOIN vst_results vr ON vr.vst_conjunto_id=vc.id "
+                        "   AND vr.version=(SELECT MAX(version) FROM vst_results "
+                        "                  WHERE vst_conjunto_id=vc.id) "
+                        "WHERE vc.vst_activity_id=? "
+                        "ORDER BY vr.version DESC LIMIT 1", (vid,)
+                    ).fetchone()
+                    _cn_mvr.close()
+                    if _row_mv and _row_mv[1]:
+                        r = _row_mv
+                        print(f'[resultado] fallback moxy_vst_historico.db: {vid}')
+                    else:
+                        return jsonify({'status': 'sem_resultado',
+                                        'mensagem': 'sem conjunto salvo para esta sessão VST'})
+                except Exception as _e_mvr:
+                    return jsonify({'status': 'sem_resultado',
+                                    'mensagem': f'sem conjunto salvo ({_e_mvr})'})
+            _r_list = list(r)
+            moxy_id       = _r_list[0]
+            rjson         = _r_list[1] if len(_r_list) > 1 else None
+            analisado_em  = _r_list[2] if len(_r_list) > 2 else None
+            val_fisio_json= _r_list[3] if len(_r_list) > 3 else None
+            bpm_vst_json  = _r_list[4] if len(_r_list) > 4 else None
+            _rpe_fi_col   = _r_list[5] if len(_r_list) > 5 else None
             if not rjson:
                 return jsonify({'status': 'sem_resultado',
                                 'mensagem': 'conjunto existe mas análise ainda não foi gravada'})
+            _rpe_fi_col = getattr(locals(), '_rpe_fi_col', None)
             resultado = json.loads(rjson)
             resultado['status'] = 'ok'
+            # Se rpe_fisiologia não está no resultado_json mas sim na coluna
+            # separada (caso do moxy_vst_historico.db via fallback)
+            if 'rpe_fisiologia' not in resultado and _rpe_fi_col:
+                try:
+                    resultado['rpe_fisiologia'] = json.loads(_rpe_fi_col)
+                except Exception:
+                    pass
             resultado['dia1_activity_id'] = moxy_id
             resultado['dia2_activity_id'] = vid
             resultado['vst_activity_id'] = vid
@@ -4739,11 +4776,25 @@ def registar(app):
                 "SELECT moxy_activity_id FROM vst_conjuntos "
                 "WHERE vst_activity_id=?", (vid,)).fetchone()
             if not r:
-                return jsonify({'status': 'sem_dados',
-                                'mensagem': 'esta sessão VST ainda não '
-                                           'está sincronizada com nenhuma '
-                                           'sessão Moxy — usa "Comparar / '
-                                           'Sincronizar" primeiro'}), 200
+                # Fallback: moxy_vst_historico.db (banco canônico)
+                try:
+                    import drive_db_moxy_vst as _mvdb_cmp
+                    _cn_cmp = _mvdb_cmp.get_moxy_vst_conn()
+                    _r_cmp = _cn_cmp.execute(
+                        "SELECT moxy_activity_id FROM vst_conjuntos "
+                        "WHERE vst_activity_id=? LIMIT 1", (vid,)
+                    ).fetchone()
+                    _cn_cmp.close()
+                    if _r_cmp:
+                        r = _r_cmp
+                        print(f'[comparar] moxy_id via moxy_vst_historico.db: {r[0]}')
+                    else:
+                        return jsonify({'status': 'sem_dados',
+                                        'mensagem': 'esta sessão VST não está sincronizada '
+                                                   'com nenhuma sessão Moxy'}), 200
+                except Exception as _e_cmp_fb:
+                    return jsonify({'status': 'sem_dados',
+                                    'mensagem': f'sem conjunto VST: {_e_cmp_fb}'}), 200
             mid = r[0]
 
             # Dia 2: a analise VST completa, ja' pronta

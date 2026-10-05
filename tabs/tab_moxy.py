@@ -2938,8 +2938,18 @@ function mxVstCarregarComparacao(vstId){
  if(box) box.innerHTML='<p class="sub" style="font-size:12px;">a comparar…</p>';
  fetch('/api/moxy/vst/comparar/'+vstId).then(r=>r.json()).then(function(d){
   if(d.status!=='ok'){
-   if(box) box.innerHTML='<p class="sub" style="font-size:12px;">'
+   if(box) box.innerHTML='<p class="sub" style="font-size:12px;color:#f78166;">⚠ '
     +(d.mensagem||'sem dados suficientes para comparar')+'</p>';
+   const _cjErr=document.getElementById('mxVstConjuntoEstado');
+   if(_cjErr&&(_cjErr.innerHTML.includes('A CALCULAR')||_cjErr.innerHTML.includes('A RE-SINCRONIZAR'))){
+    _cjErr.innerHTML='<div style="border-left:3px solid #f78166;padding:6px 10px;">'
+     +'<b>CONJUNTO DE VERIFICAÇÃO</b><br>'
+     +'<span style="color:#f78166;">⚠ '+(d.mensagem||'sem dados')+'</span><br>'
+     +'<div style="margin-top:6px;"><button onclick="mxVstForcaComparar(\x27'+vstId+'\x27)" '
+     +'style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid #58A6FF;'
+     +'background:transparent;color:#58A6FF;cursor:pointer;">↻ Tentar novamente</button></div>'
+     +'</div>';
+   }
    return;
   }
   // actualizar o estado do conjunto (agora tem resultado)

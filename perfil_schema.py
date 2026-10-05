@@ -113,7 +113,6 @@ _TABELAS = [
         id                      INTEGER PRIMARY KEY AUTOINCREMENT,
         moxy_activity_id        TEXT    NOT NULL,
         vst_activity_id         TEXT    NOT NULL,
-        status                  TEXT    DEFAULT 'active',
         bp1_status              TEXT,
         bp2_status              TEXT,
         dia1_bp1_w              REAL,
@@ -122,8 +121,13 @@ _TABELAS = [
         dia2_bp2_w              REAL,
         recovery_bp1_status     TEXT,
         recovery_bp2_status     TEXT,
-        created_at              TEXT,
-        updated_at              TEXT,
+        modalidade              TEXT,
+        resultado_json          TEXT,
+        validacao_fisiologica_json TEXT,
+        bpm_vst_validacao_json  TEXT,
+        analisado_em            TEXT,
+        criado_em               TEXT,
+        actualizado_em          TEXT,
         UNIQUE (moxy_activity_id, vst_activity_id)
     )""",
 
@@ -184,7 +188,17 @@ _TABELAS = [
 ]
 
 # Colunas a adicionar em tabelas existentes (migrações não destrutivas)
-_MIGRATIONS = []
+# Garante que bancos criados com schemas anteriores ganham as novas colunas.
+_MIGRATIONS = [
+    # vst_conjuntos — colunas originais que podem faltar em bancos migrados
+    ("vst_conjuntos", "modalidade",               "TEXT", "NULL"),
+    ("vst_conjuntos", "resultado_json",            "TEXT", "NULL"),
+    ("vst_conjuntos", "validacao_fisiologica_json","TEXT", "NULL"),
+    ("vst_conjuntos", "bpm_vst_validacao_json",    "TEXT", "NULL"),
+    ("vst_conjuntos", "analisado_em",              "TEXT", "NULL"),
+    ("vst_conjuntos", "criado_em",                 "TEXT", "NULL"),
+    ("vst_conjuntos", "actualizado_em",            "TEXT", "NULL"),
+]
 
 # Migrações de dados (executadas em aplicar_schema, idempotentes)
 def _migrar_rpe_real(conn):

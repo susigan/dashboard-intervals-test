@@ -2476,18 +2476,44 @@ def registar(app):
                 "SELECT bloco_indice, rpe FROM moxy_rpe "
                 "WHERE activity_id=?", (aid,)).fetchall()}
 
+            # Fallback: moxy_vst_historico.db (banco canónico)
+            # Pré-carrega activity_interval_rpe para esta actividade.
+            _rpe_mv_degraus = {}  # start_time → rpe
+            try:
+                import drive_db_moxy_vst as _mvdb_deg
+                _cn_mv_d = _mvdb_deg.get_moxy_vst_conn()
+                for _r_d in _cn_mv_d.execute(
+                    "SELECT start_time, rpe FROM activity_interval_rpe "
+                    "WHERE activity_id=? AND rpe IS NOT NULL AND rpe > 0",
+                    (aid,)).fetchall():
+                    _rpe_mv_degraus[float(_r_d[0])] = _r_d[1]
+                _cn_mv_d.close()
+            except Exception:
+                pass  # fallback silencioso
+
             fora = []
             for i, b in enumerate(ons):
                 t0, t1 = float(b['t0']), float(b['t1'])
                 # Resolução de RPE:
-                # 1. activity_interval_rpe por (activity_id, start_time)
+                # 1. activity_interval_rpe por (activity_id, start_time) — perfil_historico.db
                 # 2. se ausente → moxy_rpe pelo índice (legado)
-                # 3. rpe=0 em activity_interval_rpe → campo vazio, sem fallback
+                # 3. se ainda ausente → moxy_vst_historico.db (banco canónico)
+                # 4. rpe=0 em activity_interval_rpe → campo vazio, sem fallback
                 rpe_val, rpe_fonte = _rpe_interval_resolver(cn, aid, t0)
                 if rpe_fonte == 'absent':
                     # sem linha nova → tentar legado
                     rpe_val = rpe_map_legacy.get(i)
                     rpe_fonte = 'legacy' if rpe_val is not None else 'absent'
+                if rpe_fonte == 'absent' and _rpe_mv_degraus:
+                    # fallback para moxy_vst_historico.db
+                    rpe_val = _rpe_mv_degraus.get(t0)
+                    if rpe_val is None:
+                        for _t, _r in _rpe_mv_degraus.items():
+                            if abs(_t - t0) <= 1.0:
+                                rpe_val = _r
+                                break
+                    if rpe_val is not None:
+                        rpe_fonte = 'moxy_vst_historico'
                 fora.append({
                     'bloco_indice': i,
                     'degrau': i + 1,

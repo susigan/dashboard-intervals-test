@@ -5523,6 +5523,7 @@ def registar(app):
                 'rede_causal': rede_causal_d1,
                 'validacao_fisiologica': _vf_ret,
                 'bpm_vst_validacao': _bpm_vf_ret,
+                'rpe_fisiologia': rpe_fisiologia,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

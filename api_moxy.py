@@ -3269,6 +3269,20 @@ def registar(app):
                 "WHERE activity_id=?", (vid,)).fetchall()
             rpe_legacy = {int(r[0]): r[1] for r in linhas}
 
+            # Fallback: moxy_vst_historico.db — quando perfil_historico.db foi recriado vazio
+            _rpe_mv_map = {}  # start_time → rpe
+            try:
+                import drive_db_moxy_vst as _mvdb_rpe
+                _cn_mv_rpe = _mvdb_rpe.get_moxy_vst_conn()
+                _rows_mv_rpe = _cn_mv_rpe.execute(
+                    "SELECT start_time, rpe FROM activity_interval_rpe "
+                    "WHERE activity_id=? AND rpe IS NOT NULL AND rpe > 0",
+                    (vid,)).fetchall()
+                _cn_mv_rpe.close()
+                _rpe_mv_map = {float(r[0]): r[1] for r in _rows_mv_rpe}
+            except Exception:
+                pass  # fallback silencioso
+
             fora = []
             contagem = {'bp1': 0, 'bp2': 0}
             for i, item in enumerate(trabalho):
@@ -3280,6 +3294,18 @@ def registar(app):
                 if rpe_fonte == 'absent':
                     rpe_val = rpe_legacy.get(i)
                     rpe_fonte = 'legacy' if rpe_val is not None else 'absent'
+                # Fallback 2: moxy_vst_historico.db (quando perfil_historico.db vazio)
+                if rpe_fonte == 'absent' and _rpe_mv_map:
+                    # Procurar por start_time exacto ou com tolerância de 1s
+                    _rpe_mv = _rpe_mv_map.get(t0)
+                    if _rpe_mv is None:
+                        for _t, _r in _rpe_mv_map.items():
+                            if abs(_t - t0) <= 1.0:
+                                _rpe_mv = _r
+                                break
+                    if _rpe_mv is not None:
+                        rpe_val = _rpe_mv
+                        rpe_fonte = 'moxy_vst_historico'
                 fora.append({
                     'bloco_indice': i, 'grupo': grupo, 'numero': contagem[grupo],
                     'watts_medio': round(b.get('watts_medio_da_api') or b.get('watts_medio') or 0),

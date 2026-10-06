@@ -5652,8 +5652,8 @@ function mxVstRenderRpeZonas(d){
      tip.style.display='';
      tip.style.left=Math.min(mx+10,W-120)+'px'; tip.style.top=(my-30)+'px';
      tip.textContent=(best.sessao==='d1'?'D1':'D2')
-      +' '+(best.zona||'?')+'\n'
-      +labelX+': '+fv(best[campoX],campoX==='dfa1'?3:1)+(unitX?' '+unitX:'')+'\n'
+      +' '+(best.zona||'?')+'\\n'
+      +labelX+': '+fv(best[campoX],campoX==='dfa1'?3:1)+(unitX?' '+unitX:'')+'\\n'
       +'RPE: '+fv(best.rpe,1);
     } else { tip.style.display='none'; }
    };

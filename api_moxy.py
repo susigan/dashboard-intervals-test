@@ -2755,6 +2755,7 @@ def registar(app):
                             'trace': traceback.format_exc()}), 500
 
     # ── activity_interval_rpe: GET ────────────────────────────────────────
+    @app.route('/api/activity/<path:activity_id>/interval_rpe/')
     @app.route('/api/activity/<path:activity_id>/interval_rpe')
     def api_activity_interval_rpe_ler(activity_id):
         """Devolve anotações de RPE por intervalo.
@@ -2823,6 +2824,29 @@ def registar(app):
                 except Exception:
                     pass  # fallback silencioso — devolve lista vazia
 
+            # Fallback 2: moxy_vst_historico.db
+            # Se perfil_historico.db foi recriado vazio, tentar o banco canonico.
+            if not intervals:
+                try:
+                    import drive_db_moxy_vst as _mvdb_ler
+                    _cn_ml = _mvdb_ler.get_moxy_vst_conn()
+                    _rows_ml = _cn_ml.execute(
+                        "SELECT start_time, interval_type, elapsed_time, "
+                        "rpe, source, updated_at "
+                        "FROM activity_interval_rpe WHERE activity_id=? "
+                        "ORDER BY start_time",
+                        (aid,)).fetchall()
+                    _cn_ml.close()
+                    if _rows_ml:
+                        intervals = [
+                            {'start_time': r[0], 'interval_type': r[1],
+                             'elapsed_time': r[2], 'rpe': r[3],
+                             'source': r[4] or 'moxy_vst_historico', 'updated_at': r[5]}
+                            for r in _rows_ml
+                        ]
+                except Exception:
+                    pass  # fallback silencioso
+
             import os as _os
             _local_db = getattr(ddp, '_LOCAL_DB', '/tmp/perfil_historico.db')
             return jsonify({'status': 'ok', 'activity_id': aid,
@@ -2834,6 +2858,7 @@ def registar(app):
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500
     # ── activity_interval_rpe: POST (UPSERT) ─────────────────────────────
+    @app.route('/api/activity/<path:activity_id>/interval_rpe/', methods=['POST'])
     @app.route('/api/activity/<path:activity_id>/interval_rpe', methods=['POST'])
     def api_activity_interval_rpe_gravar(activity_id):
         """Grava (UPSERT) anotações de RPE por intervalo.

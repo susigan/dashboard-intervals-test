@@ -497,6 +497,75 @@ BODY = """
       <div id="mxTipVstRpePots" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
     </div>
 
+    <!-- 4b. ANÁLISE INTEGRADA RPE × FISIOLOGIA × ZONAS ────────────  -->
+    <div id="mxVstRpeZonasArea" style="display:none;margin-top:20px;">
+      <h3 style="font-size:14px;margin-top:0;">Análise integrada RPE × Fisiologia × Zonas</h3>
+      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Day 1 (MOXY) + Day 2 (VST). Z1 = &lt; BP1 · Z2 = BP1–BP2 · Z3 = ≥ BP2. HRVT1c/1s/2 são referências fisiológicas independentes — não substituem BP1/BP2.</p>
+
+      <!-- Cards BP / HRVT -->
+      <div id="mxRzCardsLimiares" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;"></div>
+
+      <!-- Tabela BP × HRVT -->
+      <details open style="margin-bottom:12px;">
+        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Comparação BP × HRVT (diferença entre métodos)</summary>
+        <div id="mxRzTabelaBpHrvt" style="margin-top:6px;overflow-x:auto;"></div>
+      </details>
+
+      <!-- Tabela integrada por intervalo -->
+      <details open style="margin-bottom:12px;">
+        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Tabela de intervalos WORK (Day 1 + Day 2)</summary>
+        <div id="mxRzTabelaIntervalos" style="margin-top:6px;overflow-x:auto;"></div>
+      </details>
+
+      <!-- Estatísticas por zona -->
+      <details open style="margin-bottom:12px;">
+        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Estatísticas por zona (Z1 / Z2 / Z3)</summary>
+        <div id="mxRzEstatZonas" style="margin-top:6px;overflow-x:auto;"></div>
+      </details>
+
+      <!-- Gráficos RPE × métricas -->
+      <details open style="margin-bottom:8px;">
+        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Gráficos RPE × métricas</summary>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">
+          <div style="flex:1;min-width:260px;">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × Potência (W)</div>
+            <div class="chartbox" style="position:relative;width:100%;">
+              <canvas id="chMxRzRpePot" height="180"></canvas>
+              <div id="mxTipRzRpePot" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+            </div>
+          </div>
+          <div style="flex:1;min-width:260px;">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × FC (bpm)</div>
+            <div class="chartbox" style="position:relative;width:100%;">
+              <canvas id="chMxRzRpeHr" height="180"></canvas>
+              <div id="mxTipRzRpeHr" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+            </div>
+          </div>
+          <div style="flex:1;min-width:260px;">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × RF (resp/min)</div>
+            <div class="chartbox" style="position:relative;width:100%;">
+              <canvas id="chMxRzRpeRf" height="180"></canvas>
+              <div id="mxTipRzRpeRf" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+            </div>
+          </div>
+          <div style="flex:1;min-width:260px;">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × SmO₂ (%)</div>
+            <div class="chartbox" style="position:relative;width:100%;">
+              <canvas id="chMxRzRpeSmo2" height="180"></canvas>
+              <div id="mxTipRzRpeSmo2" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+            </div>
+          </div>
+          <div style="flex:1;min-width:260px;">
+            <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × DFA-α1</div>
+            <div class="chartbox" style="position:relative;width:100%;">
+              <canvas id="chMxRzRpeDfa1" height="180"></canvas>
+              <div id="mxTipRzRpeDfa1" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+            </div>
+          </div>
+        </div>
+      </details>
+    </div>
+
     <!-- 3. REFERÊNCIA FISIOLÓGICA RF+HR+SmO2 ─────────────────────  -->
     <h3 style="font-size:14px;margin-top:20px;">Referência fisiológica — Dia 1 × Dia 2</h3>
     <p class="sub" style="font-size:10px;margin:2px 0 6px;">Gráfico temporal com potência, HR, RF e SmO2. Referência para comparar o comportamento fisiológico entre as sessões.</p>
@@ -2818,6 +2887,7 @@ function _mxVstRenderComparacao(d, vstId){
  mxVstMostrarLimitadorDay1(d);
  mxVstRenderRedeCausal(d);
  mxVstDesenharRpePots(d);
+ mxVstRenderRpeZonas(d);
  mxLimiterMostrar(d);
  mxHipoteseMostrar(d);
  mxHistoricoEstilosMostrar(d);
@@ -5317,6 +5387,287 @@ function mxVstDesenharRpePots(d){
  });
 }
 
+// ── mxVstRenderRpeZonas ─────────────────────────────────────────────────────
+// Renderiza a análise integrada RPE × Fisiologia × Zonas.
+// Usa exclusivamente d.rpe_zonas_integrado — sem fetch adicional.
+// Z1 < BP1, Z2 = BP1–BP2, Z3 >= BP2. HRVT são referências independentes.
+function mxVstRenderRpeZonas(d){
+ const area=document.getElementById('mxVstRpeZonasArea');
+ if(!area) return;
+ const rz=d.rpe_zonas_integrado;
+ if(!rz || !rz.intervalos || !rz.intervalos.length){ area.style.display='none'; return; }
+ area.style.display='';
+
+ // ── Cores ────────────────────────────────────────────────────────────────
+ const COR_Z={'Z1':'#3fb950','Z2':'#d29922','Z3':'#f85149'};
+ const COR_D1='#58a6ff'; const COR_D2='#bc8cff';
+ const COR_REG_G='#e3b341'; const COR_REG_D1='#58a6ff'; const COR_REG_D2='#bc8cff';
+
+ function fv(v,dec){ return v==null?'—':(+v).toFixed(dec==null?1:dec); }
+ function fvNull(v,dec){ return v==null?null:(+v).toFixed(dec==null?1:dec); }
+
+ // ── Cards de limiares ────────────────────────────────────────────────────
+ (function(){
+  const el=document.getElementById('mxRzCardsLimiares'); if(!el) return;
+  const bp=rz.bp||{}; const hr=rz.hrvt||{};
+  const cards=[
+   {lbl:'BP1',sub:'limiar protocolo',w:((bp.bp1||{}).watts),hr_v:((bp.bp1||{}).hr_interpolado),cor:'#3fb950'},
+   {lbl:'HRVT1c',sub:'α1 individualizado',w:((hr.HRVT1c||{}).watts),hr_v:((hr.HRVT1c||{}).heartrate),cor:'#58a6ff',ok:(hr.HRVT1c||{}).ok},
+   {lbl:'HRVT1s',sub:'α1 = 0.75',w:((hr.HRVT1s||{}).watts),hr_v:((hr.HRVT1s||{}).heartrate),cor:'#79c0ff',ok:(hr.HRVT1s||{}).ok},
+   {lbl:'BP2',sub:'limiar protocolo',w:((bp.bp2||{}).watts),hr_v:((bp.bp2||{}).hr_interpolado),cor:'#f85149'},
+   {lbl:'HRVT2',sub:'α1 = 0.50',w:((hr.HRVT2||{}).watts),hr_v:((hr.HRVT2||{}).heartrate),cor:'#ff7b72',ok:(hr.HRVT2||{}).ok},
+  ];
+  el.innerHTML=cards.map(function(c){
+   const indisponivel=(c.ok===false);
+   return '<div style="background:#161b22;border:1px solid '+(indisponivel?'#30363d':c.cor)+';border-radius:8px;padding:8px 12px;min-width:100px;opacity:'+(indisponivel?'0.5':'1')+'">'
+    +'<div style="font-size:11px;font-weight:700;color:'+(indisponivel?'#8b949e':c.cor)+'">'+c.lbl+'</div>'
+    +'<div style="font-size:10px;color:#8b949e;margin-bottom:4px;">'+c.sub+'</div>'
+    +(indisponivel
+      ?'<div style="font-size:12px;color:#8b949e;">não disponível</div>'
+      :'<div style="font-size:13px;font-weight:700;color:#e6edf3;">'+(c.w!=null?fv(c.w,0)+' W':'—')+'</div>'
+       +'<div style="font-size:11px;color:#8b949e;">'+(c.hr_v!=null?fv(c.hr_v,0)+' bpm':'FC —')+'</div>')
+    +'</div>';
+  }).join('');
+ })();
+
+ // ── Tabela BP × HRVT ─────────────────────────────────────────────────────
+ (function(){
+  const el=document.getElementById('mxRzTabelaBpHrvt'); if(!el) return;
+  const comp=rz.comparacao_bp_hrvt||{};
+  const linhas=[
+   {ref:'BP1 × HRVT1c',k:'bp1_vs_HRVT1c'},
+   {ref:'BP1 × HRVT1s',k:'bp1_vs_HRVT1s'},
+   {ref:'BP2 × HRVT2', k:'bp2_vs_HRVT2'},
+  ];
+  let html='<table style="border-collapse:collapse;font-size:11px;width:100%;">';
+  html+='<tr style="border-bottom:1px solid #30363d;">'
+   +'<th style="text-align:left;padding:4px 6px;color:#8b949e;">Comparação</th>'
+   +'<th style="text-align:right;padding:4px 6px;color:#8b949e;">ΔW</th>'
+   +'<th style="text-align:right;padding:4px 6px;color:#8b949e;">ΔW%</th>'
+   +'<th style="text-align:right;padding:4px 6px;color:#8b949e;">ΔFC (bpm)</th>'
+   +'<th style="text-align:right;padding:4px 6px;color:#8b949e;">ΔFC%</th>'
+   +'</tr>';
+  linhas.forEach(function(l){
+   const c=comp[l.k]||{};
+   const dw=c.delta_w; const dwp=c.delta_w_pct; const dhr=c.delta_hr; const dhrp=c.delta_hr_pct;
+   function fDelta(v,dec){ if(v==null)return'<span style="color:#8b949e;">—</span>';
+    const col=v>0?'#f85149':v<0?'#3fb950':'#e6edf3';
+    return '<span style="color:'+col+';">'+(v>0?'+':'')+fv(v,dec)+'</span>'; }
+   html+='<tr style="border-bottom:1px solid #21262d;">'
+    +'<td style="padding:4px 6px;color:#c9d1d9;">'+l.ref+'</td>'
+    +'<td style="text-align:right;padding:4px 6px;">'+fDelta(dw,1)+'</td>'
+    +'<td style="text-align:right;padding:4px 6px;">'+fDelta(dwp,1)+'</td>'
+    +'<td style="text-align:right;padding:4px 6px;">'+fDelta(dhr,1)+'</td>'
+    +'<td style="text-align:right;padding:4px 6px;">'+fDelta(dhrp,1)+'</td>'
+    +'</tr>';
+  });
+  html+='<tr><td colspan="5" style="font-size:9px;color:#8b949e;padding:4px 6px;">Diferença entre métodos — sem interpretação clínica automática. Positivo = BP maior que HRVT.</td></tr>';
+  html+='</table>';
+  el.innerHTML=html;
+ })();
+
+ // ── Tabela de intervalos ──────────────────────────────────────────────────
+ (function(){
+  const el=document.getElementById('mxRzTabelaIntervalos'); if(!el) return;
+  const ivs=rz.intervalos||[];
+  let html='<table style="border-collapse:collapse;font-size:11px;width:100%;">';
+  html+='<tr style="border-bottom:1px solid #30363d;">'
+   +'<th style="text-align:left;padding:3px 6px;color:#8b949e;">Sessão</th>'
+   +'<th style="text-align:center;padding:3px 6px;color:#8b949e;">Zona</th>'
+   +'<th style="text-align:right;padding:3px 6px;color:#8b949e;">W</th>'
+   +'<th style="text-align:right;padding:3px 6px;color:#8b949e;">RPE</th>'
+   +'<th style="text-align:right;padding:3px 6px;color:#8b949e;">FC</th>'
+   +'<th style="text-align:right;padding:3px 6px;color:#8b949e;">RF</th>'
+   +'<th style="text-align:right;padding:3px 6px;color:#8b949e;">SmO₂%</th>'
+   +'<th style="text-align:right;padding:3px 6px;color:#8b949e;">DFA-α1</th>'
+   +'</tr>';
+  ivs.forEach(function(iv){
+   const z=iv.zona; const cor=COR_Z[z]||'#8b949e';
+   const sessCor=iv.sessao==='d1'?COR_D1:COR_D2;
+   const sessLbl=iv.sessao==='d1'?'D1':'D2';
+   html+='<tr style="border-bottom:1px solid #21262d;">'
+    +'<td style="padding:3px 6px;color:'+sessCor+';">'+sessLbl+'</td>'
+    +'<td style="text-align:center;padding:3px 6px;"><span style="background:'+cor+'22;color:'+cor+';border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;">'+( z||'—')+'</span></td>'
+    +'<td style="text-align:right;padding:3px 6px;color:#e6edf3;">'+fv(iv.potencia,0)+'</td>'
+    +'<td style="text-align:right;padding:3px 6px;color:#e6edf3;">'+fv(iv.rpe,1)+'</td>'
+    +'<td style="text-align:right;padding:3px 6px;color:#c9d1d9;">'+fv(iv.hr,0)+'</td>'
+    +'<td style="text-align:right;padding:3px 6px;color:#c9d1d9;">'+fv(iv.respiracao,1)+'</td>'
+    +'<td style="text-align:right;padding:3px 6px;color:#c9d1d9;">'+fv(iv.smo2,1)+'</td>'
+    +'<td style="text-align:right;padding:3px 6px;color:#c9d1d9;">'+fv(iv.dfa1,3)+'</td>'
+    +'</tr>';
+  });
+  html+='</table>';
+  el.innerHTML=html;
+ })();
+
+ // ── Estatísticas por zona ─────────────────────────────────────────────────
+ (function(){
+  const el=document.getElementById('mxRzEstatZonas'); if(!el) return;
+  const zst=rz.zonas||{}; const d12=rz.day1_vs_day2||{};
+  let html='<table style="border-collapse:collapse;font-size:11px;width:100%;">';
+  html+='<tr style="border-bottom:1px solid #30363d;">'
+   +'<th style="text-align:left;padding:3px 8px;color:#8b949e;">Zona</th>'
+   +'<th style="text-align:right;padding:3px 8px;color:#8b949e;">n</th>'
+   +'<th style="text-align:right;padding:3px 8px;color:#8b949e;">RPE média</th>'
+   +'<th style="text-align:right;padding:3px 8px;color:#8b949e;">RPE med.</th>'
+   +'<th style="text-align:right;padding:3px 8px;color:#8b949e;">W média</th>'
+   +'<th style="text-align:right;padding:3px 8px;color:#8b949e;">FC média</th>'
+   +'<th style="text-align:right;padding:3px 8px;color:#8b949e;">SmO₂ méd.</th>'
+   +'<th style="text-align:right;padding:3px 8px;color:#8b949e;">ΔRPE consec.</th>'
+   +'</tr>';
+  ['Z1','Z2','Z3'].forEach(function(z){
+   const s=zst[z]; if(!s) return;
+   const cor=COR_Z[z]||'#8b949e';
+   const dr=s.delta_rpe_consecutivo||{};
+   html+='<tr style="border-bottom:1px solid #21262d;">'
+    +'<td style="padding:3px 8px;"><span style="background:'+cor+'22;color:'+cor+';border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;">'+z+'</span></td>'
+    +'<td style="text-align:right;padding:3px 8px;color:#e6edf3;">'+s.n+'</td>'
+    +'<td style="text-align:right;padding:3px 8px;color:#e6edf3;">'+fv((s.rpe||{}).media,1)+'</td>'
+    +'<td style="text-align:right;padding:3px 8px;color:#c9d1d9;">'+fv((s.rpe||{}).mediana,1)+'</td>'
+    +'<td style="text-align:right;padding:3px 8px;color:#c9d1d9;">'+fv((s.potencia||{}).media,0)+'</td>'
+    +'<td style="text-align:right;padding:3px 8px;color:#c9d1d9;">'+fv((s.hr||{}).media,0)+'</td>'
+    +'<td style="text-align:right;padding:3px 8px;color:#c9d1d9;">'+fv((s.smo2||{}).media,1)+'</td>'
+    +'<td style="text-align:right;padding:3px 8px;color:#c9d1d9;">'+(dr.media!=null?fv(dr.media,2):'—')+'</td>'
+    +'</tr>';
+   // slope sub-row
+   const sl=s.slopes||{};
+   const slPot=(sl.rpe_potencia||{}); const slHr=(sl.rpe_hr||{});
+   if(slPot.declive!=null||slHr.declive!=null){
+    html+='<tr style="border-bottom:1px solid #21262d;">'
+     +'<td style="padding:1px 8px 4px 16px;color:#8b949e;font-size:10px;" colspan="8">'
+     +'slope RPE×W: '+(slPot.declive!=null?fv(slPot.declive,3)+'/W':'—')
+     +(slPot.exploratorio?' ⚠exploratorio':'')
+     +(slHr.declive!=null?' · RPE×FC: '+fv(slHr.declive,3)+'/bpm':'')
+     +(slHr.exploratorio?' ⚠exploratorio':'')
+     +'</td></tr>';
+   }
+  });
+  html+='</table>';
+  if(rz.limitacoes&&rz.limitacoes.length){
+   html+='<div style="margin-top:6px;font-size:10px;color:#8b949e;">⚠ '+rz.limitacoes.join(' · ')+'</div>';
+  }
+  el.innerHTML=html;
+ })();
+
+ // ── Gráficos scatter RPE × métrica ───────────────────────────────────────
+ function _rzDesenharScatter(canvasId,tipId,campoX,labelX,unitX,ivs){
+  const cv=document.getElementById(canvasId); if(!cv) return;
+  const tip=document.getElementById(tipId);
+  const ctx=cv.getContext('2d');
+  const dpr=window.devicePixelRatio||1;
+  const W=cv.parentElement.clientWidth||320;
+  const H=180;
+  cv.width=W*dpr; cv.height=H*dpr; cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.scale(dpr,dpr);
+
+  const pts=ivs.filter(function(iv){ return iv[campoX]!=null&&iv.rpe!=null; });
+  if(!pts.length){ ctx.fillStyle='#8b949e'; ctx.font='11px sans-serif';
+   ctx.fillText('Sem dados',W/2-30,H/2); return; }
+
+  const xs=pts.map(function(p){ return p[campoX]; });
+  const ys=pts.map(function(p){ return p.rpe; });
+  const xMin=Math.min.apply(null,xs); const xMax=Math.max.apply(null,xs);
+  const yMin=Math.min.apply(null,ys); const yMax=Math.max.apply(null,ys);
+  const xR=xMax-xMin||1; const yR=yMax-yMin||1;
+
+  const PAD={t:12,r:16,b:36,l:44};
+  const pw=W-PAD.l-PAD.r; const ph=H-PAD.t-PAD.b;
+  function px(v){ return PAD.l+((v-xMin)/xR)*pw; }
+  function py(v){ return PAD.t+ph-((v-yMin)/yR)*ph; }
+
+  // BP1/BP2 vertical lines on x-axis (if campo=potencia or interpolatable)
+  const bp=rz.bp||{};
+  if(campoX==='potencia'){
+   [['bp1','#3fb950'],['bp2','#f85149']].forEach(function(pair){
+    const bpw=(bp[pair[0]]||{}).watts;
+    if(bpw!=null&&bpw>=xMin&&bpw<=xMax){
+     ctx.strokeStyle=pair[1]; ctx.setLineDash([3,3]); ctx.lineWidth=1;
+     ctx.beginPath(); ctx.moveTo(px(bpw),PAD.t); ctx.lineTo(px(bpw),PAD.t+ph); ctx.stroke();
+     ctx.setLineDash([]);
+     ctx.fillStyle=pair[1]; ctx.font='9px sans-serif';
+     ctx.fillText(pair[0].toUpperCase(),px(bpw)+2,PAD.t+8);
+    }
+   });
+  }
+
+  // Grid eixo Y (RPE)
+  ctx.strokeStyle='#21262d'; ctx.lineWidth=0.5; ctx.setLineDash([]);
+  [6,8,10,12,14,16,18,20].forEach(function(rv){
+   if(rv<yMin-0.5||rv>yMax+0.5) return;
+   const yy=py(rv);
+   ctx.beginPath(); ctx.moveTo(PAD.l,yy); ctx.lineTo(PAD.l+pw,yy); ctx.stroke();
+   ctx.fillStyle='#8b949e'; ctx.font='9px sans-serif';
+   ctx.fillText(rv,2,yy+3);
+  });
+
+  // Pontos
+  pts.forEach(function(iv){
+   const z=iv.zona; const cor=COR_Z[z]||'#8b949e';
+   const sessCor=iv.sessao==='d1'?COR_D1:COR_D2;
+   const xx=px(iv[campoX]); const yy=py(iv.rpe);
+   ctx.beginPath(); ctx.arc(xx,yy,4,0,2*Math.PI);
+   ctx.fillStyle=sessCor+'bb'; ctx.fill();
+   ctx.strokeStyle=cor; ctx.lineWidth=1.5; ctx.stroke();
+  });
+
+  // Curva de regressão global
+  const curvaK={potencia:'rpe_potencia',hr:'rpe_hr',respiracao:'rpe_rf',smo2:'rpe_smo2',dfa1:'rpe_dfa1'};
+  const ck=curvaK[campoX];
+  if(ck&&rz.curvas&&rz.curvas[ck]){
+   const reg=(rz.curvas[ck].regressao_global||{});
+   if(reg.declive!=null&&reg.intercepto!=null){
+    const x0v=xMin; const x1v=xMax;
+    const y0r=reg.declive*x0v+reg.intercepto;
+    const y1r=reg.declive*x1v+reg.intercepto;
+    ctx.strokeStyle=COR_REG_G+(reg.exploratorio?'88':'cc');
+    ctx.lineWidth=1.5; ctx.setLineDash(reg.exploratorio?[4,3]:[]); ctx.beginPath();
+    ctx.moveTo(px(x0v),py(y0r)); ctx.lineTo(px(x1v),py(y1r)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle=COR_REG_G; ctx.font='9px sans-serif';
+    ctx.fillText('r²='+fv(reg.r2,2)+(reg.exploratorio?' ⚠':''),PAD.l+4,PAD.t+10);
+   }
+  }
+
+  // Eixo X label
+  ctx.fillStyle='#8b949e'; ctx.font='9px sans-serif'; ctx.textAlign='center';
+  ctx.fillText(labelX+(unitX?' ('+unitX+')':''),PAD.l+pw/2,H-4);
+  ctx.textAlign='left';
+  // Eixo Y label
+  ctx.save(); ctx.translate(8,PAD.t+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillStyle='#8b949e'; ctx.font='9px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('RPE',0,0); ctx.restore();
+
+  // Tooltip
+  if(tip){
+   cv.onmousemove=function(e){
+    const rect=cv.getBoundingClientRect();
+    const mx=e.clientX-rect.left; const my=e.clientY-rect.top;
+    let best=null; let bestD=Infinity;
+    pts.forEach(function(iv){
+     const dx=px(iv[campoX])-mx; const dy=py(iv.rpe)-my;
+     const dist=Math.sqrt(dx*dx+dy*dy);
+     if(dist<bestD){ bestD=dist; best=iv; }
+    });
+    if(best&&bestD<20){
+     tip.style.display='';
+     tip.style.left=Math.min(mx+10,W-120)+'px'; tip.style.top=(my-30)+'px';
+     tip.textContent=(best.sessao==='d1'?'D1':'D2')
+      +' '+(best.zona||'?')+'\n'
+      +labelX+': '+fv(best[campoX],campoX==='dfa1'?3:1)+(unitX?' '+unitX:'')+'\n'
+      +'RPE: '+fv(best.rpe,1);
+    } else { tip.style.display='none'; }
+   };
+   cv.onmouseleave=function(){ tip.style.display='none'; };
+  }
+ }
+
+ const ivs=rz.intervalos||[];
+ _rzDesenharScatter('chMxRzRpePot',  'mxTipRzRpePot',  'potencia', 'Potência','W',    ivs);
+ _rzDesenharScatter('chMxRzRpeHr',   'mxTipRzRpeHr',   'hr',       'FC',      'bpm',  ivs);
+ _rzDesenharScatter('chMxRzRpeRf',   'mxTipRzRpeRf',   'respiracao','RF',     'r/min',ivs);
+ _rzDesenharScatter('chMxRzRpeSmo2', 'mxTipRzRpeSmo2', 'smo2',     'SmO₂',   '%',    ivs);
+ _rzDesenharScatter('chMxRzRpeDfa1', 'mxTipRzRpeDfa1', 'dfa1',     'DFA-α1', '',     ivs);
+}
 
 
 function mxVstLimitacoes(d){

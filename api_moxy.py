@@ -5207,6 +5207,349 @@ def registar(app):
                 print(_tb_fi.format_exc())
                 # NÃO persiste {'erro': ...} — rpe_fisiologia permanece None
 
+            # ── Análise integrada RPE × Fisiologia × Zonas ──────────────────
+            # Reutiliza exclusivamente variáveis já em memória nesta função:
+            #   canais1, t1, ons1 → dados fisiológicos Day1 (MOXY)
+            #   rpe_d1_blocos     → RPE Day1 por degrau (já resolvido)
+            #   rpe_fisiologia    → intervalos Day2 com métricas completas
+            #   bp1_alvo/bp2_alvo → limiares de zona (já calculados)
+            #   dia1_lim['dfa1']  → HRVT1c/1s/2 (já calculados, não recalcula)
+            # Não cria endpoint, tabela, nem novo cálculo de HRVT/RPE/zonas.
+            rpe_zonas_integrado = None
+            try:
+                import hrv_limiares as _hvl_rz
+
+                def _rz_mediana(vs):
+                    """Mediana de lista numérica sem dependências externas."""
+                    s = sorted(v for v in vs if v is not None)
+                    n = len(s)
+                    if not n:
+                        return None
+                    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+                def _rz_media(vs):
+                    s = [v for v in vs if v is not None]
+                    return round(sum(s) / len(s), 4) if s else None
+
+                def _rz_zona(w, bp1, bp2):
+                    if w is None:
+                        return None
+                    if bp1 is not None and w < bp1:
+                        return 'Z1'
+                    if bp2 is not None and w >= bp2:
+                        return 'Z3'
+                    return 'Z2'
+
+                def _rz_interpolar(pontos_w_v, alvo_w):
+                    """Interpola linearmente valor em alvo_w a partir de lista
+                    de (watts, valor). Não extrapola — retorna None se alvo
+                    estiver fora do intervalo dos pontos disponíveis."""
+                    pts = [(w, v) for w, v in pontos_w_v
+                           if w is not None and v is not None]
+                    if not pts:
+                        return None
+                    pts.sort()
+                    ws = [p[0] for p in pts]
+                    if alvo_w < ws[0] or alvo_w > ws[-1]:
+                        return None  # não extrapola
+                    for i in range(len(pts) - 1):
+                        w0, v0 = pts[i]
+                        w1, v1 = pts[i + 1]
+                        if w0 <= alvo_w <= w1:
+                            if abs(w1 - w0) < 0.1:
+                                return round((v0 + v1) / 2, 4)
+                            t = (alvo_w - w0) / (w1 - w0)
+                            return round(v0 + t * (v1 - v0), 4)
+                    return None
+
+                def _rz_regressao(xs, ys, label_curva):
+                    """Chama hrv_limiares._regressao; marca como exploratório
+                    quando n < 5. Não altera hrv_limiares.py."""
+                    pairs = [(x, y) for x, y in zip(xs, ys)
+                             if x is not None and y is not None]
+                    if len(pairs) < 3:
+                        return None
+                    _xs = [p[0] for p in pairs]
+                    _ys = [p[1] for p in pairs]
+                    res = _hvl_rz._regressao(_xs, _ys)
+                    if res is None:
+                        return None
+                    res = dict(res)
+                    res['exploratorio'] = res.get('n', 0) < 5
+                    res['label'] = label_curva
+                    return res
+
+                # ── Dataset Day1 ────────────────────────────────────────────
+                # Para cada WORK Day1 com RPE:
+                # – canais fisiológicos via vst.metricas_intervalo (já existe)
+                # – RPE de rpe_d1_blocos (já resolvido por _resolver_rpe_bloco)
+                # rpe_d1_blocos tem: {degrau, watts_medio, t0_s, rpe}
+                rz_d1_rpe_map = {b['t0_s']: b['rpe']
+                                 for b in rpe_d1_blocos if b.get('rpe') is not None}
+                intervalos_d1 = []
+                for _i_rz, _b_rz in enumerate(ons1):
+                    _t0_rz = _b_rz.get('t0')
+                    _t1_rz = _b_rz.get('t1')
+                    if _t0_rz is None or _t1_rz is None:
+                        continue
+                    # RPE: de rpe_d1_blocos (já calculado) por t0_s próximo
+                    _rpe_rz = None
+                    for _t0k, _rpek in rz_d1_rpe_map.items():
+                        if abs(_t0k - _t0_rz) <= 1:
+                            _rpe_rz = _rpek
+                            break
+                    if _rpe_rz is None:
+                        # fallback: rpe_d1_blocos por índice
+                        if _i_rz < len(rpe_d1_blocos):
+                            _rpe_rz = rpe_d1_blocos[_i_rz].get('rpe')
+                    if _rpe_rz is None:
+                        continue  # sem RPE, sem ponto
+                    # Métricas fisiológicas via metricas_intervalo já importado
+                    _m_rz = vst.metricas_intervalo(
+                        canais1, t1, _t0_rz, _t1_rz,
+                        watts_medio_api=_b_rz.get('watts_medio_da_api'))
+                    _w_rz = ((_m_rz.get('potencia') or {}).get('media')
+                             or _b_rz.get('watts_medio_da_api')
+                             or _b_rz.get('watts_medio'))
+                    def _rz_safe_m(m, campo):
+                        c = (m or {}).get(campo) or {}
+                        return c.get('media') if c.get('ok') else None
+                    intervalos_d1.append({
+                        'sessao': 'd1',
+                        'intervalo': _i_rz + 1,
+                        'zona': _rz_zona(_w_rz, bp1_alvo, bp2_alvo),
+                        'potencia': round(_w_rz, 1) if _w_rz is not None else None,
+                        'rpe': float(_rpe_rz),
+                        'hr': _rz_safe_m(_m_rz, 'hr'),
+                        'respiracao': _rz_safe_m(_m_rz, 'respiracao'),
+                        'smo2': _rz_safe_m(_m_rz, 'smo2'),
+                        'thb': _rz_safe_m(_m_rz, 'thb'),
+                        'dfa1': _rz_safe_m(_m_rz, 'dfa1'),
+                        't0': round(_t0_rz),
+                        'grupo': 'moxy',
+                    })
+
+                # ── Dataset Day2 ─────────────────────────────────────────────
+                # Reutiliza rpe_fisiologia.bp1.intervalos + bp2.intervalos
+                # que já contêm potencia.media, hr.media, respiracao.media,
+                # smo2.media, thb.media, dfa1.media, rpe (da análise existente)
+                intervalos_d2 = []
+                for _grp_rz, _bp_lbl in (('bp1', 'bp1'), ('bp2', 'bp2')):
+                    _fi_grp = (rpe_fisiologia or {}).get(_grp_lbl if False else _grp_rz) or {}
+                    for _iv_rz in (_fi_grp.get('intervalos') or []):
+                        _rpe2 = _iv_rz.get('rpe')
+                        if _rpe2 is None:
+                            continue
+                        _w2 = (_iv_rz.get('potencia') or {}).get('media')
+                        intervalos_d2.append({
+                            'sessao': 'd2',
+                            'intervalo': _iv_rz.get('ordem'),
+                            'zona': _rz_zona(_w2, bp1_alvo, bp2_alvo),
+                            'potencia': round(_w2, 1) if _w2 is not None else None,
+                            'rpe': float(_rpe2),
+                            'hr': (_iv_rz.get('hr') or {}).get('media'),
+                            'respiracao': (_iv_rz.get('respiracao') or {}).get('media'),
+                            'smo2': (_iv_rz.get('smo2') or {}).get('media'),
+                            'thb': (_iv_rz.get('thb') or {}).get('media'),
+                            'dfa1': (_iv_rz.get('dfa1') or {}).get('media'),
+                            't0': _iv_rz.get('t0'),
+                            'grupo': _grp_rz,
+                        })
+
+                todos_intervalos = intervalos_d1 + intervalos_d2
+
+                # ── Estatísticas por zona ───────────────────────────────────
+                def _rz_stats_zona(ivs):
+                    campos = ('potencia', 'rpe', 'hr', 'respiracao', 'smo2', 'thb', 'dfa1')
+                    out = {'n': len(ivs)}
+                    for c in campos:
+                        vs = [iv.get(c) for iv in ivs if iv.get(c) is not None]
+                        out[c] = {
+                            'media': _rz_media(vs),
+                            'mediana': round(_rz_mediana(vs), 4) if _rz_mediana(vs) is not None else None,
+                            'n': len(vs),
+                        }
+                    # deltas RPE entre intervalos consecutivos (ordenados por t0)
+                    ivs_ord = sorted(ivs, key=lambda x: (x.get('t0') or 0))
+                    deltas_rpe = []
+                    for _di in range(1, len(ivs_ord)):
+                        _r0 = ivs_ord[_di - 1].get('rpe')
+                        _r1 = ivs_ord[_di].get('rpe')
+                        if _r0 is not None and _r1 is not None:
+                            deltas_rpe.append(round(_r1 - _r0, 4))
+                    out['delta_rpe_consecutivo'] = {
+                        'media': _rz_media(deltas_rpe),
+                        'mediana': _rz_mediana(deltas_rpe),
+                        'n': len(deltas_rpe),
+                    }
+                    return out
+
+                zonas_stats = {}
+                for _z in ('Z1', 'Z2', 'Z3'):
+                    _ivs_z = [iv for iv in todos_intervalos if iv.get('zona') == _z]
+                    if _ivs_z:
+                        _s = _rz_stats_zona(_ivs_z)
+                        # slopes por zona quando n suficiente
+                        _ws_z = [iv.get('potencia') for iv in _ivs_z]
+                        _rs_z = [iv.get('rpe') for iv in _ivs_z]
+                        _sl_z = {}
+                        for _fc, _vc in (('rpe_potencia', 'potencia'), ('rpe_hr', 'hr'),
+                                         ('rpe_rf', 'respiracao'), ('rpe_smo2', 'smo2'),
+                                         ('rpe_dfa1', 'dfa1')):
+                            _xs_sl = [iv.get(_vc) for iv in _ivs_z]
+                            _ys_sl = [iv.get('rpe') for iv in _ivs_z]
+                            _sl_z[_fc] = _rz_regressao(_xs_sl, _ys_sl, f'{_z}/{_fc}')
+                        _s['slopes'] = _sl_z
+                        zonas_stats[_z] = _s
+
+                # ── Curvas globais (Day1+Day2 combinado) ────────────────────
+                def _rz_curva(campo_x, campo_y='rpe', label=''):
+                    xs = [iv.get(campo_x) for iv in todos_intervalos]
+                    ys = [iv.get(campo_y) for iv in todos_intervalos]
+                    xs_d1 = [iv.get(campo_x) for iv in intervalos_d1]
+                    ys_d1 = [iv.get('rpe') for iv in intervalos_d1]
+                    xs_d2 = [iv.get(campo_x) for iv in intervalos_d2]
+                    ys_d2 = [iv.get('rpe') for iv in intervalos_d2]
+                    return {
+                        'regressao_global': _rz_regressao(xs, ys, f'global/{label}'),
+                        'regressao_d1': _rz_regressao(xs_d1, ys_d1, f'd1/{label}'),
+                        'regressao_d2': _rz_regressao(xs_d2, ys_d2, f'd2/{label}'),
+                    }
+
+                curvas = {
+                    'rpe_potencia': _rz_curva('potencia', label='rpe_potencia'),
+                    'rpe_hr':       _rz_curva('hr',        label='rpe_hr'),
+                    'rpe_rf':       _rz_curva('respiracao', label='rpe_rf'),
+                    'rpe_smo2':     _rz_curva('smo2',      label='rpe_smo2'),
+                    'rpe_dfa1':     _rz_curva('dfa1',      label='rpe_dfa1'),
+                }
+
+                # ── HRVT — extraídos de dia1_lim.dfa1 (já calculados) ───────
+                # NÃO recalcula. NÃO chama hrv_limiares.calcular().
+                _dfa1_rz = dia1_lim.get('dfa1') or {}
+                _lim_rz  = _dfa1_rz.get('limiares') or {}
+                def _rz_hrvt(key, alpha_label):
+                    _lk = _lim_rz.get(key) or {}
+                    _wk = _lk.get('watts') or {}
+                    _hk = _lk.get('heartrate') or {}
+                    return {
+                        'ok': _lk.get('ok', False),
+                        'alpha_alvo': _lk.get('a1_alvo'),
+                        'alpha_label': alpha_label,
+                        'watts': _wk.get('valor'),
+                        'heartrate': _hk.get('valor'),
+                    }
+                hrvt_rz = {
+                    'HRVT1c': _rz_hrvt('HRVT1c', 'individualizado'),
+                    'HRVT1s': _rz_hrvt('HRVT1s', '0.75'),
+                    'HRVT2':  _rz_hrvt('HRVT2',  '0.50'),
+                }
+
+                # ── Valores fisiológicos observados em BP1/BP2 ──────────────
+                # Interpolados a partir dos intervalos disponíveis (linear).
+                # Não extrapola — marca como None quando fora do intervalo.
+                def _rz_obs_no_alvo(alvo_w, campo):
+                    pts = [(iv.get('potencia'), iv.get(campo))
+                           for iv in todos_intervalos
+                           if iv.get('potencia') is not None and iv.get(campo) is not None]
+                    return _rz_interpolar(pts, alvo_w) if alvo_w is not None else None
+
+                bp_rz = {}
+                for _bpk, _bpw in (('bp1', bp1_alvo), ('bp2', bp2_alvo)):
+                    bp_rz[_bpk] = {
+                        'watts': _bpw,
+                        'hr_interpolado':         _rz_obs_no_alvo(_bpw, 'hr'),
+                        'respiracao_interpolada':  _rz_obs_no_alvo(_bpw, 'respiracao'),
+                        'smo2_interpolada':        _rz_obs_no_alvo(_bpw, 'smo2'),
+                        'dfa1_interpolado':        _rz_obs_no_alvo(_bpw, 'dfa1'),
+                        'nota': 'interpolado linearmente a partir dos pontos disponíveis',
+                    }
+
+                # ── Comparação BP × HRVT ────────────────────────────────────
+                # Mostra diferença entre métodos — não interpreta convergência.
+                def _rz_delta_bp_hrvt(bp_w, bp_hr, hrvt_w, hrvt_hr):
+                    dw = round(bp_w - hrvt_w, 1) if bp_w is not None and hrvt_w is not None else None
+                    dw_pct = round(dw / hrvt_w * 100, 1) if dw is not None and hrvt_w else None
+                    dhr = round(bp_hr - hrvt_hr, 1) if bp_hr is not None and hrvt_hr is not None else None
+                    dhr_pct = round(dhr / hrvt_hr * 100, 1) if dhr is not None and hrvt_hr else None
+                    return {
+                        'delta_w': dw, 'delta_w_pct': dw_pct,
+                        'delta_hr': dhr, 'delta_hr_pct': dhr_pct,
+                        'nota': 'diferença entre métodos — sem interpretação clínica automática',
+                    }
+
+                _bp1_hr_obs = bp_rz['bp1'].get('hr_interpolado')
+                _bp2_hr_obs = bp_rz['bp2'].get('hr_interpolado')
+                comparacao_bp_hrvt = {
+                    'bp1_vs_HRVT1c': _rz_delta_bp_hrvt(
+                        bp1_alvo, _bp1_hr_obs,
+                        hrvt_rz['HRVT1c'].get('watts'), hrvt_rz['HRVT1c'].get('heartrate')),
+                    'bp1_vs_HRVT1s': _rz_delta_bp_hrvt(
+                        bp1_alvo, _bp1_hr_obs,
+                        hrvt_rz['HRVT1s'].get('watts'), hrvt_rz['HRVT1s'].get('heartrate')),
+                    'bp2_vs_HRVT2': _rz_delta_bp_hrvt(
+                        bp2_alvo, _bp2_hr_obs,
+                        hrvt_rz['HRVT2'].get('watts'), hrvt_rz['HRVT2'].get('heartrate')),
+                }
+
+                # ── Comparação Day1 × Day2 ───────────────────────────────────
+                def _rz_d1d2_zona(zona):
+                    _d1z = [iv for iv in intervalos_d1 if iv.get('zona') == zona]
+                    _d2z = [iv for iv in intervalos_d2 if iv.get('zona') == zona]
+                    def _ms(ivs, campo):
+                        return {'media': _rz_media([iv.get(campo) for iv in ivs]),
+                                'mediana': _rz_mediana([iv.get(campo) for iv in ivs]),
+                                'n': len([iv for iv in ivs if iv.get(campo) is not None])}
+                    return {
+                        'd1': {'n': len(_d1z),
+                               'rpe': _ms(_d1z, 'rpe'), 'potencia': _ms(_d1z, 'potencia'),
+                               'hr': _ms(_d1z, 'hr'), 'smo2': _ms(_d1z, 'smo2')},
+                        'd2': {'n': len(_d2z),
+                               'rpe': _ms(_d2z, 'rpe'), 'potencia': _ms(_d2z, 'potencia'),
+                               'hr': _ms(_d2z, 'hr'), 'smo2': _ms(_d2z, 'smo2')},
+                    }
+
+                day1_vs_day2 = {z: _rz_d1d2_zona(z) for z in ('Z1', 'Z2', 'Z3')}
+
+                # ── Limitações automáticas ────────────────────────────────────
+                limitacoes = []
+                n_tot = len(todos_intervalos)
+                n_d1  = len(intervalos_d1)
+                n_d2  = len(intervalos_d2)
+                if n_tot < 5:
+                    limitacoes.append(f'n total muito pequeno ({n_tot}): slopes e medianas não são representativos.')
+                if n_d1 < 3:
+                    limitacoes.append(f'Day1: apenas {n_d1} intervalos com RPE — regressão exploratória.')
+                if n_d2 < 3:
+                    limitacoes.append(f'Day2: apenas {n_d2} intervalos com RPE — regressão exploratória.')
+                for _hk, _hn in (('HRVT1c', 'HRVT1c'), ('HRVT1s', 'HRVT1s'), ('HRVT2', 'HRVT2')):
+                    if not hrvt_rz[_hk].get('ok') or hrvt_rz[_hk].get('watts') is None:
+                        limitacoes.append(f'{_hn}: não disponível nesta sessão (DFA-α1 insuficiente ou ausente).')
+                for _bpk, _bpw in (('BP1', bp1_alvo), ('BP2', bp2_alvo)):
+                    if _bpw is None:
+                        limitacoes.append(f'{_bpk}: limiar não calculado — análise de zona incompleta.')
+
+                rpe_zonas_integrado = {
+                    'intervalos': todos_intervalos,
+                    'zonas': zonas_stats,
+                    'curvas': curvas,
+                    'bp': bp_rz,
+                    'hrvt': hrvt_rz,
+                    'comparacao_bp_hrvt': comparacao_bp_hrvt,
+                    'day1_vs_day2': day1_vs_day2,
+                    'meta': {
+                        'n_d1': n_d1, 'n_d2': n_d2, 'n_total': n_tot,
+                        'bp1_alvo_w': bp1_alvo, 'bp2_alvo_w': bp2_alvo,
+                    },
+                    'limitacoes': limitacoes,
+                }
+                print(f'[vst_comparar][rpe_zonas] n_d1={n_d1} n_d2={n_d2} '
+                      f'zonas={list(zonas_stats.keys())}')
+            except Exception as _e_rz:
+                import traceback as _tb_rz
+                print(f'[vst_comparar][rpe_zonas] ERRO (nao persiste): {_e_rz}')
+                print(_tb_rz.format_exc())
+                # Não persiste erro — rpe_zonas_integrado permanece None
 
             # LIMITER / PADRAO FISIOLOGICO -- camada de integracao pura,
             # so' LE resultados ja' calculados: divergencia/convergencia/
@@ -5571,6 +5914,7 @@ def registar(app):
                 'bpm_vst_validacao': _bpm_vf_ret,
                 'rpe_fisiologia': rpe_fisiologia,
                 'rpe_d1_blocos': rpe_d1_blocos,
+                'rpe_zonas_integrado': rpe_zonas_integrado,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

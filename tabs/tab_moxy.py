@@ -5121,16 +5121,34 @@ function mxVstDesenharRpePots(d){
    ?(rd1.blocos||[]).filter(b=>b.rpe!=null&&b.watts_medio>0)
    :[];
   // pontos Day2 — WORKs VST com RPE
-  const pts2=rd2&&rd2.status==='ok'
+  let pts2=rd2&&rd2.status==='ok'
    ?(rd2.blocos||[]).filter(b=>b.rpe!=null&&b.watts_medio>0)
    :[];
 
-  // Log de diagnóstico (remover depois de confirmar)
-  console.log('[mxVstDesenharRpePots] Day1 pontos='+pts1.length
-   +(pts1.length?'  primeiro='+pts1[0].watts_medio+'W/RPE'+pts1[0].rpe:''));
-  console.log('[mxVstDesenharRpePots] Day2 pontos='+pts2.length
-   +(pts2.length?'  primeiro='+pts2[0].watts_medio+'W/RPE'+pts2[0].rpe:''));
+  // Fallback Day2: usar d.rpe_fisiologia quando o endpoint retornou vazio.
+  // Cobre o caso em que os RPE existem mas ainda não foram espelhados
+  // para moxy_vst_historico.db (registados antes da funcionalidade de espelhamento).
+  if(!pts2.length&&d&&d.rpe_fisiologia){
+   const _fi=d.rpe_fisiologia;
+   ['bp1','bp2'].forEach(function(bp){
+    const ivs=(_fi[bp]&&_fi[bp].intervalos)||[];
+    ivs.forEach(function(iv,idx){
+     const w=(iv.potencia&&iv.potencia.media)||null;
+     if(iv.rpe!=null&&w>0){
+      pts2.push({
+       bloco_indice:idx, grupo:bp, numero:(iv.ordem||idx+1),
+       watts_medio:Math.round(w), rpe:iv.rpe,
+       hr_medio:(iv.hr&&iv.hr.media)||null,
+       rf_medio:(iv.respiracao&&iv.respiracao.media)||null,
+       smo2_medio:(iv.smo2&&iv.smo2.media)||null,
+       rpe_fonte:'rpe_fisiologia',
+      });
+     }
+    });
+   });
+  }
 
+  console.log('[mxVstDesenharRpePots] Day1='+pts1.length+' Day2='+pts2.length);
   if(!pts1.length&&!pts2.length){
    if(st) st.textContent='Sem RPE registrado em nenhuma das sessões.';
    return;

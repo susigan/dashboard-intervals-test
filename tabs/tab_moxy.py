@@ -5148,6 +5148,20 @@ function mxVstDesenharRpePots(d){
    });
   }
 
+  // Fallback Day1: usar d.rpe_d1_blocos quando endpoint rpe_degraus retornou vazio.
+  // Cobre o caso em que perfil_historico.db foi recriado vazio após restart do Railway
+  // e os RPE ainda não foram espelhados para moxy_vst_historico.db.
+  // d.rpe_d1_blocos é calculado por _resolver_rpe_bloco no backend (4 fontes de fallback).
+  if(!pts1.length&&d&&d.rpe_d1_blocos&&d.rpe_d1_blocos.length){
+   d.rpe_d1_blocos.forEach(function(b){
+    pts1.push({
+     bloco_indice:b.degrau-1, degrau:b.degrau,
+     watts_medio:b.watts_medio, t0_s:b.t0_s,
+     rpe:b.rpe, rpe_fonte:'rpe_d1_blocos',
+    });
+   });
+  }
+
   console.log('[mxVstDesenharRpePots] Day1='+pts1.length+' Day2='+pts2.length);
   if(!pts1.length&&!pts2.length){
    if(st) st.textContent='Sem RPE registrado em nenhuma das sessões.';

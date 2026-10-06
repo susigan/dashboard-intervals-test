@@ -5131,6 +5131,26 @@ def registar(app):
             })
             print(f'[vst_comparar][RPE Day1] {_d1_rpe_log}')
 
+            # ── rpe_d1_blocos: todos os degraus Day1 com RPE resolvido ──────────
+            # Exposto no retorno para que mxVstDesenharRpePots use como fallback
+            # pts1 sem depender de /api/moxy/rpe_degraus (que precisa de
+            # perfil_historico.db populado). Reutiliza _resolver_rpe_bloco já
+            # executado acima para os blocos-alvo; não re-consulta a base.
+            rpe_d1_blocos = []
+            for _i_b, _b_d1 in enumerate(ons1):
+                _t0_d1 = float(_b_d1.get('t0', -1))
+                _w_d1 = round(_b_d1.get('watts_medio_da_api') or _b_d1.get('watts_medio') or 0)
+                _rpe_b, _ = _resolver_rpe_bloco(mid, _t0_d1, _i_b,
+                                                 rpe_d1_legacy_idx, rpe_d1_legacy_t0)
+                if _rpe_b is not None and _w_d1 > 0:
+                    rpe_d1_blocos.append({
+                        'degrau': _i_b + 1,
+                        'watts_medio': _w_d1,
+                        't0_s': round(_t0_d1),
+                        'rpe': _rpe_b,
+                    })
+            print(f'[vst_comparar][rpe_d1_blocos] n={len(rpe_d1_blocos)}')
+
             # ── Day2: RPE de cada WORK de BP1 e BP2 ────────────────────────────
             # Sem correspondência 1:1 com Day1. Cada bloco independente.
             n_bp1_works = len((dia2.get('bp1') or {}).get('blocos') or [])
@@ -5550,6 +5570,7 @@ def registar(app):
                 'validacao_fisiologica': _vf_ret,
                 'bpm_vst_validacao': _bpm_vf_ret,
                 'rpe_fisiologia': rpe_fisiologia,
+                'rpe_d1_blocos': rpe_d1_blocos,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),

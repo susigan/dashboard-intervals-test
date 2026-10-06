@@ -3521,14 +3521,42 @@ def registar(app):
                     "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
                     "WHERE activity_id=? AND t0_s IS NOT NULL", (vid,)).fetchall()}
 
+                # Pré-carregar activity_interval_rpe de moxy_vst_historico.db
+                # para AMBAS as actividades (moxy e vst) — evita N round-trips.
+                _mv_rpe_cache = {}  # (activity_id, start_time) → rpe
+                try:
+                    import drive_db_moxy_vst as _mvdb_res_rpe
+                    _cn_mv_res = _mvdb_res_rpe.get_moxy_vst_conn()
+                    for _aid_mv in set([moxy_id, vid]):
+                        for _r_mv in _cn_mv_res.execute(
+                            "SELECT start_time, rpe FROM activity_interval_rpe "
+                            "WHERE activity_id=? AND rpe IS NOT NULL AND rpe > 0",
+                            (_aid_mv,)).fetchall():
+                            _mv_rpe_cache[(str(_aid_mv), float(_r_mv[0]))] = _r_mv[1]
+                    _cn_mv_res.close()
+                except Exception:
+                    pass  # fallback silencioso — cache fica vazio
+
                 def _res_rpe(aid, t0_val, idx_fb, leg_idx, leg_t0):
+                    # 1. activity_interval_rpe em perfil_historico.db
                     val, fonte = _rpe_interval_resolver(cn, aid, t0_val)
                     if fonte in ('new', 'deleted'):
                         return val
+                    # 2. moxy_rpe legado
                     for t0_l, rpe_l in (leg_t0 or {}).items():
                         if abs(t0_l - t0_val) <= 1:
                             return rpe_l
-                    return (leg_idx or {}).get(idx_fb)
+                    rpe_idx = (leg_idx or {}).get(idx_fb)
+                    if rpe_idx is not None:
+                        return rpe_idx
+                    # 3. moxy_vst_historico.db (fallback quando perfil_historico.db vazio)
+                    key_exact = (str(aid), float(t0_val))
+                    if key_exact in _mv_rpe_cache:
+                        return _mv_rpe_cache[key_exact]
+                    for (k_aid, k_t0), k_rpe in _mv_rpe_cache.items():
+                        if k_aid == str(aid) and abs(k_t0 - t0_val) <= 1:
+                            return k_rpe
+                    return None
 
                 # Reconstruir blocos Day1 a partir do cache (dia1_* já gravados)
                 # Usar os blocos do comparacao_bp1/bp2 que têm potência → t0 implícito
@@ -4983,13 +5011,30 @@ def registar(app):
                 import traceback as _tb
                 print(f'[vst_comparar] AVISO legado moxy_rpe: {_e_leg}\n{_tb.format_exc()}')
 
+            # Pré-carregar activity_interval_rpe de moxy_vst_historico.db
+            # para mid (Day1/MOXY) e vid (Day2/VST) — evita N round-trips.
+            _mv_rpe_comp = {}  # (activity_id, start_time) → rpe
+            try:
+                import drive_db_moxy_vst as _mvdb_comp_rpe
+                _cn_mv_comp = _mvdb_comp_rpe.get_moxy_vst_conn()
+                for _aid_c in set([mid, vid]):
+                    for _rc in _cn_mv_comp.execute(
+                        "SELECT start_time, rpe FROM activity_interval_rpe "
+                        "WHERE activity_id=? AND rpe IS NOT NULL AND rpe > 0",
+                        (_aid_c,)).fetchall():
+                        _mv_rpe_comp[(str(_aid_c), float(_rc[0]))] = _rc[1]
+                _cn_mv_comp.close()
+            except Exception:
+                pass  # fallback silencioso
+
             def _resolver_rpe_bloco(activity_id, t0_val, idx_fallback, legacy_idx, legacy_t0):
                 """Resolve RPE para um bloco por (activity_id, start_time).
 
-                1. activity_interval_rpe por start_time exacto
+                1. activity_interval_rpe por start_time exacto (perfil_historico.db)
                 2. moxy_rpe pelo t0_s gravado (tolerância ≤1 s para rounding)
                 3. moxy_rpe pelo bloco_indice (fallback posicional legado)
-                4. None
+                4. moxy_vst_historico.db (fallback quando perfil_historico.db vazio)
+                5. None
 
                 rpe=0 em activity_interval_rpe = apagado; não fazer fallback.
                 Erro de código propaga — não se converte em None silencioso.
@@ -5008,6 +5053,14 @@ def registar(app):
                 rpe_idx = (legacy_idx or {}).get(idx_fallback)
                 if rpe_idx is not None:
                     return rpe_idx, 'legacy_idx'
+
+                # 4. moxy_vst_historico.db (quando perfil_historico.db foi recriado vazio)
+                key_exact = (str(activity_id), float(t0_val))
+                if key_exact in _mv_rpe_comp:
+                    return _mv_rpe_comp[key_exact], 'moxy_vst_historico'
+                for (k_aid, k_t0), k_rpe in _mv_rpe_comp.items():
+                    if k_aid == str(activity_id) and abs(k_t0 - t0_val) <= 1:
+                        return k_rpe, 'moxy_vst_historico'
 
                 return None, 'absent'
 

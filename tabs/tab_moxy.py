@@ -467,156 +467,198 @@ BODY = """
       </button>
       <span id="mxVstGravarStatus" style="font-size:11px;color:#8b949e;margin-left:10px;"></span>
     </div>
+    <!-- ═══════════════════════════════════════════════════════════
+         SEÇÃO VISÍVEL — padrão de resposta, limitador, recomendação
+         ═══════════════════════════════════════════════════════════ -->
+
     <!-- 1. DASHBOARD — BP1/BP2/Recovery/RPE + sistemas ──────────── -->
     <h3 style="font-size:14px;margin-top:16px;">Perfil Fisiológico</h3>
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta análise identifica padrões de resposta fisiológica — não demonstra causalmente qual sistema limita o desempenho.</p>
-    <!-- Validação BPM MOXY × VST: comparação entre BPM MOXY e FC real dos intervalos VST -->
-    <div id="mxVstBpmCardArea" style="margin-bottom:8px;"></div>
-    <!-- Validação fisiológica: potência × FC/HRVT × RPE -->
-    <div id="mxVstFisioCardArea" style="margin-bottom:8px;"></div>
-    <!-- Análise RPE × Fisiologia (rpe_fisiologia_json) -->
-    <div id="mxVstRpeFisioCardArea" style="margin-bottom:8px;"></div>
-<div id="mxVstDashboard" style="margin-bottom:12px;"></div>
+    <div id="mxVstDashboard" style="margin-bottom:12px;"></div>
 
-    <!-- 3b. LIMITADOR — DAY 1 / MOXY ────────────────────────────  -->
-    <h3 style="font-size:14px;margin-top:20px;">Limitador — Day 1 / MOXY</h3>
-    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Resultado da análise MOXY da sessão Day 1 associada a esta verificação. Fonte: a mesma usada pela aba de Limiares.</p>
-    <div id="mxVstLimitadorDay1" style="margin-bottom:8px;"></div>
-
-    <!-- 3c. REDE CAUSAL — DAY 1 / MOXY ──────────────────────────  -->
-    <h3 style="font-size:14px;margin-top:14px;">Rede Causal — Day 1 / MOXY</h3>
-    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Executada automaticamente ao comparar. Reutiliza o mesmo endpoint da aba Rede Causal — sem nova análise.</p>
-    <div id="mxVstRedeCausal" style="margin-bottom:8px;"></div>
-
-    <!-- 4. GRÁFICO RPE × POTÊNCIA ──────────────────────────────── -->
-    <h3 style="font-size:14px;margin-top:16px;">RPE × Potência — Day 1 × Day 2</h3>
-    <p class="sub" style="font-size:10px;margin:2px 0 6px;">Consistência entre esforço externo (potência) e esforço percebido (RPE) entre as duas sessões.</p>
-    <div id="mxVstRpePotsStatus" style="font-size:11px;color:#8b949e;margin-bottom:4px;"></div>
-    <div class="chartbox" style="position:relative;width:100%;max-height:280px;">
-      <canvas id="chMxVstRpePots" height="260"></canvas>
-      <div id="mxTipVstRpePots" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
-    </div>
-
-    <!-- 4b. ANÁLISE INTEGRADA RPE × FISIOLOGIA × ZONAS ────────────  -->
-    <div id="mxVstRpeZonasArea" style="display:none;margin-top:20px;">
-      <h3 style="font-size:14px;margin-top:0;">Análise integrada RPE × Fisiologia × Zonas</h3>
-      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Day 1 (MOXY) + Day 2 (VST). Z1 = &lt; BP1 · Z2 = BP1–BP2 · Z3 = ≥ BP2. HRVT1c/1s/2 são referências fisiológicas independentes — não substituem BP1/BP2.</p>
-
-      <!-- Cards BP / HRVT -->
-      <div id="mxRzCardsLimiares" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;"></div>
-
-      <!-- Tabela BP × HRVT -->
-      <details open style="margin-bottom:12px;">
-        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Comparação BP × HRVT (diferença entre métodos)</summary>
-        <div id="mxRzTabelaBpHrvt" style="margin-top:6px;overflow-x:auto;"></div>
-      </details>
-
-      <!-- Tabela integrada por intervalo -->
-      <details open style="margin-bottom:12px;">
-        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Tabela de intervalos WORK (Day 1 + Day 2)</summary>
-        <div id="mxRzTabelaIntervalos" style="margin-top:6px;overflow-x:auto;"></div>
-      </details>
-
-      <!-- Estatísticas por zona -->
-      <details open style="margin-bottom:12px;">
-        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Estatísticas por zona (Z1 / Z2 / Z3)</summary>
-        <div id="mxRzEstatZonas" style="margin-top:6px;overflow-x:auto;"></div>
-      </details>
-
-      <!-- Gráficos RPE × métricas -->
-      <details open style="margin-bottom:8px;">
-        <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▼ Gráficos RPE × métricas</summary>
-        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">
-          <div style="flex:1;min-width:260px;">
-            <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × Potência (W)</div>
-            <div class="chartbox" style="position:relative;width:100%;">
-              <canvas id="chMxRzRpePot" height="180"></canvas>
-              <div id="mxTipRzRpePot" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
-            </div>
-          </div>
-          <div style="flex:1;min-width:260px;">
-            <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × FC (bpm)</div>
-            <div class="chartbox" style="position:relative;width:100%;">
-              <canvas id="chMxRzRpeHr" height="180"></canvas>
-              <div id="mxTipRzRpeHr" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
-            </div>
-          </div>
-          <div style="flex:1;min-width:260px;">
-            <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × RF (resp/min)</div>
-            <div class="chartbox" style="position:relative;width:100%;">
-              <canvas id="chMxRzRpeRf" height="180"></canvas>
-              <div id="mxTipRzRpeRf" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
-            </div>
-          </div>
-          <div style="flex:1;min-width:260px;">
-            <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × SmO₂ (%)</div>
-            <div class="chartbox" style="position:relative;width:100%;">
-              <canvas id="chMxRzRpeSmo2" height="180"></canvas>
-              <div id="mxTipRzRpeSmo2" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
-            </div>
-          </div>
-          <div style="flex:1;min-width:260px;">
-            <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × DFA-α1</div>
-            <div class="chartbox" style="position:relative;width:100%;">
-              <canvas id="chMxRzRpeDfa1" height="180"></canvas>
-              <div id="mxTipRzRpeDfa1" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
-            </div>
-          </div>
-        </div>
-      </details>
-    </div>
-
-    <!-- 3. REFERÊNCIA FISIOLÓGICA RF+HR+SmO2 ─────────────────────  -->
-    <h3 style="font-size:14px;margin-top:20px;">Referência fisiológica — Dia 1 × Dia 2</h3>
-    <p class="sub" style="font-size:10px;margin:2px 0 6px;">Gráfico temporal com potência, HR, RF e SmO2. Referência para comparar o comportamento fisiológico entre as sessões.</p>
-    <div id="mxVstTemporalToggles" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;font-size:11px;">
-      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
-        <input type="checkbox" checked onchange="mxVstToggleTemporal('power',this.checked)">
-        <span style="color:#c9d1d9;">Power (W)</span></label>
-      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
-        <input type="checkbox" checked onchange="mxVstToggleTemporal('heartrate',this.checked)">
-        <span style="color:#E3B341;">HR (bpm)</span></label>
-      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
-        <input type="checkbox" checked onchange="mxVstToggleTemporal('respiration',this.checked)">
-        <span style="color:#58A6FF;">RF (resp/min)</span></label>
-      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
-        <input type="checkbox" checked onchange="mxVstToggleTemporal('smo2',this.checked)">
-        <span style="color:#3FB950;">SmO2 (%)</span></label>
-    </div>
-    <div class="chartbox" style="position:relative;width:100%;margin-top:6px;">
-      <canvas id="chMxVstTemporal" height="240"></canvas>
-      <div id="mxTipVstTemporal" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
-    </div>
-
-    <!-- 4. LIMITER ───────────────────────────────────────────────  -->
+    <!-- 2. LIMITER / Padrão fisiológico ─────────────────────────── -->
     <h3 style="font-size:14px;margin-top:20px;">LIMITER / Padrão fisiológico</h3>
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">HR, RF, SmO2, THb e DFA-α1 são marcadores complementares; a convergência aumenta a coerência do padrão, mas não estabelece causalidade.</p>
     <div id="mxLimiter" style="overflow-x:auto;"></div>
 
-    <!-- 5. HIPÓTESE ─────────────────────────────────────────────── -->
+    <!-- 3. HIPÓTESE DE INTERVENÇÃO ───────────────────────────────── -->
     <h3 style="font-size:14px;margin-top:20px;">HIPÓTESE DE INTERVENÇÃO / TREINO</h3>
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Hipótese para teste — o padrão observado não demonstra causalidade.</p>
     <div id="mxHipotese" style="overflow-x:auto;"></div>
 
-    <!-- 6. HISTÓRICO E ESTILOS ──────────────────────────────────── -->
-    <h3 style="font-size:14px;margin-top:20px;">Padrões recorrentes — histórico</h3>
-    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Frequência de padrão não demonstra causalidade.</p>
+    <!-- 4a. PADRÃO ATUAL — FONTE PRIMÁRIA (sessão corrente) ──────── -->
+    <h3 style="font-size:14px;margin-top:20px;">Padrão atual — fonte primária</h3>
+    <p class="sub" style="font-size:10px;margin:2px 0 8px;">Resultado desta sessão VST. Tem prioridade sobre o histórico — o histórico é contexto longitudinal, não substitui o dado atual.</p>
     <div id="mxHistoricoPatterns" style="overflow-x:auto;margin-top:6px;"></div>
+
+    <!-- 4b. HISTÓRICO — CONTEXTO LONGITUDINAL ───────────────────── -->
     <h3 style="font-size:14px;margin-top:16px;">Treinos candidatos</h3>
     <div id="mxHistoricoEstilos" style="overflow-x:auto;margin-top:6px;"></div>
 
-    <!-- 7. COMPARAÇÃO Dia 1 × Dia 2 — cards ────────────────────── -->
-    <h3 style="font-size:14px;margin-top:20px;">Comparação — Dia 1 × Dia 2</h3>
-    <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
-    <div id="mxVstRpe" style="margin-top:10px;"></div>
+    <!-- 5. CARDS BP/HRVT — limiares da sessão ───────────────────── -->
+    <div id="mxVstRpeZonasArea" style="display:none;margin-top:20px;">
+      <h3 style="font-size:14px;margin-top:0;">Limiares — BP1 / HRVT1 / BP2 / HRVT2</h3>
+      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Day 1 (MOXY) + Day 2 (VST). Z1 = &lt; BP1 · Z2 = BP1–BP2 · Z3 = ≥ BP2. HRVT1c/1s/2 são referências fisiológicas independentes — não substituem BP1/BP2.</p>
+      <!-- Cards BP / HRVT — única localização -->
+      <div id="mxRzCardsLimiares" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;"></div>
 
-    <!-- 8. LIMITAÇÕES ──────────────────────────────────────────── -->
-    <details style="margin-top:10px;" open>
-      <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">Limitações</summary>
+      <!-- ═══════════════════════════════════════════════════════════
+           ANÁLISE INTEGRADA — collapsible
+           ═══════════════════════════════════════════════════════════ -->
+      <details id="mxDetalhesIntegrado" style="margin-bottom:10px;">
+        <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:4px 0;">▶ Análise integrada</summary>
+
+        <!-- Validação BPM MOXY × VST -->
+        <div id="mxVstBpmCardArea" style="margin-top:10px;margin-bottom:8px;"></div>
+        <!-- Validação fisiológica: potência × FC/HRVT × RPE -->
+        <div id="mxVstFisioCardArea" style="margin-bottom:8px;"></div>
+        <!-- Análise RPE × Fisiologia (rpe_fisiologia_json) -->
+        <div id="mxVstRpeFisioCardArea" style="margin-bottom:10px;"></div>
+
+        <!-- Tabela BP × HRVT -->
+        <details style="margin-bottom:12px;">
+          <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▶ Comparação BP × HRVT (diferença entre métodos)</summary>
+          <div id="mxRzTabelaBpHrvt" style="margin-top:6px;overflow-x:auto;"></div>
+        </details>
+
+        <!-- Tabela integrada por intervalo -->
+        <details style="margin-bottom:12px;">
+          <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▶ Tabela de intervalos WORK (Day 1 + Day 2)</summary>
+          <div id="mxRzTabelaIntervalos" style="margin-top:6px;overflow-x:auto;"></div>
+        </details>
+
+        <!-- Estatísticas por zona -->
+        <details style="margin-bottom:12px;">
+          <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▶ Estatísticas por zona (Z1 / Z2 / Z3)</summary>
+          <div id="mxRzEstatZonas" style="margin-top:6px;overflow-x:auto;"></div>
+        </details>
+
+        <!-- Gráficos RPE × métricas -->
+        <details style="margin-bottom:8px;">
+          <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▶ Gráficos RPE × métricas</summary>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">
+            <div style="flex:1;min-width:260px;">
+              <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × Potência (W)</div>
+              <div class="chartbox" style="position:relative;width:100%;">
+                <canvas id="chMxRzRpePot" height="180"></canvas>
+                <div id="mxTipRzRpePot" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+              </div>
+            </div>
+            <div style="flex:1;min-width:260px;">
+              <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × FC (bpm)</div>
+              <div class="chartbox" style="position:relative;width:100%;">
+                <canvas id="chMxRzRpeHr" height="180"></canvas>
+                <div id="mxTipRzRpeHr" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+              </div>
+            </div>
+            <div style="flex:1;min-width:260px;">
+              <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × RF (resp/min)</div>
+              <div class="chartbox" style="position:relative;width:100%;">
+                <canvas id="chMxRzRpeRf" height="180"></canvas>
+                <div id="mxTipRzRpeRf" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+              </div>
+            </div>
+            <div style="flex:1;min-width:260px;">
+              <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × SmO₂ (%)</div>
+              <div class="chartbox" style="position:relative;width:100%;">
+                <canvas id="chMxRzRpeSmo2" height="180"></canvas>
+                <div id="mxTipRzRpeSmo2" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+              </div>
+            </div>
+            <div style="flex:1;min-width:260px;">
+              <div style="font-size:10px;color:#8b949e;margin-bottom:3px;">RPE × DFA-α1</div>
+              <div class="chartbox" style="position:relative;width:100%;">
+                <canvas id="chMxRzRpeDfa1" height="180"></canvas>
+                <div id="mxTipRzRpeDfa1" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- FASE 6 — Gráfico fisiológico integrado (FC / RF / SmO2 / DFA-α1 × Watts) -->
+        <details id="mxDetalhesFisioIntegrado" style="margin-top:8px;margin-bottom:4px;">
+          <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▶ Gráfico fisiológico integrado (FC · RF · SmO₂ · DFA-α1 × Watts)</summary>
+          <div style="font-size:10px;color:#8b949e;margin:6px 0 4px;">Painéis empilhados com eixo X compartilhado (Potência). D1 = <span style="color:#58a6ff;">●</span> Day 1 · D2 = <span style="color:#bc8cff;">●</span> Day 2. Zonas Z1/Z2/Z3 e limiares BP1/BP2 em todos os painéis.</div>
+          <div class="chartbox" style="position:relative;width:100%;margin-top:6px;">
+            <canvas id="chMxFisioIntegrado" height="480"></canvas>
+          </div>
+        </details>
+
+      </details><!-- fim análise integrada -->
+    </div><!-- fim mxVstRpeZonasArea -->
+
+    <!-- ═══════════════════════════════════════════════════════════
+         REFERÊNCIA FISIOLÓGICA — collapsible
+         ═══════════════════════════════════════════════════════════ -->
+    <details style="margin-top:14px;margin-bottom:6px;">
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:4px 0;">▶ Referência fisiológica</summary>
+
+      <!-- RPE × Potência -->
+      <h3 style="font-size:13px;margin-top:14px;">RPE × Potência — Day 1 × Day 2</h3>
+      <p class="sub" style="font-size:10px;margin:2px 0 6px;">Consistência entre esforço externo (potência) e esforço percebido (RPE) entre as duas sessões.</p>
+      <div id="mxVstRpePotsStatus" style="font-size:11px;color:#8b949e;margin-bottom:4px;"></div>
+      <div class="chartbox" style="position:relative;width:100%;max-height:280px;">
+        <canvas id="chMxVstRpePots" height="260"></canvas>
+        <div id="mxTipVstRpePots" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+      </div>
+
+      <!-- Gráfico temporal -->
+      <h3 style="font-size:13px;margin-top:16px;">Temporal — Dia 1 × Dia 2</h3>
+      <p class="sub" style="font-size:10px;margin:2px 0 6px;">Gráfico temporal com potência, HR, RF e SmO2.</p>
+      <div id="mxVstTemporalToggles" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;font-size:11px;">
+        <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+          <input type="checkbox" checked onchange="mxVstToggleTemporal('power',this.checked)">
+          <span style="color:#c9d1d9;">Power (W)</span></label>
+        <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+          <input type="checkbox" checked onchange="mxVstToggleTemporal('heartrate',this.checked)">
+          <span style="color:#E3B341;">HR (bpm)</span></label>
+        <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+          <input type="checkbox" checked onchange="mxVstToggleTemporal('respiration',this.checked)">
+          <span style="color:#58A6FF;">RF (resp/min)</span></label>
+        <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+          <input type="checkbox" checked onchange="mxVstToggleTemporal('smo2',this.checked)">
+          <span style="color:#3FB950;">SmO2 (%)</span></label>
+      </div>
+      <div class="chartbox" style="position:relative;width:100%;margin-top:6px;">
+        <canvas id="chMxVstTemporal" height="240"></canvas>
+        <div id="mxTipVstTemporal" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;color:#c9d1d9;z-index:5;"></div>
+      </div>
+
+    </details><!-- fim referência fisiológica -->
+
+    <!-- ═══════════════════════════════════════════════════════════
+         DAY 1 / MOXY — collapsible
+         ═══════════════════════════════════════════════════════════ -->
+    <details style="margin-top:8px;margin-bottom:6px;">
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:4px 0;">▶ Day 1 / MOXY</summary>
+      <h3 style="font-size:13px;margin-top:12px;">Limitador — Day 1 / MOXY</h3>
+      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Resultado da análise MOXY da sessão Day 1 associada a esta verificação.</p>
+      <div id="mxVstLimitadorDay1" style="margin-bottom:8px;"></div>
+      <h3 style="font-size:13px;margin-top:14px;">Rede Causal — Day 1 / MOXY</h3>
+      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Executada automaticamente ao comparar. Reutiliza o mesmo endpoint da aba Rede Causal — sem nova análise.</p>
+      <div id="mxVstRedeCausal" style="margin-bottom:8px;"></div>
+    </details><!-- fim day1/moxy -->
+
+    <!-- ═══════════════════════════════════════════════════════════
+         COMPARAÇÃO D1 × D2 — collapsible
+         ═══════════════════════════════════════════════════════════ -->
+    <details style="margin-top:8px;margin-bottom:6px;">
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:4px 0;">▶ Comparação D1 × D2</summary>
+      <div id="mxVstResumoCartoes" style="margin-top:8px;"></div>
+      <div id="mxVstRpe" style="margin-top:10px;"></div>
+    </details><!-- fim comparação -->
+
+    <!-- ═══════════════════════════════════════════════════════════
+         LIMITAÇÕES — collapsible
+         ═══════════════════════════════════════════════════════════ -->
+    <details style="margin-top:8px;margin-bottom:6px;">
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;padding:4px 0;">▶ Limitações</summary>
       <div id="mxVstLimitacoes" style="margin-top:8px;"></div>
     </details>
 
-    <!-- 9. DETALHES TÉCNICOS ─ tudo fechado ───────────────────── -->
+    <!-- ═══════════════════════════════════════════════════════════
+         DETALHES TÉCNICOS — tudo fechado (inalterado)
+         ═══════════════════════════════════════════════════════════ -->
     <details style="margin-top:16px;">
       <summary style="cursor:pointer;font-size:14px;color:#8b949e;font-weight:600;padding:6px 0;">▼ Detalhes técnicos</summary>
 
@@ -5667,6 +5709,38 @@ function mxVstRenderRpeZonas(d){
  _rzDesenharScatter('chMxRzRpeRf',   'mxTipRzRpeRf',   'respiracao','RF',     'r/min',ivs);
  _rzDesenharScatter('chMxRzRpeSmo2', 'mxTipRzRpeSmo2', 'smo2',     'SmO₂',   '%',    ivs);
  _rzDesenharScatter('chMxRzRpeDfa1', 'mxTipRzRpeDfa1', 'dfa1',     'DFA-α1', '',     ivs);
+
+ // ── FASE 6: gráfico fisiológico integrado ────────────────────────────────
+ mxVstDesenharFisioIntegrado(rz);
+
+ // Redraw quando o <details> pai for aberto (canvas fica sem largura enquanto fechado)
+ (function(){
+  const det=document.getElementById('mxDetalhesFisioIntegrado');
+  if(!det) return;
+  // Remove listener anterior se existir (evita duplicação em re-render)
+  if(det._fisioToggleListener){
+   det.removeEventListener('toggle', det._fisioToggleListener);
+  }
+  det._fisioToggleListener=function(){
+   if(det.open){
+    requestAnimationFrame(function(){ mxVstDesenharFisioIntegrado(rz); });
+   }
+  };
+  det.addEventListener('toggle', det._fisioToggleListener);
+  // Idem para o <details> pai (mxDetalhesIntegrado)
+  const detPai=document.getElementById('mxDetalhesIntegrado');
+  if(detPai){
+   if(detPai._fisioToggleListener){
+    detPai.removeEventListener('toggle', detPai._fisioToggleListener);
+   }
+   detPai._fisioToggleListener=function(){
+    if(detPai.open){
+     requestAnimationFrame(function(){ mxVstDesenharFisioIntegrado(rz); });
+    }
+   };
+   detPai.addEventListener('toggle', detPai._fisioToggleListener);
+  }
+ })();
 }
 
 
@@ -5687,6 +5761,221 @@ function mxVstLimitacoes(d){
  box.innerHTML = '<ul style="font-size:11px;color:#c9d1d9;padding-left:18px;margin:4px 0;">'
   + itens.map(t=>'<li style="margin-bottom:3px;">'+t+'</li>').join('') + '</ul>';
 }
+
+// ── mxVstDesenharFisioIntegrado ──────────────────────────────────────────────
+// Gráfico fisiológico integrado em painéis empilhados (FC / RF / SmO2 / DFA-α1)
+// Eixo X compartilhado: Potência (Watts). Usa exclusivamente rz.intervalos[].
+// Painéis omitidos automaticamente se não houver dados para aquela métrica.
+// Zonas Z1/Z2/Z3 e linhas BP1/BP2 em todos os painéis.
+function mxVstDesenharFisioIntegrado(rz){
+ const cv=document.getElementById('chMxFisioIntegrado');
+ if(!cv) return;
+ // Canvas dentro de <details> fechado tem offsetWidth=0 — aguardar abertura
+ if(cv.offsetWidth<4){ return; }
+
+ const ivs=(rz&&rz.intervalos)||[];
+ if(!ivs.length){ cv.style.display='none'; return; }
+ cv.style.display='';
+
+ const dpr=window.devicePixelRatio||1;
+ const W=cv.offsetWidth;
+
+ // ── Definir painéis ─────────────────────────────────────────────────────
+ // Verifica quais métricas têm ao menos 1 valor não-nulo
+ function temDados(chave){
+  return ivs.some(function(iv){ return iv[chave]!=null && iv[chave]!==''; });
+ }
+ const paineis=[];
+ // Painel RPE (tira topo)
+ paineis.push({id:'rpe',   chave:'rpe',        label:'RPE',     unidade:'',      ratio:0.10, cor:'#c9d1d9', linhasRef:[]});
+ if(temDados('hr'))         paineis.push({id:'hr',    chave:'hr',         label:'FC',      unidade:'bpm',   ratio:0.30, cor:'#E3B341', linhasRef:[]});
+ if(temDados('respiracao')) paineis.push({id:'rf',    chave:'respiracao', label:'RF',      unidade:'r/min', ratio:0.20, cor:'#58a6ff', linhasRef:[]});
+ if(temDados('smo2'))       paineis.push({id:'smo2',  chave:'smo2',       label:'SmO₂',   unidade:'%',     ratio:0.20, cor:'#3fb950', linhasRef:[]});
+ if(temDados('dfa1'))       paineis.push({id:'dfa1',  chave:'dfa1',       label:'DFA-α1', unidade:'',      ratio:0.20, cor:'#f0883e', linhasRef:[
+  {v:1.0,cor:'#8b949e',dash:[4,3]},
+  {v:0.75,cor:'#5DADE2',dash:[4,3]},
+  {v:0.50,cor:'#F0883E',dash:[4,3]},
+ ]});
+
+ // Normalizar ratios para somar 1.0
+ const sumRatio=paineis.reduce(function(s,p){ return s+p.ratio; },0);
+ paineis.forEach(function(p){ p.ratio=p.ratio/sumRatio; });
+
+ // ── Dimensões ────────────────────────────────────────────────────────────
+ const MARGIN_LEFT=46, MARGIN_RIGHT=14, MARGIN_TOP=8, MARGIN_BOTTOM=28;
+ const PANEL_GAP=6;
+ const totalH=cv.height||480;
+ const innerH=totalH-MARGIN_TOP-MARGIN_BOTTOM-(paineis.length-1)*PANEL_GAP;
+ let painelAltura=paineis.map(function(p){ return Math.floor(p.ratio*innerH); });
+ // Ajustar arredondamentos para somar exatamente innerH
+ const somaH=painelAltura.reduce(function(s,h){ return s+h; },0);
+ if(painelAltura.length>0) painelAltura[painelAltura.length-1]+=innerH-somaH;
+
+ // ── Canvas DPR ───────────────────────────────────────────────────────────
+ cv.width=Math.round(W*dpr); cv.height=Math.round(totalH*dpr);
+ cv.style.width=W+'px'; cv.style.height=totalH+'px';
+ const ctx=cv.getContext('2d');
+ ctx.scale(dpr,dpr);
+
+ // ── Cores e limiares ─────────────────────────────────────────────────────
+ const BP1=rz.bp&&rz.bp.bp1&&rz.bp.bp1.watts!=null?rz.bp.bp1.watts:null;
+ const BP2=rz.bp&&rz.bp.bp2&&rz.bp.bp2.watts!=null?rz.bp.bp2.watts:null;
+ const COR_BP1='#5DADE2'; const COR_BP2='#F0883E';
+ const COR_D1='#58a6ff'; const COR_D2='#bc8cff';
+ const COR_Z1='rgba(30,58,95,0.35)';   // Z1 azul escuro
+ const COR_Z2='rgba(27,94,32,0.30)';   // Z2 verde escuro
+ const COR_Z3='rgba(74,28,18,0.35)';   // Z3 vermelho escuro
+ const COR_BG='#0d1117';
+ const COR_GRID='#21262d';
+
+ // ── Eixo X — potência ────────────────────────────────────────────────────
+ const todasW=ivs.map(function(iv){ return iv.potencia; }).filter(function(v){ return v!=null; });
+ const wMin=todasW.length?Math.max(0,Math.min.apply(null,todasW)-15):0;
+ const wMax=todasW.length?Math.max.apply(null,todasW)+15:300;
+ function xPos(w){ return MARGIN_LEFT+(w-wMin)/(wMax-wMin)*(W-MARGIN_LEFT-MARGIN_RIGHT); }
+
+ // ── Fundo geral ──────────────────────────────────────────────────────────
+ ctx.fillStyle=COR_BG;
+ ctx.fillRect(0,0,W,totalH);
+
+ // ── Desenhar cada painel ─────────────────────────────────────────────────
+ let yTop=MARGIN_TOP;
+ paineis.forEach(function(painel, pi){
+  const pH=painelAltura[pi];
+  const yBot=yTop+pH;
+  const innerW=W-MARGIN_LEFT-MARGIN_RIGHT;
+
+  // Valores para este painel
+  const vals=ivs.map(function(iv){ return iv[painel.chave]; }).filter(function(v){ return v!=null; });
+  let vMin, vMax;
+  if(vals.length){
+   vMin=Math.min.apply(null,vals); vMax=Math.max.apply(null,vals);
+   const span=vMax-vMin||1;
+   vMin=vMin-span*0.08; vMax=vMax+span*0.12;
+  } else { vMin=0; vMax=1; }
+  function yPos(v){ return yTop+pH*(1-(v-vMin)/(vMax-vMin)); }
+
+  // Fundo do painel
+  ctx.fillStyle='#0d1117';
+  ctx.fillRect(MARGIN_LEFT,yTop,innerW,pH);
+
+  // Zonas Z1/Z2/Z3
+  const xBP1=BP1!=null?xPos(BP1):null;
+  const xBP2=BP2!=null?xPos(BP2):null;
+  // Z1 (< BP1)
+  const z1x0=MARGIN_LEFT; const z1x1=xBP1!=null?xBP1:MARGIN_LEFT+innerW;
+  ctx.fillStyle=COR_Z1; ctx.fillRect(z1x0,yTop,z1x1-z1x0,pH);
+  // Z2 (BP1–BP2)
+  if(xBP1!=null){
+   const z2x0=xBP1; const z2x1=xBP2!=null?xBP2:MARGIN_LEFT+innerW;
+   ctx.fillStyle=COR_Z2; ctx.fillRect(z2x0,yTop,z2x1-z2x0,pH);
+  }
+  // Z3 (> BP2)
+  if(xBP2!=null){
+   const z3x0=xBP2; const z3x1=MARGIN_LEFT+innerW;
+   ctx.fillStyle=COR_Z3; ctx.fillRect(z3x0,yTop,z3x1-z3x0,pH);
+  }
+
+  // Grid horizontal (3 linhas)
+  ctx.strokeStyle=COR_GRID; ctx.lineWidth=0.5; ctx.setLineDash([]);
+  for(let gi=1;gi<=3;gi++){
+   const yg=yTop+pH*gi/4;
+   ctx.beginPath(); ctx.moveTo(MARGIN_LEFT,yg); ctx.lineTo(MARGIN_LEFT+innerW,yg); ctx.stroke();
+  }
+
+  // Linhas de referência horizontais (ex: DFA-α1)
+  painel.linhasRef.forEach(function(lr){
+   if(lr.v<vMin||lr.v>vMax) return;
+   const ylr=yPos(lr.v);
+   ctx.strokeStyle=lr.cor; ctx.lineWidth=1; ctx.setLineDash(lr.dash||[]);
+   ctx.beginPath(); ctx.moveTo(MARGIN_LEFT,ylr); ctx.lineTo(MARGIN_LEFT+innerW,ylr); ctx.stroke();
+   ctx.fillStyle=lr.cor; ctx.font='9px sans-serif'; ctx.textAlign='right';
+   ctx.fillText(lr.v.toFixed(2),MARGIN_LEFT-2,ylr+3);
+  });
+  ctx.setLineDash([]);
+
+  // Linhas verticais BP1/BP2
+  if(xBP1!=null && xBP1>=MARGIN_LEFT && xBP1<=MARGIN_LEFT+innerW){
+   ctx.strokeStyle=COR_BP1; ctx.lineWidth=1.5; ctx.setLineDash([4,3]);
+   ctx.beginPath(); ctx.moveTo(xBP1,yTop); ctx.lineTo(xBP1,yBot); ctx.stroke();
+   if(pi===0){
+    ctx.fillStyle=COR_BP1; ctx.font='bold 9px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('BP1',xBP1,yTop+9);
+   }
+  }
+  if(xBP2!=null && xBP2>=MARGIN_LEFT && xBP2<=MARGIN_LEFT+innerW){
+   ctx.strokeStyle=COR_BP2; ctx.lineWidth=1.5; ctx.setLineDash([4,3]);
+   ctx.beginPath(); ctx.moveTo(xBP2,yTop); ctx.lineTo(xBP2,yBot); ctx.stroke();
+   if(pi===0){
+    ctx.fillStyle=COR_BP2; ctx.font='bold 9px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('BP2',xBP2,yTop+9);
+   }
+  }
+  ctx.setLineDash([]);
+
+  // Pontos
+  ivs.forEach(function(iv){
+   const wx=iv.potencia; const vy=iv[painel.chave];
+   if(wx==null||vy==null) return;
+   const px=xPos(wx); const py=yPos(vy);
+   if(py<yTop-3||py>yBot+3) return;
+   const cor=iv.sessao==='d1'?COR_D1:COR_D2;
+   ctx.fillStyle=cor;
+   if(iv.sessao==='d2'){
+    // quadrado para D2
+    ctx.fillRect(px-3,py-3,6,6);
+   } else {
+    // círculo para D1
+    ctx.beginPath(); ctx.arc(px,py,3.5,0,Math.PI*2); ctx.fill();
+   }
+  });
+
+  // Borda do painel
+  ctx.strokeStyle='#30363d'; ctx.lineWidth=0.5;
+  ctx.strokeRect(MARGIN_LEFT,yTop,innerW,pH);
+
+  // Rótulo Y (esquerda)
+  ctx.fillStyle=painel.cor; ctx.font='bold 10px sans-serif'; ctx.textAlign='right';
+  ctx.fillText(painel.label,MARGIN_LEFT-4,yTop+12);
+  // Valores min/max no eixo Y
+  ctx.fillStyle='#8b949e'; ctx.font='9px sans-serif'; ctx.textAlign='right';
+  if(vals.length){
+   ctx.fillText(Math.round(vMax),MARGIN_LEFT-4,yTop+10);
+   ctx.fillText(Math.round(vMin),MARGIN_LEFT-4,yBot-2);
+  }
+
+  yTop=yBot+PANEL_GAP;
+ });
+
+ // ── Eixo X (potência) ────────────────────────────────────────────────────
+ const xAxisY=yTop;
+ ctx.fillStyle='#8b949e'; ctx.font='10px sans-serif'; ctx.textAlign='center';
+ const nTicks=5;
+ for(let ti=0;ti<=nTicks;ti++){
+  const w=wMin+(wMax-wMin)*ti/nTicks;
+  const xp=xPos(w);
+  ctx.fillText(Math.round(w)+'W',xp,xAxisY+12);
+  ctx.strokeStyle=COR_GRID; ctx.lineWidth=0.5;
+  ctx.beginPath(); ctx.moveTo(xp,MARGIN_TOP); ctx.lineTo(xp,xAxisY); ctx.stroke();
+ }
+ // Label eixo X
+ ctx.fillStyle='#8b949e'; ctx.font='10px sans-serif'; ctx.textAlign='center';
+ ctx.fillText('Potência (W)',W/2,xAxisY+24);
+
+ // ── Legenda ───────────────────────────────────────────────────────────────
+ const legX=W-MARGIN_RIGHT-90; const legY=MARGIN_TOP+4;
+ ctx.fillStyle='rgba(13,17,23,0.85)';
+ ctx.fillRect(legX-4,legY-1,96,30);
+ // D1
+ ctx.fillStyle=COR_D1; ctx.beginPath(); ctx.arc(legX+7,legY+7,4,0,Math.PI*2); ctx.fill();
+ ctx.fillStyle='#c9d1d9'; ctx.font='10px sans-serif'; ctx.textAlign='left';
+ ctx.fillText('Day 1',legX+14,legY+11);
+ // D2
+ ctx.fillStyle=COR_D2; ctx.fillRect(legX+3,legY+17,8,8);
+ ctx.fillStyle='#c9d1d9';
+ ctx.fillText('Day 2',legX+14,legY+25);
+}
+
 
 function _vstFormatarMin(seg){
  const m=Math.floor(seg/60), s=Math.round(seg%60);

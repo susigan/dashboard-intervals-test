@@ -242,6 +242,10 @@ function trAplicarFiltros(){
     if(md.bp2_w)   params.set('bp2_w', md.bp2_w);
     if(md.bp1_bpm) params.set('bp1_bpm', md.bp1_bpm);
     if(md.bp2_bpm) params.set('bp2_bpm', md.bp2_bpm);
+    // Pontos observados VST Dia 2 — Trava 3: só vêm do contexto VST, nunca MOXY
+    if(md.pontos_observados && md.pontos_observados.length){
+      params.set('pontos_observados', JSON.stringify(md.pontos_observados));
+    }
     params.set('n', '10');
     return fetch('/api/training/opcoes?'+params.toString())
       .then(r=>r.json())
@@ -340,8 +344,17 @@ function _card(op, corMod){
   const tipo = (op.training_type||'').replace(/^[A-Z]{1,2}-[A-Z]\d-\d+\s*/,'');
   const fmt  = (op.format||'');
 
-  const workW = op.work_watts || null;
-  const workB = op.work_bpm   || null;
+  const workW  = op.work_watts || null;
+  const workB  = op.work_bpm   || null;
+  const fonte  = op.intensidade_fonte || 'generica';
+  const nPts   = op.intensidade_n_pontos || 0;
+  // Badge: observada (com N intervalos VST) ou estimativa genérica
+  const badgeObs = (fonte === 'observada' || fonte === 'observada_ponto_unico')
+    ? ('<div style="font-size:9px;font-weight:600;color:#2EA043;background:#0d2b12;'
+       +'border:1px solid #2EA043;border-radius:3px;padding:1px 5px;margin-top:6px;display:inline-block;">'
+       +'● Observada' + (nPts > 1 ? ' — ' + nPts + ' intervalos VST' : ' — 1 intervalo VST') + '</div>')
+    : ('<div style="font-size:9px;color:#484f58;margin-top:6px;display:inline-block;">'
+       +'○ Estimativa</div>');
 
   return '<div style="border:1px solid #30363d;border-radius:8px;width:230px;'
     +'overflow:hidden;flex-shrink:0;display:flex;flex-direction:column;">'
@@ -368,6 +381,8 @@ function _card(op, corMod){
     +(workW?'<span style="color:#5DADE2;">WORK W</span><span style="color:#5DADE2;font-weight:600;">'+workW+'</span>':'<span style="color:#6e7681;">WORK W</span><span style="color:#484f58;">—</span>')
     +(workB?'<span style="color:#E74C3C;">FC</span><span style="color:#E74C3C;">'+workB+'</span>':'<span style="color:#6e7681;">FC</span><span style="color:#484f58;">—</span>')
     +'</div>'
+    // badge observada vs estimativa (Trava 4)
+    + badgeObs
     // detalhes expansíveis — objectivo + mecanismo + notas de consolidação
     +((op.adaptation_target||op.mechanism_target||op.notes)
       ?'<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:10px;color:#484f58;">▼ objectivo</summary>'

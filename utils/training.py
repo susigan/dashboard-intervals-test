@@ -1249,38 +1249,162 @@ def _tm_work_category(work_range: str | None) -> str | None:
     return 'gt20'
 
 
-def _tm_calc_watts(zone: str | None, bp1_w, bp2_w) -> str | None:
-    """Calcula faixa de potência do WORK por zona. Nunca compara None."""
+def _tm_parse_rpe_range(expected_rpe_work: str | None) -> tuple[float | None, float | None]:
+    """Extrai rpe_min e rpe_max de strings como '6–7', '6-7', '7', '6.5'.
+
+    Retorna (None, None) se não parsear.
+    """
+    if not expected_rpe_work:
+        return None, None
+    s = str(expected_rpe_work).replace('–', '-').replace('—', '-').strip()
+    try:
+        if '-' in s:
+            parts = s.split('-', 1)
+            return float(parts[0].strip()), float(parts[1].strip())
+        else:
+            v = float(s)
+            return v, v
+    except (ValueError, IndexError):
+        return None, None
+
+
+# Mapeamento canônico de zona para prefixo de zona nos pontos observados
+_ZONA_PREFIXO = {'Z1': 'z1', 'Z2': 'z2', 'Z3': 'z3'}
+
+
+def _tm_filtrar_pontos(pontos_observados: list | None, zone: str | None,
+                       rpe_min: float | None, rpe_max: float | None
+                       ) -> list[dict]:
+    """Filtra pontos VST Dia 2 por zona e faixa de RPE.
+
+    Hierarquia (trava 1):
+      1. zona == zone E rpe_min <= rpe <= rpe_max          → uso direto
+      2. sem filtro de zona (zone=None) E rpe válido        → fallback amplo
+      3. nenhum → []
+
+    Não mistura Day1 nem extrapola (trava 3). Retorna lista de dicts com
+    chaves 'watts' e 'fc'.
+    """
+    if not pontos_observados or rpe_min is None or rpe_max is None:
+        return []
+    zona_key = _ZONA_PREFIXO.get(zone or '') if zone else None
+
+    resultado = []
+    for p in pontos_observados:
+        rpe = p.get('rpe')
+        if rpe is None:
+            continue
+        try:
+            rpe = float(rpe)
+        except (TypeError, ValueError):
+            continue
+        if not (rpe_min <= rpe <= rpe_max):
+            continue
+        # trava 1: filtrar por zona quando disponível
+        if zona_key and p.get('zona') and p['zona'] != zona_key:
+            continue
+        watts = p.get('watts')
+        fc    = p.get('fc')
+        if watts is None and fc is None:
+            continue
+        resultado.append({'watts': watts, 'fc': fc, 'rpe': rpe})
+    return resultado
+
+
+def _tm_intensidade_observada(pontos: list[dict],
+                              campo: str) -> tuple[str | None, str, int]:
+    """Deriva range empírico para 'watts' ou 'fc' a partir dos pontos filtrados.
+
+    Retorna (texto_range | None, fonte, n_pontos).
+    Trava 2: 0 pontos → ('generica', 0), 1 ponto → ponto único sem range,
+    ≥2 → min–max.
+    """
+    valores = [p[campo] for p in pontos if p.get(campo) is not None]
+    n = len(valores)
+    if n == 0:
+        return None, 'generica', 0
+    if n == 1:
+        v = round(float(valores[0]))
+        unidade = 'W' if campo == 'watts' else 'bpm'
+        return f'{v} {unidade}', 'observada_ponto_unico', 1
+    mn = round(min(float(v) for v in valores))
+    mx = round(max(float(v) for v in valores))
+    unidade = 'W' if campo == 'watts' else 'bpm'
+    if mn == mx:
+        return f'{mn} {unidade}', 'observada', n
+    return f'{mn}–{mx} {unidade}', 'observada', n
+
+
+def _tm_calc_watts(zone: str | None, bp1_w, bp2_w,
+                   pontos_observados: list | None = None,
+                   rpe_min: float | None = None,
+                   rpe_max: float | None = None) -> tuple[str | None, str, int]:
+    """Calcula faixa de potência do WORK por zona.
+
+    Retorna (texto, fonte, n_pontos).
+    Tenta pontos observados primeiro; fallback para percentuais BP1/BP2.
+    Fallback atual permanece intacto (trava 5).
+    """
+    # Tentativa observada (travas 1, 2, 3)
+    if pontos_observados and rpe_min is not None and rpe_max is not None:
+        pts = _tm_filtrar_pontos(pontos_observados, zone, rpe_min, rpe_max)
+        texto, fonte, n = _tm_intensidade_observada(pts, 'watts')
+        if fonte != 'generica':
+            return texto, fonte, n
+
+    # Fallback: lógica genérica original (trava 5)
     b1 = _tm_safe_float(bp1_w)
     b2 = _tm_safe_float(bp2_w)
     if zone == 'Z1':
-        return f'{max(1, round(b1 * 0.75))}–{round(b1 * 0.95)} W' if b1 is not None else None
-    if zone == 'Z2':
+        t = f'{max(1, round(b1 * 0.75))}–{round(b1 * 0.95)} W' if b1 is not None else None
+    elif zone == 'Z2':
         if b1 is not None and b2 is not None:
-            return f'{round(b1)}–{round(b2)} W'
-        if b1 is not None:
-            return f'{round(b1)}–? W'
-        return None
-    if zone == 'Z3':
-        return f'{round(b2)}–{round(b2 * 1.10)} W' if b2 is not None else None
-    return None
+            t = f'{round(b1)}–{round(b2)} W'
+        elif b1 is not None:
+            t = f'{round(b1)}–? W'
+        else:
+            t = None
+    elif zone == 'Z3':
+        t = f'{round(b2)}–{round(b2 * 1.10)} W' if b2 is not None else None
+    else:
+        t = None
+    return t, 'generica', 0
 
 
-def _tm_calc_bpm(zone: str | None, bp1_bpm, bp2_bpm) -> str | None:
-    """Calcula faixa de FC do WORK por zona. Nunca compara None."""
+def _tm_calc_bpm(zone: str | None, bp1_bpm, bp2_bpm,
+                 pontos_observados: list | None = None,
+                 rpe_min: float | None = None,
+                 rpe_max: float | None = None) -> tuple[str | None, str, int]:
+    """Calcula faixa de FC do WORK por zona.
+
+    Retorna (texto, fonte, n_pontos).
+    Tenta pontos observados primeiro; fallback para percentuais BP1/BP2.
+    Fallback atual permanece intacto (trava 5).
+    """
+    # Tentativa observada (travas 1, 2, 3)
+    if pontos_observados and rpe_min is not None and rpe_max is not None:
+        pts = _tm_filtrar_pontos(pontos_observados, zone, rpe_min, rpe_max)
+        texto, fonte, n = _tm_intensidade_observada(pts, 'fc')
+        if fonte != 'generica':
+            return texto, fonte, n
+
+    # Fallback: lógica genérica original (trava 5)
     b1 = _tm_safe_float(bp1_bpm)
     b2 = _tm_safe_float(bp2_bpm)
     if zone == 'Z1':
-        return f'{max(1, round(b1 * 0.82))}–{round(b1 * 0.95)} bpm' if b1 is not None else None
-    if zone == 'Z2':
+        t = f'{max(1, round(b1 * 0.82))}–{round(b1 * 0.95)} bpm' if b1 is not None else None
+    elif zone == 'Z2':
         if b1 is not None and b2 is not None:
-            return f'{round(b1)}–{round(b2)} bpm'
-        if b1 is not None:
-            return f'~{round(b1)}+ bpm'
-        return None
-    if zone == 'Z3':
-        return f'{round(b2)}+ bpm' if b2 is not None else None
-    return None
+            t = f'{round(b1)}–{round(b2)} bpm'
+        elif b1 is not None:
+            t = f'~{round(b1)}+ bpm'
+        else:
+            t = None
+    elif zone == 'Z3':
+        t = f'{round(b2)}+ bpm' if b2 is not None else None
+    else:
+        t = None
+    return t, 'generica', 0
 
 
 def tm_buscar_opcoes(
@@ -1293,6 +1417,7 @@ def tm_buscar_opcoes(
     bp1_w=None, bp2_w=None,
     bp1_bpm=None, bp2_bpm=None,
     n_max: int = 50,
+    pontos_observados: list | None = None,
 ) -> list:
     """Opções de treino do training_master.db para uma modalidade.
 
@@ -1373,6 +1498,18 @@ def tm_buscar_opcoes(
         else:
             relacao = 'SUPLEMENTAR'
 
+        # Extrair faixa de RPE alvo desta regra para filtrar pontos observados
+        rpe_min, rpe_max = _tm_parse_rpe_range(r.get('expected_rpe_work'))
+
+        watt_texto, watt_fonte, watt_n = _tm_calc_watts(
+            r['zone'], bp1_w, bp2_w, pontos_observados, rpe_min, rpe_max)
+        bpm_texto, bpm_fonte, bpm_n = _tm_calc_bpm(
+            r['zone'], bp1_bpm, bp2_bpm, pontos_observados, rpe_min, rpe_max)
+
+        # Fonte consolidada: usa a mais informativa (watts tem precedência)
+        intensidade_fonte  = watt_fonte if watt_fonte != 'generica' else bpm_fonte
+        intensidade_n_pts  = watt_n if watt_fonte != 'generica' else bpm_n
+
         opcoes.append({
             'rule_id':          rid,
             'limiter_code':     r['limiter_code'],
@@ -1393,11 +1530,14 @@ def tm_buscar_opcoes(
             'monitor_primary':  r.get('monitor_primary', ''),
             'notes':            r.get('notes', ''),
             'relacao':          relacao,
-            'work_watts':       _tm_calc_watts(r['zone'], bp1_w, bp2_w),
-            'work_bpm':         _tm_calc_bpm(r['zone'], bp1_bpm, bp2_bpm),
+            'work_watts':       watt_texto,
+            'work_bpm':         bpm_texto,
             'bp1_w':            _tm_safe_float(bp1_w),
             'bp2_w':            _tm_safe_float(bp2_w),
             'work_duration_category': work_cat,
+            # Rastreabilidade da intensidade (trava 4)
+            'intensidade_fonte':   intensidade_fonte,
+            'intensidade_n_pontos': intensidade_n_pts,
         })
 
     # ── Ranking fisiológico ───────────────────────────────────────────────

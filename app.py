@@ -189,10 +189,62 @@ def api_training_contexto():
             return None
         except: return None
 
+    def _extrair_pontos_observados(validacao_fisiologica_json_str):
+        """Extrai lista de {rpe, watts, fc, zona} de bp1/bp2.intervalos.
+
+        Fonte: validacao_fisiologica_json (VST Dia 2).
+        Não mistura Day1 nem extrapola (trava 3).
+        Retorna [] se JSON ausente, inválido ou sem intervalos.
+        """
+        if not validacao_fisiologica_json_str:
+            return []
+        try:
+            vf = (_json.loads(validacao_fisiologica_json_str)
+                  if isinstance(validacao_fisiologica_json_str, str)
+                  else validacao_fisiologica_json_str)
+        except Exception:
+            return []
+
+        pontos = []
+        # Mapeia cada bp para sua zona fisiológica canónica
+        _BP_ZONA = {'bp1': 'z2', 'bp2': 'z3'}  # BP1 = limiar Z1→Z2, BP2 = limiar Z2→Z3
+        for bp_key, zona_key in _BP_ZONA.items():
+            bp_data = vf.get(bp_key) or {}
+            intervalos = bp_data.get('intervalos') or []
+            for iv in intervalos:
+                rpe   = iv.get('rpe')
+                watts = iv.get('potencia_media')
+                # usar hr_final como FC preferencial; fallback hr_media
+                fc    = iv.get('hr_final') or iv.get('hr_media')
+                if rpe is None:
+                    continue
+                try:
+                    rpe_f = float(rpe)
+                except (TypeError, ValueError):
+                    continue
+                # classificação de zona do próprio intervalo quando disponível
+                zona_do_iv = None
+                pot_class = iv.get('potencia_classificacao', '')
+                if pot_class == 'abaixo_BP1':
+                    zona_do_iv = 'z1'
+                elif pot_class == 'entre_BP1_BP2':
+                    zona_do_iv = 'z2'
+                elif pot_class == 'acima_BP2':
+                    zona_do_iv = 'z3'
+                pontos.append({
+                    'rpe':   rpe_f,
+                    'watts': _sf(watts),
+                    'fc':    _sf(fc),
+                    'zona':  zona_do_iv or zona_key,
+                })
+        return pontos
+
     def _build(fonte, sistema, us_lim, pc_lim,
                moxy_data, moxy_id, vst_id, vst_data,
-               bp1_w, bp2_w, bp1_bpm, bp2_bpm):
+               bp1_w, bp2_w, bp1_bpm, bp2_bpm,
+               validacao_fisiologica_json_str=None):
         s_ = str(sistema or '').lower().strip()
+        pontos = _extrair_pontos_observados(validacao_fisiologica_json_str)
         return {
             'fonte': fonte,
             'sistema': s_ or None,
@@ -204,6 +256,7 @@ def api_training_contexto():
             'bp1_w': _sf(bp1_w), 'bp2_w': _sf(bp2_w),
             'bp1_bpm': _sf(bp1_bpm), 'bp2_bpm': _sf(bp2_bpm),
             'dias_moxy': _dias(moxy_data), 'dias_vst': _dias(vst_data),
+            'pontos_observados': pontos,  # lista de {rpe, watts, fc, zona} — [] se ausente
         }
 
     _AUSENTE = {
@@ -214,6 +267,7 @@ def api_training_contexto():
         'vst_id': None, 'vst_data': None,
         'bp1_w': None, 'bp2_w': None, 'bp1_bpm': None, 'bp2_bpm': None,
         'dias_moxy': None, 'dias_vst': None,
+        'pontos_observados': [],
     }
 
     try:
@@ -224,11 +278,17 @@ def api_training_contexto():
         for mod_code, mod_nome in _MOD.items():
 
             # ── P1: VST+MOXY com moxy_analises gravado ──────────────────
+            # índices: 0=vst_id, 1=moxy_id, 2=analisado_em, 3=dia1_bp1_w,
+            #          4=dia1_bp2_w, 5=resultado_json, 6=rede_limitador,
+            #          7=us_limitador, 8=pc_limitador, 9=moxy_data,
+            #          10=bp1_w, 11=bp2_w, 12=bp1_bpm, 13=bp2_bpm,
+            #          14=validacao_fisiologica_json
             vst_com_moxy = cn.execute(
                 "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
                 " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json,"
                 " m.rede_limitador, m.us_limitador, m.pc_limitador,"
-                " m.data, m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm"
+                " m.data, m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm,"
+                " v.validacao_fisiologica_json"
                 " FROM vst_conjuntos v"
                 " JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id"
                 " WHERE LOWER(m.modalidade)=LOWER(?)"
@@ -245,11 +305,16 @@ def api_training_contexto():
             vst_sem_moxy = None
             if not vst_com_moxy:
                 # Tentar via v.modalidade (novo) ou m.modalidade (moxy_analises existente)
+                # índices P1b: 0=vst_id, 1=moxy_id, 2=analisado_em, 3=dia1_bp1_w,
+                #              4=dia1_bp2_w, 5=resultado_json, 6=modalidade,
+                #              7=bp1_w, 8=bp2_w, 9=bp1_bpm, 10=bp2_bpm, 11=moxy_data,
+                #              12=validacao_fisiologica_json
                 vst_sem_moxy = cn.execute(
                     "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
                     " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json,"
                     " COALESCE(v.modalidade, m.modalidade) as modalidade_encontrada,"
-                    " m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm, m.data"
+                    " m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm, m.data,"
+                    " v.validacao_fisiologica_json"
                     " FROM vst_conjuntos v"
                     " LEFT JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id"
                     " WHERE v.moxy_activity_id IS NOT NULL"
@@ -265,7 +330,8 @@ def api_training_contexto():
                         from config import TYPE_MAP as _TM
                         _all_vst = cn.execute(
                             "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
-                            " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json"
+                            " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json,"
+                            " v.validacao_fisiologica_json"
                             " FROM vst_conjuntos v"
                             " WHERE v.moxy_activity_id IS NOT NULL"
                             " AND v.resultado_json IS NOT NULL"
@@ -286,10 +352,15 @@ def api_training_contexto():
                                     " WHERE vst_activity_id=?",
                                     (_mod_db, _row[0]))
                                 cn.commit()
-                                # Construir a linha no mesmo formato da query principal
+                                # Construir a linha no mesmo formato da query P1b
+                                # índices: 0=vst_id,1=moxy_id,2=analisado_em,3=dia1_bp1_w,
+                                #          4=dia1_bp2_w,5=resultado_json,6=modalidade,
+                                #          7=bp1_w,8=bp2_w,9=bp1_bpm,10=bp2_bpm,11=moxy_data,
+                                #          12=validacao_fisiologica_json
                                 vst_sem_moxy = (_row[0], _row[1], _row[2],
                                                 _row[3], _row[4], _row[5],
-                                                _mod_db, None, None, None, None, None)
+                                                _mod_db, None, None, None, None, None,
+                                                _row[6])
                                 break
                     except Exception:
                         pass
@@ -308,6 +379,7 @@ def api_training_contexto():
                 vst_dt = str(vst_com_moxy[2] or '')
                 mxy_dt = str(moxy_row[4] if moxy_row else '')
                 # Regra especial: MOXY posterior e sessão diferente → usa MOXY
+                # (MOXY não tem validacao_fisiologica_json — pontos_observados=[])
                 if moxy_row and mxy_dt > vst_dt and moxy_row[0] != vst_com_moxy[1]:
                     resultado[mod_code] = _build(
                         'moxy', moxy_row[1], moxy_row[2], moxy_row[3],
@@ -317,7 +389,8 @@ def api_training_contexto():
                     resultado[mod_code] = _build(
                         'vst', vst_com_moxy[6], vst_com_moxy[7], vst_com_moxy[8],
                         vst_com_moxy[9], vst_com_moxy[1], vst_com_moxy[0], vst_com_moxy[2],
-                        vst_com_moxy[10], vst_com_moxy[11], vst_com_moxy[12], vst_com_moxy[13])
+                        vst_com_moxy[10], vst_com_moxy[11], vst_com_moxy[12], vst_com_moxy[13],
+                        vst_com_moxy[14])  # validacao_fisiologica_json
 
             elif vst_sem_moxy:
                 # P1b: extrair sistema do resultado_json
@@ -342,13 +415,15 @@ def api_training_contexto():
                     vst_sem_moxy[11], vst_sem_moxy[1],
                     vst_sem_moxy[0], vst_sem_moxy[2],
                     bp1, bp2,
-                    _sf(vst_sem_moxy[9]), _sf(vst_sem_moxy[10]))
+                    _sf(vst_sem_moxy[9]), _sf(vst_sem_moxy[10]),
+                    vst_sem_moxy[12])  # validacao_fisiologica_json
 
             elif moxy_row:
                 resultado[mod_code] = _build(
                     'moxy', moxy_row[1], moxy_row[2], moxy_row[3],
                     moxy_row[4], moxy_row[0], None, None,
                     moxy_row[5], moxy_row[6], moxy_row[7], moxy_row[8])
+                    # sem validacao_fisiologica_json — pontos_observados=[]
             else:
                 resultado[mod_code] = dict(_AUSENTE)
 
@@ -4468,6 +4543,18 @@ def api_training_opcoes():
             try: return float(v)
             except: return None
 
+        # pontos_observados: JSON array de {rpe, watts, fc, zona} vindo do contexto
+        pontos_observados_raw = request.args.get('pontos_observados') or None
+        pontos_observados = []
+        if pontos_observados_raw:
+            try:
+                import json as _json_ops
+                pontos_observados = _json_ops.loads(pontos_observados_raw)
+                if not isinstance(pontos_observados, list):
+                    pontos_observados = []
+            except Exception:
+                pontos_observados = []
+
         opcoes = _tr.tm_buscar_opcoes(
             modality_code=mod,
             limiter_code_atual=lim_code,
@@ -4478,6 +4565,7 @@ def api_training_opcoes():
             bp1_w=_f('bp1_w'), bp2_w=_f('bp2_w'),
             bp1_bpm=_f('bp1_bpm'), bp2_bpm=_f('bp2_bpm'),
             n_max=min(int(request.args.get('n') or 10), 50),
+            pontos_observados=pontos_observados,  # Trava 4: pontos VST Dia 2
         )
         return jsonify({'status': 'ok', 'modalidade': mod,
                         'n': len(opcoes), 'opcoes': opcoes})

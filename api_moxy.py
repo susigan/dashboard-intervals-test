@@ -5433,7 +5433,7 @@ def registar(app):
                     _wk = _lk.get('watts') or {}
                     _hk = _lk.get('heartrate') or {}
                     return {
-                        'ok': _lk.get('ok', False),
+                        'ok': bool(_wk.get('ok') or _hk.get('ok')),
                         'alpha_alvo': _lk.get('a1_alvo'),
                         'alpha_label': alpha_label,
                         'watts': _wk.get('valor'),

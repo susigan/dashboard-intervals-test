@@ -495,6 +495,16 @@ BODY = """
     <h3 style="font-size:14px;margin-top:16px;">Treinos candidatos</h3>
     <div id="mxHistoricoEstilos" style="overflow-x:auto;margin-top:6px;"></div>
 
+    <!-- 4c. RESPOSTA FISIOLÓGICA × POTÊNCIA — gráfico principal ─── -->
+    <div id="mxCurvasFisioArea" style="display:none;margin-top:20px;">
+      <h3 style="font-size:14px;margin-top:0;">Resposta fisiológica × potência</h3>
+      <p class="sub" style="font-size:10px;margin:2px 0 6px;">Resposta mediana observada por zona (Z1 / Z2 / Z3). Não é um modelo fisiológico — representa a tendência central dos dados coletados. Pontos individuais em baixa opacidade (auditoria visual).</p>
+      <div class="chartbox" style="position:relative;width:100%;">
+        <canvas id="chMxCurvasFisio" height="500"></canvas>
+        <div id="mxTipCurvasFisio" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:5px 9px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+      </div>
+    </div>
+
     <!-- 5. CARDS BP/HRVT — limiares da sessão ───────────────────── -->
     <div id="mxVstRpeZonasArea" style="display:none;margin-top:20px;">
       <h3 style="font-size:14px;margin-top:0;">Limiares — BP1 / HRVT1 / BP2 / HRVT2</h3>
@@ -575,10 +585,10 @@ BODY = """
           </div>
         </details>
 
-        <!-- FASE 6 — Gráfico fisiológico integrado (FC / RF / SmO2 / DFA-α1 × Watts) -->
+        <!-- Evidência técnica — dados individuais D1/D2 por canal × potência -->
         <details id="mxDetalhesFisioIntegrado" style="margin-top:8px;margin-bottom:4px;">
-          <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▶ Gráfico fisiológico integrado (FC · RF · SmO₂ · DFA-α1 × Watts)</summary>
-          <div style="font-size:10px;color:#8b949e;margin:6px 0 4px;">Painéis empilhados com eixo X compartilhado (Potência). D1 = <span style="color:#58a6ff;">●</span> Day 1 · D2 = <span style="color:#bc8cff;">●</span> Day 2. Zonas Z1/Z2/Z3 e limiares BP1/BP2 em todos os painéis.</div>
+          <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▶ Evidência técnica — dados individuais D1/D2 × potência</summary>
+          <div style="font-size:10px;color:#8b949e;margin:6px 0 4px;">Painéis empilhados com eixo X compartilhado (Potência). D1 = <span style="color:#58a6ff;">●</span> Day 1 · D2 = <span style="color:#bc8cff;">■</span> Day 2. Zonas Z1/Z2/Z3 e limiares BP1/BP2 em todos os painéis. Painel RPE inclui regressão linear D1 e D2 separadas.</div>
           <div class="chartbox" style="position:relative;width:100%;margin-top:6px;">
             <canvas id="chMxFisioIntegrado" height="480"></canvas>
           </div>
@@ -2930,6 +2940,8 @@ function _mxVstRenderComparacao(d, vstId){
  mxVstRenderRedeCausal(d);
  mxVstDesenharRpePots(d);
  mxVstRenderRpeZonas(d);
+ // Gráfico principal: curvas fisiológicas medianas por zona
+ if(d.rpe_zonas_integrado) mxVstDesenharCurvasFisio(d.rpe_zonas_integrado);
  mxLimiterMostrar(d);
  mxHipoteseMostrar(d);
  mxHistoricoEstilosMostrar(d);
@@ -5620,7 +5632,7 @@ function mxVstRenderRpeZonas(d){
   // BP1/BP2 vertical lines on x-axis (if campo=potencia or interpolatable)
   const bp=rz.bp||{};
   if(campoX==='potencia'){
-   [['bp1','#3fb950'],['bp2','#f85149']].forEach(function(pair){
+   [['bp1','#5DADE2'],['bp2','#F0883E']].forEach(function(pair){
     const bpw=(bp[pair[0]]||{}).watts;
     if(bpw!=null&&bpw>=xMin&&bpw<=xMax){
      ctx.strokeStyle=pair[1]; ctx.setLineDash([3,3]); ctx.lineWidth=1;
@@ -5710,6 +5722,27 @@ function mxVstRenderRpeZonas(d){
  _rzDesenharScatter('chMxRzRpeSmo2', 'mxTipRzRpeSmo2', 'smo2',     'SmO₂',   '%',    ivs);
  _rzDesenharScatter('chMxRzRpeDfa1', 'mxTipRzRpeDfa1', 'dfa1',     'DFA-α1', '',     ivs);
 
+ // ── Curvas fisiológicas medianas (gráfico principal) ─────────────────────
+ // mxCurvasFisioArea fica visível; mxVstDesenharCurvasFisio já gere display.
+ // Garantir largura correcta: canvas visível antes do primeiro draw.
+ (function(){
+  const cvCurvas=document.getElementById('chMxCurvasFisio');
+  if(cvCurvas&&cvCurvas.offsetWidth===0){
+   // Canvas sem largura (layout pendente) — aguardar um frame
+   requestAnimationFrame(function(){ mxVstDesenharCurvasFisio(rz); });
+  } else {
+   mxVstDesenharCurvasFisio(rz);
+  }
+  // Redraw em resize de janela (dpi ou reflow)
+  if(window._mxCurvasFisioResizeHandler){
+   window.removeEventListener('resize', window._mxCurvasFisioResizeHandler);
+  }
+  window._mxCurvasFisioResizeHandler=function(){
+   requestAnimationFrame(function(){ mxVstDesenharCurvasFisio(rz); });
+  };
+  window.addEventListener('resize', window._mxCurvasFisioResizeHandler);
+ })();
+
  // ── FASE 6: gráfico fisiológico integrado ────────────────────────────────
  mxVstDesenharFisioIntegrado(rz);
 
@@ -5761,6 +5794,322 @@ function mxVstLimitacoes(d){
  box.innerHTML = '<ul style="font-size:11px;color:#c9d1d9;padding-left:18px;margin:4px 0;">'
   + itens.map(t=>'<li style="margin-bottom:3px;">'+t+'</li>').join('') + '</ul>';
 }
+
+// ── mxVstDesenharCurvasFisio ──────────────────────────────────────────────────
+// Gráfico PRINCIPAL: resposta fisiológica mediana por zona × potência.
+// Cada painel: 3 pontos âncora (Z1/Z2/Z3) ligados por segmentos lineares.
+// Valores de rz.zonas[Z].{metrica}.mediana — já calculados pelo backend.
+// Pontos individuais de rz.intervalos[] em baixa opacidade (auditoria visual).
+// Paineis omitidos se mediana NULL nas 3 zonas para aquela métrica.
+// NÃO usa SWC, MDC, IQR, spline, percentis — apenas medianas por zona.
+function mxVstDesenharCurvasFisio(rz){
+ const cv=document.getElementById('chMxCurvasFisio');
+ if(!cv) return;
+
+ const zonas=rz&&rz.zonas||{};
+ const ivs=(rz&&rz.intervalos)||[];
+ const area=document.getElementById('mxCurvasFisioArea');
+
+ // Verificar se há dados mínimos
+ if(!zonas.Z1&&!zonas.Z2&&!zonas.Z3){
+  if(area) area.style.display='none'; return;
+ }
+
+ // Eixo X: potência mediana de cada zona
+ const zKeys=['Z1','Z2','Z3'];
+ const xAnc=zKeys.map(function(z){ return (zonas[z]&&zonas[z].potencia)?zonas[z].potencia.mediana:null; });
+ if(xAnc.every(function(v){ return v==null; })){
+  if(area) area.style.display='none'; return;
+ }
+
+ if(area) area.style.display='';
+
+ // Definir painéis — ordem: FC / RF / RPE / SmO₂ / DFA-α1 (complementar)
+ // Cada painel: {chave, label, unidade, cor, ratio, linhasRef, complementar}
+ function temMediana(chave){
+  return zKeys.some(function(z){ return zonas[z]&&zonas[z][chave]&&zonas[z][chave].mediana!=null; });
+ }
+ const paineis=[];
+ if(temMediana('hr'))
+  paineis.push({chave:'hr',        label:'FC',      unidade:'bpm',   cor:'#E3B341', ratio:0.25, linhasRef:[], complementar:false});
+ if(temMediana('respiracao'))
+  paineis.push({chave:'respiracao',label:'RF',      unidade:'r/min', cor:'#58a6ff', ratio:0.20, linhasRef:[], complementar:false});
+ if(temMediana('rpe'))
+  paineis.push({chave:'rpe',       label:'RPE',     unidade:'',      cor:'#c9d1d9', ratio:0.20, linhasRef:[], complementar:false});
+ if(temMediana('smo2'))
+  paineis.push({chave:'smo2',      label:'SmO₂',   unidade:'%',     cor:'#3fb950', ratio:0.20, linhasRef:[], complementar:false});
+ if(temMediana('dfa1'))
+  paineis.push({chave:'dfa1',      label:'DFA-α1', unidade:'',      cor:'#f0883e', ratio:0.15, linhasRef:[
+   {v:1.0,cor:'#8b949e',dash:[4,3]},
+   {v:0.75,cor:'#5DADE2',dash:[4,3]},
+   {v:0.50,cor:'#F0883E',dash:[4,3]},
+  ], complementar:true});
+
+ if(!paineis.length){ if(area) area.style.display='none'; return; }
+
+ // Normalizar ratios
+ const sumR=paineis.reduce(function(s,p){ return s+p.ratio; },0);
+ paineis.forEach(function(p){ p.ratio=p.ratio/sumR; });
+
+ // Dimensões
+ const dpr=window.devicePixelRatio||1;
+ const W=cv.offsetWidth||cv.parentElement&&cv.parentElement.clientWidth||400;
+ const totalH=parseInt(cv.getAttribute('height')||'500',10);
+ const MARGIN={l:52,r:16,t:14,b:32};
+ const PANEL_GAP=8;
+ const innerH=totalH-MARGIN.t-MARGIN.b-(paineis.length-1)*PANEL_GAP;
+ const alturas=paineis.map(function(p){ return Math.floor(p.ratio*innerH); });
+ const somaH=alturas.reduce(function(s,h){ return s+h; },0);
+ if(alturas.length>0) alturas[alturas.length-1]+=innerH-somaH;
+
+ cv.width=Math.round(W*dpr); cv.height=Math.round(totalH*dpr);
+ cv.style.width=W+'px'; cv.style.height=totalH+'px';
+ const ctx=cv.getContext('2d');
+ ctx.scale(dpr,dpr);
+
+ // Cores de zona e BP
+ const BP1w=rz.bp&&rz.bp.bp1&&rz.bp.bp1.watts!=null?rz.bp.bp1.watts:null;
+ const BP2w=rz.bp&&rz.bp.bp2&&rz.bp.bp2.watts!=null?rz.bp.bp2.watts:null;
+ const COR_BP1='#5DADE2'; const COR_BP2='#F0883E';
+ const COR_D1='#58a6ff'; const COR_D2='#bc8cff';
+ const COR_Z1='rgba(30,58,95,0.30)';
+ const COR_Z2='rgba(27,94,32,0.25)';
+ const COR_Z3='rgba(74,28,18,0.30)';
+ const COR_BG='#0d1117';
+ const COR_GRID='#21262d';
+
+ // Eixo X global
+ const todasW=ivs.map(function(iv){ return iv.potencia; }).filter(function(v){ return v!=null; });
+ // Incluir pontos âncora no range
+ const allXVals=todasW.concat(xAnc.filter(function(v){ return v!=null; }));
+ const wMin=allXVals.length?Math.max(0,Math.min.apply(null,allXVals)-20):0;
+ const wMax=allXVals.length?Math.max.apply(null,allXVals)+20:300;
+ const innerW=W-MARGIN.l-MARGIN.r;
+ function xPos(w){ return MARGIN.l+(w-wMin)/(wMax-wMin)*innerW; }
+ const xBP1=BP1w!=null?xPos(BP1w):null;
+ const xBP2=BP2w!=null?xPos(BP2w):null;
+
+ // Fundo
+ ctx.fillStyle=COR_BG; ctx.fillRect(0,0,W,totalH);
+
+ let yTop=MARGIN.t;
+ paineis.forEach(function(painel,pi){
+  const pH=alturas[pi];
+  const yBot=yTop+pH;
+
+  // Pontos âncora (medianas por zona)
+  const ancorasX=[], ancorasY=[];
+  zKeys.forEach(function(z){
+   const xv=zonas[z]&&zonas[z].potencia?zonas[z].potencia.mediana:null;
+   const yv=zonas[z]&&zonas[z][painel.chave]?zonas[z][painel.chave].mediana:null;
+   if(xv!=null&&yv!=null){ ancorasX.push(xv); ancorasY.push(yv); }
+  });
+
+  // Calcular range Y a partir de: pontos individuais + âncoras + linhasRef
+  const valsInd=ivs.map(function(iv){ return iv[painel.chave]; }).filter(function(v){ return v!=null; });
+  const refVals=painel.linhasRef.map(function(lr){ return lr.v; });
+  const todosVals=valsInd.concat(ancorasY).concat(refVals);
+  let vMin, vMax;
+  if(todosVals.length){
+   vMin=Math.min.apply(null,todosVals); vMax=Math.max.apply(null,todosVals);
+   const span=vMax-vMin||1;
+   vMin=vMin-span*0.10; vMax=vMax+span*0.14;
+  } else { vMin=0; vMax=1; }
+  function yPos(v){ return yTop+pH*(1-(v-vMin)/(vMax-vMin)); }
+
+  // Fundo do painel
+  ctx.fillStyle=COR_BG; ctx.fillRect(MARGIN.l,yTop,innerW,pH);
+
+  // Zonas Z1/Z2/Z3
+  const z1x0=MARGIN.l; const z1x1=xBP1!=null?xBP1:MARGIN.l+innerW;
+  ctx.fillStyle=COR_Z1; ctx.fillRect(z1x0,yTop,z1x1-z1x0,pH);
+  if(xBP1!=null){
+   const z2x0=xBP1; const z2x1=xBP2!=null?xBP2:MARGIN.l+innerW;
+   ctx.fillStyle=COR_Z2; ctx.fillRect(z2x0,yTop,z2x1-z2x0,pH);
+  }
+  if(xBP2!=null){
+   ctx.fillStyle=COR_Z3; ctx.fillRect(xBP2,yTop,(MARGIN.l+innerW)-xBP2,pH);
+  }
+
+  // Grid horizontal
+  ctx.strokeStyle=COR_GRID; ctx.lineWidth=0.5; ctx.setLineDash([]);
+  for(let gi=1;gi<=3;gi++){
+   const yg=yTop+pH*gi/4;
+   ctx.beginPath(); ctx.moveTo(MARGIN.l,yg); ctx.lineTo(MARGIN.l+innerW,yg); ctx.stroke();
+  }
+
+  // Linhas de referência horizontais (ex: DFA-α1)
+  painel.linhasRef.forEach(function(lr){
+   if(lr.v<vMin||lr.v>vMax) return;
+   const ylr=yPos(lr.v);
+   ctx.strokeStyle=lr.cor; ctx.lineWidth=1; ctx.setLineDash(lr.dash||[]);
+   ctx.beginPath(); ctx.moveTo(MARGIN.l,ylr); ctx.lineTo(MARGIN.l+innerW,ylr); ctx.stroke();
+   ctx.fillStyle=lr.cor; ctx.font='9px sans-serif'; ctx.textAlign='right';
+   ctx.fillText(lr.v.toFixed(2),MARGIN.l-2,ylr+3);
+  });
+  ctx.setLineDash([]);
+
+  // Linhas BP1/BP2
+  if(xBP1!=null&&xBP1>=MARGIN.l&&xBP1<=MARGIN.l+innerW){
+   ctx.strokeStyle=COR_BP1; ctx.lineWidth=1.5; ctx.setLineDash([4,3]);
+   ctx.beginPath(); ctx.moveTo(xBP1,yTop); ctx.lineTo(xBP1,yBot); ctx.stroke();
+   if(pi===0){
+    ctx.fillStyle=COR_BP1; ctx.font='bold 9px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('BP1',xBP1,yTop+9);
+   }
+  }
+  if(xBP2!=null&&xBP2>=MARGIN.l&&xBP2<=MARGIN.l+innerW){
+   ctx.strokeStyle=COR_BP2; ctx.lineWidth=1.5; ctx.setLineDash([4,3]);
+   ctx.beginPath(); ctx.moveTo(xBP2,yTop); ctx.lineTo(xBP2,yBot); ctx.stroke();
+   if(pi===0){
+    ctx.fillStyle=COR_BP2; ctx.font='bold 9px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('BP2',xBP2,yTop+9);
+   }
+  }
+  ctx.setLineDash([]);
+
+  // Pontos individuais em baixa opacidade (auditoria visual)
+  ivs.forEach(function(iv){
+   const wx=iv.potencia; const vy=iv[painel.chave];
+   if(wx==null||vy==null) return;
+   const px=xPos(wx); const py=yPos(vy);
+   if(py<yTop-4||py>yBot+4) return;
+   const cor=iv.sessao==='d1'?COR_D1:COR_D2;
+   ctx.fillStyle=cor+'44'; // baixa opacidade
+   if(iv.sessao==='d2'){
+    ctx.fillRect(px-2.5,py-2.5,5,5);
+   } else {
+    ctx.beginPath(); ctx.arc(px,py,2.5,0,Math.PI*2); ctx.fill();
+   }
+  });
+
+  // Linha principal: segmentos entre âncoras medianas
+  if(ancorasX.length>=2){
+   // Ordenar por X crescente
+   const pares=ancorasX.map(function(x,i){ return {x:x,y:ancorasY[i]}; });
+   pares.sort(function(a,b){ return a.x-b.x; });
+   ctx.strokeStyle=painel.cor; ctx.lineWidth=2.5; ctx.setLineDash([]);
+   ctx.beginPath();
+   ctx.moveTo(xPos(pares[0].x),yPos(pares[0].y));
+   for(let si=1;si<pares.length;si++){
+    ctx.lineTo(xPos(pares[si].x),yPos(pares[si].y));
+   }
+   ctx.stroke();
+   // Pontos âncora (círculos maiores)
+   pares.forEach(function(p,i){
+    const zLbl=i===0?'Z1':i===1?'Z2':'Z3';
+    ctx.beginPath(); ctx.arc(xPos(p.x),yPos(p.y),5,0,Math.PI*2);
+    ctx.fillStyle=painel.cor; ctx.fill();
+    ctx.strokeStyle='#0d1117'; ctx.lineWidth=1.5; ctx.stroke();
+    // Valor mediano acima do ponto
+    ctx.fillStyle=painel.cor; ctx.font='bold 9px sans-serif'; ctx.textAlign='center';
+    const vLabel=painel.chave==='dfa1'?p.y.toFixed(2):(painel.chave==='rpe'?p.y.toFixed(1):Math.round(p.y));
+    ctx.fillText(vLabel,xPos(p.x),yPos(p.y)-7);
+   });
+  } else if(ancorasX.length===1){
+   // Ponto único
+   ctx.beginPath(); ctx.arc(xPos(ancorasX[0]),yPos(ancorasY[0]),5,0,Math.PI*2);
+   ctx.fillStyle=painel.cor; ctx.fill();
+  }
+
+  // Borda do painel
+  ctx.strokeStyle='#30363d'; ctx.lineWidth=0.5; ctx.setLineDash([]);
+  ctx.strokeRect(MARGIN.l,yTop,innerW,pH);
+
+  // Rótulo Y
+  ctx.fillStyle=painel.cor; ctx.font='bold 10px sans-serif'; ctx.textAlign='right';
+  ctx.fillText(painel.label+(painel.complementar?' ◆':''),MARGIN.l-4,yTop+12);
+  if(painel.unidade){
+   ctx.fillStyle='#6e7681'; ctx.font='9px sans-serif';
+   ctx.fillText(painel.unidade,MARGIN.l-4,yTop+22);
+  }
+  // Min/max eixo Y
+  ctx.fillStyle='#6e7681'; ctx.font='9px sans-serif'; ctx.textAlign='right';
+  if(todosVals.length){
+   ctx.fillText(painel.chave==='dfa1'?vMax.toFixed(1):Math.round(vMax),MARGIN.l-4,yTop+10);
+   ctx.fillText(painel.chave==='dfa1'?vMin.toFixed(1):Math.round(vMin),MARGIN.l-4,yBot-2);
+  }
+
+  yTop=yBot+PANEL_GAP;
+ });
+
+ // Eixo X
+ const xAxisY=yTop;
+ ctx.fillStyle='#8b949e'; ctx.font='10px sans-serif'; ctx.textAlign='center';
+ const nTicks=5;
+ for(let ti=0;ti<=nTicks;ti++){
+  const w=wMin+(wMax-wMin)*ti/nTicks;
+  const xp=xPos(w);
+  ctx.fillText(Math.round(w)+'W',xp,xAxisY+12);
+  ctx.strokeStyle=COR_GRID; ctx.lineWidth=0.5;
+  ctx.beginPath(); ctx.moveTo(xp,MARGIN.t); ctx.lineTo(xp,xAxisY); ctx.stroke();
+ }
+ ctx.fillStyle='#8b949e'; ctx.font='10px sans-serif'; ctx.textAlign='center';
+ ctx.fillText('Potência (W)',W/2,xAxisY+24);
+
+ // Legenda
+ const legX=W-MARGIN.r-130; const legY=MARGIN.t+4;
+ ctx.fillStyle='rgba(13,17,23,0.88)';
+ ctx.fillRect(legX-4,legY-1,138,44);
+ // linha principal
+ ctx.strokeStyle='#c9d1d9'; ctx.lineWidth=2.5; ctx.setLineDash([]);
+ ctx.beginPath(); ctx.moveTo(legX,legY+8); ctx.lineTo(legX+20,legY+8); ctx.stroke();
+ ctx.beginPath(); ctx.arc(legX+10,legY+8,4,0,Math.PI*2);
+ ctx.fillStyle='#c9d1d9'; ctx.fill();
+ ctx.fillStyle='#c9d1d9'; ctx.font='10px sans-serif'; ctx.textAlign='left';
+ ctx.fillText('Mediana por zona',legX+24,legY+12);
+ // pontos D1/D2
+ ctx.beginPath(); ctx.arc(legX+8,legY+26,3,0,Math.PI*2);
+ ctx.fillStyle=COR_D1+'44'; ctx.fill();
+ ctx.fillRect(legX+4+16,legY+22,5,5);
+ ctx.fillStyle=COR_D2+'44'; // sobrescreve apenas o quadrado
+ ctx.fillRect(legX+4+16,legY+22,5,5);
+ ctx.fillStyle='#6e7681'; ctx.font='9px sans-serif';
+ ctx.fillText('D1  D2  (auditoria)',legX+24,legY+30);
+ ctx.fillStyle='#6e7681';
+ ctx.fillText('◆ = complementar',legX+6,legY+42);
+
+ // Tooltip ao hover
+ const tip=document.getElementById('mxTipCurvasFisio');
+ if(tip){
+  cv.onmousemove=function(e){
+   const rect=cv.getBoundingClientRect();
+   const mx=e.clientX-rect.left; const my=e.clientY-rect.top;
+   // Encontrar ponto individual mais próximo
+   let best=null; let bestD=Infinity; let bestPainel=null;
+   let yT2=MARGIN.t;
+   paineis.forEach(function(painel,pi){
+    const pH2=alturas[pi];
+    const valsInd2=ivs.map(function(iv){ return iv[painel.chave]; }).filter(function(v){ return v!=null; });
+    const todosV2=valsInd2;
+    let vMin2, vMax2;
+    if(todosV2.length){
+     vMin2=Math.min.apply(null,todosV2); vMax2=Math.max.apply(null,todosV2);
+     const sp=vMax2-vMin2||1; vMin2-=sp*0.10; vMax2+=sp*0.14;
+    } else { vMin2=0; vMax2=1; }
+    function yP2(v){ return yT2+pH2*(1-(v-vMin2)/(vMax2-vMin2)); }
+    ivs.forEach(function(iv){
+     if(iv.potencia==null||iv[painel.chave]==null) return;
+     const dx=xPos(iv.potencia)-mx; const dy=yP2(iv[painel.chave])-my;
+     const d2=Math.sqrt(dx*dx+dy*dy);
+     if(d2<bestD){ bestD=d2; best=iv; bestPainel=painel; }
+    });
+    yT2+=pH2+PANEL_GAP;
+   });
+   if(best&&bestD<18&&bestPainel){
+    const vRaw=best[bestPainel.chave];
+    const vStr=bestPainel.chave==='dfa1'?vRaw.toFixed(3):(bestPainel.chave==='rpe'?vRaw.toFixed(1):Math.round(vRaw)+'');
+    tip.style.display='';
+    tip.style.left=Math.min(mx+12,W-140)+'px'; tip.style.top=(my-36)+'px';
+    tip.textContent=(best.sessao==='d1'?'D1':'D2')+' '+(best.zona||'?')+'\\n'
+     +'Pot: '+Math.round(best.potencia)+' W\\n'
+     +bestPainel.label+': '+vStr+(bestPainel.unidade?' '+bestPainel.unidade:'');
+   } else { tip.style.display='none'; }
+  };
+  cv.onmouseleave=function(){ tip.style.display='none'; };
+ }
+}
+
 
 // ── mxVstDesenharFisioIntegrado ──────────────────────────────────────────────
 // Gráfico fisiológico integrado em painéis empilhados (FC / RF / SmO2 / DFA-α1)
@@ -5929,6 +6278,27 @@ function mxVstDesenharFisioIntegrado(rz){
     ctx.beginPath(); ctx.arc(px,py,3.5,0,Math.PI*2); ctx.fill();
    }
   });
+
+  // Regressões D1/D2 — apenas no painel RPE (eixos compatíveis: RPE×potência)
+  // rz.curvas.rpe_potencia.regressao_d1/d2 têm Y=RPE, X=potência → eixos corretos
+  if(painel.id==='rpe' && rz.curvas && rz.curvas.rpe_potencia){
+   [
+    {reg:rz.curvas.rpe_potencia.regressao_d1, cor:COR_D1, label:'reg D1'},
+    {reg:rz.curvas.rpe_potencia.regressao_d2, cor:COR_D2, label:'reg D2'},
+   ].forEach(function(item){
+    const reg=item.reg||{};
+    if(reg.declive==null||reg.intercepto==null) return;
+    const y0r=reg.declive*wMin+reg.intercepto;
+    const y1r=reg.declive*wMax+reg.intercepto;
+    // Só desenhar se a linha atravessa o intervalo visual do painel
+    if(y0r>vMax+2&&y1r>vMax+2) return;
+    if(y0r<vMin-2&&y1r<vMin-2) return;
+    ctx.strokeStyle=item.cor+(reg.exploratorio?'66':'99');
+    ctx.lineWidth=1.2; ctx.setLineDash(reg.exploratorio?[5,4]:[3,2]);
+    ctx.beginPath(); ctx.moveTo(xPos(wMin),yPos(y0r)); ctx.lineTo(xPos(wMax),yPos(y1r)); ctx.stroke();
+    ctx.setLineDash([]);
+   });
+  }
 
   // Borda do painel
   ctx.strokeStyle='#30363d'; ctx.lineWidth=0.5;

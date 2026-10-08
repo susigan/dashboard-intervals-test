@@ -2287,25 +2287,6 @@ function _mxVstFisioCard(val){
    var cCor={alta:'#3FB950',moderada:'#E3B341',baixa:'#F85149'}[conf];
    hc+='<div style="font-size:10px;font-weight:600;color:#c9d1d9;margin-top:4px;border-top:1px solid #21262d;padding-top:4px;">D HRVT1c-HRVT1s: '+diffBpm+' bpm'+(diffW!=null?' / '+diffW+'W':'')+' <span style="color:'+cCor+';font-size:9px;">conc.: '+conf+'</span></div>';
   }
-  if(temVST){
-   var fcsBP2=ivsBP2.map(function(iv){return iv.hr_final;}).filter(function(v){return v!=null;});
-   var wsBP2=ivsBP2.map(function(iv){return iv.potencia_media;}).filter(function(v){return v!=null;});
-   var rpesBP2=ivsBP2.map(function(iv){return iv.rpe!=null?iv.rpe:null;}).filter(function(v){return v!=null;});
-   var fcMin2=fcsBP2.length?Math.min.apply(null,fcsBP2):null;
-   var fcMax2=fcsBP2.length?Math.max.apply(null,fcsBP2):null;
-   var wMin2=wsBP2.length?Math.min.apply(null,wsBP2):null;
-   var wMax2=wsBP2.length?Math.max.apply(null,wsBP2):null;
-   var fcRng2=fcMin2!=null?(Math.abs((fcMax2||fcMin2)-fcMin2)>0.5?Math.round(10*fcMin2)/10+'–'+Math.round(10*fcMax2)/10:String(Math.round(10*fcMin2)/10)):null;
-   var wRng2=wMin2!=null?(Math.abs((wMax2||wMin2)-wMin2)>1?Math.round(10*wMin2)/10+'–'+Math.round(10*wMax2)/10:String(Math.round(10*wMin2)/10)):null;
-   var rpeMin=rpesBP2.length?Math.min.apply(null,rpesBP2):null;
-   var rpeMax=rpesBP2.length?Math.max.apply(null,rpesBP2):null;
-   var rpeRng2=rpeMin!=null?(rpeMin===rpeMax?String(rpeMin):rpeMin+'–'+rpeMax):null;
-   hc+='<div style="font-size:9px;color:#8b949e;margin-bottom:2px;"><b style="color:#c9d1d9;">VST BP2 obs</b>: FC '+(fcRng2||'--')+' bpm / '+(wRng2||'--')+'W'+(rpeRng2?' / RPE '+rpeRng2:'')+'</div>';
-   if(r.hrvt2_bpm!=null&&fcMin2!=null){
-    var difVstHrv2=Math.round(10*(fcMin2-r.hrvt2_bpm))/10;
-    if(Math.abs(difVstHrv2)>3) hc+='<div style="font-size:9px;color:#E3B341;">⚠ FC VST vs HRV/DFA: '+(difVstHrv2>=0?'+':'')+difVstHrv2+' bpm</div>';
-   }
-  }
   if(bp1.rpe_esperado_bp!=null)
    hc+='<div style="font-size:9px;color:#8b949e;margin-top:2px;">RPE esperado BP1: '+bp1.rpe_esperado_bp+'</div>';
   hc+='</div>';
@@ -2335,6 +2316,25 @@ function _mxVstFisioCard(val){
   var cCor={alta:'#3FB950',moderada:'#E3B341',baixa:'#F85149',limitada:'#8b949e'}[conf]||'#8b949e';
   var hc='<div style="border:1px solid #3FB950;border-radius:4px;padding:6px 8px;margin-bottom:8px;">';
   hc+='<div style="font-size:10px;font-weight:700;color:#c9d1d9;margin-bottom:5px;">CONSENSO HRVT2</div>';
+  if(temVST){
+   var fcsBP2=ivsBP2.map(function(iv){return iv.hr_final;}).filter(function(v){return v!=null;});
+   var wsBP2=ivsBP2.map(function(iv){return iv.potencia_media;}).filter(function(v){return v!=null;});
+   var rpesBP2=ivsBP2.map(function(iv){return iv.rpe!=null?iv.rpe:null;}).filter(function(v){return v!=null;});
+   var fcMin2=fcsBP2.length?Math.min.apply(null,fcsBP2):null;
+   var fcMax2=fcsBP2.length?Math.max.apply(null,fcsBP2):null;
+   var wMin2=wsBP2.length?Math.min.apply(null,wsBP2):null;
+   var wMax2=wsBP2.length?Math.max.apply(null,wsBP2):null;
+   var fcRng2=fcMin2!=null?(Math.abs((fcMax2||fcMin2)-fcMin2)>0.5?Math.round(10*fcMin2)/10+'–'+Math.round(10*fcMax2)/10:String(Math.round(10*fcMin2)/10)):null;
+   var wRng2=wMin2!=null?(Math.abs((wMax2||wMin2)-wMin2)>1?Math.round(10*wMin2)/10+'–'+Math.round(10*wMax2)/10:String(Math.round(10*wMin2)/10)):null;
+   var rpeMin=rpesBP2.length?Math.min.apply(null,rpesBP2):null;
+   var rpeMax=rpesBP2.length?Math.max.apply(null,rpesBP2):null;
+   var rpeRng2=rpeMin!=null?(rpeMin===rpeMax?String(rpeMin):rpeMin+'–'+rpeMax):null;
+   hc+='<div style="font-size:9px;color:#8b949e;margin-bottom:2px;"><b style="color:#c9d1d9;">VST BP2 obs</b>: FC '+(fcRng2||'--')+' bpm / '+(wRng2||'--')+'W'+(rpeRng2?' / RPE '+rpeRng2:'')+'</div>';
+   if(r.hrvt2_bpm!=null&&fcMin2!=null){
+    var difVstHrv2=Math.round(10*(fcMin2-r.hrvt2_bpm))/10;
+    if(Math.abs(difVstHrv2)>3) hc+='<div style="font-size:9px;color:#E3B341;">⚠ FC VST vs HRV/DFA: '+(difVstHrv2>=0?'+':'')+difVstHrv2+' bpm</div>';
+   }
+  }
   bpms.forEach(function(x){ hc+='<div style="font-size:9px;color:#8b949e;margin-bottom:2px;"><b style="color:#c9d1d9;">'+x.f+'</b>: '+x.v+' bpm'+(ws.find(function(w){return w.f===x.f;})?(' / '+ws.find(function(w){return w.f===x.f;}).v+'W'):'')+'</div>'; });
   if(bp2.rpe_esperado_bp!=null) hc+='<div style="font-size:9px;color:#8b949e;margin-bottom:2px;"><b style="color:#c9d1d9;">RPE esp</b>: '+bp2.rpe_esperado_bp+'</div>';
   if(cand.delta_bpm!=null||cand.delta_w!=null){

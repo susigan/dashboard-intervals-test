@@ -3050,7 +3050,7 @@ def registar(app):
                 import nirs_breakpoints as _nbk_val
                 # Ler bp1_bpm/bp2_bpm de moxy_analises (gravados na aba Limiar)
                 _ma = cn.execute(
-                    "SELECT bp1_bpm, bp2_bpm FROM moxy_analises "
+                    "SELECT bp1_bpm, bp2_bpm FROM moxy_analyses "
                     "WHERE activity_id=? LIMIT 1", (mid,)).fetchone()
                 _bp1_bpm_val = _ma[0] if _ma else None
                 _bp2_bpm_val = _ma[1] if _ma else None
@@ -3101,7 +3101,7 @@ def registar(app):
                 # Ler bp1_bpm/bp2_bpm e bp1_w/bp2_w de moxy_analises
                 _ma2 = cn.execute(
                     "SELECT bp1_bpm, bp2_bpm, bp1_w, bp2_w "
-                    "FROM moxy_analises WHERE activity_id=? LIMIT 1", (mid,)).fetchone()
+                    "FROM moxy_analyses WHERE activity_id=? LIMIT 1", (mid,)).fetchone()
                 # dfa1: obtido via api_moxy_limiares do mesmo mid
                 _lim_resp = api_moxy_limiares(mid)
                 _lim = (_lim_resp[0].get_json()
@@ -4906,10 +4906,17 @@ def registar(app):
             dia2 = api_moxy_vst_analise(vid)
             dia2 = dia2[0].get_json() if isinstance(dia2, tuple) else dia2.get_json()
             if dia2.get('status') != 'ok':
+                _d2_msg = dia2.get('mensagem') or 'sem dados suficientes'
+                _d2_orfao = dia2.get('status') in ('removida', 'sem_dados')
+                _d2_msg_fmt = (
+                    f'Dia 2 (VST) id={vid}: atividade não encontrada na Intervals.icu. '
+                    f'Carrega em "Actualizar sessões" para apanhar o novo id.'
+                    if _d2_orfao else f'Dia 2 (VST) id={vid}: {_d2_msg}')
                 return jsonify({'status': 'sem_dados',
-                                'mensagem': 'Dia 2 (VST): ' +
-                                           (dia2.get('mensagem') or
-                                            'sem dados suficientes')}), 200
+                                'mensagem': _d2_msg_fmt,
+                                'id_vst': vid,
+                                'id_moxy': mid,
+                                'orfao': 'vst' if _d2_orfao else None}), 200
 
             # Dia 1: os limiares Moxy (watts do BP1/BP2), e depois o
             # bloco REAL dessa sessao mais proximo de cada um, para lhe
@@ -4918,10 +4925,17 @@ def registar(app):
             dia1_lim = dia1_lim[0].get_json() if isinstance(dia1_lim, tuple) \
                 else dia1_lim.get_json()
             if dia1_lim.get('status') != 'ok':
+                _d1_msg = dia1_lim.get('mensagem') or 'sem dados suficientes'
+                _d1_orfao = dia1_lim.get('status') in ('removida', 'sem_dados')
+                _d1_msg_fmt = (
+                    f'Dia 1 (MOXY) id={mid}: atividade não encontrada na Intervals.icu. '
+                    f'Carrega em "Actualizar sessões" para apanhar o novo id.'
+                    if _d1_orfao else f'Dia 1 (MOXY) id={mid}: {_d1_msg}')
                 return jsonify({'status': 'sem_dados',
-                                'mensagem': 'Dia 1 (Moxy): ' +
-                                           (dia1_lim.get('mensagem') or
-                                            'sem dados suficientes')}), 200
+                                'mensagem': _d1_msg_fmt,
+                                'id_vst': vid,
+                                'id_moxy': mid,
+                                'orfao': 'moxy' if _d1_orfao else None}), 200
 
             corpo1 = api_moxy_dados(mid)
             d1 = corpo1[0].get_json() if isinstance(corpo1, tuple) else corpo1.get_json()

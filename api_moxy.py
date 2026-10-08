@@ -5165,8 +5165,10 @@ def registar(app):
                         (_aid_c,)).fetchall():
                         _mv_rpe_comp[(str(_aid_c), float(_rc[0]))] = _rc[1]
                 _cn_mv_comp.close()
-            except Exception:
-                pass  # fallback silencioso
+            except Exception as _e_mvrpe:
+                import traceback as _tb_mvrpe
+                print(f'[vst_comparar][RPE canonico] FALHA ao carregar cache: {_e_mvrpe}\n'
+                      f'{_tb_mvrpe.format_exc()}')
 
             def _resolver_rpe_bloco(activity_id, t0_val, idx_fallback, legacy_idx, legacy_t0):
                 """Resolve RPE para um bloco por (activity_id, start_time).
@@ -6028,8 +6030,10 @@ def registar(app):
                     _cn_c.close()
                 except Exception as _e_mvdb_c:
                     print(f'[comparar][moxy_vst_historico.db] {_e_mvdb_c}')
-            except Exception:
-                pass
+            except Exception as _e_cmp_c:
+                import traceback as _tb_cmp_c
+                print(f'[comparar][CANONICO] FALHA — vst_results NÃO gravado: {_e_cmp_c}\n'
+                      f'{_tb_cmp_c.format_exc()}')
 
             # Valores em memória desta mesma execução (sem readback do legado).
             _vf_ret = (_fisio_c or {}).get('val')

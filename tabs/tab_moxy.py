@@ -453,7 +453,7 @@ BODY = """
         <select id="mxVstMoxySelect" onchange="mxVstMoxySelecionado()">
           <option value="">escolhe uma sessão VST primeiro</option>
         </select></label>
-      <button onclick="mxVstSincronizar()">Comparar / Sincronizar</button>
+      <button onclick="mxVstSincronizar()" title="Vincula o par, recalcula tudo e grava o resultado canónico numa única versão.">Verificar e gravar</button>
     </div>
     <div id="mxVstConjuntoEstado" style="margin-top:6px;"></div>
 
@@ -2468,7 +2468,6 @@ function mxVstCarregarConjuntosSalvos(){
     // Detalhes (bpm_vst_validacao, validacao_fisiologica) omitidos aqui — aparecem apenas no card da verificação activa.
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
     +'<button style="font-size:11px;" onclick="mxVstAbrirVerificacao('+ix+')">ABRIR</button>'
-    +'<button style="font-size:11px;background:#1c2331;border:1px solid #3FB950;color:#3FB950;border-radius:4px;padding:2px 8px;cursor:pointer;" onclick="mxVstGravarVerificacaoSalva('+ix+')">💾 GRAVAR</button>'
     +'</div>'
     +'</div>';
   }).join('') + '</div>';
@@ -2908,7 +2907,7 @@ function _mxVstRpeFisioCard(fi){
  if(!fi||(!fi.bp1&&!fi.bp2)){
   html+='<div style="color:#8b949e;font-size:12px;padding:10px;border:1px solid #30363d;border-radius:6px;">'
       +'Análise RPE × Fisiologia indisponível para esta versão. '
-      +'Execute novamente Comparar / Sincronizar para gerar a análise.</div>';
+      +'Execute novamente Verificar e gravar para gerar a análise.</div>';
  } else {
   if(fi.bp1) html+=_bpSection(fi.bp1,'BP1');
   if(fi.bp2) html+=_bpSection(fi.bp2,'BP2');
@@ -2926,7 +2925,7 @@ function _mxVstRenderComparacao(d, vstId){
  MX_VST_ULT_COMP = d;
  // Mostrar botão de gravar quando existe resultado calculado
  const btnArea=document.getElementById('mxVstGravarBtnArea');
- if(btnArea) btnArea.style.display='';
+ // botão 'Gravar análise VST' removido da UI: 'Verificar e gravar' já grava.
  if(MX_VST_ULT) mxDesenharVstHeatmap(MX_VST_ULT);
  mxVstResumoCartoes(d);
  mxVstRecoveryCartoes(d);

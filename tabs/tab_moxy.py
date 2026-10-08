@@ -2770,7 +2770,8 @@ function mxVstForcaComparar(vstId){
  const box=document.getElementById('mxVstConjuntoEstado');
  if(box) box.innerHTML='<div style="border-left:3px solid #F4D03F;padding:6px 10px;">'\
   +'<span style="color:#F4D03F;">A RE-SINCRONIZAR...</span></div>';
- mxVstCarregarComparacao(vstId);
+ // Re-sincronizar é gravação explícita: cria nova versão (persistir=1).
+ mxVstCarregarComparacao(vstId, true);
 }
 
 function mxVstSincronizar(){
@@ -3046,10 +3047,11 @@ function mxVstRenderRedeCausal(d){
 // mxVstCarregarComparacao — chama /vst/comparar (recálculo completo) e
 // persiste o resultado. Usa _mxVstRenderComparacao para renderizar.
 // Chamado apenas quando não há resultado em cache ou ao re-sincronizar.
-function mxVstCarregarComparacao(vstId){
+function mxVstCarregarComparacao(vstId, persistir){
  const box=document.getElementById('mxVstComparacao');
  if(box) box.innerHTML='<p class="sub" style="font-size:12px;">a comparar…</p>';
- fetch('/api/moxy/vst/comparar/'+vstId).then(r=>r.json()).then(function(d){
+ // Sem persistir: só cálculo (Visualizar/Sincronizar). Com persistir=1: nova versão.
+ fetch('/api/moxy/vst/comparar/'+vstId+(persistir?'?persistir=1':'')).then(r=>r.json()).then(function(d){
   if(d.status!=='ok'){
    if(box) box.innerHTML='<p class="sub" style="font-size:12px;color:#f78166;">⚠ '
     +(d.mensagem||'sem dados suficientes para comparar')+'</p>';

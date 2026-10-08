@@ -955,7 +955,9 @@ function mxSalvarRpe(input){
  const st=parseFloat(input.dataset.start);
  if(isNaN(st)) return;
  const raw=input.value.trim();
- let rpe=0; // default: apagado
+ // Campo vazio = no-op: nao apaga RPE existente (nao ha exclusao nesta etapa).
+ if(raw===''){ input.style.borderColor='#30363d'; return; }
+ let rpe=0;
  if(raw!==''){
   rpe=parseFloat(raw);
   if(isNaN(rpe)||rpe<1||rpe>10){

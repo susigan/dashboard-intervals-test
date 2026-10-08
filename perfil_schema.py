@@ -185,6 +185,28 @@ _TABELAS = [
         analyzed_at         TEXT,
         PRIMARY KEY (activity_id, version)
     )""",
+
+    # ──────────────────────────────────────────────────────────────
+    # Snapshot da atividade (botão "Salvar dados desta atividade",
+    # rota api_activity_salvar_snapshot em app.py). Uma linha por
+    # activity_id; o UPSERT da rota não apaga campos existentes.
+    # ──────────────────────────────────────────────────────────────
+    """CREATE TABLE IF NOT EXISTS activity_snapshot (
+        activity_id         TEXT    PRIMARY KEY,
+        nome                TEXT,
+        data                TEXT,
+        modalidade          TEXT,
+        elapsed_time        REAL,
+        avg_watts           REAL,
+        avg_hr              REAL,
+        rpe_sessao          REAL,
+        z1_sec              REAL,
+        z2_sec              REAL,
+        z3_sec              REAL,
+        icu_intervals_json  TEXT,
+        rpe_intervalos_json TEXT,
+        gravado_em          TEXT
+    )""",
 ]
 
 # Colunas a adicionar em tabelas existentes (migrações não destrutivas)

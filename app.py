@@ -5143,6 +5143,7 @@ def api_activity_salvar_snapshot(activity_id):
     Grava em activity_snapshot (upsert por activity_id).
     Depois chama upload() para o Drive.
     """
+    import traceback
     try:
         import drive_db_perfil as ddp, json as _json
         from datetime import datetime as _dt
@@ -5154,20 +5155,50 @@ def api_activity_salvar_snapshot(activity_id):
         import perfil_schema as ps
         ps.aplicar_schema(cn)
 
+        aid = str(activity_id)
+        # Mescla com o snapshot já existente (nunca apaga RPE/intervalos).
+        _atual = cn.execute(
+            "SELECT icu_intervals_json, rpe_intervalos_json FROM activity_snapshot "
+            "WHERE activity_id=?", (aid,)).fetchone()
+        _ivs_atuais = _json.loads(_atual[0]) if (_atual and _atual[0]) else []
+        _rpe_atuais = _json.loads(_atual[1]) if (_atual and _atual[1]) else {}
+        # Lista de intervalos vazia não apaga a lista já gravada.
+        _ivs_novos = corpo.get('icu_intervals') or []
+        _ivs_final = _ivs_novos if _ivs_novos else _ivs_atuais
+        # RPE: mescla por intervalo. Campo vazio (None) não apaga o valor antigo.
+        _rpe_novos = {k: v for k, v in (corpo.get('rpe_intervalos') or {}).items()
+                      if v is not None}
+        _rpe_final = {**_rpe_atuais, **_rpe_novos}
+
         cn.execute(
-            """INSERT OR REPLACE INTO activity_snapshot
+            """INSERT INTO activity_snapshot
                (activity_id, nome, data, modalidade, elapsed_time,
                 avg_watts, avg_hr, rpe_sessao,
                 z1_sec, z2_sec, z3_sec,
                 icu_intervals_json, rpe_intervalos_json, gravado_em)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (str(activity_id),
-             corpo.get('nome'), corpo.get('data'), corpo.get('modalidade'),
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(activity_id) DO UPDATE SET
+                 nome         = COALESCE(excluded.nome, nome),
+                 data         = COALESCE(excluded.data, data),
+                 modalidade   = COALESCE(excluded.modalidade, modalidade),
+                 elapsed_time = COALESCE(excluded.elapsed_time, elapsed_time),
+                 avg_watts    = COALESCE(excluded.avg_watts, avg_watts),
+                 avg_hr       = COALESCE(excluded.avg_hr, avg_hr),
+                 rpe_sessao   = COALESCE(excluded.rpe_sessao, rpe_sessao),
+                 z1_sec       = COALESCE(excluded.z1_sec, z1_sec),
+                 z2_sec       = COALESCE(excluded.z2_sec, z2_sec),
+                 z3_sec       = COALESCE(excluded.z3_sec, z3_sec),
+                 icu_intervals_json  = excluded.icu_intervals_json,
+                 rpe_intervalos_json = excluded.rpe_intervalos_json,
+                 gravado_em   = excluded.gravado_em""",
+            (aid,
+             corpo.get('nome') or None, corpo.get('data') or None,
+             corpo.get('modalidade') or None,
              corpo.get('elapsed_time'), corpo.get('avg_watts'),
              corpo.get('avg_hr'), corpo.get('rpe_sessao'),
              corpo.get('z1_sec'), corpo.get('z2_sec'), corpo.get('z3_sec'),
-             _json.dumps(corpo.get('icu_intervals') or [], ensure_ascii=False),
-             _json.dumps(corpo.get('rpe_intervalos') or {}, ensure_ascii=False),
+             _json.dumps(_ivs_final, ensure_ascii=False),
+             _json.dumps(_rpe_final, ensure_ascii=False),
              agora))
         cn.commit()
         ok_up, det_up = ddp.upload()

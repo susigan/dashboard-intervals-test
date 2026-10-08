@@ -4733,20 +4733,38 @@ def registar(app):
                         curva_rpe=None, rpe_vst_bp1=None, rpe_vst_bp2=None):
         """Calcula a validação fisiológica e BPM SEM tocar em nenhuma base.
 
-        Devolve dict em memória (ou None se falhar):
-          val, data_hash          → validacao_fisiologica (objeto)
-          val_json                → validacao_fisiologica_json (string)
+        Devolve SEMPRE um dict (nunca None silencioso):
+          val, val_json           → validacao_fisiologica (objeto / string)
           bpm, bpm_json           → bpm_vst_validacao (objeto / string)
+          data_hash               → hash dos dados de entrada
+          erro_fisio, erro_bpm    → None se OK; texto do erro se falhou
 
+        Cada validação roda em bloco próprio: falha de uma não apaga a outra.
         Usado por /comparar para montar a versão canónica completa de
         vst_results. Não lê de base alguma.
 
         Nunca recalcula DFA/HRVT — apenas usa o dfa1 já calculado.
         """
-        try:
-            import utils.nirs_breakpoints as _nbk
-            import json as _json
+        import json as _json
+        import traceback as _tb_f
+        import utils.nirs_breakpoints as _nbk
 
+        out = {'val': None, 'val_json': None, 'bpm': None, 'bpm_json': None,
+               'data_hash': None, 'erro_fisio': None, 'erro_bpm': None}
+
+        try:
+            data_hash = _fisio_hash(
+                moxy_id, vst_id, bp1_w, bp2_w, bp1_m, bp2_m,
+                rpe_vst_bp1, rpe_vst_bp2,
+                curva_rpe=curva_rpe)
+            out['data_hash'] = data_hash
+        except Exception as _e_hash:
+            out['erro_fisio'] = f'_fisio_hash: {_e_hash}'
+            print(f'[fisio] _fisio_hash falhou: {_e_hash}\n'
+                  f'{_tb_f.format_exc()}')
+
+        # ── Validação fisiológica (objeto devolvido pelo validador, intacto)
+        try:
             val_fisio = _nbk.validar_fisiologica_vst(
                 bp1_w, bp2_w, bp1_bpm, bp2_bpm, dfa1,
                 bp1_m, bp2_m,
@@ -4754,38 +4772,33 @@ def registar(app):
                 rpe_vst_bp1=rpe_vst_bp1,
                 rpe_vst_bp2=rpe_vst_bp2,
             )
-
-            data_hash = _fisio_hash(
-                moxy_id, vst_id, bp1_w, bp2_w, bp1_m, bp2_m,
-                rpe_vst_bp1, rpe_vst_bp2,
-                curva_rpe=curva_rpe)
-
-            # Adicionar metadados de versão ao resultado
+            if not isinstance(val_fisio, dict):
+                raise TypeError(
+                    f'validar_fisiologica_vst devolveu {type(val_fisio).__name__}')
             val_fisio['analysis_version'] = FISIO_ANALYSIS_VERSION
-            val_fisio['data_hash']        = data_hash
-
-            val_json = _json.dumps(val_fisio, ensure_ascii=False)
-
-            # Validação BPM MOXY × VST — executada com os mesmos dados
-            # já disponíveis: bp1_bpm, bp2_bpm, bp1_m, bp2_m.
-            # Persiste no mesmo UPDATE para manter atomicidade.
-            bpm_val = None
-            bpm_val_json = None
-            try:
-                bpm_val = _nbk.validar_bpm_vst(
-                    bp1_bpm, bp2_bpm, bp1_m, bp2_m)
-                bpm_val_json = _json.dumps(bpm_val, ensure_ascii=False)
-            except Exception as _e_bpm:
-                print(f'[fisio] validar_bpm_vst falhou: {_e_bpm}')
-
-            return {'val': val_fisio, 'data_hash': data_hash,
-                    'val_json': val_json, 'bpm': bpm_val,
-                    'bpm_json': bpm_val_json}
+            val_fisio['data_hash'] = out['data_hash']
+            out['val'] = val_fisio
+            out['val_json'] = _json.dumps(val_fisio, ensure_ascii=False)
         except Exception as _e_fisio:
-            import traceback as _tb_f
+            out['erro_fisio'] = f'validar_fisiologica_vst: {_e_fisio}'
             print(f'[fisio] _fisio_calcular falhou: {_e_fisio}\n'
                   f'{_tb_f.format_exc()}')
-            return None
+
+        # ── Validação BPM MOXY × VST (independente da fisiológica)
+        try:
+            bpm_val = _nbk.validar_bpm_vst(
+                bp1_bpm, bp2_bpm, bp1_m, bp2_m)
+            if not isinstance(bpm_val, dict):
+                raise TypeError(
+                    f'validar_bpm_vst devolveu {type(bpm_val).__name__}')
+            out['bpm'] = bpm_val
+            out['bpm_json'] = _json.dumps(bpm_val, ensure_ascii=False)
+        except Exception as _e_bpm:
+            out['erro_bpm'] = f'validar_bpm_vst: {_e_bpm}'
+            print(f'[fisio] validar_bpm_vst falhou: {_e_bpm}\n'
+                  f'{_tb_f.format_exc()}')
+
+        return out
 
     def _fisio_persistir_legado(cn, vst_id, calc):
         """COMPATIBILIDADE da UI legada: grava em perfil.vst_conjuntos.
@@ -4793,7 +4806,8 @@ def registar(app):
         NÃO é fonte para vst_results. /comparar nunca relê isto para
         montar o canónico. Quem chama faz o upload da base legada.
         """
-        if not calc:
+        # Falha de cálculo (val_json e bpm_json None) NÃO apaga o legado existente.
+        if not calc or (calc.get('val_json') is None and calc.get('bpm_json') is None):
             return
         cn.execute(
             "UPDATE vst_conjuntos "
@@ -4975,6 +4989,8 @@ def registar(app):
         try:
             import vst_verificacao as vst
             vid = str(vst_activity_id).strip().strip('/').split('/')[-1]
+            # persistir=1 → grava a versão canónica (botão Salvar). Sem ele, leitura.
+            persistir = str(request.args.get('persistir', '')).lower() in ('1', 'true', 'sim')
 
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
@@ -5831,6 +5847,12 @@ def registar(app):
                 import traceback as _tb_fa
                 print(f'[vst_comparar][fisio auto] AVISO: {_e_fisio_auto}\n'
                       f'{_tb_fa.format_exc()}')
+                # Registra o motivo no próprio objeto, para que a resposta e
+                # o insert_resultado mostrem a causa em vez de null sem razão.
+                _fisio_c = {'val': None, 'val_json': None, 'bpm': None,
+                            'bpm_json': None, 'data_hash': None,
+                            'erro_fisio': f'bloco de cálculo: {_e_fisio_auto}',
+                            'erro_bpm': None}
 
 
             # snapshot do resultado -- so' os campos ja' calculados
@@ -5859,188 +5881,235 @@ def registar(app):
                     print(f'[vst_comparar][fisio legado] AVISO: {_e_fl}')
                 ddp.upload()
 
-                # ── Persistir no moxy_vst_historico.db (banco canônico) ──────
-                try:
-                    import drive_db_moxy_vst as _mvdb_c
-                    _cn_c = _mvdb_c.get_moxy_vst_conn()
-                    _cn_c.row_factory = __import__('sqlite3').Row
-
-                    # Metadados vêm da base local de atividades, já usada pelo dashboard.
-                    # TYPE_MAP converte VirtualSki -> Ski (e equivalentes) sem inferência.
-                    import db as _db_act_meta
-                    from config import TYPE_MAP as _TYPE_MAP_ACT
-
-                    def _atividade_meta_c(aid_meta):
-                        try:
-                            _r_meta = _db_act_meta._exec(
-                                "SELECT type, date, name FROM activities WHERE id=?",
-                                (str(aid_meta),), fetch='one')
-                            if not _r_meta:
-                                return None, None, None
-                            _tipo_meta, _data_meta, _nome_meta = _r_meta
-                            return (_TYPE_MAP_ACT.get(_tipo_meta) or _tipo_meta,
-                                    _data_meta, _nome_meta)
-                        except Exception as _e_meta:
-                            print(f'[vst_comparar][activity meta] AVISO {aid_meta}: {_e_meta}')
-                            return None, None, None
-
-                    _sport_mid_c, _date_mid_c, _name_mid_c = _atividade_meta_c(mid)
-                    _sport_vid_c, _date_vid_c, _name_vid_c = _atividade_meta_c(vid)
-
-                    # 1. Atividades
-                    _mvdb_c.upsert_activity(
-                        _cn_c, mid, 'moxy', name=_name_mid_c, date=_date_mid_c,
-                        sport=_sport_mid_c)
-                    _mvdb_c.upsert_activity(
-                        _cn_c, vid, 'vst', name=_name_vid_c, date=_date_vid_c,
-                        sport=_sport_vid_c)
-
-                    # 2+3. Streams — TODOS os retornados pela API (sem whitelist)
-                    import api_client as _api_c
-                    import datetime as _dt_s
-
-                    def _sync_streams(aid_s, label):
-                        agora_s = _dt_s.datetime.now().isoformat(timespec='seconds')
-                        try:
-                            print(f'[MOXY_VST_STREAMS] activity_id={aid_s} ({label})')
-                            _raw, _err = _api_c.icu_get(f'/activity/{aid_s}/streams')
-                            if _err:
-                                print(f'[MOXY_VST_STREAMS] ERROR api {label}: {_err}')
-                                _cn_c.execute(
-                                    "INSERT INTO db_metadata(key,value,updated_at)"
-                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
-                                    " value=excluded.value,updated_at=excluded.updated_at",
-                                    ('stream_sync_last_status', 'api_error', agora_s))
-                                _cn_c.execute(
-                                    "INSERT INTO db_metadata(key,value,updated_at)"
-                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
-                                    " value=excluded.value,updated_at=excluded.updated_at",
-                                    ('stream_sync_last_error', str(_err)[:500], agora_s))
-                                return
-                            parsed = _mvdb_c._parse_streams_api(_raw)
-                            if not parsed:
-                                print(f'[MOXY_VST_STREAMS] API retornou 0 streams ({label})')
-                                _cn_c.execute(
-                                    "INSERT INTO db_metadata(key,value,updated_at)"
-                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
-                                    " value=excluded.value,updated_at=excluded.updated_at",
-                                    ('stream_sync_last_status', 'api_empty', agora_s))
-                                return
-                            keys = sorted(parsed.keys())
-                            print(f'[MOXY_VST_STREAMS] API retornou {len(parsed)} streams')
-                            print(f'[MOXY_VST_STREAMS] keys={keys}')
-                            ins, upd, pres = _mvdb_c.upsert_all_streams(_cn_c, aid_s, _raw)
-                            print(f'[MOXY_VST_STREAMS] inserted={ins} updated={upd} preserved={pres}')
-                            _cn_c.execute(
-                                "INSERT INTO db_metadata(key,value,updated_at)"
-                                " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
-                                " value=excluded.value,updated_at=excluded.updated_at",
-                                ('stream_sync_last_status', 'success', agora_s))
-                        except Exception as _e_str_i:
-                            print(f'[MOXY_VST_STREAMS] ERROR persist {label}: {_e_str_i}')
-                            try:
-                                _cn_c.execute(
-                                    "INSERT INTO db_metadata(key,value,updated_at)"
-                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
-                                    " value=excluded.value,updated_at=excluded.updated_at",
-                                    ('stream_sync_last_status', 'persist_error', agora_s))
-                                _cn_c.execute(
-                                    "INSERT INTO db_metadata(key,value,updated_at)"
-                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
-                                    " value=excluded.value,updated_at=excluded.updated_at",
-                                    ('stream_sync_last_error', str(_e_str_i)[:500], agora_s))
-                            except Exception:
-                                pass
-
-                    _sync_streams(vid, 'VST')
-                    _sync_streams(mid, 'MOXY')
-
-                    # 4. Intervalos VST (BP1 + BP2)
-                    for _grp, _ivs in [('bp1', (dia2.get('bp1') or {}).get('metricas') or []),
-                                        ('bp2', (dia2.get('bp2') or {}).get('metricas') or [])]:
-                        for _idx, _iv in enumerate(_ivs):
-                            _mvdb_c.upsert_vst_interval(
-                                _cn_c, vid, _idx if _grp == 'bp1' else _idx + 100,
-                                grupo=_grp,
-                                start_time=_iv.get('t0') or _iv.get('t0_s'),
-                                end_time=_iv.get('t1') or _iv.get('t1_s'),
-                                power_w=(_iv.get('potencia') or {}).get('media'),
-                                heart_rate_bpm=(_iv.get('hr') or {}).get('media'),
-                                smo2_pct=(_iv.get('smo2') or {}).get('media'),
-                                thb_gdl=(_iv.get('thb') or {}).get('media'),
-                                dfa1=(_iv.get('dfa1') or {}).get('media'),
-                                raw_interval=_iv)
-
-                    # 5. Conjunto MOXY × VST
-                    _cj_id = _mvdb_c.upsert_conjunto(
-                        _cn_c, mid, vid,
-                        bp1_status=comp_bp1.get('status') if comp_bp1 else None,
-                        bp2_status=comp_bp2.get('status') if comp_bp2 else None,
-                        dia1_bp1_w=comp_bp1.get('dia1_bp1_w') if comp_bp1 else None,
-                        dia2_bp1_w=comp_bp1.get('dia2_bp1_w') if comp_bp1 else None,
-                        dia1_bp2_w=comp_bp2.get('dia1_bp2_w') if comp_bp2 else None,
-                        dia2_bp2_w=comp_bp2.get('dia2_bp2_w') if comp_bp2 else None)
-
-                    # 5b. Análise MOXY canónica (moxy_analyses). Mesma computação
-                    # de api_moxy_guardar_analise: não há 2ª análise. Também faz a
-                    # escrita legada de compatibilidade (moxy_analises), que NÃO
-                    # é relida. Acontece ANTES do insert_resultado para que os
-                    # bp_bpm usados em vst_results sejam os já filtrados por FC.
-                    _an_out = {}
+                # Escrita canónica SÓ com persistir=1 (botão Salvar).
+                # Sincronizar/leitura não grava vst_results.
+                _persistido = False
+                _resultado_gravado = False
+                _persist_erro = None
+                if persistir:
+                    # ── Persistir no moxy_vst_historico.db (banco canônico) ──────
                     try:
-                        api_moxy_guardar_analise(
-                            mid, canonical_conn=_cn_c, canonical_out=_an_out)
-                    except Exception as _e_an:
-                        print(f'[comparar][moxy_analyses] AVISO: {_e_an}')
+                        import drive_db_moxy_vst as _mvdb_c
+                        _cn_c = _mvdb_c.get_moxy_vst_conn()
+                        _cn_c.row_factory = __import__('sqlite3').Row
 
-                    # 6. Resultado (nova versão — nunca sobrescreve versões anteriores)
-                    # Versão ÚNICA e completa: bps, bpm, RPE e validações.
-                    if _cj_id:
-                        import json as _json_c
-                        _mvdb_c.insert_resultado(
-                            _cn_c, _cj_id,
-                            resultado_json={
-                                'comparacao_bp1': comp_bp1,
-                                'comparacao_bp2': comp_bp2,
-                                'comparacao_rpe_bp1': comp_rpe_bp1,
-                                'comparacao_rpe_bp2': comp_rpe_bp2,
-                                'limiter_bp1': limiter_bp1,
-                                'limiter_bp2': limiter_bp2,
-                                'limiter_sintese': limiter_sintese,
-                                'hipotese_bp1': hipotese_bp1,
-                                'hipotese_bp2': hipotese_bp2,
-                                'recuperacao_final_dia2': dia2.get('recuperacao_final'),
-                                'rpe_fisiologia': rpe_fisiologia,
-                            },
-                            bp1_w=(comp_bp1 or {}).get('dia2_bp1_w'),
-                            bp2_w=(comp_bp2 or {}).get('dia2_bp2_w'),
-                            comparacao_rpe_bp1=comp_rpe_bp1,
-                            comparacao_rpe_bp2=comp_rpe_bp2,
-                            limiter_sintese=limiter_sintese,
-                            recuperacao_final_dia2=dia2.get('recuperacao_final'),
-                            rpe_fisiologia_json=rpe_fisiologia,
-                            bp1_bpm=_an_out.get('bp1_bpm'),
-                            bp2_bpm=_an_out.get('bp2_bpm'),
-                            validacao_fisiologica_json=(_fisio_c or {}).get('val_json'),
-                            bpm_vst_validacao_json=(_fisio_c or {}).get('bpm_json'))
+                        # Metadados vêm da base local de atividades, já usada pelo dashboard.
+                        # TYPE_MAP converte VirtualSki -> Ski (e equivalentes) sem inferência.
+                        import db as _db_act_meta
+                        from config import TYPE_MAP as _TYPE_MAP_ACT
 
-                    _cn_c.commit()
-                    _ok_up_mv, _det_up_mv = _mvdb_c.upload()
-                    print(f'[MOXY_VST_STREAMS] upload={"success" if _ok_up_mv else "fail: " + str(_det_up_mv)[:80]}')
-                    _cn_c.close()
-                except Exception as _e_mvdb_c:
-                    print(f'[comparar][moxy_vst_historico.db] {_e_mvdb_c}')
+                        def _atividade_meta_c(aid_meta):
+                            try:
+                                _r_meta = _db_act_meta._exec(
+                                    "SELECT type, date, name FROM activities WHERE id=?",
+                                    (str(aid_meta),), fetch='one')
+                                if not _r_meta:
+                                    return None, None, None
+                                _tipo_meta, _data_meta, _nome_meta = _r_meta
+                                return (_TYPE_MAP_ACT.get(_tipo_meta) or _tipo_meta,
+                                        _data_meta, _nome_meta)
+                            except Exception as _e_meta:
+                                print(f'[vst_comparar][activity meta] AVISO {aid_meta}: {_e_meta}')
+                                return None, None, None
+
+                        _sport_mid_c, _date_mid_c, _name_mid_c = _atividade_meta_c(mid)
+                        _sport_vid_c, _date_vid_c, _name_vid_c = _atividade_meta_c(vid)
+
+                        # 1. Atividades
+                        _mvdb_c.upsert_activity(
+                            _cn_c, mid, 'moxy', name=_name_mid_c, date=_date_mid_c,
+                            sport=_sport_mid_c)
+                        _mvdb_c.upsert_activity(
+                            _cn_c, vid, 'vst', name=_name_vid_c, date=_date_vid_c,
+                            sport=_sport_vid_c)
+
+                        # 2+3. Streams — TODOS os retornados pela API (sem whitelist)
+                        import api_client as _api_c
+                        import datetime as _dt_s
+
+                        def _sync_streams(aid_s, label):
+                            agora_s = _dt_s.datetime.now().isoformat(timespec='seconds')
+                            try:
+                                print(f'[MOXY_VST_STREAMS] activity_id={aid_s} ({label})')
+                                _raw, _err = _api_c.icu_get(f'/activity/{aid_s}/streams')
+                                if _err:
+                                    print(f'[MOXY_VST_STREAMS] ERROR api {label}: {_err}')
+                                    _cn_c.execute(
+                                        "INSERT INTO db_metadata(key,value,updated_at)"
+                                        " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                        " value=excluded.value,updated_at=excluded.updated_at",
+                                        ('stream_sync_last_status', 'api_error', agora_s))
+                                    _cn_c.execute(
+                                        "INSERT INTO db_metadata(key,value,updated_at)"
+                                        " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                        " value=excluded.value,updated_at=excluded.updated_at",
+                                        ('stream_sync_last_error', str(_err)[:500], agora_s))
+                                    return
+                                parsed = _mvdb_c._parse_streams_api(_raw)
+                                if not parsed:
+                                    print(f'[MOXY_VST_STREAMS] API retornou 0 streams ({label})')
+                                    _cn_c.execute(
+                                        "INSERT INTO db_metadata(key,value,updated_at)"
+                                        " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                        " value=excluded.value,updated_at=excluded.updated_at",
+                                        ('stream_sync_last_status', 'api_empty', agora_s))
+                                    return
+                                keys = sorted(parsed.keys())
+                                print(f'[MOXY_VST_STREAMS] API retornou {len(parsed)} streams')
+                                print(f'[MOXY_VST_STREAMS] keys={keys}')
+                                ins, upd, pres = _mvdb_c.upsert_all_streams(_cn_c, aid_s, _raw)
+                                print(f'[MOXY_VST_STREAMS] inserted={ins} updated={upd} preserved={pres}')
+                                _cn_c.execute(
+                                    "INSERT INTO db_metadata(key,value,updated_at)"
+                                    " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                    " value=excluded.value,updated_at=excluded.updated_at",
+                                    ('stream_sync_last_status', 'success', agora_s))
+                            except Exception as _e_str_i:
+                                print(f'[MOXY_VST_STREAMS] ERROR persist {label}: {_e_str_i}')
+                                try:
+                                    _cn_c.execute(
+                                        "INSERT INTO db_metadata(key,value,updated_at)"
+                                        " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                        " value=excluded.value,updated_at=excluded.updated_at",
+                                        ('stream_sync_last_status', 'persist_error', agora_s))
+                                    _cn_c.execute(
+                                        "INSERT INTO db_metadata(key,value,updated_at)"
+                                        " VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET"
+                                        " value=excluded.value,updated_at=excluded.updated_at",
+                                        ('stream_sync_last_error', str(_e_str_i)[:500], agora_s))
+                                except Exception:
+                                    pass
+
+                        _sync_streams(vid, 'VST')
+                        _sync_streams(mid, 'MOXY')
+
+                        # 4. Intervalos VST (BP1 + BP2)
+                        for _grp, _ivs in [('bp1', (dia2.get('bp1') or {}).get('metricas') or []),
+                                            ('bp2', (dia2.get('bp2') or {}).get('metricas') or [])]:
+                            for _idx, _iv in enumerate(_ivs):
+                                _mvdb_c.upsert_vst_interval(
+                                    _cn_c, vid, _idx if _grp == 'bp1' else _idx + 100,
+                                    grupo=_grp,
+                                    start_time=_iv.get('t0') or _iv.get('t0_s'),
+                                    end_time=_iv.get('t1') or _iv.get('t1_s'),
+                                    power_w=(_iv.get('potencia') or {}).get('media'),
+                                    heart_rate_bpm=(_iv.get('hr') or {}).get('media'),
+                                    smo2_pct=(_iv.get('smo2') or {}).get('media'),
+                                    thb_gdl=(_iv.get('thb') or {}).get('media'),
+                                    dfa1=(_iv.get('dfa1') or {}).get('media'),
+                                    raw_interval=_iv)
+
+                        # Watts dos BP, lidos das métricas JÁ calculadas (sem recálculo).
+                        # comparar_bp() NÃO devolve chaves 'dia1_bp1_w'/'dia2_bp1_w':
+                        # ler essas chaves dava sempre None em vst_results.bp1_w.
+                        # Dia 1: média de potência do bloco MOXY escolhido.
+                        # Dia 2: média de potência do último intervalo do bloco VST
+                        # (mesma regra de comparar_bp: dia2_final = lista[-1]).
+                        def _w_media_bloco(_m):
+                            _p = (_m or {}).get('potencia') or {}
+                            return _p.get('media')
+                        def _w_dia2_bloco(_bp):
+                            _ms = (_bp or {}).get('metricas') or []
+                            return _w_media_bloco(_ms[-1]) if _ms else None
+                        _w_dia1_bp1 = _w_media_bloco(m_dia1_bp1)
+                        _w_dia1_bp2 = _w_media_bloco(m_dia1_bp2)
+                        _w_dia2_bp1 = _w_dia2_bloco(dia2.get('bp1'))
+                        _w_dia2_bp2 = _w_dia2_bloco(dia2.get('bp2'))
+
+                        # 5. Conjunto MOXY × VST
+                        _cj_id = _mvdb_c.upsert_conjunto(
+                            _cn_c, mid, vid,
+                            bp1_status=comp_bp1.get('status') if comp_bp1 else None,
+                            bp2_status=comp_bp2.get('status') if comp_bp2 else None,
+                            dia1_bp1_w=_w_dia1_bp1,
+                            dia2_bp1_w=_w_dia2_bp1,
+                            dia1_bp2_w=_w_dia1_bp2,
+                            dia2_bp2_w=_w_dia2_bp2)
+                        if not _cj_id:
+                            raise RuntimeError('upsert_conjunto não devolveu id')
+
+                        # 5b. Análise MOXY canónica (moxy_analyses). Mesma computação
+                        # de api_moxy_guardar_analise: não há 2ª análise. Também faz a
+                        # escrita legada de compatibilidade (moxy_analises), que NÃO
+                        # é relida. Acontece ANTES do insert_resultado para que os
+                        # bp_bpm usados em vst_results sejam os já filtrados por FC.
+                        _an_out = {}
+                        try:
+                            api_moxy_guardar_analise(
+                                mid, canonical_conn=_cn_c, canonical_out=_an_out)
+                        except Exception as _e_an:
+                            print(f'[comparar][moxy_analyses] AVISO: {_e_an}')
+
+                        # 6. Resultado (nova versão — nunca sobrescreve versões anteriores)
+                        # Versão ÚNICA e completa: bps, bpm, RPE e validações.
+                        if _cj_id:
+                            import json as _json_c
+                            _mvdb_c.insert_resultado(
+                                _cn_c, _cj_id,
+                                resultado_json={
+                                    'comparacao_bp1': comp_bp1,
+                                    'comparacao_bp2': comp_bp2,
+                                    'comparacao_rpe_bp1': comp_rpe_bp1,
+                                    'comparacao_rpe_bp2': comp_rpe_bp2,
+                                    'limiter_bp1': limiter_bp1,
+                                    'limiter_bp2': limiter_bp2,
+                                    'limiter_sintese': limiter_sintese,
+                                    'hipotese_bp1': hipotese_bp1,
+                                    'hipotese_bp2': hipotese_bp2,
+                                    'recuperacao_final_dia2': dia2.get('recuperacao_final'),
+                                    'rpe_fisiologia': rpe_fisiologia,
+                                },
+                                bp1_w=_w_dia2_bp1,
+                                bp2_w=_w_dia2_bp2,
+                                comparacao_rpe_bp1=comp_rpe_bp1,
+                                comparacao_rpe_bp2=comp_rpe_bp2,
+                                limiter_sintese=limiter_sintese,
+                                recuperacao_final_dia2=dia2.get('recuperacao_final'),
+                                rpe_fisiologia_json=rpe_fisiologia,
+                                bp1_bpm=_an_out.get('bp1_bpm'),
+                                bp2_bpm=_an_out.get('bp2_bpm'),
+                                validacao_fisiologica_json=(_fisio_c or {}).get('val_json'),
+                                bpm_vst_validacao_json=(_fisio_c or {}).get('bpm_json'))
+                        _resultado_gravado = True
+
+                        _cn_c.commit()
+                        _ok_up_mv, _det_up_mv = _mvdb_c.upload()
+                        print(f'[MOXY_VST_STREAMS] upload={"success" if _ok_up_mv else "fail: " + str(_det_up_mv)[:80]}')
+                        _cn_c.close()
+                        if _resultado_gravado and _ok_up_mv:
+                            _persistido = True
+                        else:
+                            _persist_erro = (f'upload Drive: {_det_up_mv}'
+                                             if _resultado_gravado else
+                                             'vst_results não foi gravado')
+                    except Exception as _e_mvdb_c:
+                        _persist_erro = str(_e_mvdb_c)
+                        print(f'[comparar][moxy_vst_historico.db] {_e_mvdb_c}')
             except Exception as _e_cmp_c:
                 import traceback as _tb_cmp_c
+                _persist_erro = str(_e_cmp_c)
+                _persistido = False
                 print(f'[comparar][CANONICO] FALHA — vst_results NÃO gravado: {_e_cmp_c}\n'
                       f'{_tb_cmp_c.format_exc()}')
 
             # Valores em memória desta mesma execução (sem readback do legado).
             _vf_ret = (_fisio_c or {}).get('val')
             _bpm_vf_ret = (_fisio_c or {}).get('bpm')
+            _vf_erro = (_fisio_c or {}).get('erro_fisio') or (
+                None if _fisio_c else 'cálculo fisiológico não executado')
+            _bpm_erro = (_fisio_c or {}).get('erro_bpm')
+
+            if persistir and not _persistido:
+                return jsonify({
+                    'status': 'erro', 'persistido': False,
+                    'erro_persistencia': _persist_erro or 'falha desconhecida',
+                    'dia1_activity_id': mid, 'dia2_activity_id': vid,
+                }), 500
 
             return jsonify({
                 'status': 'ok',
+                'persistido': _persistido if persistir else None,
+                'erro_persistencia': _persist_erro,
                 'dia1_activity_id': mid, 'dia2_activity_id': vid,
                 'comparacao_bp1': comp_bp1, 'comparacao_bp2': comp_bp2,
                 'comparacao_recovery_bp1': comp_recovery_bp1,
@@ -6053,6 +6122,8 @@ def registar(app):
                 'rede_causal': rede_causal_d1,
                 'validacao_fisiologica': _vf_ret,
                 'bpm_vst_validacao': _bpm_vf_ret,
+                'validacao_fisiologica_erro': _vf_erro,
+                'bpm_vst_validacao_erro': _bpm_erro,
                 'rpe_fisiologia': rpe_fisiologia,
                 'rpe_d1_blocos': rpe_d1_blocos,
                 'rpe_zonas_integrado': rpe_zonas_integrado,

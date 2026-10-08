@@ -453,20 +453,13 @@ BODY = """
         <select id="mxVstMoxySelect" onchange="mxVstMoxySelecionado()">
           <option value="">escolhe uma sessão VST primeiro</option>
         </select></label>
-      <button onclick="mxVstSincronizar()" title="Vincula o par, recalcula tudo e grava o resultado canónico numa única versão.">Verificar e gravar</button>
+      <button onclick="mxVstSincronizar()" title="Vincula o par e calcula a comparação (sem gravar).">Sincronizar</button>
+      <button id="mxVstSalvarBtn" onclick="mxVstSalvar()" title="Grava a verificação final (única escrita canónica)." style="font-weight:600;">Salvar</button>
+      <span id="mxVstSalvarStatus" style="font-size:12px;"></span>
     </div>
     <div id="mxVstConjuntoEstado" style="margin-top:6px;"></div>
 
 
-    <!-- Botão de gravar análise — topo da área de análise VST -->
-    <div id="mxVstGravarBtnArea" style="margin:10px 0 4px;display:none;">
-      <button onclick="mxVstGravarAnalise()"
-        style="padding:6px 16px;background:#1c2331;border:1px solid #3FB950;
-        color:#3FB950;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
-        💾 Gravar análise VST
-      </button>
-      <span id="mxVstGravarStatus" style="font-size:11px;color:#8b949e;margin-left:10px;"></span>
-    </div>
     <!-- ═══════════════════════════════════════════════════════════
          SEÇÃO VISÍVEL — padrão de resposta, limitador, recomendação
          ═══════════════════════════════════════════════════════════ -->
@@ -2907,7 +2900,7 @@ function _mxVstRpeFisioCard(fi){
  if(!fi||(!fi.bp1&&!fi.bp2)){
   html+='<div style="color:#8b949e;font-size:12px;padding:10px;border:1px solid #30363d;border-radius:6px;">'
       +'Análise RPE × Fisiologia indisponível para esta versão. '
-      +'Execute novamente Verificar e gravar para gerar a análise.</div>';
+      +'Clique em Sincronizar e depois em Salvar para gerar a análise.</div>';
  } else {
   if(fi.bp1) html+=_bpSection(fi.bp1,'BP1');
   if(fi.bp2) html+=_bpSection(fi.bp2,'BP2');
@@ -2923,9 +2916,6 @@ function _mxVstRenderComparacao(d, vstId){
   + _vstTabelaComparacao('BP2', d.comparacao_bp2, d.comparacao_rpe_bp2);
  mxVstRpeTabela(d);
  MX_VST_ULT_COMP = d;
- // Mostrar botão de gravar quando existe resultado calculado
- const btnArea=document.getElementById('mxVstGravarBtnArea');
- // botão 'Gravar análise VST' removido da UI: 'Verificar e gravar' já grava.
  if(MX_VST_ULT) mxDesenharVstHeatmap(MX_VST_ULT);
  mxVstResumoCartoes(d);
  mxVstRecoveryCartoes(d);
@@ -9351,61 +9341,43 @@ mxSessoes();
 // as precisava ("Intervenções — o que treinar") foi removida, o fluxo
 // por sessao ja mostra tudo sozinho. As duas funcoes ficam protegidas
 // contra elementos em falta, para o caso de ainda serem chamadas
-// ── Gravar análise VST explicitamente ────────────────────────────────────
-function mxVstGravarAnalise(){
- if(!MX_VST_ULT_COMP||!MX_VID||!MX_MID){
-  const st=document.getElementById('mxVstGravarStatus');
-  if(st) st.textContent='Sem resultado — execute a comparação primeiro.';
+// ── Salvar verificação (ÚNICO caminho de gravação final) ─────────────────
+// Chama /api/moxy/vst/comparar/<vid>?persistir=1: o servidor calcula em
+// memória e faz UMA escrita canónica (vst_results). O sucesso só é mostrado
+// quando o servidor confirma persistido=true (commit + upload).
+function mxVstSalvar(){
+ const vstSel=document.getElementById('mxVstSelect');
+ const vstId=vstSel&&vstSel.value;
+ const st=document.getElementById('mxVstSalvarStatus');
+ const btn=document.getElementById('mxVstSalvarBtn');
+ if(!st) return;
+ if(!vstId){
+  st.style.color='#f78166';
+  st.textContent='✗ Erro ao salvar: escolhe primeiro uma sessão VST';
   return;
  }
- const st=document.getElementById('mxVstGravarStatus');
- if(st) st.textContent='a gravar…';
- fetch('/api/moxy/vst/gravar_analise',{method:'POST',
-  headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({
-   vst_activity_id:MX_VID,
-   moxy_activity_id:MX_MID,
-   resultado_json:MX_VST_ULT_COMP,
-  })
- }).then(r=>r.json()).then(function(d){
-  if(d.status==='ok'){
-   if(st) st.textContent='✓ Gravado e sincronizado com o Drive.';
-  } else if(d.status==='gravado_sem_upload'){
-   if(st) st.textContent='✓ Gravado localmente (Drive indisponível).';
-   mxVstDbBadgeMostrar('Análise VST gravada no DB local. O Drive não está disponível — baixe o DB e faça upload manual.');
-  } else {
-   if(st) st.textContent='Erro: '+(d.mensagem||'?');
-  }
- }).catch(function(e){
-  if(st) st.textContent='Erro de rede: '+e.message;
- });
-}
-
-// Gravar uma verificação já salva (re-gravar o que já existe para forçar persistência)
-function mxVstGravarVerificacaoSalva(ix){
- const c=MX_VST_CONJUNTOS_SALVOS[ix];
- if(!c) return;
- // Abrir primeiro para ter MX_VST_ULT_COMP preenchido, depois gravar
- mxVstAbrirVerificacao(ix);
- setTimeout(function(){
-  if(!MX_VST_ULT_COMP){
-   alert('Abra a verificação e aguarde o carregamento antes de gravar.');
-   return;
-  }
-  fetch('/api/moxy/vst/gravar_analise',{method:'POST',
-   headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({
-    vst_activity_id:c.vst_activity_id,
-    moxy_activity_id:c.moxy_activity_id,
-    resultado_json:MX_VST_ULT_COMP,
-    modalidade:c.modalidade||null,
-   })
-  }).then(r=>r.json()).then(function(d){
-   if(d.status==='gravado_sem_upload'){
-    mxVstDbBadgeMostrar('Verificação gravada localmente. Baixe o DB e faça upload para o Google Drive.');
+ st.style.color='#8b949e';
+ st.textContent='a salvar…';
+ if(btn) btn.disabled=true;
+ fetch('/api/moxy/vst/comparar/'+encodeURIComponent(vstId)+'?persistir=1')
+  .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+  .then(function(x){
+   const d=x.d||{};
+   if(x.ok && d.status==='ok' && d.persistido===true){
+    st.style.color='#3FB950';
+    st.textContent='✓ Verificação salva com sucesso';
+    _mxVstRenderComparacao(d, vstId);
+    if(typeof mxVstCarregarConjuntosSalvos==='function') mxVstCarregarConjuntosSalvos();
+   } else {
+    st.style.color='#f78166';
+    st.textContent='✗ Erro ao salvar: '+(d.erro_persistencia||d.mensagem||('HTTP '+(x.ok?'':'erro')))
    }
-  }).catch(function(){});
- }, 2000);
+  })
+  .catch(function(e){
+   st.style.color='#f78166';
+   st.textContent='✗ Erro ao salvar: '+(e&&e.message?e.message:'falha de rede');
+  })
+  .finally(function(){ if(btn) btn.disabled=false; });
 }
 
 // Badge inline na aba MOXY para avisar sobre DB local

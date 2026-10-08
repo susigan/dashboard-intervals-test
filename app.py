@@ -310,7 +310,11 @@ def api_training_contexto():
                 " act.sport"
                 " FROM vst_conjuntos vc"
                 " JOIN vst_results vr ON vr.vst_conjunto_id = vc.id"
-                " JOIN moxy_analyses ma ON ma.activity_id = vc.moxy_activity_id"
+                " JOIN moxy_analyses ma ON ma.activity_id = vc.moxy_activity_id
+                AND ma.version = (
+                    SELECT MAX(ma2.version) FROM moxy_analyses ma2
+                    WHERE ma2.activity_id = ma.activity_id
+                )"
                 " JOIN moxy_activities act ON act.activity_id = vc.moxy_activity_id"
                 " WHERE vc.moxy_activity_id IS NOT NULL"
                 " AND json_extract(ma.json_completo,'$.rede_limitador') IS NOT NULL"

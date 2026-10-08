@@ -14,6 +14,7 @@ Registado com:  import api_moxy; api_moxy.registar(app)
 import json
 import re
 import traceback
+import uuid
 from datetime import datetime, timedelta
 
 from flask import jsonify, request
@@ -220,6 +221,94 @@ def _zona(watts, bp1_w, bp2_w):
     return 'Z3'
 
 
+def _rz_integrado_do_canonico(moxy_id, vid, run_id_legado):
+    """Lê rpe_zonas_integrado do canónico SOMENTE se o run_id coincidir.
+
+    Leitura apenas: não gera run_id e não grava nada. Compara com a versão
+    canónica MAIS RECENTE do par (moxy_activity_id, vst_activity_id).
+    Devolve (valor, status):
+      'ok'                  -> valor = rpe_zonas_integrado desta mesma execução
+      'sem_run_id_legado'   -> legado sem run_id (resultado antigo)
+      'sem_canonico'        -> sem vst_results para o par
+      'run_id_divergente'   -> versão canónica mais recente é de outra execução
+      'sem_analise_canonica'-> run_id confere mas a execução não gerou a análise
+      'erro_leitura'        -> falha ao ler o canónico
+    """
+    if not run_id_legado:
+        return None, 'sem_run_id_legado'
+    try:
+        import drive_db_moxy_vst as _mvdb_rz
+        _cn_rz = _mvdb_rz.get_moxy_vst_conn()
+        try:
+            _row = _cn_rz.execute(
+                "SELECT vr.resultado_json FROM vst_conjuntos vc "
+                "JOIN vst_results vr ON vr.vst_conjunto_id=vc.id "
+                "   AND vr.version=(SELECT MAX(version) FROM vst_results "
+                "                  WHERE vst_conjunto_id=vc.id) "
+                "WHERE vc.moxy_activity_id=? AND vc.vst_activity_id=? LIMIT 1",
+                (moxy_id, vid)).fetchone()
+        finally:
+            _cn_rz.close()
+        if not _row or not _row[0]:
+            return None, 'sem_canonico'
+        _canon = json.loads(_row[0])
+        if _canon.get('run_id') != run_id_legado:
+            return None, 'run_id_divergente'
+        _rz = _canon.get('rpe_zonas_integrado')
+        if _rz is None:
+            return None, 'sem_analise_canonica'
+        return _rz, 'ok'
+    except Exception as _e:
+        print(f'[resultado][rpe_zonas canonico] {_e}')
+        return None, 'erro_leitura'
+
+
+_PRESERVAR_RUN_ID = object()  # sentinela: "não alterar o run_id já gravado no legado"
+
+
+def _canonico_run_id_atual(moxy_id, vid):
+    """run_id da versão canónica MAIS RECENTE do par (leitura apenas).
+
+    Usado para confirmar que um run_id recebido pertence à última execução
+    de /comparar gravada para este conjunto. None se não houver ou falhar.
+    """
+    try:
+        import drive_db_moxy_vst as _mvdb_cr
+        _cn_cr = _mvdb_cr.get_moxy_vst_conn()
+        try:
+            _row = _cn_cr.execute(
+                "SELECT vr.resultado_json FROM vst_conjuntos vc "
+                "JOIN vst_results vr ON vr.vst_conjunto_id=vc.id "
+                "   AND vr.version=(SELECT MAX(version) FROM vst_results "
+                "                  WHERE vst_conjunto_id=vc.id) "
+                "WHERE vc.moxy_activity_id=? AND vc.vst_activity_id=? LIMIT 1",
+                (str(moxy_id), str(vid))).fetchone()
+        finally:
+            _cn_cr.close()
+        if not _row or not _row[0]:
+            return None
+        return json.loads(_row[0]).get('run_id') or None
+    except Exception as _e:
+        print(f'[gravar_analise][run_id canonico] {_e}')
+        return None
+
+
+def _run_id_legado_atual(cn, vid):
+    """Lê (sem gravar nem gerar) o run_id já guardado no resultado_json legado.
+
+    Devolve None se não houver linha, JSON, ou campo run_id.
+    """
+    try:
+        row = cn.execute(
+            "SELECT resultado_json FROM vst_conjuntos WHERE vst_activity_id=?",
+            (str(vid),)).fetchone()
+        if not row or not row[0]:
+            return None
+        return json.loads(row[0]).get('run_id') or None
+    except Exception:
+        return None
+
+
 def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
                    comp_recovery_bp1, comp_recovery_bp2,
                    limiter_bp1, limiter_bp2,
@@ -227,7 +316,7 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
                    rede_causal_d1=None, modalidade=None,
                    comp_rpe_bp1=None, comp_rpe_bp2=None,
                    limiter_sintese=None, recuperacao_final_dia2=None,
-                   rpe_fisiologia=None):
+                   rpe_fisiologia=None, run_id=_PRESERVAR_RUN_ID):
     """Persiste o resultado de uma verificação VST em vst_conjuntos.
 
     Chamada por /api/moxy/vst/comparar  (melhor esforço, em try/except pass)
@@ -237,6 +326,10 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
     Não faz upload() — responsabilidade do chamador.
     """
     try:
+        # Sem run_id explícito, mantém o que já está gravado. None explícito
+        # significa "sem associação" (análise indisponível). Nunca gera um id aqui.
+        if run_id is _PRESERVAR_RUN_ID:
+            run_id = _run_id_legado_atual(cn, vid)
         pot1 = (comp_bp1 or {}).get('potencia') or {}
         pot2 = (comp_bp2 or {}).get('potencia') or {}
         agora = datetime.now().isoformat(timespec='seconds')
@@ -279,6 +372,8 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
                  'hipotese_bp2': hipotese_bp2,
                  'recuperacao_final_dia2': recuperacao_final_dia2,
                  'rpe_fisiologia': rpe_fisiologia,
+                 # Identificador da execução de /comparar; o canónico grava o mesmo.
+                 'run_id': run_id,
              }, **({'rede_causal': rede_causal_d1} if rede_causal_d1 is not None else {})},
              ensure_ascii=False),
              agora, agora, vid))
@@ -3150,6 +3245,24 @@ def registar(app):
             import json
             cn = ddp.get_conn()
 
+            # run_id: decisão final.
+            #  - corpo COM run_id confirmado (= run_id canónico mais recente do
+            #    mesmo par): usa-o;
+            #  - corpo COM run_id NÃO confirmado: rejeita a associação (None) —
+            #    análise fica indisponível, nada é misturado;
+            #  - corpo SEM run_id: preserva o já gravado no legado.
+            _run_corpo = str(rjson.get('run_id') or '').strip() or None
+            if _run_corpo is None:
+                _run_id_para_gravar = _PRESERVAR_RUN_ID
+                _run_id_status = 'preservado'
+            elif _canonico_run_id_atual(mid, vid) == _run_corpo:
+                _run_id_para_gravar = _run_corpo
+                _run_id_status = 'confirmado'
+            else:
+                _run_id_para_gravar = None
+                _run_id_status = 'rejeitado'
+            print(f'[gravar_analise][run_id] {_run_id_status}')
+
             # Extrair campos do resultado_json (mesmo formato de /vst/comparar)
             ok, det = _vst_persistir(
                 cn, vid, mid,
@@ -3163,6 +3276,12 @@ def registar(app):
                 rjson.get('hipotese_bp2'),
                 rede_causal_d1=rjson.get('rede_causal'),
                 modalidade=modalidade,
+                comp_rpe_bp1=rjson.get('comparacao_rpe_bp1'),
+                comp_rpe_bp2=rjson.get('comparacao_rpe_bp2'),
+                limiter_sintese=rjson.get('limiter_sintese'),
+                recuperacao_final_dia2=rjson.get('recuperacao_final_dia2'),
+                rpe_fisiologia=rjson.get('rpe_fisiologia'),
+                run_id=_run_id_para_gravar,
             )
             if not ok:
                 return jsonify({'status': 'erro',
@@ -3325,6 +3444,8 @@ def registar(app):
                 'upload_detalhe': None if ok_up else det_up,
                 'bpm_vst_validacao': _bpm_val_resultado,
                 'validacao_fisiologica': _val_fisio_resultado,
+                # run_id: confirmado | rejeitado (análise indisponível) | preservado
+                'run_id_status': _run_id_status,
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
@@ -3621,6 +3742,15 @@ def registar(app):
             _rpe_fi_col = getattr(locals(), '_rpe_fi_col', None)
             resultado = json.loads(rjson)
             resultado['status'] = 'ok'
+            # Análise integrada: o legado não a guarda. Só é recuperada do canónico
+            # quando o run_id do legado é IGUAL ao run_id do canónico mais recente
+            # do mesmo par. Sem coincidência fica indisponível (nada é misturado).
+            if 'rpe_zonas_integrado' not in resultado:
+                _rz_val, _rz_status = _rz_integrado_do_canonico(
+                    str(moxy_id), str(vid), resultado.get('run_id'))
+                if _rz_val is not None:
+                    resultado['rpe_zonas_integrado'] = _rz_val
+                resultado['rpe_zonas_integrado_status'] = _rz_status
             # Se rpe_fisiologia não está no resultado_json mas sim na coluna
             # separada (caso do moxy_vst_historico.db via fallback)
             if 'rpe_fisiologia' not in resultado and _rpe_fi_col:
@@ -5944,12 +6074,26 @@ def registar(app):
             # resposta (melhor esforco, como o resto da persistencia
             # deste projecto). _vst_persistir é partilhada com
             # /api/moxy/vst/gravar_analise para não duplicar lógica.
+            # Estado de persistência inicializado ANTES do try: o retorno final
+            # usa estas variáveis mesmo se a gravação falhar cedo.
+            _run_id = None
+            _legado_ok = None
+            _legado_det = None
+            _persistido = False
+            _resultado_gravado = False
+            _persist_erro = None
             try:
                 # Legado (perfil.vst_conjuntos) só em Salvar (persistir=1).
                 # GET /vst/comparar nunca grava nem sobe o banco.
+                # run_id: identifica ESTA execução de /comparar. Gravado nos dois
+                # bancos; o fallback de leitura só usa a análise integrada do canónico
+                # quando os dois coincidem. Gerado aqui, nunca na leitura.
+                _run_id = uuid.uuid4().hex if persistir else None
+                _legado_ok = None
+                _legado_det = None
                 if persistir:
                     try:
-                        _vst_persistir(
+                        _ok_leg, _det_leg = _vst_persistir(
                             cn, vid, mid,
                             comp_bp1, comp_bp2,
                             comp_recovery_bp1, comp_recovery_bp2,
@@ -5960,15 +6104,23 @@ def registar(app):
                             comp_rpe_bp2=comp_rpe_bp2,
                             limiter_sintese=limiter_sintese,
                             recuperacao_final_dia2=dia2.get('recuperacao_final'),
-                            rpe_fisiologia=rpe_fisiologia)
+                            rpe_fisiologia=rpe_fisiologia,
+                            run_id=_run_id)
+                        if not _ok_leg:
+                            raise RuntimeError(f'gravação legada: {_det_leg}')
                         # Legado de compatibilidade (perfil.vst_conjuntos). Usa os
                         # valores em memória de _fisio_c; não é relido para o canónico.
                         try:
                             _fisio_persistir_legado(cn, vid, _fisio_c)
                         except Exception as _e_fl:
                             print(f'[vst_comparar][fisio legado] AVISO: {_e_fl}')
-                        ddp.upload()
+                        _ok_up_leg, _det_up_leg = ddp.upload()
+                        if not _ok_up_leg:
+                            raise RuntimeError(f'upload do legado: {_det_up_leg}')
+                        _legado_ok = True
                     except Exception as _e_leg_top:
+                        _legado_ok = False
+                        _legado_det = str(_e_leg_top)
                         print(f'[comparar][legado] AVISO (não bloqueia o canónico): {_e_leg_top}')
 
                 # Escrita canónica SÓ com persistir=1 (botão Salvar).
@@ -6148,6 +6300,10 @@ def registar(app):
                                     'hipotese_bp2': hipotese_bp2,
                                     'recuperacao_final_dia2': dia2.get('recuperacao_final'),
                                     'rpe_fisiologia': rpe_fisiologia,
+                                    # Análise integrada RPE × Fisiologia × Zonas. Vai no JSON
+                                    # já existente (resultado_json): sem coluna nova, sem schema.
+                                    'rpe_zonas_integrado': rpe_zonas_integrado,
+                                    'run_id': _run_id,
                                 },
                                 bp1_w=_w_dia2_bp1,
                                 bp2_w=_w_dia2_bp2,
@@ -6193,6 +6349,9 @@ def registar(app):
                 return jsonify({
                     'status': 'erro', 'persistido': False,
                     'erro_persistencia': _persist_erro or 'falha desconhecida',
+                    'legado_gravado': _legado_ok, 'erro_legado': _legado_det,
+                    'canonico_gravado': _resultado_gravado, 'run_id': _run_id,
+                    'sincronizado': False,
                     'dia1_activity_id': mid, 'dia2_activity_id': vid,
                 }), 500
 
@@ -6200,6 +6359,11 @@ def registar(app):
                 'status': 'ok',
                 'persistido': _persistido if persistir else None,
                 'erro_persistencia': _persist_erro,
+                # Só 'sincronizado' é True quando AMBOS os bancos gravaram e subiram.
+                'legado_gravado': _legado_ok, 'erro_legado': _legado_det,
+                'canonico_gravado': _resultado_gravado if persistir else None,
+                'run_id': _run_id,
+                'sincronizado': bool(persistir and _legado_ok and _persistido),
                 'dia1_activity_id': mid, 'dia2_activity_id': vid,
                 'comparacao_bp1': comp_bp1, 'comparacao_bp2': comp_bp2,
                 'comparacao_recovery_bp1': comp_recovery_bp1,

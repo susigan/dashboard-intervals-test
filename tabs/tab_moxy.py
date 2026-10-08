@@ -499,6 +499,7 @@ BODY = """
     </div>
 
     <!-- 5. CARDS BP/HRVT — limiares da sessão ───────────────────── -->
+    <div id="mxVstRpeZonasIndisp" style="display:none;margin-top:12px;font-size:12px;color:#8b949e;"></div>
     <div id="mxVstRpeZonasArea" style="display:none;margin-top:20px;">
       <h3 style="font-size:14px;margin-top:0;">Limiares — BP1 / HRVT1 / BP2 / HRVT2</h3>
       <p class="sub" style="font-size:10px;margin:2px 0 8px;">Day 1 (MOXY) + Day 2 (VST). Z1 = &lt; BP1 · Z2 = BP1–BP2 · Z3 = ≥ BP2. HRVT1c/1s/2 são referências fisiológicas independentes — não substituem BP1/BP2.</p>
@@ -508,7 +509,7 @@ BODY = """
       <!-- ═══════════════════════════════════════════════════════════
            ANÁLISE INTEGRADA — collapsible
            ═══════════════════════════════════════════════════════════ -->
-      <details id="mxDetalhesIntegrado" style="margin-bottom:10px;">
+      <details id="mxDetalhesIntegrado" open style="margin-bottom:10px;">
         <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:4px 0;">▶ Análise integrada</summary>
 
         <!-- Validação BPM MOXY × VST -->
@@ -537,7 +538,7 @@ BODY = """
         </details>
 
         <!-- Gráficos RPE × métricas -->
-        <details style="margin-bottom:8px;">
+        <details id="mxDetalhesRzGraficos" open style="margin-bottom:8px;">
           <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▶ Gráficos RPE × métricas</summary>
           <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">
             <div style="flex:1;min-width:260px;">
@@ -593,7 +594,7 @@ BODY = """
     <!-- ═══════════════════════════════════════════════════════════
          REFERÊNCIA FISIOLÓGICA — collapsible
          ═══════════════════════════════════════════════════════════ -->
-    <details style="margin-top:14px;margin-bottom:6px;">
+    <details open style="margin-top:14px;margin-bottom:6px;">
       <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:4px 0;">▶ Referência fisiológica</summary>
 
       <!-- RPE × Potência -->
@@ -5520,7 +5521,21 @@ function mxVstRenderRpeZonas(d){
  const area=document.getElementById('mxVstRpeZonasArea');
  if(!area) return;
  const rz=d.rpe_zonas_integrado;
- if(!rz || !rz.intervalos || !rz.intervalos.length){ area.style.display='none'; return; }
+ const ind=document.getElementById('mxVstRpeZonasIndisp');
+ if(!rz || !rz.intervalos || !rz.intervalos.length){
+  area.style.display='none';
+  const st=d.rpe_zonas_integrado_status;
+  if(ind){
+   if(st && st!=='ok'){
+    ind.textContent = (st==='erro_leitura')
+     ? 'Análise integrada indisponível: falha ao ler o banco canónico.'
+     : 'Análise integrada indisponível para este conjunto salvo (sem correspondência com a comparação gravada). Salve a comparação novamente para gerá-la.';
+    ind.style.display='';
+   } else { ind.style.display='none'; }
+  }
+  return;
+ }
+ if(ind) ind.style.display='none';
  area.style.display='';
 
  // ── Cores ────────────────────────────────────────────────────────────────
@@ -5786,12 +5801,28 @@ function mxVstRenderRpeZonas(d){
   }
  }
 
- const ivs=rz.intervalos||[];
- _rzDesenharScatter('chMxRzRpePot',  'mxTipRzRpePot',  'potencia', 'Potência','W',    ivs);
- _rzDesenharScatter('chMxRzRpeHr',   'mxTipRzRpeHr',   'hr',       'FC',      'bpm',  ivs);
- _rzDesenharScatter('chMxRzRpeRf',   'mxTipRzRpeRf',   'respiracao','RF',     'r/min',ivs);
- _rzDesenharScatter('chMxRzRpeSmo2', 'mxTipRzRpeSmo2', 'smo2',     'SmO₂',   '%',    ivs);
- _rzDesenharScatter('chMxRzRpeDfa1', 'mxTipRzRpeDfa1', 'dfa1',     'DFA-α1', '',     ivs);
+ // Com a secção fechada o pai tem largura 0 e _rzDesenharScatter usa o fallback
+ // de 320/298 px. Redesenhar ao abrir a secção mantém a escala correta.
+ function _rzRedesenharScatters(){
+  const ivs=rz.intervalos||[];
+  _rzDesenharScatter('chMxRzRpePot',  'mxTipRzRpePot',  'potencia', 'Potência','W',    ivs);
+  _rzDesenharScatter('chMxRzRpeHr',   'mxTipRzRpeHr',   'hr',       'FC',      'bpm',  ivs);
+  _rzDesenharScatter('chMxRzRpeRf',   'mxTipRzRpeRf',   'respiracao','RF',     'r/min',ivs);
+  _rzDesenharScatter('chMxRzRpeSmo2', 'mxTipRzRpeSmo2', 'smo2',     'SmO₂',   '%',    ivs);
+  _rzDesenharScatter('chMxRzRpeDfa1', 'mxTipRzRpeDfa1', 'dfa1',     'DFA-α1', '',     ivs);
+ }
+ _rzRedesenharScatters();
+ // Redraw ao abrir cada secção que contém estes canvases (mesmo padrão de
+ // mxVstDesenharFisioIntegrado). Listener substituído a cada render, sem duplicar.
+ ['mxDetalhesIntegrado','mxDetalhesRzGraficos'].forEach(function(id){
+  const det=document.getElementById(id);
+  if(!det) return;
+  if(det._rzToggleListener){ det.removeEventListener('toggle', det._rzToggleListener); }
+  det._rzToggleListener=function(){
+   if(det.open){ requestAnimationFrame(function(){ _rzRedesenharScatters(); }); }
+  };
+  det.addEventListener('toggle', det._rzToggleListener);
+ });
 
  // ── Curvas fisiológicas medianas (gráfico principal) ─────────────────────
  // mxCurvasFisioArea fica visível; mxVstDesenharCurvasFisio já gere display.
@@ -9446,8 +9477,11 @@ function mxVstSalvar(){
   .then(function(x){
    const d=x.d||{};
    if(x.ok && d.status==='ok' && d.persistido===true){
-    st.style.color='#3FB950';
-    st.textContent='✓ Verificação salva com sucesso';
+    const _legOk = d.legado_gravado!==false;
+    st.style.color=_legOk?'#3FB950':'#d29922';
+    st.textContent=_legOk
+     ? '✓ Verificação salva com sucesso'
+     : '⚠ Salvo no banco canónico, mas o legado NÃO foi gravado ou enviado ('+(d.erro_legado||'sem detalhe')+'). A análise integrada pode ficar indisponível até nova comparação.';
     _mxVstRenderComparacao(d, vstId);
     if(typeof mxVstCarregarConjuntosSalvos==='function') mxVstCarregarConjuntosSalvos();
    } else {

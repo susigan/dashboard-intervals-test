@@ -285,6 +285,29 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
         return False, f'{type(e).__name__}: {e}'
 
 
+class _CursorVazio:
+    """Substituto de cursor quando a tabela legada moxy_rpe não existe."""
+    def fetchall(self):
+        return []
+    def fetchone(self):
+        return None
+
+
+def _rpe_legado_cur(cn, sql, params=()):
+    """Leitura OPCIONAL do legado moxy_rpe.
+
+    moxy_rpe é fallback de compatibilidade. Se a tabela não existir (ou
+    qualquer erro de leitura), devolve cursor vazio e segue. O RPE já
+    calculado em memória (rpe_d1_blocos, rpe_fisiologia...) não depende disto
+    e a validação fisiológica nunca pode abortar por causa desta leitura.
+    """
+    try:
+        return cn.execute(sql, params)
+    except Exception as _e_rl:
+        print(f'[rpe legado] moxy_rpe indisponível, fallback ignorado: {_e_rl}')
+        return _CursorVazio()
+
+
 def _rpe_interval_resolver(cn, activity_id, start_time):
     """Resolve o RPE para um intervalo específico.
 
@@ -296,10 +319,16 @@ def _rpe_interval_resolver(cn, activity_id, start_time):
          retorna (rpe, 'legacy') ou (None, 'absent')
     """
     import drive_db_perfil as ddp
-    row = cn.execute(
-        "SELECT rpe FROM activity_interval_rpe "
-        "WHERE activity_id=? AND start_time=?",
-        (str(activity_id), float(start_time))).fetchone()
+    # Leitura de fallback: se a tabela legada faltar, trata como "absent"
+    # (mesmo resultado de "sem linha") em vez de abortar a comparação.
+    try:
+        row = cn.execute(
+            "SELECT rpe FROM activity_interval_rpe "
+            "WHERE activity_id=? AND start_time=?",
+            (str(activity_id), float(start_time))).fetchone()
+    except Exception as _e_iv:
+        print(f'[rpe legado] activity_interval_rpe indisponível: {_e_iv}')
+        return None, 'absent'
     if row is not None:
         rpe_val = row[0]
         if rpe_val == 0:
@@ -2464,7 +2493,7 @@ def registar(app):
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
             # Fallback legado
-            linhas = cn.execute(
+            linhas = _rpe_legado_cur(cn, 
                 "SELECT bloco_indice, rpe FROM moxy_rpe "
                 "WHERE activity_id=?", (aid,)).fetchall()
             rpe_legacy = {int(r[0]): r[1] for r in linhas}
@@ -2534,7 +2563,7 @@ def registar(app):
             cn = ddp.get_conn()
             # Mapa legado de fallback (moxy_rpe) — usado apenas quando
             # não existe registo em activity_interval_rpe para aquele bloco.
-            rpe_map_legacy = {int(r[0]): r[1] for r in cn.execute(
+            rpe_map_legacy = {int(r[0]): r[1] for r in _rpe_legado_cur(cn, 
                 "SELECT bloco_indice, rpe FROM moxy_rpe "
                 "WHERE activity_id=?", (aid,)).fetchall()}
 
@@ -2655,7 +2684,7 @@ def registar(app):
             # ── Modo LEVE: só moxy_rpe (já persistido, zero chamada API) ──
             def _processar_leve(activity_id, bp1_w, bp2_w):
                 """Agrega potência e RPE por zona usando moxy_rpe."""
-                blocos_db = cn.execute(
+                blocos_db = _rpe_legado_cur(cn, 
                     "SELECT bloco_indice, watts_medio, t0_s, t1_s, rpe "
                     "FROM moxy_rpe WHERE activity_id = ? ORDER BY bloco_indice",
                     (activity_id,)).fetchall()
@@ -3189,7 +3218,7 @@ def registar(app):
                     _bp2bpm = _ma2[1] if _ma2 else None
                     # Curva watts→RPE dos blocos MOXY (de moxy_rpe, não blocos_usados)
                     _blocos_moxy = _lim.get('blocos_usados') or []
-                    _rpe_moxy_rows = cn.execute(
+                    _rpe_moxy_rows = _rpe_legado_cur(cn, 
                         "SELECT bloco_indice, watts_medio, rpe FROM moxy_rpe "
                         "WHERE activity_id=? ORDER BY bloco_indice",
                         (mid,)).fetchall()
@@ -3364,7 +3393,7 @@ def registar(app):
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
             # Fallback legado (moxy_rpe por índice)
-            linhas = cn.execute(
+            linhas = _rpe_legado_cur(cn, 
                 "SELECT bloco_indice, rpe FROM moxy_rpe "
                 "WHERE activity_id=?", (vid,)).fetchall()
             rpe_legacy = {int(r[0]): r[1] for r in linhas}
@@ -3608,16 +3637,16 @@ def registar(app):
                 import vst_verificacao as _vst_live
 
                 # Carregar legado moxy_rpe para fallback
-                _rpe_d1_leg_idx = {int(r[0]): r[2] for r in cn.execute(
+                _rpe_d1_leg_idx = {int(r[0]): r[2] for r in _rpe_legado_cur(cn, 
                     "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
                     "WHERE activity_id=? ORDER BY bloco_indice", (moxy_id,)).fetchall()}
-                _rpe_d1_leg_t0  = {float(r[1]): r[2] for r in cn.execute(
+                _rpe_d1_leg_t0  = {float(r[1]): r[2] for r in _rpe_legado_cur(cn, 
                     "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
                     "WHERE activity_id=? AND t0_s IS NOT NULL", (moxy_id,)).fetchall()}
-                _rpe_d2_leg_idx = {int(r[0]): r[2] for r in cn.execute(
+                _rpe_d2_leg_idx = {int(r[0]): r[2] for r in _rpe_legado_cur(cn, 
                     "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
                     "WHERE activity_id=? ORDER BY bloco_indice", (vid,)).fetchall()}
-                _rpe_d2_leg_t0  = {float(r[1]): r[2] for r in cn.execute(
+                _rpe_d2_leg_t0  = {float(r[1]): r[2] for r in _rpe_legado_cur(cn, 
                     "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
                     "WHERE activity_id=? AND t0_s IS NOT NULL", (vid,)).fetchall()}
 
@@ -4809,13 +4838,13 @@ def registar(app):
         # Falha de cálculo (val_json e bpm_json None) NÃO apaga o legado existente.
         if not calc or (calc.get('val_json') is None and calc.get('bpm_json') is None):
             return
+        # Só colunas que EXISTEM em perfil.vst_conjuntos (perfil_schema.py).
+        # fisio_version / fisio_data_hash não existem aqui e não são enviadas.
         cn.execute(
             "UPDATE vst_conjuntos "
-            "SET validacao_fisiologica_json=?, fisio_version=?, "
-            "fisio_data_hash=?, bpm_vst_validacao_json=? "
+            "SET validacao_fisiologica_json=?, bpm_vst_validacao_json=? "
             "WHERE vst_activity_id=?",
-            (calc['val_json'], FISIO_ANALYSIS_VERSION, calc['data_hash'],
-             calc['bpm_json'], str(vst_id)))
+            (calc['val_json'], calc['bpm_json'], str(vst_id)))
         cn.commit()
 
     def _fisio_calcular_e_persistir(cn, moxy_id, vst_id,
@@ -5150,7 +5179,7 @@ def registar(app):
             rpe_d2_legacy_idx = {}
             rpe_d2_legacy_t0  = {}
             try:
-                rpe_rows_d1 = cn.execute(
+                rpe_rows_d1 = _rpe_legado_cur(cn, 
                     "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
                     "WHERE activity_id=? ORDER BY bloco_indice", (mid,)).fetchall()
                 rpe_d1_legacy_idx = {int(r[0]): r[2] for r in rpe_rows_d1}
@@ -5158,7 +5187,7 @@ def registar(app):
                 rpe_d1_legacy_t0  = {(r[1] or -1): r[2] for r in rpe_rows_d1 if r[1] is not None}
                 rpe_d1_legacy = rpe_d1_legacy_idx   # fallback principal por índice
 
-                rpe_rows_d2 = cn.execute(
+                rpe_rows_d2 = _rpe_legado_cur(cn, 
                     "SELECT bloco_indice, t0_s, rpe FROM moxy_rpe "
                     "WHERE activity_id=? ORDER BY bloco_indice", (vid,)).fetchall()
                 rpe_d2_legacy_idx = {int(r[0]): r[2] for r in rpe_rows_d2}
@@ -5778,7 +5807,7 @@ def registar(app):
 
                 # RPE do VST (Dia 2) por intervalo — de activity_interval_rpe
                 # Cache de moxy_rpe para fallback (evita N queries)
-                _rpe_legacy_t0 = {float(r[0]): r[1] for r in cn.execute(
+                _rpe_legacy_t0 = {float(r[0]): r[1] for r in _rpe_legado_cur(cn, 
                     "SELECT t0_s, rpe FROM moxy_rpe "
                     "WHERE activity_id=? AND t0_s IS NOT NULL",
                     (vid,)).fetchall()}
@@ -5861,25 +5890,28 @@ def registar(app):
             # deste projecto). _vst_persistir é partilhada com
             # /api/moxy/vst/gravar_analise para não duplicar lógica.
             try:
-                _vst_persistir(
-                    cn, vid, mid,
-                    comp_bp1, comp_bp2,
-                    comp_recovery_bp1, comp_recovery_bp2,
-                    limiter_bp1, limiter_bp2,
-                    hipotese_bp1, hipotese_bp2,
-                    rede_causal_d1=rede_causal_d1,
-                    comp_rpe_bp1=comp_rpe_bp1,
-                    comp_rpe_bp2=comp_rpe_bp2,
-                    limiter_sintese=limiter_sintese,
-                    recuperacao_final_dia2=dia2.get('recuperacao_final'),
-                    rpe_fisiologia=rpe_fisiologia)
-                # Legado de compatibilidade (perfil.vst_conjuntos). Usa os
-                # valores em memória de _fisio_c; não é relido para o canónico.
                 try:
-                    _fisio_persistir_legado(cn, vid, _fisio_c)
-                except Exception as _e_fl:
-                    print(f'[vst_comparar][fisio legado] AVISO: {_e_fl}')
-                ddp.upload()
+                    _vst_persistir(
+                        cn, vid, mid,
+                        comp_bp1, comp_bp2,
+                        comp_recovery_bp1, comp_recovery_bp2,
+                        limiter_bp1, limiter_bp2,
+                        hipotese_bp1, hipotese_bp2,
+                        rede_causal_d1=rede_causal_d1,
+                        comp_rpe_bp1=comp_rpe_bp1,
+                        comp_rpe_bp2=comp_rpe_bp2,
+                        limiter_sintese=limiter_sintese,
+                        recuperacao_final_dia2=dia2.get('recuperacao_final'),
+                        rpe_fisiologia=rpe_fisiologia)
+                    # Legado de compatibilidade (perfil.vst_conjuntos). Usa os
+                    # valores em memória de _fisio_c; não é relido para o canónico.
+                    try:
+                        _fisio_persistir_legado(cn, vid, _fisio_c)
+                    except Exception as _e_fl:
+                        print(f'[vst_comparar][fisio legado] AVISO: {_e_fl}')
+                    ddp.upload()
+                except Exception as _e_leg_top:
+                    print(f'[comparar][legado] AVISO (não bloqueia o canónico): {_e_leg_top}')
 
                 # Escrita canónica SÓ com persistir=1 (botão Salvar).
                 # Sincronizar/leitura não grava vst_results.

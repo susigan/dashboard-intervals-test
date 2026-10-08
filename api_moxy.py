@@ -5664,95 +5664,95 @@ def registar(app):
                 _vf_c_json = None
                 _bpm_vf_c_json = None
 
-            # ── Validação fisiológica automática ──────────────────────────
-            # Calcular e persistir validacao_fisiologica_json automaticamente
-            # após cada comparação. Não depende do utilizador ir a Gravar análise.
-            try:
-                # Obter dfa1, bp1/bp2 watts e métricas — já disponíveis de dia1_lim
-                _dfa1_c = dia1_lim.get('dfa1') or {}
-                _lc_c   = (dia1_lim.get('limiares_consenso') or {})
-                _bp1w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
-                           or (_lc_c.get('primeiro') or {}).get('mediana'))
-                _bp2w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
-                           or (_lc_c.get('segundo') or {}).get('mediana'))
-                _bp1bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_bpm')
-                _bp2bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_bpm')
-                # Métricas dos blocos do dia 2 — reutilizar dia2 já calculado
-                _bp1_m_c = (dia2.get('bp1') or {}).get('metricas') or []
-                _bp2_m_c = (dia2.get('bp2') or {}).get('metricas') or []
-
-                # RPE do VST (Dia 2) por intervalo — de activity_interval_rpe
-                # Cache de moxy_rpe para fallback (evita N queries)
-                _rpe_legacy_t0 = {float(r[0]): r[1] for r in cn.execute(
-                    "SELECT t0_s, rpe FROM moxy_rpe "
-                    "WHERE activity_id=? AND t0_s IS NOT NULL",
-                    (vid,)).fetchall()}
-
-                # Pré-carregar RPE do moxy_vst_historico.db para toda a atividade
-                _rpe_mv_cache = {}
+                # ── Validação fisiológica automática ──────────────────────────
+                # Calcular e persistir validacao_fisiologica_json automaticamente
+                # após cada comparação. Não depende do utilizador ir a Gravar análise.
                 try:
-                    import drive_db_moxy_vst as _mvdb_rpe_pre
-                    _cn_rpe_pre = _mvdb_rpe_pre.get_moxy_vst_conn()
-                    for _r in _cn_rpe_pre.execute(
-                        "SELECT start_time, rpe, rpe_status FROM activity_interval_rpe "
-                        "WHERE activity_id=?", (vid,)).fetchall():
-                        _rpe_mv_cache[float(_r[0])] = (_r[1], _r[2])
-                    _cn_rpe_pre.close()
-                except Exception:
-                    pass
+                    # Obter dfa1, bp1/bp2 watts e métricas — já disponíveis de dia1_lim
+                    _dfa1_c = dia1_lim.get('dfa1') or {}
+                    _lc_c   = (dia1_lim.get('limiares_consenso') or {})
+                    _bp1w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
+                               or (_lc_c.get('primeiro') or {}).get('mediana'))
+                    _bp2w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
+                               or (_lc_c.get('segundo') or {}).get('mediana'))
+                    _bp1bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_bpm')
+                    _bp2bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_bpm')
+                    # Métricas dos blocos do dia 2 — reutilizar dia2 já calculado
+                    _bp1_m_c = (dia2.get('bp1') or {}).get('metricas') or []
+                    _bp2_m_c = (dia2.get('bp2') or {}).get('metricas') or []
 
-                def _rpe_c(metricas_lista, aid):
-                    rpes = []
-                    for _m in metricas_lista:
-                        _t0 = _m.get('t0') or _m.get('t0_s')
-                        if _t0 is None:
-                            rpes.append(None); continue
-                        _t0f = float(_t0)
-                        # Fonte 1: moxy_vst_historico.db (banco canônico)
-                        _rv = None
-                        for _t0_mv, (_rpe_mv, _stat_mv) in _rpe_mv_cache.items():
-                            if abs(_t0_mv - _t0f) <= 1 and _stat_mv != 'deleted':
-                                _rv = _rpe_mv; break
-                        # Fonte 2: activity_interval_rpe do perfil_historico.db
-                        if _rv is None:
-                            _rv_pf, _fonte_pf = _rpe_interval_resolver(cn, aid, _t0f)
-                            if _fonte_pf == 'new':
-                                _rv = _rv_pf
-                        # Fonte 3: moxy_rpe (legado) por t0_s
-                        if _rv is None:
-                            for _t0_leg, _rpe_leg in _rpe_legacy_t0.items():
-                                if abs(_t0_leg - _t0f) <= 1:
-                                    _rv = _rpe_leg; break
-                        rpes.append(_rv)
-                    return rpes
-                _rpe_c_bp1 = _rpe_c(_bp1_m_c, vid)
-                _rpe_c_bp2 = _rpe_c(_bp2_m_c, vid)
+                    # RPE do VST (Dia 2) por intervalo — de activity_interval_rpe
+                    # Cache de moxy_rpe para fallback (evita N queries)
+                    _rpe_legacy_t0 = {float(r[0]): r[1] for r in cn.execute(
+                        "SELECT t0_s, rpe FROM moxy_rpe "
+                        "WHERE activity_id=? AND t0_s IS NOT NULL",
+                        (vid,)).fetchall()}
 
-                # Curva watts->RPE do MOXY (Dia 1) — de activity_interval_rpe.
-                # Usada por validar_fisiologica_vst para calcular rpe_esperado_potencia
-                # e rpe_diferenca em cada intervalo da tabela BP1/BP2.
-                # Tambem entra no hash para invalidar a analise quando o RPE do MOXY mudar.
-                _curva_moxy_rpe = []
-                for _b1 in ons1:
-                    _t0_b1 = _b1.get('t0')
-                    _w_b1  = (_b1.get('watts') or _b1.get('watts_medio_da_api'))
-                    if _t0_b1 is not None and _w_b1 is not None:
-                        _rv_b1, _ = _rpe_interval_resolver(cn, mid, float(_t0_b1))
-                        if _rv_b1 is not None:
-                            _curva_moxy_rpe.append((_w_b1, _rv_b1))
+                    # Pré-carregar RPE do moxy_vst_historico.db para toda a atividade
+                    _rpe_mv_cache = {}
+                    try:
+                        import drive_db_moxy_vst as _mvdb_rpe_pre
+                        _cn_rpe_pre = _mvdb_rpe_pre.get_moxy_vst_conn()
+                        for _r in _cn_rpe_pre.execute(
+                            "SELECT start_time, rpe, rpe_status FROM activity_interval_rpe "
+                            "WHERE activity_id=?", (vid,)).fetchall():
+                            _rpe_mv_cache[float(_r[0])] = (_r[1], _r[2])
+                        _cn_rpe_pre.close()
+                    except Exception:
+                        pass
 
-                _fisio_calcular_e_persistir(
-                    cn, mid, vid,
-                    _bp1w_c, _bp2w_c, _bp1bpm_c, _bp2bpm_c,
-                    _dfa1_c, _bp1_m_c, _bp2_m_c,
-                    curva_rpe=_curva_moxy_rpe if _curva_moxy_rpe else None,
-                    rpe_vst_bp1=_rpe_c_bp1,
-                    rpe_vst_bp2=_rpe_c_bp2)
-                # upload feito pelo bloco _vst_persistir/ddp.upload() acima
-            except Exception as _e_fisio_auto:
-                import traceback as _tb_fa
-                print(f'[vst_comparar][fisio auto] AVISO: {_e_fisio_auto}\n'
-                      f'{_tb_fa.format_exc()}')
+                    def _rpe_c(metricas_lista, aid):
+                        rpes = []
+                        for _m in metricas_lista:
+                            _t0 = _m.get('t0') or _m.get('t0_s')
+                            if _t0 is None:
+                                rpes.append(None); continue
+                            _t0f = float(_t0)
+                            # Fonte 1: moxy_vst_historico.db (banco canônico)
+                            _rv = None
+                            for _t0_mv, (_rpe_mv, _stat_mv) in _rpe_mv_cache.items():
+                                if abs(_t0_mv - _t0f) <= 1 and _stat_mv != 'deleted':
+                                    _rv = _rpe_mv; break
+                            # Fonte 2: activity_interval_rpe do perfil_historico.db
+                            if _rv is None:
+                                _rv_pf, _fonte_pf = _rpe_interval_resolver(cn, aid, _t0f)
+                                if _fonte_pf == 'new':
+                                    _rv = _rv_pf
+                            # Fonte 3: moxy_rpe (legado) por t0_s
+                            if _rv is None:
+                                for _t0_leg, _rpe_leg in _rpe_legacy_t0.items():
+                                    if abs(_t0_leg - _t0f) <= 1:
+                                        _rv = _rpe_leg; break
+                            rpes.append(_rv)
+                        return rpes
+                    _rpe_c_bp1 = _rpe_c(_bp1_m_c, vid)
+                    _rpe_c_bp2 = _rpe_c(_bp2_m_c, vid)
+
+                    # Curva watts->RPE do MOXY (Dia 1) — de activity_interval_rpe.
+                    # Usada por validar_fisiologica_vst para calcular rpe_esperado_potencia
+                    # e rpe_diferenca em cada intervalo da tabela BP1/BP2.
+                    # Tambem entra no hash para invalidar a analise quando o RPE do MOXY mudar.
+                    _curva_moxy_rpe = []
+                    for _b1 in ons1:
+                        _t0_b1 = _b1.get('t0')
+                        _w_b1  = (_b1.get('watts') or _b1.get('watts_medio_da_api'))
+                        if _t0_b1 is not None and _w_b1 is not None:
+                            _rv_b1, _ = _rpe_interval_resolver(cn, mid, float(_t0_b1))
+                            if _rv_b1 is not None:
+                                _curva_moxy_rpe.append((_w_b1, _rv_b1))
+
+                    _fisio_calcular_e_persistir(
+                        cn, mid, vid,
+                        _bp1w_c, _bp2w_c, _bp1bpm_c, _bp2bpm_c,
+                        _dfa1_c, _bp1_m_c, _bp2_m_c,
+                        curva_rpe=_curva_moxy_rpe if _curva_moxy_rpe else None,
+                        rpe_vst_bp1=_rpe_c_bp1,
+                        rpe_vst_bp2=_rpe_c_bp2)
+                    # upload feito pelo bloco _vst_persistir/ddp.upload() acima
+                except Exception as _e_fisio_auto:
+                    import traceback as _tb_fa
+                    print(f'[vst_comparar][fisio auto] AVISO: {_e_fisio_auto}\n'
+                          f'{_tb_fa.format_exc()}')
 
 
                 # Só copiar o resultado recém-calculado; se o cálculo falhar,
@@ -5775,7 +5775,7 @@ def registar(app):
                     _cn_c = _mvdb_c.get_moxy_vst_conn()
                     _cn_c.row_factory = __import__('sqlite3').Row
 
-                        # Metadados vêm da base local de atividades, já usada pelo dashboard.
+                    # Metadados vêm da base local de atividades, já usada pelo dashboard.
                     # TYPE_MAP converte VirtualSki -> Ski (e equivalentes) sem inferência.
                     import db as _db_act_meta
                     from config import TYPE_MAP as _TYPE_MAP_ACT

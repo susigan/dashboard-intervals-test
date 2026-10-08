@@ -582,6 +582,41 @@ def insert_resultado(conn, conjunto_id, resultado_json=None,
     return next_version
 
 
+def upsert_moxy_analysis(conn, activity_id, bp1_w=None, bp1_bpm=None,
+                         bp2_w=None, bp2_bpm=None, json_completo=None,
+                         analysis_version=None, analyzed_at=None):
+    """Grava a análise MOXY canônica em moxy_analyses (única escrita viva).
+
+    Versionamento: MAX(version)+1, mas só quando algo mudou em relação à
+    versão mais recente (analysis_version, bps, bpm ou json_completo).
+    Se nada mudou, não cria versão nova. Devolve (version, criou_nova).
+    """
+    def _j(v):
+        if v is None: return None
+        return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+
+    atual = conn.execute(
+        "SELECT version, bp1_w, bp1_bpm, bp2_w, bp2_bpm, json_completo, "
+        "       analysis_version "
+        "FROM moxy_analyses WHERE activity_id=? "
+        "ORDER BY version DESC LIMIT 1",
+        (str(activity_id),)).fetchone()
+
+    novo = (bp1_w, bp1_bpm, bp2_w, bp2_bpm, _j(json_completo), analysis_version)
+    if atual is not None and tuple(atual[1:]) == novo:
+        return atual[0], False
+
+    next_version = ((atual[0] if atual else 0) or 0) + 1
+    conn.execute(
+        """INSERT INTO moxy_analyses
+               (activity_id, version, bp1_w, bp1_bpm, bp2_w, bp2_bpm,
+                json_completo, analysis_version, analyzed_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (str(activity_id), next_version, bp1_w, bp1_bpm, bp2_w, bp2_bpm,
+         _j(json_completo), analysis_version, analyzed_at))
+    return next_version, True
+
+
 def get_resultado_atual(conn, moxy_activity_id, vst_activity_id):
     """Devolve o resultado mais recente (maior version) para um conjunto.
     Retorna dict ou None.

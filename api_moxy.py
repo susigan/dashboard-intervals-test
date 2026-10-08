@@ -1930,8 +1930,15 @@ def registar(app):
 
 
     @app.route('/api/moxy/analise/<path:activity_id>', methods=['POST'])
-    def api_moxy_guardar_analise(activity_id):
+    def api_moxy_guardar_analise(activity_id, canonical_conn=None,
+                                 canonical_out=None):
         """Corre tudo e grava o resultado.
+
+        canonical_conn: conexão aberta de moxy_vst_historico.db. Se vier,
+          grava também moxy_analyses (canónico) com os MESMOS valores
+          calculados aqui. Chamado por /comparar antes do commit canónico.
+        canonical_out: dict que recebe bp1_w/bp1_bpm/bp2_w/bp2_bpm já
+          filtrados pelas regras de FC, para o vst_results usar os mesmos.
 
         Gravar de novo a mesma actividade SUBSTITUI: quando o método
         melhora, basta voltar a correr e o registo fica com a versão nova.
@@ -2022,6 +2029,40 @@ def registar(app):
                       else True)
             if not _fc_ok:
                 bp1_bpm = bp2_bpm = None
+
+            # Valores finais (após as regras de FC) — únicos usados para
+            # moxy_analyses canónico e para vst_results.bp1_bpm/bp2_bpm.
+            if canonical_out is not None:
+                canonical_out.update(bp1_w=bp1, bp1_bpm=bp1_bpm,
+                                     bp2_w=bp2, bp2_bpm=bp2_bpm)
+
+            # Escrita canónica: moxy_analyses. json_completo leva os
+            # limitadores no topo porque o Training (P1/P2) extrai daí.
+            # Sem truncagem: JSON truncado fica inválido.
+            if canonical_conn is not None:
+                try:
+                    import drive_db_moxy_vst as _mvdb_an
+                    _json_canon = {
+                        'rede_limitador': rl.get('sistema'),
+                        'us_limitador': (ip.get('us') or {}).get('limitador'),
+                        'pc_limitador': (ip.get('pc') or {}).get('limitador'),
+                        'rede_controlo_pct': rl.get('controlo_pct') or {},
+                        'limiares': lim, 'i515': itp, 'rede': rd,
+                    }
+                    _ver_an, _nova_an = _mvdb_an.upsert_moxy_analysis(
+                        canonical_conn, aid,
+                        bp1_w=bp1, bp1_bpm=bp1_bpm,
+                        bp2_w=bp2, bp2_bpm=bp2_bpm,
+                        json_completo=_json_canon,
+                        analysis_version=VERSAO_ANALISE,
+                        analyzed_at=datetime.now().strftime(
+                            '%Y-%m-%d %H:%M:%S'))
+                    print(f'[moxy_analyses][canonico] {aid} v{_ver_an} '
+                          f'{"nova" if _nova_an else "inalterada"}')
+                except Exception as _e_can:
+                    print(f'[moxy_analyses][canonico] ERRO {aid}: {_e_can}')
+                    if canonical_out is not None:
+                        canonical_out['erro'] = str(_e_can)
 
             s2 = MX_SESSOES_CACHE.get(aid, {})
             _vo2 = lim.get('vo2max_previsto') or {}
@@ -3049,9 +3090,16 @@ def registar(app):
             try:
                 import nirs_breakpoints as _nbk_val
                 # Ler bp1_bpm/bp2_bpm de moxy_analises (gravados na aba Limiar)
-                _ma = cn.execute(
+                # moxy_analyses é canónica (moxy_vst_historico.db): ler a
+                # versão mais recente. Antes lia da base legada, onde a
+                # tabela existe vazia, e o bpm nunca aparecia.
+                import drive_db_moxy_vst as _mvdb_g
+                _cn_g = _mvdb_g.get_moxy_vst_conn()
+                _ma = _cn_g.execute(
                     "SELECT bp1_bpm, bp2_bpm FROM moxy_analyses "
-                    "WHERE activity_id=? LIMIT 1", (mid,)).fetchone()
+                    "WHERE activity_id=? ORDER BY version DESC LIMIT 1",
+                    (mid,)).fetchone()
+                _cn_g.close()
                 _bp1_bpm_val = _ma[0] if _ma else None
                 _bp2_bpm_val = _ma[1] if _ma else None
                 # Obter métricas dos intervalos BP1/BP2 via api_moxy_vst_analise
@@ -3098,10 +3146,15 @@ def registar(app):
             # ── Validação fisiológica complementar (HRVT + RPE) ─────────
             _val_fisio_resultado = None
             try:
-                # Ler bp1_bpm/bp2_bpm e bp1_w/bp2_w de moxy_analises
-                _ma2 = cn.execute(
+                # bp1_bpm/bp2_bpm/bp1_w/bp2_w da versão mais recente de
+                # moxy_analyses (canónica)
+                import drive_db_moxy_vst as _mvdb_g2
+                _cn_g2 = _mvdb_g2.get_moxy_vst_conn()
+                _ma2 = _cn_g2.execute(
                     "SELECT bp1_bpm, bp2_bpm, bp1_w, bp2_w "
-                    "FROM moxy_analyses WHERE activity_id=? LIMIT 1", (mid,)).fetchone()
+                    "FROM moxy_analyses WHERE activity_id=? "
+                    "ORDER BY version DESC LIMIT 1", (mid,)).fetchone()
+                _cn_g2.close()
                 # dfa1: obtido via api_moxy_limiares do mesmo mid
                 _lim_resp = api_moxy_limiares(mid)
                 _lim = (_lim_resp[0].get_json()
@@ -4653,28 +4706,21 @@ def registar(app):
             _json.dumps(payload, sort_keys=True, default=str).encode()
         ).hexdigest()[:16]
 
-    def _fisio_calcular_e_persistir(cn, moxy_id, vst_id,
-                                    bp1_w, bp2_w, bp1_bpm, bp2_bpm,
-                                    dfa1, bp1_m, bp2_m,
-                                    curva_rpe=None, rpe_vst_bp1=None, rpe_vst_bp2=None):
-        """Única fonte de verdade para:
-          1. Calcular validacao_fisiologica via validar_fisiologica_vst()
-          2. Gerar fisio_version + fisio_data_hash
-          3. Persistir em vst_conjuntos (commit local)
-          4. Retornar o resultado
+    def _fisio_calcular(moxy_id, vst_id,
+                        bp1_w, bp2_w, bp1_bpm, bp2_bpm,
+                        dfa1, bp1_m, bp2_m,
+                        curva_rpe=None, rpe_vst_bp1=None, rpe_vst_bp2=None):
+        """Calcula a validação fisiológica e BPM SEM tocar em nenhuma base.
 
-        Chamada por:
-          - api_moxy_vst_comparar (automático após cada comparação)
-          - api_moxy_vst_gravar_analise (explícito)
-          - api_moxy_vst_resultado (quando detect outdated)
+        Devolve dict em memória (ou None se falhar):
+          val, data_hash          → validacao_fisiologica (objeto)
+          val_json                → validacao_fisiologica_json (string)
+          bpm, bpm_json           → bpm_vst_validacao (objeto / string)
 
-        Nunca recalcula calc. DFA/HRVT — apenas usa o dfa1 já calculado.
+        Usado por /comparar para montar a versão canónica completa de
+        vst_results. Não lê de base alguma.
 
-        REGRA ARQUITECTURAL:
-          Esta função NÃO faz upload para o Google Drive.
-          O upload é responsabilidade exclusiva do fluxo de gravação
-          que recebeu/modificou dados do utilizador (endpoints POST).
-          Funções de análise apenas lêem, calculam e fazem commit local.
+        Nunca recalcula DFA/HRVT — apenas usa o dfa1 já calculado.
         """
         try:
             import utils.nirs_breakpoints as _nbk
@@ -4702,6 +4748,7 @@ def registar(app):
             # Validação BPM MOXY × VST — executada com os mesmos dados
             # já disponíveis: bp1_bpm, bp2_bpm, bp1_m, bp2_m.
             # Persiste no mesmo UPDATE para manter atomicidade.
+            bpm_val = None
             bpm_val_json = None
             try:
                 bpm_val = _nbk.validar_bpm_vst(
@@ -4710,21 +4757,54 @@ def registar(app):
             except Exception as _e_bpm:
                 print(f'[fisio] validar_bpm_vst falhou: {_e_bpm}')
 
-            cn.execute(
-                "UPDATE vst_conjuntos "
-                "SET validacao_fisiologica_json=?, fisio_version=?, "
-                "fisio_data_hash=?, bpm_vst_validacao_json=? "
-                "WHERE vst_activity_id=?",
-                (val_json, FISIO_ANALYSIS_VERSION, data_hash,
-                 bpm_val_json, str(vst_id)))
-            cn.commit()
-            # NÃO chamar ddp.upload() aqui — ver docstring acima.
-            return val_fisio, data_hash
+            return {'val': val_fisio, 'data_hash': data_hash,
+                    'val_json': val_json, 'bpm': bpm_val,
+                    'bpm_json': bpm_val_json}
         except Exception as _e_fisio:
             import traceback as _tb_f
-            print(f'[fisio] _fisio_calcular_e_persistir falhou: {_e_fisio}\n'
+            print(f'[fisio] _fisio_calcular falhou: {_e_fisio}\n'
                   f'{_tb_f.format_exc()}')
+            return None
+
+    def _fisio_persistir_legado(cn, vst_id, calc):
+        """COMPATIBILIDADE da UI legada: grava em perfil.vst_conjuntos.
+
+        NÃO é fonte para vst_results. /comparar nunca relê isto para
+        montar o canónico. Quem chama faz o upload da base legada.
+        """
+        if not calc:
+            return
+        cn.execute(
+            "UPDATE vst_conjuntos "
+            "SET validacao_fisiologica_json=?, fisio_version=?, "
+            "fisio_data_hash=?, bpm_vst_validacao_json=? "
+            "WHERE vst_activity_id=?",
+            (calc['val_json'], FISIO_ANALYSIS_VERSION, calc['data_hash'],
+             calc['bpm_json'], str(vst_id)))
+        cn.commit()
+
+    def _fisio_calcular_e_persistir(cn, moxy_id, vst_id,
+                                    bp1_w, bp2_w, bp1_bpm, bp2_bpm,
+                                    dfa1, bp1_m, bp2_m,
+                                    curva_rpe=None, rpe_vst_bp1=None,
+                                    rpe_vst_bp2=None):
+        """Wrapper de compatibilidade para GET vst_resultado e gravar_analise:
+        calcula e grava no legado. Devolve (val_fisio, data_hash).
+
+        Não faz upload (regra: quem recebe o POST faz upload).
+        """
+        calc = _fisio_calcular(moxy_id, vst_id, bp1_w, bp2_w, bp1_bpm,
+                               bp2_bpm, dfa1, bp1_m, bp2_m,
+                               curva_rpe=curva_rpe,
+                               rpe_vst_bp1=rpe_vst_bp1,
+                               rpe_vst_bp2=rpe_vst_bp2)
+        if not calc:
             return None, None
+        try:
+            _fisio_persistir_legado(cn, vst_id, calc)
+        except Exception as _e_p:
+            print(f'[fisio] persistir legado falhou: {_e_p}')
+        return calc['val'], calc['data_hash']
 
 
 
@@ -5637,6 +5717,99 @@ def registar(app):
                     'motivo_ausencia': f'{type(_e_rede).__name__}: {_e_rede}',
                 }
 
+            # ── Cálculo fisiológico em MEMÓRIA (antes de qualquer escrita) ──
+            # vst_results recebe a versão completa numa única escrita. Esta
+            # validação não lê de base alguma: usa só dados já calculados.
+            _fisio_c = None
+            # Calcular e persistir validacao_fisiologica_json automaticamente
+            # após cada comparação. Não depende do utilizador ir a Gravar análise.
+            try:
+                # Obter dfa1, bp1/bp2 watts e métricas — já disponíveis de dia1_lim
+                _dfa1_c = dia1_lim.get('dfa1') or {}
+                _lc_c   = (dia1_lim.get('limiares_consenso') or {})
+                _bp1w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
+                           or (_lc_c.get('primeiro') or {}).get('mediana'))
+                _bp2w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
+                           or (_lc_c.get('segundo') or {}).get('mediana'))
+                _bp1bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_bpm')
+                _bp2bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_bpm')
+                # Métricas dos blocos do dia 2 — reutilizar dia2 já calculado
+                _bp1_m_c = (dia2.get('bp1') or {}).get('metricas') or []
+                _bp2_m_c = (dia2.get('bp2') or {}).get('metricas') or []
+
+                # RPE do VST (Dia 2) por intervalo — de activity_interval_rpe
+                # Cache de moxy_rpe para fallback (evita N queries)
+                _rpe_legacy_t0 = {float(r[0]): r[1] for r in cn.execute(
+                    "SELECT t0_s, rpe FROM moxy_rpe "
+                    "WHERE activity_id=? AND t0_s IS NOT NULL",
+                    (vid,)).fetchall()}
+
+                # Pré-carregar RPE do moxy_vst_historico.db para toda a atividade
+                _rpe_mv_cache = {}
+                try:
+                    import drive_db_moxy_vst as _mvdb_rpe_pre
+                    _cn_rpe_pre = _mvdb_rpe_pre.get_moxy_vst_conn()
+                    for _r in _cn_rpe_pre.execute(
+                        "SELECT start_time, rpe, rpe_status FROM activity_interval_rpe "
+                        "WHERE activity_id=?", (vid,)).fetchall():
+                        _rpe_mv_cache[float(_r[0])] = (_r[1], _r[2])
+                    _cn_rpe_pre.close()
+                except Exception:
+                    pass
+
+                def _rpe_c(metricas_lista, aid):
+                    rpes = []
+                    for _m in metricas_lista:
+                        _t0 = _m.get('t0') or _m.get('t0_s')
+                        if _t0 is None:
+                            rpes.append(None); continue
+                        _t0f = float(_t0)
+                        # Fonte 1: moxy_vst_historico.db (banco canônico)
+                        _rv = None
+                        for _t0_mv, (_rpe_mv, _stat_mv) in _rpe_mv_cache.items():
+                            if abs(_t0_mv - _t0f) <= 1 and _stat_mv != 'deleted':
+                                _rv = _rpe_mv; break
+                        # Fonte 2: activity_interval_rpe do perfil_historico.db
+                        if _rv is None:
+                            _rv_pf, _fonte_pf = _rpe_interval_resolver(cn, aid, _t0f)
+                            if _fonte_pf == 'new':
+                                _rv = _rv_pf
+                        # Fonte 3: moxy_rpe (legado) por t0_s
+                        if _rv is None:
+                            for _t0_leg, _rpe_leg in _rpe_legacy_t0.items():
+                                if abs(_t0_leg - _t0f) <= 1:
+                                    _rv = _rpe_leg; break
+                        rpes.append(_rv)
+                    return rpes
+                _rpe_c_bp1 = _rpe_c(_bp1_m_c, vid)
+                _rpe_c_bp2 = _rpe_c(_bp2_m_c, vid)
+
+                # Curva watts->RPE do MOXY (Dia 1) — de activity_interval_rpe.
+                # Usada por validar_fisiologica_vst para calcular rpe_esperado_potencia
+                # e rpe_diferenca em cada intervalo da tabela BP1/BP2.
+                # Tambem entra no hash para invalidar a analise quando o RPE do MOXY mudar.
+                _curva_moxy_rpe = []
+                for _b1 in ons1:
+                    _t0_b1 = _b1.get('t0')
+                    _w_b1  = (_b1.get('watts') or _b1.get('watts_medio_da_api'))
+                    if _t0_b1 is not None and _w_b1 is not None:
+                        _rv_b1, _ = _rpe_interval_resolver(cn, mid, float(_t0_b1))
+                        if _rv_b1 is not None:
+                            _curva_moxy_rpe.append((_w_b1, _rv_b1))
+
+                _fisio_c = _fisio_calcular(
+                    mid, vid,
+                    _bp1w_c, _bp2w_c, _bp1bpm_c, _bp2bpm_c,
+                    _dfa1_c, _bp1_m_c, _bp2_m_c,
+                    curva_rpe=_curva_moxy_rpe if _curva_moxy_rpe else None,
+                    rpe_vst_bp1=_rpe_c_bp1,
+                    rpe_vst_bp2=_rpe_c_bp2)
+            except Exception as _e_fisio_auto:
+                import traceback as _tb_fa
+                print(f'[vst_comparar][fisio auto] AVISO: {_e_fisio_auto}\n'
+                      f'{_tb_fa.format_exc()}')
+
+
             # snapshot do resultado -- so' os campos ja' calculados
             # acima, nada recalculado; falha aqui nao deve derrubar a
             # resposta (melhor esforco, como o resto da persistencia
@@ -5655,119 +5828,13 @@ def registar(app):
                     limiter_sintese=limiter_sintese,
                     recuperacao_final_dia2=dia2.get('recuperacao_final'),
                     rpe_fisiologia=rpe_fisiologia)
+                # Legado de compatibilidade (perfil.vst_conjuntos). Usa os
+                # valores em memória de _fisio_c; não é relido para o canónico.
+                try:
+                    _fisio_persistir_legado(cn, vid, _fisio_c)
+                except Exception as _e_fl:
+                    print(f'[vst_comparar][fisio legado] AVISO: {_e_fl}')
                 ddp.upload()
-
-                # ── Resultado fisiológico para a mesma versão canônica ───────
-                # O cálculo continua usando perfil_historico.db como fonte de
-                # persistência da validação; os JSONs são lidos imediatamente
-                # e gravados na MESMA versão de vst_results.
-                _vf_c_json = None
-                _bpm_vf_c_json = None
-
-                # ── Validação fisiológica automática ──────────────────────────
-                # Calcular e persistir validacao_fisiologica_json automaticamente
-                # após cada comparação. Não depende do utilizador ir a Gravar análise.
-                try:
-                    # Obter dfa1, bp1/bp2 watts e métricas — já disponíveis de dia1_lim
-                    _dfa1_c = dia1_lim.get('dfa1') or {}
-                    _lc_c   = (dia1_lim.get('limiares_consenso') or {})
-                    _bp1w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_w')
-                               or (_lc_c.get('primeiro') or {}).get('mediana'))
-                    _bp2w_c = ((dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_w')
-                               or (_lc_c.get('segundo') or {}).get('mediana'))
-                    _bp1bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp1_bpm')
-                    _bp2bpm_c = (dia1_lim.get('bp_moxy_sem_restricao') or {}).get('bp2_bpm')
-                    # Métricas dos blocos do dia 2 — reutilizar dia2 já calculado
-                    _bp1_m_c = (dia2.get('bp1') or {}).get('metricas') or []
-                    _bp2_m_c = (dia2.get('bp2') or {}).get('metricas') or []
-
-                    # RPE do VST (Dia 2) por intervalo — de activity_interval_rpe
-                    # Cache de moxy_rpe para fallback (evita N queries)
-                    _rpe_legacy_t0 = {float(r[0]): r[1] for r in cn.execute(
-                        "SELECT t0_s, rpe FROM moxy_rpe "
-                        "WHERE activity_id=? AND t0_s IS NOT NULL",
-                        (vid,)).fetchall()}
-
-                    # Pré-carregar RPE do moxy_vst_historico.db para toda a atividade
-                    _rpe_mv_cache = {}
-                    try:
-                        import drive_db_moxy_vst as _mvdb_rpe_pre
-                        _cn_rpe_pre = _mvdb_rpe_pre.get_moxy_vst_conn()
-                        for _r in _cn_rpe_pre.execute(
-                            "SELECT start_time, rpe, rpe_status FROM activity_interval_rpe "
-                            "WHERE activity_id=?", (vid,)).fetchall():
-                            _rpe_mv_cache[float(_r[0])] = (_r[1], _r[2])
-                        _cn_rpe_pre.close()
-                    except Exception:
-                        pass
-
-                    def _rpe_c(metricas_lista, aid):
-                        rpes = []
-                        for _m in metricas_lista:
-                            _t0 = _m.get('t0') or _m.get('t0_s')
-                            if _t0 is None:
-                                rpes.append(None); continue
-                            _t0f = float(_t0)
-                            # Fonte 1: moxy_vst_historico.db (banco canônico)
-                            _rv = None
-                            for _t0_mv, (_rpe_mv, _stat_mv) in _rpe_mv_cache.items():
-                                if abs(_t0_mv - _t0f) <= 1 and _stat_mv != 'deleted':
-                                    _rv = _rpe_mv; break
-                            # Fonte 2: activity_interval_rpe do perfil_historico.db
-                            if _rv is None:
-                                _rv_pf, _fonte_pf = _rpe_interval_resolver(cn, aid, _t0f)
-                                if _fonte_pf == 'new':
-                                    _rv = _rv_pf
-                            # Fonte 3: moxy_rpe (legado) por t0_s
-                            if _rv is None:
-                                for _t0_leg, _rpe_leg in _rpe_legacy_t0.items():
-                                    if abs(_t0_leg - _t0f) <= 1:
-                                        _rv = _rpe_leg; break
-                            rpes.append(_rv)
-                        return rpes
-                    _rpe_c_bp1 = _rpe_c(_bp1_m_c, vid)
-                    _rpe_c_bp2 = _rpe_c(_bp2_m_c, vid)
-
-                    # Curva watts->RPE do MOXY (Dia 1) — de activity_interval_rpe.
-                    # Usada por validar_fisiologica_vst para calcular rpe_esperado_potencia
-                    # e rpe_diferenca em cada intervalo da tabela BP1/BP2.
-                    # Tambem entra no hash para invalidar a analise quando o RPE do MOXY mudar.
-                    _curva_moxy_rpe = []
-                    for _b1 in ons1:
-                        _t0_b1 = _b1.get('t0')
-                        _w_b1  = (_b1.get('watts') or _b1.get('watts_medio_da_api'))
-                        if _t0_b1 is not None and _w_b1 is not None:
-                            _rv_b1, _ = _rpe_interval_resolver(cn, mid, float(_t0_b1))
-                            if _rv_b1 is not None:
-                                _curva_moxy_rpe.append((_w_b1, _rv_b1))
-
-                    _fisio_calcular_e_persistir(
-                        cn, mid, vid,
-                        _bp1w_c, _bp2w_c, _bp1bpm_c, _bp2bpm_c,
-                        _dfa1_c, _bp1_m_c, _bp2_m_c,
-                        curva_rpe=_curva_moxy_rpe if _curva_moxy_rpe else None,
-                        rpe_vst_bp1=_rpe_c_bp1,
-                        rpe_vst_bp2=_rpe_c_bp2)
-                    # upload feito pelo bloco _vst_persistir/ddp.upload() acima
-                except Exception as _e_fisio_auto:
-                    import traceback as _tb_fa
-                    print(f'[vst_comparar][fisio auto] AVISO: {_e_fisio_auto}\n'
-                          f'{_tb_fa.format_exc()}')
-
-
-                # Só copiar o resultado recém-calculado; se o cálculo falhar,
-                # não reaproveitar validação antiga da perfil_historico.db.
-                try:
-                    _vf_row_c = cn.execute(
-                        "SELECT validacao_fisiologica_json, bpm_vst_validacao_json "
-                        "FROM vst_conjuntos WHERE vst_activity_id=?",
-                        (str(vid),)).fetchone()
-                    if _vf_row_c and _vf_row_c[0]:
-                        _vf_c_json = _vf_row_c[0]
-                    if _vf_row_c and _vf_row_c[1]:
-                        _bpm_vf_c_json = _vf_row_c[1]
-                except Exception as _e_vf_read_c:
-                    print(f'[vst_comparar][fisio readback canonical] AVISO: {_e_vf_read_c}')
 
                 # ── Persistir no moxy_vst_historico.db (banco canônico) ──────
                 try:
@@ -5891,7 +5958,20 @@ def registar(app):
                         dia1_bp2_w=comp_bp2.get('dia1_bp2_w') if comp_bp2 else None,
                         dia2_bp2_w=comp_bp2.get('dia2_bp2_w') if comp_bp2 else None)
 
+                    # 5b. Análise MOXY canónica (moxy_analyses). Mesma computação
+                    # de api_moxy_guardar_analise: não há 2ª análise. Também faz a
+                    # escrita legada de compatibilidade (moxy_analises), que NÃO
+                    # é relida. Acontece ANTES do insert_resultado para que os
+                    # bp_bpm usados em vst_results sejam os já filtrados por FC.
+                    _an_out = {}
+                    try:
+                        api_moxy_guardar_analise(
+                            mid, canonical_conn=_cn_c, canonical_out=_an_out)
+                    except Exception as _e_an:
+                        print(f'[comparar][moxy_analyses] AVISO: {_e_an}')
+
                     # 6. Resultado (nova versão — nunca sobrescreve versões anteriores)
+                    # Versão ÚNICA e completa: bps, bpm, RPE e validações.
                     if _cj_id:
                         import json as _json_c
                         _mvdb_c.insert_resultado(
@@ -5909,17 +5989,17 @@ def registar(app):
                                 'recuperacao_final_dia2': dia2.get('recuperacao_final'),
                                 'rpe_fisiologia': rpe_fisiologia,
                             },
-                            validacao_fisiologica_json=_vf_c_json,
-                            bpm_vst_validacao_json=_bpm_vf_c_json,
-                            bp1_bpm=_bp1bpm_c,
-                            bp2_bpm=_bp2bpm_c,
                             bp1_w=(comp_bp1 or {}).get('dia2_bp1_w'),
                             bp2_w=(comp_bp2 or {}).get('dia2_bp2_w'),
                             comparacao_rpe_bp1=comp_rpe_bp1,
                             comparacao_rpe_bp2=comp_rpe_bp2,
                             limiter_sintese=limiter_sintese,
                             recuperacao_final_dia2=dia2.get('recuperacao_final'),
-                            rpe_fisiologia_json=rpe_fisiologia)
+                            rpe_fisiologia_json=rpe_fisiologia,
+                            bp1_bpm=_an_out.get('bp1_bpm'),
+                            bp2_bpm=_an_out.get('bp2_bpm'),
+                            validacao_fisiologica_json=(_fisio_c or {}).get('val_json'),
+                            bpm_vst_validacao_json=(_fisio_c or {}).get('bpm_json'))
 
                     _cn_c.commit()
                     _ok_up_mv, _det_up_mv = _mvdb_c.upload()
@@ -5930,39 +6010,9 @@ def registar(app):
             except Exception:
                 pass
 
-            # ── Gravar análise MOXY (moxy_analises) automaticamente ───────────
-            # api_moxy_guardar_analise calcula e persiste BP1/BP2/HRVT/
-            # interpretação/rede causal da sessão MOXY (Day 1) em moxy_analises.
-            # Só grava se ainda não estiver na versão actual — melhor esforço.
-            try:
-                _ga_resp = api_moxy_guardar_analise(mid)
-                _ga_d = (_ga_resp[0].get_json() if isinstance(_ga_resp, tuple)
-                         else _ga_resp.get_json()) or {}
-                print(f'[vst_comparar][moxy_analise] mid={mid} '
-                      f'status={_ga_d.get("status")}')
-            except Exception as _e_ga:
-                import traceback as _tb_ga
-                print(f'[vst_comparar][moxy_analise] AVISO: {_e_ga}\n'
-                      f'{_tb_ga.format_exc()}')
-
-            # Ler validacao_fisiologica_json e bpm_vst_validacao_json
-            # que acabaram de ser gravados por _fisio_calcular_e_persistir,
-            # e incluir no return para o frontend renderizar imediatamente.
-            _vf_ret = None
-            _bpm_vf_ret = None
-            try:
-                import json as _json_r
-                _vf_row = cn.execute(
-                    "SELECT validacao_fisiologica_json, bpm_vst_validacao_json "
-                    "FROM vst_conjuntos "
-                    "WHERE vst_activity_id=?", (str(vid),)).fetchone()
-                if _vf_row:
-                    if _vf_row[0]:
-                        _vf_ret = _json_r.loads(_vf_row[0])
-                    if _vf_row[1]:
-                        _bpm_vf_ret = _json_r.loads(_vf_row[1])
-            except Exception:
-                pass
+            # Valores em memória desta mesma execução (sem readback do legado).
+            _vf_ret = (_fisio_c or {}).get('val')
+            _bpm_vf_ret = (_fisio_c or {}).get('bpm')
 
             return jsonify({
                 'status': 'ok',

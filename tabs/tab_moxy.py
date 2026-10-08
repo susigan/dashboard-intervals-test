@@ -2435,12 +2435,62 @@ function _mxVstBpmValidacaoCard(val){
  return h;
 }
 
+// ── Helpers da aba Verificação (só frontend, sem estado novo) ───────────────
+// mxFetchJson: fetch com timeout; devolve o JSON ou rejeita (inclui timeout).
+function mxFetchJson(url, ms, opts){
+ const ctrl = (typeof AbortController!=='undefined') ? new AbortController() : null;
+ const t = ctrl ? setTimeout(function(){ ctrl.abort(); }, ms) : null;
+ const o = Object.assign({}, opts||{}, ctrl ? {signal: ctrl.signal} : {});
+ return fetch(url, o).then(function(r){ return r.json(); }).catch(function(e){
+  if(e && e.name==='AbortError') throw new Error('tempo esgotado ao aguardar o servidor');
+  throw e;
+ }).finally(function(){ if(t) clearTimeout(t); });
+}
+// mxSeqNovo / mxSeqAtual: "última chamada vence". O contador vive num atributo
+// do próprio elemento, não numa variável global.
+function mxSeqNovo(el){
+ const n=(parseInt(el.getAttribute('data-seq')||'0',10)||0)+1;
+ el.setAttribute('data-seq', String(n));
+ return n;
+}
+function mxSeqAtual(el, n){
+ return parseInt(el.getAttribute('data-seq')||'0',10)===n;
+}
+// Seleção atual de VST: o <select> é a fonte de verdade da aba.
+function mxVstSelAtual(){
+ const s=document.getElementById('mxVstSelect');
+ return s ? s.value : null;
+}
+// Garante que o <select> tenha a opção e a seleciona (cria a opção se faltar).
+function mxVstGarantirOpcao(sel, valor, rotulo){
+ if(!sel || !valor) return;
+ if(!sel.querySelector('option[value="'+valor+'"]')){
+  const op=document.createElement('option');
+  op.value=valor; op.textContent=rotulo||valor;
+  sel.appendChild(op);
+ }
+ sel.value=valor;
+}
+
 function mxVstCarregarConjuntosSalvos(){
  const box=document.getElementById('mxVstConjuntosSalvos');
  if(!box) return;
- box.innerHTML='<p class="sub" style="font-size:12px;">a carregar…</p>';
- fetch('/api/moxy/vst/conjuntos_salvos').then(r=>r.json()).then(function(d){
-  if(d.status!=='ok' || !d.conjuntos || !d.conjuntos.length){
+ const seq=mxSeqNovo(box);
+ // Mantém a lista válida visível enquanto a nova chamada corre
+ if(!box.querySelector('.cards')){
+  box.innerHTML='<p class="sub" style="font-size:12px;">a carregar…</p>';
+ }
+ mxFetchJson('/api/moxy/vst/conjuntos_salvos', 15000).then(function(d){
+  // Resposta de uma chamada antiga: ignorar
+  if(!mxSeqAtual(box,seq)) return;
+  if(d.status!=='ok'){
+   // Erro não apaga uma lista válida já mostrada
+   if(box.querySelector('.cards')) return;
+   box.innerHTML='<p class="sub" style="font-size:12px;color:#f78166;">erro ao carregar conjuntos: '+(d.mensagem||'desconhecido')+'</p>';
+   return;
+  }
+  if(!d.conjuntos || !d.conjuntos.length){
+   MX_VST_CONJUNTOS_SALVOS = [];
    box.innerHTML='<p class="sub" style="font-size:12px;">NENHUM CONJUNTO DE VERIFICAÇÃO ENCONTRADO</p>';
    return;
   }
@@ -2465,6 +2515,8 @@ function mxVstCarregarConjuntosSalvos(){
     +'</div>';
   }).join('') + '</div>';
  }).catch(function(e){
+  if(!mxSeqAtual(box,seq)) return;
+  if(box.querySelector('.cards')) return;
   box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
  });
 }
@@ -2478,15 +2530,10 @@ function mxVstAbrirVerificacao(ix){
  // Setar globais antes de qualquer fetch
  MX_VID = c.vst_activity_id;
  MX_MID = c.moxy_activity_id;
- // Setar selects se os options já existirem (não bloqueia se não existirem)
- const selVst=document.getElementById('mxVstSelect');
- if(selVst && selVst.querySelector('option[value="'+c.vst_activity_id+'"]')){
-  selVst.value=c.vst_activity_id;
- }
- const selMoxy=document.getElementById('mxVstMoxySelect');
- if(selMoxy && selMoxy.querySelector('option[value="'+c.moxy_activity_id+'"]')){
-  selMoxy.value=c.moxy_activity_id;
- }
+ // Garante a opção nos selects (cria se faltar) e seleciona o par.
+ // mxVstCarregar lê o <select>, por isso ele precisa estar certo antes.
+ mxVstGarantirOpcao(document.getElementById('mxVstSelect'), c.vst_activity_id, 'VST '+c.vst_activity_id);
+ mxVstGarantirOpcao(document.getElementById('mxVstMoxySelect'), c.moxy_activity_id, 'Moxy '+c.moxy_activity_id);
  // Carregar análise VST (Dia 2) e em seguida o resultado do conjunto
  mxVstCarregar();
 }
@@ -2501,10 +2548,14 @@ function mxVstCarregarLista(){
    if(est) est.textContent=d.mensagem||'nenhuma actividade com a tag VST';
    return;
   }
+  // Preserva a seleção já feita (ex.: ABRIR antes da lista chegar)
+  const anterior=sel.value;
+  const antTxt=(sel.selectedIndex>=0 && sel.options[sel.selectedIndex]) ? sel.options[sel.selectedIndex].textContent : anterior;
   sel.innerHTML='<option value="">escolhe uma sessão</option>'+
    d.actividades.map(function(a){
     return '<option value="'+a.id+'">'+a.date+' · '+(a.name||a.type||a.id)+'</option>';
    }).join('');
+  if(anterior) mxVstGarantirOpcao(sel, anterior, antTxt);
   if(est) est.textContent=d.n+' sessão(ões) VST encontrada(s)';
  }).catch(function(){
   if(est) est.textContent='erro a carregar a lista de sessões VST';
@@ -2520,11 +2571,13 @@ function mxVstCarregar(){
   document.getElementById('mxVstTabela').innerHTML='';
   return;
  }
+ if(!sel) return;
+ // Última chamada vence: respostas de seleções anteriores são descartadas
+ const seq=mxSeqNovo(sel);
+ const atual=function(){ return mxSeqAtual(sel,seq) && sel.value===id; };
  if(est) est.textContent='a calcular…';
- fetch('/api/moxy/vst/'+id).then(r=>{
-  if(!r.ok) throw new Error('HTTP '+r.status);
-  return r.json();
- }).then(function(d){
+ mxFetchJson('/api/moxy/vst/'+id, 60000).then(function(d){
+  if(!atual()) return;
   if(d.status!=='ok'){
    if(est) est.textContent=d.mensagem||'sem dados';
    document.getElementById('mxVstCartoes').innerHTML=
@@ -2553,13 +2606,15 @@ function mxVstCarregar(){
   // streams completos (tempo+canais) para HR/RF/SmO2 no grafico
   // temporal -- endpoint ja' existente, nenhum novo criado
   MX_VST_STREAMS = null;
-  fetch('/api/moxy/dados/'+id).then(r=>r.json()).then(function(sd){
+  mxFetchJson('/api/moxy/dados/'+id, 60000).then(function(sd){
+   if(!atual()) return;
    if(sd && sd.status==='ok' && sd.tempo && sd.canais){
     MX_VST_STREAMS = sd;
    }
    mxDesenharVstTemporal(d);  // redesenha, agora com os streams se vieram
-  }).catch(function(){ mxDesenharVstTemporal(d); });
+  }).catch(function(){ if(atual()) mxDesenharVstTemporal(d); });
  }).catch(function(e){
+  if(!atual()) return;
   if(est) est.textContent='erro: '+e.message;
  });
 }
@@ -2686,16 +2741,21 @@ function mxVstPopularMoxySelect(){
  const sel=document.getElementById('mxVstMoxySelect');
  if(!sel) return;
  if(!MX_SESSOES.length){
-  sel.innerHTML='<option value="">nenhuma sessão Moxy carregada ainda '
-   +'-- abre a Principal primeiro</option>';
+  // Sem lista: só põe o aviso se não houver seleção, para não apagar o par escolhido
+  if(!sel.value){
+   sel.innerHTML='<option value="">nenhuma sessão Moxy carregada ainda '
+    +'-- abre a Principal primeiro</option>';
+  }
   return;
  }
  const actual=sel.value;
+ const antTxt=(sel.selectedIndex>=0 && sel.options[sel.selectedIndex]) ? sel.options[sel.selectedIndex].textContent : actual;
  sel.innerHTML='<option value="">escolhe a sessão Moxy</option>'+
   MX_SESSOES.map(function(s){
    return '<option value="'+s.id+'">'+(s.data||'')+' · '+(s.nome||s.id)+'</option>';
   }).join('');
- if(actual) sel.value=actual;
+ // Se a Moxy escolhida não estiver em MX_SESSOES, mantém-na (não some em silêncio)
+ if(actual) mxVstGarantirOpcao(sel, actual, antTxt);
 }
 
 function mxVstMoxySelecionado(){
@@ -2723,10 +2783,14 @@ function mxVstCarregarConjunto(vstId){
  const box=document.getElementById('mxVstConjuntoEstado');
  const selMoxy=document.getElementById('mxVstMoxySelect');
  if(!box) return;
- fetch('/api/moxy/vst/resultado/'+vstId).then(r=>r.json()).then(function(cached){
+ // Só escreve se ainda for a seleção atual e a última chamada desta caixa
+ const seq=mxSeqNovo(box);
+ const atual=function(){ return mxSeqAtual(box,seq) && mxVstSelAtual()===vstId; };
+ mxFetchJson('/api/moxy/vst/resultado/'+vstId, 30000).then(function(cached){
+  if(!atual()) return;
   if(cached.status==='ok'){
    // resultado já em BD — usar directamente, sem recalcular
-   if(selMoxy&&cached.dia1_activity_id) selMoxy.value=cached.dia1_activity_id;
+   if(selMoxy&&cached.dia1_activity_id) mxVstGarantirOpcao(selMoxy, cached.dia1_activity_id, 'Moxy '+cached.dia1_activity_id);
    if(cached.dia1_activity_id) MX_MID=cached.dia1_activity_id;
    const ts=cached.analisado_em?(cached.analisado_em||'').slice(0,16):'';
    box.innerHTML='<div style="border-left:3px solid #3FB950;padding:6px 10px;">'\
@@ -2745,20 +2809,25 @@ function mxVstCarregarConjunto(vstId){
    if(!cached.validacao_fisiologica){ mxVstCarregarComparacao(vstId); }
   } else {
    // sem resultado em BD — buscar o vínculo e comparar
-   fetch('/api/moxy/vst/conjunto/'+vstId).then(r=>r.json()).then(function(d){
+   mxFetchJson('/api/moxy/vst/conjunto/'+vstId, 30000).then(function(d){
+    if(!atual()) return;
     if(d.status!=='ok'||!d.sincronizado){
      box.innerHTML='<p class="sub" style="font-size:12px;">ainda não sincronizado</p>';
      return;
     }
-    if(selMoxy) selMoxy.value=d.moxy_activity_id;
+    if(selMoxy) mxVstGarantirOpcao(selMoxy, d.moxy_activity_id, 'Moxy '+d.moxy_activity_id);
     box.innerHTML='<div style="border-left:3px solid #F4D03F;padding:6px 10px;">'\
      +'<b>CONJUNTO DE VERIFICAÇÃO</b><br>'\
      +'MOXY: '+d.moxy_activity_id+' · VST: '+vstId+'<br>'\
      +'<span style="color:#F4D03F;">A CALCULAR...</span></div>';
     mxVstCarregarComparacao(vstId);
-   }).catch(function(){ box.innerHTML=''; });
+   }).catch(function(e){
+    if(!atual()) return;
+    box.innerHTML='<p class="sub" style="font-size:12px;color:#f78166;">erro ao carregar o conjunto: '+e.message+'</p>';
+   });
   }
  }).catch(function(){
+  if(!atual()) return;
   // fallback de rede: tentar comparar normalmente
   mxVstCarregarComparacao(vstId);
  });
@@ -3047,24 +3116,33 @@ function mxVstRenderRedeCausal(d){
 // mxVstCarregarComparacao — chama /vst/comparar (recálculo completo) e
 // persiste o resultado. Usa _mxVstRenderComparacao para renderizar.
 // Chamado apenas quando não há resultado em cache ou ao re-sincronizar.
+// Sai do "A CALCULAR..." com erro e botão de nova tentativa (rede, timeout ou status).
+function mxVstMarcarConjuntoFalha(vstId, msg){
+ const cj=document.getElementById('mxVstConjuntoEstado');
+ if(!cj) return;
+ if(!(cj.innerHTML.includes('A CALCULAR') || cj.innerHTML.includes('A RE-SINCRONIZAR'))) return;
+ cj.innerHTML='<div style="border-left:3px solid #f78166;padding:6px 10px;">'
+  +'<b>CONJUNTO DE VERIFICAÇÃO</b><br>'
+  +'<span style="color:#f78166;">⚠ '+(msg||'sem dados')+'</span><br>'
+  +'<div style="margin-top:6px;"><button onclick="mxVstForcaComparar(\\x27'+vstId+'\\x27)" '
+  +'style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid #58A6FF;'
+  +'background:transparent;color:#58A6FF;cursor:pointer;">↻ Tentar novamente</button></div>'
+  +'</div>';
+}
+
 function mxVstCarregarComparacao(vstId, persistir){
  const box=document.getElementById('mxVstComparacao');
+ // Última chamada desta caixa vence; resposta de seleção antiga é descartada
+ const seq=box ? mxSeqNovo(box) : 0;
+ const atual=function(){ return (!box || mxSeqAtual(box,seq)) && mxVstSelAtual()===vstId; };
  if(box) box.innerHTML='<p class="sub" style="font-size:12px;">a comparar…</p>';
  // Sem persistir: só cálculo (Visualizar/Sincronizar). Com persistir=1: nova versão.
- fetch('/api/moxy/vst/comparar/'+vstId+(persistir?'?persistir=1':'')).then(r=>r.json()).then(function(d){
+ mxFetchJson('/api/moxy/vst/comparar/'+vstId+(persistir?'?persistir=1':''), 120000).then(function(d){
+  if(!atual()) return;
   if(d.status!=='ok'){
    if(box) box.innerHTML='<p class="sub" style="font-size:12px;color:#f78166;">⚠ '
     +(d.mensagem||'sem dados suficientes para comparar')+'</p>';
-   const _cjErr=document.getElementById('mxVstConjuntoEstado');
-   if(_cjErr&&(_cjErr.innerHTML.includes('A CALCULAR')||_cjErr.innerHTML.includes('A RE-SINCRONIZAR'))){
-    _cjErr.innerHTML='<div style="border-left:3px solid #f78166;padding:6px 10px;">'
-     +'<b>CONJUNTO DE VERIFICAÇÃO</b><br>'
-     +'<span style="color:#f78166;">⚠ '+(d.mensagem||'sem dados')+'</span><br>'
-     +'<div style="margin-top:6px;"><button onclick="mxVstForcaComparar(\\x27'+vstId+'\\x27)" '
-     +'style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid #58A6FF;'
-     +'background:transparent;color:#58A6FF;cursor:pointer;">↻ Tentar novamente</button></div>'
-     +'</div>';
-   }
+   mxVstMarcarConjuntoFalha(vstId, d.mensagem||'sem dados');
    return;
   }
   // actualizar o estado do conjunto (agora tem resultado)
@@ -3082,7 +3160,9 @@ function mxVstCarregarComparacao(vstId, persistir){
   }
   _mxVstRenderComparacao(d, vstId);
  }).catch(function(e){
-  if(box) box.innerHTML='<p class="sub" style="font-size:12px;">erro: '+e.message+'</p>';
+  if(!atual()) return;
+  if(box) box.innerHTML='<p class="sub" style="font-size:12px;color:#f78166;">erro: '+e.message+'</p>';
+  mxVstMarcarConjuntoFalha(vstId, e.message);
  });
 }
 

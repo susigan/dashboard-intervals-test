@@ -125,12 +125,13 @@ def api_training_contexto():
     Retorna {status:'ok', modalidades:{bike:{...}, row:{...}, ski:{...}, run:{...}}}.
 
     Por modalidade, hierarquia:
-      P1: VST+MOXY sincronizado com moxy_analises gravado
-          (JOIN vst_conjuntos + moxy_analises com rede_limitador)
-      P1b: VST+MOXY sincronizado mas sem moxy_analises —
+      P1: VST+MOXY sincronizado com moxy_analyses gravado
+          (JOIN vst_conjuntos + vst_results + moxy_analyses com rede_limitador no json_completo)
+          Fonte canônica: moxy_vst_historico.db
+      P1b: VST+MOXY sincronizado mas sem rede_limitador em moxy_analyses —
            extrai rede_causal do resultado_json do VST
            (resultado_json['rede_causal']['limitador']['sistema'])
-      P2: MOXY recente com moxy_analises.rede_limitador
+      P2: MOXY recente com rede_limitador em moxy_analyses.json_completo
       P3: ausente — mas ainda mostra cards sem PRINCIPAL/SUPLEMENTAR
 
     Regra especial: MOXY posterior ao VST → usa o mais recente.
@@ -271,108 +272,100 @@ def api_training_contexto():
     }
 
     try:
-        import drive_db_perfil as ddp
-        cn = ddp.get_conn()
+        import drive_db_moxy_vst as _mvdb
+        from config import TYPE_MAP as _TM
+        cn = _mvdb.get_moxy_vst_conn()
         resultado = {}
+
+        # ── Helper: resolve modalidade canônica a partir do sport raw ─────
+        def _mod_de_sport(sport_raw):
+            if not sport_raw: return None
+            return _TM.get(sport_raw) or _TM.get(sport_raw.capitalize())
 
         for mod_code, mod_nome in _MOD.items():
 
-            # ── P1: VST+MOXY com moxy_analises gravado ──────────────────
-            # índices: 0=vst_id, 1=moxy_id, 2=analisado_em, 3=dia1_bp1_w,
-            #          4=dia1_bp2_w, 5=resultado_json, 6=rede_limitador,
-            #          7=us_limitador, 8=pc_limitador, 9=moxy_data,
-            #          10=bp1_w, 11=bp2_w, 12=bp1_bpm, 13=bp2_bpm,
-            #          14=validacao_fisiologica_json
-            vst_com_moxy = cn.execute(
-                "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
-                " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json,"
-                " m.rede_limitador, m.us_limitador, m.pc_limitador,"
-                " m.data, m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm,"
-                " v.validacao_fisiologica_json"
-                " FROM vst_conjuntos v"
-                " JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id"
-                " WHERE LOWER(m.modalidade)=LOWER(?)"
-                " AND v.moxy_activity_id IS NOT NULL AND m.rede_limitador IS NOT NULL"
-                " ORDER BY v.analisado_em DESC LIMIT 1",
-                (mod_nome,)).fetchone()
+            # ── P1: VST+MOXY com análise gravada em moxy_analyses ────────
+            # Fonte canônica: moxy_vst_historico.db
+            # - vst_conjuntos (join key)
+            # - vst_results   (resultado_json, validacao_fisiologica_json, analyzed_at, bp1/bp2)
+            # - moxy_analyses (json_completo → rede_limitador, us_limitador, pc_limitador)
+            # - moxy_activities (sport → TYPE_MAP → modalidade)
+            #
+            # Modalidade não existe como coluna — resolve via TYPE_MAP[act.sport] em Python.
+            #
+            # índices: 0=vst_id, 1=moxy_id, 2=analyzed_at(analisado_em),
+            #          3=dia1_bp1_w, 4=dia1_bp2_w,
+            #          5=resultado_json, 6=validacao_fisiologica_json,
+            #          7=rede_limitador, 8=us_limitador, 9=pc_limitador,
+            #          10=moxy_data(activity_date), 11=bp1_w, 12=bp2_w,
+            #          13=bp1_bpm, 14=bp2_bpm, 15=sport
+            _rows_p1 = cn.execute(
+                "SELECT vc.vst_activity_id, vc.moxy_activity_id, vr.analyzed_at,"
+                " vc.dia1_bp1_w, vc.dia1_bp2_w,"
+                " vr.resultado_json, vr.validacao_fisiologica_json,"
+                " json_extract(ma.json_completo,'$.rede_limitador') AS rede_limitador,"
+                " json_extract(ma.json_completo,'$.us_limitador')  AS us_limitador,"
+                " json_extract(ma.json_completo,'$.pc_limitador')  AS pc_limitador,"
+                " act.activity_date, vr.bp1_w, vr.bp2_w, vr.bp1_bpm, vr.bp2_bpm,"
+                " act.sport"
+                " FROM vst_conjuntos vc"
+                " JOIN vst_results vr ON vr.vst_conjunto_id = vc.id"
+                " JOIN moxy_analyses ma ON ma.activity_id = vc.moxy_activity_id"
+                " JOIN moxy_activities act ON act.activity_id = vc.moxy_activity_id"
+                " WHERE vc.moxy_activity_id IS NOT NULL"
+                " AND json_extract(ma.json_completo,'$.rede_limitador') IS NOT NULL"
+                " ORDER BY vr.analyzed_at DESC",
+                ()).fetchall()
+            vst_com_moxy = next(
+                (_r for _r in _rows_p1 if _mod_de_sport(_r[15]) == mod_nome),
+                None)
 
-            # ── P1b: VST+MOXY sem moxy_analises — usa resultado_json ────
-            # Usa COALESCE(v.modalidade, m.modalidade):
-            #   - v.modalidade: preenchida desde a correcção (gravar_analise envia c.modalidade)
-            #   - m.modalidade: preenchida quando moxy_analises existe
-            # Para registos antigos sem v.modalidade nem moxy_analises:
-            #   fallback via db.activities (a mesma fonte que conjuntos_salvos usa)
+            # ── P1b: VST+MOXY sem json_completo com rede_limitador ───────
+            # Usa resultado_json para extrair rede_causal
             vst_sem_moxy = None
             if not vst_com_moxy:
-                # Tentar via v.modalidade (novo) ou m.modalidade (moxy_analises existente)
-                # índices P1b: 0=vst_id, 1=moxy_id, 2=analisado_em, 3=dia1_bp1_w,
-                #              4=dia1_bp2_w, 5=resultado_json, 6=modalidade,
-                #              7=bp1_w, 8=bp2_w, 9=bp1_bpm, 10=bp2_bpm, 11=moxy_data,
+                # índices P1b: 0=vst_id, 1=moxy_id, 2=analyzed_at,
+                #              3=dia1_bp1_w, 4=dia1_bp2_w, 5=resultado_json,
+                #              6=sport(para TYPE_MAP), 7=bp1_w, 8=bp2_w,
+                #              9=bp1_bpm, 10=bp2_bpm, 11=moxy_data,
                 #              12=validacao_fisiologica_json
-                vst_sem_moxy = cn.execute(
-                    "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
-                    " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json,"
-                    " COALESCE(v.modalidade, m.modalidade) as modalidade_encontrada,"
-                    " m.bp1_w, m.bp2_w, m.bp1_bpm, m.bp2_bpm, m.data,"
-                    " v.validacao_fisiologica_json"
-                    " FROM vst_conjuntos v"
-                    " LEFT JOIN moxy_analises m ON m.activity_id = v.moxy_activity_id"
-                    " WHERE v.moxy_activity_id IS NOT NULL"
-                    " AND v.resultado_json IS NOT NULL"
-                    " AND LOWER(COALESCE(v.modalidade, m.modalidade, ''))=LOWER(?)"
-                    " ORDER BY v.analisado_em DESC LIMIT 1",
-                    (mod_nome,)).fetchone()
-                # Fallback para registos antigos sem modalidade em v nem em moxy_analises:
-                # tentar resolver a modalidade via db.activities (tabela local de Intervals.icu)
-                if not vst_sem_moxy:
-                    try:
-                        import db as _idb
-                        from config import TYPE_MAP as _TM
-                        _all_vst = cn.execute(
-                            "SELECT v.vst_activity_id, v.moxy_activity_id, v.analisado_em,"
-                            " v.dia1_bp1_w, v.dia1_bp2_w, v.resultado_json,"
-                            " v.validacao_fisiologica_json"
-                            " FROM vst_conjuntos v"
-                            " WHERE v.moxy_activity_id IS NOT NULL"
-                            " AND v.resultado_json IS NOT NULL"
-                            " AND (v.modalidade IS NULL OR v.modalidade='')"
-                            " ORDER BY v.analisado_em DESC"
-                        ).fetchall()
-                        for _row in _all_vst:
-                            _mid = _row[1]
-                            _act = (_idb._exec(
-                                "SELECT type FROM activities WHERE id=?",
-                                (_mid,), fetch='one') or [None])
-                            _tipo = _act[0] if _act else None
-                            _mod_db = _TM.get(_tipo) if _tipo else None
-                            if _mod_db and _mod_db.lower() == mod_nome.lower():
-                                # Gravar a modalidade no banco para evitar esta pesquisa no futuro
-                                cn.execute(
-                                    "UPDATE vst_conjuntos SET modalidade=?"
-                                    " WHERE vst_activity_id=?",
-                                    (_mod_db, _row[0]))
-                                cn.commit()
-                                # Construir a linha no mesmo formato da query P1b
-                                # índices: 0=vst_id,1=moxy_id,2=analisado_em,3=dia1_bp1_w,
-                                #          4=dia1_bp2_w,5=resultado_json,6=modalidade,
-                                #          7=bp1_w,8=bp2_w,9=bp1_bpm,10=bp2_bpm,11=moxy_data,
-                                #          12=validacao_fisiologica_json
-                                vst_sem_moxy = (_row[0], _row[1], _row[2],
-                                                _row[3], _row[4], _row[5],
-                                                _mod_db, None, None, None, None, None,
-                                                _row[6])
-                                break
-                    except Exception:
-                        pass
+                _all_p1b = cn.execute(
+                    "SELECT vc.vst_activity_id, vc.moxy_activity_id, vr.analyzed_at,"
+                    " vc.dia1_bp1_w, vc.dia1_bp2_w, vr.resultado_json,"
+                    " act.sport, vr.bp1_w, vr.bp2_w, vr.bp1_bpm, vr.bp2_bpm,"
+                    " act.activity_date, vr.validacao_fisiologica_json"
+                    " FROM vst_conjuntos vc"
+                    " JOIN vst_results vr ON vr.vst_conjunto_id = vc.id"
+                    " JOIN moxy_activities act ON act.activity_id = vc.moxy_activity_id"
+                    " WHERE vc.moxy_activity_id IS NOT NULL"
+                    " AND vr.resultado_json IS NOT NULL"
+                    " ORDER BY vr.analyzed_at DESC",
+                    ()).fetchall()
+                for _r in (_all_p1b or []):
+                    if _mod_de_sport(_r[6]) == mod_nome:
+                        vst_sem_moxy = _r
+                        break
 
             # ── P2: MOXY mais recente desta modalidade ───────────────────
-            moxy_row = cn.execute(
-                "SELECT activity_id, rede_limitador, us_limitador, pc_limitador,"
-                " data, bp1_w, bp2_w, bp1_bpm, bp2_bpm"
-                " FROM moxy_analises"
-                " WHERE LOWER(modalidade)=LOWER(?) AND rede_limitador IS NOT NULL"
-                " ORDER BY data DESC LIMIT 1",
-                (mod_nome,)).fetchone()
+            # Fonte: moxy_analyses + moxy_activities
+            # Filtragem por modalidade via TYPE_MAP em Python
+            _all_moxy = cn.execute(
+                "SELECT ma.activity_id,"
+                " json_extract(ma.json_completo,'$.rede_limitador') AS rede_limitador,"
+                " json_extract(ma.json_completo,'$.us_limitador')  AS us_limitador,"
+                " json_extract(ma.json_completo,'$.pc_limitador')  AS pc_limitador,"
+                " act.activity_date, ma.bp1_w, ma.bp2_w, ma.bp1_bpm, ma.bp2_bpm,"
+                " act.sport"
+                " FROM moxy_analyses ma"
+                " JOIN moxy_activities act ON act.activity_id = ma.activity_id"
+                " WHERE json_extract(ma.json_completo,'$.rede_limitador') IS NOT NULL"
+                " ORDER BY act.activity_date DESC",
+                ()).fetchall()
+            moxy_row = None
+            for _r in (_all_moxy or []):
+                if _mod_de_sport(_r[9]) == mod_nome:
+                    moxy_row = _r
+                    break
 
             # ── Decidir qual fonte usar ───────────────────────────────────
             if vst_com_moxy:
@@ -387,10 +380,10 @@ def api_training_contexto():
                         moxy_row[5], moxy_row[6], moxy_row[7], moxy_row[8])
                 else:
                     resultado[mod_code] = _build(
-                        'vst', vst_com_moxy[6], vst_com_moxy[7], vst_com_moxy[8],
-                        vst_com_moxy[9], vst_com_moxy[1], vst_com_moxy[0], vst_com_moxy[2],
-                        vst_com_moxy[10], vst_com_moxy[11], vst_com_moxy[12], vst_com_moxy[13],
-                        vst_com_moxy[14])  # validacao_fisiologica_json
+                        'vst', vst_com_moxy[7], vst_com_moxy[8], vst_com_moxy[9],
+                        vst_com_moxy[10], vst_com_moxy[1], vst_com_moxy[0], vst_com_moxy[2],
+                        vst_com_moxy[11], vst_com_moxy[12], vst_com_moxy[13], vst_com_moxy[14],
+                        vst_com_moxy[6])  # validacao_fisiologica_json
 
             elif vst_sem_moxy:
                 # P1b: extrair sistema do resultado_json

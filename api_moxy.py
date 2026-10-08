@@ -2022,19 +2022,21 @@ def registar(app):
         ?modalidade=Row   ?forcar=1   (forcar re-grava mesmo as actuais)
         """
         try:
-            import drive_db_perfil as ddp
+            import drive_db_moxy_vst as _mvdb_all
             forcar = request.args.get('forcar') == '1'
             mods = ([request.args['modalidade']]
                     if request.args.get('modalidade')
                     else ['Bike', 'Row', 'Ski', 'Run'])
 
-            # que versões já estão gravadas
+            # versões já gravadas na base canónica
             ja = {}
             try:
-                cn = ddp.get_conn()
+                cn = _mvdb_all.get_moxy_vst_conn()
                 for r in cn.execute(
-                        'SELECT activity_id, versao_analise FROM '
-                        'moxy_analises').fetchall():
+                        "SELECT activity_id, analysis_version "
+                        "FROM moxy_analyses "
+                        "WHERE version IN (SELECT MAX(version) FROM moxy_analyses GROUP BY activity_id)"
+                ).fetchall():
                     ja[str(r[0])] = r[1]
                 cn.close()
             except Exception:
@@ -2090,28 +2092,44 @@ def registar(app):
 
     @app.route('/api/moxy/analises')
     def api_moxy_analises():
-        """Análises gravadas.  ?modalidade=Row"""
+        """Análises MOXY gravadas na base canónica."""
         try:
-            import drive_db_perfil as ddp
-            cond, args = [], []
-            if request.args.get('modalidade'):
-                cond.append('modalidade = ?')
-                args.append(request.args['modalidade'])
-            w = ('WHERE ' + ' AND '.join(cond)) if cond else ''
-            cn = ddp.get_conn()
-            cols = ('activity_id, modalidade, data, perfil, bp1_w, bp2_w, '
-                    'bp2_origem, smo2max, smo2min, n_degraus, us_limitador, '
-                    'pc_limitador, rede_limitador, versao_analise, '
-                    'data_gravacao')
+            import json as _j
+            import drive_db_moxy_vst as _mvdb
+            from config import TYPE_MAP as _TYPE_MAP
+            modalidade = request.args.get('modalidade')
+            cn = _mvdb.get_moxy_vst_conn()
             rows = cn.execute(
-                f'SELECT {cols} FROM moxy_analises {w} ORDER BY data DESC',
-                tuple(args)).fetchall()
+                "SELECT ma.activity_id,ma.bp1_w,ma.bp2_w,ma.json_completo,"
+                "ma.analysis_version,ma.analyzed_at,act.activity_date,act.sport "
+                "FROM moxy_analyses ma JOIN moxy_activities act ON act.activity_id=ma.activity_id "
+                "WHERE ma.version=(SELECT MAX(m2.version) FROM moxy_analyses m2 WHERE m2.activity_id=ma.activity_id) "
+                "ORDER BY act.activity_date DESC").fetchall()
             cn.close()
-            nomes = [c.strip() for c in cols.split(',')]
-            return jsonify({'status': 'ok', 'n': len(rows),
-                            'analises': [dict(zip(nomes, r)) for r in rows]})
+            fora=[]
+            for r in rows:
+                mod=_TYPE_MAP.get(r[7]) or _TYPE_MAP.get(str(r[7]).capitalize()) or r[7]
+                if modalidade and mod!=modalidade: continue
+                jc={}
+                try: jc=_j.loads(r[3]) if r[3] else {}
+                except Exception: pass
+                lim=jc.get('limiares') or {}
+                pf=lim.get('perfil_resposta') or {}
+                itp=jc.get('i515') or {}
+                pt=itp.get('pontuacao') or {}
+                rl=(jc.get('rede') or {}).get('limitador') or {}
+                fora.append({'activity_id':r[0],'modalidade':mod,'data':r[6],
+                             'perfil':pf.get('perfil'),'bp1_w':r[1],'bp2_w':r[2],
+                             'bp2_origem':(lim.get('bp_moxy_sem_restricao') or {}).get('bp2_origem'),
+                             'smo2max':pf.get('smo2max'),'smo2min':pf.get('smo2min'),
+                             'n_degraus':len(lim.get('blocos_usados') or []),
+                             'us_limitador':(pt.get('us') or {}).get('limitador'),
+                             'pc_limitador':(pt.get('pc') or {}).get('limitador'),
+                             'rede_limitador':rl.get('sistema'),
+                             'versao_analise':r[4],'data_gravacao':r[5]})
+            return jsonify({'status':'ok','n':len(fora),'analises':fora})
         except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
+            return jsonify({'status':'erro','mensagem':str(e)}),500
 
     @app.route('/api/moxy/debug/<path:activity_id>')
     def api_moxy_debug(activity_id):
@@ -2252,57 +2270,43 @@ def registar(app):
 
     @app.route('/api/moxy/limitadores')
     def api_moxy_limitadores():
-        """Limitador de cada análise GRAVADA, para a página de intervenções.
-
-        Lê da base, não recalcula: a página serve para escolher sessões e
-        procurar padrão, e recalcular dez sessões a cada clique tornaria
-        isso insuportável.
-
-        ?modalidade=Row   (sem modalidade, devolve todas)
-        """
+        """Limitadores das análises MOXY gravadas na base canónica."""
         try:
             import json as _j
-            import drive_db_perfil as ddp
-            cond, args = [], []
-            if request.args.get('modalidade'):
-                cond.append('modalidade = ?')
-                args.append(request.args['modalidade'])
-            w = ('WHERE ' + ' AND '.join(cond)) if cond else ''
-            cn = ddp.get_conn()
-            rows = cn.execute(
-                f"""SELECT activity_id, modalidade, data, perfil,
-                           us_limitador, pc_limitador, rede_limitador,
-                           bp1_w, bp2_w, lt1_reox_w, mlss_dessat_w,
-                           versao_analise, json_completo
-                      FROM moxy_analises {w} ORDER BY data DESC""",
-                tuple(args)).fetchall()
+            import drive_db_moxy_vst as _mvdb
+            from config import TYPE_MAP as _TYPE_MAP
+            modalidade=request.args.get('modalidade')
+            cn=_mvdb.get_moxy_vst_conn()
+            rows=cn.execute(
+                "SELECT ma.activity_id,ma.bp1_w,ma.bp2_w,ma.json_completo,"
+                "ma.analysis_version,act.activity_date,act.sport "
+                "FROM moxy_analyses ma JOIN moxy_activities act ON act.activity_id=ma.activity_id "
+                "WHERE ma.version=(SELECT MAX(m2.version) FROM moxy_analyses m2 WHERE m2.activity_id=ma.activity_id) "
+                "ORDER BY act.activity_date DESC").fetchall()
             cn.close()
-
-            fora = []
+            fora=[]
             for r in rows:
-                hipo = None
-                try:
-                    d = _j.loads(r[12]) if r[12] else {}
-                    hipo = ((d.get('limiares') or {})
-                            .get('hipocapnia') or {}).get('suspeita')
-                except Exception:
-                    pass
-                fora.append({
-                    'id': r[0], 'modalidade': r[1], 'data': r[2],
-                    'perfil': r[3],
-                    'us': r[4], 'pc': r[5], 'rede': r[6],
-                    'bp1_w': r[7], 'bp2_w': r[8],
-                    'lt1_reox_w': r[9], 'mlss_dessat_w': r[10],
-                    'versao': r[11], 'hipocapnia': hipo,
-                })
-            return jsonify({'status': 'ok', 'n': len(fora),
-                            'sessoes': fora,
-                            'nota': ('vem da base: são as análises já '
-                                     'gravadas. Para incluir uma sessão '
-                                     'nova, gravá-la primeiro na tab Moxy')})
+                mod=_TYPE_MAP.get(r[6]) or _TYPE_MAP.get(str(r[6]).capitalize()) or r[6]
+                if modalidade and mod!=modalidade: continue
+                jc={}
+                try: jc=_j.loads(r[3]) if r[3] else {}
+                except Exception: pass
+                lim=jc.get('limiares') or {}
+                pf=lim.get('perfil_resposta') or {}
+                ml=lim.get('mlss_dessaturacao') or {}
+                lr=lim.get('lt1_reoxigenacao') or {}
+                itp=jc.get('i515') or {}
+                pt=itp.get('pontuacao') or {}
+                rl=(jc.get('rede') or {}).get('limitador') or {}
+                fora.append({'id':r[0],'modalidade':mod,'data':r[5],'perfil':pf.get('perfil'),
+                             'us':(pt.get('us') or {}).get('limitador'),
+                             'pc':(pt.get('pc') or {}).get('limitador'),
+                             'rede':rl.get('sistema'),'bp1_w':r[1],'bp2_w':r[2],
+                             'lt1_reox_w':lr.get('lt1_estimado'),'mlss_dessat_w':ml.get('mlss_estimado'),
+                             'versao':r[4],'hipocapnia':((lim.get('hipocapnia') or {}).get('suspeita'))})
+            return jsonify({'status':'ok','n':len(fora),'sessoes':fora})
         except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
+            return jsonify({'status':'erro','mensagem':str(e)}),500
 
     @app.route('/api/moxy/rpe/<path:activity_id>')
     def api_moxy_rpe_ver(activity_id):
@@ -2492,26 +2496,26 @@ def registar(app):
             _sys.path.insert(0, _os.path.join(
                 _os.path.dirname(_os.path.abspath(__file__)), 'utils'))
             from cp_model import split_de_watts
-            import drive_db_perfil as ddp
+            import drive_db_moxy_vst as _mvdb_hz
+            from config import TYPE_MAP as _TYPE_MAP_HZ
 
             modo = (request.args.get('modo') or 'leve').strip().lower()
             n_max = min(int(request.args.get('n') or 12), 20)
 
-            cn = ddp.get_conn()
-            rows = cn.execute(
-                "SELECT activity_id, data, bp1_w, bp2_w "
-                "FROM moxy_analises "
-                "WHERE modalidade = ? AND bp1_w IS NOT NULL AND bp2_w IS NOT NULL "
-                "ORDER BY data DESC LIMIT ?",
-                (modalidade, n_max)).fetchall()
-
-            # Também registar as excluídas (sem BP) para transparência
-            excluidas_rows = cn.execute(
-                "SELECT activity_id, data "
-                "FROM moxy_analises "
-                "WHERE modalidade = ? AND (bp1_w IS NULL OR bp2_w IS NULL) "
-                "ORDER BY data DESC LIMIT 20",
-                (modalidade,)).fetchall()
+            cn = _mvdb_hz.get_moxy_vst_conn()
+            _all_hz = cn.execute(
+                "SELECT ma.activity_id,act.activity_date,ma.bp1_w,ma.bp2_w,act.sport "
+                "FROM moxy_analyses ma JOIN moxy_activities act ON act.activity_id=ma.activity_id "
+                "WHERE ma.version=(SELECT MAX(m2.version) FROM moxy_analyses m2 WHERE m2.activity_id=ma.activity_id) "
+                "ORDER BY act.activity_date DESC").fetchall()
+            rows=[]; excluidas_rows=[]
+            for _r in _all_hz:
+                _mod_hz=_TYPE_MAP_HZ.get(_r[4]) or _TYPE_MAP_HZ.get(str(_r[4]).capitalize()) or _r[4]
+                if _mod_hz==modalidade:
+                    if _r[2] is not None and _r[3] is not None and len(rows)<n_max:
+                        rows.append((_r[0],_r[1],_r[2],_r[3]))
+                    elif _r[2] is None or _r[3] is None:
+                        if len(excluidas_rows)<20: excluidas_rows.append((_r[0],_r[1]))
 
             excluidas = [
                 {'activity_id': r[0], 'data': r[1],

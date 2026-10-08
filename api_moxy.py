@@ -5674,13 +5674,22 @@ def registar(app):
                             if _rv_b1 is not None:
                                 _curva_moxy_rpe.append((_w_b1, _rv_b1))
 
-                    _fisio_calcular_e_persistir(
+                    _vf_c_obj, _vf_c_hash = _fisio_calcular_e_persistir(
                         cn, mid, vid,
                         _bp1w_c, _bp2w_c, _bp1bpm_c, _bp2bpm_c,
                         _dfa1_c, _bp1_m_c, _bp2_m_c,
                         curva_rpe=_curva_moxy_rpe if _curva_moxy_rpe else None,
                         rpe_vst_bp1=_rpe_c_bp1,
                         rpe_vst_bp2=_rpe_c_bp2)
+                    if _vf_c_obj is not None:
+                        _vf_c_json = json.dumps(_vf_c_obj, ensure_ascii=False)
+                    try:
+                        import utils.nirs_breakpoints as _nbk_c
+                        _bpm_c_obj = _nbk_c.validar_bpm_vst(
+                            _bp1bpm_c, _bp2bpm_c, _bp1_m_c, _bp2_m_c)
+                        _bpm_vf_c_json = json.dumps(_bpm_c_obj, ensure_ascii=False)
+                    except Exception as _e_bpm_c:
+                        print(f'[vst_comparar][fisio bpm canonical] AVISO: {_e_bpm_c}')
                     # upload feito pelo bloco _vst_persistir/ddp.upload() acima
                 except Exception as _e_fisio_auto:
                     import traceback as _tb_fa

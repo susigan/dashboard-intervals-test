@@ -1901,29 +1901,25 @@ def registar(app):
 
     @app.route('/api/moxy/analise/<path:activity_id>', methods=['GET'])
     def api_moxy_analise_ler(activity_id):
-        """Ler analise persistida do banco — frontend usa para recarregar
-        sem recalcular apos reload. Retorna json_completo (limiares+i515+rede).
-        """
+        """Ler a análise MOXY mais recente da base canónica."""
         try:
             import json as _json
-            import drive_db_perfil as ddp
+            import drive_db_moxy_vst as _mvdb
             aid = str(activity_id).strip().strip('/').split('/')[-1]
-            cn = ddp.get_conn()
+            cn = _mvdb.get_moxy_vst_conn()
             row = cn.execute(
-                'SELECT json_completo, versao_analise, data_gravacao '
-                'FROM moxy_analises WHERE activity_id=?',
-                (aid,)).fetchone()
+                "SELECT json_completo, version, analysis_version, analyzed_at "
+                "FROM moxy_analyses WHERE activity_id=? "
+                "ORDER BY version DESC LIMIT 1", (aid,)).fetchone()
             cn.close()
             if not row or not row[0]:
                 return jsonify({'status': 'sem_dados',
                                 'mensagem': 'sem analise persistida'}), 200
-            jc = _json.loads(row[0])
             return jsonify({
-                'status': 'ok',
-                'activity_id': aid,
-                'versao_analise': row[1],
-                'data_gravacao': row[2],
-                'json_completo': jc,
+                'status': 'ok', 'activity_id': aid,
+                'versao_analise': row[2], 'versao': row[1],
+                'data_gravacao': row[3],
+                'json_completo': _json.loads(row[0]),
             })
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
@@ -1931,15 +1927,11 @@ def registar(app):
 
     @app.route('/api/moxy/analise/<path:activity_id>', methods=['POST'])
     def api_moxy_guardar_analise(activity_id):
-        """Corre tudo e grava o resultado.
-
-        Gravar de novo a mesma actividade SUBSTITUI: quando o método
-        melhora, basta voltar a correr e o registo fica com a versão nova.
-        A versao_analise diz com que código o valor foi calculado, para
-        nao se comparar um BP de hoje com um de um método antigo.
-        """
+        """Calcula e grava automaticamente na base canónica MOXY/VST."""
         try:
-            import drive_db_perfil as ddp
+            import drive_db_moxy_vst as _mvdb
+            import db as _db_act
+            from config import TYPE_MAP as _TYPE_MAP
             aid = str(activity_id).strip().strip('/').split('/')[-1]
 
             lim = api_moxy_limiares(aid)
@@ -1948,10 +1940,8 @@ def registar(app):
             itp = itp[0].get_json() if isinstance(itp, tuple) else itp.get_json()
             rd = api_moxy_rede(aid)
             rd = rd[0].get_json() if isinstance(rd, tuple) else rd.get_json()
-
             if (lim or {}).get('status') != 'ok':
-                return jsonify({'status': 'sem_dados',
-                                'mensagem': (lim or {}).get('mensagem')}), 200
+                return jsonify({'status':'sem_dados','mensagem':(lim or {}).get('mensagem')}), 200
 
             pf = lim.get('perfil_resposta') or {}
             ml = lim.get('mlss_dessaturacao') or {}
@@ -1959,128 +1949,67 @@ def registar(app):
             ip = (itp or {}).get('interpretacao') or {}
             pt = (itp or {}).get('pontuacao') or {}
             rl = (rd or {}).get('limitador') or {}
-
-            # BP1 e BP2 do SCRIPT do Intervals.icu, que e' o que se mostra
-            # no grafico da tab Moxy e o que da' os dois de uma vez.
-            #
-            # Antes o BP1 vinha do perfil_resposta, que so' o tem quando a
-            # curva e' parabolica -- num perfil monotonico ficava None e
-            # gravava-se BP2 sem BP1, que era o que estavas a ver.
             bls = lim.get('bp_moxy_sem_restricao') or {}
             bmx = lim.get('bp_moxy') or {}
             bp1 = bp1_bpm = bp2_bpm = None
             origem1 = origem2 = None
-            for fonte, nome in ((bls, 'script Intervals.icu'),
-                                (bmx, 'regressão, 2 degraus por troço')):
+            for fonte, nome in ((bls,'script Intervals.icu'),(bmx,'regressão, 2 degraus por troço')):
                 if bp1 is None and fonte.get('bp1_w') is not None:
-                    bp1, bp1_bpm, origem1 = (fonte['bp1_w'],
-                                             fonte.get('bp1_bpm'), nome)
+                    bp1, bp1_bpm, origem1 = fonte['bp1_w'], fonte.get('bp1_bpm'), nome
             if bp1 is None and pf.get('ok') and pf.get('bp1_watts') is not None:
                 bp1, origem1 = pf['bp1_watts'], 'topo da parábola (SmO2max)'
-
             bp2 = bls.get('bp2_w') or bmx.get('bp2_w')
             bp2_bpm = bls.get('bp2_bpm') or bmx.get('bp2_bpm')
-            origem2 = 'script Intervals.icu' if bls.get('bp2_w') else (
-                'regressão, 2 degraus por troço' if bmx.get('bp2_w') else None)
+            origem2 = 'script Intervals.icu' if bls.get('bp2_w') else ('regressão, 2 degraus por troço' if bmx.get('bp2_w') else None)
             if bp2 is None:
-                bp2 = (ml.get('mlss_estimado') if ml.get('ok')
-                       else bt.get('bp_watts') if bt.get('ok') else None)
-                origem2 = ('padrão de dessaturação' if ml.get('ok')
-                           else 'quebra na taxa' if bt.get('ok') else None)
-
-            # limiares opticos das duas transicoes de Yogev
+                bp2 = ml.get('mlss_estimado') if ml.get('ok') else bt.get('bp_watts') if bt.get('ok') else None
+                origem2 = 'padrão de dessaturação' if ml.get('ok') else 'quebra na taxa' if bt.get('ok') else None
             lr = lim.get('lt1_reoxigenacao') or {}
             md = lim.get('mlss_dessaturacao') or {}
-            _lr = lr.get('lt1_entre') or [None, None]
-            _md = md.get('mlss_entre') or [None, None]
+            _lr = lr.get('lt1_entre') or [None,None]
+            _md = md.get('mlss_entre') or [None,None]
 
-            # se a FC não é fiável, não se grava bpm nenhum. Gravar um
-            # valor errado é pior do que não gravar: fica no histórico e
-            # ninguém se lembra porquê
-            if not lim.get('fc_valida', True):
-                bp1_bpm = bp2_bpm = None
-
-            # NAO gravar bpm de uma sessao com a FC congelada: gravado
-            # uma vez, esse valor entra no consenso do perfil metabolico
-            # e passa a contaminar tudo o resto sem deixar rasto
+            if not lim.get('fc_valida',True): bp1_bpm=bp2_bpm=None
             if 'heartrate' in set(lim.get('canais_invalidos') or []):
-                bp1_bpm = bp2_bpm = None
-                _fc_descartada = True
+                bp1_bpm=bp2_bpm=None; _fc_descartada=True
+            else: _fc_descartada=False
+            if not (lim.get('fc_utilizavel') or {}).get('utilizavel',True): bp1_bpm=bp2_bpm=None
+            if lim.get('fc_valida') is False: bp1_bpm=bp2_bpm=None
+
+            s2 = MX_SESSOES_CACHE.get(aid,{})
+            jc = json.dumps({'limiares':lim,'i515':itp,'rede':rd},ensure_ascii=False)[:400000]
+            analyzed_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            meta = _db_act._exec("SELECT type, date, name FROM activities WHERE id=?",(aid,),fetch='one')
+            if meta:
+                tipo,data_act,nome = meta
+                sport = _TYPE_MAP.get(tipo) or tipo
             else:
-                _fc_descartada = False
+                data_act = s2.get('data'); nome = None; sport = lim.get('modalidade')
 
-            # não gravar bpm de uma cinta que falhou: ficaria na base e
-            # contaminava o perfil metabólico e a comparação longitudinal
-            if not (lim.get('fc_utilizavel') or {}).get('utilizavel', True):
-                bp1_bpm = bp2_bpm = None
-
-            # A FC inválida não se grava. O endpoint já apaga os bpm da
-            # RESPOSTA, mas a gravação lê as variáveis locais — sem esta
-            # guarda, o 104 bpm de uma cinta presa ia para a base e depois
-            # aparecia no perfil metabólico como se fosse medição.
-            _fc_ok = (lim.get('fc_valida') if lim.get('fc_valida') is not None
-                      else True)
-            if not _fc_ok:
-                bp1_bpm = bp2_bpm = None
-
-            s2 = MX_SESSOES_CACHE.get(aid, {})
-            _vo2 = lim.get('vo2max_previsto') or {}
-            linha = (
-                aid, lim.get('modalidade'), s2.get('data'),
-                pf.get('perfil'), bp1, bp1_bpm,
-                bp2, bp2_bpm,
-                origem2,
-                (lr.get('lt1_estimado') if lr.get('ok') else None),
-                _lr[0], _lr[1],
-                (md.get('mlss_estimado') if md.get('ok') else None),
-                _md[0], _md[1],
-                pf.get('smo2max'), pf.get('smo2min'),
-                len([x for x in ((lim.get('blocos_usados')) or [])]),
-                (pt.get('us') or {}).get('score'),
-                (ip.get('us') or {}).get('limitador'),
-                (pt.get('pc') or {}).get('score'),
-                (ip.get('pc') or {}).get('limitador'),
-                rl.get('sistema'),
-                json.dumps(rl.get('controlo_pct') or {}, ensure_ascii=False),
-                ((lim.get('hipocapnia') or {}).get('z_maximo')),
-                None, None, VERSAO_ANALISE,
-                json.dumps({'limiares': lim, 'i515': itp, 'rede': rd},
-                           ensure_ascii=False)[:400000],
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                (_vo2.get('vo2max_estimado') if _vo2.get('ok') else None),
-                (1 if _vo2.get('plausivel') else
-                 (0 if _vo2.get('ok') else None)))
-
-            cn = ddp.get_conn()
-            cn.execute(
-                """INSERT OR REPLACE INTO moxy_analises
-                   (activity_id, modalidade, data, perfil, bp1_w, bp1_bpm,
-                    bp2_w, bp2_bpm, bp2_origem,
-                    lt1_reox_w, lt1_reox_de, lt1_reox_ate,
-                    mlss_dessat_w, mlss_dessat_de, mlss_dessat_ate,
-                    smo2max, smo2min, n_degraus,
-                    us_score, us_limitador, pc_score, pc_limitador,
-                    rede_limitador, rede_pct, pct_artefacto, corte_inicio_s,
-                    corte_fim_s, versao_analise, json_completo, data_gravacao,
-                    vo2max_previsto, vo2max_plausivel)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                           ?,?,?,?,?,?,?,?)""",
-                linha)
+            cn = _mvdb.get_moxy_vst_conn()
+            _mvdb.upsert_activity(cn,aid,'moxy',name=nome,date=data_act,sport=sport)
+            old = cn.execute(
+                "SELECT version FROM moxy_analyses WHERE activity_id=? AND analysis_version=? ORDER BY version DESC LIMIT 1",
+                (aid,VERSAO_ANALISE)).fetchone()
+            if old:
+                version=int(old[0])
+                cn.execute(
+                    "UPDATE moxy_analyses SET bp1_w=?,bp1_bpm=?,bp2_w=?,bp2_bpm=?,json_completo=?,analysis_version=?,analyzed_at=? WHERE activity_id=? AND version=?",
+                    (bp1,bp1_bpm,bp2,bp2_bpm,jc,VERSAO_ANALISE,analyzed_at,aid,version))
+            else:
+                rv=cn.execute("SELECT COALESCE(MAX(version),0) FROM moxy_analyses WHERE activity_id=?",(aid,)).fetchone()
+                version=int(rv[0] or 0)+1
+                cn.execute(
+                    "INSERT INTO moxy_analyses (activity_id,version,bp1_w,bp1_bpm,bp2_w,bp2_bpm,json_completo,analysis_version,analyzed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (aid,version,bp1,bp1_bpm,bp2,bp2_bpm,jc,VERSAO_ANALISE,analyzed_at))
             cn.commit()
-            ok, det = ddp.upload()
+            ok,det=_mvdb.upload()
             cn.close()
-            return jsonify({
-                'status': 'ok' if ok else 'gravado_sem_upload',
-                'activity_id': aid, 'versao': VERSAO_ANALISE,
-                'fc_descartada': _fc_descartada,
-                'nota_fc': ('a FC estava congelada nesta sessão: os valores '
-                            'em bpm não foram gravados, para não entrarem '
-                            'no consenso do perfil metabólico'
-                            if _fc_descartada else None),
-                'drive': det})
+            return jsonify({'status':'ok' if ok else 'gravado_sem_upload',
+                            'activity_id':aid,'versao':VERSAO_ANALISE,'version':version,
+                            'fc_descartada':_fc_descartada,'drive':det})
         except Exception as e:
-            return jsonify({'status': 'erro', 'mensagem': str(e),
-                            'trace': traceback.format_exc()}), 500
+            return jsonify({'status':'erro','mensagem':str(e),'trace':traceback.format_exc()}),500
 
     @app.route('/api/moxy/gravar_todas', methods=['POST'])
     def api_moxy_gravar_todas():

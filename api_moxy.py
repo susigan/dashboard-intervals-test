@@ -252,10 +252,13 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
                 "WHERE vst_activity_id=? AND (modalidade IS NULL OR modalidade='')",
                 (modalidade, vid))
         cn.execute(
-            "UPDATE vst_conjuntos SET bp1_status=?, bp2_status=?, "
-            "recovery_bp1_status=?, recovery_bp2_status=?, "
-            "dia1_bp1_w=?, dia2_bp1_w=?, dia1_bp2_w=?, dia2_bp2_w=?, "
-            "resultado_json=?, analisado_em=?, actualizado_em=? "
+            "UPDATE vst_conjuntos SET "
+            "bp1_status=COALESCE(?,bp1_status), bp2_status=COALESCE(?,bp2_status), "
+            "recovery_bp1_status=COALESCE(?,recovery_bp1_status), "
+            "recovery_bp2_status=COALESCE(?,recovery_bp2_status), "
+            "dia1_bp1_w=COALESCE(?,dia1_bp1_w), dia2_bp1_w=COALESCE(?,dia2_bp1_w), "
+            "dia1_bp2_w=COALESCE(?,dia1_bp2_w), dia2_bp2_w=COALESCE(?,dia2_bp2_w), "
+            "resultado_json=COALESCE(?,resultado_json), analisado_em=?, actualizado_em=? "
             "WHERE vst_activity_id=?",
             ((comp_bp1 or {}).get('status'), (comp_bp2 or {}).get('status'),
              (comp_recovery_bp1 or {}).get('status'),
@@ -283,6 +286,45 @@ def _vst_persistir(cn, vid, mid, comp_bp1, comp_bp2,
         return True, None
     except Exception as e:
         return False, f'{type(e).__name__}: {e}'
+
+
+_MOXY_ANALISES_COLS = (
+    'activity_id', 'modalidade', 'data', 'perfil', 'bp1_w', 'bp1_bpm',
+    'bp2_w', 'bp2_bpm', 'bp2_origem',
+    'lt1_reox_w', 'lt1_reox_de', 'lt1_reox_ate',
+    'mlss_dessat_w', 'mlss_dessat_de', 'mlss_dessat_ate',
+    'smo2max', 'smo2min', 'n_degraus',
+    'us_score', 'us_limitador', 'pc_score', 'pc_limitador',
+    'rede_limitador', 'rede_pct', 'pct_artefacto', 'corte_inicio_s',
+    'corte_fim_s', 'versao_analise', 'json_completo', 'data_gravacao',
+    'vo2max_previsto', 'vo2max_plausivel')
+
+
+def _upsert_moxy_analises_sem_perda(cn, aid, linha):
+    """Escrita legada em moxy_analises SEM apagar dados.
+
+    moxy_analises é lida por app.py e tab_detalhe, por isso não é removida.
+    Não cria tabela: se ela não existir, o erro sobe para quem chama.
+    Linha existente: UPDATE só nos campos que vieram com valor (None mantém).
+    Linha nova: INSERT.
+    """
+    cols = _MOXY_ANALISES_COLS
+    if len(linha) != len(cols):
+        raise ValueError(f'moxy_analises: {len(linha)} valores para {len(cols)} colunas')
+    existe = cn.execute(
+        "SELECT activity_id FROM moxy_analises WHERE activity_id=? LIMIT 1",
+        (str(aid),)).fetchone()
+    if existe is None:
+        cn.execute(
+            f"INSERT INTO moxy_analises ({','.join(cols)}) "
+            f"VALUES ({','.join('?' * len(cols))})", tuple(linha))
+        return
+    novos = [(c, v) for c, v in zip(cols, linha) if c != 'activity_id' and v is not None]
+    if novos:
+        cn.execute(
+            "UPDATE moxy_analises SET " + ",".join(f"{c}=?" for c, _ in novos)
+            + " WHERE activity_id=?",
+            [v for _, v in novos] + [str(aid)])
 
 
 class _CursorVazio:
@@ -379,8 +421,8 @@ def _rpe_interval_upsert(cn, activity_id, intervals):
             " rpe, source, updated_at) "
             "VALUES (?,?,?,?,?,'manual',?) "
             "ON CONFLICT(activity_id, start_time) DO UPDATE SET "
-            "  interval_type=excluded.interval_type, "
-            "  elapsed_time=excluded.elapsed_time, "
+            "  interval_type=COALESCE(excluded.interval_type, interval_type), "
+            "  elapsed_time=COALESCE(excluded.elapsed_time, elapsed_time), "
             "  rpe=excluded.rpe, "
             "  source=excluded.source, "
             "  updated_at=excluded.updated_at",
@@ -2108,11 +2150,16 @@ def registar(app):
                     if _own_cn is not None:
                         try:
                             _own_cn.commit()
-                            _own_mvdb.upload()
                         except Exception as _e_cm:
-                            print(f'[moxy_analyses][canonico] commit/upload: {_e_cm}')
-                        finally:
+                            print(f'[moxy_analyses][canonico] commit: {_e_cm}')
+                        try:
                             _own_cn.close()
+                        except Exception:
+                            pass
+                        try:
+                            _own_mvdb.upload()
+                        except Exception as _e_cm2:
+                            print(f'[moxy_analyses][canonico] upload: {_e_cm2}')
 
             s2 = MX_SESSOES_CACHE.get(aid, {})
             _vo2 = lim.get('vo2max_previsto') or {}
@@ -2143,23 +2190,13 @@ def registar(app):
                  (0 if _vo2.get('ok') else None)))
 
             cn = ddp.get_conn()
-            cn.execute(
-                """INSERT OR REPLACE INTO moxy_analises
-                   (activity_id, modalidade, data, perfil, bp1_w, bp1_bpm,
-                    bp2_w, bp2_bpm, bp2_origem,
-                    lt1_reox_w, lt1_reox_de, lt1_reox_ate,
-                    mlss_dessat_w, mlss_dessat_de, mlss_dessat_ate,
-                    smo2max, smo2min, n_degraus,
-                    us_score, us_limitador, pc_score, pc_limitador,
-                    rede_limitador, rede_pct, pct_artefacto, corte_inicio_s,
-                    corte_fim_s, versao_analise, json_completo, data_gravacao,
-                    vo2max_previsto, vo2max_plausivel)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                           ?,?,?,?,?,?,?,?)""",
-                linha)
-            cn.commit()
-            ok, det = ddp.upload()
+            try:
+                _upsert_moxy_analises_sem_perda(cn, linha[0], linha)
+                cn.commit()
+            except Exception as _e_leg_an:
+                print(f'[moxy_analises][legado] AVISO (canónico não afectado): {_e_leg_an}')
             cn.close()
+            ok, det = ddp.upload()
             return jsonify({
                 'status': 'ok' if ok else 'gravado_sem_upload',
                 'activity_id': aid, 'versao': VERSAO_ANALISE,
@@ -3037,7 +3074,7 @@ def registar(app):
                     rpe_iv = iv.get('rpe')
                     if st is not None:
                         source_iv = 'deleted' if rpe_iv == 0 else 'manual'
-                        rpe_real = None if rpe_iv == 0 else rpe_iv
+                        rpe_real = rpe_iv
                         _mvdb2.upsert_rpe(
                             cn_mv2, aid, float(st), rpe_real,
                             end_time=None,
@@ -4024,11 +4061,13 @@ def registar(app):
 
     @app.route('/api/moxy/vst/conjunto', methods=['POST'])
     def api_moxy_vst_conjunto_gravar():
-        """Grava/actualiza o vinculo VST↔Moxy. Corpo: {vst_activity_id,
-        moxy_activity_id}. Uma sessao VST so pertence a um conjunto de
-        cada vez - gravar de novo actualiza o vinculo anterior, nunca
-        acumula (RE-SINCRONIZAR / ALTERAR VINCULO usam este mesmo
-        endpoint).
+        """Cria o vinculo VST↔Moxy, ou mantem o existente.
+
+        Corpo: {vst_activity_id, moxy_activity_id, forcar_vinculo?}.
+        - sem vinculo: cria (sem upload);
+        - mesmo vinculo: no-op;
+        - vinculo diferente: 409 'vinculo_existente' salvo forcar_vinculo=true
+          (troca explicita, com upload). Nunca reatribui em silencio.
 
         Usa INSERT OR IGNORE + UPDATE para preservar resultado_json e
         validacao_fisiologica_json quando o conjunto ja existe.
@@ -4048,33 +4087,51 @@ def registar(app):
             import drive_db_perfil as ddp
             cn = ddp.get_conn()
             agora = datetime.now().isoformat(timespec='seconds')
-
-            # Criar linha se nao existir (preserva campos calculados se existir)
-            cn.execute(
-                "INSERT OR IGNORE INTO vst_conjuntos "
-                "(vst_activity_id, moxy_activity_id, criado_em, actualizado_em) "
-                "VALUES (?,?,?,?)",
-                (vid, mid, agora, agora))
-
-            # Actualizar apenas o vinculo e o timestamp -- NAO tocar em
-            # resultado_json, validacao_fisiologica_json nem outros campos
-            # calculados pelo /vst/comparar.
-            cn.execute(
-                "UPDATE vst_conjuntos "
-                "SET moxy_activity_id=?, actualizado_em=? "
-                "WHERE vst_activity_id=?",
-                (mid, agora, vid))
-
             row = cn.execute(
-                "SELECT criado_em FROM vst_conjuntos WHERE vst_activity_id=?",
-                (vid,)).fetchone()
-            criado_em = row[0] if row else agora
+                "SELECT moxy_activity_id, criado_em FROM vst_conjuntos "
+                "WHERE vst_activity_id=?", (vid,)).fetchone()
 
+            # Sem vínculo: cria. Não há resultados a proteger. Sincronizar
+            # não sobe o banco; o upload acontece em Salvar.
+            if row is None:
+                cn.execute(
+                    "INSERT INTO vst_conjuntos "
+                    "(vst_activity_id, moxy_activity_id, criado_em, actualizado_em) "
+                    "VALUES (?,?,?,?)", (vid, mid, agora, agora))
+                cn.commit()
+                return jsonify({'status': 'ok', 'vst_activity_id': vid,
+                                'moxy_activity_id': mid, 'criado_em': agora,
+                                'actualizado_em': agora, 'vinculo': 'criado',
+                                'upload_detalhe': None})
+
+            mid_atual, criado_em = row[0], row[1]
+            # Mesmo vínculo: nada a alterar.
+            if str(mid_atual or '') == mid:
+                return jsonify({'status': 'ok', 'vst_activity_id': vid,
+                                'moxy_activity_id': mid, 'criado_em': criado_em,
+                                'actualizado_em': agora, 'vinculo': 'mantido',
+                                'upload_detalhe': None})
+
+            # Vínculo diferente: só com confirmação explícita.
+            if corpo.get('forcar_vinculo') is not True:
+                return jsonify({
+                    'status': 'vinculo_existente',
+                    'mensagem': (f'VST {vid} já está ligada à MOXY {mid_atual}. '
+                                 f'Para trocar o vínculo, confirme explicitamente '
+                                 f'(forcar_vinculo=true).'),
+                    'vst_activity_id': vid,
+                    'moxy_activity_id_atual': mid_atual,
+                }), 409
+
+            cn.execute(
+                "UPDATE vst_conjuntos SET moxy_activity_id=?, actualizado_em=? "
+                "WHERE vst_activity_id=?", (mid, agora, vid))
             cn.commit()
             ok_up, det_up = ddp.upload()
             return jsonify({'status': 'ok' if ok_up else 'gravado_sem_upload',
                             'vst_activity_id': vid, 'moxy_activity_id': mid,
                             'criado_em': criado_em, 'actualizado_em': agora,
+                            'vinculo': 'trocado',
                             'upload_detalhe': None if ok_up else det_up})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
@@ -4842,7 +4899,8 @@ def registar(app):
         # fisio_version / fisio_data_hash não existem aqui e não são enviadas.
         cn.execute(
             "UPDATE vst_conjuntos "
-            "SET validacao_fisiologica_json=?, bpm_vst_validacao_json=? "
+            "SET validacao_fisiologica_json=COALESCE(?,validacao_fisiologica_json), "
+            "bpm_vst_validacao_json=COALESCE(?,bpm_vst_validacao_json) "
             "WHERE vst_activity_id=?",
             (calc['val_json'], calc['bpm_json'], str(vst_id)))
         cn.commit()
@@ -4852,10 +4910,11 @@ def registar(app):
                                     dfa1, bp1_m, bp2_m,
                                     curva_rpe=None, rpe_vst_bp1=None,
                                     rpe_vst_bp2=None):
-        """Wrapper de compatibilidade para GET vst_resultado e gravar_analise:
-        calcula e grava no legado. Devolve (val_fisio, data_hash).
+        """Calcula a validação fisiológica. Devolve (val_fisio, data_hash).
 
-        Não faz upload (regra: quem recebe o POST faz upload).
+        NÃO grava. Chamado pelo GET /vst/resultado, que não persiste:
+        a persistência ocorre só em Salvar (persistir=1) em /vst/comparar.
+        O parâmetro cn é mantido por compatibilidade de assinatura.
         """
         calc = _fisio_calcular(moxy_id, vst_id, bp1_w, bp2_w, bp1_bpm,
                                bp2_bpm, dfa1, bp1_m, bp2_m,
@@ -4864,10 +4923,6 @@ def registar(app):
                                rpe_vst_bp2=rpe_vst_bp2)
         if not calc:
             return None, None
-        try:
-            _fisio_persistir_legado(cn, vst_id, calc)
-        except Exception as _e_p:
-            print(f'[fisio] persistir legado falhou: {_e_p}')
         return calc['val'], calc['data_hash']
 
 
@@ -5890,28 +5945,31 @@ def registar(app):
             # deste projecto). _vst_persistir é partilhada com
             # /api/moxy/vst/gravar_analise para não duplicar lógica.
             try:
-                try:
-                    _vst_persistir(
-                        cn, vid, mid,
-                        comp_bp1, comp_bp2,
-                        comp_recovery_bp1, comp_recovery_bp2,
-                        limiter_bp1, limiter_bp2,
-                        hipotese_bp1, hipotese_bp2,
-                        rede_causal_d1=rede_causal_d1,
-                        comp_rpe_bp1=comp_rpe_bp1,
-                        comp_rpe_bp2=comp_rpe_bp2,
-                        limiter_sintese=limiter_sintese,
-                        recuperacao_final_dia2=dia2.get('recuperacao_final'),
-                        rpe_fisiologia=rpe_fisiologia)
-                    # Legado de compatibilidade (perfil.vst_conjuntos). Usa os
-                    # valores em memória de _fisio_c; não é relido para o canónico.
+                # Legado (perfil.vst_conjuntos) só em Salvar (persistir=1).
+                # GET /vst/comparar nunca grava nem sobe o banco.
+                if persistir:
                     try:
-                        _fisio_persistir_legado(cn, vid, _fisio_c)
-                    except Exception as _e_fl:
-                        print(f'[vst_comparar][fisio legado] AVISO: {_e_fl}')
-                    ddp.upload()
-                except Exception as _e_leg_top:
-                    print(f'[comparar][legado] AVISO (não bloqueia o canónico): {_e_leg_top}')
+                        _vst_persistir(
+                            cn, vid, mid,
+                            comp_bp1, comp_bp2,
+                            comp_recovery_bp1, comp_recovery_bp2,
+                            limiter_bp1, limiter_bp2,
+                            hipotese_bp1, hipotese_bp2,
+                            rede_causal_d1=rede_causal_d1,
+                            comp_rpe_bp1=comp_rpe_bp1,
+                            comp_rpe_bp2=comp_rpe_bp2,
+                            limiter_sintese=limiter_sintese,
+                            recuperacao_final_dia2=dia2.get('recuperacao_final'),
+                            rpe_fisiologia=rpe_fisiologia)
+                        # Legado de compatibilidade (perfil.vst_conjuntos). Usa os
+                        # valores em memória de _fisio_c; não é relido para o canónico.
+                        try:
+                            _fisio_persistir_legado(cn, vid, _fisio_c)
+                        except Exception as _e_fl:
+                            print(f'[vst_comparar][fisio legado] AVISO: {_e_fl}')
+                        ddp.upload()
+                    except Exception as _e_leg_top:
+                        print(f'[comparar][legado] AVISO (não bloqueia o canónico): {_e_leg_top}')
 
                 # Escrita canónica SÓ com persistir=1 (botão Salvar).
                 # Sincronizar/leitura não grava vst_results.
@@ -6105,9 +6163,9 @@ def registar(app):
                         _resultado_gravado = True
 
                         _cn_c.commit()
+                        _cn_c.close()
                         _ok_up_mv, _det_up_mv = _mvdb_c.upload()
                         print(f'[MOXY_VST_STREAMS] upload={"success" if _ok_up_mv else "fail: " + str(_det_up_mv)[:80]}')
-                        _cn_c.close()
                         if _resultado_gravado and _ok_up_mv:
                             _persistido = True
                         else:

@@ -29,6 +29,7 @@ import sqlite3
 import datetime
 
 from moxy_vst_schema import aplicar_schema
+import drive_db_seguro as _dbseg
 
 _DB_NAME   = "moxy_vst_historico.db"
 _LOCAL_DB  = f"/tmp/{_DB_NAME}"
@@ -81,17 +82,21 @@ def _find_db_id(svc):
 
 # ─── Integridade ──────────────────────────────────────────────────────────────
 
+# Contagens-base usadas para impedir upload que encolha o banco do Drive.
+_CONTAGENS_BASE = {
+    'moxy_activities':       'SELECT COUNT(*) FROM moxy_activities',
+    'vst_conjuntos':         'SELECT COUNT(*) FROM vst_conjuntos',
+    'vst_results':           'SELECT COUNT(*) FROM vst_results',
+    'moxy_analyses':         'SELECT COUNT(*) FROM moxy_analyses',
+    'activity_interval_rpe': 'SELECT COUNT(*) FROM activity_interval_rpe',
+    'rpe_preenchido':        'SELECT COUNT(rpe) FROM activity_interval_rpe',
+}
+
+
 def _verificar_integridade(caminho):
-    """(ok, detalhe). Nunca escreve nada."""
-    try:
-        cn = sqlite3.connect(caminho)
-        r  = cn.execute("PRAGMA integrity_check").fetchone()
-        cn.close()
-        if r and r[0] == "ok":
-            return True, "ok"
-        return False, str(r[0]) if r else "integrity_check sem resposta"
-    except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+    """(ok, detalhe). Nunca escreve nada. Só usado para validar downloads."""
+    estado, det = _dbseg.integridade(caminho)
+    return estado == "ok", det
 
 
 # ─── Download ─────────────────────────────────────────────────────────────────
@@ -100,7 +105,8 @@ def download():
     """(ok, detalhe). Baixa moxy_vst_historico.db do Drive para /tmp.
 
     Descarrega para ficheiro temporário e só promove a _LOCAL_DB após
-    confirmar integridade — evita .db parcial que bloqueia chamadas futuras.
+    confirmar integridade. Um ficheiro local existente nunca é sobrescrito:
+    é movido para arquivo. Regista a origem ('drive') para o guarda de upload.
     """
     try:
         from googleapiclient.http import MediaIoBaseDownload
@@ -114,6 +120,10 @@ def download():
                 f"Baixe o DB vazio em /api/moxy/vst/db/download, "
                 f"faca upload manual para a pasta {_FOLDER_ID} e reinicie."
             )
+        # modifiedTime lido ANTES do download: se o Drive mudar durante o
+        # download, o próximo upload é recusado em vez de sobrescrever.
+        meta = svc.files().get(fileId=file_id, fields="modifiedTime",
+                               supportsAllDrives=True).execute()
         req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
         tmp = _LOCAL_DB + ".partial"
         with open(tmp, "wb") as f:
@@ -123,10 +133,20 @@ def download():
                 _, done = dl.next_chunk()
         ok_i, det_i = _verificar_integridade(tmp)
         if not ok_i:
-            try: os.remove(tmp)
+            try: os.remove(tmp)   # cópia parcial do Drive, não dados locais
             except OSError: pass
             return False, f"download corrompido ({det_i}) — nao promovido"
+        if os.path.exists(_LOCAL_DB):
+            _dbseg.arquivar_grupo(_LOCAL_DB, "substituido")
+        else:
+            _dbseg.arquivar_wal_orfao(_LOCAL_DB)
         os.replace(tmp, _LOCAL_DB)
+        _dbseg.gravar_origem(_LOCAL_DB, {
+            "origem": "drive",
+            "file_id": file_id,
+            "modified_time": meta.get("modifiedTime"),
+            "contagens": _dbseg.contagens(_LOCAL_DB, _CONTAGENS_BASE),
+        })
         print(f"{_TAG} download concluido (file_id={file_id})")
         return True, f"descarregado (file_id={file_id})"
     except Exception as e:
@@ -140,22 +160,46 @@ def download():
 def upload():
     """(ok, detalhe). Sobe moxy_vst_historico.db para o Drive.
 
-    Sempre loga o resultado — nunca silencioso.
-
-    NOTA: service accounts nao podem criar ficheiros novos no Drive
-    (sem quota propria). Se o ficheiro ainda nao existe, o utilizador
-    precisa de fazer o upload manual inicial de um .db vazio.
-    A partir dai, updates sao feitos por esta funcao sem quota.
+    Ordem obrigatória: metadados → checkpoint do WAL → integridade →
+    guarda (origem Drive, modifiedTime igual, sem encolher) → upload.
+    Nunca cria ficheiro novo no Drive (falha de listagem não duplica).
     """
     if not os.path.exists(_LOCAL_DB):
         msg = "sem ficheiro local para subir"
         print(f"{_TAG} upload falhou: {msg}")
         return False, msg
-    ok_i, det_i = _verificar_integridade(_LOCAL_DB)
-    if not ok_i:
-        msg = f"ficheiro local corrompido ({det_i}) — upload recusado"
+    # 1. metadados de sync (melhor esforço), antes da consolidação
+    try:
+        agora = datetime.datetime.now().isoformat(timespec='seconds')
+        cn_meta = sqlite3.connect(_LOCAL_DB)
+        try:
+            cn_meta.execute(
+                "INSERT INTO db_metadata(key,value,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                "updated_at=excluded.updated_at",
+                ('last_successful_upload_at', agora, agora))
+            cn_meta.commit()
+        finally:
+            cn_meta.close()
+    except Exception:
+        pass
+    # 2. consolidar WAL: o ficheiro principal tem de conter tudo o que foi commitado
+    try:
+        _dbseg.consolidar_wal(_LOCAL_DB)
+    except Exception as e:
+        msg = f"consolidação do WAL falhou ({e}) — upload recusado"
         print(f"{_TAG} upload falhou: {msg}")
         return False, msg
+    # 3. integridade do ficheiro já consolidado
+    estado, det_i = _dbseg.integridade(_LOCAL_DB)
+    if estado != "ok":
+        msg = f"ficheiro local {estado} ({det_i}) — upload recusado"
+        print(f"{_TAG} upload falhou: {msg}")
+        return False, msg
+    ok_o, motivo_o = _dbseg.origem_drive(_dbseg.ler_origem(_LOCAL_DB))
+    if not ok_o:
+        print(f"{_TAG} upload recusado: {motivo_o}")
+        return False, motivo_o
     print(f"{_TAG} upload iniciado")
     try:
         from googleapiclient.http import MediaFileUpload
@@ -165,44 +209,35 @@ def upload():
             msg = f"falha a procurar ficheiro antes de subir: {erro}"
             print(f"{_TAG} upload falhou: {msg}")
             return False, msg
+        if not file_id:
+            msg = (f"{_DB_NAME} nao existe no Drive ({_FOLDER_ID}) — upload recusado; "
+                   f"nao e criado automaticamente")
+            print(f"{_TAG} upload falhou: {msg}")
+            return False, msg
+        # 4. guarda: só sobe base vinda do Drive, sem mudança externa e sem encolher
+        meta = svc.files().get(fileId=file_id, fields="modifiedTime",
+                               supportsAllDrives=True).execute()
+        cont = _dbseg.contagens(_LOCAL_DB, _CONTAGENS_BASE)
+        ok_v, motivo = _dbseg.validar_envio(
+            _dbseg.ler_origem(_LOCAL_DB), meta.get("modifiedTime"), cont)
+        if not ok_v:
+            print(f"{_TAG} upload recusado: {motivo}")
+            return False, motivo
         media = MediaFileUpload(_LOCAL_DB, mimetype="application/x-sqlite3",
                                 resumable=False)
-        # Atualizar metadados de sync antes de subir
-        try:
-            agora = datetime.datetime.now().isoformat(timespec='seconds')
-            cn = sqlite3.connect(_LOCAL_DB)
-            cn.execute(
-                "INSERT INTO db_metadata(key,value,updated_at) VALUES(?,?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
-                "updated_at=excluded.updated_at",
-                ('last_successful_upload_at', agora, agora)
-            )
-            cn.commit(); cn.close()
-        except Exception:
-            pass
-        if file_id:
-            svc.files().update(fileId=file_id, media_body=media,
-                               supportsAllDrives=True).execute()
-            print(f"{_TAG} upload concluido (update file_id={file_id})")
-            return True, f"actualizado (file_id={file_id})"
-        else:
-            # Tentativa de criar — pode falhar se service account sem quota
-            res = svc.files().create(
-                body={"name": _DB_NAME, "parents": [_FOLDER_ID]},
-                media_body=media, supportsAllDrives=True, fields="id",
-            ).execute()
-            print(f"{_TAG} upload concluido (criado file_id={res.get('id')})")
-            return True, f"criado (file_id={res.get('id')})"
+        res = svc.files().update(fileId=file_id, media_body=media,
+                                 supportsAllDrives=True,
+                                 fields="modifiedTime").execute()
+        _dbseg.gravar_origem(_LOCAL_DB, {
+            "origem": "drive",
+            "file_id": file_id,
+            "modified_time": res.get("modifiedTime"),
+            "contagens": cont,
+        })
+        print(f"{_TAG} upload concluido (update file_id={file_id})")
+        return True, f"actualizado (file_id={file_id})"
     except Exception as e:
         det = f"{type(e).__name__}: {e}"
-        if 'storageQuotaExceeded' in det or 'storage quota' in det.lower():
-            det = (
-                f"{_DB_NAME} nao existe no Drive ({_FOLDER_ID}) e a service account "
-                f"({_email_sa()}) nao pode cria-lo (sem quota propria). "
-                f"SOLUCAO: baixe o DB vazio em /api/moxy/vst/db/download e "
-                f"faca upload manual para a pasta do Drive. Depois desta "
-                f"primeira vez, uploads automaticos voltam a funcionar."
-            )
         print(f"{_TAG} upload falhou: {det}")
         return False, det
 
@@ -212,30 +247,24 @@ def upload():
 def get_moxy_vst_conn():
     """Conexão sqlite3 pronta a usar ao moxy_vst_historico.db.
 
-    Garante:
-    1. Ficheiro existe localmente (download se preciso)
-    2. Schema aplicado (CREATE IF NOT EXISTS, nunca DROP)
-    3. Auto-recuperação de .db corrompido
-
-    Retorna sqlite3.Connection ou lança RuntimeError se o DB
-    nao existe nem no Drive (primeira execucao antes do upload manual).
+    - Ficheiro corrompido (erro de conteúdo) é MOVIDO para arquivo, nunca apagado.
+    - Erro transitório de integridade mantém o ficheiro local.
+    - Falha de download cria banco local vazio com origem 'vazio_local' (sem upload).
     """
-    # Auto-recuperação de .db corrompido
     if os.path.exists(_LOCAL_DB):
-        ok_i, _ = _verificar_integridade(_LOCAL_DB)
-        if not ok_i:
-            print(f"{_TAG} {_LOCAL_DB} corrompido — a apagar e a re-descarregar")
-            try: os.remove(_LOCAL_DB)
-            except OSError: pass
+        estado, det = _dbseg.integridade(_LOCAL_DB)
+        if estado == "corrompido":
+            movidos = _dbseg.arquivar_grupo(_LOCAL_DB, "corrompido")
+            print(f"{_TAG} {_LOCAL_DB} corrompido ({det}) — arquivado: {movidos}")
+        elif estado == "transitorio":
+            print(f"{_TAG} integridade nao verificavel agora ({det}) — ficheiro local mantido")
 
     if not os.path.exists(_LOCAL_DB):
+        _dbseg.arquivar_wal_orfao(_LOCAL_DB)
         ok_dl, det_dl = download()
         if not ok_dl:
-            # DB nao existe no Drive: criar localmente para que a app
-            # funcione, mas avisar que o utilizador precisa de fazer
-            # o upload manual inicial.
-            print(f"{_TAG} download falhou ({det_dl}) — criar DB local vazio. "
-                  f"Baixe via /api/moxy/vst/db/download e faca upload para o Drive.")
+            print(f"{_TAG} download falhou ({det_dl}) — criar DB local vazio "
+                  f"(origem 'vazio_local': nao sera enviado ao Drive).")
             _criar_db_local_vazio()
 
     conn = sqlite3.connect(_LOCAL_DB)
@@ -245,11 +274,23 @@ def get_moxy_vst_conn():
 
 
 def _criar_db_local_vazio():
-    """Cria o .db local com o schema completo mas sem dados."""
+    """Cria o .db local com o schema completo mas sem dados.
+
+    Se já existir ficheiro local, apenas aplica o schema (sem alterar origem).
+    """
+    ja_existia = os.path.exists(_LOCAL_DB)
+    if not ja_existia:
+        _dbseg.arquivar_wal_orfao(_LOCAL_DB)
     conn = sqlite3.connect(_LOCAL_DB)
     aplicar_schema(conn)
     conn.close()
-    print(f"{_TAG} DB local criado em {_LOCAL_DB} (vazio, aguarda upload manual para Drive)")
+    if not ja_existia:
+        _dbseg.gravar_origem(_LOCAL_DB, {
+            "origem": "vazio_local",
+            "motivo": "download falhou ou ficheiro inexistente no Drive",
+        })
+        print(f"{_TAG} DB local criado em {_LOCAL_DB} (vazio, origem 'vazio_local')")
+
 
 
 # ─── Utilitários de escrita (UPSERT seguro) ───────────────────────────────────
@@ -258,14 +299,18 @@ def upsert_rpe(conn, activity_id, start_time, rpe,
                end_time=None, interval_index=None,
                interval_type=None, elapsed_time=None,
                source='manual'):
-    """Grava ou actualiza RPE. Nunca apaga. Nunca converte ausente em 0.
+    """Grava ou actualiza RPE. Nunca apaga, nunca converte ausente em valor.
 
-    rpe=None + source='deleted' → apagado explicitamente pelo utilizador
-    rpe=1..10 → valor real
+    rpe=None  → ausência: NÃO altera rpe, rpe_status nem source existentes;
+                só preenche metadados que ainda estão vazios (COALESCE).
+    rpe=0..10 → valor explícito: actualiza rpe. source='deleted' com rpe=0
+                marca o intervalo como apagado (mesmo significado do legado).
     """
     agora = datetime.datetime.now().isoformat(timespec='seconds')
-    rpe_status = 'deleted' if (rpe is None and source == 'deleted') else \
-                 'recorded' if rpe is not None else 'not_recorded'
+    if rpe is not None:
+        rpe_status = 'deleted' if source == 'deleted' else 'recorded'
+    else:
+        rpe_status = 'not_recorded'
     conn.execute(
         """INSERT INTO activity_interval_rpe
            (activity_id, start_time, end_time, interval_index,
@@ -277,9 +322,11 @@ def upsert_rpe(conn, activity_id, start_time, rpe,
              interval_index= COALESCE(excluded.interval_index, interval_index),
              interval_type = COALESCE(excluded.interval_type, interval_type),
              elapsed_time  = COALESCE(excluded.elapsed_time, elapsed_time),
-             rpe           = excluded.rpe,
-             rpe_status    = excluded.rpe_status,
-             source        = excluded.source,
+             rpe           = COALESCE(excluded.rpe, rpe),
+             rpe_status    = CASE WHEN excluded.rpe IS NULL THEN rpe_status
+                                  ELSE excluded.rpe_status END,
+             source        = CASE WHEN excluded.rpe IS NULL THEN source
+                                  ELSE excluded.source END,
              updated_at    = excluded.updated_at
         """,
         (str(activity_id), float(start_time), end_time, interval_index,
@@ -541,14 +588,38 @@ def insert_resultado(conn, conjunto_id, resultado_json=None,
     """Insere uma NOVA versão do resultado — nunca sobrescreve versões anteriores.
 
     O número de versão é calculado automaticamente como MAX(version)+1.
-    Regra anti-destruição: se algum campo for None mas o resultado anterior
-    tinha dados, a nova versão mantém None (o histórico fica na versão anterior).
+    Regra anti-destruição: campo None nesta versão herda o valor da versão
+    anterior. Versões antigas nunca são alteradas.
     """
     agora = datetime.datetime.now().isoformat(timespec='seconds')
 
     def _j(v):
         if v is None: return None
         return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+
+    # Campo None nesta versão herda o valor da última versão (não apaga histórico).
+    campos = {
+        'analysis_version': analysis_version, 'analysis_hash': analysis_hash,
+        'resultado_json': resultado_json,
+        'validacao_fisiologica_json': validacao_fisiologica_json,
+        'bpm_vst_validacao_json': bpm_vst_validacao_json,
+        'bp1_w': bp1_w, 'bp2_w': bp2_w, 'bp1_bpm': bp1_bpm, 'bp2_bpm': bp2_bpm,
+        'bp1_json': bp1_json, 'bp2_json': bp2_json,
+        'comparacao_rpe_bp1': comparacao_rpe_bp1,
+        'comparacao_rpe_bp2': comparacao_rpe_bp2,
+        'limiter_sintese': limiter_sintese,
+        'recuperacao_final_dia2': recuperacao_final_dia2,
+        'rpe_fisiologia_json': rpe_fisiologia_json,
+    }
+    prev = conn.execute(
+        "SELECT " + ",".join(campos) + " FROM vst_results "
+        "WHERE vst_conjunto_id=? ORDER BY version DESC LIMIT 1",
+        (conjunto_id,)
+    ).fetchone()
+    if prev is not None:
+        for _k, _v in zip(list(campos), prev):
+            if campos[_k] is None:
+                campos[_k] = _v
 
     # Calcular próxima versão
     row = conn.execute(
@@ -557,9 +628,10 @@ def insert_resultado(conn, conjunto_id, resultado_json=None,
     ).fetchone()
     next_version = (row[0] or 0) + 1
 
-    rpe_bp1_ok = int(bool(comparacao_rpe_bp1 or
-                     (resultado_json and 'rpe' in str(resultado_json))))
-    rpe_bp2_ok = int(bool(comparacao_rpe_bp2))
+    _rjson = campos['resultado_json']
+    rpe_bp1_ok = int(bool(campos['comparacao_rpe_bp1'] or
+                     (_rjson and 'rpe' in str(_rjson))))
+    rpe_bp2_ok = int(bool(campos['comparacao_rpe_bp2']))
 
     conn.execute(
         """INSERT INTO vst_results
@@ -572,12 +644,14 @@ def insert_resultado(conn, conjunto_id, resultado_json=None,
                 rpe_fisiologia_json, created_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
-        (conjunto_id, next_version, analysis_version, analysis_hash,
-         agora, _j(resultado_json), _j(validacao_fisiologica_json),
-         _j(bpm_vst_validacao_json), bp1_w, bp2_w, bp1_bpm, bp2_bpm,
-         _j(bp1_json), _j(bp2_json), _j(comparacao_rpe_bp1), _j(comparacao_rpe_bp2),
-         _j(limiter_sintese), _j(recuperacao_final_dia2),
-         rpe_bp1_ok, rpe_bp2_ok, _j(rpe_fisiologia_json), agora)
+        (conjunto_id, next_version, campos['analysis_version'], campos['analysis_hash'],
+         agora, _j(campos['resultado_json']), _j(campos['validacao_fisiologica_json']),
+         _j(campos['bpm_vst_validacao_json']), campos['bp1_w'], campos['bp2_w'],
+         campos['bp1_bpm'], campos['bp2_bpm'],
+         _j(campos['bp1_json']), _j(campos['bp2_json']),
+         _j(campos['comparacao_rpe_bp1']), _j(campos['comparacao_rpe_bp2']),
+         _j(campos['limiter_sintese']), _j(campos['recuperacao_final_dia2']),
+         rpe_bp1_ok, rpe_bp2_ok, _j(campos['rpe_fisiologia_json']), agora)
     )
     return next_version
 
@@ -601,6 +675,15 @@ def upsert_moxy_analysis(conn, activity_id, bp1_w=None, bp1_bpm=None,
         "FROM moxy_analyses WHERE activity_id=? "
         "ORDER BY version DESC LIMIT 1",
         (str(activity_id),)).fetchone()
+
+    if atual is not None:
+        # Campo None herda a versão mais recente: dados incompletos não apagam.
+        bp1_w = atual[1] if bp1_w is None else bp1_w
+        bp1_bpm = atual[2] if bp1_bpm is None else bp1_bpm
+        bp2_w = atual[3] if bp2_w is None else bp2_w
+        bp2_bpm = atual[4] if bp2_bpm is None else bp2_bpm
+        json_completo = atual[5] if json_completo is None else json_completo
+        analysis_version = atual[6] if analysis_version is None else analysis_version
 
     novo = (bp1_w, bp1_bpm, bp2_w, bp2_bpm, _j(json_completo), analysis_version)
     if atual is not None and tuple(atual[1:]) == novo:

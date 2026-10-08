@@ -68,9 +68,11 @@ def migrar(
                         rpe, rpe_status, source, created_at, updated_at)
                        VALUES (?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(activity_id, start_time) DO UPDATE SET
-                         rpe        = excluded.rpe,
-                         rpe_status = excluded.rpe_status,
-                         source     = excluded.source,
+                         rpe        = COALESCE(excluded.rpe, rpe),
+                         rpe_status = CASE WHEN excluded.rpe IS NULL THEN rpe_status
+                                           ELSE excluded.rpe_status END,
+                         source     = CASE WHEN excluded.rpe IS NULL THEN source
+                                           ELSE excluded.source END,
                          updated_at = excluded.updated_at
                     """,
                     (r['activity_id'], float(r['start_time']),
@@ -141,8 +143,8 @@ def migrar(
                         created_at, updated_at)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(moxy_activity_id, vst_activity_id) DO UPDATE SET
-                         bp1_status           = excluded.bp1_status,
-                         bp2_status           = excluded.bp2_status,
+                         bp1_status           = COALESCE(excluded.bp1_status, bp1_status),
+                         bp2_status           = COALESCE(excluded.bp2_status, bp2_status),
                          updated_at           = excluded.updated_at
                     """,
                     (r['moxy_activity_id'], r['vst_activity_id'],
@@ -173,11 +175,7 @@ def migrar(
                         bp2_w, bp2_bpm, json_completo,
                         analysis_version, analyzed_at)
                        VALUES (?,1,?,?,?,?,?,?,?)
-                       ON CONFLICT(activity_id, version) DO UPDATE SET
-                         bp1_w        = excluded.bp1_w,
-                         bp2_w        = excluded.bp2_w,
-                         json_completo = excluded.json_completo,
-                         analyzed_at  = excluded.analyzed_at
+                       ON CONFLICT(activity_id, version) DO NOTHING
                     """,
                     (r['activity_id'], r['bp1_w'], r['bp1_bpm'],
                      r['bp2_w'], r['bp2_bpm'],

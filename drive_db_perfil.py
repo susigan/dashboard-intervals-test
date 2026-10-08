@@ -26,6 +26,7 @@ import json
 import sqlite3
 
 from perfil_schema import aplicar_schema
+import drive_db_seguro as _dbseg
 
 _DB_NAME = "perfil_historico.db"
 _LOCAL_DB = f"/tmp/{_DB_NAME}"
@@ -82,18 +83,24 @@ def _find_db_id(svc):
         return None, f"{type(e).__name__}: {e}"
 
 
+# Contagens-base usadas para impedir upload que encolha o banco do Drive.
+_CONTAGENS_BASE = {
+    'moxy_activities':       'SELECT COUNT(*) FROM moxy_activities',
+    'vst_conjuntos':         'SELECT COUNT(*) FROM vst_conjuntos',
+    'vst_results':           'SELECT COUNT(*) FROM vst_results',
+    'moxy_analyses':         'SELECT COUNT(*) FROM moxy_analyses',
+    'activity_interval_rpe': 'SELECT COUNT(*) FROM activity_interval_rpe',
+    'rpe_preenchido':        'SELECT COUNT(rpe) FROM activity_interval_rpe',
+}
+
+
 def download():
     """(ok, detalhe). Traz o .db do Drive para /tmp.
 
     Descarrega para um ficheiro TEMPORÁRIO e só o promove a _LOCAL_DB
-    depois de confirmar (PRAGMA integrity_check) que veio inteiro e
-    legível. Isto existe porque, sem isto, uma falha a meio do
-    download (rede, timeout) deixava um .db PARCIAL exactamente no
-    sítio onde get_conn() vai procurar — e como get_conn() só chama
-    download() quando o ficheiro local NÃO existe, esse ficheiro
-    parcial ficava preso ali para o resto da vida do container,
-    dando "database disk image is malformed" em todos os pedidos
-    seguintes, sem nunca se voltar a tentar descarregar.
+    depois de confirmar integridade. Um ficheiro local existente nunca é
+    sobrescrito: é movido para arquivo. Regista a origem ('drive') para
+    o guarda de upload.
     """
     try:
         from googleapiclient.http import MediaIoBaseDownload
@@ -103,6 +110,9 @@ def download():
             return False, f"falha a procurar o ficheiro: {erro}"
         if not file_id:
             return False, "ficheiro nao existe ainda no Drive (normal na 1a vez)"
+        # modifiedTime lido ANTES do download (ver drive_db_moxy_vst.download)
+        meta = svc.files().get(fileId=file_id, fields="modifiedTime",
+                               supportsAllDrives=True).execute()
         req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
         tmp_path = _LOCAL_DB + ".partial"
         with open(tmp_path, "wb") as f:
@@ -114,13 +124,23 @@ def download():
         ok_integ, detalhe_integ = _verificar_integridade(tmp_path)
         if not ok_integ:
             try:
-                os.remove(tmp_path)
+                os.remove(tmp_path)   # cópia parcial do Drive, não dados locais
             except OSError:
                 pass
             return False, f"download terminou mas o ficheiro está corrompido " \
                           f"({detalhe_integ}) — não promovido, nada foi tocado " \
                           f"no .db anterior (se existir)"
+        if os.path.exists(_LOCAL_DB):
+            _dbseg.arquivar_grupo(_LOCAL_DB, "substituido")
+        else:
+            _dbseg.arquivar_wal_orfao(_LOCAL_DB)
         os.replace(tmp_path, _LOCAL_DB)
+        _dbseg.gravar_origem(_LOCAL_DB, {
+            "origem": "drive",
+            "file_id": file_id,
+            "modified_time": meta.get("modifiedTime"),
+            "contagens": _dbseg.contagens(_LOCAL_DB, _CONTAGENS_BASE),
+        })
         return True, f"descarregado (file_id={file_id})"
     except Exception as e:
         detalhe = f"{type(e).__name__}: {e}"
@@ -130,95 +150,102 @@ def download():
 
 def _verificar_integridade(caminho):
     """(ok, detalhe). PRAGMA integrity_check — nunca escreve nada."""
-    try:
-        cn = sqlite3.connect(caminho)
-        r = cn.execute("PRAGMA integrity_check").fetchone()
-        cn.close()
-        if r and r[0] == "ok":
-            return True, "ok"
-        return False, str(r[0]) if r else "integrity_check sem resposta"
-    except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+    estado, det = _dbseg.integridade(caminho)
+    return estado == "ok", det
 
 
 def upload():
     """(ok, detalhe). Sobe o .db actualizado para o Drive.
 
-    NOTA: se o ficheiro ainda não existir na pasta do Drive, esta função
-    NÃO consegue criá-lo — service accounts não têm quota de storage
-    própria no Google Drive (erro storageQuotaExceeded). É preciso
-    existir lá primeiro um upload manual feito por uma conta pessoal
-    (a mesma forma como correlacoes.db/hrv_analyzer.db foram criados);
-    a partir daí, esta função só faz UPDATE ao conteúdo, que não precisa
-    de quota nenhuma da service account.
+    Ordem: checkpoint do WAL → integridade → guarda (origem Drive,
+    modifiedTime igual, sem encolher) → update. Nunca cria ficheiro novo.
     """
     if not os.path.exists(_LOCAL_DB):
         return False, "sem ficheiro local para subir"
-    ok_integ, detalhe_integ = _verificar_integridade(_LOCAL_DB)
-    if not ok_integ:
-        detalhe = (f"ficheiro local corrompido ({detalhe_integ}) — upload "
-                   f"recusado para não substituir a cópia boa no Drive por "
-                   f"uma corrompida; corre get_conn() outra vez para forçar "
-                   f"um novo download antes de tentar de novo")
+    try:
+        _dbseg.consolidar_wal(_LOCAL_DB)
+    except Exception as e:
+        detalhe = f"consolidação do WAL falhou ({e}) — upload recusado"
         print(f"[drive_db_perfil] upload recusado: {detalhe}")
         return False, detalhe
+    estado, detalhe_integ = _dbseg.integridade(_LOCAL_DB)
+    if estado != "ok":
+        detalhe = (f"ficheiro local {estado} ({detalhe_integ}) — upload recusado "
+                   f"para não substituir a cópia boa no Drive")
+        print(f"[drive_db_perfil] upload recusado: {detalhe}")
+        return False, detalhe
+    ok_o, motivo_o = _dbseg.origem_drive(_dbseg.ler_origem(_LOCAL_DB))
+    if not ok_o:
+        print(f"[drive_db_perfil] upload recusado: {motivo_o}")
+        return False, motivo_o
     try:
         from googleapiclient.http import MediaFileUpload
         svc = _drive_svc()
         file_id, erro = _find_db_id(svc)
         if erro:
             return False, f"falha a procurar o ficheiro antes de subir: {erro}"
+        if not file_id:
+            return False, (f"{_DB_NAME} nao existe na pasta do Drive — upload "
+                           f"recusado; nao e criado automaticamente")
+        meta = svc.files().get(fileId=file_id, fields="modifiedTime",
+                               supportsAllDrives=True).execute()
+        cont = _dbseg.contagens(_LOCAL_DB, _CONTAGENS_BASE)
+        ok_v, motivo = _dbseg.validar_envio(
+            _dbseg.ler_origem(_LOCAL_DB), meta.get("modifiedTime"), cont)
+        if not ok_v:
+            print(f"[drive_db_perfil] upload recusado: {motivo}")
+            return False, motivo
         media = MediaFileUpload(_LOCAL_DB, mimetype="application/x-sqlite3",
                                 resumable=False)
-        if file_id:
-            svc.files().update(fileId=file_id, media_body=media,
-                               supportsAllDrives=True).execute()
-            return True, f"actualizado (file_id={file_id})"
-        else:
-            res = svc.files().create(
-                body={"name": _DB_NAME, "parents": [_FOLDER_ID]},
-                media_body=media, supportsAllDrives=True, fields="id",
-            ).execute()
-            return True, f"criado (file_id={res.get('id')})"
+        res = svc.files().update(fileId=file_id, media_body=media,
+                                 supportsAllDrives=True,
+                                 fields="modifiedTime").execute()
+        _dbseg.gravar_origem(_LOCAL_DB, {
+            "origem": "drive",
+            "file_id": file_id,
+            "modified_time": res.get("modifiedTime"),
+            "contagens": cont,
+        })
+        return True, f"actualizado (file_id={file_id})"
     except Exception as e:
         detalhe = f"{type(e).__name__}: {e}"
-        if 'storageQuotaExceeded' in detalhe or 'storage quota' in detalhe.lower():
-            detalhe = (
-                f"{_DB_NAME} ainda não existe na pasta do Drive ({_FOLDER_ID}) e a "
-                f"service account ({_email_service_account()}) não pode criá-lo "
-                f"(sem quota própria). SOLUÇÃO: fazer upload manual de um "
-                f"{_DB_NAME} vazio para essa pasta, com uma conta Google pessoal "
-                f"— igual ao que já foi feito para correlacoes.db/hrv_analyzer.db. "
-                f"Depois disso, updates automáticos passam a funcionar sem quota.")
         print(f"[drive_db_perfil] upload falhou: {detalhe}")
         return False, detalhe
 
 
 def get_conn():
-    """Conexao sqlite3 pronta a usar. Faz download na primeira chamada do
-    processo (container) — chamadas seguintes reaproveitam o /tmp local,
-    sem voltar a descarregar.
+    """Conexao sqlite3 pronta a usar.
 
-    Auto-recuperação: se o ficheiro local já existir mas estiver
-    corrompido (ex.: de um download antigo que falhou a meio, antes
-    desta protecção existir), apaga-o e força um novo download em vez
-    de continuar a devolver "database disk image is malformed" para
-    sempre nesta vida do container.
+    - Corrupção real (malformed/not a database) → ficheiro MOVIDO para arquivo.
+    - Erro transitório de integridade → ficheiro local mantido.
+    - Sem ficheiro após falha de download → banco vazio com origem 'vazio_local'
+      (não é enviado ao Drive).
     """
     if os.path.exists(_LOCAL_DB):
-        ok_integ, _ = _verificar_integridade(_LOCAL_DB)
-        if not ok_integ:
-            print(f"[drive_db_perfil] {_LOCAL_DB} corrompido — a apagar e "
-                  f"voltar a descarregar")
-            try:
-                os.remove(_LOCAL_DB)
-            except OSError:
-                pass
+        estado, det = _dbseg.integridade(_LOCAL_DB)
+        if estado == "corrompido":
+            movidos = _dbseg.arquivar_grupo(_LOCAL_DB, "corrompido")
+            print(f"[drive_db_perfil] {_LOCAL_DB} corrompido ({det}) — arquivado: {movidos}")
+        elif estado == "transitorio":
+            print(f"[drive_db_perfil] integridade nao verificavel agora ({det}) — ficheiro local mantido")
+
     if not os.path.exists(_LOCAL_DB):
-        download()
+        _dbseg.arquivar_wal_orfao(_LOCAL_DB)
+        ok_dl, det_dl = download()
+        if not ok_dl:
+            print(f"[drive_db_perfil] download falhou ({det_dl}) — banco local vazio "
+                  f"(origem 'vazio_local': nao sera enviado ao Drive)")
+
+    criado_agora = not os.path.exists(_LOCAL_DB)
     conn = sqlite3.connect(_LOCAL_DB)
     aplicar_schema(conn)
+    if criado_agora:
+        _dbseg.gravar_origem(_LOCAL_DB, {
+            "origem": "vazio_local",
+            "motivo": "download falhou ou ficheiro inexistente no Drive",
+        })
     return conn
+
 
 
 def diagnostico():

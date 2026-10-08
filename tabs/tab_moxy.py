@@ -183,8 +183,7 @@ BODY = """
       </div>
     </div>
     <div class="controls"><button onclick="mxLimiares()">Calcular</button>
-      <button onclick="mxGuardarAnalise()" title="Grava perfil, breakpoints, 5-1-5 e rede causal. Voltar a gravar substitui, com a versão do método usada.">💾 Gravar análise</button>
-      <button onclick="mxGravarTodas()" title="Grava todas as sessões com Moxy. Só re-grava as que foram calculadas com uma versão anterior do método.">💾 Gravar todas</button>
+      <span style="color:#8b949e;font-size:11px;">✓ A análise é gravada automaticamente ao calcular.</span>
       <label class="sel">Terminaram por exaustão
         <select id="mxExaustao" title="Só blocos que terminaram por falha são pontos válidos para o CER.">
           <option value="">nenhum</option>
@@ -458,15 +457,7 @@ BODY = """
     <div id="mxVstConjuntoEstado" style="margin-top:6px;"></div>
 
 
-    <!-- Botão de gravar análise — topo da área de análise VST -->
-    <div id="mxVstGravarBtnArea" style="margin:10px 0 4px;display:none;">
-      <button onclick="mxVstGravarAnalise()"
-        style="padding:6px 16px;background:#1c2331;border:1px solid #3FB950;
-        color:#3FB950;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">
-        💾 Gravar análise VST
-      </button>
-      <span id="mxVstGravarStatus" style="font-size:11px;color:#8b949e;margin-left:10px;"></span>
-    </div>
+    <div id="mxVstGravarBtnArea" style="display:none;"></div>
     <!-- ═══════════════════════════════════════════════════════════
          SEÇÃO VISÍVEL — padrão de resposta, limitador, recomendação
          ═══════════════════════════════════════════════════════════ -->
@@ -2468,7 +2459,7 @@ function mxVstCarregarConjuntosSalvos(){
     // Detalhes (bpm_vst_validacao, validacao_fisiologica) omitidos aqui — aparecem apenas no card da verificação activa.
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">'
     +'<button style="font-size:11px;" onclick="mxVstAbrirVerificacao('+ix+')">ABRIR</button>'
-    +'<button style="font-size:11px;background:#1c2331;border:1px solid #3FB950;color:#3FB950;border-radius:4px;padding:2px 8px;cursor:pointer;" onclick="mxVstGravarVerificacaoSalva('+ix+')">💾 GRAVAR</button>'
+
     +'</div>'
     +'</div>';
   }).join('') + '</div>';

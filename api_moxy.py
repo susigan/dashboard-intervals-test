@@ -2039,6 +2039,18 @@ def registar(app):
             # Escrita canónica: moxy_analyses. json_completo leva os
             # limitadores no topo porque o Training (P1/P2) extrai daí.
             # Sem truncagem: JSON truncado fica inválido.
+            # Sem conexão vinda de fora (botões "Gravar análise" / "Gravar
+            # todas"), a própria função abre e fecha a canónica: assim há um
+            # único escritor de moxy_analyses, chame de onde chamar.
+            _own_cn = None
+            _own_mvdb = None
+            if canonical_conn is None:
+                try:
+                    import drive_db_moxy_vst as _own_mvdb
+                    _own_cn = _own_mvdb.get_moxy_vst_conn()
+                    canonical_conn = _own_cn
+                except Exception as _e_own:
+                    print(f'[moxy_analyses][canonico] não abriu conexão: {_e_own}')
             if canonical_conn is not None:
                 try:
                     import drive_db_moxy_vst as _mvdb_an
@@ -2063,6 +2075,15 @@ def registar(app):
                     print(f'[moxy_analyses][canonico] ERRO {aid}: {_e_can}')
                     if canonical_out is not None:
                         canonical_out['erro'] = str(_e_can)
+                finally:
+                    if _own_cn is not None:
+                        try:
+                            _own_cn.commit()
+                            _own_mvdb.upload()
+                        except Exception as _e_cm:
+                            print(f'[moxy_analyses][canonico] commit/upload: {_e_cm}')
+                        finally:
+                            _own_cn.close()
 
             s2 = MX_SESSOES_CACHE.get(aid, {})
             _vo2 = lim.get('vo2max_previsto') or {}

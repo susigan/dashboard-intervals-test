@@ -2831,6 +2831,11 @@ function mxVstCarregarConjunto(vstId){
   }
  }).catch(function(){
   if(!atual()) return;
+  // Falha de API ao ler o resultado salvo: explicitar na área do gráfico
+  // (se o recálculo abaixo tiver sucesso, mxVstRenderRpeZonas substitui esta nota).
+  const _ar=document.getElementById('mxVstRpeZonasArea'); if(_ar) _ar.style.display='none';
+  const _in=document.getElementById('mxVstRpeZonasIndisp');
+  if(_in){ _in.textContent='Análise integrada indisponível: erro de API ao ler o conjunto salvo. Tentando recalcular.'; _in.style.display=''; }
   // fallback de rede: tentar comparar normalmente
   mxVstCarregarComparacao(vstId);
  });
@@ -3001,7 +3006,13 @@ function _mxVstRenderComparacao(d, vstId){
  mxVstMostrarLimitadorDay1(d);
  mxVstRenderRedeCausal(d);
  mxVstDesenharRpePots(d);
- mxVstRenderRpeZonas(d);
+ try{
+  mxVstRenderRpeZonas(d);
+ }catch(e){
+  const _ar=document.getElementById('mxVstRpeZonasArea'); if(_ar) _ar.style.display='none';
+  const _in=document.getElementById('mxVstRpeZonasIndisp');
+  if(_in){ _in.textContent='Análise integrada indisponível: falha de renderização ('+(e&&e.message||e)+').'; _in.style.display=''; }
+ }
  // Gráfico principal: curvas fisiológicas medianas por zona
  if(d.rpe_zonas_integrado) mxVstDesenharCurvasFisio(d.rpe_zonas_integrado);
  mxLimiterMostrar(d);
@@ -5529,12 +5540,16 @@ function mxVstRenderRpeZonas(d){
   area.style.display='none';
   const st=d.rpe_zonas_integrado_status;
   if(ind){
-   if(st && st!=='ok'){
-    ind.textContent = (st==='erro_leitura')
-     ? 'Análise integrada indisponível: falha ao ler o banco canónico.'
-     : 'Análise integrada indisponível para este conjunto salvo (sem correspondência com a comparação gravada). Salve a comparação novamente para gerá-la.';
-    ind.style.display='';
-   } else { ind.style.display='none'; }
+   // Explicação específica por causa (nunca área vazia nem mistura de sessões)
+   const _msgRz={
+    sem_run_id_legado:'Correspondência não confirmada: este conjunto foi salvo sem identificador de execução (run_id). A análise integrada não é associada automaticamente. Salve a comparação novamente para gerá-la.',
+    run_id_divergente:'Correspondência não confirmada: o resultado canónico mais recente pertence a outra execução. Nada foi misturado.',
+    sem_canonico:'Dado ausente: não há resultado canónico persistido para este par de sessões. Salve a comparação novamente para gerá-la.',
+    sem_analise_canonica:'Dado ausente: o resultado canónico não contém análise integrada.',
+    erro_leitura:'Análise integrada indisponível: falha ao ler o banco canónico.'
+   };
+   ind.textContent = _msgRz[st] || 'Dado ausente: a resposta da API não trouxe a análise integrada.';
+   ind.style.display='';
   }
   return;
  }

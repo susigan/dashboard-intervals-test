@@ -3702,23 +3702,23 @@ def registar(app):
                             'trace': traceback.format_exc()}), 500
 
 
-        def _has_real_rpe(vf_obj):
-            """Retorna True se validacao_fisiologica contém pelo menos um RPE
-            real (1..10) nos intervalos de BP1 ou BP2.
+    def _has_real_rpe(vf_obj):
+        """Retorna True se validacao_fisiologica contém pelo menos um RPE
+        real (1..10) nos intervalos de BP1 ou BP2.
 
-            Usado para decidir se um resultado persistido possui informação de
-            RPE que vale a pena preservar contra uma releitura que retornou
-            apenas ausências temporárias.
-            """
-            if not vf_obj:
-                return False
-            for bp_key in ('bp1', 'bp2'):
-                bp = vf_obj.get(bp_key) or {}
-                for iv in (bp.get('intervalos') or []):
-                    rpe = iv.get('rpe')
-                    if rpe is not None and 1 <= rpe <= 10:
-                        return True
+        Usado para decidir se um resultado persistido possui informação de
+        RPE que vale a pena preservar contra uma releitura que retornou
+        apenas ausências temporárias.
+        """
+        if not vf_obj:
             return False
+        for bp_key in ('bp1', 'bp2'):
+            bp = vf_obj.get(bp_key) or {}
+            for iv in (bp.get('intervalos') or []):
+                rpe = iv.get('rpe')
+                if rpe is not None and 1 <= rpe <= 10:
+                    return True
+        return False
 
     @app.route('/api/moxy/vst/resultado/<path:vst_activity_id>')
     def api_moxy_vst_resultado(vst_activity_id):

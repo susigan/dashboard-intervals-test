@@ -580,12 +580,14 @@ BODY = """
         </details>
 
         <!-- Evidência técnica — dados individuais D1/D2 por canal × potência -->
-        <details id="mxDetalhesFisioIntegrado" style="margin-top:8px;margin-bottom:4px;">
+        <details id="mxDetalhesFisioIntegrado" open style="margin-top:8px;margin-bottom:4px;">
           <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▶ Evidência técnica — dados individuais D1/D2 × potência</summary>
           <div style="font-size:10px;color:#8b949e;margin:6px 0 4px;">Painéis empilhados com eixo X compartilhado (Potência). D1 = <span style="color:#58a6ff;">●</span> Day 1 · D2 = <span style="color:#bc8cff;">■</span> Day 2. Zonas Z1/Z2/Z3 e limiares BP1/BP2 em todos os painéis. Painel RPE inclui regressão linear D1 e D2 separadas.</div>
           <div class="chartbox" style="position:relative;width:100%;margin-top:6px;">
             <canvas id="chMxFisioIntegrado" height="480"></canvas>
+            <div id="mxTipFisioIntegrado" style="display:none;position:absolute;pointer-events:none;z-index:5;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:11px;color:#c9d1d9;max-width:260px;"></div>
           </div>
+          <div id="mxFisioRefTabela" style="font-size:11px;margin-top:8px;color:#c9d1d9;"></div>
         </details>
 
       </details><!-- fim análise integrada -->
@@ -5520,6 +5522,7 @@ function mxVstDesenharRpePots(d){
 function mxVstRenderRpeZonas(d){
  const area=document.getElementById('mxVstRpeZonasArea');
  if(!area) return;
+ window.__mxVstModalidade=(d&&(d.modalidade||d.sport))||null;
  const rz=d.rpe_zonas_integrado;
  const ind=document.getElementById('mxVstRpeZonasIndisp');
  if(!rz || !rz.intervalos || !rz.intervalos.length){
@@ -6285,6 +6288,21 @@ function mxVstDesenharFisioIntegrado(rz){
  const wMax=todasW.length?Math.max.apply(null,todasW)+15:300;
  function xPos(w){ return MARGIN_LEFT+(w-wMin)/(wMax-wMin)*(W-MARGIN_LEFT-MARGIN_RIGHT); }
 
+ // ── Referências HRVT e BP (watts e BPM) ──────────────────────────────────
+ // HRVT vem da análise de limiar do Dia 1 (MOXY). O BPM de BP1/BP2 é INTERPOLADO
+ // a partir de pontos do Dia 1 + Dia 2: é marcado como interpolado, nunca como medido.
+ function _hvRef(k, campo){ const h=rz.hrvt&&rz.hrvt[k]; return (h&&h[campo]!=null)?h[campo]:null; }
+ const HRVT_REFS=[
+  {w:_hvRef('HRVT1c','watts'), bpm:_hvRef('HRVT1c','heartrate'), cor:'#E3B341', rotulo:'HRVT1 indiv.'},
+  {w:_hvRef('HRVT1s','watts'), bpm:_hvRef('HRVT1s','heartrate'), cor:'#79C0FF', rotulo:'HRVT1 clássico'},
+  {w:_hvRef('HRVT2','watts'),  bpm:_hvRef('HRVT2','heartrate'),  cor:'#F85149', rotulo:'HRVT2'},
+ ];
+ const BP1_BPM_INTERP=(rz.bp&&rz.bp.bp1&&rz.bp.bp1.hr_interpolado!=null)?rz.bp.bp1.hr_interpolado:null;
+ const BP2_BPM_INTERP=(rz.bp&&rz.bp.bp2&&rz.bp.bp2.hr_interpolado!=null)?rz.bp.bp2.hr_interpolado:null;
+ // Pontos para o tooltip: cada intervalo com o x da sua potência
+ const _hitIvs=ivs.filter(function(iv){ return iv.potencia!=null; })
+                  .map(function(iv){ return {x:xPos(iv.potencia), iv:iv}; });
+
  // ── Fundo geral ──────────────────────────────────────────────────────────
  ctx.fillStyle=COR_BG;
  ctx.fillRect(0,0,W,totalH);
@@ -6364,6 +6382,38 @@ function mxVstDesenharFisioIntegrado(rz){
   }
   ctx.setLineDash([]);
 
+  // Referências HRVT — linha vertical tracejada (watts); rótulo só no 1º painel
+  HRVT_REFS.forEach(function(hr, hi){
+   if(hr.w==null || hr.w<wMin || hr.w>wMax) return;
+   const xh=xPos(hr.w);
+   ctx.strokeStyle=hr.cor; ctx.lineWidth=1; ctx.setLineDash([2,3]);
+   ctx.beginPath(); ctx.moveTo(xh,yTop); ctx.lineTo(xh,yBot); ctx.stroke();
+   if(pi===0){
+    ctx.fillStyle=hr.cor; ctx.font='9px sans-serif'; ctx.textAlign='left';
+    ctx.fillText(hr.rotulo+' '+Math.round(hr.w)+' W', xh+3, yTop+9+hi*10);
+   }
+  });
+  ctx.setLineDash([]);
+  // Painel FC: BPM do HRVT (linha tracejada) e BPM de BP interpolado (marcador oco)
+  if(painel.id==='hr'){
+   HRVT_REFS.forEach(function(hr){
+    if(hr.bpm==null) return;
+    const yb=yPos(hr.bpm); if(yb<yTop||yb>yBot) return;
+    ctx.strokeStyle=hr.cor; ctx.lineWidth=1; ctx.setLineDash([4,3]);
+    ctx.beginPath(); ctx.moveTo(MARGIN_LEFT,yb); ctx.lineTo(MARGIN_LEFT+innerW,yb); ctx.stroke();
+   });
+   ctx.setLineDash([]);
+   [{w:BP1,b:BP1_BPM_INTERP,cor:COR_BP1,l:'BP1'},{w:BP2,b:BP2_BPM_INTERP,cor:COR_BP2,l:'BP2'}].forEach(function(bp){
+    if(bp.w==null||bp.b==null) return;
+    const xb=xPos(bp.w), yb=yPos(bp.b);
+    if(yb<yTop||yb>yBot||xb<MARGIN_LEFT||xb>MARGIN_LEFT+innerW) return;
+    ctx.strokeStyle=bp.cor; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.arc(xb,yb,4.5,0,Math.PI*2); ctx.stroke();
+    ctx.fillStyle=bp.cor; ctx.font='9px sans-serif'; ctx.textAlign='left';
+    ctx.fillText(bp.l+' '+Math.round(bp.b)+' bpm interp.', xb+6, yb-6);
+   });
+  }
+
   // Pontos
   ivs.forEach(function(iv){
    const wx=iv.potencia; const vy=iv[painel.chave];
@@ -6441,11 +6491,65 @@ function mxVstDesenharFisioIntegrado(rz){
  // D1
  ctx.fillStyle=COR_D1; ctx.beginPath(); ctx.arc(legX+7,legY+7,4,0,Math.PI*2); ctx.fill();
  ctx.fillStyle='#c9d1d9'; ctx.font='10px sans-serif'; ctx.textAlign='left';
- ctx.fillText('Day 1',legX+14,legY+11);
+ ctx.fillText('MOXY d1',legX+14,legY+11);
  // D2
  ctx.fillStyle=COR_D2; ctx.fillRect(legX+3,legY+17,8,8);
  ctx.fillStyle='#c9d1d9';
- ctx.fillText('Day 2',legX+14,legY+25);
+ ctx.fillText('VST d2',legX+14,legY+25);
+
+ // ── Tooltip: watts, FC, RPE e demais sinais do MESMO intervalo ───────────
+ cv._fisioHits=_hitIvs;
+ cv._fisioModalidade=window.__mxVstModalidade||null;
+ if(!cv._fisioTipBound){
+  cv._fisioTipBound=true;
+  cv.addEventListener('mousemove', function(ev){
+   const tipEl=document.getElementById('mxTipFisioIntegrado');
+   const hits=cv._fisioHits||[];
+   if(!tipEl||!hits.length) return;
+   const r=cv.getBoundingClientRect();
+   const mx=ev.clientX-r.left;
+   let bestX=null, bestD=1e9;
+   hits.forEach(function(h){ const dd=Math.abs(h.x-mx); if(dd<bestD){ bestD=dd; bestX=h.x; } });
+   if(bestX==null || bestD>6){ tipEl.style.display='none'; return; }
+   const sel=hits.filter(function(h){ return Math.abs(h.x-bestX)<0.5; }).map(function(h){ return h.iv; });
+   const f=function(v,dec,un){ return (v==null)?'—':(Number(v).toFixed(dec)+(un||'')); };
+   const linhas=['<b>'+(cv._fisioModalidade||'modalidade não informada')+'</b>'];
+   sel.slice(0,4).forEach(function(iv){
+    const origem=iv.sessao==='d2'?'VST · Dia 2':'MOXY · Dia 1';
+    linhas.push('<span style="color:#8b949e;">'+origem+' · intervalo '+(iv.intervalo!=null?iv.intervalo:'—')+' · zona '+(iv.zona||'—')+'</span>');
+    linhas.push('Potência '+f(iv.potencia,0,' W')+' · FC '+f(iv.hr,0,' bpm')+' · RPE '+f(iv.rpe,1,''));
+    linhas.push('RF '+f(iv.respiracao,1,' rpm')+' · SmO₂ '+f(iv.smo2,1,' %')+' · DFA-α1 '+f(iv.dfa1,2,''));
+   });
+   tipEl.innerHTML=linhas.join('<br>');
+   tipEl.style.display='block';
+   tipEl.style.left=Math.min(mx+12, r.width-270)+'px';
+   tipEl.style.top='8px';
+  });
+  cv.addEventListener('mouseleave', function(){
+   const t=document.getElementById('mxTipFisioIntegrado'); if(t) t.style.display='none';
+  });
+ }
+
+ // ── Tabela de referências com origem explícita ───────────────────────────
+ const tb=document.getElementById('mxFisioRefTabela');
+ if(tb){
+  const fw=function(v){ return v==null?'<span style="color:#6e7681;">indisponível</span>':(Math.round(v*10)/10)+' W'; };
+  const fb=function(v){ return v==null?'<span style="color:#6e7681;">indisponível</span>':(Math.round(v*10)/10)+' bpm'; };
+  const origemBP='Watts: consenso MOXY dia 1 · BPM: interpolado no dia 1 (MOXY, mesma sessão · não medido)';
+  const origemHR='Análise de limiar MOXY dia 1';
+  const linhasRef=[
+   ['BP1', fw(BP1), fb(BP1_BPM_INTERP), origemBP],
+   ['BP2', fw(BP2), fb(BP2_BPM_INTERP), origemBP],
+   ['HRVT1 individualizado', fw(_hvRef('HRVT1c','watts')), fb(_hvRef('HRVT1c','heartrate')), origemHR],
+   ['HRVT1 clássico (α1 0,75)', fw(_hvRef('HRVT1s','watts')), fb(_hvRef('HRVT1s','heartrate')), origemHR],
+   ['HRVT2 (α1 0,50)', fw(_hvRef('HRVT2','watts')), fb(_hvRef('HRVT2','heartrate')), origemHR],
+  ];
+  tb.innerHTML='<table style="width:100%;border-collapse:collapse;">'
+   +'<tr style="color:#6e7681;text-align:left;"><th style="padding:3px 4px;">Referência</th><th style="padding:3px 4px;">Watts</th><th style="padding:3px 4px;">BPM</th><th style="padding:3px 4px;">Origem</th></tr>'
+   +linhasRef.map(function(r){
+     return '<tr style="border-top:1px solid #21262d;"><td style="padding:3px 4px;">'+r[0]+'</td><td style="padding:3px 4px;">'+r[1]+'</td><td style="padding:3px 4px;">'+r[2]+'</td><td style="padding:3px 4px;color:#8b949e;">'+r[3]+'</td></tr>';
+   }).join('')+'</table>';
+ }
 }
 
 

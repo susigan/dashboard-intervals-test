@@ -221,6 +221,45 @@ def _zona(watts, bp1_w, bp2_w):
     return 'Z3'
 
 
+def interpolar_fc_bp_mesma_sessao(intervalos, alvo_w, campo, sessao='d1'):
+    """FC (ou outro sinal) no breakpoint alvo_w, usando SOMENTE intervalos da
+    mesma sessão e da mesma fonte de potência do alvo.
+
+    O alvo em watts vem do consenso de limiares do MOXY dia 1; por isso a
+    interpolação usa apenas intervalos com sessao == 'd1' (também MOXY). Pontos
+    VST (dia 2) nunca entram aqui: teriam potência de outra fonte e outra sessão.
+
+    Retorna None quando: alvo ausente; sem pontos válidos na sessão; alvo fora
+    do intervalo de potência coberto pela sessão (sem extrapolação).
+    Pontos com potência de mesmo valor (diferença < 0,1 W) são médios.
+    """
+    if alvo_w is None:
+        return None
+    pts = []
+    for iv in intervalos or []:
+        if iv.get('sessao') != sessao:
+            continue
+        w = iv.get('potencia')
+        v = iv.get(campo)
+        if w is None or v is None:
+            continue
+        pts.append((float(w), float(v)))
+    if not pts:
+        return None
+    pts.sort()
+    if alvo_w < pts[0][0] or alvo_w > pts[-1][0]:
+        return None
+    for i in range(len(pts) - 1):
+        w0, v0 = pts[i]
+        w1, v1 = pts[i + 1]
+        if w0 <= alvo_w <= w1:
+            if abs(w1 - w0) < 0.1:
+                return round((v0 + v1) / 2, 4)
+            t = (alvo_w - w0) / (w1 - w0)
+            return round(v0 + t * (v1 - v0), 4)
+    return None
+
+
 def _rz_integrado_do_canonico(moxy_id, vid, run_id_legado):
     """Lê rpe_zonas_integrado do canónico SOMENTE se o run_id coincidir.
 
@@ -5587,28 +5626,6 @@ def registar(app):
                         return 'Z3'
                     return 'Z2'
 
-                def _rz_interpolar(pontos_w_v, alvo_w):
-                    """Interpola linearmente valor em alvo_w a partir de lista
-                    de (watts, valor). Não extrapola — retorna None se alvo
-                    estiver fora do intervalo dos pontos disponíveis."""
-                    pts = [(w, v) for w, v in pontos_w_v
-                           if w is not None and v is not None]
-                    if not pts:
-                        return None
-                    pts.sort()
-                    ws = [p[0] for p in pts]
-                    if alvo_w < ws[0] or alvo_w > ws[-1]:
-                        return None  # não extrapola
-                    for i in range(len(pts) - 1):
-                        w0, v0 = pts[i]
-                        w1, v1 = pts[i + 1]
-                        if w0 <= alvo_w <= w1:
-                            if abs(w1 - w0) < 0.1:
-                                return round((v0 + v1) / 2, 4)
-                            t = (alvo_w - w0) / (w1 - w0)
-                            return round(v0 + t * (v1 - v0), 4)
-                    return None
-
                 def _rz_regressao(xs, ys, label_curva):
                     """Chama hrv_limiares._regressao; marca como exploratório
                     quando n < 5. Não altera hrv_limiares.py."""
@@ -5793,13 +5810,13 @@ def registar(app):
                 }
 
                 # ── Valores fisiológicos observados em BP1/BP2 ──────────────
-                # Interpolados a partir dos intervalos disponíveis (linear).
-                # Não extrapola — marca como None quando fora do intervalo.
+                # Alvo em watts = consenso MOXY dia 1. Logo a interpolação usa
+                # SOMENTE intervalos MOXY dia 1 (mesma sessão, mesma fonte de
+                # potência). Nunca combina dia 2 (VST) com dia 1 (MOXY).
+                # Sem pontos na sessão ou alvo fora da faixa → None (indisponível).
                 def _rz_obs_no_alvo(alvo_w, campo):
-                    pts = [(iv.get('potencia'), iv.get(campo))
-                           for iv in todos_intervalos
-                           if iv.get('potencia') is not None and iv.get(campo) is not None]
-                    return _rz_interpolar(pts, alvo_w) if alvo_w is not None else None
+                    return interpolar_fc_bp_mesma_sessao(
+                        intervalos_d1, alvo_w, campo, sessao='d1')
 
                 bp_rz = {}
                 for _bpk, _bpw in (('bp1', bp1_alvo), ('bp2', bp2_alvo)):
@@ -5809,7 +5826,7 @@ def registar(app):
                         'respiracao_interpolada':  _rz_obs_no_alvo(_bpw, 'respiracao'),
                         'smo2_interpolada':        _rz_obs_no_alvo(_bpw, 'smo2'),
                         'dfa1_interpolado':        _rz_obs_no_alvo(_bpw, 'dfa1'),
-                        'nota': 'interpolado linearmente a partir dos pontos disponíveis',
+                        'nota': 'interpolado linearmente apenas com intervalos MOXY dia 1 (mesma sessão e fonte de potência do alvo); None se fora da faixa',
                     }
 
                 # ── Comparação BP × HRVT ────────────────────────────────────

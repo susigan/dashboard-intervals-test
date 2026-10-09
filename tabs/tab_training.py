@@ -278,6 +278,10 @@ function _renderSecaoMod(mod, data, ctx, fZona, fTipo, fLim, fWork){
   const cor = TR_MOD_COR[mod]||'#8b949e';
   const nome = TR_MOD_NOME[mod]||mod;
   const lnome = ctx.limitador_nome||'—';
+  // Origem do BPM de referência (regra em utils/training.resolver_bpm_bp):
+  // FC VST do mesmo bloco dos watts, ou BPM MOXY rotulado como outra sessão.
+  const _ob1 = ctx.bp1_bpm_origem||null, _ob2 = ctx.bp2_bpm_origem||null;
+  const _origemBpm = (_ob1 && _ob2 && _ob1!==_ob2) ? ('BP1: '+_ob1+' · BP2: '+_ob2) : (_ob1||_ob2||null);
   const fonte = ctx.fonte==='vst'?'VST+MOXY':ctx.fonte==='moxy'?'MOXY':'Sem avaliação';
 
   let h = '<div style="margin-bottom:28px;">'
@@ -311,21 +315,21 @@ function _renderSecaoMod(mod, data, ctx, fZona, fTipo, fLim, fWork){
   if(temFiltrosActivos){
     // Filtro aplicado → todos os resultados visíveis, ordenados por ranking
     h += '<div style="display:flex;flex-wrap:wrap;gap:10px;">';
-    ops.forEach(function(op){ h += _card(op, cor); });
+    ops.forEach(function(op){ h += _card(op, cor, _origemBpm); });
     h += '</div>';
   } else {
     // Sem filtros → mostrar 3 primeiros (diversidade de zona) + Ver mais
     const visiveis = ops.slice(0,3);
     const resto    = ops.slice(3);
     h += '<div style="display:flex;flex-wrap:wrap;gap:10px;">';
-    visiveis.forEach(function(op){ h += _card(op, cor); });
+    visiveis.forEach(function(op){ h += _card(op, cor, _origemBpm); });
     h += '</div>';
     if(resto.length){
       h += '<details style="margin-top:8px;">'
         +'<summary style="cursor:pointer;font-size:11px;color:#484f58;">'
         +'▼ Ver mais opções ('+resto.length+')</summary>'
         +'<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;">';
-      resto.forEach(function(op){ h += _card(op, cor); });
+      resto.forEach(function(op){ h += _card(op, cor, _origemBpm); });
       h += '</div></details>';
     }
   }
@@ -335,7 +339,7 @@ function _renderSecaoMod(mod, data, ctx, fZona, fTipo, fLim, fWork){
 }
 
 // ── Card de opção de treino ───────────────────────────────────────────────
-function _card(op, corMod){
+function _card(op, corMod, origemBpm){
   const corRel  = TR_REL_COR[op.relacao]||'#8b949e';
   const bgZona  = TR_ZONA_BG[op.zone]||'#161b22';
   const relBg   = op.relacao==='PRINCIPAL'?'#1a3a1a':op.relacao==='SUPLEMENTAR'?'#1f1f1f':'#1a1a3a';
@@ -380,6 +384,7 @@ function _card(op, corMod){
     +'<span style="color:#6e7681;">RPE</span><span>'+op.expected_rpe_work+'</span>'
     +(workW?'<span style="color:#5DADE2;">WORK W</span><span style="color:#5DADE2;font-weight:600;">'+workW+'</span>':'<span style="color:#6e7681;">WORK W</span><span style="color:#484f58;">—</span>')
     +(workB?'<span style="color:#E74C3C;">FC</span><span style="color:#E74C3C;">'+workB+'</span>':'<span style="color:#6e7681;">FC</span><span style="color:#484f58;">—</span>')
+    +(workB&&origemBpm?'<span style="color:#6e7681;">FC origem</span><span style="color:#8b949e;font-size:10px;">'+origemBpm+'</span>':'')
     +'</div>'
     // badge observada vs estimativa (Trava 4)
     + badgeObs

@@ -260,6 +260,22 @@ def api_training_contexto():
             'pontos_observados': pontos,  # lista de {rpe, watts, fc, zona} — [] se ausente
         }
 
+    def _bpm_referencia(ctx, validacao_json, bp1_w, bp2_w, bp1_bpm_m, bp2_bpm_m,
+                        w1_moxy=False, w2_moxy=False):
+        """BPM de BP1/BP2 com origem explícita. Regra em utils/training.resolver_bpm_bp:
+        FC do mesmo bloco VST dos watts, ou BPM MOXY rotulado como outra sessão."""
+        import sys as _sys_bp
+        _sys_bp.path.insert(0, 'utils')
+        import training as _trb
+        b1, o1, ow1 = _trb.resolver_bpm_bp(validacao_json, 'bp1', _sf(bp1_w),
+                                           _sf(bp1_bpm_m), w1_moxy)
+        b2, o2, ow2 = _trb.resolver_bpm_bp(validacao_json, 'bp2', _sf(bp2_w),
+                                           _sf(bp2_bpm_m), w2_moxy)
+        ctx.update({'bp1_bpm': _sf(b1), 'bp2_bpm': _sf(b2),
+                    'bp1_bpm_origem': o1, 'bp2_bpm_origem': o2,
+                    'bp1_w_origem': ow1, 'bp2_w_origem': ow2})
+        return ctx
+
     _AUSENTE = {
         'fonte': 'ausente', 'sistema': None,
         'limitador_nome': None, 'limitador_chave': None,
@@ -386,12 +402,20 @@ def api_training_contexto():
                         'moxy', moxy_row[1], moxy_row[2], moxy_row[3],
                         moxy_row[4], moxy_row[0], None, None,
                         moxy_row[5], moxy_row[6], moxy_row[7], moxy_row[8])
+                    resultado[mod_code] = _bpm_referencia(
+                        resultado[mod_code], None,
+                        moxy_row[5], moxy_row[6], moxy_row[7], moxy_row[8],
+                        w1_moxy=True, w2_moxy=True)
                 else:
                     resultado[mod_code] = _build(
                         'vst', vst_com_moxy[7], vst_com_moxy[8], vst_com_moxy[9],
                         vst_com_moxy[10], vst_com_moxy[1], vst_com_moxy[0], vst_com_moxy[2],
                         vst_com_moxy[11], vst_com_moxy[12], vst_com_moxy[13], vst_com_moxy[14],
                         vst_com_moxy[6])  # validacao_fisiologica_json
+                    resultado[mod_code] = _bpm_referencia(
+                        resultado[mod_code], vst_com_moxy[6],
+                        vst_com_moxy[11], vst_com_moxy[12],
+                        vst_com_moxy[13], vst_com_moxy[14])
 
             elif vst_sem_moxy:
                 # P1b: extrair sistema do resultado_json
@@ -418,12 +442,23 @@ def api_training_contexto():
                     bp1, bp2,
                     _sf(vst_sem_moxy[9]), _sf(vst_sem_moxy[10]),
                     vst_sem_moxy[12])  # validacao_fisiologica_json
+                # Watts MOXY dia 1 só entram quando o VST não tem o bloco (dia1_bp*_w):
+                # nesse caso o BPM MOXY é do mesmo breakpoint e fica coerente.
+                resultado[mod_code] = _bpm_referencia(
+                    resultado[mod_code], vst_sem_moxy[12], bp1, bp2,
+                    _sf(vst_sem_moxy[9]), _sf(vst_sem_moxy[10]),
+                    w1_moxy=(_sf(vst_sem_moxy[7]) is None and bp1 is not None),
+                    w2_moxy=(_sf(vst_sem_moxy[8]) is None and bp2 is not None))
 
             elif moxy_row:
                 resultado[mod_code] = _build(
                     'moxy', moxy_row[1], moxy_row[2], moxy_row[3],
                     moxy_row[4], moxy_row[0], None, None,
                     moxy_row[5], moxy_row[6], moxy_row[7], moxy_row[8])
+                resultado[mod_code] = _bpm_referencia(
+                    resultado[mod_code], None,
+                    moxy_row[5], moxy_row[6], moxy_row[7], moxy_row[8],
+                    w1_moxy=True, w2_moxy=True)
                     # sem validacao_fisiologica_json — pontos_observados=[]
             else:
                 resultado[mod_code] = dict(_AUSENTE)

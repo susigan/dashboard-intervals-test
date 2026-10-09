@@ -1335,6 +1335,69 @@ def _tm_intensidade_observada(pontos: list[dict],
     return f'{mn}–{mx} {unidade}', 'observada', n
 
 
+def fc_bloco_vst_pareado(validacao_json, grupo: str, bp_w) -> float | None:
+    """FC do ÚLTIMO intervalo VST do grupo ('bp1' | 'bp2').
+
+    É o mesmo bloco de onde sai bp_w (vst_results.bp1_w = último bloco BP1 do
+    Dia 2). Só devolve a FC se a potência DESSE intervalo confirmar bp_w
+    (tolerância 0,06 W = arredondamento). Sem confirmação devolve None: não
+    se associa FC a watts de outro intervalo.
+    """
+    import json as _json
+    vf = validacao_json
+    if isinstance(vf, str):
+        try:
+            vf = _json.loads(vf)
+        except Exception:
+            return None
+    if not isinstance(vf, dict):
+        return None
+    ivs = (vf.get(grupo) or {}).get('intervalos') or []
+    if not ivs:
+        return None
+    ultimo = ivs[-1]
+    pot = _tm_safe_float(ultimo.get('potencia_media'))
+    w = _tm_safe_float(bp_w)
+    if pot is None or w is None or abs(pot - w) > 0.06:
+        return None
+    fc = _tm_safe_float(ultimo.get('hr_final'))
+    if fc is None:
+        fc = _tm_safe_float(ultimo.get('hr_media'))
+    return fc if (fc is not None and fc > 0) else None
+
+
+ORIGEM_BPM_VST = 'VST dia 2 — FC do mesmo bloco dos watts (intervalo pareado)'
+ORIGEM_BPM_MOXY_SEM_PAR = ('MOXY dia 1 — BPM do breakpoint MOXY (sem bloco VST '
+                           'pareado; não é a FC dos watts exibidos)')
+ORIGEM_BPM_MOXY_PAR = 'MOXY dia 1 — watts e BPM do mesmo breakpoint MOXY'
+ORIGEM_W_VST = 'VST dia 2 — último bloco BP'
+ORIGEM_W_MOXY = 'MOXY dia 1 — breakpoint MOXY'
+
+
+def resolver_bpm_bp(validacao_json, grupo: str, bp_w, bpm_moxy,
+                    w_origem_moxy: bool = False):
+    """Escolhe o BPM de referência de um breakpoint e declara a origem.
+
+    Retorna (bpm, origem_bpm, origem_w). Ordem de prioridade:
+      1. watts já são MOXY dia 1 -> BPM MOXY do MESMO breakpoint.
+      2. FC VST do mesmo bloco dos watts (fc_bloco_vst_pareado).
+      3. fallback: BPM MOXY, rotulado como de outra sessão.
+      4. nada disponível -> None (indisponível; nunca zero nem estimativa).
+    """
+    if w_origem_moxy:
+        bpm_moxy = _tm_safe_float(bpm_moxy)
+        if bpm_moxy is None or bpm_moxy <= 0:
+            return None, 'indisponível (BPM MOXY ausente)', ORIGEM_W_MOXY
+        return bpm_moxy, ORIGEM_BPM_MOXY_PAR, ORIGEM_W_MOXY
+    fc = fc_bloco_vst_pareado(validacao_json, grupo, bp_w)
+    if fc is not None:
+        return fc, ORIGEM_BPM_VST, ORIGEM_W_VST
+    bpm_moxy = _tm_safe_float(bpm_moxy)
+    if bpm_moxy is not None and bpm_moxy > 0:
+        return bpm_moxy, ORIGEM_BPM_MOXY_SEM_PAR, ORIGEM_W_VST
+    return None, 'indisponível (sem FC pareada e sem BPM MOXY)', ORIGEM_W_VST
+
+
 def _tm_calc_watts(zone: str | None, bp1_w, bp2_w,
                    pontos_observados: list | None = None,
                    rpe_min: float | None = None,

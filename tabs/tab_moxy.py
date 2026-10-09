@@ -10,7 +10,7 @@ from tabs.base import page
 SLUG = 'moxy'
 
 BODY = """
-<div class="wrap">
+<div class="wrap" style="max-height:none;overflow:visible;">
 
   <h1>Moxy</h1>
 
@@ -6423,7 +6423,9 @@ function mxVstDesenharFisioPrincipal(rz, tent){
  const dpr=window.devicePixelRatio||1;
  const W=cv.offsetWidth;
  const H=440;
- const PL=112, PRM=150, PT=44, PB=44;
+ const compacto=W<560;  // telas estreitas: margens e espaçamento dos eixos menores
+ const sp=compacto?34:48;
+ const PL=compacto?74:112, PRM=compacto?104:150, PT=44, PB=44;
  const x0=PL, x1=W-PRM, y0=PT, y1=H-PB;
  cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr);
  cv.style.width=W+'px'; cv.style.height=H+'px';
@@ -6455,7 +6457,7 @@ function mxVstDesenharFisioPrincipal(rz, tent){
    lo-=sp*0.08; hi+=sp*0.12;
   } else { lo=0; hi=1; }
   const idx = s.lado==='E' ? nE++ : nD++;
-  const ax = s.lado==='E' ? x0-48*idx : x1+48*idx;
+  const ax = s.lado==='E' ? x0-sp*idx : x1+sp*idx;
   return {s:s, lo:lo, hi:hi, temDados:vs.length>0, ax:ax,
           yPos:function(v){ return y1-(v-lo)/((hi-lo)||1)*(y1-y0); }};
  });
@@ -6505,7 +6507,7 @@ function mxVstDesenharFisioPrincipal(rz, tent){
    ctx.fillText(s.k==='rpe'?String(Math.round(v)):Number(v).toFixed(s.dec),o.ax+(left?-5:5),yt+3);
   }
   ctx.textAlign='center'; ctx.font='bold 9px sans-serif';
-  ctx.fillText(s.nome+(s.unid?' ('+s.unid+')':''),o.ax,y0-10);
+  ctx.fillText(s.nome+(s.unid&&!compacto?' ('+s.unid+')':''),o.ax,y0-10);
  });
 
  // ── Linhas verticais de BP1/BP2 e HRVT (watts) ────────────────────────
@@ -6565,7 +6567,7 @@ function mxVstDesenharFisioPrincipal(rz, tent){
  cv._fpMedDesenhadas=medDesenhadas;
  if(MX_FP_ESTADO.medianas && ATIVAS.length && !medDesenhadas){
   ctx.fillStyle='#d29922'; ctx.font='10px sans-serif'; ctx.textAlign='left';
-  ctx.fillText('Medianas: amostras insuficientes (mín. '+MX_FP_MIN_N+' por faixa de '+MX_FP_FAIXA_W+' W)',x0+6,y0+34);
+  ctx.fillText(compacto?'Medianas: amostras insuficientes':'Medianas: amostras insuficientes (mín. '+MX_FP_MIN_N+' por faixa de '+MX_FP_FAIXA_W+' W)',x0+6,y0+34);
  }
  const semRol=[];
  if(MX_FP_ESTADO.rolling){
@@ -6611,8 +6613,9 @@ function mxVstDesenharFisioPrincipal(rz, tent){
 
  // ── Eixo X compartilhado ──────────────────────────────────────────────
  ctx.fillStyle='#8b949e'; ctx.font='10px sans-serif'; ctx.textAlign='center';
- for(let ti=0;ti<=5;ti++){
-  const w=wMin+(wMax-wMin)*ti/5;
+ const nTicksX=compacto?3:5;
+ for(let ti=0;ti<=nTicksX;ti++){
+  const w=wMin+(wMax-wMin)*ti/nTicksX;
   const xp=xW(w);
   ctx.strokeStyle='#21262d'; ctx.lineWidth=0.5;
   ctx.beginPath(); ctx.moveTo(xp,y1); ctx.lineTo(xp,y1+4); ctx.stroke();
@@ -6671,7 +6674,7 @@ function mxVstDesenharFisioPrincipal(rz, tent){
   if(BP2!=null) refs.push('<span style="color:'+COR_BP2+';">BP2 '+Math.round(BP2)+' W</span>');
   HRVT.forEach(function(h){ if(h.w!=null) refs.push('<span style="color:'+h.cor+';">'+h.rot+' '+Math.round(h.w)+' W</span>'); });
   const ausentes=HRVT.filter(function(h){ return h.w==null; }).map(function(h){ return h.rot; });
-  let txt='<div>● MOXY · Dia 1 (círculo) &nbsp; ■ VST · Dia 2 (quadrado) &nbsp; pontos medidos; sem linhas entre sessões</div>';
+  let txt='<div>● MOXY · Dia 1 (círculo) · ■ VST · Dia 2 (quadrado) · pontos medidos; sem linhas entre sessões</div>';
   MX_FP_SESSOES.forEach(function(se){
    const partes=S.map(function(o){
     const n=ivs.filter(function(iv){ return iv.sessao===se.k && iv[o.s.campo]!=null && isFinite(iv[o.s.campo]); }).length;
@@ -6683,7 +6686,7 @@ function mxVstDesenharFisioPrincipal(rz, tent){
   if(MX_FP_ESTADO.rolling) txt+='<div>Linha grossa = média móvel por sessão, janela de '+MX_FP_ESTADO.janela+' W (mín. '+MX_FP_MIN_ROL+' amostras)</div>';
   const insuf=semAmostra.concat(semRol);
   if(insuf.length) txt+='<div style="margin-top:3px;color:#d29922;">Amostras insuficientes para: '+insuf.join(', ')+'</div>';
-  txt+='<div style="margin-top:3px;">Referências: '+(refs.length?refs.join(' &nbsp; '):'nenhuma disponível')+'</div>';
+  txt+='<div style="margin-top:3px;">Referências: '+(refs.length?refs.join(' · '):'nenhuma disponível')+'</div>';
   txt+='<div style="margin-top:2px;color:#6e7681;">Origem das referências: não identificada no payload desta análise.</div>';
   if(ausentes.length) txt+='<div style="color:#6e7681;">Não disponível nesta sessão: '+ausentes.join(', ')+'</div>';
   leg.innerHTML=txt;

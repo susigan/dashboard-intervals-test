@@ -469,12 +469,12 @@ BODY = """
          ═══════════════════════════════════════════════════════════ -->
     <div id="mxVstRpeZonasIndisp" style="display:none;margin-top:12px;font-size:12px;color:#8b949e;"></div>
     <div id="mxVstRpeZonasArea" style="display:none;margin-top:20px;">
-      <h3 style="font-size:14px;margin-top:0;">Gráfico fisiológico integrado — potência × resposta</h3>
+      <h3 style="font-size:14px;margin-top:0;">Resposta fisiológica × potência</h3>
       <p class="sub" style="font-size:10px;margin:2px 0 8px;">Potência (W) no eixo X; cada métrica tem seu próprio eixo Y. Pontos medidos: círculo = MOXY Dia 1, quadrado = VST Dia 2. Sem linhas entre sessões e sem valores interpolados.</p>
-      <div id="mxFisioPrincipalArea" style="display:none;">
+      <div id="mxCurvasFisioArea" style="display:none;">
         <div class="chartbox" style="position:relative;width:100%;">
-          <canvas id="chMxFisioPrincipal" height="440"></canvas>
-          <div id="mxTipFisioPrincipal" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:nowrap;"></div>
+          <canvas id="chMxCurvasFisio" height="440"></canvas>
+          <div id="mxTipCurvasFisio" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:nowrap;"></div>
         </div>
         <div id="mxFisioPrincipalLegenda" style="font-size:11px;color:#8b949e;margin-top:6px;"></div>
       </div>
@@ -517,12 +517,12 @@ BODY = """
 
 
     <!-- Medianas por zona — detalhe técnico -->
-    <div id="mxCurvasFisioArea" style="display:none;margin-top:20px;">
+    <div id="mxCurvasMedianasArea" style="display:none;margin-top:20px;">
       <h3 style="font-size:13px;margin-top:0;">Medianas por zona — resposta fisiológica × potência</h3>
       <p class="sub" style="font-size:10px;margin:2px 0 6px;">Resposta mediana observada por zona (Z1 / Z2 / Z3). Não é um modelo fisiológico — representa a tendência central dos dados coletados. Pontos individuais em baixa opacidade (auditoria visual).</p>
       <div class="chartbox" style="position:relative;width:100%;">
-        <canvas id="chMxCurvasFisio" height="500"></canvas>
-        <div id="mxTipCurvasFisio" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:5px 9px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
+        <canvas id="chMxCurvasMedianas" height="500"></canvas>
+        <div id="mxTipCurvasMedianas" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:5px;padding:5px 9px;font-size:11px;color:#c9d1d9;z-index:5;white-space:pre;"></div>
       </div>
     </div>
 
@@ -3007,7 +3007,21 @@ function _mxVstRpeFisioCard(fi){
  return html;
 }
 
+// Bloco integrado (gráfico principal, cards de limiares, interpretação e
+// detalhes RPE). Executado primeiro e isolado: uma falha em outro componente
+// não esvazia este bloco, e uma falha aqui fica visível (nunca silenciosa).
+function _mxVstBlocoIntegrado(d){
+ try{
+  mxVstRenderRpeZonas(d);
+ }catch(e){
+  console.error('[moxy] análise integrada falhou:', e);
+  const _ar=document.getElementById('mxVstRpeZonasArea'); if(_ar) _ar.style.display='none';
+  const _in=document.getElementById('mxVstRpeZonasIndisp');
+  if(_in){ _in.textContent='Análise integrada indisponível: falha de renderização ('+(e&&e.message||e)+').'; _in.style.display=''; }
+ }
+}
 function _mxVstRenderComparacao(d, vstId){
+ _mxVstBlocoIntegrado(d);
  const box=document.getElementById('mxVstComparacao');
  if(box) box.innerHTML=_vstTabelaComparacao('BP1', d.comparacao_bp1, d.comparacao_rpe_bp1)
   + _vstTabelaComparacao('BP2', d.comparacao_bp2, d.comparacao_rpe_bp2);
@@ -3025,15 +3039,6 @@ function _mxVstRenderComparacao(d, vstId){
  mxVstMostrarLimitadorDay1(d);
  mxVstRenderRedeCausal(d);
  mxVstDesenharRpePots(d);
- try{
-  mxVstRenderRpeZonas(d);
- }catch(e){
-  const _ar=document.getElementById('mxVstRpeZonasArea'); if(_ar) _ar.style.display='none';
-  const _in=document.getElementById('mxVstRpeZonasIndisp');
-  if(_in){ _in.textContent='Análise integrada indisponível: falha de renderização ('+(e&&e.message||e)+').'; _in.style.display=''; }
- }
- // Gráfico principal: curvas fisiológicas medianas por zona
- if(d.rpe_zonas_integrado) mxVstDesenharCurvasFisio(d.rpe_zonas_integrado);
  mxLimiterMostrar(d);
  mxHipoteseMostrar(d);
  mxHistoricoEstilosMostrar(d);
@@ -5862,10 +5867,10 @@ function mxVstRenderRpeZonas(d){
  });
 
  // ── Curvas fisiológicas medianas (gráfico principal) ─────────────────────
- // mxCurvasFisioArea fica visível; mxVstDesenharCurvasFisio já gere display.
+ // Medianas por zona (detalhe técnico, recolhido). Usa chMxCurvasMedianas.
  // Garantir largura correcta: canvas visível antes do primeiro draw.
  (function(){
-  const cvCurvas=document.getElementById('chMxCurvasFisio');
+  const cvCurvas=document.getElementById('chMxCurvasMedianas');
   if(cvCurvas&&cvCurvas.offsetWidth===0){
    // Canvas sem largura (layout pendente) — aguardar um frame
    requestAnimationFrame(function(){ mxVstDesenharCurvasFisio(rz); });
@@ -5885,8 +5890,14 @@ function mxVstRenderRpeZonas(d){
  // ── FASE 6: gráfico fisiológico integrado ────────────────────────────────
  mxVstDesenharFisioIntegrado(rz);
  // Visão principal: gráfico integrado único e resumo essencial
- mxVstDesenharFisioPrincipal(rz, 0);
- mxVstRenderResumoEssencial(d, rz);
+ try{ mxVstDesenharFisioPrincipal(rz, 0); }
+ catch(e){ console.error('[moxy] gráfico principal falhou:', e);
+  const _lg=document.getElementById('mxFisioPrincipalLegenda');
+  if(_lg){ _lg.textContent='Gráfico indisponível: falha de renderização ('+(e&&e.message||e)+').'; } }
+ try{ mxVstRenderResumoEssencial(d, rz); }
+ catch(e){ console.error('[moxy] interpretação essencial falhou:', e);
+  const _rs=document.getElementById('mxResumoEssencial');
+  if(_rs){ _rs.textContent='Interpretação indisponível: falha de renderização ('+(e&&e.message||e)+').'; } }
 
  // Ao abrir "Detalhes técnicos e evidências", redesenhar canvas que estavam sem largura
  (function(){
@@ -5958,12 +5969,12 @@ function mxVstLimitacoes(d){
 // Paineis omitidos se mediana NULL nas 3 zonas para aquela métrica.
 // NÃO usa SWC, MDC, IQR, spline, percentis — apenas medianas por zona.
 function mxVstDesenharCurvasFisio(rz){
- const cv=document.getElementById('chMxCurvasFisio');
+ const cv=document.getElementById('chMxCurvasMedianas');
  if(!cv) return;
 
  const zonas=rz&&rz.zonas||{};
  const ivs=(rz&&rz.intervalos)||[];
- const area=document.getElementById('mxCurvasFisioArea');
+ const area=document.getElementById('mxCurvasMedianasArea');
 
  // Verificar se há dados mínimos
  if(!zonas.Z1&&!zonas.Z2&&!zonas.Z3){
@@ -6225,7 +6236,7 @@ function mxVstDesenharCurvasFisio(rz){
  ctx.fillText('◆ = complementar',legX+6,legY+42);
 
  // Tooltip ao hover
- const tip=document.getElementById('mxTipCurvasFisio');
+ const tip=document.getElementById('mxTipCurvasMedianas');
  if(tip){
   cv.onmousemove=function(e){
    const rect=cv.getBoundingClientRect();
@@ -6285,10 +6296,10 @@ const MX_FP_SERIES=[
 ];
 
 function mxVstDesenharFisioPrincipal(rz, tent){
- const cv=document.getElementById('chMxFisioPrincipal');
+ const cv=document.getElementById('chMxCurvasFisio');
  if(!cv) return;
  tent=tent||0;
- const area=document.getElementById('mxFisioPrincipalArea');
+ const area=document.getElementById('mxCurvasFisioArea');
  const ivs=((rz&&rz.intervalos)||[]).filter(function(iv){ return iv.potencia!=null; });
  if(!ivs.length){ if(area) area.style.display='none'; return; }
  if(area) area.style.display='';
@@ -6443,7 +6454,7 @@ function mxVstDesenharFisioPrincipal(rz, tent){
  if(!cv._fpTipBound){
   cv._fpTipBound=true;
   cv.addEventListener('mousemove', function(ev){
-   const tipEl=document.getElementById('mxTipFisioPrincipal');
+   const tipEl=document.getElementById('mxTipCurvasFisio');
    const hits=cv._fpHits||[];
    if(!tipEl||!hits.length) return;
    const r=cv.getBoundingClientRect();
@@ -6470,7 +6481,7 @@ function mxVstDesenharFisioPrincipal(rz, tent){
    tipEl.style.top='8px';
   });
   cv.addEventListener('mouseleave', function(){
-   const t=document.getElementById('mxTipFisioPrincipal'); if(t) t.style.display='none';
+   const t=document.getElementById('mxTipCurvasFisio'); if(t) t.style.display='none';
   });
  }
 

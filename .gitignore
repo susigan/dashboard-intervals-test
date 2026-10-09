@@ -110,3 +110,5 @@ venv.bak/
 .DS_Store
 Thumbs.db
 
+tests/moxy/moxy_test.html
+tests/moxy/shot_*.png

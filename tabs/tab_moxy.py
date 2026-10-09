@@ -472,6 +472,7 @@ BODY = """
       <h3 style="font-size:14px;margin-top:0;">Resposta fisiológica × potência</h3>
       <p class="sub" style="font-size:10px;margin:2px 0 8px;">Potência (W) no eixo X; cada métrica tem seu próprio eixo Y. Pontos medidos: círculo = MOXY Dia 1, quadrado = VST Dia 2. Sem linhas entre sessões e sem valores interpolados.</p>
       <div id="mxCurvasFisioArea" style="display:none;">
+        <div id="mxFpControles" style="margin-bottom:8px;"></div>
         <div class="chartbox" style="position:relative;width:100%;">
           <canvas id="chMxCurvasFisio" height="440"></canvas>
           <div id="mxTipCurvasFisio" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:nowrap;"></div>
@@ -2104,6 +2105,7 @@ function mxVstToggleTemporal(chave, visivel){
  if(MX_VST_ULT) mxDesenharVstTemporal(MX_VST_ULT);
 }
 let MX_VST_CONJUNTOS_SALVOS = [];  // ultima lista de /api/moxy/vst/conjuntos_salvos, para o botao ABRIR por indice
+let MX_VST_MODALIDADE_POR_VST = {};  // vst_activity_id -> modalidade, vinda de conjuntos_salvos (nunca inventada)
 let MX_VID = null;  // vst_activity_id activo (para botão Gravar análise)
 let MX_MID = null;  // moxy_activity_id activo (para botão Gravar análise)
 const DEBUG_VST_VERIFICACAO = false;  // true mostra a revisao completa (so' para desenvolvimento)
@@ -2517,6 +2519,8 @@ function mxVstCarregarConjuntosSalvos(){
    return;
   }
   MX_VST_CONJUNTOS_SALVOS = d.conjuntos;
+  MX_VST_MODALIDADE_POR_VST = {};
+  d.conjuntos.forEach(function(c){ if(c.vst_activity_id && c.modalidade) MX_VST_MODALIDADE_POR_VST[c.vst_activity_id]=c.modalidade; });
   box.innerHTML = '<div class="cards">' + d.conjuntos.map(function(c,ix){
    const data = (c.analisado_em||c.actualizado_em||'').slice(0,10).split('-').reverse().join('/');
    return '<div class="card" style="min-width:220px;">'
@@ -5557,7 +5561,7 @@ function mxVstDesenharRpePots(d){
 function mxVstRenderRpeZonas(d){
  const area=document.getElementById('mxVstRpeZonasArea');
  if(!area) return;
- window.__mxVstModalidade=(d&&(d.modalidade||d.sport))||null;
+ window.__mxVstModalidade=(d&&(d.modalidade||d.sport))||(d&&d.vst_activity_id&&MX_VST_MODALIDADE_POR_VST[d.vst_activity_id])||MX_VST_MODALIDADE_POR_VST[MX_VID]||null;
  const rz=d.rpe_zonas_integrado;
  const ind=document.getElementById('mxVstRpeZonasIndisp');
  if(!rz || !rz.intervalos || !rz.intervalos.length){
@@ -5732,7 +5736,18 @@ function mxVstRenderRpeZonas(d){
  })();
 
  // ── Gráficos scatter RPE × métrica ───────────────────────────────────────
- function _rzDesenharScatter(canvasId,tipId,campoX,labelX,unitX,ivs){
+ function _rzSeguro(canvasId,tipId,campoX,labelX,unitX,ivs){
+  try{ _rzDesenharScatter(canvasId,tipId,campoX,labelX,unitX,ivs); }
+  catch(e){
+   console.error('[RPE x metricas] '+canvasId+': '+(e&&e.message?e.message:e), e);
+   const cv=document.getElementById(canvasId);
+   if(cv){ const c=cv.getContext('2d'); c.setTransform(1,0,0,1,0,0);
+    c.fillStyle='#0d1117'; c.fillRect(0,0,cv.width,cv.height);
+    c.fillStyle='#f78166'; c.font='11px sans-serif';
+    c.fillText('Erro ao desenhar este gráfico (detalhe no console).',10,20); }
+  }
+ }
+function _rzDesenharScatter(canvasId,tipId,campoX,labelX,unitX,ivs){
   const cv=document.getElementById(canvasId); if(!cv) return;
   const tip=document.getElementById(tipId);
   const ctx=cv.getContext('2d');
@@ -5744,7 +5759,7 @@ function mxVstRenderRpeZonas(d){
 
   const pts=ivs.filter(function(iv){ return iv[campoX]!=null&&iv.rpe!=null; });
   if(!pts.length){ ctx.fillStyle='#8b949e'; ctx.font='11px sans-serif';
-   ctx.fillText('Sem dados',W/2-30,H/2); return; }
+   ctx.fillText('Sem amostras com RPE e '+labelX+' (0 pares)',10,H/2); return; }
 
   const xs=pts.map(function(p){ return p[campoX]; });
   const ys=pts.map(function(p){ return p.rpe; });
@@ -5847,11 +5862,11 @@ function mxVstRenderRpeZonas(d){
  // de 320/298 px. Redesenhar ao abrir a secção mantém a escala correta.
  function _rzRedesenharScatters(){
   const ivs=rz.intervalos||[];
-  _rzDesenharScatter('chMxRzRpePot',  'mxTipRzRpePot',  'potencia', 'Potência','W',    ivs);
-  _rzDesenharScatter('chMxRzRpeHr',   'mxTipRzRpeHr',   'hr',       'FC',      'bpm',  ivs);
-  _rzDesenharScatter('chMxRzRpeRf',   'mxTipRzRpeRf',   'respiracao','RF',     'r/min',ivs);
-  _rzDesenharScatter('chMxRzRpeSmo2', 'mxTipRzRpeSmo2', 'smo2',     'SmO₂',   '%',    ivs);
-  _rzDesenharScatter('chMxRzRpeDfa1', 'mxTipRzRpeDfa1', 'dfa1',     'DFA-α1', '',     ivs);
+  _rzSeguro('chMxRzRpePot',  'mxTipRzRpePot',  'potencia', 'Potência','W',    ivs);
+  _rzSeguro('chMxRzRpeHr',   'mxTipRzRpeHr',   'hr',       'FC',      'bpm',  ivs);
+  _rzSeguro('chMxRzRpeRf',   'mxTipRzRpeRf',   'respiracao','RF',     'r/min',ivs);
+  _rzSeguro('chMxRzRpeSmo2', 'mxTipRzRpeSmo2', 'smo2',     'SmO₂',   '%',    ivs);
+  _rzSeguro('chMxRzRpeDfa1', 'mxTipRzRpeDfa1', 'dfa1',     'DFA-α1', '',     ivs);
  }
  _rzRedesenharScatters();
  // Redraw ao abrir cada secção que contém estes canvases (mesmo padrão de
@@ -6295,10 +6310,106 @@ const MX_FP_SERIES=[
  {k:'dfa1', campo:'dfa1',       nome:'DFA-α1', unid:'',    cor:'#f2cc60', lado:'D', pos:2, fixo:null, dec:2, ticks:5}
 ];
 
+// ── Controles e tendências da visão principal ─────────────────────────────
+// Estado só em memória (por visualização). Padrão: medianas ligadas, média
+// móvel desligada. Ocultar uma métrica remove seus pontos, medianas e média.
+const MX_FP_PADRAO={ativas:{hr:true,smo2:true,rf:true,rpe:true,dfa1:true},medianas:true,rolling:false,janela:30};
+let MX_FP_ESTADO=JSON.parse(JSON.stringify(MX_FP_PADRAO));
+let MX_FP_RZ=null;          // último rz desenhado, para redesenhar ao mudar controle
+const MX_FP_MIN_N=3;        // amostras mínimas por faixa para mediana
+const MX_FP_MIN_ROL=2;      // amostras mínimas dentro da janela da média móvel
+const MX_FP_FAIXA_W=20;     // largura da faixa de potência (W)
+const MX_FP_JANELAS=[10,20,30,50];
+const MX_FP_SESSOES=[{k:'d1',nome:'MOXY · Dia 1',rot:'D1',dash:[]},{k:'d2',nome:'VST · Dia 2',rot:'D2',dash:[5,3]}];
+const MX_FP_DEC={hr:0,smo2:1,rf:1,rpe:1,dfa1:2};
+
+function _mxFpRedesenhar(){ if(MX_FP_RZ) mxVstDesenharFisioPrincipal(MX_FP_RZ,0); }
+
+function _mxFpSincronizar(){
+ const box=document.getElementById('mxFpControles'); if(!box) return;
+ box.querySelectorAll('[data-fp]').forEach(function(b){
+  const on=!!MX_FP_ESTADO.ativas[b.getAttribute('data-fp')];
+  b.setAttribute('aria-pressed',on?'true':'false');
+  b.style.opacity=on?'1':'0.45';
+ });
+ const m=document.getElementById('mxFpMedianas'); if(m) m.checked=MX_FP_ESTADO.medianas;
+ const r=document.getElementById('mxFpRolling'); if(r) r.checked=MX_FP_ESTADO.rolling;
+ const j=document.getElementById('mxFpJanela');
+ if(j){ j.value=String(MX_FP_ESTADO.janela); j.disabled=!MX_FP_ESTADO.rolling; }
+}
+
+function _mxFpLigarControles(){
+ const box=document.getElementById('mxFpControles');
+ if(!box||box._ligado) return;
+ box._ligado=true;
+ box.innerHTML=
+  '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">'
+  + MX_FP_SERIES.map(function(s){
+     return '<button type="button" data-fp="'+s.k+'" aria-pressed="true" title="Mostrar ou ocultar '+s.nome+'" '
+      +'style="cursor:pointer;background:#161b22;border:1px solid #30363d;border-radius:14px;padding:3px 10px;color:'+s.cor+';font-size:11px;">'
+      +'<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:'+s.cor+';margin-right:5px;"></span>'
+      +s.nome+(s.unid?' ('+s.unid+')':'')+'</button>';
+    }).join('')
+  + '</div>'
+  + '<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:11px;color:#c9d1d9;margin-top:6px;">'
+  + '<label><input type="checkbox" id="mxFpMedianas"> Medianas por faixa de '+MX_FP_FAIXA_W+' W</label>'
+  + '<label><input type="checkbox" id="mxFpRolling"> Média móvel</label>'
+  + '<label>Janela <select id="mxFpJanela">'+MX_FP_JANELAS.map(function(w){ return '<option value="'+w+'">'+w+' W</option>'; }).join('')+'</select></label>'
+  + '<button type="button" id="mxFpReset" style="cursor:pointer;background:transparent;border:1px solid #30363d;border-radius:6px;padding:3px 10px;color:#8b949e;font-size:11px;">Restaurar padrão</button>'
+  + '</div>';
+ box.addEventListener('click', function(ev){
+  const b=ev.target.closest('[data-fp]');
+  if(b){ const k=b.getAttribute('data-fp'); MX_FP_ESTADO.ativas[k]=!MX_FP_ESTADO.ativas[k]; _mxFpSincronizar(); _mxFpRedesenhar(); return; }
+  if(ev.target.closest('#mxFpReset')){ MX_FP_ESTADO=JSON.parse(JSON.stringify(MX_FP_PADRAO)); _mxFpSincronizar(); _mxFpRedesenhar(); }
+ });
+ box.addEventListener('change', function(ev){
+  const t=ev.target;
+  if(t.id==='mxFpMedianas') MX_FP_ESTADO.medianas=t.checked;
+  else if(t.id==='mxFpRolling') MX_FP_ESTADO.rolling=t.checked;
+  else if(t.id==='mxFpJanela') MX_FP_ESTADO.janela=Number(t.value)||30;
+  _mxFpSincronizar(); _mxFpRedesenhar();
+ });
+ _mxFpSincronizar();
+}
+
+// Medianas por faixa de potência para uma métrica e uma sessão (sem interpolação)
+function _mxFpMedianas(ivs,campo,sessao){
+ const bandas={};
+ ivs.forEach(function(iv){
+  if(iv.sessao!==sessao||iv.potencia==null) return;
+  const v=iv[campo]; if(v==null||!isFinite(v)) return;
+  const k=Math.floor(iv.potencia/MX_FP_FAIXA_W);
+  (bandas[k]=bandas[k]||[]).push(v);
+ });
+ return Object.keys(bandas).map(Number).sort(function(a,b){ return a-b; }).map(function(k){
+  const vs=bandas[k].slice().sort(function(a,b){ return a-b; });
+  const n=vs.length;
+  const med=n%2?vs[(n-1)/2]:(vs[n/2-1]+vs[n/2])/2;
+  return {k:k, x:(k+0.5)*MX_FP_FAIXA_W, med:med, n:n, suf:n>=MX_FP_MIN_N};
+ });
+}
+
+// Média móvel por sessão: média dos pontos a até janela/2 W do próprio ponto
+function _mxFpRolling(ivs,campo,sessao,janela){
+ const pts=ivs.filter(function(iv){ return iv.sessao===sessao&&iv.potencia!=null&&iv[campo]!=null&&isFinite(iv[campo]); })
+  .map(function(iv){ return {p:iv.potencia, v:iv[campo]}; })
+  .sort(function(a,b){ return a.p-b.p; });
+ const half=janela/2;
+ return pts.map(function(a){
+  let s=0, n=0;
+  pts.forEach(function(b){ if(Math.abs(b.p-a.p)<=half){ s+=b.v; n++; } });
+  return {x:a.p, y:n>=MX_FP_MIN_ROL?s/n:null, n:n};
+ });
+}
+
+function _mxFpFmt(k,v){ return Number(v).toFixed(MX_FP_DEC[k]!=null?MX_FP_DEC[k]:1); }
+
 function mxVstDesenharFisioPrincipal(rz, tent){
  const cv=document.getElementById('chMxCurvasFisio');
  if(!cv) return;
+ _mxFpLigarControles();
  tent=tent||0;
+ if(rz) MX_FP_RZ=rz;
  const area=document.getElementById('mxCurvasFisioArea');
  const ivs=((rz&&rz.intervalos)||[]).filter(function(iv){ return iv.potencia!=null; });
  if(!ivs.length){ if(area) area.style.display='none'; return; }
@@ -6331,8 +6442,10 @@ function mxVstDesenharFisioPrincipal(rz, tent){
  const wMax=Math.max.apply(null,wVals)+15;
  function xW(w){ return x0+(w-wMin)/((wMax-wMin)||1)*(x1-x0); }
 
- // ── Eixos Y independentes (um por métrica) ──────────────────────────────
- const S=MX_FP_SERIES.map(function(s){
+ // ── Eixos Y: somente métricas ativas; um eixo por métrica ───────────────
+ const ATIVAS=MX_FP_SERIES.filter(function(s){ return MX_FP_ESTADO.ativas[s.k]; });
+ let nE=0, nD=0;
+ const S=ATIVAS.map(function(s){
   const vs=ivs.map(function(iv){ return iv[s.campo]; }).filter(function(v){ return v!=null && isFinite(v); });
   let lo, hi;
   if(s.fixo){ lo=s.fixo[0]; hi=s.fixo[1]; }
@@ -6341,7 +6454,8 @@ function mxVstDesenharFisioPrincipal(rz, tent){
    const sp=(hi-lo)||Math.abs(hi)*0.1||1;
    lo-=sp*0.08; hi+=sp*0.12;
   } else { lo=0; hi=1; }
-  const ax = s.lado==='E' ? x0-48*(s.pos) : x1+48*(s.pos);
+  const idx = s.lado==='E' ? nE++ : nD++;
+  const ax = s.lado==='E' ? x0-48*idx : x1+48*idx;
   return {s:s, lo:lo, hi:hi, temDados:vs.length>0, ax:ax,
           yPos:function(v){ return y1-(v-lo)/((hi-lo)||1)*(y1-y0); }};
  });
@@ -6388,7 +6502,7 @@ function mxVstDesenharFisioPrincipal(rz, tent){
    const yt=o.yPos(v);
    ctx.strokeStyle=s.cor; ctx.lineWidth=1;
    ctx.beginPath(); ctx.moveTo(o.ax,yt); ctx.lineTo(o.ax+(left?-3:3),yt); ctx.stroke();
-   ctx.fillText(s.fixo&&s.k==='rpe'?String(Math.round(v)):Number(v).toFixed(s.dec),o.ax+(left?-5:5),yt+3);
+   ctx.fillText(s.k==='rpe'?String(Math.round(v)):Number(v).toFixed(s.dec),o.ax+(left?-5:5),yt+3);
   }
   ctx.textAlign='center'; ctx.font='bold 9px sans-serif';
   ctx.fillText(s.nome+(s.unid?' ('+s.unid+')':''),o.ax,y0-10);
@@ -6418,19 +6532,82 @@ function mxVstDesenharFisioPrincipal(rz, tent){
  });
  ctx.setLineDash([]);
 
- // ── Pontos individuais: cor = métrica; forma = sessão ─────────────────
+ // ── Tendências por sessão (só entre dados medidos; sem misturar sessões) ─
+ const semAmostra=[];
+ let medDesenhadas=0;
+ if(MX_FP_ESTADO.medianas){
+  S.forEach(function(o){
+   MX_FP_SESSOES.forEach(function(se){
+    const bs=_mxFpMedianas(ivs,o.s.campo,se.k);
+    if(!bs.length) return;
+    const suf=bs.filter(function(b){ return b.suf; });
+    if(!suf.length){ semAmostra.push('mediana '+o.s.nome+' '+se.rot); return; }
+    medDesenhadas+=suf.length;
+    ctx.strokeStyle=o.s.cor; ctx.globalAlpha=0.9; ctx.lineWidth=1.5; ctx.setLineDash(se.dash);
+    ctx.beginPath(); let prev=null;
+    bs.forEach(function(b){
+     if(!b.suf){ prev=null; return; }
+     const px=xW(b.x), py=o.yPos(b.med);
+     if(prev && b.k===prev.k+1) ctx.lineTo(px,py); else ctx.moveTo(px,py);
+     prev=b;
+    });
+    ctx.stroke(); ctx.setLineDash([]);
+    suf.forEach(function(b){
+     const px=xW(b.x), py=o.yPos(b.med);
+     ctx.beginPath(); ctx.moveTo(px,py-4); ctx.lineTo(px+4,py); ctx.lineTo(px,py+4); ctx.lineTo(px-4,py); ctx.closePath();
+     if(se.k==='d1'){ ctx.fillStyle=o.s.cor; ctx.fill(); }
+     else { ctx.strokeStyle=o.s.cor; ctx.lineWidth=1.5; ctx.stroke(); }
+    });
+    ctx.globalAlpha=1;
+   });
+  });
+ }
+ cv._fpMedDesenhadas=medDesenhadas;
+ if(MX_FP_ESTADO.medianas && ATIVAS.length && !medDesenhadas){
+  ctx.fillStyle='#d29922'; ctx.font='10px sans-serif'; ctx.textAlign='left';
+  ctx.fillText('Medianas: amostras insuficientes (mín. '+MX_FP_MIN_N+' por faixa de '+MX_FP_FAIXA_W+' W)',x0+6,y0+34);
+ }
+ const semRol=[];
+ if(MX_FP_ESTADO.rolling){
+  S.forEach(function(o){
+   MX_FP_SESSOES.forEach(function(se){
+    const rs=_mxFpRolling(ivs,o.s.campo,se.k,MX_FP_ESTADO.janela);
+    if(!rs.length) return;
+    if(!rs.some(function(r){ return r.y!=null; })){ semRol.push('média '+o.s.nome+' '+se.rot); return; }
+    ctx.strokeStyle=o.s.cor; ctx.globalAlpha=0.8; ctx.lineWidth=2.5; ctx.setLineDash(se.dash);
+    ctx.beginPath(); let started=false;
+    rs.forEach(function(r){
+     if(r.y==null){ started=false; return; }
+     const px=xW(r.x), py=o.yPos(r.y);
+     if(!started){ ctx.moveTo(px,py); started=true; } else ctx.lineTo(px,py);
+    });
+    ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha=1;
+   });
+  });
+ }
+
+ // ── Pontos medidos: cor = métrica; forma = sessão (círculo D1, quadrado D2)
+ cv._fpHits=[];
  ivs.forEach(function(iv){
   const px=xW(iv.potencia);
   S.forEach(function(o){
    const v=iv[o.s.campo];
-   if(!o.temDados || v==null || !isFinite(v)) return;
+   if(v==null || !isFinite(v)) return;
    const py=o.yPos(v);
    if(py<y0-2 || py>y1+2) return;
    ctx.fillStyle=o.s.cor;
    if(iv.sessao==='d2'){ ctx.fillRect(px-3,py-3,6,6); }
    else { ctx.beginPath(); ctx.arc(px,py,3.5,0,Math.PI*2); ctx.fill(); }
+   cv._fpHits.push({x:px, y:py, iv:iv, k:o.s.k});
   });
  });
+ if(!ATIVAS.length){
+  ctx.fillStyle='#8b949e'; ctx.font='12px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('Nenhuma métrica selecionada. Ative ao menos uma acima.',(x0+x1)/2,(y0+y1)/2);
+ } else if(!cv._fpHits.length){
+  ctx.fillStyle='#8b949e'; ctx.font='12px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('Nenhum ponto medido para as métricas selecionadas.',(x0+x1)/2,(y0+y1)/2);
+ }
 
  // ── Eixo X compartilhado ──────────────────────────────────────────────
  ctx.fillStyle='#8b949e'; ctx.font='10px sans-serif'; ctx.textAlign='center';
@@ -6448,8 +6625,7 @@ function mxVstDesenharFisioPrincipal(rz, tent){
   if(xs!=null && xs<x1-10) ctx.fillText(z,xs,y1-5);
  });
 
- // ── Tooltip: somente valores disponíveis, sessão de origem por linha ───
- cv._fpHits=ivs.map(function(iv){ return {x:xW(iv.potencia), iv:iv}; });
+ // ── Tooltip: somente o ponto mais próximo; mostra o intervalo inteiro ──
  cv._fpModal=window.__mxVstModalidade||null;
  if(!cv._fpTipBound){
   cv._fpTipBound=true;
@@ -6458,26 +6634,28 @@ function mxVstDesenharFisioPrincipal(rz, tent){
    const hits=cv._fpHits||[];
    if(!tipEl||!hits.length) return;
    const r=cv.getBoundingClientRect();
-   const mx=ev.clientX-r.left;
-   let bestX=null, bestD=1e9;
-   hits.forEach(function(h){ const dd=Math.abs(h.x-mx); if(dd<bestD){ bestD=dd; bestX=h.x; } });
-   if(bestX==null || bestD>6){ tipEl.style.display='none'; return; }
-   const sel=hits.filter(function(h){ return Math.abs(h.x-bestX)<0.5; }).map(function(h){ return h.iv; });
-   const linhas=['<b>'+(cv._fpModal||'modalidade não informada')+'</b>'];
-   sel.slice(0,4).forEach(function(iv){
-    const origem=iv.sessao==='d2'?'VST · Dia 2':'MOXY · Dia 1';
-    linhas.push('<span style="color:#8b949e;">'+origem+(iv.intervalo!=null?' · intervalo '+iv.intervalo:'')+'</span>');
-    const p=['Potência '+Math.round(iv.potencia)+' W'];
-    if(iv.hr!=null) p.push('FC '+Math.round(iv.hr)+' bpm');
-    if(iv.respiracao!=null) p.push('RF '+Number(iv.respiracao).toFixed(1)+' rpm');
-    if(iv.smo2!=null) p.push('SmO₂ '+Number(iv.smo2).toFixed(1)+' %');
-    if(iv.rpe!=null) p.push('RPE '+Number(iv.rpe).toFixed(1));
-    if(iv.dfa1!=null) p.push('DFA-α1 '+Number(iv.dfa1).toFixed(2));
-    linhas.push(p.join(' · '));
+   const mx=ev.clientX-r.left, my=ev.clientY-r.top;
+   let best=null, bestD=1e9;
+   hits.forEach(function(h){
+    const dd=Math.hypot(h.x-mx,h.y-my);
+    if(dd<bestD){ bestD=dd; best=h; }
+   });
+   if(!best || bestD>10){ tipEl.style.display='none'; return; }
+   const iv=best.iv;
+   const linhas=['<b>'+(cv._fpModal||'modalidade não registrada')+'</b>'];
+   linhas.push('<span style="color:#8b949e;">'+(iv.sessao==='d2'?'VST · Dia 2':'MOXY · Dia 1')+(iv.intervalo!=null?' · intervalo '+iv.intervalo:'')+'</span>');
+   linhas.push('Potência '+Math.round(iv.potencia)+' W');
+   MX_FP_SERIES.forEach(function(s){
+    const v=iv[s.campo];
+    let t=s.nome+': ';
+    if(v==null || !isFinite(v)) t+='<span style="color:#6e7681;">não medido nesta sessão</span>';
+    else t+='<span style="color:'+s.cor+';">'+_mxFpFmt(s.k,v)+(s.unid?' '+s.unid:'')+'</span>';
+    if(!MX_FP_ESTADO.ativas[s.k]) t+=' <span style="color:#6e7681;">(oculta)</span>';
+    linhas.push(t);
    });
    tipEl.innerHTML=linhas.join('<br>');
    tipEl.style.display='block';
-   tipEl.style.left=Math.min(mx+12, r.width-260)+'px';
+   tipEl.style.left=Math.min(mx+12, r.width-240)+'px';
    tipEl.style.top='8px';
   });
   cv.addEventListener('mouseleave', function(){
@@ -6485,7 +6663,7 @@ function mxVstDesenharFisioPrincipal(rz, tent){
   });
  }
 
- // ── Legenda textual: sessões, métricas e referências disponíveis ──────
+ // ── Legenda: símbolos, contagens por sessão, tendências e referências ─
  const leg=document.getElementById('mxFisioPrincipalLegenda');
  if(leg){
   const refs=[];
@@ -6493,13 +6671,25 @@ function mxVstDesenharFisioPrincipal(rz, tent){
   if(BP2!=null) refs.push('<span style="color:'+COR_BP2+';">BP2 '+Math.round(BP2)+' W</span>');
   HRVT.forEach(function(h){ if(h.w!=null) refs.push('<span style="color:'+h.cor+';">'+h.rot+' '+Math.round(h.w)+' W</span>'); });
   const ausentes=HRVT.filter(function(h){ return h.w==null; }).map(function(h){ return h.rot; });
-  let txt='<div>● MOXY · Dia 1 (círculo) &nbsp; ■ VST · Dia 2 (quadrado) &nbsp; · pontos medidos, sem linhas entre sessões</div>';
-  txt+='<div style="margin-top:3px;">'+S.map(function(o){ return '<span style="color:'+o.s.cor+';">'+o.s.nome+(o.s.unid?' ('+o.s.unid+')':'')+'</span>'; }).join(' &nbsp; ')+'</div>';
+  let txt='<div>● MOXY · Dia 1 (círculo) &nbsp; ■ VST · Dia 2 (quadrado) &nbsp; pontos medidos; sem linhas entre sessões</div>';
+  MX_FP_SESSOES.forEach(function(se){
+   const partes=S.map(function(o){
+    const n=ivs.filter(function(iv){ return iv.sessao===se.k && iv[o.s.campo]!=null && isFinite(iv[o.s.campo]); }).length;
+    return '<span style="color:'+o.s.cor+';">'+o.s.nome+(o.s.unid?' ('+o.s.unid+')':'')+' '+n+'</span>';
+   });
+   txt+='<div style="margin-top:2px;">'+se.nome+' · amostras medidas: '+(partes.length?partes.join(' · '):'nenhuma métrica ativa')+'</div>';
+  });
+  if(MX_FP_ESTADO.medianas) txt+='<div style="margin-top:3px;">◆ cheio = mediana MOXY D1 · ◇ vazado = mediana VST D2, por faixa de '+MX_FP_FAIXA_W+' W (mín. '+MX_FP_MIN_N+' amostras; linha só entre faixas vizinhas com dados)</div>';
+  if(MX_FP_ESTADO.rolling) txt+='<div>Linha grossa = média móvel por sessão, janela de '+MX_FP_ESTADO.janela+' W (mín. '+MX_FP_MIN_ROL+' amostras)</div>';
+  const insuf=semAmostra.concat(semRol);
+  if(insuf.length) txt+='<div style="margin-top:3px;color:#d29922;">Amostras insuficientes para: '+insuf.join(', ')+'</div>';
   txt+='<div style="margin-top:3px;">Referências: '+(refs.length?refs.join(' &nbsp; '):'nenhuma disponível')+'</div>';
-  if(ausentes.length) txt+='<div style="margin-top:3px;color:#6e7681;">Não disponível nesta sessão: '+ausentes.join(', ')+'</div>';
+  txt+='<div style="margin-top:2px;color:#6e7681;">Origem das referências: não identificada no payload desta análise.</div>';
+  if(ausentes.length) txt+='<div style="color:#6e7681;">Não disponível nesta sessão: '+ausentes.join(', ')+'</div>';
   leg.innerHTML=txt;
  }
 }
+
 
 function mxVstRenderResumoEssencial(d, rz){
  const box=document.getElementById('mxResumoEssencial');
@@ -6833,7 +7023,7 @@ function mxVstDesenharFisioIntegrado(rz){
    if(bestX==null || bestD>6){ tipEl.style.display='none'; return; }
    const sel=hits.filter(function(h){ return Math.abs(h.x-bestX)<0.5; }).map(function(h){ return h.iv; });
    const f=function(v,dec,un){ return (v==null)?'—':(Number(v).toFixed(dec)+(un||'')); };
-   const linhas=['<b>'+(cv._fisioModalidade||'modalidade não informada')+'</b>'];
+   const linhas=['<b>'+(cv._fisioModalidade||'modalidade não registrada')+'</b>'];
    sel.slice(0,4).forEach(function(iv){
     const origem=iv.sessao==='d2'?'VST · Dia 2':'MOXY · Dia 1';
     linhas.push('<span style="color:#8b949e;">'+origem+' · intervalo '+(iv.intervalo!=null?iv.intervalo:'—')+' · zona '+(iv.zona||'—')+'</span>');

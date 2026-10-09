@@ -464,6 +464,33 @@ BODY = """
          SEÇÃO VISÍVEL — padrão de resposta, limitador, recomendação
          ═══════════════════════════════════════════════════════════ -->
 
+    <!-- ═══════════════════════════════════════════════════════════
+         VISÃO PRINCIPAL — gráfico integrado, limiares e interpretação
+         ═══════════════════════════════════════════════════════════ -->
+    <div id="mxVstRpeZonasIndisp" style="display:none;margin-top:12px;font-size:12px;color:#8b949e;"></div>
+    <div id="mxVstRpeZonasArea" style="display:none;margin-top:20px;">
+      <h3 style="font-size:14px;margin-top:0;">Gráfico fisiológico integrado — potência × resposta</h3>
+      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Potência (W) no eixo X; cada métrica tem seu próprio eixo Y. Pontos medidos: círculo = MOXY Dia 1, quadrado = VST Dia 2. Sem linhas entre sessões e sem valores interpolados.</p>
+      <div id="mxFisioPrincipalArea" style="display:none;">
+        <div class="chartbox" style="position:relative;width:100%;">
+          <canvas id="chMxFisioPrincipal" height="440"></canvas>
+          <div id="mxTipFisioPrincipal" style="display:none;position:absolute;pointer-events:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:11px;color:#c9d1d9;z-index:5;white-space:nowrap;"></div>
+        </div>
+        <div id="mxFisioPrincipalLegenda" style="font-size:11px;color:#8b949e;margin-top:6px;"></div>
+      </div>
+      <h3 style="font-size:14px;margin-top:0;">Limiares — BP1 / HRVT1 / BP2 / HRVT2</h3>
+      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Day 1 (MOXY) + Day 2 (VST). Z1 = &lt; BP1 · Z2 = BP1–BP2 · Z3 = ≥ BP2. HRVT1c/1s/2 são referências fisiológicas independentes — não substituem BP1/BP2.</p>
+      <!-- Cards BP / HRVT — única localização -->
+      <div id="mxRzCardsLimiares" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;"></div>
+      <div id="mxResumoEssencial" style="margin-top:14px;"></div>
+    </div><!-- fim visão principal -->
+
+    <!-- ═══════════════════════════════════════════════════════════
+         DETALHES TÉCNICOS E EVIDÊNCIAS — recolhido por padrão
+         ═══════════════════════════════════════════════════════════ -->
+    <details id="mxDetalhesTecnicosEvidencias" style="margin-top:16px;margin-bottom:6px;">
+      <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:4px 0;">▶ Detalhes técnicos e evidências</summary>
+      <div style="font-size:10px;color:#8b949e;margin:6px 0 8px;">Perfil, padrões, medianas por zona, tabelas de origem, dados individuais D1 × D2, diagnósticos e justificativas. Mesmos cálculos; apenas recolhidos da visão principal.</div>
     <!-- 1. DASHBOARD — BP1/BP2/Recovery/RPE + sistemas ──────────── -->
     <h3 style="font-size:14px;margin-top:16px;">Perfil Fisiológico</h3>
     <p class="sub" style="font-size:10px;margin:2px 0 8px;">Esta análise identifica padrões de resposta fisiológica — não demonstra causalmente qual sistema limita o desempenho.</p>
@@ -488,9 +515,10 @@ BODY = """
     <h3 style="font-size:14px;margin-top:16px;">Treinos candidatos</h3>
     <div id="mxHistoricoEstilos" style="overflow-x:auto;margin-top:6px;"></div>
 
-    <!-- 4c. RESPOSTA FISIOLÓGICA × POTÊNCIA — gráfico principal ─── -->
+
+    <!-- Medianas por zona — detalhe técnico -->
     <div id="mxCurvasFisioArea" style="display:none;margin-top:20px;">
-      <h3 style="font-size:14px;margin-top:0;">Resposta fisiológica × potência</h3>
+      <h3 style="font-size:13px;margin-top:0;">Medianas por zona — resposta fisiológica × potência</h3>
       <p class="sub" style="font-size:10px;margin:2px 0 6px;">Resposta mediana observada por zona (Z1 / Z2 / Z3). Não é um modelo fisiológico — representa a tendência central dos dados coletados. Pontos individuais em baixa opacidade (auditoria visual).</p>
       <div class="chartbox" style="position:relative;width:100%;">
         <canvas id="chMxCurvasFisio" height="500"></canvas>
@@ -498,18 +526,10 @@ BODY = """
       </div>
     </div>
 
-    <!-- 5. CARDS BP/HRVT — limiares da sessão ───────────────────── -->
-    <div id="mxVstRpeZonasIndisp" style="display:none;margin-top:12px;font-size:12px;color:#8b949e;"></div>
-    <div id="mxVstRpeZonasArea" style="display:none;margin-top:20px;">
-      <h3 style="font-size:14px;margin-top:0;">Limiares — BP1 / HRVT1 / BP2 / HRVT2</h3>
-      <p class="sub" style="font-size:10px;margin:2px 0 8px;">Day 1 (MOXY) + Day 2 (VST). Z1 = &lt; BP1 · Z2 = BP1–BP2 · Z3 = ≥ BP2. HRVT1c/1s/2 são referências fisiológicas independentes — não substituem BP1/BP2.</p>
-      <!-- Cards BP / HRVT — única localização -->
-      <div id="mxRzCardsLimiares" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;"></div>
-
       <!-- ═══════════════════════════════════════════════════════════
            ANÁLISE INTEGRADA — collapsible
            ═══════════════════════════════════════════════════════════ -->
-      <details id="mxDetalhesIntegrado" open style="margin-bottom:10px;">
+      <details id="mxDetalhesIntegrado" style="margin-bottom:10px;">
         <summary style="cursor:pointer;font-size:13px;color:#8b949e;font-weight:600;padding:4px 0;">▶ Análise integrada</summary>
 
         <!-- Validação BPM MOXY × VST -->
@@ -580,7 +600,7 @@ BODY = """
         </details>
 
         <!-- Evidência técnica — dados individuais D1/D2 por canal × potência -->
-        <details id="mxDetalhesFisioIntegrado" open style="margin-top:8px;margin-bottom:4px;">
+        <details id="mxDetalhesFisioIntegrado" style="margin-top:8px;margin-bottom:4px;">
           <summary style="cursor:pointer;font-size:12px;color:#8b949e;padding:3px 0;">▶ Evidência técnica — dados individuais D1/D2 × potência</summary>
           <div style="font-size:10px;color:#8b949e;margin:6px 0 4px;">Painéis empilhados com eixo X compartilhado (Potência). D1 = <span style="color:#58a6ff;">●</span> Day 1 · D2 = <span style="color:#bc8cff;">■</span> Day 2. Zonas Z1/Z2/Z3 e limiares BP1/BP2 em todos os painéis. Painel RPE inclui regressão linear D1 e D2 separadas.</div>
           <div class="chartbox" style="position:relative;width:100%;margin-top:6px;">
@@ -591,7 +611,6 @@ BODY = """
         </details>
 
       </details><!-- fim análise integrada -->
-    </div><!-- fim mxVstRpeZonasArea -->
 
     <!-- ═══════════════════════════════════════════════════════════
          REFERÊNCIA FISIOLÓGICA — collapsible
@@ -778,8 +797,8 @@ BODY = """
 
     </details><!-- fim detalhes técnicos -->
 
-
     <div id="mxVstRecoveryFinal" style="margin-top:12px;"></div>
+    </details><!-- fim detalhes técnicos e evidências -->
   </div>
 
 </div>
@@ -5865,6 +5884,22 @@ function mxVstRenderRpeZonas(d){
 
  // ── FASE 6: gráfico fisiológico integrado ────────────────────────────────
  mxVstDesenharFisioIntegrado(rz);
+ // Visão principal: gráfico integrado único e resumo essencial
+ mxVstDesenharFisioPrincipal(rz, 0);
+ mxVstRenderResumoEssencial(d, rz);
+
+ // Ao abrir "Detalhes técnicos e evidências", redesenhar canvas que estavam sem largura
+ (function(){
+  const detEv=document.getElementById('mxDetalhesTecnicosEvidencias');
+  if(!detEv) return;
+  if(detEv._evidToggleListener){ detEv.removeEventListener('toggle', detEv._evidToggleListener); }
+  detEv._evidToggleListener=function(){
+   if(detEv.open){
+    requestAnimationFrame(function(){ mxVstDesenharCurvasFisio(rz); });
+   }
+  };
+  detEv.addEventListener('toggle', detEv._evidToggleListener);
+ })();
 
  // Redraw quando o <details> pai for aberto (canvas fica sem largura enquanto fechado)
  (function(){
@@ -6236,6 +6271,265 @@ function mxVstDesenharCurvasFisio(rz){
 // Eixo X compartilhado: Potência (Watts). Usa exclusivamente rz.intervalos[].
 // Painéis omitidos automaticamente se não houver dados para aquela métrica.
 // Zonas Z1/Z2/Z3 e linhas BP1/BP2 em todos os painéis.
+// ── Gráfico fisiológico integrado — visão principal ───────────────────────
+// Uma única área de plotagem. X = potência (W). Cada métrica tem eixo Y
+// próprio com valores originais (sem normalização). Círculo = MOXY Dia 1,
+// quadrado = VST Dia 2. Pontos medidos apenas: sem linhas entre sessões,
+// sem interpolação, sem linhas horizontais de referência de DFA-α1.
+const MX_FP_SERIES=[
+ {k:'hr',   campo:'hr',         nome:'FC',     unid:'bpm', cor:'#ff7b72', lado:'E', pos:0, fixo:null, dec:0, ticks:5},
+ {k:'smo2', campo:'smo2',       nome:'SmO₂',   unid:'%',   cor:'#3fb950', lado:'E', pos:1, fixo:null, dec:0, ticks:5},
+ {k:'rf',   campo:'respiracao', nome:'RF',     unid:'rpm', cor:'#d2a8ff', lado:'D', pos:0, fixo:null, dec:0, ticks:5},
+ {k:'rpe',  campo:'rpe',        nome:'RPE',    unid:'',    cor:'#e6edf3', lado:'D', pos:1, fixo:[1,10], dec:0, ticks:4},
+ {k:'dfa1', campo:'dfa1',       nome:'DFA-α1', unid:'',    cor:'#f2cc60', lado:'D', pos:2, fixo:null, dec:2, ticks:5}
+];
+
+function mxVstDesenharFisioPrincipal(rz, tent){
+ const cv=document.getElementById('chMxFisioPrincipal');
+ if(!cv) return;
+ tent=tent||0;
+ const area=document.getElementById('mxFisioPrincipalArea');
+ const ivs=((rz&&rz.intervalos)||[]).filter(function(iv){ return iv.potencia!=null; });
+ if(!ivs.length){ if(area) area.style.display='none'; return; }
+ if(area) area.style.display='';
+ // Canvas em <details> fechado tem offsetWidth=0: aguardar layout (limitado)
+ if(cv.offsetWidth<4){
+  if(tent<30) requestAnimationFrame(function(){ mxVstDesenharFisioPrincipal(rz, tent+1); });
+  return;
+ }
+
+ const dpr=window.devicePixelRatio||1;
+ const W=cv.offsetWidth;
+ const H=440;
+ const PL=112, PRM=150, PT=44, PB=44;
+ const x0=PL, x1=W-PRM, y0=PT, y1=H-PB;
+ cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr);
+ cv.style.width=W+'px'; cv.style.height=H+'px';
+ const ctx=cv.getContext('2d');
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+ ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,W,H);
+ if(x1-x0<120){
+  ctx.fillStyle='#8b949e'; ctx.font='12px sans-serif'; ctx.textAlign='left';
+  ctx.fillText('Largura insuficiente para o gráfico integrado.',10,20);
+  return;
+ }
+
+ // ── Eixo X compartilhado: potência ──────────────────────────────────────
+ const wVals=ivs.map(function(iv){ return iv.potencia; });
+ const wMin=Math.max(0,Math.min.apply(null,wVals)-15);
+ const wMax=Math.max.apply(null,wVals)+15;
+ function xW(w){ return x0+(w-wMin)/((wMax-wMin)||1)*(x1-x0); }
+
+ // ── Eixos Y independentes (um por métrica) ──────────────────────────────
+ const S=MX_FP_SERIES.map(function(s){
+  const vs=ivs.map(function(iv){ return iv[s.campo]; }).filter(function(v){ return v!=null && isFinite(v); });
+  let lo, hi;
+  if(s.fixo){ lo=s.fixo[0]; hi=s.fixo[1]; }
+  else if(vs.length){
+   lo=Math.min.apply(null,vs); hi=Math.max.apply(null,vs);
+   const sp=(hi-lo)||Math.abs(hi)*0.1||1;
+   lo-=sp*0.08; hi+=sp*0.12;
+  } else { lo=0; hi=1; }
+  const ax = s.lado==='E' ? x0-48*(s.pos) : x1+48*(s.pos);
+  return {s:s, lo:lo, hi:hi, temDados:vs.length>0, ax:ax,
+          yPos:function(v){ return y1-(v-lo)/((hi-lo)||1)*(y1-y0); }};
+ });
+
+ // ── Limiares: BP1/BP2 e HRVT (só quando disponíveis) ────────────────────
+ const BP1=(rz.bp&&rz.bp.bp1&&rz.bp.bp1.watts!=null)?rz.bp.bp1.watts:null;
+ const BP2=(rz.bp&&rz.bp.bp2&&rz.bp.bp2.watts!=null)?rz.bp.bp2.watts:null;
+ function _hv(k,campo){ const h=rz.hrvt&&rz.hrvt[k]; return (h&&h[campo]!=null)?h[campo]:null; }
+ const HRVT=[
+  {k:'HRVT1c', w:_hv('HRVT1c','watts'), cor:'#E3B341', rot:'HRVT1 indiv.'},
+  {k:'HRVT1s', w:_hv('HRVT1s','watts'), cor:'#79C0FF', rot:'HRVT1 clássico'},
+  {k:'HRVT2',  w:_hv('HRVT2','watts'),  cor:'#F85149', rot:'HRVT2'}
+ ];
+ const COR_BP1='#5DADE2', COR_BP2='#F0883E';
+
+ // ── Zonas de fundo (Z1 < BP1 ≤ Z2 < BP2 ≤ Z3) ─────────────────────────
+ const xB1=BP1!=null?xW(BP1):null, xB2=BP2!=null?xW(BP2):null;
+ ctx.fillStyle='rgba(30,58,95,0.35)';
+ ctx.fillRect(x0,y0,(xB1!=null?Math.min(Math.max(xB1,x0),x1):x1)-x0,y1-y0);
+ if(xB1!=null){
+  ctx.fillStyle='rgba(27,94,32,0.30)';
+  const xa=Math.min(Math.max(xB1,x0),x1), xb=xB2!=null?Math.min(Math.max(xB2,x0),x1):x1;
+  ctx.fillRect(xa,y0,xb-xa,y1-y0);
+ }
+ if(xB2!=null){
+  ctx.fillStyle='rgba(74,28,18,0.35)';
+  const xa=Math.min(Math.max(xB2,x0),x1);
+  ctx.fillRect(xa,y0,x1-xa,y1-y0);
+ }
+ ctx.strokeStyle='#30363d'; ctx.lineWidth=1; ctx.setLineDash([]);
+ ctx.strokeRect(x0,y0,x1-x0,y1-y0);
+
+ // ── Eixos Y: linha, marcas, valores e título com unidade ───────────────
+ S.forEach(function(o){
+  const s=o.s;
+  ctx.strokeStyle=s.cor; ctx.globalAlpha=0.55; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(o.ax,y0); ctx.lineTo(o.ax,y1); ctx.stroke();
+  ctx.globalAlpha=1;
+  ctx.fillStyle=s.cor; ctx.font='10px sans-serif';
+  const left=s.lado==='E';
+  ctx.textAlign=left?'right':'left';
+  for(let ti=0;ti<s.ticks;ti++){
+   const v=o.lo+(o.hi-o.lo)*ti/(s.ticks-1);
+   const yt=o.yPos(v);
+   ctx.strokeStyle=s.cor; ctx.lineWidth=1;
+   ctx.beginPath(); ctx.moveTo(o.ax,yt); ctx.lineTo(o.ax+(left?-3:3),yt); ctx.stroke();
+   ctx.fillText(s.fixo&&s.k==='rpe'?String(Math.round(v)):Number(v).toFixed(s.dec),o.ax+(left?-5:5),yt+3);
+  }
+  ctx.textAlign='center'; ctx.font='bold 9px sans-serif';
+  ctx.fillText(s.nome+(s.unid?' ('+s.unid+')':''),o.ax,y0-10);
+ });
+
+ // ── Linhas verticais de BP1/BP2 e HRVT (watts) ────────────────────────
+ ctx.setLineDash([4,3]); ctx.lineWidth=1.5;
+ if(xB1!=null && xB1>=x0 && xB1<=x1){
+  ctx.strokeStyle=COR_BP1; ctx.beginPath(); ctx.moveTo(xB1,y0); ctx.lineTo(xB1,y1); ctx.stroke();
+  ctx.fillStyle=COR_BP1; ctx.font='bold 9px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('BP1 '+Math.round(BP1)+' W',xB1,y0+11);
+ }
+ if(xB2!=null && xB2>=x0 && xB2<=x1){
+  ctx.strokeStyle=COR_BP2; ctx.beginPath(); ctx.moveTo(xB2,y0); ctx.lineTo(xB2,y1); ctx.stroke();
+  ctx.fillStyle=COR_BP2; ctx.font='bold 9px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('BP2 '+Math.round(BP2)+' W',xB2,y0+22);
+ }
+ ctx.setLineDash([2,3]); ctx.lineWidth=1;
+ let rotIdx=0;
+ HRVT.forEach(function(h){
+  if(h.w==null || h.w<wMin || h.w>wMax) return;
+  const xh=xW(h.w);
+  ctx.strokeStyle=h.cor; ctx.beginPath(); ctx.moveTo(xh,y0); ctx.lineTo(xh,y1); ctx.stroke();
+  ctx.fillStyle=h.cor; ctx.font='9px sans-serif'; ctx.textAlign='left';
+  ctx.fillText(h.rot+' '+Math.round(h.w)+' W', xh+3, y1-6-rotIdx*11);
+  rotIdx++;
+ });
+ ctx.setLineDash([]);
+
+ // ── Pontos individuais: cor = métrica; forma = sessão ─────────────────
+ ivs.forEach(function(iv){
+  const px=xW(iv.potencia);
+  S.forEach(function(o){
+   const v=iv[o.s.campo];
+   if(!o.temDados || v==null || !isFinite(v)) return;
+   const py=o.yPos(v);
+   if(py<y0-2 || py>y1+2) return;
+   ctx.fillStyle=o.s.cor;
+   if(iv.sessao==='d2'){ ctx.fillRect(px-3,py-3,6,6); }
+   else { ctx.beginPath(); ctx.arc(px,py,3.5,0,Math.PI*2); ctx.fill(); }
+  });
+ });
+
+ // ── Eixo X compartilhado ──────────────────────────────────────────────
+ ctx.fillStyle='#8b949e'; ctx.font='10px sans-serif'; ctx.textAlign='center';
+ for(let ti=0;ti<=5;ti++){
+  const w=wMin+(wMax-wMin)*ti/5;
+  const xp=xW(w);
+  ctx.strokeStyle='#21262d'; ctx.lineWidth=0.5;
+  ctx.beginPath(); ctx.moveTo(xp,y1); ctx.lineTo(xp,y1+4); ctx.stroke();
+  ctx.fillText(Math.round(w)+' W',xp,y1+15);
+ }
+ ctx.fillText('Potência (W)',(x0+x1)/2,y1+32);
+ ctx.fillStyle='#8b949e'; ctx.font='9px sans-serif'; ctx.textAlign='left';
+ ['Z1','Z2','Z3'].forEach(function(z,i){
+  const xs=[x0+4, xB1!=null?xB1+4:null, xB2!=null?xB2+4:null][i];
+  if(xs!=null && xs<x1-10) ctx.fillText(z,xs,y1-5);
+ });
+
+ // ── Tooltip: somente valores disponíveis, sessão de origem por linha ───
+ cv._fpHits=ivs.map(function(iv){ return {x:xW(iv.potencia), iv:iv}; });
+ cv._fpModal=window.__mxVstModalidade||null;
+ if(!cv._fpTipBound){
+  cv._fpTipBound=true;
+  cv.addEventListener('mousemove', function(ev){
+   const tipEl=document.getElementById('mxTipFisioPrincipal');
+   const hits=cv._fpHits||[];
+   if(!tipEl||!hits.length) return;
+   const r=cv.getBoundingClientRect();
+   const mx=ev.clientX-r.left;
+   let bestX=null, bestD=1e9;
+   hits.forEach(function(h){ const dd=Math.abs(h.x-mx); if(dd<bestD){ bestD=dd; bestX=h.x; } });
+   if(bestX==null || bestD>6){ tipEl.style.display='none'; return; }
+   const sel=hits.filter(function(h){ return Math.abs(h.x-bestX)<0.5; }).map(function(h){ return h.iv; });
+   const linhas=['<b>'+(cv._fpModal||'modalidade não informada')+'</b>'];
+   sel.slice(0,4).forEach(function(iv){
+    const origem=iv.sessao==='d2'?'VST · Dia 2':'MOXY · Dia 1';
+    linhas.push('<span style="color:#8b949e;">'+origem+(iv.intervalo!=null?' · intervalo '+iv.intervalo:'')+'</span>');
+    const p=['Potência '+Math.round(iv.potencia)+' W'];
+    if(iv.hr!=null) p.push('FC '+Math.round(iv.hr)+' bpm');
+    if(iv.respiracao!=null) p.push('RF '+Number(iv.respiracao).toFixed(1)+' rpm');
+    if(iv.smo2!=null) p.push('SmO₂ '+Number(iv.smo2).toFixed(1)+' %');
+    if(iv.rpe!=null) p.push('RPE '+Number(iv.rpe).toFixed(1));
+    if(iv.dfa1!=null) p.push('DFA-α1 '+Number(iv.dfa1).toFixed(2));
+    linhas.push(p.join(' · '));
+   });
+   tipEl.innerHTML=linhas.join('<br>');
+   tipEl.style.display='block';
+   tipEl.style.left=Math.min(mx+12, r.width-260)+'px';
+   tipEl.style.top='8px';
+  });
+  cv.addEventListener('mouseleave', function(){
+   const t=document.getElementById('mxTipFisioPrincipal'); if(t) t.style.display='none';
+  });
+ }
+
+ // ── Legenda textual: sessões, métricas e referências disponíveis ──────
+ const leg=document.getElementById('mxFisioPrincipalLegenda');
+ if(leg){
+  const refs=[];
+  if(BP1!=null) refs.push('<span style="color:'+COR_BP1+';">BP1 '+Math.round(BP1)+' W</span>');
+  if(BP2!=null) refs.push('<span style="color:'+COR_BP2+';">BP2 '+Math.round(BP2)+' W</span>');
+  HRVT.forEach(function(h){ if(h.w!=null) refs.push('<span style="color:'+h.cor+';">'+h.rot+' '+Math.round(h.w)+' W</span>'); });
+  const ausentes=HRVT.filter(function(h){ return h.w==null; }).map(function(h){ return h.rot; });
+  let txt='<div>● MOXY · Dia 1 (círculo) &nbsp; ■ VST · Dia 2 (quadrado) &nbsp; · pontos medidos, sem linhas entre sessões</div>';
+  txt+='<div style="margin-top:3px;">'+S.map(function(o){ return '<span style="color:'+o.s.cor+';">'+o.s.nome+(o.s.unid?' ('+o.s.unid+')':'')+'</span>'; }).join(' &nbsp; ')+'</div>';
+  txt+='<div style="margin-top:3px;">Referências: '+(refs.length?refs.join(' &nbsp; '):'nenhuma disponível')+'</div>';
+  if(ausentes.length) txt+='<div style="margin-top:3px;color:#6e7681;">Não disponível nesta sessão: '+ausentes.join(', ')+'</div>';
+  leg.innerHTML=txt;
+ }
+}
+
+function mxVstRenderResumoEssencial(d, rz){
+ const box=document.getElementById('mxResumoEssencial');
+ if(!box) return;
+ if(!rz||!rz.intervalos||!rz.intervalos.length){ box.innerHTML=''; return; }
+ const esc=function(s){ return String(s).replace(/[&<>"]/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); };
+
+ // 1. Tendência descritiva: medianas por zona (sem causalidade)
+ const METR=[['hr','FC',' bpm',0],['respiracao','RF',' rpm',1],['smo2','SmO₂',' %',1],['rpe','RPE','',1],['dfa1','DFA-α1','',2]];
+ const tend=[];
+ METR.forEach(function(m){
+  const partes=[];
+  ['Z1','Z2','Z3'].forEach(function(z){
+   const st=(rz.zonas||{})[z]&&rz.zonas[z][m[0]];
+   if(st && st.mediana!=null && st.n>=2) partes.push(z+' '+Number(st.mediana).toFixed(m[3])+m[2]+' (n='+st.n+')');
+  });
+  if(partes.length>=2) tend.push('<li style="margin-bottom:3px;"><b>'+m[1]+'</b>: '+esc(partes.join(' · '))+'</li>');
+ });
+
+ // 2. Consistência entre sessões (rótulos já calculados pela análise)
+ const c1=(d&&d.comparacao_bp1&&d.comparacao_bp1.status)||'—';
+ const c2=(d&&d.comparacao_bp2&&d.comparacao_bp2.status)||'—';
+
+ // 3. Principal limitação: uma frase, a mais relevante
+ let lim='';
+ if(c1==='DIVERGENTE'||c2==='DIVERGENTE') lim='evidências divergentes entre MOXY e VST em pelo menos um limiar; leitura exploratória.';
+ else if(c1==='DADOS INSUFICIENTES'||c2==='DADOS INSUFICIENTES') lim='dados insuficientes para pelo menos um limiar.';
+ else if(rz.limitacoes&&rz.limitacoes.length) lim=rz.limitacoes[0];
+
+ box.innerHTML='<div style="border:1px solid #30363d;border-radius:8px;padding:10px 14px;background:#0d1117;">'
+  +'<div style="font-size:12px;font-weight:600;color:#c9d1d9;margin-bottom:6px;">Interpretação essencial</div>'
+  +'<div style="font-size:11px;color:#8b949e;margin-bottom:3px;">Tendência observada por zona (descritiva, não implica causa):</div>'
+  +(tend.length?'<ul style="font-size:11px;color:#c9d1d9;margin:0 0 8px 16px;padding:0;">'+tend.join('')+'</ul>'
+     :'<div style="font-size:11px;color:#8b949e;margin-bottom:8px;">Amostras insuficientes por zona para descrever a tendência.</div>')
+  +(c1==='—'&&c2==='—'
+     ?'<div style="font-size:11px;color:#8b949e;margin-bottom:4px;">Consistência entre sessões: não disponível (sem comparação BP1/BP2 nesta verificação).</div>'
+     :'<div style="font-size:11px;color:#c9d1d9;margin-bottom:4px;">Consistência entre sessões: BP1 '+esc(c1)+' · BP2 '+esc(c2)+'</div>')
+  +(lim?'<div style="font-size:11px;color:#F0883E;">Principal limitação: '+esc(lim)+'</div>':'')
+  +'</div>';
+}
+
 function mxVstDesenharFisioIntegrado(rz){
  const cv=document.getElementById('chMxFisioIntegrado');
  if(!cv) return;

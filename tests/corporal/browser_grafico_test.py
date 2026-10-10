@@ -334,7 +334,7 @@ def main():
             FIG = {'peso': 'chMain', 'bf': 'chMain', 'calorias': 'chMain', 'net': 'chCalNet'}
             for g_ in ['W', 'M']:
                 pg.select_option('#granul', g_); pg.wait_for_timeout(120)
-                for campo in ['peso', 'bf', 'calorias', 'net']:
+                for campo in ['peso', 'bf', 'net']:
                     jsr = dict(js_rolp(pg, FIG[campo], campo, g_))
                     refr = ref_rolp(payload['linhas'], campo, g_, 4)
                     ok = all((jsr.get(k) is None) == (refr.get(k) is None) and
@@ -343,6 +343,13 @@ def main():
                     ok = ok and all(jsr[k] is None for k in jsr if k not in refr)
                     check('media movel %s, %s, N=4: igual a referencia independente' % (campo, g_), ok,
                           'periodos=%d' % len(jsr))
+                # calorias: janelas so com medicao = referencia; janelas com estimativa sao marcadas
+                rolc = pg.evaluate("([f,g])=>TEMP_ULT.figuras[f].dados.calorias.rolPts.map(q=>[periodoInfo(diaStr(q.ini),g).k,q.v,q.est])", [FIG['calorias'], g_])
+                refc = ref_rolp(payload['linhas'], 'calorias', g_, 4)
+                ok_med = all(abs(v - refc[k]) < 1e-9 for k, v, e in rolc if v is not None and not e and refc.get(k) is not None)
+                ok_marca = all(e for k, v, e in rolc if v is not None and refc.get(k) is None)
+                check('calorias, %s: janelas so medidas batem com a referencia; janelas com estimativa marcadas' % g_,
+                      ok_med and ok_marca, 'estimados=%d' % sum(1 for x in rolc if x[2]))
             # N: 2, 3, 4, 6, 8, 12 (seletor), em semanas
             pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
             for N_ in [2, 3, 4, 6, 8, 12]:

@@ -259,6 +259,71 @@ function rolPeriodo(per,campo,N){
  return out;
 }
 
+// ── calorias estimadas (so para preencher lacunas de calorias) ────────────
+// calorias(periodo i) ~ a + b * X(periodo i+L), X = peso ou BF, L = 0..4 periodos.
+// Para cada X escolhe o atraso de maior R2 (com pelo menos MIN_PARES_EST pares).
+// A estimativa de um periodo e a media dos modelos disponiveis, ponderada pelo R2.
+// Nao entra em pontos, KPIs nem no r7 do backend: so preenche a media movel.
+const MIN_PARES_EST=8, LAGS_EST=[0,1,2,3,4];
+function regressaoLinear(xs,ys){
+ const n=xs.length, mx=xs.reduce((a,b)=>a+b,0)/n, my=ys.reduce((a,b)=>a+b,0)/n;
+ let sxy=0,sxx=0,syy=0;
+ for(let i=0;i<n;i++){const dx=xs[i]-mx,dy=ys[i]-my;sxy+=dx*dy;sxx+=dx*dx;syy+=dy*dy;}
+ if(sxx<=0||syy<=0) return null;
+ const b=sxy/sxx;
+ return {a:my-b*mx,b:b,r2:(sxy*sxy)/(sxx*syy),n:n};
+}
+function modelosCalorias(per){
+ const out={};
+ ['peso','bf'].forEach(X=>{
+  let melhor=null;
+  LAGS_EST.forEach(L=>{
+   const xs=[],ys=[];
+   for(let i=0;i+L<per.length;i++){
+    const y=per[i].v.calorias, x=per[i+L].v[X];
+    if(y!=null&&x!=null){ys.push(y);xs.push(x);}}
+   if(xs.length<MIN_PARES_EST) return;
+   const m=regressaoLinear(xs,ys); if(!m) return;
+   if(!melhor||m.r2>melhor.r2) melhor={X:X,L:L,a:m.a,b:m.b,r2:m.r2,n:m.n};
+  });
+  if(melhor&&melhor.r2>0) out[X]=melhor;
+ });
+ return out;
+}
+// estimativa por periodo (null onde ha calorias medidas ou nao ha modelo)
+function estimarCalorias(per){
+ const mods=modelosCalorias(per), usados=Object.keys(mods);
+ return per.map((q,i)=>{
+  if(q.v.calorias!=null||!usados.length) return {v:null};
+  let s=0,w=0; const fontes=[];
+  usados.forEach(X=>{const m=mods[X], j=i+m.L;
+   if(j>=per.length) return;
+   const x=per[j].v[X]; if(x==null) return;
+   s+=m.r2*(m.a+m.b*x); w+=m.r2; fontes.push(X+' (atraso '+m.L+' sem., R2='+m.r2.toFixed(2)+')');});
+  return w>0?{v:s/w,fontes:fontes}:{v:null};
+ });
+}
+// media movel de calorias: como rolPeriodo, mas usa a estimativa nos periodos sem medicao;
+// o ponto e marcado como 'est' quando a janela inclui algum periodo estimado
+function rolCaloriasMisto(per,est,N){
+ const out=[];
+ per.forEach((q,i)=>{
+  const ini=diaNum(q.ini), fim=diaNum(q.fim);
+  let v=null, usaEst=false;
+  if(i>=N-1){
+   let s=0, ok=true;
+   for(let k=i-N+1;k<=i;k++){
+    const medido=per[k].v.calorias;
+    if(medido!=null){s+=medido;}
+    else if(est[k].v!=null){s+=est[k].v;usaEst=true;}
+    else {ok=false;break;}}
+   if(ok) v=s/N;
+  }
+  out.push({ini:ini,fim:fim,t:Math.round((ini+fim)/2),v:v,n:N,est:usaEst&&v!=null});
+ });
+ return out;
+}
+
 // agrega linhas diarias por periodo; periodos vazios entre o primeiro e o
 // ultimo registo aparecem com dias=0 e valores nulos (nada e preenchido)
 // iniDia/fimDia (YYYY-MM-DD) opcionais: o intervalo cobre todos os periodos de
@@ -324,7 +389,7 @@ function limitesY(vals,minSpan){
 function nomeCamada(m,tipo,N,g){
  const t=SERIES_TEMP[m].titulo;
  if(tipo==='pontos') return t+' — pontos por '+GRAN_NOME[g];
- if(tipo==='rolling') return t+' — média móvel '+N+' '+ROLL_NOME[g];
+ if(tipo==='rolling') return t+' — média móvel '+N+' '+ROLL_NOME[g]+(m==='calorias'?' (lacunas estimadas)':'');
  return t+' — resumo '+GRAN_PLURAL[g];
 }
 
@@ -436,7 +501,15 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
    G.strokeStyle='#0d1117';G.lineWidth=5;trilha();G.stroke();
    // peso: linha continua; BF e calorias: tracejada (como na referencia)
    G.setLineDash(L.m==='peso'?[]:[6,4]);
-   G.strokeStyle=c.cor;G.lineWidth=2.6;trilha();G.stroke();
+   G.strokeStyle=c.cor;G.lineWidth=2.6;
+   if(d.rolPts.some(q=>q.est)){
+    // trechos com calorias estimadas: pontilhado e mais claro (nao sao medidos)
+    for(let j=1;j<d.rolPts.length;j++){const a=d.rolPts[j-1],b=d.rolPts[j];
+     if(a.v==null||b.v==null) continue;
+     G.globalAlpha=b.est?0.55:1; G.setLineDash(b.est?[2,3]:[6,4]);
+     G.beginPath();G.moveTo(X(a.t),Yf(a.v));G.lineTo(X(b.t),Yf(b.v));G.stroke();}
+    G.globalAlpha=1;
+   } else {trilha();G.stroke();}
    G.setLineDash([]);
   } else {
    // um ponto por periodo (peso e BF), no centro do periodo
@@ -469,7 +542,8 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
     if(L.tipo==='rolling'){const q=d.rolPts.find(z=>z.ini<=t&&t<=z.fim);
      if(q) html+=linhaTip(c.cor,c.titulo+' · média móvel '+N+' '+ROLL_NOME[g],q.v==null?
       'sem média (algum dos '+N+' períodos não tem valor)':
-      fmtV(q.v,c.unid)+' '+c.unid+' · média dos últimos '+N+' períodos');}
+      fmtV(q.v,c.unid)+' '+c.unid+' · média dos últimos '+N+' períodos'+
+      (q.est?' · inclui calorias ESTIMADAS (não medidas) nos períodos sem registo':''));}
    });});
   return html;});
 
@@ -495,10 +569,12 @@ function drawTemporal(){
  const periodos=per.map(q=>({k:q.k,rot:q.rot,ini:diaNum(q.ini),fim:diaNum(q.fim),dias:q.dias}));
  // dados de cada metrica, calculados uma vez e partilhados pelas figuras
  const cache={};
+ const ESTIMA=estimarCalorias(perFull), ESTIMA_INFO=modelosCalorias(perFull);
  const dadosDe=m=>{
   if(cache[m]) return cache[m];
   // media movel calculada sobre todos os periodos (antes do recorte), depois limitada ao intervalo
-  const rolPts=rolPeriodo(perFull,m,N).filter(q=>q.fim>=t0&&q.ini<=t1);
+  const rolCompleto=m==='calorias'?rolCaloriasMisto(perFull,ESTIMA,N):rolPeriodo(perFull,m,N);
+  const rolPts=rolCompleto.filter(q=>q.fim>=t0&&q.ini<=t1);
   return cache[m]={
    // pontos agrupados: um por periodo (mediana para peso e BF, media para calorias)
    pontos:per.filter(q=>q.v[m]!=null).map(q=>{const i0=diaNum(q.ini),i1=diaNum(q.fim);
@@ -518,7 +594,9 @@ function drawTemporal(){
  document.getElementById('subTempInfo').textContent='Intervalo: '+dataBR(corte)+' a '+dataBR(fim)+'. '+
   per.length+' periodos ('+GRAN_NOME[g]+'). '+
   semReg+' sem registos (faixa cinza, sem valor); '+poucos+' com menos de '+MIN_REG[g]+
-  ' dias (indicado no tooltip). Media movel de '+N+' '+ROLL_NOME[g]+', so com os '+N+' periodos preenchidos.';
+  ' dias (indicado no tooltip). Media movel de '+N+' '+ROLL_NOME[g]+', so com os '+N+' periodos preenchidos.'+
+ (Object.keys(ESTIMA_INFO).length?' Calorias estimadas (pontilhado) so nas lacunas, por regressao: '+
+  Object.keys(ESTIMA_INFO).map(X=>X+' com atraso '+ESTIMA_INFO[X].L+' sem., R2='+ESTIMA_INFO[X].r2.toFixed(2)).join('; ')+'.':'');
 }
 
 // barras de variacao com as bandas de referencia por cima

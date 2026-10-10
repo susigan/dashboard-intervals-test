@@ -2057,6 +2057,75 @@ montarExport();
 ['homeoMod','homeoVista','homeoMods','haIni','haFim','hrIni','hrFim'].forEach(id=>
  document.getElementById(id).onchange=function(){if(D)drawHomeo();});
 document.getElementById('canalFMT').onchange=function(){if(D&&D.fmt)drawAtencao();};
+// ── CTL vs KJ — coeficientes dTRIMP/dkJ e eficiência por kJ ──────────────────
+// Dados vêm de D.dtrimp_dkj e D.eficiencia_kj (calculados em pmc.py, sem
+// alteração aqui). Só mostramos o que o backend devolveu; modalidades sem
+// resultado recebem uma mensagem explícita, nunca um valor inventado.
+const CTLKJ_MIN_TXT='mínimo 8 sessões com RPE e kJ, duração ≥ 10 min';
+function ctlkjEsc(v){ return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function ctlkjNum(v,dec){ return (v==null||!isFinite(v))?'—':Number(v).toFixed(dec); }
+function ctlkjNomeTipo(t){
+ const nomes={todos:'Todos os tipos',base:'Base (RPE ≤ 5)',tempo:'Tempo (RPE 6–7)',intervalado:'Intervalado (RPE ≥ 8)'};
+ return nomes[t]||t;
+}
+function ctlkjMostrarSubtab(k){
+ const coef=(k==='coef');
+ document.getElementById('ctlkjCoefBox').style.display=coef?'':'none';
+ document.getElementById('ctlkjEfBox').style.display=coef?'none':'';
+ const bc=document.getElementById('ctlkjBtnCoef'), be=document.getElementById('ctlkjBtnEf');
+ bc.style.background=coef?'#1c2331':'#161b22'; bc.style.border='1px solid '+(coef?'#5DADE2':'#30363d'); bc.style.color=coef?'#5DADE2':'#8b949e';
+ be.style.background=coef?'#161b22':'#1c2331'; be.style.border='1px solid '+(coef?'#30363d':'#5DADE2'); be.style.color=coef?'#8b949e':'#5DADE2';
+ bc.setAttribute('aria-pressed',coef?'true':'false'); be.setAttribute('aria-pressed',coef?'false':'true');
+}
+function mostrarDtrimpDkj(){
+ const head=document.getElementById('ctlkjCoefHead'), body=document.getElementById('ctlkjCoefBody');
+ if(!head||!body) return;
+ const cols=['Modalidade','Tipo de sessão','n','dTRIMP/dkJ','R²','Coef. densidade','kJ médio','TRIMP médio'];
+ head.innerHTML=cols.map(function(c){ return '<th>'+ctlkjEsc(c)+'</th>'; }).join('');
+ const dados=D.dtrimp_dkj;
+ if(dados===undefined||dados===null){
+  body.innerHTML='<tr><td colspan="8" style="color:#8b949e;">Dados de dTRIMP/dkJ ausentes na resposta.</td></tr>'; return; }
+ const mods=(D.ciclicos||Object.keys(dados));
+ const com=mods.filter(function(m){ return Array.isArray(dados[m])&&dados[m].length; });
+ const sem=mods.filter(function(m){ return !(Array.isArray(dados[m])&&dados[m].length); });
+ if(!com.length){
+  body.innerHTML='<tr><td colspan="8" style="color:#8b949e;">Sem resultado: nenhuma modalidade tem amostras suficientes ('+CTLKJ_MIN_TXT+').</td></tr>'; return; }
+ let html='';
+ com.forEach(function(m){
+  dados[m].forEach(function(l){
+   html+='<tr><td>'+ctlkjEsc(m)+'</td><td>'+ctlkjEsc(ctlkjNomeTipo(l.tipo))+'</td><td>'+ctlkjEsc(l.n)+'</td>'
+    +'<td>'+ctlkjNum(l.dtrimp_dkj,4)+'</td><td>'+ctlkjNum(l.r2,3)+'</td><td>'+ctlkjNum(l.coef_densidade,3)+'</td>'
+    +'<td>'+ctlkjNum(l.kj_medio,0)+'</td><td>'+ctlkjNum(l.trimp_medio,1)+'</td></tr>';
+  });
+ });
+ if(sem.length) html+='<tr><td colspan="8" style="color:#8b949e;">Sem resultado para: '+ctlkjEsc(sem.join(', '))+' ('+CTLKJ_MIN_TXT+' — ou dados ausentes).</td></tr>';
+ body.innerHTML=html;
+}
+function mostrarEficienciaKj(){
+ const box=document.getElementById('ctlkjEfCards'); if(!box) return;
+ const dados=D.eficiencia_kj;
+ if(dados===undefined||dados===null){
+  box.innerHTML='<div class="sub">Dados de eficiência por kJ ausentes na resposta.</div>'; return; }
+ const mods=(D.ciclicos||Object.keys(dados));
+ const com=mods.filter(function(m){ return !!dados[m]; });
+ const sem=mods.filter(function(m){ return !dados[m]; });
+ if(!com.length){
+  box.innerHTML='<div class="sub">Sem resultado: nenhuma modalidade tem amostras suficientes (mínimo 10 sessões com RPE e kJ, 8 após o corte dos extremos de 5 %).</div>'; return; }
+ let html=com.map(function(m){
+  const e=dados[m];
+  const aviso=e.desactualizado&&e.aviso?'<div style="color:#E67E22;font-size:12px;margin-top:6px;">'+ctlkjEsc(e.aviso)+'</div>':'';
+  return '<div class="card" style="min-width:220px;">'
+   +'<div class="label">'+ctlkjEsc(m)+' · '+ctlkjEsc(e.n_sessoes)+' sessões</div>'
+   +'<div class="value">'+ctlkjNum(e.eff_actual,3)+'</div>'
+   +'<div class="sub">TRIMP/kJ atual (média rolling de 4 semanas)</div>'
+   +'<div class="sub">Mediana histórica: '+ctlkjNum(e.eff_historica,3)+' · tendência: '+ctlkjEsc(e.tendencia)+'</div>'
+   +'<div class="sub">Última sessão com kJ e RPE: '+ctlkjEsc(e.ultima_data)+'</div>'
+   +aviso+'</div>';
+ }).join('');
+ if(sem.length) html+='<div class="sub" style="width:100%;">Sem resultado para: '+ctlkjEsc(sem.join(', '))+' ('+CTLKJ_MIN_TXT+' — ou dados ausentes).</div>';
+ box.innerHTML=html;
+}
+
 function redesenhar(){
  if(!D)return;
  drawPMC();

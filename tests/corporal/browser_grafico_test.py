@@ -129,6 +129,9 @@ def main():
     import tabs.tab_corporal as tc
 
     payload = gerar_payload()
+    SHOTS = os.environ.get('CORP_SHOTS') or tempfile.mkdtemp(prefix='corp_shots_')
+    os.makedirs(SHOTS, exist_ok=True)
+    print('capturas em', SHOTS)
     tmp = tempfile.mkdtemp(prefix='corp_grafico_')
     with open(os.path.join(tmp, 'corp.html'), 'w', encoding='utf-8') as f:
         f.write(tc.render())
@@ -139,8 +142,8 @@ def main():
         with sync_playwright() as p:
             b = p.chromium.launch()
 
-            def pagina(dados=payload):
-                pg = b.new_page(viewport={'width': 1100, 'height': 900})
+            def pagina(dados=payload, largura=1100):
+                pg = b.new_page(viewport={'width': largura, 'height': 900})
                 pg.errs, pg.reqs = [], []
                 pg.on('pageerror', lambda e: pg.errs.append(str(e)[:200]))
                 pg.on('request', lambda r: pg.reqs.append(r.url) if '/api/corporal' in r.url else None)
@@ -202,17 +205,18 @@ def main():
             # 4. tooltip de periodo vazio e de periodo com dados
             pg.evaluate("()=>{document.getElementById('granul').value='W';document.getElementById('granul').onchange();}")
             pg.wait_for_timeout(200)
-            info = pg.evaluate("()=>{const W=document.getElementById('chPeso').clientWidth;"
-                               "const idx=agregarTemporal(janelaDias(C.linhas),'W').findIndex(x=>x.k==='2025-W50');"
-                               "const n=agregarTemporal(janelaDias(C.linhas),'W').length;"
-                               "const x=60+(W-72)*(idx/(n-1));"
-                               "return TIPS.chPeso(x,10,W,220);}")
+            geo = "const geo=(W)=>{const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);return {PL:PL,w:w};};"
+            info = pg.evaluate("()=>{" + geo + "const W=document.getElementById('chMain').clientWidth;"
+                               "const per=agregarTemporal(janelaDias(C.linhas),'W');"
+                               "const idx=per.findIndex(x=>x.k==='2025-W50');"
+                               "const G=geo(W);const x=G.PL+G.w*(idx/(per.length-1));"
+                               "return TIPS.chMain(x,10,W,340);}")
             check('tooltip de periodo vazio diz "sem registos no periodo"', 'sem registos no periodo' in info, info[:160])
-            info2 = pg.evaluate("()=>{const W=document.getElementById('chPeso').clientWidth;"
+            info2 = pg.evaluate("()=>{" + geo + "const W=document.getElementById('chMain').clientWidth;"
                                 "const per=agregarTemporal(janelaDias(C.linhas),'W');"
                                 "const idx=per.findIndex(x=>x.dias>0);"
-                                "const x=60+(W-72)*(idx/(per.length-1));"
-                                "return TIPS.chPeso(x,10,W,220);}")
+                                "const G=geo(W);const x=G.PL+G.w*(idx/(per.length-1));"
+                                "return TIPS.chMain(x,10,W,340);}")
             check('tooltip traz periodo, intervalo, unidade e n',
                   'kg' in info2 and 'n=' in info2 and 'registo' in info2 and '/' in info2, info2[:260])
 
@@ -240,30 +244,36 @@ def main():
             depois = json.dumps(pg.evaluate("C.linhas"), sort_keys=True)
             check('dados diarios originais inalterados apos trocar granularidade', antes == depois)
 
-            # 7. legenda: alterna serie, mantem pelo menos uma
-            pg.select_option('#granul', 'W')
-            pg.wait_for_timeout(120)
-            pg.click('#lgNet [data-serie="net_rolling"]')
-            pg.wait_for_timeout(120)
-            check('legenda desativa a media movel de Net', pg.evaluate("ATIVAS.net_rolling") is False)
-            pg.click('#lgNet [data-serie="net_periodo"]')
-            pg.wait_for_timeout(120)
-            check('painel de Net nao fica sem camadas visiveis (ultima camada resiste)',
-                  pg.evaluate("ATIVAS.net_periodo") is True)
-            pg.click('#lgCal [data-serie="calorias_rolling"]')
-            pg.wait_for_timeout(120)
-            check('painel de calorias fica so com a barra de periodo visivel',
-                  pg.evaluate("[ATIVAS.calorias_rolling,ATIVAS.calorias_periodo]") == [False, True])
-            pg.click('#lgCal [data-serie="calorias_periodo"]')
-            pg.wait_for_timeout(120)
-            check('legenda nao desliga a ultima camada visivel do painel de calorias',
-                  pg.evaluate("ATIVAS.calorias_periodo") is True)
-            for sid, leg in [('net_rolling', 'lgNet'), ('net_periodo', 'lgNet'), ('calorias_rolling', 'lgCal')]:
-                if not pg.evaluate("ATIVAS['%s']" % sid):      # so religa o que esta desligado
-                    pg.click('#%s [data-serie="%s"]' % (leg, sid))
-                    pg.wait_for_timeout(120)
-            check('legenda reativa as camadas de Calorias e Net',
-                  pg.evaluate("[ATIVAS.net_rolling,ATIVAS.net_periodo,ATIVAS.calorias_rolling]") == [True, True, True])
+            # 7. legenda: alterna camadas dentro de cada figura; a ultima camada visivel resiste
+            DEFAULTS = {'main_peso_pontos': True, 'main_peso_rolling': True, 'main_peso_periodo': True,
+                        'main_bf_pontos': True, 'main_bf_rolling': True, 'main_bf_periodo': True,
+                        'main_calorias_pontos': True, 'main_calorias_rolling': True, 'main_calorias_periodo': False,
+                        'cn_calorias_pontos': True, 'cn_calorias_rolling': True, 'cn_calorias_periodo': False,
+                        'cn_net_rolling': True}
+            pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
+            txt = pg.inner_text('#lgMain')
+            check('legenda da figura principal identifica metrica e tipo de serie',
+                  all(t in txt for t in ['Peso — registros', 'Peso — rolling 7 dias', 'Peso — resumo semanal',
+                                         'Gordura corporal — registros', 'Calorias — registros']), txt[:200])
+            pg.click('#lgCalNet [data-serie="cn_net_rolling"]'); pg.wait_for_timeout(120)
+            check('legenda desativa a media movel de Net', pg.evaluate("ATIVAS.cn_net_rolling") is False)
+            pg.click('#lgCalNet [data-serie="cn_calorias_rolling"]'); pg.wait_for_timeout(120)
+            check('legenda desativa a media movel de calorias (registos continuam)',
+                  pg.evaluate("[ATIVAS.cn_calorias_rolling,ATIVAS.cn_calorias_pontos]") == [False, True])
+            pg.click('#lgCalNet [data-serie="cn_calorias_pontos"]'); pg.wait_for_timeout(120)
+            check('figura Calorias + Net nao fica sem camadas (ultima camada resiste)',
+                  pg.evaluate("ATIVAS.cn_calorias_pontos") is True)
+            pg.click('#lgMain [data-serie="main_bf_rolling"]'); pg.wait_for_timeout(120)
+            check('legenda da figura principal desativa a media movel de gordura',
+                  pg.evaluate("ATIVAS.main_bf_rolling") is False)
+            pg.click('#lgMain [data-serie="main_calorias_periodo"]'); pg.wait_for_timeout(120)
+            check('legenda liga o resumo de calorias na figura principal',
+                  pg.evaluate("ATIVAS.main_calorias_periodo") is True)
+            for sid in ['cn_net_rolling', 'cn_calorias_rolling', 'main_bf_rolling', 'main_calorias_periodo']:
+                leg = 'lgCalNet' if sid.startswith('cn_') else 'lgMain'
+                if pg.evaluate("ATIVAS['%s']" % sid) != DEFAULTS[sid]:
+                    pg.click('#%s [data-serie="%s"]' % (leg, sid)); pg.wait_for_timeout(120)
+            check('legenda volta ao estado padrao das camadas', pg.evaluate("ATIVAS") == DEFAULTS)
 
             # 7b. media movel (rolling): mesma regra dos KPIs, lacunas, granularidade, originais
             pg.evaluate("()=>{document.getElementById('janela').value='0';document.getElementById('janela').onchange();}")
@@ -291,10 +301,10 @@ def main():
 
             # granularidade e janela de rolling nao mudam a camada de media movel
             pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
-            rolW = pg.evaluate("JSON.stringify(TEMP_ULT.dados.chPeso.peso.rolPts)")
+            rolW = pg.evaluate("JSON.stringify(TEMP_ULT.figuras.chMain.dados.peso.rolPts)")
             for g in ['M', 'Q', 'S', 'A']:
                 pg.select_option('#granul', g); pg.wait_for_timeout(120)
-                rol = pg.evaluate("JSON.stringify(TEMP_ULT.dados.chPeso.peso.rolPts)")
+                rol = pg.evaluate("JSON.stringify(TEMP_ULT.figuras.chMain.dados.peso.rolPts)")
                 check('media movel identica com granularidade %s' % g, rol == rolW)
             pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
             antes_linhas = json.dumps(pg.evaluate("C.linhas"), sort_keys=True)
@@ -302,9 +312,9 @@ def main():
             n_req = len(pg.reqs)
             pg.select_option('#rollJan', '14'); pg.wait_for_timeout(150)
             check('janela rolling 14 aplicada', pg.evaluate("TEMP_ULT.N") == 14)
-            rol14 = pg.evaluate("JSON.stringify(TEMP_ULT.dados.chPeso.peso.rolPts.map(q=>q.v))")
+            rol14 = pg.evaluate("JSON.stringify(TEMP_ULT.figuras.chMain.dados.peso.rolPts.map(q=>q.v))")
             ref14 = ref_roll(payload['linhas'], 'peso', 14)
-            cont = pg.evaluate("TEMP_ULT.dados.chPeso.peso.rolPts.map(q=>[q.t,q.v])")
+            cont = pg.evaluate("TEMP_ULT.figuras.chMain.dados.peso.rolPts.map(q=>[q.t,q.v])")
             def dia_de(t):
                 return (date(1970, 1, 1) + timedelta(days=t)).isoformat()
             okr = all(((v is None) == (dia_de(t) not in ref14)) and (v is None or abs(v - ref14[dia_de(t)][0]) < 1e-9)
@@ -317,12 +327,64 @@ def main():
             check('KPIs inalterados por granularidade e janela rolling',
                   kpi_antes == pg.evaluate("document.getElementById('kpis').textContent"))
 
-            # tooltip mostra a media movel no dia
-            t_com = [q for q in pg.evaluate("TEMP_ULT.dados.chPeso.peso.rolPts") if q['v'] is not None]
+            # tooltip mostra a media movel (rolling) no dia, na figura principal
+            t_com = [q for q in pg.evaluate("TEMP_ULT.figuras.chMain.dados.peso.rolPts") if q['v'] is not None]
             alvo = t_com[len(t_com) // 2]['t']
-            tip = pg.evaluate("(t)=>{const c=document.getElementById('chPeso');const W=c.clientWidth;const T=TEMP_ULT;"
-                              "const x=60+(W-72)*((t-T.t0)/(T.t1-T.t0));return TIPS.chPeso(x,10,W,220);}", alvo)
-            check('tooltip do dia mostra a media movel e os dias validos na janela', 'media movel' in tip and 'dias validos na janela' in tip, tip[:200])
+            tip = pg.evaluate("(t)=>{const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
+                              "const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);"
+                              "const x=PL+w*((t-T.t0)/(T.t1-T.t0));return TIPS.chMain(x,10,W,340);}", alvo)
+            check('tooltip do dia mostra a rolling e os dias validos na janela',
+                  'rolling 7 dias' in tip and 'dias validos na janela' in tip, tip[:200])
+
+            # 11. estrutura: uma figura com peso, gordura e calorias; eixos Y independentes
+            pg.evaluate("()=>{document.getElementById('janela').value='0';document.getElementById('janela').onchange();}")
+            pg.wait_for_timeout(150)
+            est = pg.evaluate("()=>({m:TEMP_ULT.figuras.chMain.metricas, lim:TEMP_ULT.figuras.chMain.lim,"
+                              "ids:[...document.querySelectorAll('canvas')].map(c=>c.id)})")
+            check('figura principal: peso, gordura e calorias na mesma figura', est['m'] == ['peso', 'bf', 'calorias'], str(est['m']))
+            escalas = list(est['lim'].values())
+            check('figura principal: tres eixos Y, cada um com escala propria',
+                  len(escalas) == 3 and all(e is not None for e in escalas) and len(set(map(tuple, escalas))) == 3, str(escalas))
+            check('figuras temporais: dois canvases, sem os quatro paineis antigos',
+                  'chMain' in est['ids'] and 'chCalNet' in est['ids']
+                  and not any(i in est['ids'] for i in ['chPeso', 'chBF', 'chCal', 'chNet']), str(est['ids']))
+            cn = pg.evaluate("()=>({m:TEMP_ULT.figuras.chCalNet.metricas, lim:TEMP_ULT.figuras.chCalNet.lim})")
+            check('figura Calorias + Net: duas metricas em dois eixos', cn['m'] == ['calorias', 'net'], str(cn['m']))
+            check('eixo do Net inclui a referencia 0', cn['lim']['net'][0] <= 0 <= cn['lim']['net'][1], str(cn['lim']['net']))
+            n_pontos = len(pg.evaluate("TEMP_ULT.figuras.chMain.dados.peso.pontos"))
+            n_orig = sum(1 for r in payload['linhas'] if r.get('peso') is not None)
+            check('pontos de peso = registos originais (a media movel nao os substitui)', n_pontos == n_orig,
+                  '%d vs %d' % (n_pontos, n_orig))
+            rp = pg.evaluate("TEMP_ULT.figuras.chCalNet.dados.net.rolPts.map(q=>[q.t,q.v])")
+            refn = ref_roll(payload['linhas'], 'net', 7)
+            okn = all(((v is None) == (dia_de(t) not in refn)) and (v is None or abs(v - refn[dia_de(t)][0]) < 1e-9)
+                      for t, v in rp)
+            check('Net: media movel igual a referencia; dias sem valor ficam nulos (nao viram zero)', okn)
+
+            # Net ausente: sem zero inventado; sem Net nem calorias: figura nao desenha (mensagem de ausencia)
+            sem_net = json.loads(json.dumps(payload))
+            for r_ in sem_net['linhas']:
+                r_['net'] = None
+            pg3 = pagina(sem_net)
+            check('sem Net: sem escala de Net, sem ponto e sem zero inventado',
+                  pg3.evaluate("TEMP_ULT.figuras.chCalNet.lim.net") is None
+                  and all(q['v'] is None for q in pg3.evaluate("TEMP_ULT.figuras.chCalNet.dados.net.rolPts")))
+            check('sem Net: calorias continuam na figura Calorias + Net',
+                  pg3.evaluate("TEMP_ULT.figuras.chCalNet.lim.calorias") is not None)
+            check('sem Net: nenhum erro de JavaScript', not pg3.errs, str(pg3.errs))
+            pg3.close()
+            sem_nada = json.loads(json.dumps(payload))
+            for r_ in sem_nada['linhas']:
+                r_['net'] = None
+                r_['calorias'] = None
+            pg4 = pagina(sem_nada)
+            check('sem Net nem calorias: figura Calorias + Net mostra a ausencia (nao desenha)',
+                  pg4.evaluate("TEMP_ULT.figuras.chCalNet") is None)
+            check('sem calorias: figura principal segue com peso e gordura',
+                  pg4.evaluate("TEMP_ULT.figuras.chMain.lim.peso") is not None
+                  and pg4.evaluate("TEMP_ULT.figuras.chMain.lim.calorias") is None)
+            check('sem Net nem calorias: nenhum erro de JavaScript', not pg4.errs, str(pg4.errs))
+            pg4.close()
 
             # 8. escala Y nao exagera pequenas oscilacoes
             lim = pg.evaluate("limitesY([80.0,80.2],SERIES_TEMP.peso.minSpan)")
@@ -346,6 +408,23 @@ def main():
             check('tabela de lag preenchida', pg.evaluate("document.getElementById('lagBody').rows.length") > 0)
             check('nenhum erro de JavaScript durante os testes', not pg.errs, str(pg.errs))
             pg.close()
+
+            # 9b. capturas e larguras de tela (sinteticos)
+            pg6 = pagina(payload)
+            pg6.locator('#chMain').locator('..').screenshot(path=os.path.join(SHOTS, 'main_semana_1100.png'))
+            pg6.select_option('#granul', 'M'); pg6.wait_for_timeout(150)
+            pg6.locator('#chMain').locator('..').screenshot(path=os.path.join(SHOTS, 'main_mes_1100.png'))
+            pg6.locator('#chCalNet').locator('..').screenshot(path=os.path.join(SHOTS, 'calorias_net_1100.png'))
+            check('capturas do desktop geradas sem erros de JavaScript', not pg6.errs, str(pg6.errs))
+            pg6.close()
+            pg7 = pagina(payload, largura=390)
+            check('390 px: figuras desenhadas sem erros de JavaScript',
+                  not pg7.errs and pg7.evaluate("!!TEMP_ULT.figuras.chMain && !!TEMP_ULT.figuras.chCalNet"), str(pg7.errs))
+            check('390 px: a area de desenho da figura principal tem largura util (>= 120 px)',
+                  pg7.evaluate("(()=>{const W=document.getElementById('chMain').clientWidth;"
+                               "const OFF=W<560?56:72;return W-58-(10+2*OFF);})()") >= 120)
+            pg7.locator('#chMain').locator('..').screenshot(path=os.path.join(SHOTS, 'main_390.png'))
+            pg7.close()
 
             # 10. sem dados: mensagem, sem erro
             vazio = {'status': 'OK', 'sheets_ok': True, 'erros_sheets': None, 'linhas': [],

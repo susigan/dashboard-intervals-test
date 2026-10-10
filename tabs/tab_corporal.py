@@ -51,9 +51,7 @@ BODY = r"""
 <div class="cards" id="kpis"></div>
 
 <h2>Evolucao temporal: peso, gordura e calorias</h2>
-<div class="sub" id="subTemp">Linha: media movel de N dias sobre os registos diarios (mesma regra dos KPIs).
-  Barras: resumo do periodo escolhido (mediana para peso e gordura; media para calorias e net).
-  Pontos: registos diarios originais.</div>
+<div class="sub" id="subTemp">Figura 1: peso e gordura (pontos e linha de media movel, cada um com eixo proprio) e calorias (barras e linha de media movel). Figura 2: calorias e net (linha de media movel), com a linha de referencia Net = 0.<br>A media movel e calculada sobre os registos diarios. A granularidade muda apenas o resumo por periodo (peso e gordura: mediana; calorias: media).</div>
 <div class="controls">
   <label class="sel">Janela
     <select id="janela">
@@ -78,20 +76,12 @@ BODY = r"""
     </select></label>
 </div>
 <div class="chartbox">
-  <div class="legend" id="lgPeso"></div>
-  <canvas id="chPeso" height="220"></canvas>
+  <div class="legend" id="lgMain"></div>
+  <canvas id="chMain" height="340"></canvas>
 </div>
 <div class="chartbox">
-  <div class="legend" id="lgBF"></div>
-  <canvas id="chBF" height="200"></canvas>
-</div>
-<div class="chartbox">
-  <div class="legend" id="lgCal"></div>
-  <canvas id="chCal" height="200"></canvas>
-</div>
-<div class="chartbox">
-  <div class="legend" id="lgNet"></div>
-  <canvas id="chNet" height="200"></canvas>
+  <div class="legend" id="lgCalNet"></div>
+  <canvas id="chCalNet" height="260"></canvas>
 </div>
 <div class="sub" id="subTempInfo"></div>
 
@@ -173,17 +163,31 @@ const MIN_REG={W:3,M:7,Q:14,S:30,A:60};
 const GRAN_NOME={W:'semana',M:'mes',Q:'trimestre',S:'semestre',A:'ano'};
 // minimo de dias com registo dentro da janela rolling (igual a corporal.media_movel)
 const MIN_OBS_ROLL=3;
-const PAINEIS=[
- {canvas:'chPeso',legenda:'lgPeso',altura:220,metricas:['peso']},
- {canvas:'chBF',legenda:'lgBF',altura:200,metricas:['bf']},
- {canvas:'chCal',legenda:'lgCal',altura:200,metricas:['calorias']},
- {canvas:'chNet',legenda:'lgNet',altura:200,metricas:['net']}];
-// camadas visiveis (alternadas pela legenda); pontos de calorias/net ficam
-// desligados por padrao para nao poluir o painel
-const ATIVAS={peso_pontos:true,peso_rolling:true,peso_periodo:true,
- bf_pontos:true,bf_rolling:true,bf_periodo:true,
- calorias_pontos:false,calorias_rolling:true,calorias_periodo:true,
- net_pontos:false,net_rolling:true,net_periodo:true};
+// Figuras. Cada uma e um unico canvas com eixos Y independentes.
+//   eixos[].lado: 'esq' = eixo esquerdo; 'dir' = um eixo por coluna a direita
+//   (o primeiro fica mais perto do grafico). Cada eixo tem escala e unidade proprias.
+const FIGURAS=[
+ {canvas:'chMain',legenda:'lgMain',pref:'main',altura:340,
+  eixos:[{m:'peso',lado:'esq'},{m:'bf',lado:'dir'},{m:'calorias',lado:'dir'}]},
+ {canvas:'chCalNet',legenda:'lgCalNet',pref:'cn',altura:260,
+  eixos:[{m:'calorias',lado:'esq'},{m:'net',lado:'dir',zero:true}]}];
+// camadas de cada metrica em cada figura:
+//   pontos  : registos diarios (peso e BF: pontos; calorias: barras)
+//   rolling : media movel de N dias sobre os registos diarios
+//   periodo : resumo por periodo (o unico elemento que muda com a granularidade)
+const CAMADAS={
+ main:{peso:['pontos','rolling','periodo'],bf:['pontos','rolling','periodo'],
+       calorias:['pontos','rolling','periodo']},
+ cn:{calorias:['pontos','rolling','periodo'],net:['rolling']}};
+// camadas visiveis (alternadas pela legenda de cada figura)
+const ATIVAS={main_peso_pontos:true,main_peso_rolling:true,main_peso_periodo:true,
+ main_bf_pontos:true,main_bf_rolling:true,main_bf_periodo:true,
+ main_calorias_pontos:true,main_calorias_rolling:true,main_calorias_periodo:false,
+ cn_calorias_pontos:true,cn_calorias_rolling:true,cn_calorias_periodo:false,
+ cn_net_rolling:true};
+const GRAN_PLURAL={W:'semanal',M:'mensal',Q:'trimestral',S:'semestral',A:'anual'};
+// nome curto para o titulo dos eixos (a legenda usa o nome completo)
+const EIXO_NOME={peso:'Peso',bf:'Gordura',calorias:'Calorias',net:'Net'};
 // ultimo desenho (lido pelos testes; nao e usado pela interface)
 let TEMP_ULT=null;
 
@@ -298,92 +302,146 @@ function limitesY(vals,minSpan){
  return niceLim(mid-span/2,mid+span/2);
 }
 
-function desenharPainel(p,dados,g,N,t0,t1){
+function nomeCamada(m,tipo,N,g){
+ const t=SERIES_TEMP[m].titulo;
+ if(tipo==='pontos') return t+' — registros';
+ if(tipo==='rolling') return t+' — rolling '+N+' dias';
+ return t+' — resumo '+GRAN_PLURAL[g];
+}
+
+// desenha uma figura (um canvas) com um eixo Y por metrica.
+// Devolve as escalas e os dados usados (lidos pelos testes).
+function desenharFigura(f,dados,g,N,t0,t1,periodos){
+ const metricas=[];
+ f.eixos.forEach(e=>{if(!metricas.includes(e.m)) metricas.push(e.m);});
  const camadas=[];
- p.metricas.forEach(m=>{const c=SERIES_TEMP[m];
-  camadas.push({id:m+'_pontos',m:m,tipo:'pontos',nome:c.titulo+' · registos diarios'});
-  camadas.push({id:m+'_rolling',m:m,tipo:'rolling',nome:c.titulo+' · media movel '+N+' dias'});
-  camadas.push({id:m+'_periodo',m:m,tipo:'periodo',nome:c.titulo+' · '+c.stat+' por '+GRAN_NOME[g]});});
- const leg=document.getElementById(p.legenda);
- leg.innerHTML=camadas.map(L=>{const c=SERIES_TEMP[L.m];
-  return '<span data-serie="'+L.id+'" style="cursor:pointer;opacity:'+(ATIVAS[L.id]?1:0.35)+'">'+
-   '<i style="background:'+c.cor+'"></i>'+L.nome+' ('+c.unid+')</span>';}).join('');
+ metricas.forEach(m=>CAMADAS[f.pref][m].forEach(tipo=>camadas.push(
+  {id:f.pref+'_'+m+'_'+tipo,m:m,tipo:tipo,nome:nomeCamada(m,tipo,N,g)})));
+ const leg=document.getElementById(f.legenda);
+ leg.innerHTML=camadas.map(L=>'<span data-serie="'+L.id+'" style="cursor:pointer;opacity:'+
+  (ATIVAS[L.id]?1:0.35)+'"><i style="background:'+SERIES_TEMP[L.m].cor+'"></i>'+L.nome+'</span>').join('');
  leg.onclick=function(ev){
   const sp=ev.target.closest?ev.target.closest('[data-serie]'):null; if(!sp) return;
   const id=sp.getAttribute('data-serie');
   const visiveis=camadas.filter(L=>ATIVAS[L.id]).length;
-  if(ATIVAS[id]&&visiveis<=1) return;          // mantem pelo menos uma camada
+  if(ATIVAS[id]&&visiveis<=1) return;          // mantem pelo menos uma camada na figura
   ATIVAS[id]=!ATIVAS[id]; drawTemporal();};
 
- const vis=camadas.filter(L=>ATIVAS[L.id]);
- const o=ctx(p.canvas,p.altura); if(!o) return;
+ const o=ctx(f.canvas,f.altura); if(!o) return null;
  const G=o.g,W=o.W,H=o.H;
- const PL=60,PR=12,PT=12,PB=26,w=W-PL-PR,h=H-PT-PB;
- if(!vis.length){noData(G,W,H,'Nenhuma camada ativa');return;}
- const vals=[];
- vis.forEach(L=>{const d=dados[L.m];
-  if(L.tipo==='pontos') d.pontos.forEach(q=>vals.push(q.v));
-  if(L.tipo==='rolling') d.rolPts.forEach(q=>{if(q.v!=null)vals.push(q.v);});
-  if(L.tipo==='periodo') d.periodos.forEach(q=>{if(q.v!=null)vals.push(q.v);});});
- if(!vals.length){noData(G,W,H,'Sem registos no intervalo');return;}
- const minSpan=Math.max.apply(null,p.metricas.map(m=>SERIES_TEMP[m].minSpan));
- const lim=limitesY(vals,minSpan), lo=lim[0], hi=lim[1];
- const X=t=>PL+w*(t1>t0?(t-t0)/(t1-t0):0.5);
- const Y=v=>PT+h-(v-lo)/(hi-lo)*h;
- const base=dados[p.metricas[0]].periodos;
+ const vis=camadas.filter(L=>ATIVAS[L.id]);
+ if(!vis.length){noData(G,W,H,'Nenhuma camada ativa');return null;}
+ const dir=f.eixos.filter(e=>e.lado==='dir');
+ const OFF=W<560?56:72;
+ const PL=58, PR=dir.length?10+dir.length*OFF:12, PT=34, PB=26;
+ const w=W-PL-PR, h=H-PT-PB;
 
+ // valores visiveis por metrica; nada e preenchido nem convertido em zero
+ const valores={};
+ metricas.forEach(m=>valores[m]=[]);
+ vis.forEach(L=>{const d=dados[L.m];
+  if(L.tipo==='pontos') d.pontos.forEach(q=>valores[L.m].push(q.v));
+  if(L.tipo==='rolling') d.rolPts.forEach(q=>{if(q.v!=null) valores[L.m].push(q.v);});
+  if(L.tipo==='periodo') d.periodos.forEach(q=>{if(q.v!=null) valores[L.m].push(q.v);});});
+ if(!metricas.some(m=>valores[m].length)){noData(G,W,H,'Sem registos no intervalo');return null;}
+
+ // escala propria de cada eixo; a referencia Net = 0 entra no eixo quando ha Net
+ const lim={};
+ f.eixos.forEach(e=>{const v=valores[e.m];
+  if(!v.length){lim[e.m]=null;return;}
+  lim[e.m]=limitesY(e.zero?v.concat([0]):v,SERIES_TEMP[e.m].minSpan);});
+
+ const X=t=>PL+w*(t1>t0?(t-t0)/(t1-t0):0.5);
+ const Y={};
+ metricas.forEach(m=>{if(!lim[m]) return;
+  const lo=lim[m][0], hi=lim[m][1];
+  Y[m]=v=>PT+h-(v-lo)/(hi-lo)*h;});
+ const colX=e=>PL+w+10+dir.indexOf(e)*OFF;
+
+ // grade (4 divisoes) e faixas de periodos sem registos (sem valor)
  G.strokeStyle='#21262d';G.lineWidth=1;
  for(let i=0;i<=4;i++){const y=PT+h*i/4;G.beginPath();G.moveTo(PL,y);G.lineTo(PL+w,y);G.stroke();}
- // periodos sem registos: faixa cinza (sem valor)
- base.forEach(q=>{if(q.dias===0){const a=X(Math.max(q.ini,t0)),b=X(Math.min(q.fim,t1));
+ periodos.forEach(q=>{if(q.dias===0){const a=X(Math.max(q.ini,t0)),b=X(Math.min(q.fim,t1));
   G.fillStyle='rgba(139,148,158,0.12)';G.fillRect(a,PT,Math.max(1,b-a),h);}});
 
+ // eixos: titulo e unidade em cima, valores na escala propria
+ f.eixos.forEach(e=>{
+  const lm=lim[e.m]; if(!lm) return;
+  const c=SERIES_TEMP[e.m], lo=lm[0], hi=lm[1];
+  const xl=e.lado==='esq'?PL-6:colX(e);
+  G.font='10px sans-serif';G.textAlign=e.lado==='esq'?'right':'left';
+  G.fillStyle=c.cor;
+  G.fillText(EIXO_NOME[e.m],xl,12);
+  G.fillText('('+c.unid+')',xl,24);
+  G.fillStyle='#8b949e';
+  for(let i=0;i<=4;i++){const v=hi-(hi-lo)*i/4;G.fillText(fmtV(v,c.unid),xl,PT+h*i/4+3);}
+ });
+
+ // linha de referencia Net = 0
+ f.eixos.forEach(e=>{
+  if(!e.zero||!lim[e.m]) return;
+  const y0=Y[e.m](0);
+  G.strokeStyle='#8b949e';G.lineWidth=1;G.setLineDash([5,4]);
+  G.beginPath();G.moveTo(PL,y0);G.lineTo(PL+w,y0);G.stroke();G.setLineDash([]);
+  G.fillStyle='#8b949e';G.font='10px sans-serif';G.textAlign='left';
+  G.fillText(SERIES_TEMP[e.m].titulo+' = 0',PL+4,y0-4);
+ });
+
+ // series
  vis.forEach(L=>{
-  const c=SERIES_TEMP[L.m], d=dados[L.m];
+  const c=SERIES_TEMP[L.m], d=dados[L.m], Yf=Y[L.m]; if(!Yf) return;
   if(L.tipo==='periodo'){
    G.strokeStyle=c.cor;G.lineWidth=4;G.globalAlpha=0.5;
    d.periodos.forEach(q=>{if(q.v==null)return;
-    G.beginPath();G.moveTo(X(Math.max(q.ini,t0)),Y(q.v));G.lineTo(X(Math.min(q.fim,t1)),Y(q.v));G.stroke();});
+    G.beginPath();G.moveTo(X(Math.max(q.ini,t0)),Yf(q.v));G.lineTo(X(Math.min(q.fim,t1)),Yf(q.v));G.stroke();});
    G.globalAlpha=1;
   } else if(L.tipo==='rolling'){
-   G.strokeStyle=c.cor;G.lineWidth=2;G.beginPath();let st=false;
+   G.strokeStyle=c.cor;G.lineWidth=2.2;G.beginPath();let st=false;
    d.rolPts.forEach(q=>{if(q.v==null){st=false;return;}
-    if(!st){G.moveTo(X(q.t),Y(q.v));st=true;}else G.lineTo(X(q.t),Y(q.v));});
+    if(!st){G.moveTo(X(q.t),Yf(q.v));st=true;}else G.lineTo(X(q.t),Yf(q.v));});
    G.stroke();
-  } else {
-   G.fillStyle=c.cor;G.globalAlpha=0.55;
-   d.pontos.forEach(q=>{G.beginPath();G.arc(X(q.t),Y(q.v),2.2,0,2*Math.PI);G.fill();});
+  } else if(L.m==='calorias'){
+   // barras: uma por dia com registo; dias sem registo nao tem barra
+   const bw=Math.max(1.5,w/(t1-t0+1)*0.6), base=PT+h;
+   G.fillStyle=c.cor;G.globalAlpha=0.45;
+   d.pontos.forEach(q=>{const y=Yf(q.v);G.fillRect(X(q.t)-bw/2,y,bw,base-y);});
    G.globalAlpha=1;
-  }});
+  } else {
+   G.fillStyle=c.cor;G.globalAlpha=0.6;
+   d.pontos.forEach(q=>{G.beginPath();G.arc(X(q.t),Yf(q.v),2.4,0,2*Math.PI);G.fill();});
+   G.globalAlpha=1;
+  }
+ });
 
- const u=SERIES_TEMP[p.metricas[0]].unid;
- G.font='10px sans-serif';G.fillStyle='#8b949e';G.textAlign='right';
- for(let i=0;i<=4;i++){const v=hi-(hi-lo)*i/4;G.fillText(fmtV(v,u),PL-6,PT+h*i/4+3);}
- G.textAlign='left';G.fillText(u,4,PT+8);
- G.fillStyle='#8b949e';G.textAlign='center';
- const step=Math.max(1,Math.ceil(base.length/8));
- base.forEach((q,i)=>{if(i%step!==0)return;G.fillText(q.rot,X(Math.max(q.ini,t0)),H-8);});
+ // datas em baixo (rotulo do periodo)
+ G.fillStyle='#8b949e';G.textAlign='center';G.font='10px sans-serif';
+ // um rotulo a cada ~64 px, para nao colidir em telas estreitas
+ const maxRot=Math.max(2,Math.floor(w/64));
+ const step=Math.max(1,Math.ceil(periodos.length/maxRot));
+ periodos.forEach((q,i)=>{if(i%step!==0)return;G.fillText(q.rot,X(Math.max(q.ini,t0)),H-8);});
  G.textAlign='left';
 
- registarTip(p.canvas,function(mxp,myp,rw){
+ registarTip(f.canvas,function(mxp,myp,rw){
   const x=mxp*(W/rw);
   if(x<PL||x>PL+w) return '';
   const t=Math.round(t0+(x-PL)/w*(t1-t0));
   if(t<t0||t>t1) return '';
   let html='<div class="th">'+dataBR(diaStr(t))+'</div>';
-  p.metricas.forEach(m=>{const c=SERIES_TEMP[m],d=dados[m];
+  metricas.forEach(m=>{const c=SERIES_TEMP[m],d=dados[m];
    vis.filter(L=>L.m===m).forEach(L=>{
     if(L.tipo==='pontos'){const q=d.pontos.find(z=>z.t===t);
      if(q) html+=linhaTip(c.cor,c.titulo+' · registo',fmtV(q.v,c.unid)+' '+c.unid);}
     if(L.tipo==='rolling'){const q=d.rolPts[t-t0];
-     html+=linhaTip(c.cor,c.titulo+' · media movel '+N+' dias',q.v==null?'sem media (menos de '+MIN_OBS_ROLL+' dias)':
+     html+=linhaTip(c.cor,c.titulo+' · rolling '+N+' dias',q.v==null?'sem media (menos de '+MIN_OBS_ROLL+' dias)':
       fmtV(q.v,c.unid)+' '+c.unid+' · '+q.n+' dias validos na janela de '+N);}
     if(L.tipo==='periodo'){const q=d.periodos.find(z=>z.ini<=t&&t<=z.fim);
-     if(q) html+=linhaTip(c.cor,c.titulo+' · '+c.stat+' '+GRAN_NOME[g]+' '+q.k,
+     if(q) html+=linhaTip(c.cor,c.titulo+' · resumo '+GRAN_PLURAL[g]+' '+q.k,
       q.dias===0?'sem registos no periodo':fmtV(q.v,c.unid)+' '+c.unid+' · n='+q.n+
       ' ('+q.dias+' dias)'+(q.n<MIN_REG[g]?' poucos registos':''));}
    });});
   return html;});
+
+ return {lim:lim,dados:dados,metricas:metricas,camadas:camadas};
 }
 
 function drawTemporal(){
@@ -393,33 +451,38 @@ function drawTemporal(){
  const hoje=hojeLocal();
  const full=(C.linhas||[]).filter(r=>r&&r.date&&r.date<=hoje)
   .sort((x,y)=>x.date<y.date?-1:x.date>y.date?1:0);
- if(!full.length){PAINEIS.forEach(p=>{const o=ctx(p.canvas,p.altura);if(o)noData(o.g,o.W,o.H,'Sem registos');});return;}
+ if(!full.length){FIGURAS.forEach(f=>{const o=ctx(f.canvas,f.altura);if(o)noData(o.g,o.W,o.H,'Sem registos');});return;}
  const fim=full[full.length-1].date;
  const jn=parseInt(document.getElementById('janela').value,10);
  const corte=(jn>0)?sUTC(addDias(dUTC(fim),-(jn-1))):full[0].date;
  const disp=full.filter(r=>r.date>=corte);
  const per=agregarTemporal(disp,g);
  const t0=diaNum(corte), t1=diaNum(fim);
- const todos={};
- PAINEIS.forEach(p=>{
+ const periodos=per.map(q=>({k:q.k,rot:q.rot,ini:diaNum(q.ini),fim:diaNum(q.fim),dias:q.dias}));
+ // dados de cada metrica, calculados uma vez e partilhados pelas figuras
+ const cache={};
+ const dadosDe=m=>{
+  if(cache[m]) return cache[m];
+  const rm=mediaMovel(full,m,N);      // rolling sobre os registos diarios, antes do recorte
+  const rolPts=[];
+  for(let t=t0;t<=t1;t++) rolPts.push({t:t,v:rm[t]?rm[t].v:null,n:rm[t]?rm[t].n:0});
+  return cache[m]={
+   pontos:disp.filter(r=>typeof r[m]==='number'&&isFinite(r[m])).map(r=>({t:diaNum(r.date),v:r[m]})),
+   rolPts:rolPts,
+   periodos:per.map(q=>({k:q.k,rot:q.rot,ini:diaNum(q.ini),fim:diaNum(q.fim),dias:q.dias,v:q.v[m],n:q.n[m]}))};
+ };
+ const figuras={};
+ FIGURAS.forEach(f=>{
   const dados={};
-  p.metricas.forEach(m=>{
-   const pontos=disp.filter(r=>typeof r[m]==='number'&&isFinite(r[m])).map(r=>({t:diaNum(r.date),v:r[m]}));
-   const rm=mediaMovel(full,m,N);
-   const rolPts=[];
-   for(let t=t0;t<=t1;t++) rolPts.push({t:t,v:rm[t]?rm[t].v:null,n:rm[t]?rm[t].n:0});
-   const periodos=per.map(q=>({k:q.k,rot:q.rot,ini:diaNum(q.ini),fim:diaNum(q.fim),dias:q.dias,v:q.v[m],n:q.n[m]}));
-   dados[m]={pontos:pontos,rolPts:rolPts,periodos:periodos};
-  });
-  todos[p.canvas]=dados;
-  desenharPainel(p,dados,g,N,t0,t1);
+  f.eixos.forEach(e=>{dados[e.m]=dadosDe(e.m);});
+  figuras[f.canvas]=desenharFigura(f,dados,g,N,t0,t1,periodos);
  });
- TEMP_ULT={g:g,N:N,corte:corte,fim:fim,t0:t0,t1:t1,dados:todos};
+ TEMP_ULT={g:g,N:N,corte:corte,fim:fim,t0:t0,t1:t1,figuras:figuras};
  const semReg=per.filter(q=>!q.dias).length;
  const poucos=per.filter(q=>q.dias>0&&q.dias<MIN_REG[g]).length;
  document.getElementById('subTempInfo').textContent=per.length+' periodos ('+GRAN_NOME[g]+'). '+
-  semReg+' sem registos (linhas interrompidas); '+poucos+' com menos de '+MIN_REG[g]+
-  ' dias (pontos ocos). Media movel de '+N+' dias calculada sobre os registos diarios, sem preencher lacunas.';
+  semReg+' sem registos (faixa cinza, sem valor); '+poucos+' com menos de '+MIN_REG[g]+
+  ' dias (indicado no tooltip). Media movel de '+N+' dias sobre os registos diarios, sem preencher lacunas.';
 }
 
 // barras de variacao com as bandas de referencia por cima

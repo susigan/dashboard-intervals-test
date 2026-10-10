@@ -51,7 +51,7 @@ BODY = r"""
 <div class="cards" id="kpis"></div>
 
 <h2>Evolucao temporal: peso, gordura e calorias</h2>
-<div class="sub" id="subTemp">Figura 1: peso e gordura (pontos e linha de media movel, cada um com eixo proprio) e calorias (barras e linha de media movel). Figura 2: calorias e net (linha de media movel), com a linha de referencia Net = 0.<br>A media movel e calculada sobre os registos diarios. A granularidade muda apenas o resumo por periodo (peso e gordura: mediana; calorias: media).</div>
+<div class="sub" id="subTemp">Figura 1: peso e gordura (pontos e media movel, cada um com eixo proprio) e calorias (barras e media movel). Figura 2: calorias e net (media movel), com a linha de referencia Net = 0.<br>A media movel e a media dos ultimos N periodos (semana, mes, trimestre, semestre ou ano), e so aparece quando os N periodos tem valor. Nao ha preenchimento: lacunas interrompem a linha.</div>
 <div class="controls">
   <label class="sel">Janela
     <select id="janela">
@@ -60,11 +60,14 @@ BODY = r"""
       <option value="365">1 ano</option>
       <option value="0">Todo o histórico</option>
     </select></label>
-  <label class="sel">Media movel
+  <label class="sel">Media movel (periodos)
     <select id="rollJan">
-      <option value="7" selected>7 dias</option>
-      <option value="14">14 dias</option>
-      <option value="28">28 dias</option>
+      <option value="2">2</option>
+      <option value="3">3</option>
+      <option value="4" selected>4</option>
+      <option value="6">6</option>
+      <option value="8">8</option>
+      <option value="12">12</option>
     </select></label>
   <label class="sel">Periodo
     <select id="granul">
@@ -146,13 +149,13 @@ function jan(arr){
 // ── Visao temporal ─────────────────────────────────────────────────────────
 // Tres camadas por metrica, todas derivadas de C.linhas (nada e alterado):
 //   pontos   : registos diarios originais
-//   rolling  : media movel de N dias de calendario. Mesma regra de
-//              corporal.media_movel (que alimenta os KPIs): janela de N dias
-//              terminada no dia, so dias com valor, minimo MIN_OBS_ROLL.
+//   rolling  : media movel dos ultimos N periodos (semana ISO, mes, trimestre,
+//              semestre, ano; N = seletor "Media movel"). Usa o resumo de cada
+//              periodo; so tem valor quando os N periodos da janela tem valor.
 //              Calculada sobre o historico completo ANTES do recorte da Janela.
-//   periodo  : resumo por periodo (semana ISO, mes, trimestre, semestre, ano):
-//              mediana (peso, BF) ou media (calorias, net) dos dias com registo.
-// A granularidade muda so a camada "periodo"; a media movel nao depende dela.
+//   periodo  : resumo por periodo: mediana (peso, BF) ou media (calorias, net).
+// A granularidade muda o periodo e, por consequencia, a media movel.
+// A media movel diaria de corporal.media_movel (KPIs) nao e alterada.
 const SERIES_TEMP={
  peso:{titulo:'Peso',unid:'kg',stat:'mediana',cor:CORC.peso,minSpan:2},
  bf:{titulo:'Gordura corporal',unid:'%',stat:'mediana',cor:CORC.bf,minSpan:2},
@@ -161,8 +164,6 @@ const SERIES_TEMP={
 // dias minimos por periodo; abaixo disto o ponto do periodo aparece oco
 const MIN_REG={W:3,M:7,Q:14,S:30,A:60};
 const GRAN_NOME={W:'semana',M:'mes',Q:'trimestre',S:'semestre',A:'ano'};
-// minimo de dias com registo dentro da janela rolling (igual a corporal.media_movel)
-const MIN_OBS_ROLL=3;
 // Figuras. Cada uma e um unico canvas com eixos Y independentes.
 //   eixos[].lado: 'esq' = eixo esquerdo; 'dir' = um eixo por coluna a direita
 //   (o primeiro fica mais perto do grafico). Cada eixo tem escala e unidade proprias.
@@ -173,19 +174,20 @@ const FIGURAS=[
   eixos:[{m:'calorias',lado:'esq'},{m:'net',lado:'dir',zero:true}]}];
 // camadas de cada metrica em cada figura:
 //   pontos  : registos diarios (peso e BF: pontos; calorias: barras)
-//   rolling : media movel de N dias sobre os registos diarios
-//   periodo : resumo por periodo (o unico elemento que muda com a granularidade)
+//   rolling : media movel dos ultimos N periodos (N e a granularidade do seletor)
+//   periodo : resumo por periodo (mediana ou media), desligado por padrao
 const CAMADAS={
  main:{peso:['pontos','rolling','periodo'],bf:['pontos','rolling','periodo'],
        calorias:['pontos','rolling','periodo']},
  cn:{calorias:['pontos','rolling','periodo'],net:['rolling']}};
 // camadas visiveis (alternadas pela legenda de cada figura)
-const ATIVAS={main_peso_pontos:true,main_peso_rolling:true,main_peso_periodo:true,
- main_bf_pontos:true,main_bf_rolling:true,main_bf_periodo:true,
+const ATIVAS={main_peso_pontos:true,main_peso_rolling:true,main_peso_periodo:false,
+ main_bf_pontos:true,main_bf_rolling:true,main_bf_periodo:false,
  main_calorias_pontos:true,main_calorias_rolling:true,main_calorias_periodo:false,
  cn_calorias_pontos:true,cn_calorias_rolling:true,cn_calorias_periodo:false,
  cn_net_rolling:true};
 const GRAN_PLURAL={W:'semanal',M:'mensal',Q:'trimestral',S:'semestral',A:'anual'};
+const ROLL_NOME={W:'semanas',M:'meses',Q:'trimestres',S:'semestres',A:'anos'};
 // inicio fixo de 'Todo o historico' (data final = data atual, ver drawTemporal)
 const INICIO_TODO='2022-01-03';
 // nome curto para o titulo dos eixos (a legenda usa o nome completo)
@@ -238,18 +240,23 @@ function estatistica(vals,tipo){
  return vals.reduce((a,b)=>a+b,0)/n;
 }
 
-// media movel de N dias de calendario, mesma regra de corporal.media_movel.
-// Devolve {dia numerico: {v, n}} so para dias com minimo de observacoes.
-function mediaMovel(full,campo,N){
- const val={}; let a=Infinity,b=-Infinity;
- full.forEach(r=>{const t=diaNum(r.date); if(t<a)a=t; if(t>b)b=t;
-  const v=r[campo]; if(typeof v==='number'&&isFinite(v)) val[t]=v;});
- const out={};
- for(let d=a;d<=b;d++){
-  let s=0,c=0;
-  for(let k=d-N+1;k<=d;k++){ if(val[k]!==undefined){s+=val[k];c++;} }
-  if(c>=MIN_OBS_ROLL) out[d]={v:s/c,n:c};
- }
+// media movel por periodo (como na referencia): media dos ultimos N periodos.
+// Cada periodo de 'per' (mesma ordem) gera uma entrada com o periodo em dias
+// numericos e t = dia central do periodo. v = null quando algum dos N periodos
+// da janela nao tem valor: nada e preenchido, e a linha interrompe.
+function rolPeriodo(per,campo,N){
+ const out=[];
+ per.forEach((q,i)=>{
+  const ini=diaNum(q.ini), fim=diaNum(q.fim);
+  let v=null;
+  if(i>=N-1){
+   let s=0,ok=true;
+   for(let k=i-N+1;k<=i;k++){const x=per[k].v[campo];
+    if(x==null){ok=false;break;} s+=x;}
+   if(ok) v=s/N;
+  }
+  out.push({ini:ini,fim:fim,t:Math.round((ini+fim)/2),v:v,n:N});
+ });
  return out;
 }
 
@@ -311,7 +318,7 @@ function limitesY(vals,minSpan){
 function nomeCamada(m,tipo,N,g){
  const t=SERIES_TEMP[m].titulo;
  if(tipo==='pontos') return t+' — registros diários';
- if(tipo==='rolling') return t+' — rolling '+N+' dias';
+ if(tipo==='rolling') return t+' — média móvel '+N+' '+ROLL_NOME[g];
  return t+' — resumo '+GRAN_PLURAL[g];
 }
 
@@ -400,6 +407,8 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
 
  // series: barras de fundo, depois resumos, registos e, por cima, a linha rolling
  const ordemDesenho=L=>(L.tipo==='pontos'&&L.m==='calorias')?0:L.tipo==='periodo'?1:L.tipo==='pontos'?2:3;
+ // series recortadas na area do grafico (periodos fora do intervalo nao aparecem)
+ G.save(); G.beginPath(); G.rect(PL,PT,w,h); G.clip();
  vis.slice().sort((a,b)=>ordemDesenho(a)-ordemDesenho(b)).forEach(L=>{
   const c=SERIES_TEMP[L.m], d=dados[L.m], Yf=Y[L.m]; if(!Yf) return;
   if(L.tipo==='periodo'){
@@ -409,12 +418,17 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
    G.globalAlpha=1;
   } else if(L.tipo==='rolling'){
    // halo escuro por baixo: a media movel continua legivel sobre barras e pontos
+   // a linha so liga dias consecutivos com medicao propria; sem medicao no dia, interrompe
    const trilha=()=>{G.beginPath();let st=false;
     d.rolPts.forEach(q=>{if(q.v==null){st=false;return;}
      if(!st){G.moveTo(X(q.t),Yf(q.v));st=true;}else G.lineTo(X(q.t),Yf(q.v));});};
    G.lineJoin='round';G.globalAlpha=1;
+   G.setLineDash([]);
    G.strokeStyle='#0d1117';G.lineWidth=5;trilha();G.stroke();
+   // peso: linha continua; BF e calorias: tracejada (como na referencia)
+   G.setLineDash(L.m==='peso'?[]:[6,4]);
    G.strokeStyle=c.cor;G.lineWidth=2.6;trilha();G.stroke();
+   G.setLineDash([]);
   } else if(L.m==='calorias'){
    // barras: uma por dia com registo; dias sem registo nao tem barra
    // densidade: pixels por dia. Em historicos longos ou telas estreitas as barras
@@ -430,6 +444,7 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
    G.globalAlpha=1;
   }
  });
+ G.restore();
 
  // datas em baixo (rotulo do periodo)
  G.fillStyle='#8b949e';G.textAlign='center';G.font='10px sans-serif';
@@ -449,9 +464,10 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
    vis.filter(L=>L.m===m).forEach(L=>{
     if(L.tipo==='pontos'){const q=d.pontos.find(z=>z.t===t);
      if(q) html+=linhaTip(c.cor,c.titulo+' · registo',fmtV(q.v,c.unid)+' '+c.unid);}
-    if(L.tipo==='rolling'){const q=d.rolPts[t-t0];
-     html+=linhaTip(c.cor,c.titulo+' · rolling '+N+' dias',q.v==null?'sem media (menos de '+MIN_OBS_ROLL+' dias)':
-      fmtV(q.v,c.unid)+' '+c.unid+' · '+q.n+' dias validos na janela de '+N+' (minimo '+MIN_OBS_ROLL+')');}
+    if(L.tipo==='rolling'){const q=d.rolPts.find(z=>z.ini<=t&&t<=z.fim);
+     if(q) html+=linhaTip(c.cor,c.titulo+' · média móvel '+N+' '+ROLL_NOME[g],q.v==null?
+      'sem média (algum dos '+N+' períodos não tem valor)':
+      fmtV(q.v,c.unid)+' '+c.unid+' · média dos últimos '+N+' períodos');}
     if(L.tipo==='periodo'){const q=d.periodos.find(z=>z.ini<=t&&t<=z.fim);
      if(q) html+=linhaTip(c.cor,c.titulo+' · resumo '+GRAN_PLURAL[g]+' '+q.k+
       ' ('+dataBR(diaStr(q.ini))+' a '+dataBR(diaStr(q.fim))+')',
@@ -466,7 +482,7 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
 function drawTemporal(){
  if(!C) return;
  const g=document.getElementById('granul').value;
- const N=parseInt(document.getElementById('rollJan').value,10)||7;
+ const N=parseInt(document.getElementById('rollJan').value,10)||4;
  const hoje=hojeLocal();
  const full=(C.linhas||[]).filter(r=>r&&r.date&&r.date<=hoje)
   .sort((x,y)=>x.date<y.date?-1:x.date>y.date?1:0);
@@ -477,15 +493,15 @@ function drawTemporal(){
  const corte=todo?INICIO_TODO:sUTC(addDias(dUTC(fim),-(jn-1)));
  const disp=full.filter(r=>r.date>=corte);
  const per=agregarTemporal(disp,g,corte,fim);
+ const perFull=agregarTemporal(full,g,full[0].date,fim);
  const t0=diaNum(corte), t1=diaNum(fim);
  const periodos=per.map(q=>({k:q.k,rot:q.rot,ini:diaNum(q.ini),fim:diaNum(q.fim),dias:q.dias}));
  // dados de cada metrica, calculados uma vez e partilhados pelas figuras
  const cache={};
  const dadosDe=m=>{
   if(cache[m]) return cache[m];
-  const rm=mediaMovel(full,m,N);      // rolling sobre os registos diarios, antes do recorte
-  const rolPts=[];
-  for(let t=t0;t<=t1;t++) rolPts.push({t:t,v:rm[t]?rm[t].v:null,n:rm[t]?rm[t].n:0});
+  // media movel calculada sobre todos os periodos (antes do recorte), depois limitada ao intervalo
+  const rolPts=rolPeriodo(perFull,m,N).filter(q=>q.fim>=t0&&q.ini<=t1);
   return cache[m]={
    pontos:disp.filter(r=>typeof r[m]==='number'&&isFinite(r[m])).map(r=>({t:diaNum(r.date),v:r[m]})),
    rolPts:rolPts,
@@ -503,7 +519,7 @@ function drawTemporal(){
  document.getElementById('subTempInfo').textContent='Intervalo: '+dataBR(corte)+' a '+dataBR(fim)+'. '+
   per.length+' periodos ('+GRAN_NOME[g]+'). '+
   semReg+' sem registos (faixa cinza, sem valor); '+poucos+' com menos de '+MIN_REG[g]+
-  ' dias (indicado no tooltip). Media movel de '+N+' dias sobre os registos diarios, sem preencher lacunas.';
+  ' dias (indicado no tooltip). Media movel de '+N+' '+ROLL_NOME[g]+', so com os '+N+' periodos preenchidos.';
 }
 
 // barras de variacao com as bandas de referencia por cima

@@ -152,6 +152,27 @@ def ref_roll(linhas, campo, N, minimo=3):
     return out
 
 
+def ref_rolp(linhas, campo, g, N, hoje=None):
+    """Media movel por periodo: media dos ultimos N periodos; None se algum dos N nao tem valor.
+    Independente do JavaScript: usa o resumo de ref_agregar (mediana ou media por periodo)."""
+    per = ref_agregar(linhas, g, hoje)
+    keys = list(per.keys())
+    out = {}
+    for i, k in enumerate(keys):
+        if i < N - 1:
+            out[k] = None
+            continue
+        vals = [per[keys[j]]['v'][campo] for j in range(i - N + 1, i + 1)]
+        out[k] = sum(vals) / N if all(v is not None for v in vals) else None
+    return out
+
+
+def js_rolp(pg, fig, campo, g):
+    """Rolling do grafico (JS), como [chave do periodo, valor] na ordem do grafico."""
+    return pg.evaluate("([f,c,g])=>TEMP_ULT.figuras[f].dados[c].rolPts.map(q=>[periodoInfo(diaStr(q.ini),g).k,q.v])",
+                       [fig, campo, g])
+
+
 # ── navegador ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -235,6 +256,8 @@ def main():
             # 4. tooltip de periodo vazio e de periodo com dados
             pg.evaluate("()=>{document.getElementById('granul').value='W';document.getElementById('granul').onchange();}")
             pg.wait_for_timeout(200)
+            pg.evaluate("()=>{ATIVAS.main_peso_periodo=true;drawTemporal();}")
+            pg.wait_for_timeout(150)
             geo = "const geo=(W)=>{const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);return {PL:PL,w:w};};"
             info = pg.evaluate("()=>{" + geo + "const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
                                "const q=T.figuras.chMain.dados.peso.periodos.find(z=>z.k==='2025-W50');"
@@ -275,16 +298,17 @@ def main():
             check('dados diarios originais inalterados apos trocar granularidade', antes == depois)
 
             # 7. legenda: alterna camadas dentro de cada figura; a ultima camada visivel resiste
-            DEFAULTS = {'main_peso_pontos': True, 'main_peso_rolling': True, 'main_peso_periodo': True,
-                        'main_bf_pontos': True, 'main_bf_rolling': True, 'main_bf_periodo': True,
+            DEFAULTS = {'main_peso_pontos': True, 'main_peso_rolling': True, 'main_peso_periodo': False,
+                        'main_bf_pontos': True, 'main_bf_rolling': True, 'main_bf_periodo': False,
                         'main_calorias_pontos': True, 'main_calorias_rolling': True, 'main_calorias_periodo': False,
                         'cn_calorias_pontos': True, 'cn_calorias_rolling': True, 'cn_calorias_periodo': False,
                         'cn_net_rolling': True}
             pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
             txt = pg.inner_text('#lgMain')
             check('legenda da figura principal identifica metrica e tipo de serie',
-                  all(t in txt for t in ['Peso — registros', 'Peso — rolling 7 dias', 'Peso — resumo semanal',
-                                         'Gordura corporal — registros', 'Calorias — registros']), txt[:200])
+                  all(t in txt for t in ['Peso — registros diários', 'Peso — média móvel 4 semanas',
+                                         'Peso — resumo semanal', 'Gordura corporal — registros diários',
+                                         'Calorias — registros diários']), txt[:200])
             pg.click('#lgCalNet [data-serie="cn_net_rolling"]'); pg.wait_for_timeout(120)
             check('legenda desativa a media movel de Net', pg.evaluate("ATIVAS.cn_net_rolling") is False)
             pg.click('#lgCalNet [data-serie="cn_calorias_rolling"]'); pg.wait_for_timeout(120)
@@ -299,72 +323,93 @@ def main():
             pg.click('#lgMain [data-serie="main_calorias_periodo"]'); pg.wait_for_timeout(120)
             check('legenda liga o resumo de calorias na figura principal',
                   pg.evaluate("ATIVAS.main_calorias_periodo") is True)
-            for sid in ['cn_net_rolling', 'cn_calorias_rolling', 'main_bf_rolling', 'main_calorias_periodo']:
+            for sid in ['cn_net_rolling', 'cn_calorias_rolling', 'main_bf_rolling', 'main_calorias_periodo',
+                        'main_peso_periodo', 'main_bf_periodo']:
                 leg = 'lgCalNet' if sid.startswith('cn_') else 'lgMain'
                 if pg.evaluate("ATIVAS['%s']" % sid) != DEFAULTS[sid]:
                     pg.click('#%s [data-serie="%s"]' % (leg, sid)); pg.wait_for_timeout(120)
             check('legenda volta ao estado padrao das camadas', pg.evaluate("ATIVAS") == DEFAULTS)
 
-            # 7b. media movel (rolling): mesma regra dos KPIs, lacunas, granularidade, originais
+            # 7b. media movel por periodo: mesma regra, lacunas, granularidade, originais
             pg.evaluate("()=>{document.getElementById('janela').value='0';document.getElementById('janela').onchange();}")
             pg.wait_for_timeout(150)
-            for campo in ['peso', 'bf', 'calorias', 'net']:
-                js = pg.evaluate("c=>{const full=C.linhas.slice().sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);"
-                                 "const m=mediaMovel(full,c,7);return Object.keys(m).map(k=>[diaStr(+k),m[k].v,m[k].n]);}",
-                                 campo)
-                jsd = {x[0]: x[1] for x in js}
-                bk = {x['date']: x['valor'] for x in payload['r7'][campo] if x['valor'] is not None}
-                ok_set = set(jsd) == set(bk)
-                ok_val = ok_set and all(abs(jsd[k] - bk[k]) <= 0.006 for k in bk)
-                check('rolling 7 dias de %s igual ao r7 do backend (KPIs)' % campo, ok_val,
-                      'dias js=%d backend=%d' % (len(jsd), len(bk)))
-            for N in [7, 14, 28]:
-                js = pg.evaluate("N=>{const full=C.linhas.slice().sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);"
-                                 "const m=mediaMovel(full,'peso',N);return Object.keys(m).map(k=>[diaStr(+k),m[k].v,m[k].n]);}", N)
-                ref = ref_roll(payload['linhas'], 'peso', N)
-                ok = set(x[0] for x in js) == set(ref) and all(abs(x[1] - ref[x[0]][0]) < 1e-9 and x[2] == ref[x[0]][1] for x in js)
-                check('rolling peso %d dias igual a referencia independente' % N, ok)
-            nulos = pg.evaluate("()=>{const full=C.linhas.slice().sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);"
-                                "const m=mediaMovel(full,'peso',7);const a=diaNum(full[0].date),b=diaNum(full[full.length-1].date);"
-                                "let c=0;for(let d=a;d<=b;d++) if(!m[d]) c++;return c;}")
-            check('lacunas: dias sem media (menos de 3 registos na janela) ficam nulos, sem preencher', nulos > 0, str(nulos))
+            FIG = {'peso': 'chMain', 'bf': 'chMain', 'calorias': 'chMain', 'net': 'chCalNet'}
+            for g_ in ['W', 'M']:
+                pg.select_option('#granul', g_); pg.wait_for_timeout(120)
+                for campo in ['peso', 'bf', 'calorias', 'net']:
+                    jsr = dict(js_rolp(pg, FIG[campo], campo, g_))
+                    refr = ref_rolp(payload['linhas'], campo, g_, 4)
+                    ok = all((jsr.get(k) is None) == (refr.get(k) is None) and
+                             (jsr.get(k) is None or abs(jsr[k] - refr[k]) < 1e-9)
+                             for k in jsr if k in refr)
+                    ok = ok and all(jsr[k] is None for k in jsr if k not in refr)
+                    check('media movel %s, %s, N=4: igual a referencia independente' % (campo, g_), ok,
+                          'periodos=%d' % len(jsr))
+            # N: 2, 3, 4, 6, 8, 12 (seletor), em semanas
+            pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
+            for N_ in [2, 3, 4, 6, 8, 12]:
+                pg.select_option('#rollJan', str(N_)); pg.wait_for_timeout(120)
+                jsr = dict(js_rolp(pg, 'chMain', 'peso', 'W'))
+                refr = ref_rolp(payload['linhas'], 'peso', 'W', N_)
+                ok = all((jsr.get(k) is None) == (refr.get(k) is None) and
+                         (jsr.get(k) is None or abs(jsr[k] - refr[k]) < 1e-9) for k in jsr if k in refr)
+                check('media movel peso, semana, N=%d: igual a referencia' % N_, ok and pg.evaluate("TEMP_ULT.N") == N_)
+            pg.select_option('#rollJan', '4'); pg.wait_for_timeout(120)
 
-            # granularidade e janela de rolling nao mudam a camada de media movel
+            # lacunas: periodo sem registos ou sem a metrica quebra a janela (nao preenche)
             pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
-            rolW = pg.evaluate("JSON.stringify(TEMP_ULT.figuras.chMain.dados.peso.rolPts)")
-            for g in ['M', 'Q', 'S', 'A']:
-                pg.select_option('#granul', g); pg.wait_for_timeout(120)
-                rol = pg.evaluate("JSON.stringify(TEMP_ULT.figuras.chMain.dados.peso.rolPts)")
-                check('media movel identica com granularidade %s' % g, rol == rolW)
+            per_w = pg.evaluate("TEMP_ULT.figuras.chMain.dados.peso.periodos.map(q=>({k:q.k,dias:q.dias,n:q.n.peso,v:q.v}))")
+            rol_w = dict(js_rolp(pg, 'chMain', 'peso', 'W'))
+            quebrou = True
+            for i_, q in enumerate(per_w):
+                if i_ < 3: continue
+                janela_ = per_w[i_ - 3:i_ + 1]
+                if any(x['n'] == 0 for x in janela_):
+                    if rol_w.get(q['k']) is not None:
+                        quebrou = False
+            check('peso: nenhuma media movel em periodo cuja janela tem periodo sem peso', quebrou)
+            mes_sem_net = pg.evaluate("TEMP_ULT.figuras.chCalNet.dados.net.periodos.map(q=>({k:q.k,n:q.n}))")
+            rol_net = dict(js_rolp(pg, 'chCalNet', 'net', 'W'))
+            sem_net_ok = True
+            for i_, q in enumerate(mes_sem_net):
+                if i_ < 3: continue
+                if any(x['n'] == 0 for x in mes_sem_net[i_ - 3:i_ + 1]) and rol_net.get(q['k']) is not None:
+                    sem_net_ok = False
+            check('Net: nenhuma media movel quando a janela tem semana sem Net (mes de marco/2025)', sem_net_ok)
+
+            # granularidade muda o rolling (periodos diferentes); pontos diarios nao mudam
             pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
+            pts_w = pg.evaluate("JSON.stringify(TEMP_ULT.figuras.chMain.dados.peso.pontos)")
+            rol_W = js_rolp(pg, 'chMain', 'peso', 'W')
+            pg.select_option('#granul', 'M'); pg.wait_for_timeout(120)
+            pts_m = pg.evaluate("JSON.stringify(TEMP_ULT.figuras.chMain.dados.peso.pontos)")
+            rol_M = js_rolp(pg, 'chMain', 'peso', 'M')
+            check('pontos diarios de peso iguais em semana e mes', pts_w == pts_m)
+            check('media movel muda com a granularidade (semana x mes)', rol_W != rol_M,
+                  '%d vs %d periodos' % (len(rol_W), len(rol_M)))
+            pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
+
+            # troca de janela da media movel: sem consulta ao Sheets; dados originais e KPIs intactos
             antes_linhas = json.dumps(pg.evaluate("C.linhas"), sort_keys=True)
             kpi_antes = pg.evaluate("document.getElementById('kpis').textContent")
             n_req = len(pg.reqs)
-            pg.select_option('#rollJan', '14'); pg.wait_for_timeout(150)
-            check('janela rolling 14 aplicada', pg.evaluate("TEMP_ULT.N") == 14)
-            rol14 = pg.evaluate("JSON.stringify(TEMP_ULT.figuras.chMain.dados.peso.rolPts.map(q=>q.v))")
-            ref14 = ref_roll(payload['linhas'], 'peso', 14)
-            cont = pg.evaluate("TEMP_ULT.figuras.chMain.dados.peso.rolPts.map(q=>[q.t,q.v])")
-            def dia_de(t):
-                return (date(1970, 1, 1) + timedelta(days=t)).isoformat()
-            okr = all(((v is None) == (dia_de(t) not in ref14)) and (v is None or abs(v - ref14[dia_de(t)][0]) < 1e-9)
-                      for t, v in cont)
-            check('janela rolling 14 dias igual a referencia (grafico)', okr)
-            pg.select_option('#rollJan', '7'); pg.wait_for_timeout(120)
-            check('trocar janela rolling nao faz consulta ao Sheets', len(pg.reqs) == n_req, str(pg.reqs[n_req:]))
-            check('dados originais (C.linhas) intactos apos granularidade e rolling',
+            pg.select_option('#rollJan', '12'); pg.wait_for_timeout(150)
+            check('janela da media movel 12 periodos aplicada', pg.evaluate("TEMP_ULT.N") == 12)
+            pg.select_option('#rollJan', '4'); pg.wait_for_timeout(120)
+            check('trocar janela da media movel nao faz consulta ao Sheets', len(pg.reqs) == n_req, str(pg.reqs[n_req:]))
+            check('dados originais (C.linhas) intactos apos granularidade e media movel',
                   antes_linhas == json.dumps(pg.evaluate("C.linhas"), sort_keys=True))
-            check('KPIs inalterados por granularidade e janela rolling',
+            check('KPIs inalterados por granularidade e media movel',
                   kpi_antes == pg.evaluate("document.getElementById('kpis').textContent"))
 
-            # tooltip mostra a media movel (rolling) no dia, na figura principal
+            # tooltip mostra a media movel do periodo e quantos periodos entram na conta
             t_com = [q for q in pg.evaluate("TEMP_ULT.figuras.chMain.dados.peso.rolPts") if q['v'] is not None]
             alvo = t_com[len(t_com) // 2]['t']
             tip = pg.evaluate("(t)=>{const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
                               "const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);"
                               "const x=PL+w*((t-T.t0)/(T.t1-T.t0));return TIPS.chMain(x,10,W,340);}", alvo)
-            check('tooltip do dia mostra a rolling e os dias validos na janela',
-                  'rolling 7 dias' in tip and 'dias validos na janela' in tip, tip[:200])
+            check('tooltip mostra a media movel do periodo e os 4 periodos',
+                  'média móvel 4 semanas' in tip and 'últimos 4 períodos' in tip, tip[:200])
 
             # 11. estrutura: uma figura com peso, gordura e calorias; eixos Y independentes
             pg.evaluate("()=>{document.getElementById('janela').value='0';document.getElementById('janela').onchange();}")
@@ -385,11 +430,11 @@ def main():
             n_orig = sum(1 for r in payload['linhas'] if r.get('peso') is not None)
             check('pontos de peso = registos originais (a media movel nao os substitui)', n_pontos == n_orig,
                   '%d vs %d' % (n_pontos, n_orig))
-            rp = pg.evaluate("TEMP_ULT.figuras.chCalNet.dados.net.rolPts.map(q=>[q.t,q.v])")
-            refn = ref_roll(payload['linhas'], 'net', 7)
-            okn = all(((v is None) == (dia_de(t) not in refn)) and (v is None or abs(v - refn[dia_de(t)][0]) < 1e-9)
-                      for t, v in rp)
-            check('Net: media movel igual a referencia; dias sem valor ficam nulos (nao viram zero)', okn)
+            refn = ref_rolp(payload['linhas'], 'net', 'W', 4)
+            jsn = dict(js_rolp(pg, 'chCalNet', 'net', 'W'))
+            okn = all((jsn[k] is None) == (refn.get(k) is None) and (jsn[k] is None or abs(jsn[k] - refn[k]) < 1e-9)
+                      for k in jsn if k in refn)
+            check('Net: media movel por periodo igual a referencia; sem valor vira nulo (nao zero)', okn)
 
             # Net ausente: sem zero inventado; sem Net nem calorias: figura nao desenha (mensagem de ausencia)
             sem_net = json.loads(json.dumps(payload))
@@ -475,20 +520,30 @@ def main():
             vazios = pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.periodos.filter(q=>q.dias===0)")
             check('lacuna real de 2023 gera periodos vazios sem valor',
                   len(vazios) > 0 and all(q['v'] is None for q in vazios), str(len(vazios)))
-            rol_gap = pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.rolPts.map(q=>[diaStr(q.t),q.v])")
-            check('rolling nao preenche a lacuna de 2023 (dias 08/03 a 15/04 nulos)',
-                  all(v is None for dd, v in rol_gap if '2023-03-08' <= dd <= '2023-04-15'))
-            rol_net = pl.evaluate("TEMP_ULT.figuras.chCalNet.dados.net.rolPts.map(q=>[diaStr(q.t),q.v])")
-            check('rolling de Net nulo no mes sem Net (marco/2025, a partir do dia 8)',
-                  all(v is None for dd, v in rol_net if '2025-03-08' <= dd <= '2025-03-31'))
-            # rolling 7/14/28 contra referencia independente no historico longo
-            for N in [7, 28]:
-                pl.select_option('#rollJan', str(N)); pl.wait_for_timeout(120)
-                cont = pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.rolPts.map(q=>[diaStr(q.t),q.v])")
-                ref = ref_roll(longo['linhas'], 'peso', N)
-                ok = all((v is None) == (dd not in ref) and (v is None or abs(v - ref[dd][0]) < 1e-9) for dd, v in cont)
-                check('historico longo: rolling peso %d dias igual a referencia' % N, ok)
-            pl.select_option('#rollJan', '7'); pl.wait_for_timeout(120)
+            per_l = pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.periodos.map(q=>({k:q.k,dias:q.dias}))")
+            rol_l = dict(js_rolp(pl, 'chMain', 'peso', 'W'))
+            gap_ok = True
+            for i_, q in enumerate(per_l):
+                if i_ >= 3 and any(x['dias'] == 0 for x in per_l[i_ - 3:i_ + 1]) and rol_l.get(q['k']) is not None:
+                    gap_ok = False
+            check('lacuna de 2023 nao e preenchida: nenhuma media movel em janela que a inclui', gap_ok)
+            per_net = pl.evaluate("TEMP_ULT.figuras.chCalNet.dados.net.periodos.map(q=>({k:q.k,n:q.n}))")
+            rol_nl = dict(js_rolp(pl, 'chCalNet', 'net', 'W'))
+            net_ok = True
+            for i_, q in enumerate(per_net):
+                if i_ >= 3 and any(x['n'] == 0 for x in per_net[i_ - 3:i_ + 1]) and rol_nl.get(q['k']) is not None:
+                    net_ok = False
+            check('Net: nenhuma media movel em janela que inclui o mes sem Net (marco/2025)', net_ok)
+            # media movel por periodo contra referencia independente no historico longo
+            for g_, N_ in [('W', 4), ('M', 3)]:
+                pl.select_option('#granul', g_); pl.select_option('#rollJan', str(N_)); pl.wait_for_timeout(150)
+                jsr = dict(js_rolp(pl, 'chMain', 'peso', g_))
+                refr = ref_rolp(longo['linhas'], 'peso', g_, N_)
+                ok = all((jsr[k] is None) == (refr.get(k) is None) and (jsr[k] is None or abs(jsr[k] - refr[k]) < 1e-9)
+                         for k in jsr if k in refr) and all(jsr[k] is None for k in jsr if k not in refr)
+                check('historico longo: media movel peso, %s, N=%d igual a referencia' % (g_, N_), ok,
+                      'periodos=%d' % len(jsr))
+            pl.select_option('#granul', 'W'); pl.select_option('#rollJan', '4'); pl.wait_for_timeout(120)
             # janelas: 90/180/365 comecam no ultimo registo menos N-1 dias, nao em 2022
             ultimo = longo['linhas'][-1]['date']
             for jn_ in ['90', '180', '365']:
@@ -518,11 +573,12 @@ def main():
                   antes_l == json.dumps(pl.evaluate("C.linhas"), sort_keys=True)
                   and kpi_l == pl.evaluate("document.getElementById('kpis').textContent"))
             # tooltips: media movel com minimo; resumo com intervalo de datas
-            t_rol = [q for q in pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.rolPts") if q['v'] is not None][100]['t']
+            t_rol = [q for q in pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.rolPts") if q['v'] is not None][20]['t']
             tip_r = pl.evaluate("(t)=>{const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
                                 "const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);"
                                 "return TIPS.chMain(PL+w*((t-T.t0)/(T.t1-T.t0)),10,W,340);}", t_rol)
-            check('tooltip da media movel informa o minimo de registos', '(minimo 3)' in tip_r, tip_r[:200])
+            check('tooltip da media movel informa a janela de periodos', 'últimos 4 períodos' in tip_r, tip_r[:200])
+            pl.evaluate("()=>{ATIVAS.main_peso_periodo=true;drawTemporal();}"); pl.wait_for_timeout(120)
             t_per = [q for q in pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.periodos") if q['dias'] > 0][40]['ini']
             tip_p = pl.evaluate("(t)=>{const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
                                 "const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);"
@@ -531,6 +587,7 @@ def main():
             check('tooltip do resumo informa o intervalo do periodo',
                   bool(_re.search(r'\d{2}/\d{2}/\d{4} a \d{2}/\d{2}/\d{4}', tip_p)), tip_p[:200])
             check('legenda usa "registros diários"', 'Peso — registros diários' in pl.inner_text('#lgMain'))
+            check('legenda usa "média móvel 4 semanas"', 'Peso — média móvel 4 semanas' in pl.inner_text('#lgMain'))
             check('historico longo: nenhum erro de JavaScript', not pl.errs, str(pl.errs))
             pl.close()
 

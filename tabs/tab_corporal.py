@@ -51,7 +51,7 @@ BODY = r"""
 <div class="cards" id="kpis"></div>
 
 <h2>Evolucao temporal: peso, gordura e calorias</h2>
-<div class="sub" id="subTemp">Figura 1: peso e gordura (pontos e media movel, cada um com eixo proprio) e calorias (barras e media movel). Figura 2: calorias e net (media movel), com a linha de referencia Net = 0.<br>A media movel e a media dos ultimos N periodos (semana, mes, trimestre, semestre ou ano), e so aparece quando os N periodos tem valor. Nao ha preenchimento: lacunas interrompem a linha.</div>
+<div class="sub" id="subTemp">Figura 1: peso e gordura (um ponto por periodo e media movel, cada um com eixo proprio) e calorias (uma barra por periodo e media movel). Figura 2: calorias e net (media movel), com a linha de referencia Net = 0.<br>Cada ponto e o resumo do periodo (mediana para peso e gordura, media para calorias e net). A media movel e a media dos ultimos N periodos, e so aparece quando os N periodos tem valor. Nao ha preenchimento: lacunas interrompem a linha.</div>
 <div class="controls">
   <label class="sel">Janela
     <select id="janela">
@@ -177,14 +177,13 @@ const FIGURAS=[
 //   rolling : media movel dos ultimos N periodos (N e a granularidade do seletor)
 //   periodo : resumo por periodo (mediana ou media), desligado por padrao
 const CAMADAS={
- main:{peso:['pontos','rolling','periodo'],bf:['pontos','rolling','periodo'],
-       calorias:['pontos','rolling','periodo']},
- cn:{calorias:['pontos','rolling','periodo'],net:['rolling']}};
+ main:{peso:['pontos','rolling'],bf:['pontos','rolling'],calorias:['pontos','rolling']},
+ cn:{calorias:['pontos','rolling'],net:['rolling']}};
 // camadas visiveis (alternadas pela legenda de cada figura)
-const ATIVAS={main_peso_pontos:true,main_peso_rolling:true,main_peso_periodo:false,
- main_bf_pontos:true,main_bf_rolling:true,main_bf_periodo:false,
- main_calorias_pontos:true,main_calorias_rolling:true,main_calorias_periodo:false,
- cn_calorias_pontos:true,cn_calorias_rolling:true,cn_calorias_periodo:false,
+const ATIVAS={main_peso_pontos:true,main_peso_rolling:true,
+ main_bf_pontos:true,main_bf_rolling:true,
+ main_calorias_pontos:true,main_calorias_rolling:true,
+ cn_calorias_pontos:true,cn_calorias_rolling:true,
  cn_net_rolling:true};
 const GRAN_PLURAL={W:'semanal',M:'mensal',Q:'trimestral',S:'semestral',A:'anual'};
 const ROLL_NOME={W:'semanas',M:'meses',Q:'trimestres',S:'semestres',A:'anos'};
@@ -302,22 +301,29 @@ function janelaDias(rows){
 function fmtV(v,unid){return unid==='kcal'?Math.round(v).toLocaleString('pt-PT'):v.toFixed(1);}
 
 // limites com passo redondo (1, 2, 2.5 ou 5 x 10^k) e 4 intervalos
+// menor intervalo com passo redondo (1, 2, 2.5 ou 5 x 10^k) que cobre [lo,hi]
+// com 4 a 6 divisoes: a escala fica justa aos dados, sem espaco vazio
 function niceLim(lo,hi){
- const fat=[1,2,2.5,5];
- for(let m=Math.pow(10,Math.floor(Math.log10(Math.max(hi-lo,1e-9)))-2);m<1e9;m*=10)
-  for(const f of fat){const s=f*m,a=Math.floor(lo/s)*s;
-   if(a+4*s>=hi) return [a,a+4*s];}
- return [lo,hi];
+ const fat=[1,2,2.5,5], span0=Math.max(hi-lo,1e-9);
+ let best=null;
+ for(let m=Math.pow(10,Math.floor(Math.log10(span0))-1);m<1e9;m*=10){
+  for(const f of fat){const s=f*m, a=Math.floor(lo/s)*s;
+   for(const n of [4,5,6]){
+    if(a+n*s>=hi-1e-9){const c=[a,a+n*s];
+     if(!best||c[1]-c[0]<best[1]-best[0]) best=c;
+     break;}}}
+  if(best&&m>span0*10) break;}
+ return best||[lo,hi];
 }
 function limitesY(vals,minSpan){
  const lo=vals.reduce((a,b)=>b<a?b:a,Infinity), hi=vals.reduce((a,b)=>b>a?b:a,-Infinity);
- const mid=(lo+hi)/2, span=Math.max(hi-lo,minSpan)*1.2;
- return niceLim(mid-span/2,mid+span/2);
+ const span=Math.max(hi-lo,minSpan), mid=(lo+hi)/2, pad=span*0.05;
+ return niceLim(mid-span/2-pad,mid+span/2+pad);
 }
 
 function nomeCamada(m,tipo,N,g){
  const t=SERIES_TEMP[m].titulo;
- if(tipo==='pontos') return t+' — registros diários';
+ if(tipo==='pontos') return t+' — pontos por '+GRAN_NOME[g];
  if(tipo==='rolling') return t+' — média móvel '+N+' '+ROLL_NOME[g];
  return t+' — resumo '+GRAN_PLURAL[g];
 }
@@ -355,7 +361,7 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
  vis.forEach(L=>{const d=dados[L.m];
   if(L.tipo==='pontos') d.pontos.forEach(q=>valores[L.m].push(q.v));
   if(L.tipo==='rolling') d.rolPts.forEach(q=>{if(q.v!=null) valores[L.m].push(q.v);});
-  if(L.tipo==='periodo') d.periodos.forEach(q=>{if(q.v!=null) valores[L.m].push(q.v);});});
+  });
  if(!metricas.some(m=>valores[m].length)){noData(G,W,H,'Sem registos no intervalo');return null;}
 
  // escala propria de cada eixo; a referencia Net = 0 entra no eixo quando ha Net
@@ -406,15 +412,18 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
  });
 
  // series: barras de fundo, depois resumos, registos e, por cima, a linha rolling
- const ordemDesenho=L=>(L.tipo==='pontos'&&L.m==='calorias')?0:L.tipo==='periodo'?1:L.tipo==='pontos'?2:3;
+ const ordemDesenho=L=>(L.tipo==='pontos'&&L.m==='calorias')?0:L.tipo==='pontos'?1:2;
+ const pxDia=w/Math.max(1,t1-t0);   // pixels por dia de calendario
  // series recortadas na area do grafico (periodos fora do intervalo nao aparecem)
  G.save(); G.beginPath(); G.rect(PL,PT,w,h); G.clip();
  vis.slice().sort((a,b)=>ordemDesenho(a)-ordemDesenho(b)).forEach(L=>{
   const c=SERIES_TEMP[L.m], d=dados[L.m], Yf=Y[L.m]; if(!Yf) return;
-  if(L.tipo==='periodo'){
-   G.strokeStyle=c.cor;G.lineWidth=4;G.globalAlpha=0.5;
-   d.periodos.forEach(q=>{if(q.v==null)return;
-    G.beginPath();G.moveTo(X(Math.max(q.ini,t0)),Yf(q.v));G.lineTo(X(Math.min(q.fim,t1)),Yf(q.v));G.stroke();});
+  if(L.tipo==='pontos'&&L.m==='calorias'){
+   // barras: uma por periodo, ocupando a largura do periodo (sem registo = sem barra)
+   const base=PT+h;
+   G.fillStyle=c.cor;G.globalAlpha=0.65;
+   d.pontos.forEach(q=>{const y=Yf(q.v),bw=Math.max(2,(q.fim-q.ini+1)*pxDia*0.88);
+    G.fillRect(X(q.t)-bw/2,y,bw,base-y);});
    G.globalAlpha=1;
   } else if(L.tipo==='rolling'){
    // halo escuro por baixo: a media movel continua legivel sobre barras e pontos
@@ -429,18 +438,10 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
    G.setLineDash(L.m==='peso'?[]:[6,4]);
    G.strokeStyle=c.cor;G.lineWidth=2.6;trilha();G.stroke();
    G.setLineDash([]);
-  } else if(L.m==='calorias'){
-   // barras: uma por dia com registo; dias sem registo nao tem barra
-   // densidade: pixels por dia. Em historicos longos ou telas estreitas as barras
-   // ficam mais tenues, para a linha rolling e os outros registos continuarem legiveis
-   const dens=w/(t1-t0+1), bw=Math.max(1,dens*0.7), base=PT+h;
-   G.fillStyle=c.cor;G.globalAlpha=Math.max(0.12,Math.min(0.3,dens*0.6));
-   d.pontos.forEach(q=>{const y=Yf(q.v);G.fillRect(X(q.t)-bw/2,y,bw,base-y);});
-   G.globalAlpha=1;
   } else {
-   const densP=w/(t1-t0+1), raio=Math.min(1.9,Math.max(1.1,densP*4));
-   G.fillStyle=c.cor;G.globalAlpha=0.55;
-   d.pontos.forEach(q=>{G.beginPath();G.arc(X(q.t),Yf(q.v),raio,0,2*Math.PI);G.fill();});
+   // um ponto por periodo (peso e BF), no centro do periodo
+   G.fillStyle=c.cor;G.globalAlpha=0.9;
+   d.pontos.forEach(q=>{G.beginPath();G.arc(X(q.t),Yf(q.v),3.2,0,2*Math.PI);G.fill();});
    G.globalAlpha=1;
   }
  });
@@ -462,17 +463,13 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
   let html='<div class="th">'+dataBR(diaStr(t))+'</div>';
   metricas.forEach(m=>{const c=SERIES_TEMP[m],d=dados[m];
    vis.filter(L=>L.m===m).forEach(L=>{
-    if(L.tipo==='pontos'){const q=d.pontos.find(z=>z.t===t);
-     if(q) html+=linhaTip(c.cor,c.titulo+' · registo',fmtV(q.v,c.unid)+' '+c.unid);}
+    if(L.tipo==='pontos'){const q=d.pontos.find(z=>z.ini<=t&&t<=z.fim);
+     if(q) html+=linhaTip(c.cor,c.titulo+' · '+GRAN_NOME[g]+' '+q.k+' ('+dataBR(diaStr(q.ini))+' a '+dataBR(diaStr(q.fim))+')',
+      fmtV(q.v,c.unid)+' '+c.unid+' ('+c.stat+') · n='+q.n+' ('+q.dias+' dias)');}
     if(L.tipo==='rolling'){const q=d.rolPts.find(z=>z.ini<=t&&t<=z.fim);
      if(q) html+=linhaTip(c.cor,c.titulo+' · média móvel '+N+' '+ROLL_NOME[g],q.v==null?
       'sem média (algum dos '+N+' períodos não tem valor)':
       fmtV(q.v,c.unid)+' '+c.unid+' · média dos últimos '+N+' períodos');}
-    if(L.tipo==='periodo'){const q=d.periodos.find(z=>z.ini<=t&&t<=z.fim);
-     if(q) html+=linhaTip(c.cor,c.titulo+' · resumo '+GRAN_PLURAL[g]+' '+q.k+
-      ' ('+dataBR(diaStr(q.ini))+' a '+dataBR(diaStr(q.fim))+')',
-      q.dias===0?'sem registos no periodo':fmtV(q.v,c.unid)+' '+c.unid+' · n='+q.n+
-      ' ('+q.dias+' dias)'+(q.n<MIN_REG[g]?' poucos registos':''));}
    });});
   return html;});
 
@@ -503,7 +500,9 @@ function drawTemporal(){
   // media movel calculada sobre todos os periodos (antes do recorte), depois limitada ao intervalo
   const rolPts=rolPeriodo(perFull,m,N).filter(q=>q.fim>=t0&&q.ini<=t1);
   return cache[m]={
-   pontos:disp.filter(r=>typeof r[m]==='number'&&isFinite(r[m])).map(r=>({t:diaNum(r.date),v:r[m]})),
+   // pontos agrupados: um por periodo (mediana para peso e BF, media para calorias)
+   pontos:per.filter(q=>q.v[m]!=null).map(q=>{const i0=diaNum(q.ini),i1=diaNum(q.fim);
+    return {t:Math.round((i0+i1)/2),ini:i0,fim:i1,v:q.v[m],n:q.n[m],dias:q.dias,k:q.k};}),
    rolPts:rolPts,
    periodos:per.map(q=>({k:q.k,rot:q.rot,ini:diaNum(q.ini),fim:diaNum(q.fim),dias:q.dias,v:q.v[m],n:q.n[m]}))};
  };

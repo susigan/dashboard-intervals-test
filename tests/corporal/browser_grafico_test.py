@@ -256,21 +256,20 @@ def main():
             # 4. tooltip de periodo vazio e de periodo com dados
             pg.evaluate("()=>{document.getElementById('granul').value='W';document.getElementById('granul').onchange();}")
             pg.wait_for_timeout(200)
-            pg.evaluate("()=>{ATIVAS.main_peso_periodo=true;drawTemporal();}")
-            pg.wait_for_timeout(150)
             geo = "const geo=(W)=>{const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);return {PL:PL,w:w};};"
             info = pg.evaluate("()=>{" + geo + "const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
                                "const q=T.figuras.chMain.dados.peso.periodos.find(z=>z.k==='2025-W50');"
                                "const G=geo(W);const x=G.PL+G.w*((q.ini+3-T.t0)/(T.t1-T.t0));"
                                "return TIPS.chMain(x,10,W,340);}")
-            check('tooltip de periodo vazio diz "sem registos no periodo"', 'sem registos no periodo' in info, info[:160])
+            check('periodo sem registos nao tem ponto no tooltip (nada inventado)',
+                  'semana 2025-W50' not in info, info[:160])
             info2 = pg.evaluate("()=>{" + geo + "const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
                                 "const q=T.figuras.chMain.dados.peso.periodos.find(z=>z.dias>0);"
                                 "const G=geo(W);const x=G.PL+G.w*((q.ini+3-T.t0)/(T.t1-T.t0));"
                                 "return TIPS.chMain(x,10,W,340);}")
             import re as _re2
-            check('tooltip traz periodo, intervalo, unidade e n',
-                  'kg' in info2 and 'n=' in info2 and 'resumo semanal' in info2
+            check('tooltip do ponto traz periodo, intervalo, unidade, estatistica e n',
+                  'kg' in info2 and 'n=' in info2 and '(mediana)' in info2 and 'semana' in info2
                   and bool(_re2.search(r'\d{2}/\d{2}/\d{4} a \d{2}/\d{2}/\d{4}', info2)), info2[:260])
 
             # 5. Janela aplicada antes da agregacao
@@ -298,21 +297,21 @@ def main():
             check('dados diarios originais inalterados apos trocar granularidade', antes == depois)
 
             # 7. legenda: alterna camadas dentro de cada figura; a ultima camada visivel resiste
-            DEFAULTS = {'main_peso_pontos': True, 'main_peso_rolling': True, 'main_peso_periodo': False,
-                        'main_bf_pontos': True, 'main_bf_rolling': True, 'main_bf_periodo': False,
-                        'main_calorias_pontos': True, 'main_calorias_rolling': True, 'main_calorias_periodo': False,
-                        'cn_calorias_pontos': True, 'cn_calorias_rolling': True, 'cn_calorias_periodo': False,
+            DEFAULTS = {'main_peso_pontos': True, 'main_peso_rolling': True,
+                        'main_bf_pontos': True, 'main_bf_rolling': True,
+                        'main_calorias_pontos': True, 'main_calorias_rolling': True,
+                        'cn_calorias_pontos': True, 'cn_calorias_rolling': True,
                         'cn_net_rolling': True}
             pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
             txt = pg.inner_text('#lgMain')
             check('legenda da figura principal identifica metrica e tipo de serie',
-                  all(t in txt for t in ['Peso — registros diários', 'Peso — média móvel 4 semanas',
-                                         'Peso — resumo semanal', 'Gordura corporal — registros diários',
-                                         'Calorias — registros diários']), txt[:200])
+                  all(t in txt for t in ['Peso — pontos por semana', 'Peso — média móvel 4 semanas',
+                                         'Gordura corporal — pontos por semana', 'Calorias — pontos por semana']),
+                  txt[:200])
             pg.click('#lgCalNet [data-serie="cn_net_rolling"]'); pg.wait_for_timeout(120)
             check('legenda desativa a media movel de Net', pg.evaluate("ATIVAS.cn_net_rolling") is False)
             pg.click('#lgCalNet [data-serie="cn_calorias_rolling"]'); pg.wait_for_timeout(120)
-            check('legenda desativa a media movel de calorias (registos continuam)',
+            check('legenda desativa a media movel de calorias (pontos continuam)',
                   pg.evaluate("[ATIVAS.cn_calorias_rolling,ATIVAS.cn_calorias_pontos]") == [False, True])
             pg.click('#lgCalNet [data-serie="cn_calorias_pontos"]'); pg.wait_for_timeout(120)
             check('figura Calorias + Net nao fica sem camadas (ultima camada resiste)',
@@ -320,11 +319,10 @@ def main():
             pg.click('#lgMain [data-serie="main_bf_rolling"]'); pg.wait_for_timeout(120)
             check('legenda da figura principal desativa a media movel de gordura',
                   pg.evaluate("ATIVAS.main_bf_rolling") is False)
-            pg.click('#lgMain [data-serie="main_calorias_periodo"]'); pg.wait_for_timeout(120)
-            check('legenda liga o resumo de calorias na figura principal',
-                  pg.evaluate("ATIVAS.main_calorias_periodo") is True)
-            for sid in ['cn_net_rolling', 'cn_calorias_rolling', 'main_bf_rolling', 'main_calorias_periodo',
-                        'main_peso_periodo', 'main_bf_periodo']:
+            pg.click('#lgMain [data-serie="main_calorias_pontos"]'); pg.wait_for_timeout(120)
+            check('legenda desativa os pontos de calorias na figura principal',
+                  pg.evaluate("ATIVAS.main_calorias_pontos") is False)
+            for sid in ['cn_net_rolling', 'cn_calorias_rolling', 'main_bf_rolling', 'main_calorias_pontos']:
                 leg = 'lgCalNet' if sid.startswith('cn_') else 'lgMain'
                 if pg.evaluate("ATIVAS['%s']" % sid) != DEFAULTS[sid]:
                     pg.click('#%s [data-serie="%s"]' % (leg, sid)); pg.wait_for_timeout(120)
@@ -379,12 +377,13 @@ def main():
 
             # granularidade muda o rolling (periodos diferentes); pontos diarios nao mudam
             pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
-            pts_w = pg.evaluate("JSON.stringify(TEMP_ULT.figuras.chMain.dados.peso.pontos)")
+            pts_w = pg.evaluate("TEMP_ULT.figuras.chMain.dados.peso.pontos.length")
             rol_W = js_rolp(pg, 'chMain', 'peso', 'W')
             pg.select_option('#granul', 'M'); pg.wait_for_timeout(120)
-            pts_m = pg.evaluate("JSON.stringify(TEMP_ULT.figuras.chMain.dados.peso.pontos)")
+            pts_m = pg.evaluate("TEMP_ULT.figuras.chMain.dados.peso.pontos.length")
             rol_M = js_rolp(pg, 'chMain', 'peso', 'M')
-            check('pontos diarios de peso iguais em semana e mes', pts_w == pts_m)
+            check('pontos agrupados: ha menos pontos em mes do que em semana', 0 < pts_m < pts_w,
+                  '%d mes vs %d semana' % (pts_m, pts_w))
             check('media movel muda com a granularidade (semana x mes)', rol_W != rol_M,
                   '%d vs %d periodos' % (len(rol_W), len(rol_M)))
             pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
@@ -426,10 +425,11 @@ def main():
             cn = pg.evaluate("()=>({m:TEMP_ULT.figuras.chCalNet.metricas, lim:TEMP_ULT.figuras.chCalNet.lim})")
             check('figura Calorias + Net: duas metricas em dois eixos', cn['m'] == ['calorias', 'net'], str(cn['m']))
             check('eixo do Net inclui a referencia 0', cn['lim']['net'][0] <= 0 <= cn['lim']['net'][1], str(cn['lim']['net']))
-            n_pontos = len(pg.evaluate("TEMP_ULT.figuras.chMain.dados.peso.pontos"))
-            n_orig = sum(1 for r in payload['linhas'] if r.get('peso') is not None)
-            check('pontos de peso = registos originais (a media movel nao os substitui)', n_pontos == n_orig,
-                  '%d vs %d' % (n_pontos, n_orig))
+            pts_pe = pg.evaluate("TEMP_ULT.figuras.chMain.dados.peso.pontos")
+            per_pe = pg.evaluate("TEMP_ULT.figuras.chMain.dados.peso.periodos")
+            com_dado = [q['k'] for q in per_pe if q['v'] is not None]
+            check('pontos de peso = um por periodo com registos (agrupado, nao diario)',
+                  [q['k'] for q in pts_pe] == com_dado, '%d pontos, %d periodos com dado' % (len(pts_pe), len(com_dado)))
             refn = ref_rolp(payload['linhas'], 'net', 'W', 4)
             jsn = dict(js_rolp(pg, 'chCalNet', 'net', 'W'))
             okn = all((jsn[k] is None) == (refn.get(k) is None) and (jsn[k] is None or abs(jsn[k] - refn[k]) < 1e-9)
@@ -468,8 +468,14 @@ def main():
             check('escala de peso tem amplitude minima (>= 2 kg)', lim[1] - lim[0] >= 2.0, str(lim))
             for lo_, hi_ in [(77.7, 80.1), (1930, 2750), (-450, 300), (18.2, 18.5), (79.9, 80.0)]:
                 r = pg.evaluate("([a,b])=>niceLim(a,b)", [lo_, hi_])
-                passo = (r[1] - r[0]) / 4
-                redondo = abs(r[0] / passo - round(r[0] / passo)) < 1e-9
+                # 4 a 6 divisoes; o passo e redondo (1, 2, 2.5 ou 5 x 10^k) e a escala cobre os dados
+                import math as _m
+                def _redondo(passo, r0):
+                    if passo <= 0: return False
+                    mant = passo / 10 ** _m.floor(_m.log10(passo) + 1e-9)
+                    return (any(abs(mant - f) < 1e-6 for f in (1, 2, 2.5, 5))
+                            and abs(r0 / passo - round(r0 / passo)) < 1e-6)
+                redondo = any(_redondo((r[1] - r[0]) / n, r[0]) for n in (4, 5, 6))
                 cobre = r[0] <= lo_ + 1e-9 and r[1] >= hi_ - 1e-9
                 check('escala com passo redondo e cobre os dados (%s..%s)' % (lo_, hi_), redondo and cobre, str(r))
 
@@ -578,15 +584,14 @@ def main():
                                 "const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);"
                                 "return TIPS.chMain(PL+w*((t-T.t0)/(T.t1-T.t0)),10,W,340);}", t_rol)
             check('tooltip da media movel informa a janela de periodos', 'últimos 4 períodos' in tip_r, tip_r[:200])
-            pl.evaluate("()=>{ATIVAS.main_peso_periodo=true;drawTemporal();}"); pl.wait_for_timeout(120)
-            t_per = [q for q in pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.periodos") if q['dias'] > 0][40]['ini']
+            t_per = [q for q in pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.pontos")][40]['ini']
             tip_p = pl.evaluate("(t)=>{const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
                                 "const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);"
                                 "return TIPS.chMain(PL+w*((t-T.t0)/(T.t1-T.t0)),10,W,340);}", t_per)
             import re as _re
-            check('tooltip do resumo informa o intervalo do periodo',
+            check('tooltip do ponto informa o intervalo do periodo',
                   bool(_re.search(r'\d{2}/\d{2}/\d{4} a \d{2}/\d{2}/\d{4}', tip_p)), tip_p[:200])
-            check('legenda usa "registros diários"', 'Peso — registros diários' in pl.inner_text('#lgMain'))
+            check('legenda usa "pontos por semana"', 'Peso — pontos por semana' in pl.inner_text('#lgMain'))
             check('legenda usa "média móvel 4 semanas"', 'Peso — média móvel 4 semanas' in pl.inner_text('#lgMain'))
             check('historico longo: nenhum erro de JavaScript', not pl.errs, str(pl.errs))
             pl.close()

@@ -58,8 +58,9 @@ try:
 
     # ── 3. Gráficos técnicos: funcionam ao abrir os detalhes ──────────────────
     abrir_detalhes(pg)
-    for cid in ['chMxCurvasMedianas','chMxRzRpePot','chMxRzRpeHr','chMxRzRpeRf','chMxRzRpeSmo2','chMxRzRpeDfa1','chMxFisioIntegrado']:
+    for cid in ['chMxCurvasMedianas','chMxRzRpePot','chMxRzRpeHr','chMxRzRpeRf','chMxRzRpeSmo2','chMxRzRpeDfa1']:
         check('3 detalhe com tinta ao abrir: '+cid, pg.evaluate(INK, cid)>200, str(pg.evaluate(INK,cid)))
+    check('3 chMxFisioIntegrado removido (substituído pela tabela de referência)', pg.evaluate("()=>document.getElementById('chMxFisioIntegrado')==null && !!document.getElementById('mxFisioRefTabela')"))
 
     # ── 4. Troca de modalidade e de conjunto atualiza dados e tooltip ─────────
     def hover_d1(pg):

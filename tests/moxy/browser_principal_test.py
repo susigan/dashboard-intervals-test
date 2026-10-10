@@ -139,7 +139,7 @@ try:
     check('7 medianas por zona redesenham ao abrir detalhes', pg.evaluate("() => { const c=document.getElementById('chMxCurvasFisio'); return !!c && c.width>0; }"))
     pg.evaluate("() => { const d=document.getElementById('mxDetalhesIntegrado'); if(d) d.open=true; }")
     pg.wait_for_timeout(400)
-    check('7 gráfico técnico D1/D2 existe dentro dos detalhes', pg.evaluate("() => !!document.getElementById('chMxFisioIntegrado')"))
+    check('7 gráfico integrado removido; tabela de referência presente', pg.evaluate("() => document.getElementById('chMxFisioIntegrado')==null && !!document.getElementById('mxFisioRefTabela')"))
 
     # ── 8. Estados: indisponível, erro de leitura, falha de render ──────────
     pg.evaluate("() => { document.getElementById('mxDetalhesTecnicosEvidencias').open=false; }")

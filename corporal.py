@@ -45,29 +45,45 @@ def _num(v):
 
 
 def preparar(corporal, wellness):
-    """Junta as duas fontes e limpa, seguindo as regras do dashboard."""
+    """Junta as duas fontes e limpa, seguindo as regras do dashboard.
+
+    Peso: so a aba diaria (Respostas ao formulario 1, coluna Peso). O peso
+    do Consolidado_Comida NAO e usado, e nao ha substituicao automatica:
+    dia sem peso diario fica sem peso.
+    BF: formulario de wellness tem prioridade (inalterado).
+    Calorias, net e macros: Consolidado_Comida (inalterado).
+    """
     if not corporal:
         return []
 
+    hoje = datetime.now().strftime('%Y-%m-%d')
+
     # BF do formulario de wellness tem prioridade
     bf_well = {}
+    # peso diario; datas futuras ficam de fora
+    peso_well = {}
     for w in (wellness or []):
         v = _num(w.get('fat'))
         if v is not None:
             bf_well[w['date']] = v
+        p = _num(w.get('peso'))
+        if p is not None and w['date'] <= hoje:
+            peso_well[w['date']] = p
 
     linhas = []
     for r in corporal:
         d = dict(r)
+        d['peso'] = peso_well.get(d['date'])
         if d['date'] in bf_well:
             d['bf'] = bf_well[d['date']]
         linhas.append(d)
 
-    # tambem entram dias que so existem no wellness
+    # tambem entram dias que so existem no wellness (BF ou peso)
     existentes = {r['date'] for r in linhas}
-    for data, v in bf_well.items():
+    for data in sorted(set(bf_well) | set(peso_well)):
         if data not in existentes:
-            linhas.append({'date': data, 'bf': v})
+            linhas.append({'date': data, 'peso': peso_well.get(data),
+                           'bf': bf_well.get(data)})
     linhas.sort(key=lambda r: r['date'])
 
     # cortar cada coluna no seu ultimo registo valido

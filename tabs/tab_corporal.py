@@ -50,8 +50,10 @@ BODY = r"""
 
 <div class="cards" id="kpis"></div>
 
-<h2>Peso, gordura corporal e calorias</h2>
-<div class="sub">Media movel de 7 dias — remove o ruido diario de agua e glicogenio</div>
+<h2>Evolucao temporal: peso, gordura e calorias</h2>
+<div class="sub" id="subTemp">Linha: media movel de N dias sobre os registos diarios (mesma regra dos KPIs).
+  Barras: resumo do periodo escolhido (mediana para peso e gordura; media para calorias e net).
+  Pontos: registos diarios originais.</div>
 <div class="controls">
   <label class="sel">Janela
     <select id="janela">
@@ -60,17 +62,38 @@ BODY = r"""
       <option value="365">1 ano</option>
       <option value="0">Tudo</option>
     </select></label>
+  <label class="sel">Media movel
+    <select id="rollJan">
+      <option value="7" selected>7 dias</option>
+      <option value="14">14 dias</option>
+      <option value="28">28 dias</option>
+    </select></label>
+  <label class="sel">Periodo
+    <select id="granul">
+      <option value="W" selected>Semana</option>
+      <option value="M">Mes</option>
+      <option value="Q">Trimestre</option>
+      <option value="S">Semestre</option>
+      <option value="A">Ano</option>
+    </select></label>
 </div>
 <div class="chartbox">
   <div class="legend" id="lgPeso"></div>
-  <canvas id="chPeso" height="280"></canvas>
+  <canvas id="chPeso" height="220"></canvas>
 </div>
-
-<h2>Calorias e balanco energetico</h2>
+<div class="chartbox">
+  <div class="legend" id="lgBF"></div>
+  <canvas id="chBF" height="200"></canvas>
+</div>
 <div class="chartbox">
   <div class="legend" id="lgCal"></div>
-  <canvas id="chCal" height="240"></canvas>
+  <canvas id="chCal" height="200"></canvas>
 </div>
+<div class="chartbox">
+  <div class="legend" id="lgNet"></div>
+  <canvas id="chNet" height="200"></canvas>
+</div>
+<div class="sub" id="subTempInfo"></div>
 
 <h2>Variacao com bandas de ganho e perda esperados</h2>
 <div class="sub" id="subVar"></div>
@@ -130,76 +153,274 @@ function jan(arr){
  return (n>0&&arr.length>n)?arr.slice(-n):arr;
 }
 
-// series com eixo proprio, para peso (kg) e gordura (%) coexistirem
-function linhas(canvasId,legendId,dados,series,cores,labels,altura){
- const o=ctx(canvasId,altura||260); if(!o)return;
- const g=o.g,W=o.W,H=o.H;
- const PL=52,PR=52,PT=12,PB=24,w=W-PL-PR,h=H-PT-PB,n=dados.length;
- if(!n){noData(g,W,H);return;}
- const X=i=>PL+w*(n>1?i/(n-1):0.5);
- const vis=series.filter(s=>dados.some(d=>d[s]!=null));
- if(legendId)document.getElementById(legendId).innerHTML=vis.map(s=>
-  '<span><i style="background:'+cores[s]+'"></i>'+(labels[s]||s)+'</span>').join('');
- if(!vis.length){noData(g,W,H);return;}
+// ── Visao temporal ─────────────────────────────────────────────────────────
+// Tres camadas por metrica, todas derivadas de C.linhas (nada e alterado):
+//   pontos   : registos diarios originais
+//   rolling  : media movel de N dias de calendario. Mesma regra de
+//              corporal.media_movel (que alimenta os KPIs): janela de N dias
+//              terminada no dia, so dias com valor, minimo MIN_OBS_ROLL.
+//              Calculada sobre o historico completo ANTES do recorte da Janela.
+//   periodo  : resumo por periodo (semana ISO, mes, trimestre, semestre, ano):
+//              mediana (peso, BF) ou media (calorias, net) dos dias com registo.
+// A granularidade muda so a camada "periodo"; a media movel nao depende dela.
+const SERIES_TEMP={
+ peso:{titulo:'Peso',unid:'kg',stat:'mediana',cor:CORC.peso,minSpan:2},
+ bf:{titulo:'Gordura corporal',unid:'%',stat:'mediana',cor:CORC.bf,minSpan:2},
+ calorias:{titulo:'Calorias',unid:'kcal',stat:'media',cor:CORC.calorias,minSpan:1000},
+ net:{titulo:'Net',unid:'kcal',stat:'media',cor:CORC.net,minSpan:1000}};
+// dias minimos por periodo; abaixo disto o ponto do periodo aparece oco
+const MIN_REG={W:3,M:7,Q:14,S:30,A:60};
+const GRAN_NOME={W:'semana',M:'mes',Q:'trimestre',S:'semestre',A:'ano'};
+// minimo de dias com registo dentro da janela rolling (igual a corporal.media_movel)
+const MIN_OBS_ROLL=3;
+const PAINEIS=[
+ {canvas:'chPeso',legenda:'lgPeso',altura:220,metricas:['peso']},
+ {canvas:'chBF',legenda:'lgBF',altura:200,metricas:['bf']},
+ {canvas:'chCal',legenda:'lgCal',altura:200,metricas:['calorias']},
+ {canvas:'chNet',legenda:'lgNet',altura:200,metricas:['net']}];
+// camadas visiveis (alternadas pela legenda); pontos de calorias/net ficam
+// desligados por padrao para nao poluir o painel
+const ATIVAS={peso_pontos:true,peso_rolling:true,peso_periodo:true,
+ bf_pontos:true,bf_rolling:true,bf_periodo:true,
+ calorias_pontos:false,calorias_rolling:true,calorias_periodo:true,
+ net_pontos:false,net_rolling:true,net_periodo:true};
+// ultimo desenho (lido pelos testes; nao e usado pela interface)
+let TEMP_ULT=null;
 
- const lim={};
- vis.forEach(function(s){
-  let a=Infinity,b=-Infinity;
-  dados.forEach(function(d){const v=d[s];if(v==null)return;
-   if(v<a)a=v;if(v>b)b=v;});
-  if(!isFinite(a)){a=0;b=1;}
-  const marg=(b-a)*0.08||1;
-  lim[s]=[a-marg,b+marg];});
+function pad2(n){return String(n).padStart(2,'0');}
+function dUTC(s){const p=s.split('-');return new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));}
+function sUTC(d){return d.getUTCFullYear()+'-'+pad2(d.getUTCMonth()+1)+'-'+pad2(d.getUTCDate());}
+function addDias(d,n){return new Date(d.getTime()+n*86400000);}
+function diaNum(s){return Math.round(dUTC(s).getTime()/86400000);}
+function diaStr(n){return sUTC(new Date(n*86400000));}
+function dataBR(s){return s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4);}
+function hojeLocal(){const d=new Date();return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());}
 
- g.strokeStyle='#21262d';g.lineWidth=1;
- for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
+// periodo (ISO semana seg-dom, mes, trimestre, semestre, ano de calendario)
+// que contem a data s
+function periodoInfo(s,g){
+ const d=dUTC(s),y=d.getUTCFullYear(),m=d.getUTCMonth();
+ if(g==='W'){
+  const ini=addDias(d,-((d.getUTCDay()+6)%7)), fim=addDias(ini,6);
+  const th=addDias(ini,3), yy=th.getUTCFullYear();
+  const wk=Math.ceil(((th-Date.UTC(yy,0,1))/86400000+1)/7);
+  return {k:yy+'-W'+pad2(wk),ini:sUTC(ini),fim:sUTC(fim),rot:pad2(ini.getUTCDate())+'/'+pad2(ini.getUTCMonth()+1)};}
+ if(g==='M')
+  return {k:y+'-'+pad2(m+1),ini:y+'-'+pad2(m+1)+'-01',fim:sUTC(new Date(Date.UTC(y,m+1,0))),
+   rot:pad2(m+1)+'/'+String(y).slice(2)};
+ if(g==='Q'){const q=Math.floor(m/3);
+  return {k:y+'-Q'+(q+1),ini:sUTC(new Date(Date.UTC(y,q*3,1))),fim:sUTC(new Date(Date.UTC(y,q*3+3,0))),
+   rot:'T'+(q+1)+' '+String(y).slice(2)};}
+ if(g==='S'){const h=m<6?0:1;
+  return {k:y+'-S'+(h+1),ini:sUTC(new Date(Date.UTC(y,h*6,1))),fim:sUTC(new Date(Date.UTC(y,h*6+6,0))),
+   rot:'S'+(h+1)+' '+String(y).slice(2)};}
+ return {k:String(y),ini:y+'-01-01',fim:y+'-12-31',rot:String(y)};
+}
+// inicio do periodo seguinte
+function proximoPeriodo(p,g){
+ const d=dUTC(p.ini),y=d.getUTCFullYear(),m=d.getUTCMonth();
+ if(g==='W') return sUTC(addDias(d,7));
+ if(g==='M') return sUTC(new Date(Date.UTC(y,m+1,1)));
+ if(g==='Q') return sUTC(new Date(Date.UTC(y,m+3,1)));
+ if(g==='S') return sUTC(new Date(Date.UTC(y,m+6,1)));
+ return (y+1)+'-01-01';
+}
+function estatistica(vals,tipo){
+ const n=vals.length;
+ if(tipo==='mediana'){const s=vals.slice().sort((a,b)=>a-b);
+  return n%2?s[(n-1)/2]:(s[n/2-1]+s[n/2])/2;}
+ return vals.reduce((a,b)=>a+b,0)/n;
+}
 
- vis.forEach(function(s){
-  const[a,b]=lim[s];
-  g.strokeStyle=cores[s];g.lineWidth=2;g.beginPath();let st=false;
-  dados.forEach(function(d,i){const v=d[s];if(v==null){st=false;return;}
-   const y=PT+h-(v-a)/(b-a)*h;
-   if(!st){g.moveTo(X(i),y);st=true;}else g.lineTo(X(i),y);});
-  g.stroke();});
+// media movel de N dias de calendario, mesma regra de corporal.media_movel.
+// Devolve {dia numerico: {v, n}} so para dias com minimo de observacoes.
+function mediaMovel(full,campo,N){
+ const val={}; let a=Infinity,b=-Infinity;
+ full.forEach(r=>{const t=diaNum(r.date); if(t<a)a=t; if(t>b)b=t;
+  const v=r[campo]; if(typeof v==='number'&&isFinite(v)) val[t]=v;});
+ const out={};
+ for(let d=a;d<=b;d++){
+  let s=0,c=0;
+  for(let k=d-N+1;k<=d;k++){ if(val[k]!==undefined){s+=val[k];c++;} }
+  if(c>=MIN_OBS_ROLL) out[d]={v:s/c,n:c};
+ }
+ return out;
+}
 
- g.font='10px sans-serif';
- vis.slice(0,2).forEach(function(s,idx){
-  const[a,b]=lim[s],dir=idx===1;
-  g.fillStyle=cores[s];g.textAlign=dir?'left':'right';
-  for(let i=0;i<=4;i++){const v=b-(b-a)*i/4;
-   g.fillText(v>=1000?Math.round(v):v.toFixed(1),dir?PL+w+6:PL-6,PT+h*i/4+3);}});
- g.fillStyle='#8b949e';g.textAlign='center';
- const step=Math.ceil(n/8);
- dados.forEach(function(d,i){if(i%step!==0)return;
-  g.fillText((d.date||d.periodo||'').slice(0,7),X(i),H-8);});
- g.textAlign='left';
+// agrega linhas diarias por periodo; periodos vazios entre o primeiro e o
+// ultimo registo aparecem com dias=0 e valores nulos (nada e preenchido)
+function agregarTemporal(rows,g){
+ const hoje=hojeLocal();
+ const validas=rows.filter(r=>r&&r.date&&r.date<=hoje)
+  .sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+ if(!validas.length) return [];
+ const mapa={};
+ validas.forEach(r=>{const info=periodoInfo(r.date,g);
+  if(!mapa[info.k]) mapa[info.k]={info:info,dias:[]};
+  mapa[info.k].dias.push(r);});
+ const fimIni=periodoInfo(validas[validas.length-1].date,g).ini;
+ const out=[];
+ let ini=periodoInfo(validas[0].date,g).ini;
+ while(ini<=fimIni){
+  const info=periodoInfo(ini,g);
+  const dias=mapa[info.k]?mapa[info.k].dias:[];
+  const item={k:info.k,rot:info.rot,ini:info.ini,fim:info.fim,dias:dias.length,n:{},v:{}};
+  Object.keys(SERIES_TEMP).forEach(s=>{
+   const vals=dias.map(r=>r[s]).filter(v=>typeof v==='number'&&isFinite(v));
+   item.n[s]=vals.length;
+   item.v[s]=vals.length?estatistica(vals,SERIES_TEMP[s].stat):null;});
+  out.push(item);
+  ini=proximoPeriodo(info,g);
+ }
+ return out;
+}
+// recorte da Janela em dias de calendario, a partir do ultimo registo
+function janelaDias(rows){
+ const n=parseInt(document.getElementById('janela').value,10);
+ if(!(n>0)||!rows.length) return rows.slice();
+ const fim=rows.reduce((m,r)=>r.date>m?r.date:m,'');
+ const corte=sUTC(addDias(dUTC(fim),-(n-1)));
+ return rows.filter(r=>r.date>=corte);
+}
+function fmtV(v,unid){return unid==='kcal'?Math.round(v).toLocaleString('pt-PT'):v.toFixed(1);}
 
- registarTip(canvasId,function(mxp,myp,rw){
-  const esc=rw/W,x=mxp/esc;
-  if(x<PL||x>PL+w)return '';
-  const i=Math.round((x-PL)/w*(n-1));
-  if(i<0||i>=n)return '';
-  const d=dados[i];
-  let html='<div class="th">'+(d.date||d.periodo)+'</div>';
-  vis.forEach(function(s){if(d[s]==null)return;
-   html+=linhaTip(cores[s],labels[s]||s,
-    d[s]>=1000?Math.round(d[s]).toLocaleString('pt-PT'):d[s].toFixed(1));});
+// limites com passo redondo (1, 2, 2.5 ou 5 x 10^k) e 4 intervalos
+function niceLim(lo,hi){
+ const fat=[1,2,2.5,5];
+ for(let m=Math.pow(10,Math.floor(Math.log10(Math.max(hi-lo,1e-9)))-2);m<1e9;m*=10)
+  for(const f of fat){const s=f*m,a=Math.floor(lo/s)*s;
+   if(a+4*s>=hi) return [a,a+4*s];}
+ return [lo,hi];
+}
+function limitesY(vals,minSpan){
+ const lo=vals.reduce((a,b)=>b<a?b:a,Infinity), hi=vals.reduce((a,b)=>b>a?b:a,-Infinity);
+ const mid=(lo+hi)/2, span=Math.max(hi-lo,minSpan)*1.2;
+ return niceLim(mid-span/2,mid+span/2);
+}
+
+function desenharPainel(p,dados,g,N,t0,t1){
+ const camadas=[];
+ p.metricas.forEach(m=>{const c=SERIES_TEMP[m];
+  camadas.push({id:m+'_pontos',m:m,tipo:'pontos',nome:c.titulo+' · registos diarios'});
+  camadas.push({id:m+'_rolling',m:m,tipo:'rolling',nome:c.titulo+' · media movel '+N+' dias'});
+  camadas.push({id:m+'_periodo',m:m,tipo:'periodo',nome:c.titulo+' · '+c.stat+' por '+GRAN_NOME[g]});});
+ const leg=document.getElementById(p.legenda);
+ leg.innerHTML=camadas.map(L=>{const c=SERIES_TEMP[L.m];
+  return '<span data-serie="'+L.id+'" style="cursor:pointer;opacity:'+(ATIVAS[L.id]?1:0.35)+'">'+
+   '<i style="background:'+c.cor+'"></i>'+L.nome+' ('+c.unid+')</span>';}).join('');
+ leg.onclick=function(ev){
+  const sp=ev.target.closest?ev.target.closest('[data-serie]'):null; if(!sp) return;
+  const id=sp.getAttribute('data-serie');
+  const visiveis=camadas.filter(L=>ATIVAS[L.id]).length;
+  if(ATIVAS[id]&&visiveis<=1) return;          // mantem pelo menos uma camada
+  ATIVAS[id]=!ATIVAS[id]; drawTemporal();};
+
+ const vis=camadas.filter(L=>ATIVAS[L.id]);
+ const o=ctx(p.canvas,p.altura); if(!o) return;
+ const G=o.g,W=o.W,H=o.H;
+ const PL=60,PR=12,PT=12,PB=26,w=W-PL-PR,h=H-PT-PB;
+ if(!vis.length){noData(G,W,H,'Nenhuma camada ativa');return;}
+ const vals=[];
+ vis.forEach(L=>{const d=dados[L.m];
+  if(L.tipo==='pontos') d.pontos.forEach(q=>vals.push(q.v));
+  if(L.tipo==='rolling') d.rolPts.forEach(q=>{if(q.v!=null)vals.push(q.v);});
+  if(L.tipo==='periodo') d.periodos.forEach(q=>{if(q.v!=null)vals.push(q.v);});});
+ if(!vals.length){noData(G,W,H,'Sem registos no intervalo');return;}
+ const minSpan=Math.max.apply(null,p.metricas.map(m=>SERIES_TEMP[m].minSpan));
+ const lim=limitesY(vals,minSpan), lo=lim[0], hi=lim[1];
+ const X=t=>PL+w*(t1>t0?(t-t0)/(t1-t0):0.5);
+ const Y=v=>PT+h-(v-lo)/(hi-lo)*h;
+ const base=dados[p.metricas[0]].periodos;
+
+ G.strokeStyle='#21262d';G.lineWidth=1;
+ for(let i=0;i<=4;i++){const y=PT+h*i/4;G.beginPath();G.moveTo(PL,y);G.lineTo(PL+w,y);G.stroke();}
+ // periodos sem registos: faixa cinza (sem valor)
+ base.forEach(q=>{if(q.dias===0){const a=X(Math.max(q.ini,t0)),b=X(Math.min(q.fim,t1));
+  G.fillStyle='rgba(139,148,158,0.12)';G.fillRect(a,PT,Math.max(1,b-a),h);}});
+
+ vis.forEach(L=>{
+  const c=SERIES_TEMP[L.m], d=dados[L.m];
+  if(L.tipo==='periodo'){
+   G.strokeStyle=c.cor;G.lineWidth=4;G.globalAlpha=0.5;
+   d.periodos.forEach(q=>{if(q.v==null)return;
+    G.beginPath();G.moveTo(X(Math.max(q.ini,t0)),Y(q.v));G.lineTo(X(Math.min(q.fim,t1)),Y(q.v));G.stroke();});
+   G.globalAlpha=1;
+  } else if(L.tipo==='rolling'){
+   G.strokeStyle=c.cor;G.lineWidth=2;G.beginPath();let st=false;
+   d.rolPts.forEach(q=>{if(q.v==null){st=false;return;}
+    if(!st){G.moveTo(X(q.t),Y(q.v));st=true;}else G.lineTo(X(q.t),Y(q.v));});
+   G.stroke();
+  } else {
+   G.fillStyle=c.cor;G.globalAlpha=0.55;
+   d.pontos.forEach(q=>{G.beginPath();G.arc(X(q.t),Y(q.v),2.2,0,2*Math.PI);G.fill();});
+   G.globalAlpha=1;
+  }});
+
+ const u=SERIES_TEMP[p.metricas[0]].unid;
+ G.font='10px sans-serif';G.fillStyle='#8b949e';G.textAlign='right';
+ for(let i=0;i<=4;i++){const v=hi-(hi-lo)*i/4;G.fillText(fmtV(v,u),PL-6,PT+h*i/4+3);}
+ G.textAlign='left';G.fillText(u,4,PT+8);
+ G.fillStyle='#8b949e';G.textAlign='center';
+ const step=Math.max(1,Math.ceil(base.length/8));
+ base.forEach((q,i)=>{if(i%step!==0)return;G.fillText(q.rot,X(Math.max(q.ini,t0)),H-8);});
+ G.textAlign='left';
+
+ registarTip(p.canvas,function(mxp,myp,rw){
+  const x=mxp*(W/rw);
+  if(x<PL||x>PL+w) return '';
+  const t=Math.round(t0+(x-PL)/w*(t1-t0));
+  if(t<t0||t>t1) return '';
+  let html='<div class="th">'+dataBR(diaStr(t))+'</div>';
+  p.metricas.forEach(m=>{const c=SERIES_TEMP[m],d=dados[m];
+   vis.filter(L=>L.m===m).forEach(L=>{
+    if(L.tipo==='pontos'){const q=d.pontos.find(z=>z.t===t);
+     if(q) html+=linhaTip(c.cor,c.titulo+' · registo',fmtV(q.v,c.unid)+' '+c.unid);}
+    if(L.tipo==='rolling'){const q=d.rolPts[t-t0];
+     html+=linhaTip(c.cor,c.titulo+' · media movel '+N+' dias',q.v==null?'sem media (menos de '+MIN_OBS_ROLL+' dias)':
+      fmtV(q.v,c.unid)+' '+c.unid+' · '+q.n+' dias validos na janela de '+N);}
+    if(L.tipo==='periodo'){const q=d.periodos.find(z=>z.ini<=t&&t<=z.fim);
+     if(q) html+=linhaTip(c.cor,c.titulo+' · '+c.stat+' '+GRAN_NOME[g]+' '+q.k,
+      q.dias===0?'sem registos no periodo':fmtV(q.v,c.unid)+' '+c.unid+' · n='+q.n+
+      ' ('+q.dias+' dias)'+(q.n<MIN_REG[g]?' poucos registos':''));}
+   });});
   return html;});
 }
 
-function juntarR7(campos){
- const idx={};
- campos.forEach(function(c){
-  (C.r7[c]||[]).forEach(function(r){
-   idx[r.date]=idx[r.date]||{date:r.date};
-   idx[r.date][c]=r.valor;});});
- return Object.keys(idx).sort().map(k=>idx[k]);
+function drawTemporal(){
+ if(!C) return;
+ const g=document.getElementById('granul').value;
+ const N=parseInt(document.getElementById('rollJan').value,10)||7;
+ const hoje=hojeLocal();
+ const full=(C.linhas||[]).filter(r=>r&&r.date&&r.date<=hoje)
+  .sort((x,y)=>x.date<y.date?-1:x.date>y.date?1:0);
+ if(!full.length){PAINEIS.forEach(p=>{const o=ctx(p.canvas,p.altura);if(o)noData(o.g,o.W,o.H,'Sem registos');});return;}
+ const fim=full[full.length-1].date;
+ const jn=parseInt(document.getElementById('janela').value,10);
+ const corte=(jn>0)?sUTC(addDias(dUTC(fim),-(jn-1))):full[0].date;
+ const disp=full.filter(r=>r.date>=corte);
+ const per=agregarTemporal(disp,g);
+ const t0=diaNum(corte), t1=diaNum(fim);
+ const todos={};
+ PAINEIS.forEach(p=>{
+  const dados={};
+  p.metricas.forEach(m=>{
+   const pontos=disp.filter(r=>typeof r[m]==='number'&&isFinite(r[m])).map(r=>({t:diaNum(r.date),v:r[m]}));
+   const rm=mediaMovel(full,m,N);
+   const rolPts=[];
+   for(let t=t0;t<=t1;t++) rolPts.push({t:t,v:rm[t]?rm[t].v:null,n:rm[t]?rm[t].n:0});
+   const periodos=per.map(q=>({k:q.k,rot:q.rot,ini:diaNum(q.ini),fim:diaNum(q.fim),dias:q.dias,v:q.v[m],n:q.n[m]}));
+   dados[m]={pontos:pontos,rolPts:rolPts,periodos:periodos};
+  });
+  todos[p.canvas]=dados;
+  desenharPainel(p,dados,g,N,t0,t1);
+ });
+ TEMP_ULT={g:g,N:N,corte:corte,fim:fim,t0:t0,t1:t1,dados:todos};
+ const semReg=per.filter(q=>!q.dias).length;
+ const poucos=per.filter(q=>q.dias>0&&q.dias<MIN_REG[g]).length;
+ document.getElementById('subTempInfo').textContent=per.length+' periodos ('+GRAN_NOME[g]+'). '+
+  semReg+' sem registos (linhas interrompidas); '+poucos+' com menos de '+MIN_REG[g]+
+  ' dias (pontos ocos). Media movel de '+N+' dias calculada sobre os registos diarios, sem preencher lacunas.';
 }
-
-function drawPeso(){ linhas('chPeso','lgPeso',jan(juntarR7(['peso','bf'])),
- ['peso','bf'],CORC,LBLC,280); }
-function drawCal(){ linhas('chCal','lgCal',jan(juntarR7(['calorias','net'])),
- ['calorias','net'],CORC,LBLC,240); }
 
 // barras de variacao com as bandas de referencia por cima
 function drawVar(){
@@ -380,15 +601,19 @@ async function load(){
   'Bandas sobre o valor do periodo anterior — Peso ±0.30% a ±0.70%, '+
   'Gordura ±0.25% a ±0.65%. Barras dentro das bandas = variacao fisiologica normal.';
 
- drawPeso();drawCal();drawVar();drawMacro();tabelaLag();
+ drawTemporal();drawVar();drawMacro();tabelaLag();
 }
 document.getElementById('periodo').onchange=load;
 ['varSel'].forEach(id=>document.getElementById(id).onchange=drawVar);
 document.getElementById('macroModo').onchange=drawMacro;
 document.getElementById('janela').onchange=function(){
- if(!C)return; drawPeso();drawCal();drawMacro();};
+ if(!C)return; drawTemporal();drawMacro();};
+document.getElementById('granul').onchange=function(){
+ if(!C)return; drawTemporal();};
+document.getElementById('rollJan').onchange=function(){
+ if(!C)return; drawTemporal();};
 window.addEventListener('resize',function(){
- if(!C)return; drawPeso();drawCal();drawVar();drawMacro();});
+ if(!C)return; drawTemporal();drawVar();drawMacro();});
 load();
 """
 

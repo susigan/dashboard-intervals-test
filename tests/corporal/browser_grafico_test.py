@@ -61,6 +61,36 @@ def gerar_payload():
         return tc.api_data().get_json()
 
 
+def gerar_payload_longo():
+    """Historico de 03/01/2022 ate hoje, com lacunas reais (sem registos) e um mes sem Net."""
+    import sheets_client as sheets
+    from flask import Flask
+    import tabs.tab_corporal as tc
+    d0, d1 = date(2022, 1, 3), date.today()
+    W, C = [['Data', 'Peso', 'FAT']], [['Data', 'Peso', 'BF', 'Calorias', 'Carb', 'Fat', 'Ptn', 'Net']]
+    for i in range((d1 - d0).days + 1):
+        d = d0 + timedelta(days=i)
+        if date(2023, 3, 1) <= d <= date(2023, 4, 15):
+            continue
+        peso = '' if i % 9 == 4 else '%.2f' % (90.0 - 0.006 * i + 0.5 * ((i * 7) % 5 - 2) / 4)
+        fat = '%.1f' % (22.0 - 0.003 * i + 0.4 * ((i * 3) % 4 - 1.5)) if i % 4 != 1 else ''
+        W.append([d.isoformat(), peso, fat])
+        if not (date(2024, 6, 1) <= d <= date(2024, 6, 30)):
+            cal = str(2100 + (i * 37) % 700)
+            net = str(int(cal) - 2300 + (i * 53) % 300 - 150)
+            if date(2025, 3, 1) <= d <= date(2025, 3, 31):
+                net = ''
+            C.append([d.isoformat(), '', '', cal, '250', '70', '150', net])
+
+    def fake(url, aba):
+        return (W if 'Respostas' in aba else C), None
+    sheets._ler_aba = fake
+    sheets._cache.update({'wellness': None, 'corporal': None, 'time': None})
+    app = Flask(__name__)
+    with app.test_request_context('/api/corporal?periodo=W'):
+        return tc.api_data().get_json()
+
+
 # ── implementacao de referencia em Python (independente do JS) ────────────────
 
 def periodo_py(d, g):
@@ -206,19 +236,19 @@ def main():
             pg.evaluate("()=>{document.getElementById('granul').value='W';document.getElementById('granul').onchange();}")
             pg.wait_for_timeout(200)
             geo = "const geo=(W)=>{const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);return {PL:PL,w:w};};"
-            info = pg.evaluate("()=>{" + geo + "const W=document.getElementById('chMain').clientWidth;"
-                               "const per=agregarTemporal(janelaDias(C.linhas),'W');"
-                               "const idx=per.findIndex(x=>x.k==='2025-W50');"
-                               "const G=geo(W);const x=G.PL+G.w*(idx/(per.length-1));"
+            info = pg.evaluate("()=>{" + geo + "const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
+                               "const q=T.figuras.chMain.dados.peso.periodos.find(z=>z.k==='2025-W50');"
+                               "const G=geo(W);const x=G.PL+G.w*((q.ini+3-T.t0)/(T.t1-T.t0));"
                                "return TIPS.chMain(x,10,W,340);}")
             check('tooltip de periodo vazio diz "sem registos no periodo"', 'sem registos no periodo' in info, info[:160])
-            info2 = pg.evaluate("()=>{" + geo + "const W=document.getElementById('chMain').clientWidth;"
-                                "const per=agregarTemporal(janelaDias(C.linhas),'W');"
-                                "const idx=per.findIndex(x=>x.dias>0);"
-                                "const G=geo(W);const x=G.PL+G.w*(idx/(per.length-1));"
+            info2 = pg.evaluate("()=>{" + geo + "const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
+                                "const q=T.figuras.chMain.dados.peso.periodos.find(z=>z.dias>0);"
+                                "const G=geo(W);const x=G.PL+G.w*((q.ini+3-T.t0)/(T.t1-T.t0));"
                                 "return TIPS.chMain(x,10,W,340);}")
+            import re as _re2
             check('tooltip traz periodo, intervalo, unidade e n',
-                  'kg' in info2 and 'n=' in info2 and 'registo' in info2 and '/' in info2, info2[:260])
+                  'kg' in info2 and 'n=' in info2 and 'resumo semanal' in info2
+                  and bool(_re2.search(r'\d{2}/\d{2}/\d{4} a \d{2}/\d{2}/\d{4}', info2)), info2[:260])
 
             # 5. Janela aplicada antes da agregacao
             pg.evaluate("()=>{document.getElementById('janela').value='90';document.getElementById('janela').onchange();}")
@@ -371,6 +401,8 @@ def main():
                   and all(q['v'] is None for q in pg3.evaluate("TEMP_ULT.figuras.chCalNet.dados.net.rolPts")))
             check('sem Net: calorias continuam na figura Calorias + Net',
                   pg3.evaluate("TEMP_ULT.figuras.chCalNet.lim.calorias") is not None)
+            check('sem Net: a figura informa "sem registos" para o Net',
+                  'net' in pg3.evaluate("TEMP_ULT.figuras.chCalNet.semDados"))
             check('sem Net: nenhum erro de JavaScript', not pg3.errs, str(pg3.errs))
             pg3.close()
             sem_nada = json.loads(json.dumps(payload))
@@ -425,6 +457,82 @@ def main():
                                "const OFF=W<560?56:72;return W-58-(10+2*OFF);})()") >= 120)
             pg7.locator('#chMain').locator('..').screenshot(path=os.path.join(SHOTS, 'main_390.png'))
             pg7.close()
+
+            # 12. Todo o historico (03/01/2022 ate hoje), janelas, lacunas e rolling longo
+            longo = gerar_payload_longo()
+            pl = pagina(longo)
+            pl.evaluate("()=>{const j=document.getElementById('janela');j.value='0';j.onchange();}")
+            pl.wait_for_timeout(150)
+            hoje_js = pl.evaluate("hojeLocal()")
+            check('Todo o historico: inicio fixo em 03/01/2022', pl.evaluate("TEMP_ULT.corte") == '2022-01-03')
+            check('Todo o historico: fim e a data atual (%s)' % hoje_js, pl.evaluate("TEMP_ULT.fim") == hoje_js)
+            opts = pl.evaluate("[...document.querySelectorAll('#janela option')].map(o=>o.textContent)")
+            check('opcao "Todo o histórico" aparece no seletor', 'Todo o histórico' in opts, str(opts))
+            per_w = pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.periodos.map(q=>[q.k,q.dias])")
+            y_, w_, _ = date.fromisoformat(hoje_js).isocalendar()
+            check('periodos semanais cobrem de 2022-W01 ate a semana atual',
+                  per_w[0][0] == '2022-W01' and per_w[-1][0] == '%d-W%02d' % (y_, w_), str((per_w[0], per_w[-1])))
+            vazios = pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.periodos.filter(q=>q.dias===0)")
+            check('lacuna real de 2023 gera periodos vazios sem valor',
+                  len(vazios) > 0 and all(q['v'] is None for q in vazios), str(len(vazios)))
+            rol_gap = pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.rolPts.map(q=>[diaStr(q.t),q.v])")
+            check('rolling nao preenche a lacuna de 2023 (dias 08/03 a 15/04 nulos)',
+                  all(v is None for dd, v in rol_gap if '2023-03-08' <= dd <= '2023-04-15'))
+            rol_net = pl.evaluate("TEMP_ULT.figuras.chCalNet.dados.net.rolPts.map(q=>[diaStr(q.t),q.v])")
+            check('rolling de Net nulo no mes sem Net (marco/2025, a partir do dia 8)',
+                  all(v is None for dd, v in rol_net if '2025-03-08' <= dd <= '2025-03-31'))
+            # rolling 7/14/28 contra referencia independente no historico longo
+            for N in [7, 28]:
+                pl.select_option('#rollJan', str(N)); pl.wait_for_timeout(120)
+                cont = pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.rolPts.map(q=>[diaStr(q.t),q.v])")
+                ref = ref_roll(longo['linhas'], 'peso', N)
+                ok = all((v is None) == (dd not in ref) and (v is None or abs(v - ref[dd][0]) < 1e-9) for dd, v in cont)
+                check('historico longo: rolling peso %d dias igual a referencia' % N, ok)
+            pl.select_option('#rollJan', '7'); pl.wait_for_timeout(120)
+            # janelas: 90/180/365 comecam no ultimo registo menos N-1 dias, nao em 2022
+            ultimo = longo['linhas'][-1]['date']
+            for jn_ in ['90', '180', '365']:
+                pl.select_option('#janela', jn_); pl.wait_for_timeout(120)
+                esperado = (date.fromisoformat(ultimo) - timedelta(days=int(jn_) - 1)).isoformat()
+                check('janela %s dias comeca em ultimo registo - %d dias' % (jn_, int(jn_) - 1),
+                      pl.evaluate("TEMP_ULT.corte") == esperado, '%s vs %s' % (pl.evaluate("TEMP_ULT.corte"), esperado))
+            # rolling nas datas comuns nao depende da janela escolhida
+            pl.select_option('#janela', '90'); pl.wait_for_timeout(120)
+            r90 = pl.evaluate("Object.fromEntries(TEMP_ULT.figuras.chMain.dados.peso.rolPts.map(q=>[diaStr(q.t),q.v]))")
+            pl.select_option('#janela', '0'); pl.wait_for_timeout(120)
+            r0 = pl.evaluate("Object.fromEntries(TEMP_ULT.figuras.chMain.dados.peso.rolPts.map(q=>[diaStr(q.t),q.v]))")
+            comuns = [k for k in r90 if k in r0]
+            check('rolling de uma data nao muda com a janela escolhida',
+                  len(comuns) > 0 and all(r90[k] == r0[k] for k in comuns), str(len(comuns)))
+            # as duas figuras usam o mesmo intervalo efetivo
+            check('figuras com o mesmo intervalo efetivo',
+                  pl.evaluate("TEMP_ULT.figuras.chMain.dados.calorias.rolPts.length === TEMP_ULT.figuras.chCalNet.dados.calorias.rolPts.length"))
+            # troca de janela: sem consulta ao Sheets, dados e KPIs intactos
+            antes_l = json.dumps(pl.evaluate("C.linhas"), sort_keys=True)
+            kpi_l = pl.evaluate("document.getElementById('kpis').textContent")
+            n_req = len(pl.reqs)
+            pl.select_option('#janela', '180'); pl.wait_for_timeout(120)
+            pl.select_option('#janela', '0'); pl.wait_for_timeout(120)
+            check('trocar janela nao faz consulta ao Sheets', len(pl.reqs) == n_req, str(pl.reqs[n_req:]))
+            check('trocar janela nao altera dados originais nem KPIs',
+                  antes_l == json.dumps(pl.evaluate("C.linhas"), sort_keys=True)
+                  and kpi_l == pl.evaluate("document.getElementById('kpis').textContent"))
+            # tooltips: media movel com minimo; resumo com intervalo de datas
+            t_rol = [q for q in pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.rolPts") if q['v'] is not None][100]['t']
+            tip_r = pl.evaluate("(t)=>{const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
+                                "const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);"
+                                "return TIPS.chMain(PL+w*((t-T.t0)/(T.t1-T.t0)),10,W,340);}", t_rol)
+            check('tooltip da media movel informa o minimo de registos', '(minimo 3)' in tip_r, tip_r[:200])
+            t_per = [q for q in pl.evaluate("TEMP_ULT.figuras.chMain.dados.peso.periodos") if q['dias'] > 0][40]['ini']
+            tip_p = pl.evaluate("(t)=>{const W=document.getElementById('chMain').clientWidth;const T=TEMP_ULT;"
+                                "const OFF=W<560?56:72;const PL=58,w=W-PL-(10+2*OFF);"
+                                "return TIPS.chMain(PL+w*((t-T.t0)/(T.t1-T.t0)),10,W,340);}", t_per)
+            import re as _re
+            check('tooltip do resumo informa o intervalo do periodo',
+                  bool(_re.search(r'\d{2}/\d{2}/\d{4} a \d{2}/\d{2}/\d{4}', tip_p)), tip_p[:200])
+            check('legenda usa "registros diários"', 'Peso — registros diários' in pl.inner_text('#lgMain'))
+            check('historico longo: nenhum erro de JavaScript', not pl.errs, str(pl.errs))
+            pl.close()
 
             # 10. sem dados: mensagem, sem erro
             vazio = {'status': 'OK', 'sheets_ok': True, 'erros_sheets': None, 'linhas': [],

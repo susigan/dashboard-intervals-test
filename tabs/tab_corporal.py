@@ -24,6 +24,7 @@ def api_data():
 
     res = corporal.resumo(linhas, wellness)
     ag = corporal.agrupar(linhas, periodo)
+    ag_mes = corporal.agrupar(linhas, 'M')
     cal_r7 = res['r7']['calorias']
 
     return jsonify({
@@ -34,8 +35,9 @@ def api_data():
         'r7': res['r7'],
         'agrupado': ag,
         'periodo': periodo,
-        'variacao': {'peso': corporal.variacao_com_bandas(ag, 'peso'),
-                     'bf': corporal.variacao_com_bandas(ag, 'bf')},
+        # variacao sempre mensal: as bandas (% do mes anterior) foram definidas para o mes
+        'variacao': {'peso': corporal.variacao_com_bandas(ag_mes, 'peso'),
+                     'bf': corporal.variacao_com_bandas(ag_mes, 'bf')},
         'bandas': {k: [{'pct': p, 'rotulo': r, 'cor': c}
                        for p, r, c in v] for k, v in corporal.BANDAS.items()},
         'macros': corporal.macros_percentagem(linhas),
@@ -96,11 +98,6 @@ BODY = r"""
       <option value="W" selected>Semana</option>
       <option value="M">Mes</option>
       <option value="Q">Trimestre</option>
-    </select></label>
-  <label class="sel">Variavel
-    <select id="varSel">
-      <option value="peso" selected>Peso</option>
-      <option value="bf">Gordura corporal</option>
     </select></label>
 </div>
 <div class="chartbox">
@@ -599,76 +596,81 @@ function drawTemporal(){
   Object.keys(ESTIMA_INFO).map(X=>X+' com atraso '+ESTIMA_INFO[X].L+' sem., R2='+ESTIMA_INFO[X].r2.toFixed(2)).join('; ')+'.':'');
 }
 
-// barras de variacao com as bandas de referencia por cima
+// variacao mensal de peso e gordura, em % do mes anterior, na mesma figura.
+// Bandas fixas em % (linhas horizontais): peso +-0.30 a +-0.70, gordura +-0.25 a +-0.65.
 function drawVar(){
- const campo=document.getElementById('varSel').value;
- const dados=C.variacao[campo]||[];
  const o=ctx('chVar',260); if(!o)return;
  const g=o.g,W=o.W,H=o.H;
- const PL=54,PR=16,PT=12,PB=30,w=W-PL-PR,h=H-PT-PB,n=dados.length;
+ const PL=54,PR=16,PT=12,PB=30,w=W-PL-PR,h=H-PT-PB;
+ const metricas=['peso','bf'];
+ // meses em ordem; cada mes tem a variacao de cada metrica (ou nada)
+ const chaves=[];
+ metricas.forEach(m=>(C.variacao[m]||[]).forEach(d=>{if(!chaves.includes(d.periodo))chaves.push(d.periodo);}));
+ chaves.sort();
+ const n=chaves.length;
  if(!n){noData(g,W,H,'Sem dados suficientes');return;}
- const bandas=C.bandas[campo]||[];
- const rotulos=bandas.map(b=>b.rotulo);
+ const mapa={};
+ metricas.forEach(m=>{mapa[m]={};(C.variacao[m]||[]).forEach(d=>{
+  mapa[m][d.periodo]={pct:d.delta/d.base*100,delta:d.delta,base:d.base,valor:d.valor};});});
+ const bandas={};
+ metricas.forEach(m=>{bandas[m]=(C.bandas[m]||[]).map(b=>({pct:b.pct*100,rotulo:b.rotulo,cor:b.cor}));});
 
  let mn=0,mx=0;
- dados.forEach(function(d){
-  mn=Math.min(mn,d.delta);mx=Math.max(mx,d.delta);
-  rotulos.forEach(function(r){if(d[r]!=null){mn=Math.min(mn,d[r]);mx=Math.max(mx,d[r]);}});});
- const marg=(mx-mn)*0.12||0.1; mn-=marg; mx+=marg;
+ metricas.forEach(m=>{Object.values(mapa[m]).forEach(v=>{mn=Math.min(mn,v.pct);mx=Math.max(mx,v.pct);});
+  bandas[m].forEach(b=>{mn=Math.min(mn,b.pct);mx=Math.max(mx,b.pct);});});
+ const marg=(mx-mn)*0.12||0.5; mn-=marg; mx+=marg;
  const Y=v=>PT+h-(v-mn)/(mx-mn)*h;
  const X=i=>PL+w*(i+0.5)/n;
+ const slot=w/n, bw=Math.max(2,Math.min(9,slot*0.36));
 
- g.strokeStyle='#21262d';
+ g.strokeStyle='#21262d';g.lineWidth=1;
  for(let i=0;i<=4;i++){const y=PT+h*i/4;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();}
  g.strokeStyle='#8b949e';g.lineWidth=1;g.beginPath();
  g.moveTo(PL,Y(0));g.lineTo(PL+w,Y(0));g.stroke();
 
- const bw=Math.max(2,w/n*0.55);
- dados.forEach(function(d,i){
-  const y0=Y(0),y1=Y(d.delta);
-  g.fillStyle=d.delta>=0?CORC[campo]:'#E74C3C';
-  g.globalAlpha=0.8;
-  g.fillRect(X(i)-bw/2,Math.min(y0,y1),bw,Math.abs(y1-y0));
-  g.globalAlpha=1;});
+ // bandas: linhas horizontais em % fixo (tracejado = limite maximo, pontilhado = limite minimo)
+ metricas.forEach(m=>bandas[m].forEach(b=>{
+  g.strokeStyle=b.cor;g.lineWidth=1.2;
+  g.setLineDash(Math.abs(b.pct)>=0.6?[6,3]:[2,3]);
+  g.beginPath();g.moveTo(PL,Y(b.pct));g.lineTo(PL+w,Y(b.pct));g.stroke();g.setLineDash([]);}));
 
- bandas.forEach(function(b){
-  g.strokeStyle=b.cor;g.lineWidth=1.4;
-  g.setLineDash(Math.abs(b.pct)>0.005?[6,3]:[2,3]);
-  g.beginPath();let st=false;
-  dados.forEach(function(d,i){const v=d[b.rotulo];if(v==null)return;
-   if(!st){g.moveTo(X(i),Y(v));st=true;}else g.lineTo(X(i),Y(v));});
-  g.stroke();g.setLineDash([]);});
+ // barras: peso a esquerda, gordura a direita de cada mes
+ metricas.forEach((m,mi)=>{
+  const off=(mi===0?-1:1)*(bw/2+1);
+  chaves.forEach((k,i)=>{const v=mapa[m][k]; if(!v) return;
+   const y0=Y(0), y1=Y(v.pct);
+   g.fillStyle=CORC[m];g.globalAlpha=0.85;
+   g.fillRect(X(i)+off-bw/2,Math.min(y0,y1),bw,Math.abs(y1-y0));
+   g.globalAlpha=1;});});
 
  document.getElementById('lgVar').innerHTML=
-  '<span><i style="background:'+CORC[campo]+'"></i>Δ '+LBLC[campo]+'</span>'+
-  bandas.map(b=>'<span><i style="background:'+b.cor+'"></i>'+b.rotulo+'</span>').join('');
+  '<span><i style="background:'+CORC.peso+'"></i>Δ% peso (mensal)</span>'+
+  '<span><i style="background:'+CORC.bf+'"></i>Δ% gordura (mensal)</span>'+
+  bandas.peso.map(b=>'<span><i style="background:'+b.cor+'"></i>peso '+b.rotulo+'</span>').join('')+
+  bandas.bf.map(b=>'<span><i style="background:'+b.cor+'"></i>gord. '+b.rotulo+'</span>').join('');
 
  g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
- for(let i=0;i<=4;i++)g.fillText((mx-(mx-mn)*i/4).toFixed(2),PL-6,PT+h*i/4+3);
+ for(let i=0;i<=4;i++)g.fillText((mx-(mx-mn)*i/4).toFixed(2)+'%',PL-6,PT+h*i/4+3);
  g.textAlign='center';
  const step=Math.ceil(n/10);
- dados.forEach(function(d,i){if(i%step!==0)return;
+ chaves.forEach(function(k,i){if(i%step!==0)return;
   g.save();g.translate(X(i),H-8);
   if(n>14){g.rotate(-Math.PI/5);g.textAlign='right';}
-  g.fillText(d.periodo,0,0);g.restore();});
+  g.fillText(k,0,0);g.restore();});
  g.textAlign='left';
 
  registarTip('chVar',function(mxp,myp,rw){
-  const esc=rw/W,x=mxp/esc;
-  const i=Math.floor((x/esc?x:x-PL)/(w/n));
+  const x=mxp*(W/rw);
   const j=Math.round((x-PL)/w*n-0.5);
-  const d=dados[j]; if(!d)return '';
-  const un=campo==='peso'?' kg':' %';
-  let html='<div class="th">'+d.periodo+'</div>'+
-   linhaTip(CORC[campo],'Δ',(d.delta>=0?'+':'')+d.delta+un)+
-   '<div class="tr"><span>Valor</span><b>'+d.valor+un+'</b></div>'+
-   '<div class="tr"><span>Base anterior</span><b>'+d.base+un+'</b></div>';
-  bandas.forEach(function(b){if(d[b.rotulo]==null)return;
-   html+=linhaTip(b.cor,b.rotulo,(d[b.rotulo]>=0?'+':'')+d[b.rotulo]+un);});
-  const dentro=Math.abs(d.delta)<=Math.abs(d[rotulos[0]]||99);
-  html+='<div class="tr" style="border-top:1px solid #30363d;margin-top:4px;'+
-   'padding-top:4px"><span>Dentro do esperado</span><b style="color:'+
-   (dentro?'#2ECC71':'#E67E22')+'">'+(dentro?'sim':'nao')+'</b></div>';
+  const k=chaves[j]; if(k===undefined||x<PL||x>PL+w) return '';
+  let html='<div class="th">'+k+'</div>';
+  metricas.forEach(m=>{const v=mapa[m][k]; if(!v) return;
+   const un=m==='peso'?' kg':' pp';
+   html+=linhaTip(CORC[m],SERIES_TEMP[m].titulo+' (mensal)',
+    (v.pct>=0?'+':'')+v.pct.toFixed(2)+'% · '+(v.delta>=0?'+':'')+v.delta+un+' · valor '+v.valor+un);
+   const lim=Math.abs(bandas[m][0].pct);
+   html+='<div class="tr"><span>Dentro do esperado ('+SERIES_TEMP[m].titulo+')</span><b style="color:'+
+    (Math.abs(v.pct)<=lim?'#2ECC71':'#E67E22')+'">'+(Math.abs(v.pct)<=lim?'sim':'nao')+'</b></div>';});
   return html;});
 }
 
@@ -775,13 +777,12 @@ async function load(){
   k[1]+k[2]+'</div></div>').join('');
 
  document.getElementById('subVar').innerHTML=
-  'Bandas sobre o valor do periodo anterior — Peso ±0.30% a ±0.70%, '+
-  'Gordura ±0.25% a ±0.65%. Barras dentro das bandas = variacao fisiologica normal.';
+  'Variacao mensal em % do mes anterior. Bandas: peso ±0.30% a ±0.70%, '+
+  'gordura ±0.25% a ±0.65%. Barras dentro das bandas = variacao fisiologica normal.';
 
  drawTemporal();drawVar();drawMacro();tabelaLag();
 }
 document.getElementById('periodo').onchange=load;
-['varSel'].forEach(id=>document.getElementById(id).onchange=drawVar);
 document.getElementById('macroModo').onchange=drawMacro;
 document.getElementById('janela').onchange=function(){
  if(!C)return; drawTemporal();drawMacro();};

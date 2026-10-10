@@ -494,6 +494,14 @@ def main():
               const g=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let n=0;
               for(let i=3;i<g.length;i+=4) if(g[i]>0) n++; out[id]=n;});return out;}""")
             check('grafico de variacao desenha', tinta.get('chVar', 0) > 0, str(tinta))
+            lg_var = pg.inner_text('#lgVar')
+            check('variacao: peso e gordura na mesma figura (legenda)',
+                  'Δ% peso' in lg_var and 'Δ% gordura' in lg_var, lg_var[:160])
+            check('variacao: sem seletor de variavel', pg.evaluate("!document.getElementById('varSel')"))
+            chaves_v = [d['periodo'] for d in pg.evaluate("C.variacao.peso")]
+            check('variacao: meses (AAAA-MM), independente do seletor de periodo',
+                  chaves_v and all(__import__('re').match(r'^\d{4}-\d{2}$', k) for k in chaves_v), str(chaves_v[:3]))
+
             check('grafico de macros desenha', tinta.get('chMacro', 0) > 0, str(tinta))
             check('tabela de lag preenchida', pg.evaluate("document.getElementById('lagBody').rows.length") > 0)
             check('nenhum erro de JavaScript durante os testes', not pg.errs, str(pg.errs))

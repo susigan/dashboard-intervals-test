@@ -1646,7 +1646,7 @@ function gammaLagTxt(e){
 function gammaTexto(g){
  if(!g)return '—';
  const e=gammaEstado(g);
- const r2=(e.r2!=null?'R&sup2; no γ aplicado '+e.r2:'sem ajuste');
+ const r2=(e.r2!=null?'R&sup2; do γ aplicado '+e.r2:'sem ajuste');
  if(e.antigo)return e.gamma+' (R&sup2; '+(g.r2)+')';
  if(e.padrao)return e.gamma+' <span title="'+e.motivo+'" style="color:#E67E22">padrão — ajuste rejeitado</span> ('+r2+')'+gammaLagTxt(e);
  return e.gamma+' calibrado ('+r2+')'+gammaLagTxt(e);
@@ -1792,7 +1792,7 @@ function drawPMC(){
            ['tsb','TSB (forma)','#2ECC71']];
  if(verF&&F){
   const gg=F.gammas||{};
-  const rotG=(x)=>(x?x.gamma+(x.origem==='padrao'?' padrão':''):'?');
+  const rotG=(x)=>(x?x.gamma+(x.origem==='padrao'?' padrão':(x.origem==='calibracao'?' calibrado':'')):'?');
   it.push(['ctlg_perf','CTLγ perf (γ='+rotG(gg.perf)+')','#2980b9']);
   it.push(['ctlg_rec','CTLγ rec (γ='+rotG(gg.rec)+')','#8e44ad']);}
  document.getElementById('lgPMC').innerHTML=it.map(x=>

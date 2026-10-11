@@ -912,6 +912,7 @@ def api_export(nome):
     base = base or nome
     ext = (ext or 'csv').lower()
     tipo = request.args.get('tipo')
+    resumo = None
 
     try:
         if base == 'tudo':
@@ -957,6 +958,11 @@ def api_export(nome):
             texto = export.cp_ajustado(db)
         elif base == 'serie_diaria':
             texto = export.serie_diaria(_pmc, db, sheets)
+        elif base == 'cp_fallback' and ext == 'csv':
+            try:
+                texto, resumo = export.cp_fallback(db)
+            except export.SemDados as e:
+                return jsonify({'erro': str(e)}), 503
         else:
             return jsonify({'erro': f'"{base}" nao existe',
                             **export.indice()}), 404
@@ -968,8 +974,11 @@ def api_export(nome):
 
     mime = 'application/json' if ext == 'json' else 'text/csv'
     hoje = datetime.now().strftime('%Y%m%d')
-    return Response(texto, mimetype=f'{mime}; charset=utf-8', headers={
-        'Content-Disposition': f'attachment; filename="{base}_{hoje}.{ext}"'})
+    cab = {'Content-Disposition': f'attachment; filename="{base}_{hoje}.{ext}"'}
+    if resumo is not None:
+        import json as _json
+        cab['X-Resumo'] = _json.dumps(resumo, ensure_ascii=True)
+    return Response(texto, mimetype=f'{mime}; charset=utf-8', headers=cab)
 
 
 @app.route('/api/debug/wellness-icu')

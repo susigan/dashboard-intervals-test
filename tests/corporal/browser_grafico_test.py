@@ -32,7 +32,7 @@ def check(nome, ok, detalhe=''):
 
 # ── dados sinteticos e payload real da api_data ───────────────────────────────
 
-def gerar_payload():
+def gerar_payload(periodo='W'):
     import sheets_client as sheets
     from flask import Flask
     import tabs.tab_corporal as tc
@@ -57,7 +57,7 @@ def gerar_payload():
     sheets._ler_aba = fake
     sheets._cache.update({'wellness': None, 'corporal': None, 'time': None})
     app = Flask(__name__)
-    with app.test_request_context('/api/corporal?periodo=W'):
+    with app.test_request_context('/api/corporal?periodo=%s' % periodo):
         return tc.api_data().get_json()
 
 
@@ -498,9 +498,22 @@ def main():
             check('variacao: peso e gordura na mesma figura (legenda)',
                   'Δ% peso' in lg_var and 'Δ% gordura' in lg_var, lg_var[:160])
             check('variacao: sem seletor de variavel', pg.evaluate("!document.getElementById('varSel')"))
-            chaves_v = [d['periodo'] for d in pg.evaluate("C.variacao.peso")]
-            check('variacao: meses (AAAA-MM), independente do seletor de periodo',
-                  chaves_v and all(__import__('re').match(r'^\d{4}-\d{2}$', k) for k in chaves_v), str(chaves_v[:3]))
+            # variacao segue o seletor "Agrupar por": semana, mes e trimestre (payloads reais da api_data)
+            PAY = {p_: gerar_payload(p_) for p_ in ['W', 'M', 'Q']}
+            padroes = {'W': r'^\d{4}-W\d{2}$', 'M': r'^\d{4}-\d{2}$', 'Q': r'^\d{4}-Q\d$'}
+            contagem = {}
+            for p_ in ['M', 'Q', 'W']:
+                pg.unroute('**/api/corporal**')
+                def _resp(route, *_, _p=p_):
+                    route.fulfill(body=json.dumps(PAY[_p]), content_type='application/json')
+                pg.route('**/api/corporal**', _resp)
+                pg.select_option('#periodo', p_); pg.wait_for_timeout(700)
+                chaves_v = [d['periodo'] for d in pg.evaluate("C.variacao.peso")]
+                contagem[p_] = len(chaves_v)
+                check('variacao agrupada por %s: chaves no formato do periodo' % p_,
+                      chaves_v and all(__import__('re').match(padroes[p_], k) for k in chaves_v), str(chaves_v[:3]))
+            check('variacao muda com o agrupamento (semana > mes > trimestre)',
+                  contagem['W'] > contagem['M'] > contagem['Q'] > 0, str(contagem))
 
             check('grafico de macros desenha', tinta.get('chMacro', 0) > 0, str(tinta))
             check('tabela de lag preenchida', pg.evaluate("document.getElementById('lagBody').rows.length") > 0)

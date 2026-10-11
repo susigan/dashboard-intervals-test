@@ -24,7 +24,6 @@ def api_data():
 
     res = corporal.resumo(linhas, wellness)
     ag = corporal.agrupar(linhas, periodo)
-    ag_mes = corporal.agrupar(linhas, 'M')
     cal_r7 = res['r7']['calorias']
 
     return jsonify({
@@ -35,9 +34,9 @@ def api_data():
         'r7': res['r7'],
         'agrupado': ag,
         'periodo': periodo,
-        # variacao sempre mensal: as bandas (% do mes anterior) foram definidas para o mes
-        'variacao': {'peso': corporal.variacao_com_bandas(ag_mes, 'peso'),
-                     'bf': corporal.variacao_com_bandas(ag_mes, 'bf')},
+        # variacao no mesmo agrupamento escolhido em "Agrupar por"
+        'variacao': {'peso': corporal.variacao_com_bandas(ag, 'peso'),
+                     'bf': corporal.variacao_com_bandas(ag, 'bf')},
         'bandas': {k: [{'pct': p, 'rotulo': r, 'cor': c}
                        for p, r, c in v] for k, v in corporal.BANDAS.items()},
         'macros': corporal.macros_percentagem(linhas),
@@ -777,8 +776,8 @@ async function load(){
   k[1]+k[2]+'</div></div>').join('');
 
  document.getElementById('subVar').innerHTML=
-  'Variacao mensal em % do mes anterior. Bandas: peso ±0.30% a ±0.70%, '+
-  'gordura ±0.25% a ±0.65%. Barras dentro das bandas = variacao fisiologica normal.';
+  'Variacao em % do periodo anterior, no agrupamento escolhido. Bandas (definidas para o mes): '+
+  'peso ±0.30% a ±0.70%, gordura ±0.25% a ±0.65%. Barras dentro das bandas = variacao fisiologica normal.';
 
  drawTemporal();drawVar();drawMacro();tabelaLag();
 }

@@ -157,6 +157,21 @@ def alertas(dias, wellness=None):
 # FTLM fraccionario, fases e FMT — sobre a camada classica acima
 # ══════════════════════════════════════════════════════════════════════════
 
+def _r2_gamma_aplicado(ctl, alvo, lag, suavizar):
+    """R² do CTLγ já calculado com o γ efetivamente aplicado.
+
+    Usa o mesmo alinhamento de ftlm.fit_gamma (média móvel causal do alvo e
+    lag). Só serve para exibir o R² do γ aplicado; não altera nenhum ajuste.
+    """
+    import numpy as np
+    import ftlm
+    alvo = np.asarray(alvo, dtype=np.float64)
+    a = ftlm._media_movel(alvo, suavizar) if suavizar > 1 else alvo
+    x = ctl[:-lag] if lag else ctl
+    y = a[lag:] if lag else a
+    return round(float(ftlm._r2(x, y)), 4)
+
+
 def _serie_por_dia(sessoes, datas, campo, agregacao='sum'):
     """Valor diario alinhado com a lista de datas. NaN onde nao ha sessao."""
     import numpy as np
@@ -252,13 +267,19 @@ def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
         if np.isfinite(sq).sum() >= 5:
             sleep_z = _zscore_rolling_28(sq, datas)
 
+    # Lags e suavizacao dos ajustes de gamma: fixos, nao estimados. Os mesmos
+    # valores sao passados a fit_gamma e gravados nos metadados.
+    LAG_PERF, SUAV_PERF = 0, 3
+    LAG_REC, SUAV_REC = 1, 0
+
     # ── gamma de recuperacao: carga de ontem contra HRV de hoje (lag=1) ────
     gamma_rec, r2_rec, n_rec = ftlm.GAMMA_DEFAULT, 0.0, 0
     fit_rec = {'motivo': 'sem serie de HRV suficiente', 'aceite': False}
     hrv_tendencia = np.full(n, np.nan)
     if int(np.isfinite(hrv_ln).sum()) >= 21:
         hrv_tendencia = ftlm.hrv_trend(hrv_ln, window=7)
-        fit_rec = ftlm.fit_gamma(cargas, hrv_tendencia, lag=1, max_lag=max_lag)
+        fit_rec = ftlm.fit_gamma(cargas, hrv_tendencia, lag=LAG_REC,
+                                 max_lag=max_lag, suavizar=SUAV_REC)
         gamma_rec = fit_rec['gamma']
         r2_rec, n_rec = fit_rec['r2'], fit_rec['n']
 
@@ -267,13 +288,20 @@ def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
     gamma_perf, r2_perf, n_perf = ftlm.GAMMA_DEFAULT, 0.0, 0
     fit_perf = {'motivo': 'sem pontos de CP suficientes', 'aceite': False}
     if np.isfinite(cp).sum() >= 10:
-        fit_perf = ftlm.fit_gamma(cargas, cp, lag=0, max_lag=max_lag,
-                                  suavizar=3)
+        fit_perf = ftlm.fit_gamma(cargas, cp, lag=LAG_PERF, max_lag=max_lag,
+                                  suavizar=SUAV_PERF)
         gamma_perf = fit_perf['gamma']
         r2_perf, n_perf = fit_perf['r2'], fit_perf['n']
 
     ctlg_perf = ftlm.ftlm_fractional(cargas, gamma_perf, max_lag)
     ctlg_rec = ftlm.ftlm_fractional(cargas, gamma_rec, max_lag)
+
+    # R² do γ efetivamente aplicado (pode diferir do candidato r2_* quando o
+    # ajuste e rejeitado e o γ volta ao padrão).
+    r2_aplicado_perf = (_r2_gamma_aplicado(ctlg_perf, cp, LAG_PERF, SUAV_PERF)
+                        if fit_perf.get('gamma_encontrado') is not None else None)
+    r2_aplicado_rec = (_r2_gamma_aplicado(ctlg_rec, hrv_tendencia, LAG_REC, SUAV_REC)
+                       if fit_rec.get('gamma_encontrado') is not None else None)
 
     por_mod, ctlg_mod, fases_mod = {}, {}, {}
     for mod in modalidades:
@@ -289,11 +317,13 @@ def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
                  'na_fronteira': False, 'p_permutacao': None,
                  'motivo': 'sem pontos de CP suficientes'}
         if np.isfinite(cp_mod).sum() >= 5:
-            fit_m = ftlm.fit_gamma(carga_mod, cp_mod, lag=0,
-                                   max_lag=max_lag, suavizar=3)
+            fit_m = ftlm.fit_gamma(carga_mod, cp_mod, lag=LAG_PERF,
+                                   max_lag=max_lag, suavizar=SUAV_PERF)
             g_m, r2_m, n_m = fit_m['gamma'], fit_m['r2'], fit_m['n']
         serie_mod = ftlm.ftlm_fractional(carga_mod, g_m, max_lag)
         ctlg_mod[mod] = serie_mod
+        r2_aplicado_m = (_r2_gamma_aplicado(serie_mod, cp_mod, LAG_PERF, SUAV_PERF)
+                         if fit_m.get('gamma_encontrado') is not None else None)
 
         f_mod = ftlm.detect_phases(serie_mod, hrv_tendencia, weed_z,
                                    _dias_sem_treino(carga_mod))
@@ -301,6 +331,9 @@ def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
 
         por_mod[mod] = {
             'gamma': g_m, 'r2': r2_m, 'n': n_m,
+            'origem': 'calibracao' if fit_m.get('aceite') else 'padrao',
+            'r2_aplicado': r2_aplicado_m,
+            'lag': LAG_PERF, 'suavizacao': SUAV_PERF,
             'gamma_fit': {k: fit_m.get(k) for k in
                           ('gamma_encontrado', 'aceite', 'na_fronteira',
                            'p_permutacao', 'motivo')},
@@ -372,11 +405,19 @@ def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
     return {
         'serie': serie,
         'gammas': {
+            # 'gamma' e o aplicado; 'r2' e o do ajuste candidato (ja existia);
+            # 'r2_aplicado' e o R² da curva do gamma aplicado.
             'perf': {'gamma': gamma_perf, 'r2': r2_perf, 'n': n_perf,
+                     'origem': 'calibracao' if fit_perf.get('aceite') else 'padrao',
+                     'r2_aplicado': r2_aplicado_perf,
+                     'lag': LAG_PERF, 'suavizacao': SUAV_PERF,
                      **{k: (fit_perf or {}).get(k) for k in
                         ('gamma_encontrado', 'aceite', 'na_fronteira',
                          'p_permutacao', 'motivo')}},
             'rec': {'gamma': gamma_rec, 'r2': r2_rec, 'n': n_rec,
+                    'origem': 'calibracao' if fit_rec.get('aceite') else 'padrao',
+                    'r2_aplicado': r2_aplicado_rec,
+                    'lag': LAG_REC, 'suavizacao': SUAV_REC,
                     **{k: (fit_rec or {}).get(k) for k in
                        ('gamma_encontrado', 'aceite', 'na_fronteira',
                         'p_permutacao', 'motivo')}},

@@ -330,6 +330,13 @@ R&sup2; entre o CTL&gamma; e um indicador real teu. Sao dois &gamma; independent
 <li><b>&gamma;<sub>rec</sub></b> — ajustado contra a tendencia do teu LnRMSSD, com um dia
 de desfasamento (a carga de ontem explica o HRV de hoje)</li>
 </ul>
+<p>Os lags sao fixos, nao estimados: &gamma;<sub>perf</sub> usa a carga do proprio dia
+(lag 0) contra a CP suavizada por media movel causal de 3 dias; &gamma;<sub>rec</sub> usa
+a carga de ontem (lag 1) contra a tendencia do LnRMSSD.</p>
+<p>Se o ajuste nao passa nos criterios (R&sup2; minimo, &gamma; no extremo da grelha, ou
+uma permutacao que nao supera o acaso), o &gamma; usado e o padr&atilde;o <b>0.35</b> e
+a interface indica isso, com o motivo. O R&sup2; mostrado e sempre o do &gamma;
+efetivamente aplicado, nunca o do candidato rejeitado.</p>
 
 <p class="nota">Porque e que as duas curvas tem escalas tao diferentes: com
 &gamma;=0.9 o expoente e &minus;0.1 e a soma quase nao decai, chegando aos milhares;
@@ -1219,8 +1226,12 @@ function drawCTLg(){
   const v=pm[m];
   const leg=(D.ftlm||{}).fases_legenda||{};
   const f=leg[v.fase]||{};
+  const em=gammaEstado(v);
+  const rotuloG=em.padrao?' (padrão, ajuste rejeitado)':
+    (em.origem==='calibracao'?' (calibrado)':'');
   document.getElementById('lgM'+m).innerHTML=
-   '<span><i style="background:'+cor+'"></i>CTLγ γ='+v.gamma+' R²='+v.r2+'</span>'+
+   '<span><i style="background:'+cor+'"></i>CTLγ γ='+v.gamma+rotuloG+
+    ' R²='+(em.r2!=null?em.r2:'—')+'</span>'+
    '<span style="opacity:.6"><i style="background:'+cor+'"></i>CTL/ATL</span>'+
    (f.label?'<span style="color:'+f.cor+'">'+f.label+'</span>':'');
 
@@ -1615,11 +1626,36 @@ function drawFMT(){
   contrib.map(c=>c.nome+' <b>'+c.pct.toFixed(0)+'%</b>').join(' · ')+
   '</div>';
 }
+// ── estado dos gammas: origem (calibracao ou padrao), R² do gamma aplicado ──
+// g = F.gammas.perf | F.gammas.rec (metadados no proprio objeto) ou
+// por_modalidade[m] (metadados do ajuste em gamma_fit). Respostas antigas,
+// sem 'origem', ficam sem rotulo de estado e mostram so o valor.
+function gammaEstado(g){
+ const gf=g.gamma_fit||g;
+ const antigo=(g.origem===undefined);
+ let r2=(g.r2_aplicado!=null?g.r2_aplicado:(antigo?g.r2:null));
+ return {gamma:g.gamma, origem:g.origem, padrao:(g.origem==='padrao'),
+         antigo:antigo, r2:r2, lag:g.lag, suav:g.suavizacao,
+         motivo:gf.motivo||'',
+         candidato:(gf.gamma_encontrado!=null?gf.gamma_encontrado:null)};
+}
+function gammaLagTxt(e){
+ if(e.lag==null)return '';
+ return ' · lag '+e.lag+(e.suav>1?' · média móvel '+e.suav+' d':'');
+}
+function gammaTexto(g){
+ if(!g)return '—';
+ const e=gammaEstado(g);
+ const r2=(e.r2!=null?'R&sup2; no γ aplicado '+e.r2:'sem ajuste');
+ if(e.antigo)return e.gamma+' (R&sup2; '+(g.r2)+')';
+ if(e.padrao)return e.gamma+' <span title="'+e.motivo+'" style="color:#E67E22">padrão — ajuste rejeitado</span> ('+r2+')'+gammaLagTxt(e);
+ return e.gamma+' calibrado ('+r2+')'+gammaLagTxt(e);
+}
 function tabelaGammas(){
  const pm=(D.ftlm||{}).por_modalidade||{};
  const mods=Object.keys(pm);
  document.getElementById('gHead').innerHTML=
-  ['Modalidade','γ','R²','n','Sessoes','CTLγ (% do proprio max)','Fase']
+  ['Modalidade','γ','R² (γ aplicado)','dias-alvo','Sessoes','CTLγ (% do proprio max)','Fase']
    .map((c,i)=>'<th class="'+(i&&i<6?'num':'')+'">'+c+'</th>').join('');
  const leg=(D.ftlm||{}).fases_legenda||{};
  // O CTLγ absoluto NAO e comparavel entre modalidades: gammas diferentes
@@ -1627,14 +1663,15 @@ function tabelaGammas(){
  // γ=0.1 a dezenas). Mostramos a percentagem do proprio maximo, que e
  // comparavel, e o valor bruto em segunda linha.
  document.getElementById('gBody').innerHTML=mods.map(function(m){
-  const v=pm[m], f=leg[v.fase]||{}, gf=v.gamma_fit||{};
-  const suspeito=gf.aceite===false;
+  const v=pm[m], f=leg[v.fase]||{}, e=gammaEstado(v);
+  const gCel=e.padrao
+   ? v.gamma+'<br><span style="font-size:11px;color:#E67E22" title="'+e.motivo+'">'+
+     'padrão'+(e.candidato!=null?' (dados deram '+e.candidato+')':'')+'</span>'
+   : v.gamma+(e.origem==='calibracao'
+     ? '<br><span style="font-size:11px;color:#2ECC71">calibrado</span>':'');
   return '<tr><td style="color:'+(D.cores[m]||'#e6e6e6')+'">'+m+'</td>'+
-   '<td class="num">'+v.gamma+
-    (suspeito?'<br><span style="font-size:11px;color:#E67E22" title="'+
-     (gf.motivo||'')+'">defeito'+(gf.gamma_encontrado!=null?
-     ' (dados deram '+gf.gamma_encontrado+')':'')+'</span>':'')+'</td>'+
-   '<td class="num">'+v.r2+'</td>'+
+   '<td class="num">'+gCel+'</td>'+
+   '<td class="num">'+(e.r2!=null?e.r2:'—')+'</td>'+
    '<td class="num">'+v.n+'</td><td class="num">'+v.n_sessoes+'</td>'+
    '<td class="num">'+(v.ctlg_pct!=null?v.ctlg_pct+'%':'—')+
     '<br><span style="font-size:11px;color:#8b949e">'+
@@ -1755,8 +1792,9 @@ function drawPMC(){
            ['tsb','TSB (forma)','#2ECC71']];
  if(verF&&F){
   const gg=F.gammas||{};
-  it.push(['ctlg_perf','CTLγ perf (γ='+(gg.perf?gg.perf.gamma:'?')+')','#2980b9']);
-  it.push(['ctlg_rec','CTLγ rec (γ='+(gg.rec?gg.rec.gamma:'?')+')','#8e44ad']);}
+  const rotG=(x)=>(x?x.gamma+(x.origem==='padrao'?' padrão':''):'?');
+  it.push(['ctlg_perf','CTLγ perf (γ='+rotG(gg.perf)+')','#2980b9']);
+  it.push(['ctlg_rec','CTLγ rec (γ='+rotG(gg.rec)+')','#8e44ad']);}
  document.getElementById('lgPMC').innerHTML=it.map(x=>
   '<span class="tog'+(OFFP[x[0]]?' off':'')+'" data-k="'+x[0]+'">'+
   '<i style="background:'+x[2]+'"></i>'+x[1]+'</span>').join('');
@@ -2037,18 +2075,26 @@ montarExport();
    'carga diaria empilhada por modalidade em baixo<br>'+
    '<span style="font-size:12px">Kernel Riemann-Liouville: CTL&gamma;(t) = '+
    '&Sigma; Load(t&minus;k)&middot;k<sup>&gamma;&minus;1</sup>/&Gamma;(&gamma;) &middot; '+
-   '&gamma;<sub>perf</sub> '+(g.perf?g.perf.gamma+' (R&sup2; '+g.perf.r2+')':'—')+
-   ' &middot; &gamma;<sub>rec</sub> '+(g.rec?g.rec.gamma+' (R&sup2; '+g.rec.r2+')':'—')+
+   '&gamma;<sub>perf</sub> '+gammaTexto(g.perf)+
+   ' &middot; &gamma;<sub>rec</sub> '+gammaTexto(g.rec)+
    (D.cp_fonte&&D.cp_fonte.da_curva
     ? '<br>CP de '+D.cp_fonte.da_curva+' sessoes ajustado a P(t)=W&prime;/t+CP '+
       '(2-20min, R&sup2;&ge;0.80)' : '')+'</span>';
 
   drawCTLg(); tabelaGammas(); drawFMT();
   const fm=F.fmt||{};
+  // As dimensoes CTLg_perf e CTLg_rec usam o gamma aplicado. Quando e o padrao,
+  // o kappa herda essa escolha: dizemos isso aqui, sem alterar o calculo.
+  const gFmt=F.gammas||{};
+  const herdados=[['perf',gFmt.perf],['rec',gFmt.rec]]
+   .filter(x=>x[1]&&x[1].origem==='padrao');
+  const notaPadrao=herdados.length?'<br><span style="color:#E67E22">'+
+   herdados.map(x=>'CTLg_'+x[0]+' com γ padrão '+x[1].gamma).join(' e ')+
+   ' (ajuste não aceito): κ herda esse γ.</span>':'';
   document.getElementById('subFMT').innerHTML=
    '&kappa;(t) = trace(cov(&Delta;x)) em janela de 28d sobre '+
    (fm.dimensoes||[]).length+' dimensoes: '+(fm.dimensoes||[]).join(', ')+
-   '. &kappa; alto = sistema a oscilar mais.';
+   '. &kappa; alto = sistema a oscilar mais.'+notaPadrao;
  }
 
 }

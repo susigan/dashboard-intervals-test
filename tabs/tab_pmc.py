@@ -671,6 +671,8 @@ __EXPL_alos__
     <td class="num"><a href="/api/export/testes.csv">CSV</a></td></tr>
   <tr><td>CP ajustado</td><td>CP e W&prime; por sessao, de P(t)=W&prime;/t+CP</td>
     <td class="num"><a href="/api/export/cp.csv">CSV</a></td></tr>
+  <tr><td>CP de fallback</td><td>CP bruto das sessoes sem curva: icu_pm_cp, icu_rolling_ftp, icu_pm_ftp, icu_pm_w_prime</td>
+    <td class="num"><a href="/api/export/cp_fallback.csv">CSV</a></td></tr>
   <tr><td>Serie diaria</td><td>CTL, ATL, TSB dia a dia</td>
     <td class="num"><a href="/api/export/serie_diaria.csv">CSV</a></td></tr>
   <tr><td><b>Tudo</b></td><td>todos os anteriores num so ficheiro</td>

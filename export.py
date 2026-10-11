@@ -161,6 +161,60 @@ def cp_ajustado(db):
     return _csv(db.cp_por_sessao() or [], COLUNAS['cp'])
 
 
+CAMPOS_CP_FALLBACK = ['id', 'start_date_local', 'icu_pm_cp',
+                      'icu_rolling_ftp', 'icu_pm_ftp', 'icu_pm_w_prime']
+
+
+class SemDados(Exception):
+    """Sem fonte bruta acessivel. Recusa-se a exportacao em vez de estimar."""
+
+
+def cp_fallback_linhas(acts, curva_ids):
+    """Sessoes cujo CP no /api/pmc vem do fallback, e nao da curva.
+
+    Mesmo criterio de tabs/tab_pmc.api_data: data com 10 caracteres,
+    cp = num(icu_pm_cp) or num(icu_rolling_ftp) or num(icu_pm_ftp) (truthy),
+    e id fora de curva_ids (curvas com r2 >= 0.80). Os valores sao devolvidos
+    tal como estao no raw: None continua None, 0 continua 0.
+    """
+    from api_client import num
+    linhas = []
+    for a in acts:
+        if len((a.get('start_date_local') or '')[:10]) != 10:
+            continue
+        cp = (num(a.get('icu_pm_cp')) or num(a.get('icu_rolling_ftp'))
+              or num(a.get('icu_pm_ftp')) or None)
+        if not cp or a.get('id') in curva_ids:
+            continue
+        linhas.append({c: a.get(c) for c in CAMPOS_CP_FALLBACK})
+    return linhas
+
+
+def cp_fallback(db):
+    """(texto_csv, resumo) das sessoes com CP de fallback, a partir de activities.raw.
+
+    Levanta SemDados se a base estiver desligada, vazia, ou se a curva de CP
+    nao puder ser lida. Nao chama a API externa.
+    """
+    acts = db.load_activities()
+    if not acts:
+        raise SemDados('base de dados indisponivel ou sem actividades; '
+                       'cp_fallback.csv precisa de activities.raw')
+    try:
+        curva_ids = {r['activity_id'] for r in (db.cp_por_sessao() or [])
+                     if r['r2'] >= 0.80}
+    except Exception as e:
+        raise SemDados(f'curva de CP indisponivel: {type(e).__name__}: {e}')
+    linhas = cp_fallback_linhas(acts, curva_ids)
+    resumo = {
+        'registros': len(linhas),
+        'ids_distintos': len({r['id'] for r in linhas}),
+        'preenchidos': {c: sum(1 for r in linhas if r[c] not in (None, ''))
+                        for c in CAMPOS_CP_FALLBACK},
+    }
+    return _csv(linhas, CAMPOS_CP_FALLBACK), resumo
+
+
 def serie_diaria(pmc, db, sheets):
     """Serie diaria com CTL, ATL e TSB — o que alimenta os graficos."""
     from api_client import fetch_activities, norm_tipo, num

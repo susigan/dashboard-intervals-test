@@ -6,6 +6,7 @@ original: HRV/RMSSD, HRR, sono, stress, fadiga, humor, dores musculares,
 peso, gordura, calorias e macros.
 """
 
+import math
 from datetime import datetime, timedelta
 from flask import jsonify, request
 
@@ -17,6 +18,30 @@ from config import CICLICOS, CORES_MOD, ANOS_HRV, limite_hrv
 from tabs.base import page, explicacao
 
 SLUG = 'pmc'
+
+
+def cp_bruto_da_atividade(a):
+    """CP de uma sessao a partir dos campos da Intervals.icu (sem a curva).
+
+    Ordem: icu_pm_cp e depois icu_pm_ftp. icu_rolling_ftp, EFTP e icu_ftp nao
+    entram: sao estimativas de FTP, nao de CP, e divergem do CP da curva
+    aceite (ver auditoria do CP). Valores booleanos, nao finitos ou nao
+    positivos sao recusados, porque num() deixa passar NaN, infinito e
+    negativos.
+    """
+    for campo in ('icu_pm_cp', 'icu_pm_ftp'):
+        bruto = a.get(campo)
+        if isinstance(bruto, bool):
+            continue
+        v = num(bruto)
+        if math.isfinite(v) and v > 0:
+            return v
+    return None
+
+
+def eftp_da_atividade(a):
+    """eFTP da propria Intervals.icu (campo 'EFTP'). So para comparar com o CP da curva."""
+    return num(a.get('EFTP'))
 
 
 def _sheets(force=False):
@@ -45,8 +70,7 @@ def api_data():
             'horas': (num(a.get('elapsed_time')) or num(a.get('moving_time'))) / 3600,
             'rpe': a.get('icu_rpe'), 'xss': num(a.get('SS')),
             # proxies de performance para ajustar o gamma
-            'cp': (num(a.get('icu_pm_cp')) or num(a.get('icu_rolling_ftp'))
-                   or num(a.get('icu_pm_ftp')) or None),
+            'cp': cp_bruto_da_atividade(a),
             'w_prime': num(a.get('icu_pm_w_prime')) or None,
             # so' para a conversao pace<->watts da Run (regressao_pace_watts)
             'distancia_m': num(a.get('icu_distance')) or num(a.get('distance')),
@@ -55,7 +79,7 @@ def api_data():
             'duracao_s': num(a.get('moving_time')) or num(a.get('elapsed_time')),
             # eFTP da PROPRIA Intervals.icu, so' para comparar com o CP
             # da curva ajustada -- fontes diferentes, podem divergir
-            'eftp_icu': num(a.get('icu_eftp')),
+            'eftp_icu': eftp_da_atividade(a),
             # kJ -- para o modelo TRIMP~kJ (CTL vs KJ). icu_joules e' o
             # integral real do stream de potencia; watts_medio*duracao e'
             # so' o fallback quando falta o icu_joules
@@ -205,8 +229,7 @@ def api_calibracao_dados():
         sessoes.append({
             'id': a.get('id'), 'date': d, 'type': norm_tipo(a.get('type')),
             'tl': num(a.get('icu_training_load')),
-            'cp': (num(a.get('icu_pm_cp')) or num(a.get('icu_rolling_ftp'))
-                   or num(a.get('icu_pm_ftp')) or None),
+            'cp': cp_bruto_da_atividade(a),
             'w_prime': num(a.get('icu_pm_w_prime')) or None,
         })
 

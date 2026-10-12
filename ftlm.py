@@ -124,8 +124,12 @@ def fit_gamma(load, alvo, lag=0, gama_min=0.10, gama_max=0.90, passo=0.05,
               max_lag=365, suavizar=0, r2_minimo=0.02, permutacoes=150):
     """Procura o γ que maximiza o R² entre CTLγ e a serie alvo.
 
-    lag=0 para performance (CP no proprio dia), lag=1 para HRV (a carga de
-    ontem explica o HRV de hoje).
+    Alinhamento: CTLγ(t) usa a carga ate t-1 (ver ftlm_fractional); o dia t
+    nunca entra no proprio CTL. Com lag=0 o alvo de t e pareado com CTLγ(t),
+    ou seja, a resposta aparece com 1 dia de defasagem em relacao a carga.
+    Com lag=k cada CTLγ(t) e pareado com o alvo de t+k, somando k dias.
+    Usos: performance (lag=0) e recuperacao (lag=1, HRV; a carga efetiva
+    chega com 2 dias de defasagem, ver defeito E4 em tests/pmc/test_ftlm_unit.py).
     """
     load = np.asarray(load, dtype=np.float64)
     alvo = np.asarray(alvo, dtype=np.float64)

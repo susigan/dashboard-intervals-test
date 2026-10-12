@@ -542,8 +542,13 @@ def modelo_homeostatico(serie_classica, sessoes, p0=None,
     fit = ftlm.ewm(cargas, melhor['t1'])
     fad = ftlm.ewm(cargas, melhor['t2'])
     p_hat = p0 + melhor['k1'] * fit - melhor['k2'] * fad
+    # suavizacao RETROSPECTIVA (centrada: usa dias futuros). Mantida para o
+    # grafico de analise a posteriori; identificada como nao causal.
     suave = _savgol(p_hat, 21, 3)
     sd = _banda_sd(p_hat, 14)
+    # versao CAUSAL: cada dia so usa os dias ate ao proprio dia (defeito M3)
+    suave_c = _savgol_causal(p_hat, 21, 3)
+    sd_c = _banda_sd_causal(p_hat, 14)
 
     # porque e que falhou, em detalhe — para se poder comparar modalidades
     if ajustado:
@@ -578,6 +583,9 @@ def modelo_homeostatico(serie_classica, sessoes, p0=None,
                    'p_hat_suave': round(float(suave[i]), 1),
                    'banda_sup': round(float(suave[i] + sd[i]), 1),
                    'banda_inf': round(float(suave[i] - sd[i]), 1),
+                   'p_hat_suave_causal': _arred(suave_c[i]),
+                   'banda_sup_causal': _arred(suave_c[i] + sd_c[i]),
+                   'banda_inf_causal': _arred(suave_c[i] - sd_c[i]),
                    'fitness': round(float(fit[i]), 1),
                    'fadiga': round(float(fad[i]), 1)} for i in range(n)],
     }
@@ -623,8 +631,50 @@ def _savgol(y, janela=21, grau=3):
     return np.array([float(np.dot(coef, ext[i:i + j])) for i in range(n)])
 
 
+def _arred(v):
+    import numpy as np
+    return round(float(v), 1) if np.isfinite(v) else None
+
+
+def _savgol_causal(y, janela=21, grau=3):
+    """Savitzky-Golay causal: em cada dia, polinomio ajustado so aos dias ate la.
+
+    Avalia o polinomio no ultimo ponto da janela (em vez do centro). Atraso
+    maior do que a versao centrada, mas sem usar dados futuros. Com menos de
+    grau+2 pontos devolve o proprio valor.
+    """
+    import numpy as np
+    y = np.asarray(y, dtype=np.float64)
+    out = np.full(len(y), np.nan)
+    for i in range(len(y)):
+        ini = max(0, i - janela + 1)
+        seg = y[ini:i + 1]
+        m = np.isfinite(seg)
+        if m.sum() < grau + 2:
+            out[i] = y[i] if np.isfinite(y[i]) else np.nan
+            continue
+        x = np.arange(len(seg), dtype=np.float64)[m] - (len(seg) - 1)
+        coef = np.polyfit(x, seg[m], min(grau, int(m.sum()) - 1))
+        out[i] = float(coef[-1])   # valor do polinomio em x = 0, o dia i
+    return out
+
+
+def _banda_sd_causal(y, janela=14):
+    """Desvio padrao movel causal (so os ultimos `janela` dias), para a banda."""
+    import numpy as np
+    y = np.asarray(y, dtype=np.float64)
+    n = len(y)
+    out = np.zeros(n)
+    for i in range(n):
+        seg = y[max(0, i - janela + 1):i + 1]
+        seg = seg[np.isfinite(seg)]
+        if len(seg) >= 3:
+            out[i] = float(seg.std())
+    return out
+
+
 def _banda_sd(y, janela=14):
-    """Desvio padrao movel centrado, para a banda +/-1 SD."""
+    """Desvio padrao movel centrado, para a banda +/-1 SD. NAO causal (ver M3)."""
     import numpy as np
     y = np.asarray(y, dtype=np.float64)
     n = len(y)

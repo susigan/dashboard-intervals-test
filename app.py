@@ -963,6 +963,11 @@ def api_export(nome):
                 texto, resumo = export.cp_fallback(db)
             except export.SemDados as e:
                 return jsonify({'erro': str(e)}), 503
+        elif base == 'cp_aceitas' and ext == 'csv':
+            try:
+                texto, resumo = export.cp_aceitas(db)
+            except export.SemDados as e:
+                return jsonify({'erro': str(e)}), 503
         else:
             return jsonify({'erro': f'"{base}" nao existe',
                             **export.indice()}), 404

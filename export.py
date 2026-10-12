@@ -215,6 +215,89 @@ def cp_fallback(db):
     return _csv(linhas, CAMPOS_CP_FALLBACK), resumo
 
 
+# Mesmo limiar que tabs/tab_pmc.api_data usa para aceitar a curva de CP.
+LIMIAR_R2_CURVA = 0.80
+
+# Campos brutos do Intervals.icu lidos de activities.raw, com as chaves
+# originais (EFTP em maiusculas, como vem da API).
+CAMPOS_CP_ACEITAS_BRUTOS = ['icu_pm_cp', 'icu_rolling_ftp', 'icu_pm_ftp',
+                            'icu_pm_ftp_watts', 'icu_pm_ftp_secs',
+                            'icu_pm_w_prime', 'icu_ftp', 'EFTP']
+CAMPOS_CP_ACEITAS = (['id', 'date', 'type_raw', 'curva_cp', 'curva_w_prime',
+                      'curva_r2', 'curva_n_pontos'] + CAMPOS_CP_ACEITAS_BRUTOS)
+
+
+def cp_aceitas_linhas(acts, curvas):
+    """Uma linha por sessao com curva de CP aceita (r2 >= 0.80).
+
+    acts: dicts originais de activities.raw; curvas: saida de db.cp_por_sessao.
+    Devolve (linhas, sem_atividade): sessoes com curva aceita mas sem registo
+    em activities nao geram linha; ficam so contadas em sem_atividade.
+    Campos ausentes no raw ficam None (vazios no CSV), nunca zero.
+    """
+    raw_por_id = {}
+    for a in acts or []:
+        i = a.get('id')
+        if i and i not in raw_por_id:
+            raw_por_id[i] = a
+
+    linhas, sem_atividade, vistos = [], [], set()
+    for c in curvas or []:
+        aid = c.get('activity_id')
+        r2 = c.get('r2')
+        if aid in vistos or r2 is None or r2 < LIMIAR_R2_CURVA:
+            continue
+        vistos.add(aid)
+        a = raw_por_id.get(aid)
+        if a is None:
+            sem_atividade.append(aid)
+            continue
+        linha = {
+            'id': aid,
+            'date': (a.get('start_date_local') or '')[:10] or c.get('date'),
+            'type_raw': a.get('type'),
+            'curva_cp': c.get('cp'),
+            'curva_w_prime': c.get('w_prime'),
+            'curva_r2': r2,
+            'curva_n_pontos': c.get('n_pontos'),
+        }
+        for campo in CAMPOS_CP_ACEITAS_BRUTOS:
+            linha[campo] = a.get(campo)
+        linhas.append(linha)
+    return linhas, sem_atividade
+
+
+def cp_aceitas(db):
+    """(texto_csv, resumo) das sessoes com curva de CP aceita, com campos brutos.
+
+    Reutiliza db.cp_por_sessao (o mesmo calculo do PMC) e db.load_activities.
+    Nao chama a API externa e nao recalcula a regressao.
+    Levanta SemDados se a base estiver desligada, vazia, ou se a curva de CP
+    nao puder ser lida.
+    """
+    acts = db.load_activities()
+    if not acts:
+        raise SemDados('base de dados indisponivel ou sem actividades; '
+                       'cp_aceitas.csv precisa de activities.raw')
+    try:
+        curvas = db.cp_por_sessao() or []
+    except Exception as e:
+        raise SemDados(f'curva de CP indisponivel: {type(e).__name__}: {e}')
+
+    aceitas = {c.get('activity_id') for c in curvas
+               if c.get('r2') is not None and c['r2'] >= LIMIAR_R2_CURVA}
+    linhas, sem_atividade = cp_aceitas_linhas(acts, curvas)
+    resumo = {
+        'curvas_aceitas': len(aceitas),
+        'linhas': len(linhas),
+        'ids_unicos': len({r['id'] for r in linhas}),
+        'sem_atividade': len(sem_atividade),
+        'campos_brutos_ausentes': {c: sum(1 for r in linhas if r[c] is None)
+                                   for c in CAMPOS_CP_ACEITAS_BRUTOS},
+    }
+    return _csv(linhas, CAMPOS_CP_ACEITAS), resumo
+
+
 def serie_diaria(pmc, db, sheets):
     """Serie diaria com CTL, ATL e TSB — o que alimenta os graficos."""
     from api_client import fetch_activities, norm_tipo, num

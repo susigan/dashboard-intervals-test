@@ -638,6 +638,64 @@ def _banda_sd(y, janela=14):
     return out
 
 
+# ── validacao da apresentacao do homeostatico ──────────────────────────
+# modelo_homeostatico cai nos padroes (K 2/3, T 42/7) quando nao ha ajuste
+# aceite. Esses valores nunca sao apresentados como ajuste. O criterio de
+# aceitacao e o proprio do modelo (K1 e K2 positivos e R2 > 0, por grelha) e
+# N_MIN_HOMEO, o minimo de testes de CP que o ajuste exige. Nao ha limiar de
+# R2 aqui: o R2 e devolvido e mostrado, e a decisao sobre um limiar fica
+# para aprovacao separada.
+N_MIN_HOMEO = 20
+# Capacidade explicativa e so um ROTULO descritivo (nao decide validade). 0.10
+# significa explicar menos de 10% da variacao do CP. Nao e um limiar de
+# aceitacao: um ajuste com R2 baixo continua 'valido' pelo criterio do modelo,
+# mas a interface diz que a capacidade explicativa e muito baixa.
+R2_ROTULO_BAIXO = 0.10
+
+
+def capacidade_explicativa(r2):
+    """Rotulo descritivo da qualidade explicativa de um R2."""
+    import math
+    try:
+        x = float(r2)
+    except (TypeError, ValueError):
+        return 'indeterminada'
+    if not math.isfinite(x):
+        return 'indeterminada'
+    if x < R2_ROTULO_BAIXO:
+        return 'muito baixa (explica menos de 10% da variacao do CP)'
+    return None
+
+
+def estado_homeostatico(r):
+    """Estado de apresentacao de um resultado de modelo_homeostatico.
+
+    'valido'    : ajuste aceite pelo modelo (unico estado mostrado como ajuste)
+    'rejeitado' : houve tentativas de ajuste, nenhuma aceite (motivo do modelo)
+    'padrao'    : sem ajuste possivel; a serie usa os parametros por defeito
+    'sem_dados' : nao ha resultado
+    Devolve {'estado', 'valido', 'motivo', 'capacidade'}; nao altera o resultado.
+    'capacidade' descreve o R2 de qualquer ajuste ('muito baixa', ...) e e None
+    quando nao ha rotulo; nao entra na validade.
+    """
+    if not r:
+        return {'estado': 'sem_dados', 'valido': False,
+                'motivo': 'sem CP para ajustar', 'capacidade': None}
+    n = int(r.get('n_testes') or 0)
+    cap = capacidade_explicativa(r.get('r2')) if r.get('ajustado') else None
+    if r.get('ajustado') and n >= N_MIN_HOMEO:
+        return {'estado': 'valido', 'valido': True,
+                'motivo': f"ajuste valido (R² {r.get('r2')})",
+                'capacidade': cap}
+    if int(r.get('tentativas') or 0) > 0:
+        return {'estado': 'rejeitado', 'valido': False,
+                'motivo': r.get('motivo') or 'ajuste rejeitado',
+                'capacidade': None}
+    return {'estado': 'padrao', 'valido': False,
+            'motivo': r.get('motivo') or 'parametros padrao',
+            'capacidade': None}
+
+
 def homeostatico_por_modalidade(serie_classica, sessoes, modalidades):
     """Reserva de performance calculada por modalidade.
 
@@ -707,6 +765,11 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
         p_ant = (i_ant, f_ant)
 
     ph = ((homeostatico or {}).get('serie')) or []
+    # so entra a reserva com ajuste valido (ver estado_homeostatico). Sem ele a
+    # dimensao fica fora e o total e a media das restantes (ver 'formula').
+    estado_ph = estado_homeostatico(homeostatico)
+    if not estado_ph['valido']:
+        ph = []
     w = wellness or []
 
     # Escala de referencia do TSB: o desvio-padrao do proprio atleta, em vez
@@ -738,10 +801,13 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
     linhas, scores = [], []
     for nome, uni, bom_positivo, ant, rec, det, ref in dims:
         if not np.isfinite(ant) or not np.isfinite(rec):
+            motivo = 'sem dados'
+            if nome == 'Reserva pico' and not estado_ph['valido']:
+                motivo = 'indisponivel: ' + estado_ph['motivo']
             linhas.append({'dim': nome, 'unidade': uni, 'ant': None,
                            'rec': None, 'delta_pct': None, 'score': None,
                            'n_ant': det[0].get('n', 0), 'n_rec': det[1].get('n', 0),
-                           'motivo': 'sem dados'})
+                           'motivo': motivo})
             continue
 
         delta = rec - ant
@@ -773,6 +839,9 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
                        'saturado': abs(dp) >= 50})
 
     total = float(np.clip(np.mean(scores), -1, 1)) if scores else 0.0
+    incluidas = [l['dim'] for l in linhas if l.get('score') is not None]
+    excluidas = [f"{l['dim']} ({l['motivo']})" for l in linhas
+                 if l.get('score') is None]
     if total > 0.20:
         estado = {'label': 'BOA ADAPTACAO', 'cor': '#27ae60',
                   'desc': 'O corpo responde positivamente a carga'}
@@ -786,8 +855,14 @@ def indice_alostatico(serie_classica, homeostatico, wellness,
     return {'total': round(total, 4), 'n_dims': len(scores),
             'estado': estado, 'dimensoes': linhas,
             'periodo_anterior': list(p_ant), 'periodo_recente': list(p_rec),
-            'formula': 'score = sinal * clip(delta_pct / 50, -1, +1); '
-                       'total = media dos scores com dados',
+            'formula': ('score = sinal * clip(delta_pct / 50, -1, +1); '
+                        'total = media dos scores das dimensoes incluidas: '
+                        + ('; '.join(incluidas) or 'nenhuma')
+                        + '. Excluidas: ' + ('; '.join(excluidas) or 'nenhuma')),
+            'incluidas': incluidas,
+            'excluidas': excluidas,
+            'reserva_pico': {'disponivel': estado_ph['valido'],
+                             'motivo': estado_ph['motivo']},
             'ref_tsb': round(ref_tsb, 2), 'ref_tsb_fonte': ref_tsb_fonte,
             'scores': [round(s, 4) for s in scores],
             'p_hat_disponivel': len(ph),

@@ -6,6 +6,7 @@ original: HRV/RMSSD, HRR, sono, stress, fadiga, humor, dores musculares,
 peso, gordura, calorias e macros.
 """
 
+import math
 from datetime import datetime, timedelta
 from flask import jsonify, request
 
@@ -17,6 +18,105 @@ from config import CICLICOS, CORES_MOD, ANOS_HRV, limite_hrv
 from tabs.base import page, explicacao
 
 SLUG = 'pmc'
+
+
+# Validacao do CP final (depois da selecao, tambem para o fallback).
+PISO_CP_W = 50.0        # C1: CP abaixo disto nao e plausivel em Bike/Row/Ski/Run
+P1_MAX_W = 2000.0       # C3: P(1 s) acima disto e suspeito; so rejeita com divergencia
+TOL_DIVERGENCIA = 0.20  # C2: divergencia curva vs icu_pm_cp (confirma C3; alerta)
+MODS_CP = ('Bike', 'Row', 'Ski', 'Run')
+
+
+def cp_valido(v, tipo=None):
+    """True se v e um CP utilizavel. Booleanos, nao finitos, nao positivos e,
+    nas modalidades com CP, valores abaixo de PISO_CP_W sao recusados."""
+    if v is None or isinstance(v, bool):
+        return False
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(x) or x <= 0:
+        return False
+    if tipo in MODS_CP and x < PISO_CP_W:
+        return False
+    return True
+
+
+def _campo_cp(a, tipo=None):
+    """Campo da Intervals.icu que da o CP da sessao (ja validado), ou None."""
+    for campo in ('icu_pm_cp', 'icu_pm_ftp'):
+        if cp_valido(num(a.get(campo)) if not isinstance(a.get(campo), bool) else None, tipo):
+            return campo
+    return None
+
+
+def cp_bruto_da_atividade(a, tipo=None):
+    """CP de uma sessao a partir dos campos da Intervals.icu (sem a curva).
+
+    Ordem: icu_pm_cp e depois icu_pm_ftp. icu_rolling_ftp, EFTP e icu_ftp nao
+    entram: sao estimativas de FTP, nao de CP, e divergem do CP da curva
+    aceite (ver auditoria do CP). Um candidato que falha cp_valido passa ao
+    seguinte; se nenhum passa, devolve None.
+    """
+    campo = _campo_cp(a, tipo)
+    return num(a.get(campo)) if campo else None
+
+
+def curva_suspeita(cp_curva, p1, cp_icu):
+    """C3: a curva e rejeitada so se P(1 s) > P1_MAX_W E a curva divergir mais
+    de TOL_DIVERGENCIA do icu_pm_cp. Um pico de 1 s isolado pode ser sprint
+    real; a divergencia da fonte confirma a corrupcao. Sem icu_pm_cp nao ha
+    confirmacao e a curva nao e rejeitada por este criterio."""
+    if p1 is None or p1 <= P1_MAX_W or not cp_icu:
+        return False
+    return abs(cp_curva / cp_icu - 1) > TOL_DIVERGENCIA
+
+
+def selecionar_cp(sessoes, cp_curva):
+    """CP final de cada sessao: curva aceita, senao icu_pm_cp, senao icu_pm_ftp.
+
+    Cada candidato passa por cp_valido e, para a curva, por curva_suspeita.
+    Se nenhum passa, a sessao fica com CP None (nunca zero nem valor artificial).
+    Altera sessoes[i]['cp'] e ['w_prime']; devolve contadores para a interface.
+    """
+    cont = {'da_curva': 0, 'do_icu_pm_cp': 0, 'do_icu_pm_ftp': 0,
+            'curva_rejeitada_piso': 0, 'curva_rejeitada_p1': 0,
+            'alerta_divergencia_icu': 0, 'sem_cp': 0}
+    for s in sessoes:
+        tipo = s.get('type')
+        if tipo == 'WeightTraining':   # fora das analises de CP
+            s['cp'] = None
+            continue
+        icu = s.get('cp')          # ja validado em cp_bruto_da_atividade
+        r = cp_curva.get(s['id'])
+        if r:
+            if not cp_valido(r['cp'], tipo):
+                cont['curva_rejeitada_piso'] += 1
+            elif curva_suspeita(r['cp'], r.get('p1'), icu):
+                cont['curva_rejeitada_p1'] += 1
+            else:
+                s['cp'] = r['cp']
+                s['w_prime'] = r['w_prime'] or s.get('w_prime')
+                cont['da_curva'] += 1
+                if icu and abs(r['cp'] / icu - 1) > TOL_DIVERGENCIA:
+                    cont['alerta_divergencia_icu'] += 1
+                continue
+        if icu is not None:
+            if s.get('cp_campo') == 'icu_pm_ftp':
+                cont['do_icu_pm_ftp'] += 1
+            else:
+                cont['do_icu_pm_cp'] += 1
+        else:
+            s['cp'] = None
+            if tipo in MODS_CP:
+                cont['sem_cp'] += 1
+    return cont
+
+
+def eftp_da_atividade(a):
+    """eFTP da propria Intervals.icu (campo 'EFTP'). So para comparar com o CP da curva."""
+    return num(a.get('EFTP'))
 
 
 def _sheets(force=False):
@@ -45,8 +145,8 @@ def api_data():
             'horas': (num(a.get('elapsed_time')) or num(a.get('moving_time'))) / 3600,
             'rpe': a.get('icu_rpe'), 'xss': num(a.get('SS')),
             # proxies de performance para ajustar o gamma
-            'cp': (num(a.get('icu_pm_cp')) or num(a.get('icu_rolling_ftp'))
-                   or num(a.get('icu_pm_ftp')) or None),
+            'cp': cp_bruto_da_atividade(a, norm_tipo(a.get('type'))),
+            'cp_campo': _campo_cp(a, norm_tipo(a.get('type'))),
             'w_prime': num(a.get('icu_pm_w_prime')) or None,
             # so' para a conversao pace<->watts da Run (regressao_pace_watts)
             'distancia_m': num(a.get('icu_distance')) or num(a.get('distance')),
@@ -55,7 +155,7 @@ def api_data():
             'duracao_s': num(a.get('moving_time')) or num(a.get('elapsed_time')),
             # eFTP da PROPRIA Intervals.icu, so' para comparar com o CP
             # da curva ajustada -- fontes diferentes, podem divergir
-            'eftp_icu': num(a.get('icu_eftp')),
+            'eftp_icu': eftp_da_atividade(a),
             # kJ -- para o modelo TRIMP~kJ (CTL vs KJ). icu_joules e' o
             # integral real do stream de potencia; watts_medio*duracao e'
             # so' o fallback quando falta o icu_joules
@@ -72,19 +172,14 @@ def api_data():
     # CP ajustado a curva de potencia tem prioridade sobre o icu_pm_cp: aquele
     # e a estimativa de uma sessao isolada e, nos dias sem esforcos maximos,
     # subestima muito e enche a serie de ruido.
-    cp_curva, n_cp_curva = {}, 0
+    cp_curva = {}
     try:
         for r in db.cp_por_sessao():
             if r['r2'] >= 0.80:      # so ajustes que sao mesmo uma recta
                 cp_curva[r['activity_id']] = r
     except Exception as e:
         print(f"cp_por_sessao: {e}")
-    for s in sessoes:
-        r = cp_curva.get(s['id'])
-        if r:
-            s['cp'] = r['cp']
-            s['w_prime'] = r['w_prime'] or s.get('w_prime')
-            n_cp_curva += 1
+    cp_cont = selecionar_cp(sessoes, cp_curva)
 
     try:
         ftlm_res = pmc.calcular_ftlm(sessoes, wellness, serie, CICLICOS)
@@ -126,6 +221,11 @@ def api_data():
             tau_sugerido=par.get('tau_carga') if tau_ok else None,
             lag_hrv_sugerido=par.get('lag_hrv') if lag_ok else None)
         homeo_mod = pmc.homeostatico_por_modalidade(serie, sessoes, CICLICOS)
+        # a interface so mostra a serie como ajuste quando a validacao passa
+        if homeo:
+            homeo['validacao'] = pmc.estado_homeostatico(homeo)
+        for _r in homeo_mod.values():
+            _r['validacao'] = pmc.estado_homeostatico(_r)
         alos = pmc.indice_alostatico(
             serie, homeo, wellness,
             p_ant=(request.args.get('ant_ini'), request.args.get('ant_fim'))
@@ -169,11 +269,10 @@ def api_data():
         },
         'alertas': pmc.alertas(serie, wellness),
         'ftlm': ftlm_res, 'erro_ftlm': erro_ftlm,
-        'cp_fonte': {
-            'da_curva': n_cp_curva,
-            'do_icu_pm_cp': sum(1 for s in sessoes
-                                if s.get('cp') and s['id'] not in cp_curva),
-            'nota': "ajustado a P(t)=W'/t+CP nas duracoes 2-20min, R2>=0.80"},
+        'cp_fonte': {**cp_cont,
+            'nota': "curva ajustada a P(t)=W'/t+CP, 2-20 min, R2>=0.80; rejeitada "
+                    "se P(1 s)>2000 W e divergir >20% do icu_pm_cp; piso 50 W em "
+                    "Bike/Row/Ski/Run; sem valor plausivel = sem CP"},
         'fmt': fmt_res,
         'homeostatico': homeo, 'homeostatico_mod': homeo_mod,
         'alostatico': alos,
@@ -205,8 +304,8 @@ def api_calibracao_dados():
         sessoes.append({
             'id': a.get('id'), 'date': d, 'type': norm_tipo(a.get('type')),
             'tl': num(a.get('icu_training_load')),
-            'cp': (num(a.get('icu_pm_cp')) or num(a.get('icu_rolling_ftp'))
-                   or num(a.get('icu_pm_ftp')) or None),
+            'cp': cp_bruto_da_atividade(a, norm_tipo(a.get('type'))),
+            'cp_campo': _campo_cp(a, norm_tipo(a.get('type'))),
             'w_prime': num(a.get('icu_pm_w_prime')) or None,
         })
 
@@ -217,10 +316,7 @@ def api_calibracao_dados():
                 cp_curva[r['activity_id']] = r
     except Exception:
         pass
-    for s in sessoes:
-        r = cp_curva.get(s['id'])
-        if r:
-            s['cp'] = r['cp']
+    selecionar_cp(sessoes, cp_curva)
 
     wellness, _c, _e = _sheets()
     serie = pmc.calcular(sessoes, 'tl')
@@ -671,7 +767,7 @@ __EXPL_alos__
     <td class="num"><a href="/api/export/testes.csv">CSV</a></td></tr>
   <tr><td>CP ajustado</td><td>CP e W&prime; por sessao, de P(t)=W&prime;/t+CP</td>
     <td class="num"><a href="/api/export/cp.csv">CSV</a></td></tr>
-  <tr><td>CP de fallback</td><td>CP bruto das sessoes sem curva: icu_pm_cp, icu_rolling_ftp, icu_pm_ftp, icu_pm_w_prime</td>
+  <tr><td>CP de fallback</td><td>CP bruto das sessoes sem curva aceita: icu_pm_cp e, na falta dele, icu_pm_ftp. icu_rolling_ftp, EFTP e icu_ftp nao entram (ver auditoria do CP)</td>
     <td class="num"><a href="/api/export/cp_fallback.csv">CSV</a></td></tr>
   <tr><td>Serie diaria</td><td>CTL, ATL, TSB dia a dia</td>
     <td class="num"><a href="/api/export/serie_diaria.csv">CSV</a></td></tr>
@@ -882,6 +978,10 @@ function periodosHomeo(serie){
  return {ant:[aI,aF],rec:[rI,rF]};
 }
 
+// so um ajuste valido (estado_homeostatico no servidor) pode ser mostrado como tal
+function homeoValido(x){return !!(x&&x.validacao&&x.validacao.valido);}
+// rotulo descritivo do R2 (nao decide validade): so aparece num ajuste valido
+function homeoCapacidade(x){return (homeoValido(x)&&x.validacao&&x.validacao.capacidade)||'';}
 function drawHomeo(){
  const H=D.homeostatico;
  if(!H){const o=ctx('chHomeo',300);if(o)noData(o.g,o.W,o.H);return;}
@@ -890,6 +990,12 @@ function drawHomeo(){
  const verMods=document.getElementById('homeoMods').checked;
  const HM=D.homeostatico_mod||{};
  const principal=(modSel&&HM[modSel])?HM[modSel]:H;
+ if(!homeoValido(principal)){
+  const o=ctx('chHomeo',300);
+  if(o)noData(o.g,o.W,o.H,'Sem ajuste valido: '+((principal.validacao&&principal.validacao.motivo)||'sem dados'));
+  document.getElementById('lgHomeo').innerHTML='';
+  document.getElementById('homeoAnalise').innerHTML='';
+  return;}
  const P=periodosHomeo(principal.serie);
 
  const dentro=(d,r)=>d>=r[0]&&d<=r[1];
@@ -909,7 +1015,7 @@ function drawHomeo(){
  const XR=i=>PL+wA+gap+wR*(rec.length>1?i/(rec.length-1):0.5);
 
  // modalidades a sobrepor: sempre que a caixa esteja ligada
- const mods=(verMods&&vista==='todo')?Object.keys(HM):[];
+ const mods=(verMods&&vista==='todo')?Object.keys(HM).filter(m=>homeoValido(HM[m])):[];
  const idxMod={};
  mods.forEach(function(m){
   const ix={};(HM[m].serie||[]).forEach(r=>{ix[r.date]=r.p_hat_suave;});
@@ -1037,8 +1143,8 @@ const MOTIVOS={
  r2_nao_positivo:'R&sup2; nao positivo',
  sem_tentativas:'sem tentativas'};
 function motivoHomeo(v){
- if(v.ajustado)return 'ajustado';
- let t=MOTIVOS[v.motivo]||'defeito 42/7';
+ if(homeoValido(v))return 'ajustado (R² '+v.r2+')'+(homeoCapacidade(v)?' — capacidade explicativa '+homeoCapacidade(v):'');
+ let t=(v.motivo&&v.motivo!=='ok'&&MOTIVOS[v.motivo])||'sem ajuste válido';
  if(v.motivo==='poucos_pontos_cp')t+=' ('+v.n_testes+'/20)';
  if(v.motivo==='k_negativo'&&v.melhor_rejeitado)
   t+=' — o melhor daria K&#8321;='+v.melhor_rejeitado.k1+
@@ -1053,12 +1159,14 @@ function tabelaHomeo(){
    .map((c,i)=>'<th class="'+(i&&i<7?'num':'')+'">'+c+'</th>').join('');
  function linha(nome,v,cor){
   const s=v.serie||[];
-  const ult=s.length?s[s.length-1].p_hat_suave:'—';
+  const ok=homeoValido(v);
+  const ult=(ok&&s.length)?s[s.length-1].p_hat_suave:'—';
+  const par=x=>ok?x:'—';
   return '<tr><td style="color:'+cor+'">'+nome+'</td>'+
-   '<td class="num">'+v.k1+'</td><td class="num">'+v.k2+'</td>'+
-   '<td class="num">'+v.t1+'d</td><td class="num">'+v.t2+'d</td>'+
+   '<td class="num">'+par(v.k1)+'</td><td class="num">'+par(v.k2)+'</td>'+
+   '<td class="num">'+(ok?v.t1+'d':'—')+'</td><td class="num">'+(ok?v.t2+'d':'—')+'</td>'+
    '<td class="num">'+v.r2+'</td><td class="num">'+ult+'</td>'+
-   '<td style="font-size:12px;color:'+(v.ajustado?'#2ECC71':'#E67E22')+'" '+
+   '<td style="font-size:12px;color:'+(ok?'#2ECC71':'#E67E22')+'" '+
    'title="'+(v.nota||'')+'">'+motivoHomeo(v)+'</td></tr>';}
  const l=[];
  if(H)l.push(linha('Global',H,'#e6e6e6'));
@@ -1071,16 +1179,18 @@ function mostrarHomeo(){
  if(!H){document.getElementById('subHomeo').innerHTML=
    '<span class="err">indisponivel</span>';return;}
  document.getElementById('subHomeo').innerHTML=
-  'p̂(t) = p₀ + K₁·EWM(carga,T₁) − K₂·EWM(carga,T₂) · '+H.nota;
+  'p̂(t) = p₀ + K₁·EWM(carga,T₁) − K₂·EWM(carga,T₂) · '+H.nota+
+  (homeoValido(H)?(homeoCapacidade(H)?' <b style="color:#E67E22">Capacidade explicativa '+homeoCapacidade(H)+': R² '+H.r2+'. O ajuste e aceite pelo modelo, mas explica pouco do CP.</b>':''):' <span class="err">Sem ajuste valido: '+((H.validacao&&H.validacao.motivo)||'sem dados')+'</span>');
  const selM=document.getElementById('homeoMod');
  const HM=D.homeostatico_mod||{};
  if(selM.options.length<=1)
   selM.innerHTML='<option value="">Global</option>'+
    Object.keys(HM).map(m=>'<option>'+m+'</option>').join('');
+ const hv=homeoValido(H);
  document.getElementById('homeoKpis').innerHTML=[
-  ['K₁ (ganho fitness)',H.k1],['K₂ (ganho fadiga)',H.k2],
-  ['T₁ (τ fitness)',H.t1+'d'],['T₂ (τ fadiga)',H.t2+'d'],
-  ['R²',H.r2],['Pontos de CP',H.n_testes]
+  ['K₁ (ganho fitness)',hv?H.k1:'—'],['K₂ (ganho fadiga)',hv?H.k2:'—'],
+  ['T₁ (τ fitness)',hv?H.t1+'d':'—'],['T₂ (τ fadiga)',hv?H.t2+'d':'—'],
+  ['R²'+(homeoCapacidade(H)?' (muito baixo)':''),H.r2],['Pontos de CP',H.n_testes]
  ].map(k=>'<div class="card"><div class="label">'+k[0]+'</div>'+
   '<div class="value">'+k[1]+'</div></div>').join('');
  drawHomeo(); tabelaHomeo();

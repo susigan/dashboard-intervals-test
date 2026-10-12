@@ -939,6 +939,9 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28, desde_hrv=None):
     # Se o HRV so comeca em 2024, isso transformava 2021-2023 numa constante
     # inventada — 56% da serie — e a calibracao corria sobre dados falsos.
     MAX_LACUNA = 7
+    # HRV SO com medicoes reais, antes de qualquer interpolacao. A calibracao
+    # usa esta serie: um dia preenchido nao e uma medicao (defeito M1).
+    hrv_bruto = dims['HRV'].copy() if 'HRV' in dims else None
     cobertura = {}
     for k, v in dims.items():
         m = np.isfinite(v)
@@ -982,7 +985,10 @@ def calcular_fmt(sessoes, wellness, serie_classica, janela=28, desde_hrv=None):
     # a relacao directa entre carga acumulada e nivel de HRV. Testado: com
     # tau real de 14 dias, calibrar pela tendencia recupera 3; pelo LnRMSSD
     # recupera 14.
-    hrv_para_calibrar = dims.get('HRV')
+    # Usa a serie BRUTA (sem interpolacao): so as medicoes reais entram na
+    # estimacao dos parametros. Os dias preenchidos continuam no tensor e
+    # na visualizacao, mas nao sao observacoes.
+    hrv_para_calibrar = hrv_bruto
     if hrv_para_calibrar is not None and np.isfinite(hrv_para_calibrar).sum() < 30:
         hrv_para_calibrar = None
     l1_hist = []

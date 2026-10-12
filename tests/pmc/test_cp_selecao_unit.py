@@ -102,7 +102,9 @@ class DoisPontosUsamAMesmaRegra(_Carrega):
             origem = f.read()
         self.assertNotIn("num(a.get('icu_rolling_ftp'))", origem)
         self.assertNotIn("num(a.get('icu_eftp'))", origem)
-        self.assertGreaterEqual(origem.count('cp_bruto_da_atividade(a)'), 2)
+        # as duas rotas (api_data e api_calibracao_dados) usam o mesmo helper;
+        # a chamada passa o tipo para aplicar o piso de CP
+        self.assertGreaterEqual(origem.count("cp_bruto_da_atividade(a, norm_tipo(a.get('type')))"), 2)
 
 
 if __name__ == '__main__':

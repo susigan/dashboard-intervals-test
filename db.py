@@ -800,10 +800,13 @@ def cp_por_sessao(tipo=None, secs_min=120, secs_max=1200, minimo_pontos=4):
         prev = [cp + w_prime * x for x in xs]
         ss_res = sum((y - p) ** 2 for y, p in zip(ys, prev))
         r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        # P(1 s) da propria curva: so para validar (ver tabs/tab_pmc.py); nao entra no ajuste
+        p1 = next((float(w) for s_, w in zip(c['secs'], c['watts'])
+                   if s_ == 1 and isinstance(w, (int, float)) and w > 0), None)
         out.append({'activity_id': c['activity_id'], 'date': c['date'],
                     'type': c['type'], 'cp': round(cp, 1),
                     'w_prime': round(w_prime, 0), 'r2': round(r2, 4),
-                    'n_pontos': n})
+                    'n_pontos': n, 'p1': p1})
     out.sort(key=lambda r: r['date'])
     return out
 

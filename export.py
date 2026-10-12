@@ -170,9 +170,14 @@ class SemDados(Exception):
 
 
 def cp_fallback_linhas(acts, curva_ids):
-    """Sessoes cujo CP no /api/pmc vem do fallback, e nao da curva.
+    """Sessoes sem curva aceita, com os campos brutos da cadeia ANTIGA.
 
-    Mesmo criterio de tabs/tab_pmc.api_data: data com 10 caracteres,
+    Export de auditoria: reproduz a cadeia anterior a 7fee86e (icu_rolling_ftp
+    incluido), para inspeccionar as sessoes que deixaram de ter CP no PMC.
+    NAO e a cadeia atual de tabs/tab_pmc.api_data, que usa so icu_pm_cp e
+    icu_pm_ftp (cp_bruto_da_atividade).
+
+    Data com 10 caracteres,
     cp = num(icu_pm_cp) or num(icu_rolling_ftp) or num(icu_pm_ftp) (truthy),
     e id fora de curva_ids (curvas com r2 >= 0.80). Os valores sao devolvidos
     tal como estao no raw: None continua None, 0 continua 0.

@@ -6,7 +6,10 @@ original: HRV/RMSSD, HRR, sono, stress, fadiga, humor, dores musculares,
 peso, gordura, calorias e macros.
 """
 
+import hashlib
+import json
 import math
+import re
 from datetime import datetime, timedelta
 from flask import jsonify, request
 
@@ -129,6 +132,30 @@ _cache_pmc = {'chave': None, 'valor': None, 'time': None}
 TTL_PMC = 900
 
 
+def _digest(obj):
+    """SHA-256 de uma estrutura JSON canonica.
+
+    A chave da cache e o digest das ENTRADAS efetivas do calculo, nao o numero
+    de sessoes nem a ultima data: qualquer alteracao de HRV, CP, carga, janela
+    (desde) ou completude muda a chave.
+    """
+    blob = json.dumps(obj, sort_keys=True, separators=(',', ':'), default=str)
+    return hashlib.sha256(blob.encode('utf-8')).hexdigest()
+
+
+def _entradas_fmt(serie, sessoes, wellness, desde_hrv):
+    """Campos que alteram o resultado de pmc.calcular_fmt, e nada mais."""
+    return {
+        'serie': [(d.get('date'), d.get('load')) for d in (serie or [])],
+        'sessoes': [(s.get('id'), s.get('date'), s.get('type'), s.get('tl'),
+                     s.get('cp'), s.get('w_prime')) for s in (sessoes or [])],
+        'wellness': [(w.get('date'), w.get('hrv'), w.get('sleep_quality'),
+                      w.get('stress'), w.get('soreness'), w.get('fatiga'))
+                     for w in (wellness or [])],
+        'desde_hrv': desde_hrv,
+    }
+
+
 def api_data():
     acts = fetch_activities()
     if not acts:
@@ -189,21 +216,26 @@ def api_data():
         traceback.print_exc()
         ftlm_res, erro_ftlm = None, f'{type(e).__name__}: {e}'
 
-    # calcular_fmt corre a calibracao com permutacao — cara. Em cache, com a
-    # chave a mudar quando chegam sessoes novas.
-    chave_fmt = (serie[-1]['date'] if serie else None, len(sessoes))
+    # calcular_fmt corre a calibracao com permutacao — cara. A cache so e
+    # reutilizada quando TODAS as entradas do calculo sao as mesmas. O erro do
+    # FTLM (erro_ftlm) e independente desta cache e nunca e apagado por ela.
+    desde_fmt = limite_hrv()
+    chave_fmt = _digest(_entradas_fmt(serie, sessoes, wellness, desde_fmt))
     agora = datetime.now()
     if (_cache_pmc['chave'] == chave_fmt and _cache_pmc['time']
             and (agora - _cache_pmc['time']).total_seconds() < TTL_PMC):
-        fmt_res, erro_ftlm = _cache_pmc['valor'], None
+        fmt_res = _cache_pmc['valor']
     else:
         fmt_res = None
     try:
         if fmt_res is None:
             fmt_res = pmc.calcular_fmt(sessoes, wellness, serie,
-                                       desde_hrv=limite_hrv())
-            _cache_pmc.update({'chave': chave_fmt, 'valor': fmt_res,
-                               'time': agora})
+                                       desde_hrv=desde_fmt)
+            # um erro de calculo (ou falta de dados) nao e um resultado valido:
+            # nao fica em cache, e a proxima chamada tenta de novo
+            if not (fmt_res or {}).get('erro'):
+                _cache_pmc.update({'chave': chave_fmt, 'valor': fmt_res,
+                                   'time': agora})
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -322,21 +354,29 @@ def api_calibracao_dados():
     serie = pmc.calcular(sessoes, 'tl')
 
     completo = request.args.get('completo') in ('1', 'true', 'yes')
-    chave = (serie[0]['date'] if serie else None,
-             serie[-1]['date'] if serie else None, len(sessoes), completo)
+    # ?desde=YYYY-MM-DD limita as analises que dependem de HRV: a janela
+    # comeca nesse dia. Util quando as medicoes so comecaram a meio do historico.
+    desde_pedido = request.args.get('desde')
+    if desde_pedido and not re.match(r'^\d{4}-\d{2}-\d{2}$', desde_pedido):
+        return {'erro': 'desde deve ser YYYY-MM-DD'}
+    desde_hrv = desde_pedido or limite_hrv()
+    # primeiro e ultimo dia com HRV real dentro da janela usada pelo calculo
+    hrv_ini, hrv_fim, hrv_dias = pmc._janela_hrv(
+        [d['date'] for d in serie], wellness, desde_hrv)
+    # a chave cobre TODAS as entradas que alteram a resposta: janela (desde),
+    # HRV, CP, sessoes, carga e completude
+    chave = _digest({'entradas': _entradas_fmt(serie, sessoes, wellness, desde_hrv),
+                     'completo': completo})
     agora = datetime.now()
     if (_cache_cal['chave'] == chave and _cache_cal['time']
             and (agora - _cache_cal['time']).total_seconds() < TTL_CAL):
         return {**_cache_cal['valor'], 'de_cache': True}
 
-    res = pmc.calcular_fmt(sessoes, wellness, serie, desde_hrv=limite_hrv())
+    res = pmc.calcular_fmt(sessoes, wellness, serie, desde_hrv=desde_hrv)
     if not res or res.get('erro'):
         return {'erro': (res or {}).get('erro', 'nao foi possivel calibrar')}
 
     cal = res.get('calibracao') or {}
-    # ?desde=YYYY-MM-DD limita as analises que dependem de HRV.
-    # Util quando as medicoes so comecaram a meio do historico.
-    desde_hrv = request.args.get('desde') or limite_hrv()
     # O teste de eventos e barato; a segmentacao por ano/modalidade e a
     # ancora sao ~35 buscas com permutacao. Ficam atras de ?completo=1,
     # senao cada carregamento da tab espera minutos por elas.
@@ -373,6 +413,8 @@ def api_calibracao_dados():
         'calibracao': cal,
         'janela_hrv': {
             'desde': desde_hrv, 'anos': ANOS_HRV,
+            'primeiro_dia_hrv': hrv_ini, 'ultimo_dia_hrv': hrv_fim,
+            'dias_hrv': hrv_dias,
             'motivo': ('as analises com HRV usam so os ultimos '
                        f'{ANOS_HRV:g} anos — dados mais antigos podem vir de '
                        'outro dispositivo ou protocolo. Carga, CP e curvas de '

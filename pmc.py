@@ -272,7 +272,7 @@ def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
     LAG_PERF, SUAV_PERF = 0, 3
     LAG_REC, SUAV_REC = 1, 0
 
-    # ── gamma de recuperacao: carga de ontem contra HRV de hoje (lag=1) ────
+    # ── gamma de recuperacao: CTL ate t-1 contra HRV de t+1 (lag=1; defeito E4) ────
     gamma_rec, r2_rec, n_rec = ftlm.GAMMA_DEFAULT, 0.0, 0
     fit_rec = {'motivo': 'sem serie de HRV suficiente', 'aceite': False}
     hrv_tendencia = np.full(n, np.nan)

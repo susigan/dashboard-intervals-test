@@ -528,12 +528,12 @@ def calibrar_tudo(carga, hrv_trend=None, cp=None, kappa=None, lambda1=None):
 
     # Canal 4: em que horizonte kappa se relaciona com a CP.
     #
-    # NAO impomos o sinal. A intuicao inicial era kappa alto -> CP a cair
-    # (risco), mas nos dados reais deste atleta a relacao e a inversa e mais
-    # forte: kappa alto prevê CP MAIS ALTA 14-21 dias depois. Faz sentido —
-    # kappa alto e uma perturbacao grande do sistema, ou seja um estimulo, e
-    # a resposta chega com atraso. Forcar o sinal negativo rejeitava um sinal
-    # real. Reportamos o que os dados dizem e deixamos a leitura seguir.
+    # NAO impomos o sinal. A leitura de risco (kappa alto -> CP a cair) e uma
+    # hipotese, nao um resultado. O lag e escolhido por calibrar_lag sobre
+    # range(0, 43) e so e aceito se p_permutacao < 0.05 (ver _usar em pmc.py).
+    # Nos dados de producao (lag 6, r -0,076, p_permutacao 0,404) o canal e
+    # rejeitado e tau_risco fica no valor de referencia. Comentario corrigido:
+    # a versao anterior citava "14-21 dias" sem suporte no resultado real.
     if kappa is not None and cp is not None:
         c4 = calibrar_lag(kappa, cp, range(0, 43), None, 'tau_risco')
         if c4.get('fonte') == 'dados':

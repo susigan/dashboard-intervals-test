@@ -1683,34 +1683,44 @@ const REGIME_CFG = {
    desc:'κ dentro da faixa habitual (entre o teu p25 e p75 histórico) — sem sinal forte em nenhuma direcção.'},
 };
 
+// Regime em uma data i: percentis p25/p75 EXPANSIVOS, calculados so' com os
+// valores de κ ate' i (inclusive). Acrescentar dias posteriores nao muda o
+// regime de i. Hoje e' o ultimo indice, por isso o resultado de hoje coincide
+// com o que daria sobre o historico inteiro.
+function regimeNaData(serieK, i, tsb){
+ const vals=[];
+ for(let j=0;j<=i && j<serieK.length;j++){
+  const v=serieK[j]&&serieK[j].kappa; if(v!=null) vals.push(v);}
+ const kappa=vals.length?vals[vals.length-1]:null;
+ if(vals.length<10 || tsb==null || kappa==null) return null;
+ const ord=vals.slice().sort((a,b)=>a-b);
+ function percentil(p){ const k=Math.min(ord.length-1,Math.floor(p*ord.length)); return ord[k]; }
+ const p75=percentil(0.75), p25=percentil(0.25);
+ const kAlto=kappa>p75, kBaixo=kappa<p25;
+ let chave='normal';
+ if(tsb>0 && kAlto) chave='fadiga';
+ else if(tsb<0 && kAlto) chave='acumulacao';
+ else if(tsb>0 && kBaixo) chave='supercompensacao';
+ else if(tsb<0 && kBaixo) chave='recovery';
+ return {chave:chave, kappa:kappa, p25:p25, p75:p75, tsb:tsb};
+}
+
 function mostrarRegimeHoje(){
  const box=document.getElementById('regimeHojeCard');
  if(!box) return;
  const serieK=(D.ftlm&&D.ftlm.serie)||[];
- const vals=serieK.map(d=>d.kappa).filter(v=>v!=null);
  const tsbHoje=(D.actual||{}).tsb;
- const kappaHoje=vals.length?vals[vals.length-1]:null;
- if(vals.length<10 || tsbHoje==null || kappaHoje==null){
+ const r=regimeNaData(serieK, serieK.length-1, tsbHoje);
+ if(!r){
   box.innerHTML='<span class="sub">dados insuficientes para classificar o regime de hoje</span>';
   return;
  }
- const ord=vals.slice().sort((a,b)=>a-b);
- function percentil(p){ const i=Math.min(ord.length-1,Math.floor(p*ord.length)); return ord[i]; }
- const p75=percentil(0.75), p25=percentil(0.25);
- const kAlto=kappaHoje>p75, kBaixo=kappaHoje<p25;
-
- let chave='normal';
- if(tsbHoje>0 && kAlto) chave='fadiga';
- else if(tsbHoje<0 && kAlto) chave='acumulacao';
- else if(tsbHoje>0 && kBaixo) chave='supercompensacao';
- else if(tsbHoje<0 && kBaixo) chave='recovery';
- const cfg=REGIME_CFG[chave];
-
+ const cfg=REGIME_CFG[r.chave];
  box.innerHTML=
   '<div style="font-size:15px;font-weight:600;color:'+cfg.cor+';">'+cfg.label+'</div>'+
-  '<div style="font-size:11px;color:#8b949e;margin-top:4px;">TSB hoje: '+tsbHoje.toFixed(1)+
-  ' &middot; κ hoje: '+kappaHoje.toFixed(3)+
-  '<br>κ histórico: p25='+p25.toFixed(3)+' &middot; p75='+p75.toFixed(3)+'</div>'+
+  '<div style="font-size:11px;color:#8b949e;margin-top:4px;">TSB hoje: '+r.tsb.toFixed(1)+
+  ' &middot; κ hoje: '+r.kappa.toFixed(3)+
+  '<br>κ até hoje (expansivo): p25='+r.p25.toFixed(3)+' &middot; p75='+r.p75.toFixed(3)+'</div>'+
   '<div style="font-size:12px;margin-top:8px;">'+cfg.desc+'</div>';
 }
 

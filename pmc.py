@@ -368,11 +368,13 @@ def calcular_ftlm(sessoes, wellness, serie_classica, modalidades):
     fase_global, contrib = ftlm.fase_global_ponderada(fases_mod, ctlg_actual_mod)
 
     # ── FMT: quanto o sistema esta a oscilar ──────────────────────────────
-    dimensoes = [ctlg_perf, ctlg_rec]
-    nomes_dim = ['CTLg_perf', 'CTLg_rec']
-    if np.isfinite(hrv_tendencia).sum() >= 30:
-        dimensoes.append(hrv_tendencia)
-        nomes_dim.append('HRV_trend')
+    # Só dimensões causais entram no κ. CTLg_rec (γ re-estimado na série
+    # inteira) e HRV_trend (z global dentro de hrv_trend) ficam de fora;
+    # CTLg_perf usa γ fixo no padrão, para que o κ não dependa do ajuste
+    # de γ feito sobre a série completa.
+    ctlg_perf_kappa = ftlm.ftlm_fractional(cargas, ftlm.GAMMA_DEFAULT, max_lag)
+    dimensoes = [ctlg_perf_kappa]
+    nomes_dim = ['CTLg_perf']
     if weed_z is not None and np.isfinite(weed_z).sum() >= 30:
         dimensoes.append(weed_z)
         nomes_dim.append('WEED')

@@ -68,6 +68,43 @@ def _zscore(arr):
     return (arr - mu) / sd if sd > 1e-9 else arr - mu
 
 
+def _stats_causais(arr, minimo=10):
+    """Media, desvio (populacional) e contagem de TODOS os pontos ate t, inclusive.
+
+    Versao causal de _zscore: o resultado em t so usa arr[:t+1]. Acrescentar
+    dados depois de t nao altera nada em t. Sem minimo de pontos validos,
+    devolve NaN. Usa somas acumuladas (sequenciais), por isso o resultado
+    de um prefixo e identico, bit a bit, ao do mesmo prefixo dentro da serie
+    completa.
+    """
+    a = np.asarray(arr, dtype=np.float64)
+    m = np.isfinite(a)
+    v = np.where(m, a, 0.0)
+    n_t = np.cumsum(m).astype(np.float64)
+    s1 = np.cumsum(v)
+    s2 = np.cumsum(v * v)
+    with np.errstate(all='ignore'):
+        mu = s1 / n_t
+        var = np.maximum(s2 / n_t - mu * mu, 0.0)
+        sd = np.sqrt(var)
+    ok = m & (n_t >= minimo)
+    mu = np.where(ok, mu, np.nan)
+    sd = np.where(ok, sd, np.nan)
+    return mu, sd, ok
+
+
+def _zscore_causal(arr, minimo=10):
+    """z de cada ponto contra a media e o desvio de arr[:t+1] (causal)."""
+    a = np.asarray(arr, dtype=np.float64)
+    mu, sd, ok = _stats_causais(a, minimo)
+    out = np.full(len(a), np.nan)
+    com_desvio = ok & (sd > 1e-9)
+    out[com_desvio] = (a[com_desvio] - mu[com_desvio]) / sd[com_desvio]
+    sem_desvio = ok & ~(sd > 1e-9)
+    out[sem_desvio] = a[sem_desvio] - mu[sem_desvio]
+    return out
+
+
 def _linregress(x, y):
     """Declive e ordenada na origem. Substitui scipy.stats.linregress."""
     x = np.asarray(x, dtype=np.float64)
@@ -392,11 +429,18 @@ def explicar_kappa(k, k_media=None, k_desvio=None):
         }
 
 
-def kappa_fmt(series, janela=28, suavizar=7):
+def kappa_fmt(series, janela=28, suavizar=7, causal=True):
     """κ(t) = trace(cov(Δx)) numa janela movel, e λ₁ = peso do 1º eigenvalor.
 
     Cada serie e normalizada antes, para que modalidades com escalas
     diferentes contribuam de forma comparavel. κ alto = sistema instavel.
+
+    causal=True (padrao): a normalizacao de cada serie em t usa so os pontos
+    ate t (ver _zscore_causal). Assim o κ de um dia nao muda quando sao
+    acrescentados dados posteriores. causal=False reproduz a normalizacao
+    global antiga (z sobre a serie inteira), que vaza informacao do futuro.
+    Mudanca de definicao: os valores de κ deixam de ser comparaveis aos
+    publicados antes desta versao (ver pmc.calcular_ftlm para as dimensoes).
     """
     series = [s for s in series if s is not None and len(s)]
     if not series:
@@ -404,7 +448,8 @@ def kappa_fmt(series, janela=28, suavizar=7):
     n, d = len(series[0]), len(series)
     mat = np.full((n, d), np.nan)
     for j, s in enumerate(series):
-        mat[:, j] = _zscore(np.asarray(s, dtype=np.float64))
+        s = np.asarray(s, dtype=np.float64)
+        mat[:, j] = _zscore_causal(s) if causal else _zscore(s)
 
     delta = np.full_like(mat, np.nan)
     delta[1:] = mat[1:] - mat[:-1]

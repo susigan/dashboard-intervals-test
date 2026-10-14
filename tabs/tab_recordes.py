@@ -289,7 +289,7 @@ function kpis(){
   ['Duracoes',durs.length],
   ['Recordes este ano',esteAno],
   ['Ultimo recorde',ultimo?ultimo.date:'—'],
-  ['FTP 20min',durs.indexOf(1200)>=0?Math.round(R.melhores[1200].watts*0.95)+' W':'—'],
+  ['Proxy FTP 20min (95% de 1200 s, estimativa)',durs.indexOf(1200)>=0?Math.round(R.melhores[1200].watts*0.95)+' W':'—'],
   ['Pico 5s',durs.indexOf(5)>=0?Math.round(R.melhores[5].watts)+' W':'—'],
  ].map(k=>'<div class="card"><div class="label">'+k[0]+'</div><div class="value">'+
   k[1]+'</div></div>').join('');

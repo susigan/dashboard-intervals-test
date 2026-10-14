@@ -118,7 +118,8 @@ def selecionar_cp(sessoes, cp_curva):
 
 
 def eftp_da_atividade(a):
-    """eFTP da propria Intervals.icu (campo 'EFTP'). So para comparar com o CP da curva."""
+    """Campo 'EFTP' (semântica não confirmada; não é FTP medido nem eFTP persistente do atleta).
+    Uso restrito à comparação com o CP da curva."""
     return num(a.get('EFTP'))
 
 
@@ -130,6 +131,14 @@ def _sheets(force=False):
 
 _cache_pmc = {'chave': None, 'valor': None, 'time': None}
 TTL_PMC = 900
+# Versao da chave da cache do FMT. Subir sempre que o payload ganhar campos
+# que dependam de codigo novo: assim nenhuma resposta antiga e reutilizada.
+# v2: inclui evolucao_performance (o FMT em si nao muda).
+# v3: evolucao_performance renomeia ftp_estimado -> ftp_configurado e deixa de excluir
+#     sequencias sem evidencia (so sinaliza).
+# v4: icu_pm_ftp passa a ser eftp_atividade (eFTP da atividade); ftp_medido e eftp
+#     deixam de existir; o payload da evolucao ganha a chave 'fontes'.
+CACHE_VERSAO_PMC = 4
 
 
 def _digest(obj):
@@ -146,6 +155,7 @@ def _digest(obj):
 def _entradas_fmt(serie, sessoes, wellness, desde_hrv):
     """Campos que alteram o resultado de pmc.calcular_fmt, e nada mais."""
     return {
+        'versao_cache': CACHE_VERSAO_PMC,
         'serie': [(d.get('date'), d.get('load')) for d in (serie or [])],
         'sessoes': [(s.get('id'), s.get('date'), s.get('type'), s.get('tl'),
                      s.get('cp'), s.get('w_prime')) for s in (sessoes or [])],
@@ -269,6 +279,32 @@ def api_data():
         traceback.print_exc()
         homeo, homeo_mod, alos = None, {}, None
 
+    # Evolucao da performance. Le os campos CRUS de FTP (icu_pm_ftp, icu_ftp,
+    # EFTP) e nao o campo 'ftp' da base, que mistura fontes e grava zero para
+    # ausencia. Os campos sao passados como vem: None e ausencia, 0 e zero.
+    entradas_evol = []
+    for a in acts:
+        d_ev = (a.get('start_date_local') or '')[:10]
+        if len(d_ev) != 10:
+            continue
+        entradas_evol.append({
+            'id': a.get('id'), 'date': d_ev, 'type': norm_tipo(a.get('type')),
+            'icu_pm_ftp': a.get('icu_pm_ftp'), 'icu_ftp': a.get('icu_ftp'),
+            'EFTP': a.get('EFTP'),
+        })
+    try:
+        curvas_evol = db.load_power_curves() or []
+    except Exception as e:
+        print(f"load_power_curves (evolucao): {e}")
+        curvas_evol = []
+    try:
+        evolucao = pmc.evolucao_performance(
+            entradas_evol, curvas_evol, serie[-1]['date'] if serie else None)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        evolucao = {'status': 'erro', 'erro': f'{type(e).__name__}: {e}'}
+
     try:
         dtrimp_dkj = pmc.dtrimp_dkj(sessoes, CICLICOS)
     except Exception as e:
@@ -308,6 +344,7 @@ def api_data():
         'fmt': fmt_res,
         'homeostatico': homeo, 'homeostatico_mod': homeo_mod,
         'alostatico': alos,
+        'evolucao_performance': evolucao,
         'dtrimp_dkj': dtrimp_dkj,
         'eficiencia_kj': eficiencia,
         'cores': CORES_MOD, 'ciclicos': CICLICOS,
@@ -715,6 +752,46 @@ __EXPL_fmt__
 
 
 
+<h2>Evolução da performance</h2>
+<div class="sub">
+  Tendência de FTP/eFTP e melhores esforços por modalidade: mediana da janela
+  recente contra a janela anterior de mesmo tamanho. Zero e ausência nunca entram
+  como valor. Valores repetidos e extremos são sinalizados, não removidos.
+  O modelo fisiológico (homeostático) não está validado e não aparece aqui.
+</div>
+<div class="controls">
+  <label class="sel">Modalidade
+    <select id="evolMod">
+      <option value="Bike" selected>Bike</option>
+      <option value="Row">Row</option>
+      <option value="Run">Run</option>
+      <option value="Ski">Ski</option>
+    </select></label>
+  <label class="sel">Janela
+    <select id="evolJanela">
+      <option value="90">90 dias</option>
+      <option value="180" selected>180 dias</option>
+      <option value="365">365 dias</option>
+    </select></label>
+  <label class="sel">Fonte
+    <select id="evolFonte">
+      <option value="todas" selected>Todas</option>
+      <option value="eftp_atividade">eFTP da atividade</option>
+      <option value="ftp_configurado">FTP configurado</option>
+      <option value="eftp_nao_confirmado">EFTP (não confirmado)</option>
+    </select></label>
+</div>
+<div class="sub" id="evolSub"></div>
+<div class="sub" id="evolExplica"><b>Como ler:</b> o <b>eFTP da atividade</b> é uma estimativa do Intervals.icu calculada a partir da atividade completa, incluindo os períodos de recuperação. Uma sessão isolada com eFTP baixo não demonstra perda real de performance. O <b>FTP configurado</b> é o valor definido nas configurações do Intervals.icu: é referência, não prova da performance atual. O <b>EFTP</b> tem semântica não confirmada e é exibido separado, sem interpretação. Os melhores esforços são lidos diretamente da curva de potência. Nenhuma classificação automática de melhora ou piora é aplicada.</div>
+<div id="evolAvisos"></div>
+<div class="wrap" style="margin-bottom:10px"><table>
+  <thead><tr id="evolHead"></tr></thead><tbody id="evolBody"></tbody></table></div>
+<div class="sub">Melhores esforços observados diretamente na curva de potência
+  (sem interpolação). Mesmas janelas e critérios de suficiência do FTP.</div>
+<div class="wrap" style="margin-bottom:14px"><table>
+  <thead><tr id="evolMeHead"></tr></thead><tbody id="evolMeBody"></tbody></table></div>
+
+<div id="homeoLegado" hidden>
 <h2>Modelo homeostatico — reserva de performance</h2>
 __EXPL_homeo__
 <div class="sub" id="subHomeo"></div>
@@ -745,6 +822,7 @@ __EXPL_homeo__
 </div>
 <div class="wrap" style="max-height:260px;margin-bottom:14px"><table>
   <thead><tr id="hmHead"></tr></thead><tbody id="hmBody"></tbody></table></div>
+</div>
 
 <h2>Indice alostatico</h2>
 __EXPL_alos__
@@ -2191,7 +2269,7 @@ async function load(){
 
  carregarSugestoes();
 montarExport();
- drawPMC(); mostrarFMT5(); mostrarRegimeHoje(); mostrarHomeo(); mostrarAlos();
+ drawPMC(); mostrarFMT5(); mostrarRegimeHoje(); mostrarEvolucao(); mostrarAlos();
  mostrarDtrimpDkj(); mostrarEficienciaKj();
  redesenhar();  // drawCTLg/drawFMT so' correm daqui -- sem isto, o
                  // grafico de Curvatura ficava em branco ate' o
@@ -2266,6 +2344,8 @@ montarExport();
  document.getElementById(id).onchange=function(){if(D)drawPMC();});
 ['homeoMod','homeoVista','homeoMods','haIni','haFim','hrIni','hrFim'].forEach(id=>
  document.getElementById(id).onchange=function(){if(D)drawHomeo();});
+['evolMod','evolJanela','evolFonte'].forEach(id=>
+ document.getElementById(id).onchange=function(){if(D)mostrarEvolucao();});
 document.getElementById('canalFMT').onchange=function(){if(D&&D.fmt)drawAtencao();};
 // ── CTL vs KJ — coeficientes dTRIMP/dkJ e eficiência por kJ ──────────────────
 // Dados vêm de D.dtrimp_dkj e D.eficiencia_kj (calculados em pmc.py, sem
@@ -2336,12 +2416,74 @@ function mostrarEficienciaKj(){
  box.innerHTML=html;
 }
 
+// ── Evolucao da performance: FTP/eFTP e melhores esforcos (pmc.evolucao_performance)
+// Mostra o que o backend devolveu. Ausencia nunca vira zero; sem dados = aviso explicito.
+const EV_MOTIVOS={sem_dados:'sem observacoes nas janelas',
+ observacoes_insuficientes:'menos de 10 observacoes validas numa das janelas',
+ cobertura_insuficiente:'cobertura temporal abaixo de 70% numa das janelas'};
+function evEsc(v){return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function evV(v,dec){return (v===null||v===undefined||!isFinite(v))?'—':Number(v).toFixed(dec);}
+function evCabecalho(){return ['Série','Mediana anterior','Mediana recente','Δ W','Δ %','Obs. ant. / rec.','Semanas rec. / exigidas','Estado'];}
+function evLinha(rotulo,s,jan){
+ const w=(s&&s.janelas&&s.janelas[jan])||{};
+ const ok=w.status==='ok';
+ const estado=ok?'<span style="color:#2ECC71">ok</span>':
+  '<span class="err">Dados insuficientes: '+evEsc((w.motivos||[]).map(m=>EV_MOTIVOS[m]||m).join('; '))+'</span>';
+ const cells=[evEsc(rotulo),
+  ok?evV(w.mediana_anterior,1):'—',
+  ok?evV(w.mediana_recente,1):'—',
+  ok?evV(w.diferenca,1):'—',
+  (ok&&w.variacao_pct!==null&&w.variacao_pct!==undefined)?evV(w.variacao_pct,1)+'%':'—',
+  evEsc((w.n_anterior||0)+' / '+(w.n_recente||0)),
+  evEsc((w.semanas_recente||0)+' / '+(w.semanas_necessarias||'—')),
+  estado];
+ return '<tr>'+cells.map(c=>'<td>'+c+'</td>').join('')+'</tr>';
+}
+function evNotaQualidade(rotulo,s){
+ const q=(s&&s.qualidade)||{};
+ const p=[(q.n_validos||0)+' válidos'];
+ if(q.n_zero)p.push(q.n_zero+' zero(s) tratados como ausência');
+ if(q.n_ausentes)p.push(q.n_ausentes+' ausente(s)');
+ if(q.n_negativos)p.push(q.n_negativos+' negativo(s)');
+ if(q.n_excluidos_tendencia)p.push(q.n_excluidos_tendencia+' excluído(s) da tendência (padrão confirmado com evidência)');
+ (q.sequencias_identicas||[]).forEach(b=>p.push('sequência de '+b.n+' valores iguais ('+b.valor+') de '+b.inicio+' a '+b.fim+
+  ' ('+b.dias+' dias): '+(b.classificacao==='padrao_confirmado'?'padrão confirmado, excluída':'suspeita, origem não confirmada, mantida e sinalizada')));
+ if((q.valores_suspeitos||[]).length)p.push(q.valores_suspeitos.length+' valor(es) suspeito(s) ('+evEsc(q.valores_suspeitos[0].motivo)+'), mantido(s) e sinalizado(s): medianas podem não ser confiáveis');
+ if((q.outliers_sinalizados||[]).length)p.push(q.outliers_sinalizados.length+' valor(es) extremo(s) sinalizado(s), não removidos');
+ if(q.idade_dias!==null&&q.idade_dias!==undefined)p.push('última observação há '+q.idade_dias+' dias');
+ return '<div class="sub"><b>'+evEsc(rotulo)+':</b> '+evEsc(p.join(' · '))+
+  (s&&s.semantica?'<br><i>Origem: '+evEsc(s.semantica)+'</i>':'')+'</div>';
+}
+function mostrarEvolucao(){
+ const E=D&&D.evolucao_performance;
+ const head=document.getElementById('evolHead'), body=document.getElementById('evolBody');
+ const mHead=document.getElementById('evolMeHead'), mBody=document.getElementById('evolMeBody');
+ const avisos=document.getElementById('evolAvisos'), sub=document.getElementById('evolSub');
+ if(!E||!E.modalidades){
+  sub.innerHTML='<span class="err">Evolução indisponível'+(E&&E.erro?': '+evEsc(E.erro):'')+'</span>';
+  head.innerHTML='';body.innerHTML='';mHead.innerHTML='';mBody.innerHTML='';avisos.innerHTML='';return;}
+ const mod=document.getElementById('evolMod').value;
+ const jan=document.getElementById('evolJanela').value;
+ const fonte=document.getElementById('evolFonte').value;
+ const M=E.modalidades[mod];
+ sub.innerHTML='Referência: '+evEsc(E.referencia||'—')+' · '+evEsc(mod)+' · janela de '+evEsc(jan)+' dias (recente vs. anterior)';
+ head.innerHTML=evCabecalho().map(h=>'<th>'+h+'</th>').join('');
+ mHead.innerHTML=evCabecalho().map(h=>'<th>'+h+'</th>').join('').replace('Série','Melhor esforço');
+ if(!M){body.innerHTML='';mBody.innerHTML='';avisos.innerHTML='<div class="sub">Sem dados para '+evEsc(mod)+'.</div>';return;}
+ const fontes=[['eftp_atividade','eFTP da atividade (icu_pm_ftp)'],['ftp_configurado','FTP configurado (icu_ftp)'],['eftp_nao_confirmado','EFTP (campo não confirmado)']]
+  .filter(f=>fonte==='todas'||fonte===f[0]);
+ body.innerHTML=fontes.map(f=>evLinha(f[1],M.fontes[f[0]],jan)).join('');
+ const sec=[['60','1 min'],['300','5 min'],['720','12 min'],['1200','20 min']];
+ mBody.innerHTML=sec.map(x=>evLinha(x[1],M.melhores_esforcos[x[0]],jan)).join('');
+ avisos.innerHTML=fontes.map(f=>evNotaQualidade(f[1],M.fontes[f[0]])).join('')+
+  sec.map(x=>evNotaQualidade(x[1],M.melhores_esforcos[x[0]])).join('');
+}
+
 function redesenhar(){
  if(!D)return;
  drawPMC();
  if(D.ftlm){drawCTLg();drawFMT();}
- if(D.fmt){drawMatriz();drawEigen();drawAtencao();}
- if(D.homeostatico){drawHomeo();}}
+ if(D.fmt){drawMatriz();drawEigen();drawAtencao();}}
 document.getElementById('janelaPMC').onchange=redesenhar;
 window.addEventListener('resize',redesenhar);
 load();

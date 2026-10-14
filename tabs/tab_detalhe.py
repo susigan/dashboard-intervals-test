@@ -736,7 +736,8 @@ async function load(){
  const cards=[['Duracao',Math.round((a.elapsed_time||0)/60)+' min'],
   ['Distancia',((a.icu_distance||a.distance||0)/1000).toFixed(1)+' km'],
   ['TL',a.icu_training_load],['NP',(a.icu_weighted_avg_watts||0)+' W'],
-  ['FTP',(a.icu_pm_ftp||a.icu_ftp||0)+' W'],
+  ['eFTP da atividade',a.icu_pm_ftp!=null?a.icu_pm_ftp+' W':'—'],
+  ['FTP configurado',a.icu_ftp!=null?a.icu_ftp+' W':'—'],
   ['IF',a.icu_intensity!=null?(a.icu_intensity>3?a.icu_intensity.toFixed(0)+'%':a.icu_intensity.toFixed(2)):'-'],
   ['HR med',(a.average_heartrate||0)+' bpm'],['HR max',(a.max_heartrate||0)+' bpm'],
   ['kJ',Math.round((a.icu_joules||0)/1000)],
@@ -746,7 +747,7 @@ async function load(){
   ['PI',a.polarization_index!=null?a.polarization_index.toFixed(2):'-'],
   ['VI',a.icu_variability_index!=null?a.icu_variability_index.toFixed(2):'-'],
   ['EF',a.icu_efficiency_factor!=null?a.icu_efficiency_factor.toFixed(2):'-'],
-  ['kJ > FTP',Math.round((a.icu_joules_above_ftp||0)/1000)]];
+  ['kJ acima do limiar (ref. Intervals.icu, não confirmada)',Math.round((a.icu_joules_above_ftp||0)/1000)]];
  document.getElementById('cards').innerHTML=cards.map(c=>
   '<div class="card"><div class="label">'+c[0]+'</div><div class="value">'+(c[1]==null?'-':c[1])+'</div></div>').join('');
 

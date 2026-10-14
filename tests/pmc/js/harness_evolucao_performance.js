@@ -34,6 +34,7 @@ const sandbox = {
   console, Math, Infinity, isFinite, Object, Array, Number, String, JSON, Date, RegExp,
   document: {
     getElementById: (id) => el(id),
+    body: {},
     querySelectorAll: () => [],
     querySelector: () => null,
   },
@@ -47,6 +48,7 @@ const sandbox = {
   window: {addEventListener: () => {}, removeEventListener: () => {}, location: {search: ''}},
   fetch: () => new Promise(() => {}),
   localStorage: {getItem: () => null, setItem: () => {}},
+  getComputedStyle: () => ({backgroundColor: 'rgb(13, 17, 23)'}),
 };
 vm.createContext(sandbox);
 vm.runInContext(code, sandbox);
@@ -63,7 +65,8 @@ sandbox.mostrarEvolucao();
 r.cabecalho = el('evolHead').innerHTML.includes('Mediana anterior') &&
               el('evolHead').innerHTML.includes('Estado');
 r.linha_eftp_atividade = el('evolBody').innerHTML.includes('eFTP da atividade');
-r.linha_ftp_configurado = el('evolBody').innerHTML.includes('FTP configurado');
+r.linha_ftp_configurado = el('evolCfgBody').innerHTML.includes('FTP configurado') &&
+  !el('evolCfgBody').innerHTML.includes('Mediana') && !el('evolBody').innerHTML.includes('FTP configurado');
 r.linha_eftp_nao_confirmado = el('evolBody').innerHTML.includes('EFTP (campo não confirmado)');
 r.sem_rotulo_ftp_medido = !(el('evolBody').innerHTML + el('evolSub').innerHTML).includes('FTP medido');
 r.melhores_1_5_12_20 = ['1 min', '5 min', '12 min', '20 min']

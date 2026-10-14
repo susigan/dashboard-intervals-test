@@ -2289,6 +2289,10 @@ EVOL_SEQ_MIN = 10               # valores identicos consecutivos: sempre sinaliz
 EVOL_OUTLIER_K = 3.0            # sinalizacao por IQR; nunca remove
 EVOL_ESCALA_SUSPEITA_MAX = 1.0  # EFTP <= 1 W: escala nao-watt (observado em 2 objetos crus)
 EVOL_MELHORES_SECS = (60, 300, 720, 1200)
+EVOL_PONTOS_DIAS = 730
+# Fontes cujos pontos alimentam os graficos (tab_pmc). Os demais blocos (FTP configurado,
+# EFTP nao confirmado) mantem qualidade, janelas e ultimo_valor, sem a serie de pontos.
+EVOL_FONTES_COM_PONTOS = ('eftp_atividade',)
 EVOL_CAMPO_NAO_LIDO = 'icu_rolling_ftp'
 # (chave, campo cru, rotulo, semantica)
 EVOL_SERIES = (
@@ -2418,41 +2422,71 @@ def _evol_janela(obs, ref, W):
         'n_anterior': len(ant), 'n_recente': len(rec),
         'semanas_anterior': sem_ant, 'semanas_recente': sem_rec,
         'semanas_necessarias': exigidas, 'semanas_total': semanas_total,
+        'periodo_recente': [(ini_rec + timedelta(days=1)).isoformat(), fim.isoformat()],
+        'periodo_anterior': [(ini_ant + timedelta(days=1)).isoformat(), ini_rec.isoformat()],
     }
 
 
 def _evol_serie(brutos, ref, rotulo, campo, semantica='', eftp=False,
-                padroes_confirmados=None):
+                padroes_confirmados=None, com_pontos=True):
     """brutos: [(data, valor_cru, id_atividade)] de TODAS as sessoes da modalidade
     (ausencia = None). Devolve qualidade do historico e as janelas. Nunca remove outliers
     nem valores suspeitos: sinaliza. Exclui apenas sequencia com padrao confirmado."""
     brutos = sorted(brutos, key=lambda t: t[0])
     n_aus = n_zero = n_neg = 0
     validos = []
+    ausencias = []   # (data, id, estado) para pontos nao validos
     for d, raw, ident in brutos:
         if raw is None or isinstance(raw, bool) or not isinstance(raw, (int, float)):
             n_aus += 1
+            ausencias.append((d, ident, 'ausente'))
             continue
         if raw == 0:
             n_zero += 1
+            ausencias.append((d, ident, 'zero'))
             continue
         if raw < 0:
             n_neg += 1
+            ausencias.append((d, ident, 'negativo'))
             continue
         v = _evol_valor(raw)
         if v is None:
             n_aus += 1
+            ausencias.append((d, ident, 'ausente'))
         else:
             validos.append((d, v, ident))
     seqs = _evol_sequencias(validos, padroes_confirmados)
     excluidos = set()
+    marcas = {}   # indice em validos -> set de sinalizacoes
     for s in seqs:
+        for k in s['indices']:
+            marcas.setdefault(k, set()).add('excluido' if s['excluida_da_tendencia'] else 'sequencia')
         if s['excluida_da_tendencia']:
             excluidos.update(s['indices'])
     tendencia = [(d, v) for k, (d, v, _) in enumerate(validos) if k not in excluidos]
     for s in seqs:
         s.pop('indices', None)
     suspeitos = _evol_suspeitos(validos) if eftp else []
+    ids_suspeitos = {(x['data'], x['id']) for x in suspeitos}
+    extremos = _evol_outliers(validos)
+    ids_extremos = {(x['data'], x['id']) for x in extremos}
+    for k, (d, _, ident) in enumerate(validos):
+        if (d, ident) in ids_suspeitos:
+            marcas.setdefault(k, set()).add('suspeito')
+        if (d, ident) in ids_extremos:
+            marcas.setdefault(k, set()).add('extremo')
+    fim_pontos = _evol_dt(ref) - timedelta(days=EVOL_PONTOS_DIAS)
+    pontos = []
+    for k, (d, v, ident) in enumerate(validos):
+        if _evol_dt(d) < fim_pontos or _evol_dt(d) > _evol_dt(ref):
+            continue
+        pontos.append({'data': d, 'id': ident, 'valor': v, 'estado': 'valido',
+                       'sinalizacoes': sorted(marcas.get(k, ()))})
+    for d, ident, estado in ausencias:
+        if fim_pontos <= _evol_dt(d) <= _evol_dt(ref):
+            pontos.append({'data': d, 'id': ident, 'valor': None, 'estado': estado,
+                           'sinalizacoes': []})
+    pontos.sort(key=lambda p: (p['data'], str(p['id'])))
     ultima = validos[-1] if validos else None
     idade = (_evol_dt(ref) - _evol_dt(ultima[0])).days if ultima else None
     return {
@@ -2470,6 +2504,8 @@ def _evol_serie(brutos, ref, rotulo, campo, semantica='', eftp=False,
             'valores_suspeitos': suspeitos,
             'outliers_sinalizados': _evol_outliers(validos),
         },
+        'ultimo_valor': ultima[1] if ultima else None,
+        **({'pontos': pontos} if com_pontos else {}),
         'janelas': {str(W): _evol_janela(tendencia, ref, W) for W in EVOL_JANELAS},
     }
 
@@ -2522,7 +2558,8 @@ def evolucao_performance(entradas, curvas, referencia, modalidades=EVOL_MODALIDA
                       for e in entradas or [] if e.get('type') == mod]
             fontes[chave] = _evol_serie(brutos, referencia, rotulo, campo, semantica,
                                         eftp=(chave == 'eftp_nao_confirmado'),
-                                        padroes_confirmados=padroes_confirmados)
+                                        padroes_confirmados=padroes_confirmados,
+                                        com_pontos=(chave in EVOL_FONTES_COM_PONTOS))
         melhores = {}
         for secs in EVOL_MELHORES_SECS:
             brutos = _evol_melhores(curvas, mod, secs)

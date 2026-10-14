@@ -136,7 +136,8 @@ class EvolucaoInterface(unittest.TestCase):
         self.assertNotIn('value="eftp"', self.body)
 
     def test_js_usa_o_payload_fontes_e_nao_o_antigo(self):
-        self.assertIn('M.fontes[', self.js)
+        # le o campo 'fontes' do payload (direto ou via F=M.fontes||{}), nunca o nome antigo
+        self.assertIn('M.fontes', self.js)
         self.assertNotIn('M.ftp[', self.js)
 
 
@@ -145,7 +146,7 @@ class EvolucaoInterface(unittest.TestCase):
         chaves = [c[0] for c in P.EVOL_SERIES]
         self.assertEqual(chaves, ['eftp_atividade', 'ftp_configurado', 'eftp_nao_confirmado'])
         for chave in chaves:
-            self.assertIn(f"['{chave}'", self.js, chave)
+            self.assertIn(f"'{chave}'", self.js, chave)
             self.assertIn(f'value="{chave}"', self.body, chave)
         self.assertIn("eFTP da atividade (icu_pm_ftp)", self.js)
         self.assertIn("FTP configurado (icu_ftp)", self.js)

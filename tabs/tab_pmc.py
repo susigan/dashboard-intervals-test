@@ -782,14 +782,19 @@ __EXPL_fmt__
     </select></label>
 </div>
 <div class="sub" id="evolSub"></div>
-<div class="sub" id="evolExplica"><b>Como ler:</b> o <b>eFTP da atividade</b> é uma estimativa do Intervals.icu calculada a partir da atividade completa, incluindo os períodos de recuperação. Uma sessão isolada com eFTP baixo não demonstra perda real de performance. O <b>FTP configurado</b> é o valor definido nas configurações do Intervals.icu: é referência, não prova da performance atual. O <b>EFTP</b> tem semântica não confirmada e é exibido separado, sem interpretação. Os melhores esforços são lidos diretamente da curva de potência. Nenhuma classificação automática de melhora ou piora é aplicada.</div>
+<div class="sub" id="evolExplica"><b>Como ler:</b> o <b>eFTP da atividade</b> é uma estimativa do Intervals.icu calculada a partir da atividade completa, incluindo os períodos de recuperação. Uma sessão isolada com eFTP baixo não demonstra perda real de performance. O eFTP da atividade depende dos dados e da estrutura da sessão e, isoladamente, não é suficiente para concluir se a capacidade do atleta aumentou ou diminuiu. O <b>FTP configurado</b> é o valor definido nas configurações do Intervals.icu: é referência, não prova da performance atual. O <b>EFTP</b> tem semântica não confirmada e é exibido separado, sem interpretação. Os melhores esforços são lidos diretamente da curva de potência. Nenhuma classificação automática de melhora ou piora é aplicada.</div>
+<div class="sub" id="evolPopulacao"></div>
 <div id="evolAvisos"></div>
 <div class="wrap" style="margin-bottom:10px"><table>
   <thead><tr id="evolHead"></tr></thead><tbody id="evolBody"></tbody></table></div>
+<div class="wrap" style="margin-bottom:10px"><table>
+  <thead><tr><th>Série</th><th>Valor de referência</th><th>Data</th><th>Nota</th></tr></thead>
+  <tbody id="evolCfgBody"></tbody></table></div>
 <div class="sub">Melhores esforços observados diretamente na curva de potência
   (sem interpolação). Mesmas janelas e critérios de suficiência do FTP.</div>
 <div class="wrap" style="margin-bottom:14px"><table>
   <thead><tr id="evolMeHead"></tr></thead><tbody id="evolMeBody"></tbody></table></div>
+<div id="evolGraficos"></div>
 
 <div id="homeoLegado" hidden>
 <h2>Modelo homeostatico — reserva de performance</h2>
@@ -2269,7 +2274,9 @@ async function load(){
 
  carregarSugestoes();
 montarExport();
- drawPMC(); mostrarFMT5(); mostrarRegimeHoje(); mostrarEvolucao(); mostrarAlos();
+ drawPMC(); mostrarFMT5(); mostrarRegimeHoje();
+ try{mostrarEvolucao();}catch(e){console.error('Evolução da performance indisponível nesta carga:',e);}
+ mostrarAlos();
  mostrarDtrimpDkj(); mostrarEficienciaKj();
  redesenhar();  // drawCTLg/drawFMT so' correm daqui -- sem isto, o
                  // grafico de Curvatura ficava em branco ate' o
@@ -2425,7 +2432,9 @@ function evEsc(v){return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').re
 function evV(v,dec){return (v===null||v===undefined||!isFinite(v))?'—':Number(v).toFixed(dec);}
 function evCabecalho(){return ['Série','Mediana anterior','Mediana recente','Δ W','Δ %','Obs. ant. / rec.','Semanas rec. / exigidas','Estado'];}
 function evLinha(rotulo,s,jan){
- const w=(s&&s.janelas&&s.janelas[jan])||{};
+ if(!s||!s.janelas)return '<tr><td>'+evEsc(rotulo)+'</td><td colspan="7">'+
+  (s?'janelas não informadas nesta resposta.':'série indisponível nesta resposta.')+'</td></tr>';
+ const w=(s.janelas&&s.janelas[jan])||{};
  const ok=w.status==='ok';
  const estado=ok?'<span style="color:#2ECC71">ok</span>':
   '<span class="err">Dados insuficientes: '+evEsc((w.motivos||[]).map(m=>EV_MOTIVOS[m]||m).join('; '))+'</span>';
@@ -2440,7 +2449,9 @@ function evLinha(rotulo,s,jan){
  return '<tr>'+cells.map(c=>'<td>'+c+'</td>').join('')+'</tr>';
 }
 function evNotaQualidade(rotulo,s){
- const q=(s&&s.qualidade)||{};
+ if(!s||!s.qualidade)return '<div class="sub"><b>'+evEsc(rotulo)+':</b> '+
+  (s?'qualidade não informada nesta resposta.':'série indisponível nesta resposta.')+'</div>';
+ const q=s.qualidade;
  const p=[(q.n_validos||0)+' válidos'];
  if(q.n_zero)p.push(q.n_zero+' zero(s) tratados como ausência');
  if(q.n_ausentes)p.push(q.n_ausentes+' ausente(s)');
@@ -2454,14 +2465,117 @@ function evNotaQualidade(rotulo,s){
  return '<div class="sub"><b>'+evEsc(rotulo)+':</b> '+evEsc(p.join(' · '))+
   (s&&s.semantica?'<br><i>Origem: '+evEsc(s.semantica)+'</i>':'')+'</div>';
 }
+// ── Graficos da evolucao: um ponto por atividade, medianas de janela, sem interpolacao
+const EV_COR={ponto:'#3a78b5',sinal:'#c4691f',mediana:'#e6edf3',ausente:'#8b949e',grade:'#21262d',eixo:'#8b949e',texto:'#e6edf3'};
+const EV_SINAL={sequencia:'sequencia de valores iguais',suspeito:'escala suspeita',extremo:'valor extremo',excluido:'excluido da tendencia'};
+function evDia(s){return Date.parse(String(s).slice(0,10)+'T00:00:00Z')/86400000;}
+function evFundo(){const b=getComputedStyle(document.body).backgroundColor;
+ return (b&&b!=='rgba(0, 0, 0, 0)'&&b!=='transparent')?b:'#0d1117';}
+function evLegenda(){return '<span style="margin-right:14px"><i style="display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:middle;background:'+EV_COR.ponto+'"></i>valor válido (um ponto por atividade)</span>'+
+ '<span style="margin-right:14px"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle;background:transparent;border:2px solid '+EV_COR.sinal+'"></i>sinalizado: mantido e visível</span>'+
+ '<span style="margin-right:14px"><i style="display:inline-block;background:'+EV_COR.ausente+';width:2px;height:10px;margin-right:4px;vertical-align:middle"></i>ausente ou zero (sem valor, sem interpolação)</span>'+
+ '<span style="margin-right:14px"><i style="display:inline-block;background:'+EV_COR.mediana+';width:14px;height:2px;margin-right:4px;vertical-align:middle"></i>mediana da janela (recente ou anterior)</span>';}
+function evRotuloSinais(p){return (p.sinalizacoes||[]).map(s=>EV_SINAL[s]||s).join(', ');}
+function evPeriodo(p){return (Array.isArray(p)&&p.length===2&&p[0]&&p[1])?p:null;}
+function evPerTxt(p){const q=evPeriodo(p);return q?' ('+evEsc(q.join(' a '))+')':'';}
+function drawEvolChart(id,s,jan,ref){
+ const H=240, c=ctx(id,H); if(!c)return; const g=c.g, W=c.W;
+ const pts=(s&&Array.isArray(s.pontos))?s.pontos:[];
+ const val=pts.filter(p=>p.estado==='valido');
+ if(!val.length){noData(g,W,H,'Sem observações válidas nesta série');return;}
+ const win=(s.janelas&&s.janelas[jan])||{};
+ const medias=[];
+ const pa=evPeriodo(win.periodo_anterior), pr=evPeriodo(win.periodo_recente);
+ if(win.status==='ok'){
+  if(win.mediana_anterior!=null&&pa)medias.push({v:win.mediana_anterior,ini:evDia(pa[0]),fim:evDia(pa[1]),r:'anterior'});
+  if(win.mediana_recente!=null&&pr)medias.push({v:win.mediana_recente,ini:evDia(pr[0]),fim:evDia(pr[1]),r:'recente'});
+ }
+ const fimN=evDia(ref), iniN=fimN-730;
+ const vs=val.map(p=>p.valor).concat(medias.map(m=>m.v));
+ let lo=Math.min.apply(null,vs), hi=Math.max.apply(null,vs);
+ const pad=Math.max((hi-lo)*0.1,1); lo=Math.max(0,lo-pad); hi=hi+pad;
+ const PL=48,PR=14,PT=14,PB=40, x0=PL, x1=W-PR, y0=PT, y1=H-PB;
+ const X=d=>x0+(x1-x0)*((d-iniN)/(fimN-iniN));
+ const Y=v=>y1-(y1-y0)*((v-lo)/(hi-lo));
+ g.font='11px sans-serif';
+ g.textBaseline='middle'; g.textAlign='right';
+ for(let k=0;k<=4;k++){const v=lo+(hi-lo)*k/4, y=Y(v);
+  g.strokeStyle=EV_COR.grade; g.lineWidth=1; g.beginPath(); g.moveTo(x0,y); g.lineTo(x1,y); g.stroke();
+  g.fillStyle=EV_COR.eixo; g.fillText(String(Math.round(v)),x0-6,y);}
+ g.textAlign='center'; g.textBaseline='top'; g.fillStyle=EV_COR.eixo;
+ let ultimoX=-1e9;
+ for(let d=iniN; d<=fimN; d+=91){const t=new Date(d*86400000).toISOString().slice(0,7), tx=X(d), lw=g.measureText(t).width;
+  if(tx-lw/2<ultimoX+14||tx+lw/2>x1)continue; g.fillText(t,tx,y1+18); ultimoX=tx+lw/2;}
+ const rotulosMed=[];
+ medias.forEach(m=>{g.strokeStyle=EV_COR.mediana; g.lineWidth=2; g.beginPath();
+  g.moveTo(X(m.ini),Y(m.v)); g.lineTo(X(m.fim),Y(m.v)); g.stroke();
+  rotulosMed.push({m:m});});
+ const bg=evFundo(), hits=[];
+ pts.forEach(p=>{ if(p.estado!=='valido')return;
+  const x=X(evDia(p.data)), y=Y(p.valor), sinal=(p.sinalizacoes||[]).length>0;
+  g.beginPath(); g.arc(x,y,4,0,Math.PI*2);
+  if(sinal){g.fillStyle=bg; g.fill(); g.lineWidth=2; g.strokeStyle=EV_COR.sinal; g.stroke();}
+  else{g.fillStyle=EV_COR.ponto; g.fill(); g.lineWidth=2; g.strokeStyle=bg; g.stroke();}
+  hits.push({x:x,y:y,p:p});});
+ rotulosMed.forEach(r=>{const m=r.m;
+  const rot=(m.r==='anterior'?'ant. ':'rec. ')+Math.round(m.v); g.font='11px sans-serif';
+  const lw=g.measureText(rot).width;
+  let lx=X(m.fim); if(lx-lw<x0)lx=x0+lw; const ly=Y(m.v)-5;
+  g.fillStyle=evFundo(); g.fillRect(lx-lw-3,ly-12,lw+6,14);
+  g.fillStyle=EV_COR.texto; g.textAlign='right'; g.textBaseline='bottom';
+  g.fillText(rot,lx,ly);});
+ pts.forEach(p=>{ if(p.estado==='valido')return;
+  const x=X(evDia(p.data));
+  g.strokeStyle=EV_COR.ausente; g.lineWidth=1; g.beginPath(); g.moveTo(x,y1+3); g.lineTo(x,y1+9); g.stroke();});
+ const cv=document.getElementById(id), tip=document.getElementById(id+'Tip');
+ cv.onpointermove=function(ev){
+  const r=cv.getBoundingClientRect(), mx=ev.clientX-r.left, my=ev.clientY-r.top;
+  let best=null, bd=1e9;
+  hits.forEach(h=>{const d=Math.hypot(h.x-mx,h.y-my); if(d<bd){bd=d;best=h;}});
+  if(!best||bd>14){tip.style.display='none';return;}
+  const sg=evRotuloSinais(best.p);
+  tip.textContent=best.p.data+'\n'+Math.round(best.p.valor)+' W\nvalor válido'+(sg?' · '+sg:'');
+  tip.style.display='block';
+  tip.style.left=Math.min(best.x+10,W-180)+'px'; tip.style.top=Math.max(best.y-44,0)+'px';};
+ cv.onpointerleave=function(){tip.style.display='none';};
+}
+function evBlocoGrafico(id,titulo,s,jan){
+ if(!s)return '<div class="sub"><b>'+evEsc(titulo)+'</b> · série indisponível nesta resposta.</div>';
+ const q=(s&&s.qualidade)||{};
+ const pts=(s&&Array.isArray(s.pontos))?s.pontos:[];
+ const win=(s&&s.janelas&&s.janelas[jan])||{};
+ let estadoJan='';
+ if(win.status!=='ok')estadoJan='<span class="err">Janela '+evEsc(jan)+' dias: dados insuficientes ('+evEsc((win.motivos||[]).map(m=>EV_MOTIVOS[m]||m).join('; '))+'). Sem mediana nesta janela.</span>';
+ else estadoJan='Janela '+evEsc(jan)+' dias: mediana anterior '+evV(win.mediana_anterior,1)+' W'+evPerTxt(win.periodo_anterior)+', mediana recente '+evV(win.mediana_recente,1)+' W'+evPerTxt(win.periodo_recente)+'.';
+ const linhas=pts.map(p=>'<tr><td>'+evEsc(p.data)+'</td><td>'+(p.valor===null?'—':evEsc(Math.round(p.valor)+' W'))+
+  '</td><td>'+evEsc(p.estado)+'</td><td>'+evEsc(evRotuloSinais(p))+'</td></tr>').join('');
+ return '<div class="sub"><b>'+evEsc(titulo)+'</b> · '+evEsc((q.n_validos||0)+' válidos')+' · '+
+  evEsc((q.n_ausentes||0)+' ausentes')+' · '+evEsc((q.n_zero||0)+' zeros')+'<br>'+estadoJan+'</div>'+
+  '<div style="position:relative"><canvas id="'+id+'" style="width:100%;height:240px;display:block"></canvas>'+
+  '<div id="'+id+'Tip" style="position:absolute;pointer-events:none;display:none;white-space:pre-line;'+
+  'background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:4px 8px;font-size:12px;border-radius:4px"></div></div>'+
+  '<details class="sub"><summary>Ver pontos em tabela ('+pts.length+' registros nos últimos 730 dias)</summary>'+
+  '<div class="wrap"><table><thead><tr><th>Data</th><th>Valor</th><th>Estado</th><th>Sinalização</th></tr></thead><tbody>'+linhas+'</tbody></table></div></details>';
+}
+function evPopulacao(M){
+ const F=M.fontes||{}, ME=M.melhores_esforcos||{};
+ const c=(s,k)=>(s&&s.qualidade&&s.qualidade[k]!=null)?s.qualidade[k]:'—';
+ const e=F.eftp_atividade, m=ME['60'];
+ return 'Populações distintas: o eFTP da atividade vem das atividades do Intervals.icu ('+c(e,'n_brutos')+
+  ' atividades, '+c(e,'n_validos')+' com valor válido). Os melhores esforços vêm da curva de potência por atividade ('+
+  c(m,'n_brutos')+' atividades com curva, '+c(m,'n_validos')+' com 1 min válido). As contagens podem diferir: nem toda atividade tem curva e nem toda curva tem eFTP. Zero e ausência não entram como valor.';
+}
 function mostrarEvolucao(){
  const E=D&&D.evolucao_performance;
  const head=document.getElementById('evolHead'), body=document.getElementById('evolBody');
  const mHead=document.getElementById('evolMeHead'), mBody=document.getElementById('evolMeBody');
  const avisos=document.getElementById('evolAvisos'), sub=document.getElementById('evolSub');
+ const cfgBody=document.getElementById('evolCfgBody'), graf=document.getElementById('evolGraficos');
+ const pop=document.getElementById('evolPopulacao');
  if(!E||!E.modalidades){
   sub.innerHTML='<span class="err">Evolução indisponível'+(E&&E.erro?': '+evEsc(E.erro):'')+'</span>';
-  head.innerHTML='';body.innerHTML='';mHead.innerHTML='';mBody.innerHTML='';avisos.innerHTML='';return;}
+  head.innerHTML='';body.innerHTML='';mHead.innerHTML='';mBody.innerHTML='';avisos.innerHTML='';
+  cfgBody.innerHTML='';graf.innerHTML='';pop.textContent='';return;}
  const mod=document.getElementById('evolMod').value;
  const jan=document.getElementById('evolJanela').value;
  const fonte=document.getElementById('evolFonte').value;
@@ -2469,14 +2583,31 @@ function mostrarEvolucao(){
  sub.innerHTML='Referência: '+evEsc(E.referencia||'—')+' · '+evEsc(mod)+' · janela de '+evEsc(jan)+' dias (recente vs. anterior)';
  head.innerHTML=evCabecalho().map(h=>'<th>'+h+'</th>').join('');
  mHead.innerHTML=evCabecalho().map(h=>'<th>'+h+'</th>').join('').replace('Série','Melhor esforço');
- if(!M){body.innerHTML='';mBody.innerHTML='';avisos.innerHTML='<div class="sub">Sem dados para '+evEsc(mod)+'.</div>';return;}
- const fontes=[['eftp_atividade','eFTP da atividade (icu_pm_ftp)'],['ftp_configurado','FTP configurado (icu_ftp)'],['eftp_nao_confirmado','EFTP (campo não confirmado)']]
+ if(!M){body.innerHTML='';mBody.innerHTML='';cfgBody.innerHTML='';graf.innerHTML='';pop.textContent='';
+  avisos.innerHTML='<div class="sub">Sem dados para '+evEsc(mod)+'.</div>';return;}
+ const F=M.fontes||{}, ME=M.melhores_esforcos||{};
+ pop.textContent=evPopulacao(M);
+ const fontes=[['eftp_atividade','eFTP da atividade (icu_pm_ftp)'],['eftp_nao_confirmado','EFTP (campo não confirmado)']]
   .filter(f=>fonte==='todas'||fonte===f[0]);
- body.innerHTML=fontes.map(f=>evLinha(f[1],M.fontes[f[0]],jan)).join('');
+ body.innerHTML=fontes.map(f=>evLinha(f[1],F[f[0]],jan)).join('');
+ const cfg=F.ftp_configurado;
+ const mostraCfg=(fonte==='todas'||fonte==='ftp_configurado');
+ cfgBody.innerHTML=mostraCfg?'<tr><td>FTP configurado (icu_ftp)</td><td>'+
+  (cfg&&cfg.ultimo_valor!=null?evEsc(Math.round(cfg.ultimo_valor)+' W'):'—')+'</td><td>'+
+  evEsc((cfg&&cfg.qualidade&&cfg.qualidade.ultima_observacao)||'—')+'</td><td>Referência de configuração do Intervals.icu. Não compõe a tendência: sem Δ, sem estado e sem classificação.</td></tr>':'';
  const sec=[['60','1 min'],['300','5 min'],['720','12 min'],['1200','20 min']];
- mBody.innerHTML=sec.map(x=>evLinha(x[1],M.melhores_esforcos[x[0]],jan)).join('');
- avisos.innerHTML=fontes.map(f=>evNotaQualidade(f[1],M.fontes[f[0]])).join('')+
-  sec.map(x=>evNotaQualidade(x[1],M.melhores_esforcos[x[0]])).join('');
+ mBody.innerHTML=sec.map(x=>evLinha(x[1],ME[x[0]],jan)).join('');
+ avisos.innerHTML=fontes.map(f=>evNotaQualidade(f[1],F[f[0]])).join('')+
+  sec.map(x=>evNotaQualidade(x[1],ME[x[0]])).join('');
+ const specs=[['ev_m60',sec[0][1]+' (60 s)',ME['60']],
+  ['ev_m300',sec[1][1]+' (300 s)',ME['300']],
+  ['ev_m720',sec[2][1]+' (720 s)',ME['720']],
+  ['ev_m1200',sec[3][1]+' (1200 s)',ME['1200']],
+  ['ev_eftp','eFTP da atividade (icu_pm_ftp)',F.eftp_atividade]];
+ graf.innerHTML='<div class="sub">'+evLegenda()+'</div><div class="sub">Gráficos mostram todo o histórico de 730 dias, independentemente da Fonte escolhida na tabela. Cada ponto é uma atividade. Ausências e zeros não viram valor nem são interpolados.</div>'+
+  specs.map(x=>evBlocoGrafico(x[0],x[1],x[2],jan)).join('');
+ specs.forEach(x=>{if(!x[2])return;try{drawEvolChart(x[0],x[2],jan,E.referencia);}
+  catch(err){console.error('Gráfico '+x[0]+' indisponível:',err);const c=ctx(x[0],240);if(c)noData(c.g,c.W,240,'Série incompleta: gráfico indisponível');}});
 }
 
 function redesenhar(){
@@ -2486,6 +2617,7 @@ function redesenhar(){
  if(D.fmt){drawMatriz();drawEigen();drawAtencao();}}
 document.getElementById('janelaPMC').onchange=redesenhar;
 window.addEventListener('resize',redesenhar);
+window.addEventListener('resize',function(){if(D)mostrarEvolucao();});
 load();
 carregarSugestoes();
 """

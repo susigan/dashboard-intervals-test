@@ -28,7 +28,8 @@ def api_data():
             'kj': round(kj_da_atividade(a), 0),
             'training_load': num(a.get('icu_training_load')),
             'avg_watts': num(a.get('icu_weighted_avg_watts')) or num(a.get('icu_average_watts')),
-            'ftp': num(a.get('icu_pm_ftp')) or num(a.get('icu_ftp')),
+            'eftp_atividade': num(a.get('icu_pm_ftp')),
+            'ftp_configurado': num(a.get('icu_ftp')),
             'rpe': a.get('icu_rpe'), 'xss': round(num(a.get('SS')), 0),
             'avg_hr': num(a.get('average_heartrate')), 'max_hr': num(a.get('max_heartrate')),
             'source': a.get('source'),
@@ -68,7 +69,7 @@ BODY = r"""
 JS = r"""
 const COLS=[['date','Data',0],['name','Nome',0],['type','Tipo',0],['type_raw','Tipo API',0],
  ['duration_min','Min',1],['distance_km','km',1],['kj','kJ',1],['training_load','TL',1],
- ['avg_watts','W',1],['ftp','FTP',1],['rpe','RPE',1],['xss','XSS',1],
+ ['avg_watts','W',1],['eftp_atividade','eFTP ativ.',1],['ftp_configurado','FTP conf.',1],['rpe','RPE',1],['xss','XSS',1],
  ['avg_hr','HR',1],['max_hr','HR max',1],['tags','Tags',0],['source','Fonte',0]];
 let data=[],CORES={},sortKey='date',sortAsc=false;
 

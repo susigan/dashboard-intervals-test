@@ -22,7 +22,9 @@ class ActivityProcessor:
     # ==================== POWER ====================
     
     def get_ftp(self, activity: Dict[str, Any]) -> int:
-        """FTP — Morton 3P > rolling > default."""
+        """Valor de referência de potência: eFTP da atividade (icu_pm_ftp, Morton 3P, atividade
+        completa) > FTP configurado (icu_ftp) > default. Não é FTP medido nem eFTP persistente
+        do atleta. Sem chamadores no código."""
         ftp = activity.get('icu_pm_ftp')
         if ftp is not None and ftp > 0:
             return int(ftp)

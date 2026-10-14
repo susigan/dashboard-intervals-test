@@ -2270,3 +2270,266 @@ def eficiencia_rolling(sessoes, modalidades, janela_semanas=4, hoje=None):
             'n_sessoes': len(dm),
         }
     return out
+
+
+# ---------------------------------------------------------------------------
+# Evolucao da performance (PMC). Funcoes puras: sem banco, sem API.
+# Series separadas, sem mistura de fontes:
+#   eftp_atividade       <- icu_pm_ftp  (eFTP da atividade completa, Intervals.icu)
+#   ftp_configurado      <- icu_ftp     (FTP definido pelo usuario nas configuracoes)
+#   eftp_nao_confirmado  <- EFTP        (semantica nao confirmada)
+#   melhores esforcos    <- curva de potencia (60, 300, 720, 1200 s)
+# icu_rolling_ftp nao e lido: semantica nao confirmada.
+# ---------------------------------------------------------------------------
+EVOL_JANELAS = (90, 180, 365)
+EVOL_MODALIDADES = ('Bike', 'Row', 'Run', 'Ski')
+EVOL_N_MIN = 10                 # observacoes validas minimas por janela
+EVOL_COBERTURA_MIN = 0.70       # cobertura minima, por semanas-calendario
+EVOL_SEQ_MIN = 10               # valores identicos consecutivos: sempre sinalizados
+EVOL_OUTLIER_K = 3.0            # sinalizacao por IQR; nunca remove
+EVOL_ESCALA_SUSPEITA_MAX = 1.0  # EFTP <= 1 W: escala nao-watt (observado em 2 objetos crus)
+EVOL_MELHORES_SECS = (60, 300, 720, 1200)
+EVOL_CAMPO_NAO_LIDO = 'icu_rolling_ftp'
+# (chave, campo cru, rotulo, semantica)
+EVOL_SERIES = (
+    ('eftp_atividade', 'icu_pm_ftp', 'eFTP da atividade (icu_pm_ftp)',
+     'estimativa do Intervals.icu para a atividade completa, calculada a partir das '
+     'curvas de potencia (modelo de potencia critica de 3 parametros de Morton), '
+     'incluindo os periodos de recuperacao. Nao e recalculada aqui e nao equivale ao '
+     'FTP configurado nem a capacidade maxima atual.'),
+    ('ftp_configurado', 'icu_ftp', 'FTP configurado (icu_ftp)',
+     'FTP definido pelo usuario nas configuracoes do Intervals.icu. Referencia; nao '
+     'comprova a performance atual.'),
+    ('eftp_nao_confirmado', 'EFTP', 'EFTP (campo nao confirmado)',
+     'semantica nao confirmada (valor do atleta ou estimativa por atividade nao '
+     'comprovados). Exibido separado; nao e eFTP do modelo.'),
+)
+
+
+def _evol_dt(s):
+    return datetime.strptime(str(s)[:10], '%Y-%m-%d').date()
+
+
+def _evol_valor(v):
+    """Observacao valida ou None. Zero, negativo, bool, texto e ausente -> None."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    if f != f or f == float('inf') or f <= 0:
+        return None
+    return f
+
+
+def _evol_sequencias(obs, padroes_confirmados=None):
+    """obs: [(data, valor, id)] ordenado por data. Blocos de >= EVOL_SEQ_MIN valores
+    iguais consecutivos.
+
+    Classificacao:
+      - 'suspeita': sinalizada e MANTIDA na tendencia, com aviso.
+      - 'padrao_confirmado': so com evidencia explicita do chamador
+        (padroes_confirmados = {(inicio, fim, valor)}). Unico caso de exclusao, com motivo.
+    Duracao (dias) e informativa: nao decide exclusao.
+    """
+    confirmados = set(padroes_confirmados or ())
+    blocos, i = [], 0
+    while i < len(obs):
+        j = i
+        while j + 1 < len(obs) and obs[j + 1][1] == obs[i][1]:
+            j += 1
+        n = j - i + 1
+        if n >= EVOL_SEQ_MIN:
+            ini, fim, val = obs[i][0], obs[j][0], obs[i][1]
+            dias = (_evol_dt(fim) - _evol_dt(ini)).days
+            confirmado = (ini, fim, val) in confirmados
+            blocos.append({
+                'valor': val, 'inicio': ini, 'fim': fim, 'n': n, 'dias': dias,
+                'ids': [obs[k][2] for k in range(i, j + 1)],
+                'classificacao': 'padrao_confirmado' if confirmado else 'suspeita',
+                'excluida_da_tendencia': confirmado,
+                'motivo': ('valor padrao confirmado por evidencia explicita'
+                           if confirmado else
+                           'sequencia de valores identicos; origem nao confirmada; mantida'),
+                'indices': list(range(i, j + 1))})
+        i = j + 1
+    return blocos
+
+
+def _evol_suspeitos(validos):
+    """Valores de EFTP em escala nao-watt (<= EVOL_ESCALA_SUSPEITA_MAX). So sinaliza."""
+    return [{'data': d, 'id': i, 'valor': v, 'motivo': 'escala nao-watt suspeita (<= 1 W)'}
+            for d, v, i in validos if v <= EVOL_ESCALA_SUSPEITA_MAX]
+
+
+def _evol_outliers(obs):
+    """obs: [(data, valor, id)]. Sinaliza por IQR; nunca remove."""
+    if len(obs) < 4:
+        return []
+    import statistics
+    vals = [v for _, v, _ in obs]
+    q1, _, q3 = statistics.quantiles(vals, n=4, method='inclusive')
+    amp = q3 - q1
+    if amp <= 0:
+        return []
+    lo, hi = q1 - EVOL_OUTLIER_K * amp, q3 + EVOL_OUTLIER_K * amp
+    return [{'data': d, 'id': i, 'valor': v} for d, v, i in obs if v < lo or v > hi]
+
+
+def _evol_janela(obs, ref, W):
+    """obs: [(data, valor)]. Compara duas janelas de W dias ate ref: recente (ref-W, ref]
+    e anterior (ref-2W, ref-W]. Cobertura por semanas-calendario (segunda a domingo)."""
+    fim = _evol_dt(ref)
+    ini_rec = fim - timedelta(days=W)
+    ini_ant = fim - timedelta(days=2 * W)
+    semanas_total = round(W / 7)
+    exigidas = (7 * semanas_total + 9) // 10          # ceil(0.70 * semanas)
+
+    def pedacos(a, b):
+        return [(d, v) for d, v in obs if a < _evol_dt(d) <= b]
+
+    rec, ant = pedacos(ini_rec, fim), pedacos(ini_ant, ini_rec)
+
+    def semanas(par):
+        return len({_evol_dt(d) - timedelta(days=_evol_dt(d).weekday())
+                    for d, _ in par})
+
+    sem_rec, sem_ant = semanas(rec), semanas(ant)
+    motivos = []
+    if len(rec) + len(ant) == 0:
+        motivos.append('sem_dados')
+    else:
+        if len(rec) < EVOL_N_MIN or len(ant) < EVOL_N_MIN:
+            motivos.append('observacoes_insuficientes')
+        if sem_rec < exigidas or sem_ant < exigidas:
+            motivos.append('cobertura_insuficiente')
+    ok = not motivos
+    import statistics
+    med_ant = float(statistics.median([v for _, v in ant])) if ant else None
+    med_rec = float(statistics.median([v for _, v in rec])) if rec else None
+    diff = pct = None
+    if ok:
+        diff = round(med_rec - med_ant, 2)
+        pct = round((med_rec - med_ant) / med_ant * 100, 1) if med_ant else None
+    return {
+        'status': 'ok' if ok else 'insuficiente',
+        'motivos': motivos,
+        'mediana_anterior': round(med_ant, 2) if (ok and med_ant is not None) else None,
+        'mediana_recente': round(med_rec, 2) if (ok and med_rec is not None) else None,
+        'diferenca': diff, 'variacao_pct': pct,
+        'n_anterior': len(ant), 'n_recente': len(rec),
+        'semanas_anterior': sem_ant, 'semanas_recente': sem_rec,
+        'semanas_necessarias': exigidas, 'semanas_total': semanas_total,
+    }
+
+
+def _evol_serie(brutos, ref, rotulo, campo, semantica='', eftp=False,
+                padroes_confirmados=None):
+    """brutos: [(data, valor_cru, id_atividade)] de TODAS as sessoes da modalidade
+    (ausencia = None). Devolve qualidade do historico e as janelas. Nunca remove outliers
+    nem valores suspeitos: sinaliza. Exclui apenas sequencia com padrao confirmado."""
+    brutos = sorted(brutos, key=lambda t: t[0])
+    n_aus = n_zero = n_neg = 0
+    validos = []
+    for d, raw, ident in brutos:
+        if raw is None or isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            n_aus += 1
+            continue
+        if raw == 0:
+            n_zero += 1
+            continue
+        if raw < 0:
+            n_neg += 1
+            continue
+        v = _evol_valor(raw)
+        if v is None:
+            n_aus += 1
+        else:
+            validos.append((d, v, ident))
+    seqs = _evol_sequencias(validos, padroes_confirmados)
+    excluidos = set()
+    for s in seqs:
+        if s['excluida_da_tendencia']:
+            excluidos.update(s['indices'])
+    tendencia = [(d, v) for k, (d, v, _) in enumerate(validos) if k not in excluidos]
+    for s in seqs:
+        s.pop('indices', None)
+    suspeitos = _evol_suspeitos(validos) if eftp else []
+    ultima = validos[-1] if validos else None
+    idade = (_evol_dt(ref) - _evol_dt(ultima[0])).days if ultima else None
+    return {
+        'origem': campo, 'rotulo': rotulo, 'semantica': semantica,
+        'qualidade': {
+            'n_brutos': len(brutos), 'n_ausentes': n_aus, 'n_zero': n_zero,
+            'n_negativos': n_neg, 'n_validos': len(validos),
+            'n_excluidos_tendencia': len(validos) - len(tendencia),
+            'n_sequencias_sinalizadas': sum(1 for s in seqs if s['classificacao'] == 'suspeita'),
+            'n_registros_em_sequencia': sum(s['n'] for s in seqs),
+            'ultima_observacao': ultima[0] if ultima else None,
+            'ultima_atividade_id': ultima[2] if ultima else None,
+            'idade_dias': idade,
+            'sequencias_identicas': seqs,
+            'valores_suspeitos': suspeitos,
+            'outliers_sinalizados': _evol_outliers(validos),
+        },
+        'janelas': {str(W): _evol_janela(tendencia, ref, W) for W in EVOL_JANELAS},
+    }
+
+
+def _evol_melhores(curvas, mod, secs):
+    """(data, watts, activity_id) do melhor esforco exatamente nesta duracao (sem
+    interpolacao). Curvas de outra modalidade sao ignoradas."""
+    out = []
+    for c in curvas or []:
+        if c.get('type') != mod:
+            continue
+        mapa = {}
+        for s, w in zip(c.get('secs') or [], c.get('watts') or []):
+            try:
+                mapa[int(round(float(s)))] = w
+            except (TypeError, ValueError):
+                continue
+        out.append((str(c.get('date'))[:10], mapa.get(secs), c.get('activity_id')))
+    return sorted(out, key=lambda t: t[0])
+
+
+def evolucao_performance(entradas, curvas, referencia, modalidades=EVOL_MODALIDADES,
+                         padroes_confirmados=None):
+    """Evolucao por modalidade: eFTP da atividade, FTP configurado, EFTP (nao confirmado)
+    e melhores esforcos. Cada serie e separada; nao ha mediana entre campos.
+
+    entradas: [{'id','date','type','icu_pm_ftp','icu_ftp','EFTP'}] -- todas as sessoes;
+              ausente ou zero = ausencia.
+    curvas:   saida de db.load_power_curves (activity_id, secs/watts por sessao).
+    referencia: data ISO de referencia (ultimo dia da serie).
+    padroes_confirmados: {(inicio, fim, valor)} com evidencia explicita. Vazio por padrao.
+    """
+    base = {'referencia': referencia, 'janelas': list(EVOL_JANELAS),
+            'regras': {'n_minimo': EVOL_N_MIN, 'cobertura_minima': EVOL_COBERTURA_MIN,
+                       'sequencia_min': EVOL_SEQ_MIN,
+                       'sequencia_exclusao': 'somente com padrao confirmado explicitamente',
+                       'escala_suspeita_max_w': EVOL_ESCALA_SUSPEITA_MAX,
+                       'outlier_iqr_k': EVOL_OUTLIER_K,
+                       'melhores_s': list(EVOL_MELHORES_SECS),
+                       'campo_nao_lido': EVOL_CAMPO_NAO_LIDO,
+                       'associacao': 'id, data e modalidade da atividade preservados'},
+            'modalidades': {}}
+    if not referencia:
+        base['status'] = 'sem_referencia'
+        return base
+    for mod in modalidades:
+        fontes = {}
+        for chave, campo, rotulo, semantica in EVOL_SERIES:
+            brutos = [(str(e.get('date'))[:10], e.get(campo), e.get('id'))
+                      for e in entradas or [] if e.get('type') == mod]
+            fontes[chave] = _evol_serie(brutos, referencia, rotulo, campo, semantica,
+                                        eftp=(chave == 'eftp_nao_confirmado'),
+                                        padroes_confirmados=padroes_confirmados)
+        melhores = {}
+        for secs in EVOL_MELHORES_SECS:
+            brutos = _evol_melhores(curvas, mod, secs)
+            melhores[str(secs)] = _evol_serie(
+                brutos, referencia, f'{secs} s', f'power_curves[{secs}s]',
+                'melhor esforco medido na curva de potencia, valor exato da duracao',
+                padroes_confirmados=padroes_confirmados)
+        base['modalidades'][mod] = {'fontes': fontes, 'melhores_esforcos': melhores}
+    base['status'] = 'ok'
+    return base

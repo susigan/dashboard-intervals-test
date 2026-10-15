@@ -13,6 +13,11 @@ import tempfile
 import unittest
 from datetime import date, timedelta
 
+
+def _des(reg):
+    """Pontos desenhados por duracao no grafico comparativo (ev_norm)."""
+    return (reg.get('__ultimo_norm') or {}).get('desenhados', {})
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, ROOT)
 
@@ -276,13 +281,13 @@ class RenderizacaoDeterministica(unittest.TestCase):
 
     def test_um_arco_por_ponto_valido(self):
         out = self._rodar()
-        self.assertEqual(out['ev_m60']['arcs'], 97)  # 100 - zero - ausente - negativo
-        self.assertEqual(out['ev_m300']['arcs'], 100)  # 300 s presente em todas as 100 curvas
+        self.assertEqual(_des(out).get('60'), 97)  # 100 - zero - ausente - negativo
+        self.assertEqual(_des(out).get('300'), 100)  # 300 s presente em todas as 100 curvas
         self.assertIn('ev_eftp', out)
 
     def test_rotulos_de_ausencia_e_mediana_aparecem(self):
         out = self._rodar(jan='180')
-        textos = ' '.join(out['ev_m60']['texts'])
+        textos = ' '.join(out['ev_eftp']['texts'])
         self.assertIn('rec. ', textos)
         self.assertIn('ant. ', textos)
 
@@ -290,8 +295,8 @@ class RenderizacaoDeterministica(unittest.TestCase):
         payload = json.load(open(self.payload, encoding='utf-8'))
         for jan in ('90', '180', '365'):
             with self.subTest(jan=jan):
-                ok = payload['modalidades']['Bike']['melhores_esforcos']['60']['janelas'][jan]['status'] == 'ok'
-                textos = ' '.join(self._rodar(jan=jan)['ev_m60']['texts'])
+                ok = payload['modalidades']['Bike']['fontes']['eftp_atividade']['janelas'][jan]['status'] == 'ok'
+                textos = ' '.join(self._rodar(jan=jan)['ev_eftp']['texts'])
                 self.assertEqual('rec. ' in textos, ok)
 
 

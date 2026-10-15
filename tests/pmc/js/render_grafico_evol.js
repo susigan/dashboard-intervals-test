@@ -14,6 +14,7 @@ function canvasRec(id) {
     arc() { r.arcs++; }, moveTo() {}, lineTo() { r.lines++; }, stroke() { r.strokes++; },
     fillText(t) { r.texts.push(String(t)); },
     fillRect() {}, measureText(t) { return {width: String(t).length * 6}; },
+    rect() {}, closePath() {}, setLineDash() {}, save() {}, restore() {},
   }, W: 600, H: 240};
 }
 const els = {};
@@ -44,7 +45,33 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(code, sandbox);
 vm.runInContext('D = ' + JSON.stringify({evolucao_performance: fixture}) + ';', sandbox);
+// opcional: series ocultas pela legenda (ex.: "60,720")
+const OCULTAS = (process.argv[7] || '').split(',').filter(Boolean);
+OCULTAS.forEach(k => vm.runInContext(`EV_OCULTAS[${JSON.stringify(k)}] = true;`, sandbox));
 vm.runInContext('mostrarEvolucao();', sandbox);
+// normalizacao calculada pela propria pagina (sem recalcular no teste)
+registro.__norm = JSON.parse(vm.runInContext(
+  `(function () {
+     const MODS = (D.evolucao_performance || {}).modalidades || {};
+     const MS = (MODS[${JSON.stringify(MOD)}] || {}).melhores_esforcos || {};
+     return JSON.stringify(EV_DUR.map(d => ({k: d.k, rot: d.rot, n: evSerieNorm(MS[d.k], ${JSON.stringify(JAN)})})));
+   })()`, sandbox));
+registro.__ultimo_norm = JSON.parse(vm.runInContext('JSON.stringify(EV_ULTIMO_NORM)', sandbox));
+registro.__tooltip = JSON.parse(vm.runInContext(
+  `(function () {
+     const MODS = (D.evolucao_performance || {}).modalidades || {};
+     const MS = (MODS[${JSON.stringify(MOD)}] || {}).melhores_esforcos || {};
+     const s = evSerieNorm(MS['60'], ${JSON.stringify(JAN)});
+     const aj = evAjusteDur(evObsAjuste(s));
+     const p = s.pontos.find(q => q.delta !== null);
+     return JSON.stringify(p ? evTextoPonto({rot: '1 min', p: p, med: s.med, aj: aj}) : '');
+   })()`, sandbox));
+registro.__auditoria = JSON.parse(vm.runInContext('JSON.stringify(EV_AUDIT_SRC ? evAuditoriaHtml(EV_AUDIT_SRC) : "")', sandbox));
+registro.__rotulos = JSON.parse(vm.runInContext(
+  `JSON.stringify({elevada_no_limite: evSensRotulo(1, 1, true), baixa_logo_abaixo: evSensRotulo(0.999, 1, true),
+    elevada_acima: evSensRotulo(1.0000001, 1, true), dispersao_zero: evSensRotulo(0.5, 0, true),
+    sem_banda: evSensRotulo(0.5, null, true), sem_influente: evSensRotulo(null, 1, false),
+    sd_negativo: evSensRotulo(0.5, -2, true), razao_nula: evSensRotulo(null, 1, true)})`, sandbox));
 registro.__html = el('evolGraficos').innerHTML;  // texto das janelas (para testes de texto)
 registro.__tabelas = {  // tabelas, avisos e populacao (para testes de texto e regressao)
   eftp: el('evolBody').innerHTML, melhores: el('evolMeBody').innerHTML, cfg: el('evolCfgBody').innerHTML,

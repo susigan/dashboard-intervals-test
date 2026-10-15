@@ -268,16 +268,21 @@ class RefinoResumoEAuditoria(unittest.TestCase):
     def test_auditoria_recolhida_e_sem_tabela_extensa_por_padrao(self):
         reg = self._run(self.base, jan='180')
         html = reg['__html']
-        self.assertIn('<div id="evAuditBody"></div>', html)
-        # a unica tabela restante e a do eFTP (fora do escopo desta alteracao)
-        self.assertEqual(html.count('<table'), 1)
+        # a auditoria agora fica na area recolhida 'Detalhes dos dados e qualidade' (estatica), fora do grafico
         self.assertNotIn('Δ% vs mediana anterior', html)
-        self.assertIn('registros nas 4 durações', html)
+        self.assertNotIn('id="evAudit"', html)
+        # a unica tabela do grafico e a do eFTP, dentro de 'Ver pontos em tabela' (recolhida)
+        self.assertEqual(html.count('<table'), 1)
+        src = open(os.path.join(ROOT, 'tabs', 'tab_pmc.py'), encoding='utf-8').read()
+        self.assertIn('<details class="sub" id="evAudit"><summary id="evAuditResumo">', src)
+        self.assertIn('<div id="evAuditBody"></div>', src)
+        self.assertIn('registros nas 4 durações', src)
 
     def test_explicacao_recolhida_com_metodo_e_limites(self):
         reg = self._run(self.base, jan='180')
         html = reg['__html']
-        self.assertIn('Como ler este gráfico e o método', html)
+        self.assertIn('Ver método estatístico', html)
+        self.assertIn('pense nos pontos como as suas medições', html)
         self.assertIn('não é intervalo de confiança nem de predição', html)
         self.assertIn('não muda e nenhum dado é removido', html)
 
@@ -286,7 +291,10 @@ class RefinoResumoEAuditoria(unittest.TestCase):
         reg = self._run(self.base, jan='180')
         self.assertIn('ev_eftp', reg)
         self.assertNotIn('eftp_atividade', reg['__ultimo_norm']['ajuste'])
-        self.assertIn('não equivale ao FTP configurado', reg['__html'])
+        # a distincao vive no bloco superior de explicacao (estatico); o grafico nao repete o paragrafo
+        src = open(os.path.join(ROOT, 'tabs', 'tab_pmc.py'), encoding='utf-8').read()
+        self.assertIn('e não equivale ao FTP configurado', src)
+        self.assertNotIn('não equivale ao FTP configurado', reg['__html'])
 
 
 def _linha(html, rotulo):

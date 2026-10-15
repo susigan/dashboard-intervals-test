@@ -194,7 +194,10 @@ class ComparativoMelhoresEsforcos(unittest.TestCase):
         validos = sum(1 for q in eftp if q.get('valor') is not None)
         self.assertEqual(reg['ev_eftp']['arcs'], validos)
         self.assertIn('eFTP da atividade', reg['__html'])
-        self.assertIn('não equivale ao FTP configurado', reg['__html'])
+        # a distincao vive no bloco superior de explicacao (estatico); o grafico nao repete o paragrafo
+        src = open(os.path.join(ROOT, 'tabs', 'tab_pmc.py'), encoding='utf-8').read()
+        self.assertIn('e não equivale ao FTP configurado', src)
+        self.assertNotIn('não equivale ao FTP configurado', reg['__html'])
 
     def test_payload_incompleto_nao_lanca_e_mantem_demais_duracoes(self):
         p = copy.deepcopy(self.base)

@@ -782,9 +782,15 @@ __EXPL_fmt__
     </select></label>
 </div>
 <div class="sub" id="evolSub"></div>
-<div class="sub" id="evolExplica"><b>Como ler:</b> o <b>eFTP da atividade</b> é uma estimativa do Intervals.icu calculada a partir da atividade completa, incluindo os períodos de recuperação. Uma sessão isolada com eFTP baixo não demonstra perda real de performance. O eFTP da atividade depende dos dados e da estrutura da sessão e, isoladamente, não é suficiente para concluir se a capacidade do atleta aumentou ou diminuiu. O <b>FTP configurado</b> é o valor definido nas configurações do Intervals.icu: é referência, não prova da performance atual. O <b>EFTP</b> tem semântica não confirmada e é exibido separado, sem interpretação. Os melhores esforços são lidos diretamente da curva de potência. Nenhuma classificação automática de melhora ou piora é aplicada.</div>
-<div class="sub" id="evolPopulacao"></div>
-<div id="evolAvisos"></div>
+<div class="sub" id="evolExplica"><b>Como ler:</b> cada ponto representa um registro, não uma conclusão sobre a sua performance.
+<ul style="margin:6px 0 0 18px;padding:0">
+<li><b>eFTP da atividade:</b> estimativa do Intervals.icu para a sessão completa, incluindo recuperações. Depende da estrutura do treino; um valor baixo isolado não significa perda de capacidade e não equivale ao FTP configurado.</li>
+<li><b>FTP configurado:</b> valor definido nas configurações do Intervals.icu. É uma referência, não uma medição da capacidade atual.</li>
+<li><b>EFTP:</b> campo de significado não confirmado. É mostrado separadamente, sem interpretação.</li>
+<li><b>Melhores esforços:</b> potência observada exatamente em 1, 5, 12 e 20 minutos, lida diretamente da curva, sem interpolação.</li>
+</ul>
+A comparação usa a mediana de duas janelas do mesmo tamanho: a recente e a anterior. Só é apresentada quando há observações e cobertura temporal suficientes. Valores repetidos e extremos suspeitos são sinalizados, não removidos automaticamente. As séries podem ter quantidades diferentes de registros.
+</div>
 <div class="wrap" style="margin-bottom:10px"><table>
   <thead><tr id="evolHead"></tr></thead><tbody id="evolBody"></tbody></table></div>
 <div class="wrap" style="margin-bottom:10px"><table>
@@ -795,6 +801,11 @@ __EXPL_fmt__
 <div class="wrap" style="margin-bottom:14px"><table>
   <thead><tr id="evolMeHead"></tr></thead><tbody id="evolMeBody"></tbody></table></div>
 <div id="evolGraficos"></div>
+<details class="sub" id="evolDetDados" style="margin-bottom:14px"><summary><b>Detalhes dos dados e qualidade</b></summary>
+<div class="sub" id="evolPopulacao"></div>
+<div id="evolAvisos"></div>
+<details class="sub" id="evAudit"><summary id="evAuditResumo">Detalhes por observação (auditoria)</summary><div id="evAuditBody"></div></details>
+</details>
 
 <div id="homeoLegado" hidden>
 <h2>Modelo homeostatico — reserva de performance</h2>
@@ -2680,7 +2691,7 @@ const EV_METODO='Δ% = 100 × (valor da atividade ÷ mediana anterior − 1), na
  'Faixa = ±1 desvio-padrão local dos resíduos em torno da linha: mede a dispersão dos pontos, não é intervalo de confiança nem de predição. A dispersão é estimada sobre os mesmos dados do ajuste e pode subestimar a variabilidade real. '+
  'Tendência (90 dias) compara a linha de hoje com a de 90 dias atrás; aparece como estável quando a diferença é menor que a dispersão local. '+
  'Sensibilidade (diagnóstico): retira-se, só neste cálculo, a observação mais influente dentro de 90 dias do ponto mais recente e compara-se a estimativa no mesmo ponto temporal. Razão = |deslocamento| ÷ DP local; razão ≥ 1 = Sensibilidade: elevada; razão < 1 = Sensibilidade: baixa segundo o critério utilizado; sem banda, dispersão nula ou sem ajuste = não calculável. A tendência oficial não muda e nenhum dado é removido: não altera dados, medianas nem a curva oficial. '+
- 'Excluídos da tendência: somente os marcados pelo backend como padrão confirmado. Variação positiva ou negativa é relativa à referência e não classifica performance.';
+ 'Excluídos da tendência: somente os marcados pelo backend como padrão confirmado. Ausentes, zeros e negativos não entram como valor. Valores extremos e suspeitos entram no cálculo e são sinalizados, não removidos. Variação positiva ou negativa é relativa à referência e não classifica performance.';
 const EV_BTN='display:inline-flex;align-items:center;gap:4px;background:transparent;border:1px solid #30363d;color:#e6edf3;border-radius:999px;padding:5px 10px;min-height:32px;font-size:12px;cursor:pointer';
 function evFmtData(t){const s=new Date(t*86400000).toISOString().slice(0,10);return s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4);}
 function evPp(v){return (v>=0?'+':'')+Number(v).toFixed(1);}
@@ -2962,8 +2973,8 @@ function mostrarEvolucao(){
 
  const normSeries=EV_DUR.map(d=>{const norm=evSerieNorm(ME[d.k],jan);return {d:d,s:ME[d.k],norm:norm,aj:evAjusteDur(evObsAjuste(norm))};});
  EV_AUDIT_SRC=normSeries;
- const detMet0=document.getElementById('evMetodoDet'), detAud0=document.getElementById('evAudit');
- const abertos=[!!(detMet0&&detMet0.open), !!(detAud0&&detAud0.open)];
+ const detMet0=document.getElementById('evMetodoDet');
+ const abertos=!!(detMet0&&detMet0.open);
  const nRegs=normSeries.reduce((t,x)=>t+x.norm.pontos.length,0);
  graf.innerHTML=EV_CSS_GRAF+
   '<div class="sub"><b>Melhores esforços</b> · variação relativa à mediana anterior · janela de '+evEsc(jan)+' dias · histórico de 730 dias</div>'+
@@ -2971,17 +2982,25 @@ function mostrarEvolucao(){
   '<div class="evchart"><canvas id="ev_norm" role="img" aria-label="Variação percentual dos melhores esforços de 1, 5, 12 e 20 minutos em relação à mediana anterior, com tendência e dispersão" aria-describedby="evResumo"></canvas>'+
   '<div id="ev_normTip" class="evtip"></div></div>'+
   '<div class="evleg" id="evNormLeg">'+evLegendaCompacta(normSeries)+'</div>'+
+  '<div class="sub evmut" id="evComoLer" style="line-height:1.5"><b>Como ler:</b> pense nos pontos como as suas medições ao longo do tempo.'+
+  '<ul style="margin:6px 0 6px 18px;padding:0">'+
+  '<li><b>Pontos:</b> melhores esforços observados. Ausências, zeros e valores negativos não contam.</li>'+
+  '<li><b>Linha:</b> tendência estimada a partir dos pontos próximos; cada duração tem a sua própria linha.</li>'+
+  '<li><b>Faixa:</b> mostra o quanto os pontos oscilam em torno da linha. Não é um intervalo de confiança.</li>'+
+  '<li><b>Linha clara nas bordas:</b> há poucas medições de um dos lados. A tendência continua calculada, mas tem menos suporte.</li>'+
+  '<li><b>Tendência (90 dias):</b> compara a linha atual com a de 90 dias atrás. Diferenças pequenas face à dispersão são consideradas estáveis.</li>'+
+  '<li><b>Sensibilidade:</b> verifica se uma única medição influente muda muito a estimativa. É um diagnóstico, não uma alteração da curva.</li>'+
+  '</ul>Importante: nenhuma medição é removida por esse diagnóstico. A variação é relativa à mediana anterior e, sozinha, não prova melhora ou piora da performance.</div>'+
   '<div class="evmut">pontos = observados · linha = tendência · faixa = ±1 DP local dos resíduos (dispersão, não intervalo de confiança) · linha clara = trecho com suporte unilateral ou limitado nas bordas · tracejado = mediana recente · 0% = mediana anterior</div>'+
-  '<details class="sub" id="evMetodoDet"><summary>Como ler este gráfico e o método</summary><div class="sub evmut" style="line-height:1.5">'+EV_METODO+'</div></details>'+
-  '<details class="sub" id="evAudit"><summary>Detalhes por observação (auditoria) · '+nRegs+' registros nas 4 durações</summary><div id="evAuditBody"></div></details>'+
-  '<div class="sub" style="margin-top:14px"><b>eFTP da atividade</b> é outra variável e fica em gráfico separado. Depende da estrutura da sessão e não equivale ao FTP configurado. Sozinho, não demonstra mudança de capacidade.</div>'+
-  '<div class="sub">'+evLegenda()+'</div>'+
+  '<details class="sub" id="evMetodoDet"><summary>Ver método estatístico</summary><div class="sub evmut" style="line-height:1.5">'+EV_METODO+'</div></details>'+
+  '<div class="sub" style="margin-top:14px">'+evLegenda()+'</div>'+
   evBlocoGrafico('ev_eftp','eFTP da atividade (icu_pm_ftp)',F.eftp_atividade,jan);
  const detMet=document.getElementById('evMetodoDet'), aud=document.getElementById('evAudit');
- if(abertos[0]&&detMet)detMet.open=true;
- if(abertos[1]&&aud)aud.open=true;
- if(aud)aud.ontoggle=function(){
-  if(aud.open&&!aud.dataset.pronta){aud.dataset.pronta='1';document.getElementById('evAuditBody').innerHTML=evAuditoriaHtml(EV_AUDIT_SRC||[]);}};
+ if(abertos&&detMet)detMet.open=true;
+ const audBody=document.getElementById('evAuditBody'), audRes=document.getElementById('evAuditResumo');
+ if(audRes)audRes.textContent='Detalhes por observação (auditoria) · '+nRegs+' registros nas 4 durações';
+ if(aud&&audBody){const renderAud=()=>{audBody.innerHTML=aud.open?evAuditoriaHtml(EV_AUDIT_SRC||[]):'';};
+  aud.ontoggle=renderAud; renderAud();}
  try{drawEvolNorm('ev_norm',normSeries,jan,E.referencia);}
   catch(err){console.error('Gráfico comparativo indisponível:',err);const c=ctx('ev_norm',290);if(c)noData(c.g,c.W,290,'Gráfico indisponível nesta resposta');}
  if(F.eftp_atividade){try{drawEvolChart('ev_eftp',F.eftp_atividade,jan,E.referencia);}

@@ -114,10 +114,11 @@ class EvolucaoInterface(unittest.TestCase):
         ini = corpo.index('id="evolExplica"')
         bloco = corpo[ini:ini + 1200]
         self.assertIn('estimativa do Intervals.icu', bloco)
-        self.assertIn('atividade completa', bloco)
-        self.assertIn('incluindo os períodos de recuperação', bloco)
-        self.assertIn('Uma sessão isolada com eFTP baixo não demonstra perda real de performance', bloco)
-        self.assertIn('Nenhuma classificação automática de melhora ou piora', bloco)
+        self.assertIn('sessão completa', bloco)
+        self.assertIn('incluindo recuperações', bloco)
+        self.assertIn('um valor baixo isolado não significa perda de capacidade', bloco)
+        self.assertIn('e não equivale ao FTP configurado', bloco)
+        self.assertIn('campo de significado não confirmado', bloco)
 
     def test_icu_pm_ftp_nunca_apresentado_como_ftp_medido(self):
         ini = self.body.index('<h2>Evolução da performance</h2>')
@@ -155,6 +156,8 @@ class EvolucaoInterface(unittest.TestCase):
         ini = self.js.index('const EV_MOTIVOS')
         fim = self.js.index('function redesenhar()')
         trecho = self.js[ini:fim].lower()
+        # unica ocorrencia permitida: a negacao explicita do texto ("nao prova melhora ou piora")
+        trecho = trecho.replace('não prova melhora ou piora da performance', '')
         for palavra in ('queda', 'piora', 'melhora', 'declínio', 'declinio', 'perda de'):
             self.assertNotIn(palavra, trecho, palavra)
 

@@ -189,10 +189,11 @@ class ComparativoMelhoresEsforcos(unittest.TestCase):
 
     def test_eftp_atividade_continua_em_grafico_separado(self):
         reg = self._rodar(self.base)
-        self.assertIn('ev_eftp', reg)
+        self.assertIn('eFTP da atividade (icu_pm_ftp)', reg['__html'])
         eftp = self._mod(self.base)['fontes']['eftp_atividade']['pontos']
         validos = sum(1 for q in eftp if q.get('valor') is not None)
-        self.assertEqual(reg['ev_eftp']['arcs'], validos)
+        # a tabela de pontos (recolhida) lista cada valor valido; so ela tem 'W' por celula
+        self.assertEqual(reg['__tabela_eftp'].count(' W</td>'), validos)
         self.assertIn('eFTP da atividade', reg['__html'])
         # a distincao vive no bloco superior de explicacao (estatico); o grafico nao repete o paragrafo
         src = open(os.path.join(ROOT, 'tabs', 'tab_pmc.py'), encoding='utf-8').read()
@@ -211,7 +212,7 @@ class ComparativoMelhoresEsforcos(unittest.TestCase):
         p['modalidades']['Bike']['melhores_esforcos'] = {}
         reg = self._rodar(p)
         self.assertEqual(reg['__ultimo_norm']['desenhados'], {})
-        self.assertIn('ev_eftp', reg)
+        self.assertIn('eFTP da atividade (icu_pm_ftp)', reg['__html'])
 
 
 if __name__ == '__main__':

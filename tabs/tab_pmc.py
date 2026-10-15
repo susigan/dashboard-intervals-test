@@ -805,6 +805,7 @@ A comparação usa a mediana de duas janelas do mesmo tamanho: a recente e a ant
 <div class="sub" id="evolPopulacao"></div>
 <div id="evolAvisos"></div>
 <details class="sub" id="evAudit"><summary id="evAuditResumo">Detalhes por observação (auditoria)</summary><div id="evAuditBody"></div></details>
+<details class="sub" id="evEftpTab"><summary id="evEftpTabResumo">Pontos do eFTP da atividade (tabela)</summary><div id="evEftpTabBody"></div></details>
 </details>
 
 <div id="homeoLegado" hidden>
@@ -821,6 +822,7 @@ __EXPL_homeo__
       <option value="banda">Fit + banda</option>
       <option value="fits">So os fits</option>
     </select></label>
+  <label class="sel">Suavização <select id="homeoSuav"><option value="retro" selected>Retrospectiva (padrão)</option><option value="causal">Causal</option></select></label>
   <label class="sel"><input type="checkbox" id="homeoMods" checked> Sobrepor modalidades</label>
 </div>
 <div class="controls" style="font-size:12px">
@@ -1118,6 +1120,12 @@ function periodosHomeo(serie){
 function homeoValido(x){return !!(x&&x.validacao&&x.validacao.valido);}
 // rotulo descritivo do R2 (nao decide validade): so aparece num ajuste valido
 function homeoCapacidade(x){return (homeoValido(x)&&x.validacao&&x.validacao.capacidade)||'';}
+// Campos ja existentes no payload. So escolhe qual versao ja calculada se desenha.
+function homeoCampos(){
+ const causal=((document.getElementById('homeoSuav')||{}).value==='causal');
+ return causal
+  ?{suave:'p_hat_suave_causal',sup:'banda_sup_causal',inf:'banda_inf_causal',nome:'causal, usa apenas os dias até cada dia'}
+  :{suave:'p_hat_suave',sup:'banda_sup',inf:'banda_inf',nome:'retrospectiva, usa também dias posteriores'};}
 function drawHomeo(){
  const H=D.homeostatico;
  if(!H){const o=ctx('chHomeo',300);if(o)noData(o.g,o.W,o.H);return;}
@@ -1133,6 +1141,7 @@ function drawHomeo(){
   document.getElementById('homeoAnalise').innerHTML='';
   return;}
  const P=periodosHomeo(principal.serie);
+ const K=homeoCampos();
 
  const dentro=(d,r)=>d>=r[0]&&d<=r[1];
  const ant=principal.serie.filter(x=>dentro(x.date,P.ant));
@@ -1154,12 +1163,12 @@ function drawHomeo(){
  const mods=(verMods&&vista==='todo')?Object.keys(HM).filter(m=>homeoValido(HM[m])):[];
  const idxMod={};
  mods.forEach(function(m){
-  const ix={};(HM[m].serie||[]).forEach(r=>{ix[r.date]=r.p_hat_suave;});
+  const ix={};(HM[m].serie||[]).forEach(r=>{ix[r.date]=r[K.suave];});
   idxMod[m]=ix;});
 
  let mn=Infinity,mx=-Infinity;
  [ant,rec].forEach(seg=>seg.forEach(function(d){
-  [d.banda_inf,d.banda_sup,d.p_hat_suave].forEach(function(v){
+  [d[K.inf],d[K.sup],d[K.suave]].forEach(function(v){
    if(v==null)return;if(v<mn)mn=v;if(v>mx)mx=v;});}));
  mods.forEach(m=>[ant,rec].forEach(seg=>seg.forEach(function(d){
   const v=idxMod[m][d.date];if(v==null)return;
@@ -1176,9 +1185,9 @@ function drawHomeo(){
   if(!seg.length)return null;
   if(vista!=='fits'){
    g.fillStyle=fill;g.beginPath();let ok=false;
-   seg.forEach(function(d,i){const v=d.banda_sup;if(v==null)return;
+   seg.forEach(function(d,i){const v=d[K.sup];if(v==null)return;
     if(!ok){g.moveTo(X(i),Y(v));ok=true;}else g.lineTo(X(i),Y(v));});
-   for(let i=seg.length-1;i>=0;i--){const v=seg[i].banda_inf;if(v==null)continue;
+   for(let i=seg.length-1;i>=0;i--){const v=seg[i][K.inf];if(v==null)continue;
     g.lineTo(X(i),Y(v));}
    g.closePath();g.fill();}
   if(vista==='todo'&&!OFFH.bruto){
@@ -1188,7 +1197,7 @@ function drawHomeo(){
    g.stroke();}
   g.strokeStyle=cor;g.lineWidth=2.4;g.beginPath();let st2=false;
   let pico=null,pi=0;
-  seg.forEach(function(d,i){const v=d.p_hat_suave;if(v==null){st2=false;return;}
+  seg.forEach(function(d,i){const v=d[K.suave];if(v==null){st2=false;return;}
    if(pico===null||v>pico){pico=v;pi=i;}
    if(!st2){g.moveTo(X(i),Y(v));st2=true;}else g.lineTo(X(i),Y(v));});
   g.stroke();
@@ -1197,7 +1206,7 @@ function drawHomeo(){
    g.fillStyle=cor;g.beginPath();g.arc(X(pi),Y(pico),4,0,Math.PI*2);g.fill();
    g.fillStyle=cor;g.font='10px sans-serif';g.textAlign='center';
    g.fillText('pico '+Math.round(pico),X(pi),Y(pico)-8);g.textAlign='left';}
-  return pico;
+  return pico===null?null:{v:pico,d:seg[pi].date};
  }
 
  // modalidades por tras
@@ -1226,7 +1235,7 @@ function drawHomeo(){
 
  const itens=[['__a','Anterior · '+P.ant[0]+' a '+P.ant[1]+' (n='+ant.length+')',CORANT],
               ['__r','Recente · '+P.rec[0]+' a '+P.rec[1]+' (n='+rec.length+')',CORREC]];
- if(vista==='todo')itens.push(['bruto','p̂ diario','rgba(150,150,150,0.4)']);
+ if(vista==='todo')itens.push(['bruto','p̂ diário bruto (sem suavização)','rgba(150,150,150,0.4)']);
  mods.forEach(m=>itens.push([m,m,(D.cores||{})[m]||'#8b949e']));
  document.getElementById('lgHomeo').innerHTML=itens.map(x=>
   (x[0].indexOf('__')===0
@@ -1236,20 +1245,19 @@ function drawHomeo(){
  document.querySelectorAll('#lgHomeo span.tog').forEach(function(sp){
   sp.onclick=function(){OFFH[sp.dataset.k]=!OFFH[sp.dataset.k];drawHomeo();};});
 
- // leitura por baixo, como no dashboard
+ // leitura neutra: descreve a curva estimada; nao conclui adaptacao, fadiga ou causa
  const el=document.getElementById('homeoAnalise');
- if(picoA!=null&&picoR!=null){
-  const dif=picoR-picoA, pct=(dif/picoA*100);
-  const cor=dif>=0?'#2ECC71':'#E67E22';
-  el.innerHTML='<div style="background:#161b22;border-left:3px solid '+cor+
-   ';padding:9px 13px;border-radius:0 6px 6px 0;font-size:13px;margin:10px 0">'+
-   'O pico de reserva '+(dif>=0?'subiu':'desceu')+' <b>'+Math.abs(Math.round(dif))+
-   ' unidades</b> entre periodos ('+Math.round(picoA)+' → '+Math.round(picoR)+', '+
-   (pct>=0?'+':'')+pct.toFixed(0)+'%). '+
-   (dif>=0?'Melhor adaptacao na fase recente.'
-         :'A reserva caiu — carga sem compensacao, ou fase de acumulacao.')+
-   '</div>';
- } else el.innerHTML='';
+ const dt=x=>String(x||'').split('-').reverse().join('/');
+ let txt='<div style="background:#161b22;border-left:3px solid #30363d;padding:9px 13px;border-radius:0 6px 6px 0;font-size:13px;margin:10px 0">'+
+  '<b>Como ler:</b> a linha é a <b>curva estimada pelo modelo</b> ('+K.nome+'), não observações diárias. '+
+  'A faixa é ±1 desvio-padrão móvel de 14 dias da própria curva ajustada; não é intervalo de confiança nem previsão. '+
+  'Os períodos anterior e recente são desenhados separadamente, sem ligação entre eles.';
+ if(vista==='todo')txt+=' O ponto cinzento claro é o p̂ diário bruto, sem suavização.';
+ if(mods.length)txt+=' Modalidades sobrepostas: tracejado no período anterior, contínuo no recente.';
+ if(picoA!=null&&picoR!=null&&picoA.v!==0){
+  const dif=picoR.v-picoA.v, pct=dif/picoA.v*100;
+  txt+=' Pico da curva estimada: anterior '+Math.round(picoA.v)+' ('+dt(picoA.d)+'), recente '+Math.round(picoR.v)+' ('+dt(picoR.d)+'); diferença '+(dif>=0?'+':'')+Math.round(dif)+' ('+(pct>=0?'+':'')+pct.toFixed(0)+'%). Isto descreve a curva ajustada; não mostra adaptação, fadiga nem causa.';}
+ el.innerHTML=txt+'</div>';
 
  [[ant,XA],[rec,XR]].forEach(function(par,k){
   registarTip('chHomeo',function(mxp,myp,rw){
@@ -1263,12 +1271,12 @@ function drawHomeo(){
    seg.forEach(function(d,i){const dd=Math.abs(X(i)-x);if(dd<dist){dist=dd;melhor=i;}});
    const d=seg[melhor];
    let html='<div class="th">'+rot+' · '+d.date+'</div>'+
-    linhaTip(rot==='Anterior'?CORANT:CORREC,'p̂ ajustado',d.p_hat_suave);
+    linhaTip(rot==='Anterior'?CORANT:CORREC,'curva estimada',d[K.suave]);
    mods.forEach(function(m){
     if(OFFH[m])return;
     const v=idxMod[m][d.date];if(v==null)return;
     html+=linhaTip((D.cores||{})[m]||'#8b949e',m,v);});
-   html+='<div class="tr"><span>Banda</span><b>'+d.banda_inf+' a '+d.banda_sup+'</b></div>';
+   html+='<div class="tr"><span>Banda (±1 DP móvel)</span><b>'+d[K.inf]+' a '+d[K.sup]+'</b></div>';
    return html;});});
 }
 
@@ -1296,7 +1304,7 @@ function tabelaHomeo(){
  function linha(nome,v,cor){
   const s=v.serie||[];
   const ok=homeoValido(v);
-  const ult=(ok&&s.length)?s[s.length-1].p_hat_suave:'—';
+  const ult=(ok&&s.length)?s[s.length-1][homeoCampos().suave]:'—';
   const par=x=>ok?x:'—';
   return '<tr><td style="color:'+cor+'">'+nome+'</td>'+
    '<td class="num">'+par(v.k1)+'</td><td class="num">'+par(v.k2)+'</td>'+
@@ -2360,7 +2368,7 @@ montarExport();
 }
 ['verFTLM','verFases','escCTLgPMC'].forEach(id=>
  document.getElementById(id).onchange=function(){if(D)drawPMC();});
-['homeoMod','homeoVista','homeoMods','haIni','haFim','hrIni','hrFim'].forEach(id=>
+['homeoMod','homeoVista','homeoSuav','homeoMods','haIni','haFim','hrIni','hrFim'].forEach(id=>
  document.getElementById(id).onchange=function(){if(D)drawHomeo();});
 ['evolMod','evolJanela','evolFonte'].forEach(id=>
  document.getElementById(id).onchange=function(){if(D)mostrarEvolucao();});
@@ -2482,74 +2490,40 @@ const EV_SINAL={sequencia:'sequencia de valores iguais',suspeito:'escala suspeit
 function evDia(s){return Date.parse(String(s).slice(0,10)+'T00:00:00Z')/86400000;}
 function evFundo(){const b=getComputedStyle(document.body).backgroundColor;
  return (b&&b!=='rgba(0, 0, 0, 0)'&&b!=='transparent')?b:'#0d1117';}
-function evLegenda(){return '<span style="margin-right:14px"><i style="display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:middle;background:'+EV_COR.ponto+'"></i>valor válido (um ponto por atividade)</span>'+
- '<span style="margin-right:14px"><i style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle;background:transparent;border:2px solid '+EV_COR.sinal+'"></i>sinalizado: mantido e visível</span>'+
- '<span style="margin-right:14px"><i style="display:inline-block;background:'+EV_COR.ausente+';width:2px;height:10px;margin-right:4px;vertical-align:middle"></i>ausente ou zero (sem valor, sem interpolação)</span>'+
- '<span style="margin-right:14px"><i style="display:inline-block;background:'+EV_COR.mediana+';width:14px;height:2px;margin-right:4px;vertical-align:middle"></i>mediana da janela (recente ou anterior)</span>';}
+// eFTP da atividade: resumo textual com os campos ja calculados pelo backend (janelas[jan]).
+// Nao recalcula medianas nem diferencas; so formata e classifica o sinal da diferenca ja fornecida.
+function evResumoEftp(s,jan){
+ const cab='<div class="sub" id="evEftpResumo"><b>eFTP da atividade (icu_pm_ftp)</b> · janela de '+evEsc(jan)+' dias';
+ if(!s)return '<div class="sub">'+cab+'<br>Série indisponível nesta resposta.</div>';
+ const w=(s.janelas&&s.janelas[jan])||{};
+ if(w.status!=='ok'){
+  const motivos=(w.motivos||[]).map(m=>EV_MOTIVOS[m]||m).join('; ');
+  return '<div class="sub">'+cab+'<br><span class="err">Dados insuficientes para comparar</span>'+
+   (motivos?' ('+evEsc(motivos)+')':'')+'.</div>';}
+ const d=w.diferenca;
+ const dTxt=(d===null||d===undefined)?'—':((d>0?'+':'')+Number(d).toFixed(1)+' W');
+ const arred=(d===null||d===undefined)?null:Number(d).toFixed(1);
+ const estado=(arred===null)?'—':((arred==='0.0'||arred==='-0.0')?'estabilidade':(d>0?'subida':'descida'));
+ const pct=(w.variacao_pct===null||w.variacao_pct===undefined)?'—':((w.variacao_pct>0?'+':'')+Number(w.variacao_pct).toFixed(1)+'%');
+ return '<div class="sub">'+cab+'<br>'+
+  'Mediana anterior: <b>'+evV(w.mediana_anterior,1)+' W</b>'+evPerTxt(w.periodo_anterior)+'<br>'+
+  'Mediana recente: <b>'+evV(w.mediana_recente,1)+' W</b>'+evPerTxt(w.periodo_recente)+'<br>'+
+  'Diferença: <b>'+dTxt+'</b> ('+pct+') · estado: <b>'+estado+'</b>.<br>'+
+  '<span class="evmut">Comparação entre duas medianas. Descreve o que mudou entre os períodos; não identifica causa.</span></div>';
+}
+function evPerTxt(q){const p=evPeriodo(q);return p?' ('+evEsc(p.join(' a '))+')':'';}
+function evTabelaEftp(s){
+ const q=(s&&s.qualidade)||{};
+ const pts=(s&&Array.isArray(s.pontos))?s.pontos:[];
+ const linhas=pts.map(p=>'<tr><td>'+evEsc(p.data)+'</td><td>'+(p.valor===null?'—':evEsc(Math.round(p.valor)+' W'))+
+  '</td><td>'+evEsc(p.estado)+'</td><td>'+evEsc(evRotuloSinais(p))+'</td></tr>').join('');
+ return '<div class="evmut">'+evEsc((q.n_validos||0)+' válidos')+' · '+evEsc((q.n_ausentes||0)+' ausentes')+' · '+
+  evEsc((q.n_zero||0)+' zeros')+'</div>'+
+  '<div class="wrap"><table><thead><tr><th>Data</th><th>Valor</th><th>Estado</th><th>Sinalização</th></tr></thead><tbody>'+linhas+'</tbody></table></div>';
+}
+
 function evRotuloSinais(p){return (p.sinalizacoes||[]).map(s=>EV_SINAL[s]||s).join(', ');}
 function evPeriodo(p){return (Array.isArray(p)&&p.length===2&&p[0]&&p[1])?p:null;}
-function evPerTxt(p){const q=evPeriodo(p);return q?' ('+evEsc(q.join(' a '))+')':'';}
-function drawEvolChart(id,s,jan,ref){
- const H=240, c=ctx(id,H); if(!c)return; const g=c.g, W=c.W;
- const pts=(s&&Array.isArray(s.pontos))?s.pontos:[];
- const val=pts.filter(p=>p.estado==='valido');
- if(!val.length){noData(g,W,H,'Sem observações válidas nesta série');return;}
- const win=(s.janelas&&s.janelas[jan])||{};
- const medias=[];
- const pa=evPeriodo(win.periodo_anterior), pr=evPeriodo(win.periodo_recente);
- if(win.status==='ok'){
-  if(win.mediana_anterior!=null&&pa)medias.push({v:win.mediana_anterior,ini:evDia(pa[0]),fim:evDia(pa[1]),r:'anterior'});
-  if(win.mediana_recente!=null&&pr)medias.push({v:win.mediana_recente,ini:evDia(pr[0]),fim:evDia(pr[1]),r:'recente'});
- }
- const fimN=evDia(ref), iniN=fimN-730;
- const vs=val.map(p=>p.valor).concat(medias.map(m=>m.v));
- let lo=Math.min.apply(null,vs), hi=Math.max.apply(null,vs);
- const pad=Math.max((hi-lo)*0.1,1); lo=Math.max(0,lo-pad); hi=hi+pad;
- const PL=48,PR=14,PT=14,PB=40, x0=PL, x1=W-PR, y0=PT, y1=H-PB;
- const X=d=>x0+(x1-x0)*((d-iniN)/(fimN-iniN));
- const Y=v=>y1-(y1-y0)*((v-lo)/(hi-lo));
- g.font='11px sans-serif';
- g.textBaseline='middle'; g.textAlign='right';
- for(let k=0;k<=4;k++){const v=lo+(hi-lo)*k/4, y=Y(v);
-  g.strokeStyle=EV_COR.grade; g.lineWidth=1; g.beginPath(); g.moveTo(x0,y); g.lineTo(x1,y); g.stroke();
-  g.fillStyle=EV_COR.eixo; g.fillText(String(Math.round(v)),x0-6,y);}
- g.textAlign='center'; g.textBaseline='top'; g.fillStyle=EV_COR.eixo;
- let ultimoX=-1e9;
- for(let d=iniN; d<=fimN; d+=91){const t=new Date(d*86400000).toISOString().slice(0,7), tx=X(d), lw=g.measureText(t).width;
-  if(tx-lw/2<ultimoX+14||tx+lw/2>x1)continue; g.fillText(t,tx,y1+18); ultimoX=tx+lw/2;}
- const rotulosMed=[];
- medias.forEach(m=>{g.strokeStyle=EV_COR.mediana; g.lineWidth=2; g.beginPath();
-  g.moveTo(X(m.ini),Y(m.v)); g.lineTo(X(m.fim),Y(m.v)); g.stroke();
-  rotulosMed.push({m:m});});
- const bg=evFundo(), hits=[];
- pts.forEach(p=>{ if(p.estado!=='valido')return;
-  const x=X(evDia(p.data)), y=Y(p.valor), sinal=(p.sinalizacoes||[]).length>0;
-  g.beginPath(); g.arc(x,y,4,0,Math.PI*2);
-  if(sinal){g.fillStyle=bg; g.fill(); g.lineWidth=2; g.strokeStyle=EV_COR.sinal; g.stroke();}
-  else{g.fillStyle=EV_COR.ponto; g.fill(); g.lineWidth=2; g.strokeStyle=bg; g.stroke();}
-  hits.push({x:x,y:y,p:p});});
- rotulosMed.forEach(r=>{const m=r.m;
-  const rot=(m.r==='anterior'?'ant. ':'rec. ')+Math.round(m.v); g.font='11px sans-serif';
-  const lw=g.measureText(rot).width;
-  let lx=X(m.fim); if(lx-lw<x0)lx=x0+lw; const ly=Y(m.v)-5;
-  g.fillStyle=evFundo(); g.fillRect(lx-lw-3,ly-12,lw+6,14);
-  g.fillStyle=EV_COR.texto; g.textAlign='right'; g.textBaseline='bottom';
-  g.fillText(rot,lx,ly);});
- pts.forEach(p=>{ if(p.estado==='valido')return;
-  const x=X(evDia(p.data));
-  g.strokeStyle=EV_COR.ausente; g.lineWidth=1; g.beginPath(); g.moveTo(x,y1+3); g.lineTo(x,y1+9); g.stroke();});
- const cv=document.getElementById(id), tip=document.getElementById(id+'Tip');
- cv.onpointermove=function(ev){
-  const r=cv.getBoundingClientRect(), mx=ev.clientX-r.left, my=ev.clientY-r.top;
-  let best=null, bd=1e9;
-  hits.forEach(h=>{const d=Math.hypot(h.x-mx,h.y-my); if(d<bd){bd=d;best=h;}});
-  if(!best||bd>14){tip.style.display='none';return;}
-  const sg=evRotuloSinais(best.p);
-  tip.textContent=best.p.data+'\n'+Math.round(best.p.valor)+' W\nvalor válido'+(sg?' · '+sg:'');
-  tip.style.display='block';
-  tip.style.left=Math.min(best.x+10,W-180)+'px'; tip.style.top=Math.max(best.y-44,0)+'px';};
- cv.onpointerleave=function(){tip.style.display='none';};
-}
 // ── Melhores esforcos: grafico comparativo em variacao percentual (Δ% vs mediana anterior)
 // Denominador: mediana_anterior do backend, mesma duracao e janela. Nunca a mediana recente.
 // Sem mediana anterior valida (ausente, zero, negativa ou nao finita): serie indisponivel.
@@ -2910,24 +2884,6 @@ function drawEvolNorm(id,series,jan,ref){
    if(e.target&&e.target.closest&&e.target.closest('#ev_norm'))return;
    const t=document.getElementById('ev_normTip'); if(t)t.style.display='none';});}
 }
-function evBlocoGrafico(id,titulo,s,jan){
- if(!s)return '<div class="sub"><b>'+evEsc(titulo)+'</b> · série indisponível nesta resposta.</div>';
- const q=(s&&s.qualidade)||{};
- const pts=(s&&Array.isArray(s.pontos))?s.pontos:[];
- const win=(s&&s.janelas&&s.janelas[jan])||{};
- let estadoJan='';
- if(win.status!=='ok')estadoJan='<span class="err">Janela '+evEsc(jan)+' dias: dados insuficientes ('+evEsc((win.motivos||[]).map(m=>EV_MOTIVOS[m]||m).join('; '))+'). Sem mediana nesta janela.</span>';
- else estadoJan='Janela '+evEsc(jan)+' dias: mediana anterior '+evV(win.mediana_anterior,1)+' W'+evPerTxt(win.periodo_anterior)+', mediana recente '+evV(win.mediana_recente,1)+' W'+evPerTxt(win.periodo_recente)+'.';
- const linhas=pts.map(p=>'<tr><td>'+evEsc(p.data)+'</td><td>'+(p.valor===null?'—':evEsc(Math.round(p.valor)+' W'))+
-  '</td><td>'+evEsc(p.estado)+'</td><td>'+evEsc(evRotuloSinais(p))+'</td></tr>').join('');
- return '<div class="sub"><b>'+evEsc(titulo)+'</b> · '+evEsc((q.n_validos||0)+' válidos')+' · '+
-  evEsc((q.n_ausentes||0)+' ausentes')+' · '+evEsc((q.n_zero||0)+' zeros')+'<br>'+estadoJan+'</div>'+
-  '<div style="position:relative"><canvas id="'+id+'" style="width:100%;height:240px;display:block"></canvas>'+
-  '<div id="'+id+'Tip" style="position:absolute;pointer-events:none;display:none;white-space:pre-line;'+
-  'background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:4px 8px;font-size:12px;border-radius:4px"></div></div>'+
-  '<details class="sub"><summary>Ver pontos em tabela ('+pts.length+' registros nos últimos 730 dias)</summary>'+
-  '<div class="wrap"><table><thead><tr><th>Data</th><th>Valor</th><th>Estado</th><th>Sinalização</th></tr></thead><tbody>'+linhas+'</tbody></table></div></details>';
-}
 function evPopulacao(M){
  const F=M.fontes||{}, ME=M.melhores_esforcos||{};
  const c=(s,k)=>(s&&s.qualidade&&s.qualidade[k]!=null)?s.qualidade[k]:'—';
@@ -2993,8 +2949,7 @@ function mostrarEvolucao(){
   '</ul>Importante: nenhuma medição é removida por esse diagnóstico. A variação é relativa à mediana anterior e, sozinha, não prova melhora ou piora da performance.</div>'+
   '<div class="evmut">pontos = observados · linha = tendência · faixa = ±1 DP local dos resíduos (dispersão, não intervalo de confiança) · linha clara = trecho com suporte unilateral ou limitado nas bordas · tracejado = mediana recente · 0% = mediana anterior</div>'+
   '<details class="sub" id="evMetodoDet"><summary>Ver método estatístico</summary><div class="sub evmut" style="line-height:1.5">'+EV_METODO+'</div></details>'+
-  '<div class="sub" style="margin-top:14px">'+evLegenda()+'</div>'+
-  evBlocoGrafico('ev_eftp','eFTP da atividade (icu_pm_ftp)',F.eftp_atividade,jan);
+  evResumoEftp(F.eftp_atividade,jan);
  const detMet=document.getElementById('evMetodoDet'), aud=document.getElementById('evAudit');
  if(abertos&&detMet)detMet.open=true;
  const audBody=document.getElementById('evAuditBody'), audRes=document.getElementById('evAuditResumo');
@@ -3003,8 +2958,10 @@ function mostrarEvolucao(){
   aud.ontoggle=renderAud; renderAud();}
  try{drawEvolNorm('ev_norm',normSeries,jan,E.referencia);}
   catch(err){console.error('Gráfico comparativo indisponível:',err);const c=ctx('ev_norm',290);if(c)noData(c.g,c.W,290,'Gráfico indisponível nesta resposta');}
- if(F.eftp_atividade){try{drawEvolChart('ev_eftp',F.eftp_atividade,jan,E.referencia);}
-  catch(err){console.error('Gráfico eFTP indisponível:',err);const c=ctx('ev_eftp',240);if(c)noData(c.g,c.W,240,'Série incompleta: gráfico indisponível');}}
+ const etab=document.getElementById('evEftpTab'), etBody=document.getElementById('evEftpTabBody'), etRes=document.getElementById('evEftpTabResumo');
+ if(etRes)etRes.textContent='Pontos do eFTP da atividade (tabela) · '+(((F.eftp_atividade||{}).pontos)||[]).length+' registros';
+ if(etab&&etBody){const renderEt=()=>{etBody.innerHTML=etab.open?evTabelaEftp(F.eftp_atividade):'';};
+  etab.ontoggle=renderEt; renderEt();}
 }
 
 function redesenhar(){

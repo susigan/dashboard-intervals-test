@@ -27,7 +27,8 @@ sys.path.insert(0, HERE)
 
 from test_evolucao_visual_unit import _cenario, _gerar  # noqa: E402
 
-GRAFICOS = ('ev_norm', 'ev_eftp')
+GRAFICOS = ('ev_norm',)  # o eFTP agora e resumo textual (ver EFTP_RESUMO), nao canvas
+EFTP_RESUMO = 'eFTP da atividade (icu_pm_ftp)'
 NODE = '/opt/node22/bin/node' if os.path.exists('/opt/node22/bin/node') else 'node'
 HARNESS = os.path.join(HERE, 'js', 'render_grafico_evol.js')
 
@@ -81,11 +82,11 @@ class RobustezEvolucaoUI(unittest.TestCase):
             with self.subTest(grafico=g):
                 self.assertIn(g, reg)
         self.assertEqual(_des(reg).get('60'), 97)
-        textos = ' '.join(reg['ev_eftp']['texts'])
-        self.assertIn('ant. ', textos)
-        self.assertIn('rec. ', textos)
-        self.assertNotIn('Série incompleta', textos)
         html = reg['__html']
+        self.assertIn(EFTP_RESUMO, html)
+        self.assertIn('Mediana anterior:', html)
+        self.assertIn('Mediana recente:', html)
+        self.assertNotIn('Dados insuficientes para comparar', html)
         self.assertIn('(2025-10-20 a 2026-04-17)', html)  # periodo anterior exibido
         self.assertIn('(2026-04-18 a 2026-10-14)', html)  # periodo recente exibido
 
@@ -101,10 +102,10 @@ class RobustezEvolucaoUI(unittest.TestCase):
             with self.subTest(grafico=g):
                 self.assertIn(g, reg)
         self.assertEqual(_des(reg).get('60'), 97)  # pontos continuam desenhados
-        textos = ' '.join(reg['ev_eftp']['texts'])
-        self.assertNotIn('ant. ', textos)  # sem periodo, sem rotulo de mediana anterior
-        self.assertIn('rec. ', textos)     # periodo recente intacto segue rotulado
         html = reg['__html']
+        self.assertNotIn('(2025-10-20 a 2026-04-17)', html)  # sem periodo, sem parenteses do periodo anterior
+        self.assertIn('(2026-04-18 a 2026-10-14)', html)     # periodo recente intacto
+        self.assertIn('Mediana anterior:', html)
         med = self.base['modalidades']['Bike']['melhores_esforcos']['60']['janelas']['180']['mediana_anterior']
         self.assertIn(f'{med:.1f} → ', html)  # o valor continua no resumo
         self.assertNotIn('()', html)                      # sem parenteses vazios
@@ -116,9 +117,9 @@ class RobustezEvolucaoUI(unittest.TestCase):
         rc, reg, err = self._rodar(p)
         self.assertEqual(rc, 0, err[-400:])
         self.assertEqual(_des(reg).get('60'), 97)
-        textos = ' '.join(reg['ev_eftp']['texts'])
-        self.assertNotIn('rec. ', textos)
-        self.assertIn('ant. ', textos)
+        html = reg['__html']
+        self.assertNotIn('(2026-04-18 a 2026-10-14)', html)
+        self.assertIn('(2025-10-20 a 2026-04-17)', html)
 
     def test_periodos_ambos_ausentes_mantem_todos_os_graficos(self):
         p = copy.deepcopy(self.base)
@@ -145,6 +146,7 @@ class RobustezEvolucaoUI(unittest.TestCase):
                     self.assertEqual(rc, 0, err[-400:])
                     for g in GRAFICOS:
                         self.assertIn(g, reg)
+                    self.assertIn(EFTP_RESUMO, reg['__html'])  # formas invalidas nao derrubam o resumo
 
     def test_janelas_ausentes_numa_serie_nao_impedem_as_outras(self):
         p = copy.deepcopy(self.base)
@@ -205,21 +207,22 @@ class FonteQualidadeEEstruturaAusentes(unittest.TestCase):
         self.assertIn('— atividades', reg['__tabelas']['populacao'])
         # os melhores esforcos seguem desenhados
         self.assertEqual(_des(reg).get('60'), 97)
-        self.assertNotIn('ev_eftp', reg)
+        self.assertNotIn('Mediana anterior:', reg['__html'])
 
     def test_melhores_esforcos_ausente_nao_lanca_e_mantem_eftp(self):
         rc, reg, err = self._rodar(self._sem(['melhores_esforcos']))
         self.assertEqual(rc, 0, err[-400:])
         self.assertIn('série indisponível nesta resposta', reg['__tabelas']['melhores'])
         self.assertNotIn('60', _des(reg))
-        self.assertGreater(reg['ev_eftp']['arcs'], 0)
+        self.assertIn(EFTP_RESUMO, reg['__html'])
+        self.assertIn('Mediana anterior:', reg['__html'])
 
     def test_eftp_atividade_ausente_so_essa_serie_fica_indisponivel(self):
         p = self._sem(['fontes', 'eftp_atividade'])
         rc, reg, err = self._rodar(p)
         self.assertEqual(rc, 0, err[-400:])
         self.assertIn('série indisponível nesta resposta', reg['__tabelas']['eftp'])
-        self.assertNotIn('ev_eftp', reg)
+        self.assertNotIn('Mediana anterior:', reg['__html'])
         self.assertEqual(_des(reg).get('60'), 97)
         self.assertIn('— atividades', reg['__tabelas']['populacao'])
 
@@ -243,7 +246,7 @@ class FonteQualidadeEEstruturaAusentes(unittest.TestCase):
         self.assertIn('qualidade não informada nesta resposta', reg['__tabelas']['avisos'])
         self.assertIn('— atividades', reg['__tabelas']['populacao'])
         self.assertEqual(_des(reg).get('60'), 97)  # pontos continuam desenhados
-        self.assertIn('ev_eftp', reg)
+        self.assertIn(EFTP_RESUMO, reg['__html'])
 
     def test_janelas_ausentes_numa_serie_mostram_traco_sem_lancar(self):
         p = self._com(['melhores_esforcos', '300', 'janelas'], None)

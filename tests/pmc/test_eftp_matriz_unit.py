@@ -187,14 +187,15 @@ class TextoDaInterface(unittest.TestCase):
             self.src = f.read()
 
     def test_explica_dependencia_da_estrutura(self):
-        self.assertIn('depende dos dados e da estrutura da sessão', self.src)
+        self.assertIn('Depende da estrutura do treino', self.src)
 
     def test_explica_que_nao_basta_para_concluir_capacidade(self):
-        self.assertIn('isoladamente, não é suficiente para concluir se a capacidade do atleta aumentou ou diminuiu',
-                      self.src)
+        self.assertIn('um valor baixo isolado não significa perda de capacidade', self.src)
+        # distincao semantica: eFTP da atividade (icu_pm_ftp) nao equivale ao FTP configurado (icu_ftp)
+        self.assertIn('e não equivale ao FTP configurado', self.src)
 
     def test_explica_recuperacoes_incluidas(self):
-        self.assertIn('incluindo os períodos de recuperação', self.src)
+        self.assertIn('incluindo recuperações', self.src)
 
 
 if __name__ == '__main__':

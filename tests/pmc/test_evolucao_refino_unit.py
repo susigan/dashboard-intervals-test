@@ -271,8 +271,8 @@ class RefinoResumoEAuditoria(unittest.TestCase):
         # a auditoria agora fica na area recolhida 'Detalhes dos dados e qualidade' (estatica), fora do grafico
         self.assertNotIn('Δ% vs mediana anterior', html)
         self.assertNotIn('id="evAudit"', html)
-        # a unica tabela do grafico e a do eFTP, dentro de 'Ver pontos em tabela' (recolhida)
-        self.assertEqual(html.count('<table'), 1)
+        # nenhuma tabela no html do grafico: a tabela de pontos do eFTP e renderizada so ao abrir a secao
+        self.assertEqual(html.count('<table'), 0)
         src = open(os.path.join(ROOT, 'tabs', 'tab_pmc.py'), encoding='utf-8').read()
         self.assertIn('<details class="sub" id="evAudit"><summary id="evAuditResumo">', src)
         self.assertIn('<div id="evAuditBody"></div>', src)
@@ -289,7 +289,7 @@ class RefinoResumoEAuditoria(unittest.TestCase):
     # 11. eFTP separado e sem mudanca de semantica
     def test_eftp_fora_do_grafico_comparativo(self):
         reg = self._run(self.base, jan='180')
-        self.assertIn('ev_eftp', reg)
+        self.assertIn('eFTP da atividade (icu_pm_ftp)', reg['__html'])
         self.assertNotIn('eftp_atividade', reg['__ultimo_norm']['ajuste'])
         # a distincao vive no bloco superior de explicacao (estatico); o grafico nao repete o paragrafo
         src = open(os.path.join(ROOT, 'tabs', 'tab_pmc.py'), encoding='utf-8').read()

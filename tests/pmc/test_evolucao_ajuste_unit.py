@@ -256,7 +256,7 @@ class AjusteComparativo(unittest.TestCase):
     def test_eftp_nao_entra_no_ajuste(self):
         reg = self._run(self.base)
         self.assertNotIn('eftp_atividade', reg['__ultimo_norm']['ajuste'])
-        self.assertIn('ev_eftp', reg)
+        self.assertIn('eFTP da atividade (icu_pm_ftp)', reg['__html'])
 
 
 if __name__ == '__main__':

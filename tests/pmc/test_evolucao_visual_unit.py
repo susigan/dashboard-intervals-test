@@ -283,21 +283,24 @@ class RenderizacaoDeterministica(unittest.TestCase):
         out = self._rodar()
         self.assertEqual(_des(out).get('60'), 97)  # 100 - zero - ausente - negativo
         self.assertEqual(_des(out).get('300'), 100)  # 300 s presente em todas as 100 curvas
-        self.assertIn('ev_eftp', out)
+        self.assertIn('eFTP da atividade (icu_pm_ftp)', out['__html'])
 
     def test_rotulos_de_ausencia_e_mediana_aparecem(self):
         out = self._rodar(jan='180')
-        textos = ' '.join(out['ev_eftp']['texts'])
-        self.assertIn('rec. ', textos)
-        self.assertIn('ant. ', textos)
+        self.assertIn('Mediana recente:', out['__html'])
+        self.assertIn('Mediana anterior:', out['__html'])
 
     def test_rotulo_de_mediana_so_quando_janela_suficiente(self):
         payload = json.load(open(self.payload, encoding='utf-8'))
         for jan in ('90', '180', '365'):
             with self.subTest(jan=jan):
                 ok = payload['modalidades']['Bike']['fontes']['eftp_atividade']['janelas'][jan]['status'] == 'ok'
-                textos = ' '.join(self._rodar(jan=jan)['ev_eftp']['texts'])
-                self.assertEqual('rec. ' in textos, ok)
+                html = self._rodar(jan=jan)['__html']
+                self.assertEqual('Mediana recente:' in html, ok)
+                self.assertEqual('Dados insuficientes para comparar' in html, not ok)
+                if ok:
+                    w = payload['modalidades']['Bike']['fontes']['eftp_atividade']['janelas'][jan]
+                    self.assertIn(f"Mediana recente: <b>{w['mediana_recente']:.1f} W</b>", html)
 
 
 class TextosEIdsDaInterface(unittest.TestCase):

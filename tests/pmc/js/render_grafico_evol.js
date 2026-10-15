@@ -72,6 +72,11 @@ registro.__rotulos = JSON.parse(vm.runInContext(
     elevada_acima: evSensRotulo(1.0000001, 1, true), dispersao_zero: evSensRotulo(0.5, 0, true),
     sem_banda: evSensRotulo(0.5, null, true), sem_influente: evSensRotulo(null, 1, false),
     sd_negativo: evSensRotulo(0.5, -2, true), razao_nula: evSensRotulo(null, 1, true)})`, sandbox));
+registro.__tabela_eftp = vm.runInContext(
+  `(function () {
+     const M = ((D.evolucao_performance || {}).modalidades || {})[${JSON.stringify(MOD)}] || {};
+     return typeof evTabelaEftp === 'function' ? evTabelaEftp((M.fontes || {}).eftp_atividade) : '';
+   })()`, sandbox);
 registro.__html = el('evolGraficos').innerHTML;  // texto das janelas (para testes de texto)
 registro.__tabelas = {  // tabelas, avisos e populacao (para testes de texto e regressao)
   eftp: el('evolBody').innerHTML, melhores: el('evolMeBody').innerHTML, cfg: el('evolCfgBody').innerHTML,

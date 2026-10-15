@@ -2539,6 +2539,366 @@ function drawEvolChart(id,s,jan,ref){
   tip.style.left=Math.min(best.x+10,W-180)+'px'; tip.style.top=Math.max(best.y-44,0)+'px';};
  cv.onpointerleave=function(){tip.style.display='none';};
 }
+// ── Melhores esforcos: grafico comparativo em variacao percentual (Δ% vs mediana anterior)
+// Denominador: mediana_anterior do backend, mesma duracao e janela. Nunca a mediana recente.
+// Sem mediana anterior valida (ausente, zero, negativa ou nao finita): serie indisponivel.
+const EV_DUR=[
+ {k:'60',rot:'1 min',cor:'#3987e5',forma:'circ'},
+ {k:'300',rot:'5 min',cor:'#d95926',forma:'quad'},
+ {k:'720',rot:'12 min',cor:'#199e70',forma:'tri'},
+ {k:'1200',rot:'20 min',cor:'#c98500',forma:'dia'}];
+const EV_NORM_CONTROLE='#f0efec';
+const EV_OCULTAS={};
+let EV_ULTIMO_NORM=null;
+function evMedAnt(s,jan){
+ if(!s)return {ok:false,motivo:'série indisponível nesta resposta'};
+ const w=(s.janelas&&s.janelas[jan])||null;
+ if(!w)return {ok:false,motivo:'janela '+jan+' dias não informada'};
+ if(w.status!=='ok')return {ok:false,motivo:'dados insuficientes nesta janela ('+((w.motivos||[]).map(m=>EV_MOTIVOS[m]||m).join('; ')||'sem motivo informado')+')'};
+ const m=w.mediana_anterior;
+ if(m===null||m===undefined)return {ok:false,motivo:'mediana anterior ausente'};
+ if(typeof m!=='number'||!isFinite(m))return {ok:false,motivo:'mediana anterior inválida'};
+ if(m===0)return {ok:false,motivo:'mediana anterior igual a zero'};
+ if(m<0)return {ok:false,motivo:'mediana anterior negativa'};
+ return {ok:true,valor:m,motivo:''};
+}
+function evDeltaPct(p,m){return 100*(p/m-1);}
+function evSerieNorm(s,jan){
+ const med=evMedAnt(s,jan);
+ const w=(s&&s.janelas&&s.janelas[jan])||{};
+ const recDelta=(med.ok&&typeof w.mediana_recente==='number'&&isFinite(w.mediana_recente))?evDeltaPct(w.mediana_recente,med.valor):null;
+ const brutos=(s&&Array.isArray(s.pontos))?s.pontos:[];
+ const pontos=brutos.filter(p=>p&&typeof p==='object').map(p=>{
+  const valido=p.estado==='valido'&&typeof p.valor==='number'&&isFinite(p.valor)&&p.valor>0;
+  return {data:String(p.data||''),id:p.id,estado:String(p.estado||''),
+   valor:valido?p.valor:null,
+   sinal:Array.isArray(p.sinalizacoes)?p.sinalizacoes:[],
+   delta:(med.ok&&valido)?evDeltaPct(p.valor,med.valor):null};
+ });
+ return {ok:med.ok,motivo:med.motivo,med:med.ok?med.valor:null,recDelta:recDelta,
+  periodoRec:evPeriodo(w.periodo_recente),pontos:pontos,
+  n:{ant:(w.n_anterior==null?null:w.n_anterior),rec:(w.n_recente==null?null:w.n_recente)}};
+}
+function evPasso(span){const b=Math.max(span,1e-9)/4, m=Math.pow(10,Math.floor(Math.log10(b))), r=b/m;
+ return (r<=1?1:r<=2?2:r<=5?5:10)*m;}
+function evForma(g,f,x,y,r){
+ g.beginPath();
+ if(f==='circ'){g.arc(x,y,r,0,2*Math.PI);}
+ else if(f==='quad'){g.rect(x-r,y-r,2*r,2*r);}
+ else if(f==='tri'){g.moveTo(x,y-r*1.2);g.lineTo(x+r*1.1,y+r*0.8);g.lineTo(x-r*1.1,y+r*0.8);g.closePath();}
+ else {g.moveTo(x,y-r*1.25);g.lineTo(x+r*1.25,y);g.lineTo(x,y+r*1.25);g.lineTo(x-r*1.25,y);g.closePath();}
+ g.fill();
+}
+function evMarcadorSvg(f,cor){
+ const forma={circ:'<circle cx="6" cy="6" r="4"/>',quad:'<rect x="2" y="2" width="8" height="8"/>',
+  tri:'<polygon points="6,1.5 10.5,9.5 1.5,9.5"/>',dia:'<polygon points="6,1 11,6 6,11 1,6"/>'}[f]||'';
+ return '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" style="vertical-align:middle;margin-right:4px;fill:'+cor+'">'+forma+'</svg>';
+}
+function evTextoPonto(h){
+ const p=h.p, sg=p.delta>=0?'+':'';
+ let t=h.rot+' · '+p.data+'\n'+Math.round(p.valor)+' W · '+sg+p.delta.toFixed(1)+'% vs mediana anterior ('+h.med.toFixed(1)+' W)';
+ if(p.sinal.length)t+='\n'+p.sinal.map(x=>EV_SINAL[x]||x).join(', ');
+ const fe=evAjusteEm(h.aj,evDia(p.data));
+ t+='\n'+(fe===null?'tendência: sem ajuste nesta data':'tendência estimada: '+(fe>=0?'+':'')+fe.toFixed(1)+'% (estimativa, não observação)');
+ return t;
+}
+// ── Tendencia: regressao local linear por duracao (ver auditoria, EV_AJ) ──
+// Ajuste independente por duracao, sobre os pontos validos do historico (730 dias)
+// e sem os marcados 'excluido' (sequencia confirmada, a mesma regra da tendencia do backend).
+// Linha = regressao local linear com pesos tricubo, raio de EV_AJ.H dias.
+// Banda = +/-1 DP LOCAL dos residuos em torno da linha (mesmos pesos). E dispersao
+// dos pontos, NAO intervalo de confianca nem de predicao.
+// Sem linha onde ha menos de EV_AJ.NMIN observacoes no raio (nao extrapola).
+const EV_AJ={H:90,NMIN:8,PASSO:7};
+// Suporte unilateral (apenas apresentacao): menos de EV_LADO_MIN observacoes de um dos lados, dentro de +-H.
+// Metade do minimo de ajuste; nao altera a estimativa, so sinaliza que o trecho depende de um lado.
+const EV_LADO_MIN=EV_AJ.NMIN/2;
+function evTricubo(d,H){const u=Math.abs(d)/H;return u<1?Math.pow(1-u*u*u,3):0;}
+function evLLFit(t0,T,Y,excl){
+ let n=0,sw=0,sx=0,sxx=0,sy=0,sxy=0;
+ for(let i=0;i<T.length;i++){if(i===excl)continue;const d=T[i]-t0,w=evTricubo(d,EV_AJ.H);if(w<=0)continue;
+  n++;sw+=w;sx+=w*d;sxx+=w*d*d;sy+=w*Y[i];sxy+=w*d*Y[i];}
+ if(n<EV_AJ.NMIN)return null;
+ const det=sw*sxx-sx*sx; if(!(det>1e-9*sw*sw))return null;
+ return {yhat:(sxx*sy-sx*sxy)/det,n:n};
+}
+function evObsAjuste(norm){
+ return (norm&&norm.ok?norm.pontos:[]).filter(p=>p.delta!==null&&p.sinal.indexOf('excluido')<0)
+  .map(p=>({t:evDia(p.data),y:p.delta,id:p.id})).sort((a,b)=>a.t-b.t);
+}
+function evAjusteDur(obs){
+ const out={ok:false,motivo:'',n_obs:obs.length,T:[],Y:[],grade:[],banda:0,curva:0};
+ if(obs.length<EV_AJ.NMIN){out.motivo='menos de '+EV_AJ.NMIN+' observações válidas no histórico';return out;}
+ const T=obs.map(o=>o.t),Y=obs.map(o=>o.y); out.T=T; out.Y=Y;
+ const R=T.map((t,i)=>{const f=evLLFit(t,T,Y);return f?Y[i]-f.yhat:null;});
+ for(let g=Math.ceil(T[0]);g<=T[T.length-1];g+=EV_AJ.PASSO){
+  const f=evLLFit(g,T,Y);
+  if(!f){out.grade.push({t:g,y:null,sd:null,lado:null,nL:0,nR:0});continue;}
+  let k=0,sw2=0,ss=0;
+  for(let i=0;i<T.length;i++){if(R[i]===null)continue;const w=evTricubo(T[i]-g,EV_AJ.H);if(w<=0)continue;k++;sw2+=w;ss+=w*R[i]*R[i];}
+  const sd=(k>=EV_AJ.NMIN&&sw2>0)?Math.sqrt(ss/sw2):null;
+  let nL=0,nR=0;
+  for(let i=0;i<T.length;i++){const d=T[i]-g; if(evTricubo(d,EV_AJ.H)<=0)continue; if(d<0)nL++; else if(d>0)nR++;}
+  const lado=(nR<EV_LADO_MIN&&nL<EV_LADO_MIN)?'ambos':(nR<EV_LADO_MIN?'direita':(nL<EV_LADO_MIN?'esquerda':null));
+  out.grade.push({t:g,y:f.yhat,sd:sd,lado:lado,nL:nL,nR:nR});
+  if(sd!==null)out.banda++;
+ }
+ out.curva=out.grade.filter(q=>q.y!==null).length;
+ out.ok=out.curva>0;
+ if(!out.ok)out.motivo='sem ponto com '+EV_AJ.NMIN+' observações em ±'+EV_AJ.H+' dias';
+ return out;
+}
+function evAjusteEm(a,t){const f=(a&&a.ok)?evLLFit(t,a.T,a.Y):null;return f?f.yhat:null;}
+function evRgba(hex,al){const n=parseInt(hex.slice(1),16);return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+al+')';}
+// ── Melhores esforcos: resumo, grafico conjunto e auditoria (refino visual) ──
+// Sensibilidade (diagnostico, nao altera a tendencia oficial): retira-se UMA observacao
+// que influencia o ponto mais recente da curva. Criterio explicito: a estimativa e
+// "sensivel" se a retirada desloca o ponto em pelo menos 1 DP local dos residuos
+// (a propria dispersao tipica de uma observacao em torno da tendencia). Limite de 1 DP
+// e convencao documentada, nao um ajuste estatistico.
+let EV_AUDIT_SRC=null;
+const EV_CSS_GRAF='<style>'+
+ '.evgrid{display:flex;flex-direction:column;gap:2px;font-size:12px;margin:6px 0}'+
+ '.evrow{display:grid;grid-template-columns:118px 1.4fr 1.3fr 1.8fr;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid #21262d}'+
+ '.evhead{color:#8b949e;font-size:11px;border-bottom:1px solid #30363d}'+
+ '.evmut{color:#8b949e;font-size:11px}'+
+ '.evspan{grid-column:span 4}'+
+ '.evchart{position:relative;margin-top:8px}'+
+ '#ev_norm{width:100%;height:290px;display:block}'+
+ '.evleg{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}'+
+ '.evtip{position:absolute;pointer-events:none;display:none;white-space:pre-line;background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:4px 8px;font-size:12px;border-radius:4px;max-width:230px}'+
+ '#ev_norm:focus-visible,.evleg button:focus-visible{outline:2px solid #58a6ff;outline-offset:2px}'+
+ '@media (max-width:560px){#ev_norm{height:250px}.evhead{display:none}'+
+ '.evrow{grid-template-columns:1fr 1fr;gap:6px 10px}.evd{grid-column:1/-1}.evspan{grid-column:1/-1}.evrow .evc:last-child{grid-column:1/-1}'+
+ '.evc::before{content:attr(data-l);display:block;color:#8b949e;font-size:10px}}'+
+ '</style>';
+const EV_METODO='Δ% = 100 × (valor da atividade ÷ mediana anterior − 1), na mesma duração e janela, com a mediana anterior calculada pelo backend. '+
+ 'Pontos = melhores esforços observados; ausentes, zeros e negativos não entram. '+
+ 'Linha = tendência ajustada a cada duração separadamente, por regressão local linear com pesos tricubo e raio de ±90 dias. '+
+ 'Só aparece onde há pelo menos 8 observações válidas no raio, e não avança além das datas observadas. '+
+ 'Linha clara = trecho com menos de 4 observações de pelo menos um dos lados (até 90 dias): a estimativa é a mesma, mas o suporte é unilateral ou limitado nessa borda (recente ou início da série). Nenhum ponto é removido. '+
+ 'Faixa = ±1 desvio-padrão local dos resíduos em torno da linha: mede a dispersão dos pontos, não é intervalo de confiança nem de predição. A dispersão é estimada sobre os mesmos dados do ajuste e pode subestimar a variabilidade real. '+
+ 'Tendência (90 dias) compara a linha de hoje com a de 90 dias atrás; aparece como estável quando a diferença é menor que a dispersão local. '+
+ 'Sensibilidade (diagnóstico): retira-se, só neste cálculo, a observação mais influente dentro de 90 dias do ponto mais recente e compara-se a estimativa no mesmo ponto temporal. Razão = |deslocamento| ÷ DP local; razão ≥ 1 = Sensibilidade: elevada; razão < 1 = Sensibilidade: baixa segundo o critério utilizado; sem banda, dispersão nula ou sem ajuste = não calculável. A tendência oficial não muda e nenhum dado é removido: não altera dados, medianas nem a curva oficial. '+
+ 'Excluídos da tendência: somente os marcados pelo backend como padrão confirmado. Variação positiva ou negativa é relativa à referência e não classifica performance.';
+const EV_BTN='display:inline-flex;align-items:center;gap:4px;background:transparent;border:1px solid #30363d;color:#e6edf3;border-radius:999px;padding:5px 10px;min-height:32px;font-size:12px;cursor:pointer';
+function evFmtData(t){const s=new Date(t*86400000).toISOString().slice(0,10);return s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4);}
+function evPp(v){return (v>=0?'+':'')+Number(v).toFixed(1);}
+// Limiar do diagnostico de sensibilidade: razao = |deslocamento ao retirar 1 observacao| / DP local.
+// razao >= 1 => "elevada". Convencao documentada (1 DP local), nao ajuste estatistico.
+const EV_SENS_LIMITE=1;
+// Dispersao abaixo disto (em pontos percentuais) e numericamente nula (ruido de ponto flutuante):
+// tratada como 'dispersao nula' para nao gerar razao sem significado.
+const EV_SD_MIN=1e-9;
+// Texto de suporte nas bordas (diagnostico visual; nao altera o ajuste). lado: 'direita' | 'esquerda' | 'ambos' | null
+function evBordaTxt(lado,onde){
+ if(lado==='direita')return 'suporte unilateral à direita '+onde;
+ if(lado==='esquerda')return 'suporte unilateral à esquerda '+onde;
+ if(lado==='ambos')return 'suporte limitado dos dois lados '+onde;
+ return null;
+}
+function evSensRotulo(razao,sd,temInf){
+ if(!temInf)return {nivel:'nc',rot:'Sensibilidade: não calculável (sem observação influente com ajuste)'};
+ if(sd===null||sd===undefined)return {nivel:'nc',rot:'Sensibilidade: não calculável (sem banda)'};
+ if(!(sd>EV_SD_MIN))return {nivel:'nc',rot:'Sensibilidade: não calculável (dispersão nula)'};
+ if(razao===null||!isFinite(razao))return {nivel:'nc',rot:'Sensibilidade: não calculável'};
+ return razao>=EV_SENS_LIMITE?{nivel:'elevada',rot:'Sensibilidade: elevada'}
+  :{nivel:'baixa',rot:'Sensibilidade: baixa segundo o critério utilizado'};
+}
+function evTendencia90(a){
+ const ult=a.grade.filter(q=>q.y!==null);
+ if(!ult.length)return {dir:null,texto:'sem tendência nesta janela',sens:'Sensibilidade: não calculável',nivel:'nc',razao:null,inf:null,oficial:null,sem:null,ponto:null,n_rec:0};
+ const e=ult[ult.length-1];
+ let dir=null, texto;
+ const base=e.t-EV_AJ.H, pr=(base>=a.T[0])?evLLFit(base,a.T,a.Y):null;
+ if(pr===null){texto='sem ajuste há '+EV_AJ.H+' dias para comparar';}
+ else{const dlt=e.y-pr.yhat;
+  if(e.sd===null){texto=evPp(dlt)+' pp em '+EV_AJ.H+' dias (sem banda: não classificada)';}
+  else{dir=(Math.abs(dlt)<1e-9||Math.abs(dlt)<e.sd)?'estável':(dlt>0?'ascendente':'descendente');
+   texto=dir+' ('+evPp(dlt)+' pp em '+EV_AJ.H+' dias)';}}
+ let melhor=null;
+ for(let i=0;i<a.T.length;i++){if(Math.abs(a.T[i]-e.t)>=EV_AJ.H)continue;
+  const f=evLLFit(e.t,a.T,a.Y,i); if(!f)continue;
+  const dlt=f.yhat-e.y; if(melhor===null||Math.abs(dlt)>Math.abs(melhor.dlt))melhor={i:i,dlt:dlt,t:a.T[i],y:a.Y[i]};}
+ const razao=(melhor&&e.sd!==null&&e.sd>EV_SD_MIN)?Math.abs(melhor.dlt)/e.sd:null;
+ const s=evSensRotulo(razao,e.sd,!!melhor);
+ const ini=a.grade.find(q=>q.y!==null);
+ const bordas=[evBordaTxt(e.lado,'nos dados recentes'),ini?evBordaTxt(ini.lado,'no início da série'):null].filter(Boolean);
+ return {dir:dir,texto:texto,sens:s.rot,nivel:s.nivel,razao:razao,inf:melhor,borda:bordas,
+  oficial:e.y,sem:melhor?e.y+melhor.dlt:null,ponto:e,n_rec:a.T.filter(t=>t>e.t-EV_AJ.H).length};
+}
+// Bordas consolidadas: as durações compartilham datas; se o resultado for igual, uma única nota basta.
+function evBordaPeriodos(a){
+ const dir=[],esq=[];
+ a.grade.forEach(q=>{if(q.y===null)return;
+  if(q.lado==='direita'||q.lado==='ambos')dir.push(q.t);
+  if(q.lado==='esquerda'||q.lado==='ambos')esq.push(q.t);});
+ return {dir:dir,esq:esq};
+}
+function evBordaNota(series){
+ const com=series.filter(x=>x.aj&&x.aj.ok).map(x=>({k:x.d.k,p:evBordaPeriodos(x.aj)}));
+ if(!com.length)return {comum:true,nota:null,perRow:false};
+ const chave=c=>JSON.stringify([c.p.dir,c.p.esq]);
+ const comum=com.every(c=>chave(c)===chave(com[0]));
+ const p=com[0].p;
+ if(!p.dir.length&&!p.esq.length)return {comum:comum,nota:null,perRow:!comum};
+ if(!comum)return {comum:false,nota:null,perRow:true};
+ const faixa=arr=>[evFmtData(arr[0]),evFmtData(arr[arr.length-1])];
+ const partes=[];
+ if(p.dir.length){const f=faixa(p.dir); partes.push('à direita, nos dados recentes: de '+f[0]+' a '+f[1]);}
+ if(p.esq.length){const f=faixa(p.esq); partes.push('à esquerda, no início da série: de '+f[0]+' a '+f[1]);}
+ const quem=com.length>1?'em todas as '+com.length+' durações com ajuste':'nesta duração';
+ return {comum:true,perRow:false,nota:'Suporte unilateral nas bordas, '+quem+' (mesmas datas): '+partes.join('; ')+'. Diagnóstico visual: nenhum ponto é removido nem alterado.'};
+}
+function evResumoHtml(series,jan){
+ const bn=evBordaNota(series);
+ const linhas=series.map(x=>{
+  const sx=x.s, w=(sx&&sx.janelas&&sx.janelas[jan])||{}, nr=x.norm, a=x.aj;
+  const oc=!!EV_OCULTAS[x.d.k];
+  const cab='<span class="evd" style="color:'+x.d.cor+'"><b>'+evEsc(x.d.rot)+'</b>'+(oc?' <span class="evmut">(oculta no gráfico)</span>':'')+'</span>';
+  if(!nr.ok)return '<div class="evrow">'+cab+'<span class="evc evmut evspan" data-l="Comparação entre períodos">comparação indisponível: '+evEsc(nr.motivo)+'</span></div>';
+  const rec=(w.mediana_recente!=null)?evV(w.mediana_recente,1)+' W':'—';
+  const dW=(w.diferenca!=null)?evPp(w.diferenca)+' W':'—';
+  const pc=(w.variacao_pct!=null)?evPp(w.variacao_pct)+'%':'—';
+  const suf='janela de '+jan+' dias · obs. '+(w.n_anterior!=null?w.n_anterior:'—')+' no período anterior / '+(w.n_recente!=null?w.n_recente:'—')+' no recente';
+  const t=(a&&a.ok)?evTendencia90(a):{texto:'sem tendência: '+evEsc((a&&a.motivo)||'sem dados'),sens:'Sensibilidade: não calculável',nivel:'nc',inf:null,razao:null,oficial:null,sem:null};
+  const ajuste=(a&&a.ok)?('ajuste de '+evFmtData(a.T[0])+' a '+evFmtData(a.T[a.T.length-1])+' · '+a.n_obs+' obs. · '+t.n_rec+' nos últimos '+EV_AJ.H+' dias'):'';
+  let diag='';
+  if(t.inf&&t.nivel!=='nc'){
+   diag='diagnóstico, sem a observação de '+evFmtData(t.inf.t)+' ('+evPp(t.inf.y)+'%): estimativa '+evPp(t.sem)+'% em vez de '+evPp(t.oficial)+'% · '+evV(t.razao,2)+' DP local. Não altera dados nem a curva oficial.';}
+  return '<div class="evrow">'+cab+
+   '<span class="evc" data-l="Comparação entre períodos">'+evV(nr.med,1)+' → '+rec+' · '+dW+' · '+pc+'<br><span class="evmut">'+evEsc(suf)+'</span></span>'+
+   '<span class="evc" data-l="Tendência recente estimada">'+evEsc(t.texto)+(ajuste?'<br><span class="evmut">'+evEsc(ajuste)+'</span>':'')+(bn.perRow&&t.borda&&t.borda.length?t.borda.map(b=>'<br><span class="evmut">'+evEsc(b)+'</span>').join(''):'')+'</span>'+
+   '<span class="evc" data-l="Sensibilidade (diagnóstico)"><b>'+evEsc(t.sens)+'</b>'+(diag?'<br><span class="evmut">'+evEsc(diag)+'</span>':'')+'</span></div>';
+ }).join('');
+ return '<div class="evgrid" role="table" aria-label="Resumo por duração"><div class="evrow evhead" role="row">'+
+  '<span>Duração</span><span>Comparação entre períodos</span><span>Tendência recente estimada</span><span>Sensibilidade (diagnóstico)</span></div>'+
+  linhas+'</div>'+(bn.nota?'<div class="evmut" style="margin-top:6px">'+evEsc(bn.nota)+'</div>':'');
+}
+function evLegendaCompacta(series){
+ return series.map(x=>{const d=x.d, oc=!!EV_OCULTAS[d.k], ok=x.norm.ok;
+  const txt=ok?(oc?'oculta':'visível'):'indisponível';
+  return '<button type="button" aria-pressed="'+(oc?'false':'true')+'"'+(ok?' onclick="evAlternarDur(\''+d.k+'\')"':' disabled')+
+   ' aria-label="'+evEsc(d.rot)+': '+txt+(ok?'; clique para '+(oc?'exibir':'ocultar'):'')+'"'+
+   ' style="'+EV_BTN+';opacity:'+((ok&&!oc)?'1':'0.6')+';cursor:'+(ok?'pointer':'default')+'">'+
+   evMarcadorSvg(d.forma,d.cor)+'<b>'+evEsc(d.rot)+'</b><span class="evmut">'+txt+'</span></button>';
+ }).join('');
+}
+function evAlternarDur(k){EV_OCULTAS[k]=!EV_OCULTAS[k]; mostrarEvolucao();}
+function evAuditoriaHtml(series){
+ return series.map(x=>{const n=x.norm;
+  const linhas=n.pontos.map(p=>'<tr><td>'+evEsc(p.data)+'</td><td>'+(p.valor===null?'—':evEsc(Math.round(p.valor)+' W'))+
+   '</td><td>'+(p.delta===null?'—':evEsc((p.delta>=0?'+':'')+p.delta.toFixed(1)+'%'))+
+   '</td><td>'+evEsc(p.estado)+'</td><td>'+evEsc(p.sinal.map(q=>EV_SINAL[q]||q).join(', '))+'</td></tr>').join('');
+  return '<h4 class="evmut" style="margin:10px 0 4px">'+evEsc(x.d.rot)+' · '+n.pontos.length+' registros nos últimos 730 dias'+
+   (n.ok?'':' · normalização indisponível: '+evEsc(n.motivo))+'</h4>'+
+   '<div class="wrap"><table><thead><tr><th>Data</th><th>Valor</th><th>Δ% vs mediana anterior</th><th>Estado</th><th>Sinalização</th></tr></thead><tbody>'+linhas+'</tbody></table></div>';
+ }).join('');
+}
+function drawEvolNorm(id,series,jan,ref){
+ const cvEl=document.getElementById(id);
+ const H=(cvEl&&cvEl.clientHeight)||290;
+ const c=ctx(id,H); if(!c)return; const g=c.g, W=c.W;
+ const mob=W<520;
+ const vis=series.filter(x=>x.norm.ok&&!EV_OCULTAS[x.d.k]);
+ EV_ULTIMO_NORM={visiveis:vis.map(x=>x.d.k),ocultas:series.filter(x=>EV_OCULTAS[x.d.k]).map(x=>x.d.k),desenhados:{},curvas:{},bandas:{},ajuste:{},sensibilidade:{}};
+ series.forEach(x=>{const a=x.aj||{ok:false,motivo:'sem ajuste',n_obs:0,curva:0,banda:0,grade:[]};
+  EV_ULTIMO_NORM.ajuste[x.d.k]={ok:a.ok,motivo:a.motivo,n_obs:a.n_obs,curva:a.curva,banda:a.banda,grade:a.grade};
+  if(a.ok&&!EV_OCULTAS[x.d.k]){const t=evTendencia90(a);EV_ULTIMO_NORM.sensibilidade[x.d.k]={sens:t.sens,nivel:t.nivel,razao:t.razao,dir:t.dir,oficial:t.oficial,sem:t.sem,inf:t.inf?{t:t.inf.t,y:t.inf.y,dlt:t.inf.dlt}:null};}});
+ const valores=[];
+ vis.forEach(x=>{x.norm.pontos.forEach(p=>{if(p.delta!==null)valores.push(p.delta);});
+  if(x.norm.recDelta!==null)valores.push(x.norm.recDelta);
+  if(x.aj&&x.aj.ok)x.aj.grade.forEach(q=>{if(q.y===null)return;valores.push(q.y);if(q.sd!==null){valores.push(q.y+q.sd);valores.push(q.y-q.sd);}});});
+ if(!valores.length){noData(g,W,H,'Sem pontos válidos com mediana anterior nas séries visíveis');return;}
+ let lo=Math.min(0,Math.min.apply(null,valores)), hi=Math.max(0,Math.max.apply(null,valores));
+ const pad=Math.max((hi-lo)*0.1,2); lo-=pad; hi+=pad;
+ const PL=mob?40:52,PR=12,PT=10,PB=mob?34:38, x0=PL,x1=W-PR,y0=PT,y1=H-PB;
+ const fimN=evDia(ref), iniN=fimN-730;
+ const X=d=>x0+(x1-x0)*((d-iniN)/(fimN-iniN));
+ const Y=v=>y1-(y1-y0)*((v-lo)/(hi-lo));
+ const passo=evPasso(hi-lo), dec=passo<1?1:0;
+ g.font='11px sans-serif'; g.textBaseline='middle'; g.textAlign='right';
+ for(let v=Math.ceil(lo/passo)*passo; v<=hi+1e-9; v+=passo){
+  const zero=Math.abs(v)<1e-9;
+  g.strokeStyle='#21262d'; g.lineWidth=1; g.beginPath(); g.moveTo(x0,Y(v)); g.lineTo(x1,Y(v)); g.stroke();
+  g.fillStyle=zero?'#e6edf3':'#8b949e'; g.fillText(zero?'0%':(v>0?'+':'')+v.toFixed(dec)+'%',x0-6,Y(v));
+ }
+ // referencia 0% = mediana anterior: linha tracejada, sem texto sobre os dados
+ g.strokeStyle='#c9d1d9'; g.lineWidth=1.2; g.setLineDash([5,4]); g.globalAlpha=0.8;
+ g.beginPath(); g.moveTo(x0,Y(0)); g.lineTo(x1,Y(0)); g.stroke(); g.setLineDash([]); g.globalAlpha=1;
+ g.textAlign='center'; g.textBaseline='top'; g.fillStyle='#8b949e';
+ let ultimoX=-1e9;
+ for(let d=Math.ceil(iniN/91)*91; d<=fimN; d+=91){
+  const xx=X(d), lab=new Date(d*86400000).toISOString().slice(0,7), lw=g.measureText(lab).width;
+  if(xx-ultimoX<lw+12)continue;
+  g.fillText(lab,xx,y1+8); ultimoX=xx;
+ }
+ // bandas: dispersao +/-1 DP local, opacidade baixa; quebra onde nao ha desvio
+ vis.forEach(x=>{const a=x.aj; if(!a||!a.ok)return;
+  const runs=[]; let cur=[];
+  a.grade.forEach(q=>{if(q.y===null||q.sd===null){if(cur.length)runs.push(cur);cur=[];}else cur.push(q);});
+  if(cur.length)runs.push(cur);
+  runs.forEach(run=>{ if(run.length<2)return;
+   g.fillStyle=evRgba(x.d.cor,0.07); g.beginPath();
+   run.forEach((q,i)=>{const px=X(q.t),py=Y(q.y+q.sd); i?g.lineTo(px,py):g.moveTo(px,py);});
+   for(let i=run.length-1;i>=0;i--){const q=run[i]; g.lineTo(X(q.t),Y(q.y-q.sd));}
+   g.closePath(); g.fill();});
+ });
+ // tendencia: linha mais forte que os pontos; lacunas sem suporte ficam sem linha
+ vis.forEach(x=>{const a=x.aj; if(!a||!a.ok)return;
+  const runs=[]; let cur=[];
+  a.grade.forEach(q=>{if(q.y===null){if(cur.length)runs.push(cur);cur=[];}else cur.push(q);});
+  if(cur.length)runs.push(cur);
+  g.strokeStyle=x.d.cor; g.lineWidth=mob?2.2:2.5; g.lineJoin='round';
+  runs.forEach(run=>{for(let i=1;i<run.length;i++){const q0=run[i-1], q1=run[i];
+    g.globalAlpha=(q0.lado||q1.lado)?0.35:1;
+    g.beginPath(); g.moveTo(X(q0.t),Y(q0.y)); g.lineTo(X(q1.t),Y(q1.y)); g.stroke();}});
+  g.globalAlpha=1;
+  EV_ULTIMO_NORM.curvas[x.d.k]=a.curva; EV_ULTIMO_NORM.bandas[x.d.k]=a.banda;
+ });
+ // mediana recente: tracejado da cor da duracao (distinto da tendencia, continua)
+ vis.forEach(x=>{const n=x.norm; if(n.recDelta===null||!n.periodoRec)return;
+  const a=evDia(n.periodoRec[0]), b=evDia(n.periodoRec[1]);
+  g.strokeStyle=x.d.cor; g.lineWidth=2; g.setLineDash([2,3]); g.beginPath(); g.moveTo(X(a),Y(n.recDelta)); g.lineTo(X(b),Y(n.recDelta)); g.stroke(); g.setLineDash([]);
+ });
+ // observacoes: marcadores pequenos e transparentes; sinalizados ganham anel
+ const hits=[];
+ const raioR=mob?3:3.2;
+ vis.forEach(x=>{let k=0;
+  x.norm.pontos.forEach(p=>{if(p.delta===null)return; k++;
+   const px=X(evDia(p.data)), py=Y(p.delta);
+   g.globalAlpha=0.62; g.fillStyle=x.d.cor; g.strokeStyle=x.d.cor; g.lineWidth=1; evForma(g,x.d.forma,px,py,raioR);
+   g.globalAlpha=1;
+   if(p.sinal.length){g.strokeStyle='#f0efec'; g.lineWidth=1.2; g.beginPath(); g.arc(px,py,raioR+2.6,0,2*Math.PI); g.stroke();}
+   hits.push({x:px,y:py,rot:x.d.rot,p:p,med:x.norm.med,aj:x.aj});
+  });
+  EV_ULTIMO_NORM.desenhados[x.d.k]=k;
+ });
+ // diagnostico de sensibilidade: anel tracejado na observacao influente (sem alterar dados)
+ vis.forEach(x=>{const t=EV_ULTIMO_NORM.sensibilidade[x.d.k]; if(!t||!t.inf||t.nivel!=='elevada')return;
+  const px=X(t.inf.t), py=Y(x.aj.Y[x.aj.T.indexOf(t.inf.t)]);
+  g.strokeStyle='#f0efec'; g.lineWidth=1; g.setLineDash([2,2]); g.beginPath(); g.arc(px,py,raioR+5,0,2*Math.PI); g.stroke(); g.setLineDash([]);
+ });
+ const cv=document.getElementById(id), tip=document.getElementById(id+'Tip');
+ if(!cv||!tip)return;
+ const alcance=mob?24:14;
+ const mostra=function(ev){
+  const r=cv.getBoundingClientRect(), mx=ev.clientX-r.left, my=ev.clientY-r.top;
+  let best=null, bd=alcance*alcance;
+  hits.forEach(h=>{const dd=(h.x-mx)*(h.x-mx)+(h.y-my)*(h.y-my); if(dd<=bd){bd=dd; best=h;}});
+  if(!best){tip.style.display='none';return;}
+  tip.textContent=evTextoPonto(best);
+  tip.style.display='block';
+  tip.style.left=Math.max(4,Math.min(mx+12,W-236))+'px'; tip.style.top=Math.max(my-10,0)+'px';
+ };
+ cv.onpointermove=function(ev){ if(ev.pointerType!=='touch')mostra(ev); };
+ cv.onpointerdown=function(ev){ mostra(ev); };
+ cv.onpointerleave=function(ev){ if(ev.pointerType!=='touch')tip.style.display='none'; };
+ if(!window.__evTipFora){window.__evTipFora=true;
+  window.addEventListener('pointerdown',function(e){
+   if(e.target&&e.target.closest&&e.target.closest('#ev_norm'))return;
+   const t=document.getElementById('ev_normTip'); if(t)t.style.display='none';});}
+}
 function evBlocoGrafico(id,titulo,s,jan){
  if(!s)return '<div class="sub"><b>'+evEsc(titulo)+'</b> · série indisponível nesta resposta.</div>';
  const q=(s&&s.qualidade)||{};
@@ -2599,15 +2959,33 @@ function mostrarEvolucao(){
  mBody.innerHTML=sec.map(x=>evLinha(x[1],ME[x[0]],jan)).join('');
  avisos.innerHTML=fontes.map(f=>evNotaQualidade(f[1],F[f[0]])).join('')+
   sec.map(x=>evNotaQualidade(x[1],ME[x[0]])).join('');
- const specs=[['ev_m60',sec[0][1]+' (60 s)',ME['60']],
-  ['ev_m300',sec[1][1]+' (300 s)',ME['300']],
-  ['ev_m720',sec[2][1]+' (720 s)',ME['720']],
-  ['ev_m1200',sec[3][1]+' (1200 s)',ME['1200']],
-  ['ev_eftp','eFTP da atividade (icu_pm_ftp)',F.eftp_atividade]];
- graf.innerHTML='<div class="sub">'+evLegenda()+'</div><div class="sub">Gráficos mostram todo o histórico de 730 dias, independentemente da Fonte escolhida na tabela. Cada ponto é uma atividade. Ausências e zeros não viram valor nem são interpolados.</div>'+
-  specs.map(x=>evBlocoGrafico(x[0],x[1],x[2],jan)).join('');
- specs.forEach(x=>{if(!x[2])return;try{drawEvolChart(x[0],x[2],jan,E.referencia);}
-  catch(err){console.error('Gráfico '+x[0]+' indisponível:',err);const c=ctx(x[0],240);if(c)noData(c.g,c.W,240,'Série incompleta: gráfico indisponível');}});
+
+ const normSeries=EV_DUR.map(d=>{const norm=evSerieNorm(ME[d.k],jan);return {d:d,s:ME[d.k],norm:norm,aj:evAjusteDur(evObsAjuste(norm))};});
+ EV_AUDIT_SRC=normSeries;
+ const detMet0=document.getElementById('evMetodoDet'), detAud0=document.getElementById('evAudit');
+ const abertos=[!!(detMet0&&detMet0.open), !!(detAud0&&detAud0.open)];
+ const nRegs=normSeries.reduce((t,x)=>t+x.norm.pontos.length,0);
+ graf.innerHTML=EV_CSS_GRAF+
+  '<div class="sub"><b>Melhores esforços</b> · variação relativa à mediana anterior · janela de '+evEsc(jan)+' dias · histórico de 730 dias</div>'+
+  '<div id="evResumo">'+evResumoHtml(normSeries,jan)+'</div>'+
+  '<div class="evchart"><canvas id="ev_norm" role="img" aria-label="Variação percentual dos melhores esforços de 1, 5, 12 e 20 minutos em relação à mediana anterior, com tendência e dispersão" aria-describedby="evResumo"></canvas>'+
+  '<div id="ev_normTip" class="evtip"></div></div>'+
+  '<div class="evleg" id="evNormLeg">'+evLegendaCompacta(normSeries)+'</div>'+
+  '<div class="evmut">pontos = observados · linha = tendência · faixa = ±1 DP local dos resíduos (dispersão, não intervalo de confiança) · linha clara = trecho com suporte unilateral ou limitado nas bordas · tracejado = mediana recente · 0% = mediana anterior</div>'+
+  '<details class="sub" id="evMetodoDet"><summary>Como ler este gráfico e o método</summary><div class="sub evmut" style="line-height:1.5">'+EV_METODO+'</div></details>'+
+  '<details class="sub" id="evAudit"><summary>Detalhes por observação (auditoria) · '+nRegs+' registros nas 4 durações</summary><div id="evAuditBody"></div></details>'+
+  '<div class="sub" style="margin-top:14px"><b>eFTP da atividade</b> é outra variável e fica em gráfico separado. Depende da estrutura da sessão e não equivale ao FTP configurado. Sozinho, não demonstra mudança de capacidade.</div>'+
+  '<div class="sub">'+evLegenda()+'</div>'+
+  evBlocoGrafico('ev_eftp','eFTP da atividade (icu_pm_ftp)',F.eftp_atividade,jan);
+ const detMet=document.getElementById('evMetodoDet'), aud=document.getElementById('evAudit');
+ if(abertos[0]&&detMet)detMet.open=true;
+ if(abertos[1]&&aud)aud.open=true;
+ if(aud)aud.ontoggle=function(){
+  if(aud.open&&!aud.dataset.pronta){aud.dataset.pronta='1';document.getElementById('evAuditBody').innerHTML=evAuditoriaHtml(EV_AUDIT_SRC||[]);}};
+ try{drawEvolNorm('ev_norm',normSeries,jan,E.referencia);}
+  catch(err){console.error('Gráfico comparativo indisponível:',err);const c=ctx('ev_norm',290);if(c)noData(c.g,c.W,290,'Gráfico indisponível nesta resposta');}
+ if(F.eftp_atividade){try{drawEvolChart('ev_eftp',F.eftp_atividade,jan,E.referencia);}
+  catch(err){console.error('Gráfico eFTP indisponível:',err);const c=ctx('ev_eftp',240);if(c)noData(c.g,c.W,240,'Série incompleta: gráfico indisponível');}}
 }
 
 function redesenhar(){

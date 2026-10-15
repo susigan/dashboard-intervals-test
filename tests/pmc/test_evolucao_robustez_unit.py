@@ -15,6 +15,11 @@ import sys
 import tempfile
 import unittest
 
+
+def _des(reg):
+    """Pontos desenhados por duracao no grafico comparativo (ev_norm)."""
+    return (reg.get('__ultimo_norm') or {}).get('desenhados', {})
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
 sys.path.insert(0, ROOT)
@@ -22,7 +27,7 @@ sys.path.insert(0, HERE)
 
 from test_evolucao_visual_unit import _cenario, _gerar  # noqa: E402
 
-GRAFICOS = ('ev_m60', 'ev_m300', 'ev_m720', 'ev_m1200', 'ev_eftp')
+GRAFICOS = ('ev_norm', 'ev_eftp')
 NODE = '/opt/node22/bin/node' if os.path.exists('/opt/node22/bin/node') else 'node'
 HARNESS = os.path.join(HERE, 'js', 'render_grafico_evol.js')
 
@@ -75,8 +80,8 @@ class RobustezEvolucaoUI(unittest.TestCase):
         for g in GRAFICOS:
             with self.subTest(grafico=g):
                 self.assertIn(g, reg)
-        self.assertEqual(reg['ev_m60']['arcs'], 97)
-        textos = ' '.join(reg['ev_m60']['texts'])
+        self.assertEqual(_des(reg).get('60'), 97)
+        textos = ' '.join(reg['ev_eftp']['texts'])
         self.assertIn('ant. ', textos)
         self.assertIn('rec. ', textos)
         self.assertNotIn('Série incompleta', textos)
@@ -95,13 +100,13 @@ class RobustezEvolucaoUI(unittest.TestCase):
         for g in GRAFICOS:
             with self.subTest(grafico=g):
                 self.assertIn(g, reg)
-        self.assertEqual(reg['ev_m60']['arcs'], 97)  # pontos continuam desenhados
-        textos = ' '.join(reg['ev_m60']['texts'])
+        self.assertEqual(_des(reg).get('60'), 97)  # pontos continuam desenhados
+        textos = ' '.join(reg['ev_eftp']['texts'])
         self.assertNotIn('ant. ', textos)  # sem periodo, sem rotulo de mediana anterior
         self.assertIn('rec. ', textos)     # periodo recente intacto segue rotulado
         html = reg['__html']
         med = self.base['modalidades']['Bike']['melhores_esforcos']['60']['janelas']['180']['mediana_anterior']
-        self.assertIn(f'mediana anterior {med:.1f} W', html)  # o valor continua no resumo
+        self.assertIn(f'{med:.1f} → ', html)  # o valor continua no resumo
         self.assertNotIn('()', html)                      # sem parenteses vazios
 
     def test_periodo_recente_ausente_nao_lanca_e_mantem_pontos(self):
@@ -110,8 +115,8 @@ class RobustezEvolucaoUI(unittest.TestCase):
             w.pop('periodo_recente', None)
         rc, reg, err = self._rodar(p)
         self.assertEqual(rc, 0, err[-400:])
-        self.assertEqual(reg['ev_m60']['arcs'], 97)
-        textos = ' '.join(reg['ev_m60']['texts'])
+        self.assertEqual(_des(reg).get('60'), 97)
+        textos = ' '.join(reg['ev_eftp']['texts'])
         self.assertNotIn('rec. ', textos)
         self.assertIn('ant. ', textos)
 
@@ -149,7 +154,7 @@ class RobustezEvolucaoUI(unittest.TestCase):
         for g in GRAFICOS:
             with self.subTest(grafico=g):
                 self.assertIn(g, reg)
-        self.assertEqual(reg['ev_m60']['arcs'], 97)
+        self.assertEqual(_des(reg).get('60'), 97)
 
     def test_pontos_nao_array_nao_impedem_os_outros_graficos(self):
         p = copy.deepcopy(self.base)
@@ -159,7 +164,7 @@ class RobustezEvolucaoUI(unittest.TestCase):
         for g in GRAFICOS:
             with self.subTest(grafico=g):
                 self.assertIn(g, reg)
-        self.assertEqual(reg['ev_m60']['arcs'], 97)
+        self.assertEqual(_des(reg).get('60'), 97)
 
 
 class FonteQualidadeEEstruturaAusentes(unittest.TestCase):
@@ -199,14 +204,14 @@ class FonteQualidadeEEstruturaAusentes(unittest.TestCase):
         self.assertIn('série indisponível nesta resposta', reg['__tabelas']['eftp'])
         self.assertIn('— atividades', reg['__tabelas']['populacao'])
         # os melhores esforcos seguem desenhados
-        self.assertEqual(reg['ev_m60']['arcs'], 97)
+        self.assertEqual(_des(reg).get('60'), 97)
         self.assertNotIn('ev_eftp', reg)
 
     def test_melhores_esforcos_ausente_nao_lanca_e_mantem_eftp(self):
         rc, reg, err = self._rodar(self._sem(['melhores_esforcos']))
         self.assertEqual(rc, 0, err[-400:])
         self.assertIn('série indisponível nesta resposta', reg['__tabelas']['melhores'])
-        self.assertNotIn('ev_m60', reg)
+        self.assertNotIn('60', _des(reg))
         self.assertGreater(reg['ev_eftp']['arcs'], 0)
 
     def test_eftp_atividade_ausente_so_essa_serie_fica_indisponivel(self):
@@ -215,7 +220,7 @@ class FonteQualidadeEEstruturaAusentes(unittest.TestCase):
         self.assertEqual(rc, 0, err[-400:])
         self.assertIn('série indisponível nesta resposta', reg['__tabelas']['eftp'])
         self.assertNotIn('ev_eftp', reg)
-        self.assertEqual(reg['ev_m60']['arcs'], 97)
+        self.assertEqual(_des(reg).get('60'), 97)
         self.assertIn('— atividades', reg['__tabelas']['populacao'])
 
     def test_series_nulas_nao_lancam(self):
@@ -225,8 +230,8 @@ class FonteQualidadeEEstruturaAusentes(unittest.TestCase):
         self.assertEqual(rc, 0, err[-400:])
         self.assertIn('série indisponível nesta resposta', reg['__tabelas']['melhores'])
         self.assertIn('série indisponível nesta resposta', reg['__tabelas']['eftp'])
-        self.assertEqual(reg['ev_m60']['arcs'], 97)
-        self.assertNotIn('ev_m720', reg)
+        self.assertEqual(_des(reg).get('60'), 97)
+        self.assertNotIn('720', _des(reg))
 
     def test_qualidade_ausente_mostra_aviso_e_mantem_pontos(self):
         p = copy.deepcopy(self.base)
@@ -237,7 +242,7 @@ class FonteQualidadeEEstruturaAusentes(unittest.TestCase):
         self.assertEqual(rc, 0, err[-400:])
         self.assertIn('qualidade não informada nesta resposta', reg['__tabelas']['avisos'])
         self.assertIn('— atividades', reg['__tabelas']['populacao'])
-        self.assertEqual(reg['ev_m60']['arcs'], 97)  # pontos continuam desenhados
+        self.assertEqual(_des(reg).get('60'), 97)  # pontos continuam desenhados
         self.assertIn('ev_eftp', reg)
 
     def test_janelas_ausentes_numa_serie_mostram_traco_sem_lancar(self):
@@ -245,7 +250,7 @@ class FonteQualidadeEEstruturaAusentes(unittest.TestCase):
         rc, reg, err = self._rodar(p)
         self.assertEqual(rc, 0, err[-400:])
         self.assertIn('janelas não informadas nesta resposta', reg['__tabelas']['melhores'])
-        self.assertEqual(reg['ev_m60']['arcs'], 97)
+        self.assertEqual(_des(reg).get('60'), 97)
 
     def test_fonte_selecionada_ausente_nao_lanca(self):
         for fonte in ('ftp_configurado', 'eftp_nao_confirmado', 'eftp_atividade'):
@@ -253,7 +258,7 @@ class FonteQualidadeEEstruturaAusentes(unittest.TestCase):
                 p = self._sem(['fontes', fonte])
                 rc, reg, err = self._rodar(p, fonte=fonte)
                 self.assertEqual(rc, 0, err[-400:])
-                self.assertIn('ev_m60', reg)  # melhores esforcos nao dependem da fonte
+                self.assertIn('ev_norm', reg)  # melhores esforcos nao dependem da fonte
 
     def test_ftp_configurado_ausente_mostra_traco_na_referencia(self):
         p = self._sem(['fontes', 'ftp_configurado'])

@@ -1,9 +1,11 @@
 """Tab Atividades — lista completa, ordenavel e filtravel."""
 
-from flask import Response, jsonify, request
+from flask import Response, jsonify, request, send_file
 from api_client import fetch_activities, cache_info, norm_tipo, num, kj_da_atividade
+import os
 import re
 import export
+import exportacao_completa as xc
 import db as _db
 
 _DATA_NOME = re.compile(r'^\d{4}-\d{2}-\d{2}$')
@@ -130,6 +132,89 @@ def api_export_pacote():
     return Response(conteudo, mimetype='application/zip', headers=cab)
 
 
+MAX_IDS_EXPORTACAO_COMPLETA = 5000
+
+
+def api_exportacao_iniciar():
+    """Inicia a exportacao completa. So aqui a API de streams e chamada, por pedido explicito.
+
+    POST {"ids": [...], "filtros": {...}}. Os IDs tem de estar no conjunto que a aba carregou.
+    """
+    corpo = request.get_json(silent=True)
+    ids = corpo.get('ids') if isinstance(corpo, dict) else None
+    if not isinstance(ids, list) or not ids or len(ids) > MAX_IDS_EXPORTACAO_COMPLETA or \
+            not all(isinstance(i, (str, int)) and not isinstance(i, bool) for i in ids):
+        return jsonify({'erro': 'pedido invalido: esperado {"ids": [...]} com 1 a 5000 IDs'}), 400
+    acts = fetch_activities()
+    if not acts:
+        return jsonify({'erro': 'sem atividades disponiveis'}), 503
+    autorizados = {str(a.get('id')) for a in acts if a.get('id') is not None}
+    fora = [str(i) for i in ids if str(i) not in autorizados]
+    if fora:
+        return jsonify({'erro': 'IDs fora do conjunto autorizado', 'total_fora': len(fora),
+                        'exemplos': fora[:5]}), 400
+    bruto = corpo.get('filtros') if isinstance(corpo.get('filtros'), dict) else {}
+    filtros = {k: str(bruto.get(k, ''))[:200] for k in export.FILTROS_PERMITIDOS}
+    try:
+        job = xc.novo_job(acts, ids, filtros)
+    except xc.JobEmAndamento as e:
+        return jsonify({'erro': 'ja existe uma exportacao em andamento',
+                        'job_id': str(e)}), 409
+    return jsonify({'job_id': job.id, 'total': len(job.ordem)}), 202
+
+
+def _estado_de(job_id):
+    job = xc.obter_job(job_id)
+    res = job.resumo()
+    pronto = (not job.rodando) and res['pendentes'] == 0
+    return job, {'job_id': job.id, 'resumo': res, 'pronto': pronto,
+                 'pacote_disponivel': os.path.exists(os.path.join(job.dir, 'pacote.zip')),
+                 'falhas': job.falhas()[:200], 'falhas_total': len(job.falhas())}
+
+
+def api_exportacao_estado(job_id):
+    try:
+        _, dados = _estado_de(job_id)
+    except xc.JobInexistente:
+        return jsonify({'erro': 'exportacao nao encontrada'}), 404
+    return jsonify(dados)
+
+
+def api_exportacao_retomar(job_id):
+    """Refaz so as atividades com falha ou nao consultadas. As concluidas nao sao refeitas."""
+    try:
+        job = xc.obter_job(job_id)
+    except xc.JobInexistente:
+        return jsonify({'erro': 'exportacao nao encontrada'}), 404
+    if job.rodando:
+        return jsonify({'erro': 'exportacao ainda em andamento'}), 409
+    try:
+        xc.retomar_job(job)
+    except xc.JobEmAndamento:
+        return jsonify({'erro': 'exportacao ja em andamento'}), 409
+    return jsonify({'job_id': job.id, 'retomando': True}), 202
+
+
+def api_exportacao_download(job_id):
+    try:
+        job = xc.obter_job(job_id)
+    except xc.JobInexistente:
+        return jsonify({'erro': 'exportacao nao encontrada'}), 404
+    if job.rodando:
+        return jsonify({'erro': 'exportacao ainda em andamento'}), 409
+    if job.resumo()['pendentes']:
+        return jsonify({'erro': 'ha atividades nao consultadas; retome a exportacao primeiro'}), 409
+    caminho = os.path.join(job.dir, 'pacote.zip')
+    if not os.path.exists(caminho):
+        try:
+            caminho, _ = xc.montar_pacote(job)
+        except xc.JobEmAndamento:
+            return jsonify({'erro': 'exportacao ainda em andamento'}), 409
+    nome = f'pacote_completo_{job.id[:8]}.zip'
+    return send_file(caminho, mimetype='application/zip', as_attachment=True,
+                     download_name=nome)
+
+
 BODY = r"""
 <h1>Atividades</h1>
 <div class="sub" id="sub">A carregar...</div>
@@ -144,6 +229,7 @@ BODY = r"""
   <button id="btnPacote" type="button" title="Streams do banco local: reduzidos a ate 1500 pontos quando aplicavel, sem stream de tempo e sem unidades. Ver manifest.json no ZIP.">Exportar dados completos</button>
   <span class="sub">Streams locais: reduzidos (até 1500 pontos), sem tempo e sem unidades</span>
   <span class="sub" id="msgCsv"></span>
+  <span id="pacoteAcoes"></span>
 </div>
 <div class="count" id="count"></div>
 <div class="wrap"><table>
@@ -246,31 +332,63 @@ function exportarCsv(){
   .catch(function(e){msg.textContent='Erro: '+e.message;});
 }
 document.getElementById('btnCsv').onclick=exportarCsv;
+let pacoteJob=null, pacoteTimer=null;
+function pacoteMsg(txt){document.getElementById('msgCsv').textContent=txt;}
+function pacoteAcoes(){
+ const box=document.getElementById('pacoteAcoes'); box.innerHTML='';
+ return box;
+}
 function exportarPacote(){
- const msg=document.getElementById('msgCsv');
  const rows=filtrados();
- if(!rows.length){msg.textContent='Nenhuma atividade corresponde aos filtros.';return;}
+ if(!rows.length){pacoteMsg('Nenhuma atividade corresponde aos filtros.');return;}
  const filtros={search:document.getElementById('search').value,
    typeFilter:document.getElementById('typeFilter').value,
    tagFilter:document.getElementById('tagFilter').value,
    dtDe:document.getElementById('dtDe').value,dtAte:document.getElementById('dtAte').value};
- msg.textContent='A gerar pacote ('+rows.length+' atividades)...';
- fetch('/api/atividades/export.zip',{method:'POST',headers:{'Content-Type':'application/json'},
+ pacoteAcoes();
+ document.getElementById('btnPacote').disabled=true;
+ pacoteMsg('A iniciar exportação de '+rows.length+' atividades (chamadas à API, uma por atividade)...');
+ fetch('/api/exportacao/iniciar',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({ids:rows.map(r=>r.id),filtros:filtros})})
-  .then(function(res){
-   if(!res.ok)return res.json().then(function(j){throw new Error(j.mensagem||j.erro||('HTTP '+res.status));});
-   const m=/filename="([^"]+)"/.exec(res.headers.get('Content-Disposition')||'');
-   const nome=m?m[1]:'pacote_atividades.zip';
-   const erros=res.headers.get('X-Erros-Leitura')||'0';
-   const semS=res.headers.get('X-Sem-Streams')||'0';
-   return res.blob().then(function(b){return {b:b,nome:nome,erros:erros,semS:semS};});
-  })
-  .then(function(x){
-   const u=URL.createObjectURL(x.b);const a=document.createElement('a');
-   a.href=u;a.download=x.nome;document.body.appendChild(a);a.click();a.remove();
-   setTimeout(function(){URL.revokeObjectURL(u);},1000);
-   msg.textContent=rows.length+' atividades exportadas; sem streams locais: '+x.semS+'; erros de leitura: '+x.erros+'. Streams locais estão reduzidos a até 1500 pontos, sem tempo e sem unidades (ver manifest.json).';})
-  .catch(function(e){msg.textContent='Erro: '+e.message;});
+  .then(function(res){return res.json().then(function(j){
+     if(!res.ok)throw new Error(j.erro||('HTTP '+res.status));return j;});})
+  .then(function(j){pacoteJob=j.job_id;acompanharPacote();})
+  .catch(function(e){pacoteMsg('Erro: '+e.message);document.getElementById('btnPacote').disabled=false;});
+}
+function acompanharPacote(){
+ if(!pacoteJob)return;
+ fetch('/api/exportacao/'+pacoteJob+'/estado').then(function(r){return r.json();}).then(function(j){
+   const r=j.resumo;
+   pacoteMsg('Selecionadas: '+r.selecionadas+' · concluídas: '+r.concluidas+
+     ' (sem streams na fonte: '+r.sem_streams+') · com erro: '+r.erros+
+     ' · pendentes: '+r.pendentes+' · com fallback local (reduzido): '+r.com_fallback_local+
+     (r.rodando?' · em andamento...':''));
+   if(r.rodando){pacoteTimer=setTimeout(acompanharPacote,2000);return;}
+   document.getElementById('btnPacote').disabled=false;
+   const box=pacoteAcoes();
+   if(r.pendentes===0){
+     const a=document.createElement('a');
+     a.href='/api/exportacao/'+pacoteJob+'/download';a.textContent='Baixar pacote ZIP';
+     box.appendChild(a);
+   }
+   if(r.erros||r.pendentes){
+     const b=document.createElement('button');b.type='button';b.textContent='Retomar falhas ('+(r.erros+r.pendentes)+')';
+     b.onclick=function(){
+       fetch('/api/exportacao/'+pacoteJob+'/retomar',{method:'POST'})
+        .then(function(res){return res.json().then(function(x){if(!res.ok)throw new Error(x.erro);return x;});})
+        .then(function(){document.getElementById('btnPacote').disabled=true;acompanharPacote();})
+        .catch(function(e){pacoteMsg('Erro: '+e.message);});
+     };
+     box.appendChild(b);
+   }
+   pacoteMsg(pacoteMsgFinal(r));
+ }).catch(function(e){pacoteMsg('Erro ao consultar estado: '+e.message);});
+}
+function pacoteMsgFinal(r){
+ const base='Selecionadas: '+r.selecionadas+' · concluídas: '+r.concluidas+' · com erro: '+r.erros+' · pendentes: '+r.pendentes;
+ return r.completo_original
+   ? base+' · pacote com streams originais completos das atividades selecionadas.'
+   : base+' · pacote NÃO completo: há falhas, pendências ou streams reduzidos locais.';
 }
 document.getElementById('btnPacote').onclick=exportarPacote;
 ['search','dtDe','dtAte'].forEach(id=>document.getElementById(id).oninput=render);

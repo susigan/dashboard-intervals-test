@@ -664,6 +664,26 @@ def api_atividades_export_zip():
     return tab_atividades.api_export_pacote()
 
 
+@app.route('/api/exportacao/iniciar', methods=['POST'])
+def api_exportacao_iniciar():
+    return tab_atividades.api_exportacao_iniciar()
+
+
+@app.route('/api/exportacao/<job_id>/estado')
+def api_exportacao_estado(job_id):
+    return tab_atividades.api_exportacao_estado(job_id)
+
+
+@app.route('/api/exportacao/<job_id>/retomar', methods=['POST'])
+def api_exportacao_retomar(job_id):
+    return tab_atividades.api_exportacao_retomar(job_id)
+
+
+@app.route('/api/exportacao/<job_id>/download')
+def api_exportacao_download(job_id):
+    return tab_atividades.api_exportacao_download(job_id)
+
+
 @app.route('/api/activity/<activity_id>/full')
 def api_activity_full(activity_id):
     return tab_detalhe.api_full(activity_id)

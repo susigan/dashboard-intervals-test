@@ -8,6 +8,7 @@ que corre aqui.
 import csv
 import io
 import json
+import re
 from datetime import datetime
 
 
@@ -337,3 +338,328 @@ def indice():
         ],
         'tudo': '/api/export/tudo.json — todos num so ficheiro',
     }
+
+
+# ── exportacao completa das atividades (JSON bruto, uma linha por atividade) ──
+#
+# Diferente de atividades(): le o JSON original de cada atividade (a coluna
+# 'raw' do banco ou o dict da API), para que trimp, icu_training_load, RPE,
+# tags e campos personalizados cheguem ao CSV com o nome original.
+
+# Excluidos por regra, nunca gravados: campo fora de escopo do projeto (CAMPOS_EXCLUIDOS),
+# derivados gravados pelo app no proprio dict (_kj, _type_norm), metadados de
+# cliente OAuth e qualquer chave com nome de segredo.
+CAMPOS_EXCLUIDOS = frozenset({'CPR'})
+PREFIXOS_EXCLUIDOS = ('_', 'oauth_')
+SUBSTRINGS_SEGREDO = ('token', 'password', 'senha', 'secret', 'apikey', 'api_key',
+                      'authorization', 'cookie')
+
+# Colunas que aparecem primeiro, se existirem; o resto segue ordem alfabetica.
+COLUNAS_INICIAIS = ['id', 'start_date_local', 'start_date', 'type', 'name', 'source',
+                    'moving_time', 'elapsed_time', 'distance', 'icu_distance',
+                    'icu_training_load', 'trimp', 'icu_rpe', 'icu_joules',
+                    'icu_joules_above_ftp', 'average_heartrate', 'max_heartrate',
+                    'tags', 'icu_ftp', 'icu_pm_ftp', 'icu_athlete_id']
+
+_NUMERO = re.compile(r'^[+-]?(\d+([.,]\d*)?|[.,]\d+)([eE][+-]?\d+)?$')
+
+
+def campo_permitido(nome):
+    """True se a chave original pode ir para o CSV."""
+    if not isinstance(nome, str) or not nome:
+        return False
+    if nome in CAMPOS_EXCLUIDOS or nome.startswith(PREFIXOS_EXCLUIDOS):
+        return False
+    baixo = nome.lower()
+    return not any(s in baixo for s in SUBSTRINGS_SEGREDO)
+
+
+def _protege_formula(s):
+    """Texto que o Excel leria como formula recebe uma aspa simples na frente.
+    Numeros (inclusive com sinal) ficam como estao."""
+    cabeca = s.lstrip()
+    if cabeca[:1] in ('=', '+', '-', '@', '\t', '\r') and not _NUMERO.match(s.strip()):
+        return "'" + s
+    return s
+
+
+def celula(v):
+    """Valor JSON -> texto. None (ausente ou nulo) vira vazio; 0 continua '0'."""
+    if v is None:
+        return ''
+    if isinstance(v, bool):
+        return 'true' if v else 'false'
+    if isinstance(v, float):
+        return repr(v)
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, (list, dict)):
+        # estruturas: JSON compacto e estavel, por campo (nunca o registro inteiro)
+        return json.dumps(v, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    return _protege_formula(str(v))
+
+
+def _colunas(registros):
+    vistas = set()
+    for r in registros:
+        vistas.update(k for k in r if campo_permitido(k))
+    ini = [c for c in COLUNAS_INICIAIS if c in vistas]
+    resto = sorted((c for c in vistas if c not in ini), key=lambda c: c.casefold())
+    return ini + resto
+
+
+def atividades_csv(acts, ids=None):
+    """(bytes_csv, info) a partir dos dicts originais das atividades.
+
+    ids: lista de IDs (texto) a exportar, ou None para todas. A ordem das linhas
+    segue a ordem de 'acts'. IDs pedidos e nao encontrados vao para info['ids_ausentes'].
+    Vazio (sem linhas) devolve bytes vazios e info['n'] == 0; quem chama decide a resposta.
+    """
+    if ids is None:
+        escolhidos = list(acts)
+        ausentes = []
+    else:
+        pedidos = [str(i) for i in ids]
+        conjunto = set(pedidos)
+        escolhidos = [a for a in acts if str(a.get('id')) in conjunto]
+        achados = {str(a.get('id')) for a in escolhidos}
+        ausentes = [i for i in pedidos if i not in achados]
+    colunas = _colunas(escolhidos)
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator='\r\n', quoting=csv.QUOTE_MINIMAL)
+    w.writerow(colunas)
+    datas = []
+    for a in escolhidos:
+        w.writerow([celula(a.get(c)) if c in a else '' for c in colunas])
+        d = str(a.get('start_date_local') or '')[:10]
+        if len(d) == 10:
+            datas.append(d)
+    info = {'n': len(escolhidos), 'colunas': colunas, 'ids_ausentes': ausentes,
+            'de': min(datas) if datas else None, 'ate': max(datas) if datas else None}
+    if not escolhidos:
+        return b'', info
+    # BOM UTF-8: o Excel em portugues abre acentos corretamente
+    return buf.getvalue().encode('utf-8-sig'), info
+
+
+# ── pacote completo: atividades + streams (ZIP) ───────────────────────────
+# Streams sao lidos SO do banco local (db.get_streams). Nunca chamam a API:
+# a pagina de detalhe chama, mas so por atividade e sob clique. Aqui um pacote
+# teria dezenas ou centenas de chamadas, e isso nao foi autorizado.
+
+import hashlib
+import zipfile
+
+VERSAO_FORMATO_PACOTE = '1.0'
+LIMITE_ATIVIDADES_PACOTE = 300          # cada atividade pode trazer milhares de linhas de stream
+CAMPOS_DERIVADOS_APP = ('_kj', '_type_norm')   # gravados por tabs/tab_detalhe.py nos dicts em cache
+COLUNAS_STREAMS = ['activity_id', 'stream_key', 'stream_type', 'sensor_name',
+                   'sample_index', 'time_seconds', 'timestamp', 'value', 'unit',
+                   'pontos_originais', 'reduzido']
+FILTROS_PERMITIDOS = ('search', 'typeFilter', 'tagFilter', 'dtDe', 'dtAte')
+
+
+class LimitePacote(Exception):
+    """Pedido com mais atividades do que cabe num pacote. Nao trunca: recusa."""
+
+    def __init__(self, n):
+        super().__init__(n)
+        self.n = n
+
+
+def objeto_original(a):
+    """Objeto da API sem as chaves que o app acrescenta (comprovadas em tab_detalhe.py)
+    e sem campos fora da politica de exportacao (segredos, CPR)."""
+    return {k: v for k, v in a.items()
+            if k not in CAMPOS_DERIVADOS_APP and campo_permitido(k)}
+
+
+def _csv_bytes(linhas, colunas):
+    """CSV UTF-8 com BOM e CRLF, como o da aba. Celulas ja vem em texto (celula())."""
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=colunas, extrasaction='ignore',
+                       lineterminator='\r\n')
+    w.writeheader()
+    for r in linhas:
+        w.writerow({c: r.get(c, '') for c in colunas})
+    return ('﻿' + buf.getvalue()).encode('utf-8')
+
+
+def _linhas_streams(aid, streams, meta):
+    """Uma linha por amostra. Cada linha leva a chave do proprio stream: nada e
+    alinhado por posicao entre streams diferentes.
+
+    Tempo: so ha time_seconds quando existe um stream 'time' de mesmo comprimento
+    (associacao por indice dentro do MESMO stream e evidente nesse caso). Sem ele,
+    time_seconds fica vazio. Nunca se inventa tempo.
+    Devolve (linhas, estruturados): estruturados sao streams que nao cabem em CSV.
+    """
+    por_chave = {m.get('key'): m for m in (meta or []) if isinstance(m, dict)}
+    tempo = streams.get('time') if isinstance(streams.get('time'), list) else None
+    linhas, estruturados = [], {}
+    for chave, arr in streams.items():
+        m = por_chave.get(chave, {})
+        if not isinstance(arr, list) or any(isinstance(v, (list, dict)) for v in arr):
+            estruturados[chave] = arr
+            continue
+        pontos = m.get('points')
+        if isinstance(pontos, int) and not isinstance(pontos, bool):
+            reduzido = 'true' if pontos > len(arr) else 'false'
+        else:
+            reduzido = ''
+        usa_tempo = tempo is not None and len(tempo) == len(arr)
+        for i, v in enumerate(arr):
+            linhas.append({
+                'activity_id': celula(aid),
+                'stream_key': celula(chave),
+                'stream_type': celula(m.get('type') or chave),
+                'sensor_name': celula(m.get('sensor_name')),
+                'sample_index': i,
+                'time_seconds': celula(tempo[i]) if usa_tempo else '',
+                'timestamp': '',
+                'value': celula(v),
+                'unit': celula(m.get('unit')),
+                'pontos_originais': celula(pontos),
+                'reduzido': reduzido,
+            })
+    return linhas, estruturados
+
+
+def pacote_zip(acts, ids, buscar_streams, filtros=None, fonte_atividades=None,
+               banco_ativo=True, agora=None):
+    """ZIP com atividades.csv, atividades.jsonl, streams.csv, manifest.json
+    (+ streams_estruturados.json quando houver stream que nao cabe em CSV).
+
+    acts: atividades da mesma fonte que a tabela. ids: IDs escolhidos pelos filtros.
+    buscar_streams(aid) -> (streams, meta) ou (None, None). Leitura local apenas.
+    Devolve (bytes_zip, resumo). Levanta LimitePacote acima do limite; ValueError
+    quando nenhuma atividade pedida existe.
+    """
+    agora = agora or datetime.now().isoformat(timespec='seconds')
+    por_id = {str(a.get('id')): a for a in acts
+              if isinstance(a, dict) and a.get('id') is not None}
+
+    vistos, unicos, duplicados = set(), [], 0
+    for i in ids:
+        s = str(i)
+        if s in vistos:
+            duplicados += 1
+            continue
+        vistos.add(s)
+        unicos.append(s)
+    if len(unicos) > LIMITE_ATIVIDADES_PACOTE:
+        raise LimitePacote(len(unicos))
+
+    ausentes = [s for s in unicos if s not in por_id]
+    presentes = [s for s in unicos if s in por_id]
+    if not presentes:
+        raise ValueError('nenhuma atividade pedida existe na fonte local')
+    selecionadas = [por_id[s] for s in presentes]
+
+    csv_bytes, info_csv = atividades_csv(selecionadas, presentes)
+    jsonl_bytes = ''.join(
+        json.dumps(objeto_original(a), ensure_ascii=False, separators=(',', ':')) + '\n'
+        for a in selecionadas).encode('utf-8')
+
+    linhas, estruturados, por_atividade = [], {}, []
+    for s in presentes:
+        st = {'activity_id': s, 'status': None, 'erro': None,
+              'stream_tipos': [], 'amostras': 0, 'estruturados': []}
+        try:
+            streams, meta = buscar_streams(s)
+            if not streams:
+                st['status'] = 'sem_streams_locais'
+            else:
+                l, est = _linhas_streams(s, streams, meta)
+                linhas.extend(l)
+                if est:
+                    estruturados[s] = est
+                st.update(status='exportado', stream_tipos=sorted(streams.keys()),
+                          amostras=len(l), estruturados=sorted(est.keys()))
+        except Exception as e:  # erro registrado no manifesto, nunca silencioso
+            st.update(status='erro_leitura', erro=str(e)[:200])
+        por_atividade.append(st)
+
+    cobertura = {}
+    for l in linhas:
+        c = cobertura.setdefault(l['stream_type'], {'atividades': set(), 'amostras': 0})
+        c['atividades'].add(l['activity_id'])
+        c['amostras'] += 1
+    cobertura = {k: {'atividades': len(v['atividades']), 'amostras': v['amostras']}
+                 for k, v in sorted(cobertura.items())}
+
+    n_sem = sum(1 for p in por_atividade if p['status'] == 'sem_streams_locais')
+    n_erro = sum(1 for p in por_atividade if p['status'] == 'erro_leitura')
+    n_ok = sum(1 for p in por_atividade if p['status'] == 'exportado')
+    n_pares = sum(len(p['stream_tipos']) for p in por_atividade)
+
+    limitacoes = [
+        'Streams locais sao reduzidos a no maximo 1500 pontos por media '
+        '(api_client.parse_streams). Coluna reduzido=true indica a serie reduzida; '
+        'pontos_originais informa o comprimento original quando guardado.',
+        'O stream de tempo nao e guardado localmente: time_seconds e timestamp ficam vazios '
+        'salvo quando o pacote recebe um stream time com mesmo comprimento.',
+        'Unidades nao sao guardadas localmente: unit fica vazio salvo quando informado.',
+        'Streams sem valores numericos ou do tipo array nao sao guardados localmente; '
+        'a ausencia nao significa que o stream nao existe na fonte.',
+        f'Atividades sem streams locais: {n_sem}. Nao foram consultadas na API nesta exportacao.',
+        'CPR excluido por politica do projeto.',
+        'Campos _kj e _type_norm (derivados pelo app) removidos do JSON original.',
+    ]
+    if not banco_ativo:
+        limitacoes.append('Banco local nao habilitado: nenhum stream foi lido.')
+    if fonte_atividades != 'db':
+        limitacoes.append(f'Atividades vieram da fonte "{fonte_atividades}", '
+                          'nao do banco local: o pacote nao e apenas local.')
+    if duplicados:
+        limitacoes.append(f'{duplicados} IDs duplicados foram ignorados.')
+    if ausentes:
+        limitacoes.append(f'{len(ausentes)} IDs nao existem na fonte local e nao foram exportados.')
+
+    arquivos = {
+        'atividades.csv': csv_bytes,
+        'atividades.jsonl': jsonl_bytes,
+        'streams.csv': _csv_bytes(linhas, COLUNAS_STREAMS),
+    }
+    if estruturados:
+        arquivos['streams_estruturados.json'] = json.dumps(
+            estruturados, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+
+    manifest = {
+        'versao_formato': VERSAO_FORMATO_PACOTE,
+        'gerado_em': agora,
+        'filtros': filtros or {},
+        'atividades': {
+            'selecionadas': len(unicos), 'exportadas': len(presentes),
+            'com_streams': n_ok, 'sem_streams_locais': n_sem, 'com_erro_leitura': n_erro,
+            'ids_ausentes': ausentes, 'ids_duplicados': duplicados,
+        },
+        'streams': {
+            'pares_atividade_stream': n_pares, 'amostras_exportadas': len(linhas),
+            'cobertura_por_tipo': cobertura,
+            'estruturados_em_json': sorted(estruturados.keys()),
+        },
+        'por_atividade': por_atividade,
+        'fonte': {
+            'atividades': f'fonte "{fonte_atividades}" (mesma da tabela)',
+            'streams': 'banco local, tabela streams via db.get_streams; sem chamadas a API',
+        },
+        'sem_chamadas_externas': fonte_atividades == 'db',
+        'limitacoes': limitacoes,
+        'arquivos': [{'nome': n, 'bytes': len(b), 'sha256': hashlib.sha256(b).hexdigest()}
+                     for n, b in arquivos.items()],
+        'nota_integridade': 'manifest.json nao se inclui no proprio hash',
+    }
+    arquivos['manifest.json'] = json.dumps(manifest, ensure_ascii=False, indent=2).encode('utf-8')
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for nome in ['atividades.csv', 'atividades.jsonl', 'streams.csv',
+                     'streams_estruturados.json', 'manifest.json']:
+            if nome in arquivos:
+                z.writestr(nome, arquivos[nome])
+
+    resumo = {'n': len(presentes), 'de': info_csv['de'], 'ate': info_csv['ate'],
+              'ids_ausentes': ausentes, 'streams_amostras': len(linhas),
+              'sem_streams': n_sem, 'erros': n_erro}
+    return buf.getvalue(), resumo

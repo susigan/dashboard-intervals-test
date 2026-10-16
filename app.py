@@ -654,6 +654,16 @@ def api_atividades():
     return tab_atividades.api_data()
 
 
+@app.route('/api/atividades/export.csv', methods=['POST'])
+def api_atividades_export_csv():
+    return tab_atividades.api_export_csv()
+
+
+@app.route('/api/atividades/export.zip', methods=['POST'])
+def api_atividades_export_zip():
+    return tab_atividades.api_export_pacote()
+
+
 @app.route('/api/activity/<activity_id>/full')
 def api_activity_full(activity_id):
     return tab_detalhe.api_full(activity_id)

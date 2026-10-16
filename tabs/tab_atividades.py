@@ -1,7 +1,19 @@
 """Tab Atividades — lista completa, ordenavel e filtravel."""
 
-from flask import jsonify, request
-from api_client import fetch_activities, norm_tipo, num, kj_da_atividade
+from flask import Response, jsonify, request
+from api_client import fetch_activities, cache_info, norm_tipo, num, kj_da_atividade
+import re
+import export
+import db as _db
+
+_DATA_NOME = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def _intervalo_nome(de, ate):
+    """Parte do nome do arquivo: so datas validas AAAA-MM-DD entram no nome."""
+    if not (de and ate and _DATA_NOME.match(de) and _DATA_NOME.match(ate)):
+        return 'sem_data'
+    return de if de == ate else f'{de}_a_{ate}'
 from config import CORES_MOD
 from tabs.base import page
 
@@ -47,6 +59,77 @@ def api_data():
                     'tags': todas_tags, 'activities': out})
 
 
+LIMITE_IDS_CSV = 20000
+
+
+def api_export_csv():
+    """CSV das atividades pedidas pela aba: POST {"ids": [...]}.
+
+    Os IDs chegam ja filtrados pela propria tabela (funcao filtrados() da pagina),
+    por isso a exportacao usa exatamente os mesmos criterios, sem segunda copia.
+    """
+    corpo = request.get_json(silent=True)
+    ids = corpo.get('ids') if isinstance(corpo, dict) else None
+    if not isinstance(ids, list) or len(ids) > LIMITE_IDS_CSV or \
+            not all(isinstance(i, (str, int)) and not isinstance(i, bool) for i in ids):
+        return jsonify({'erro': 'pedido invalido: esperado {"ids": [...]}'}), 400
+    if not ids:
+        return jsonify({'status': 'vazio',
+                        'mensagem': 'Nenhuma atividade corresponde aos filtros.'}), 404
+    acts = fetch_activities()
+    if not acts:
+        return jsonify({'erro': 'sem atividades disponiveis'}), 503
+    conteudo, info = export.atividades_csv(acts, ids)
+    if info['n'] == 0:
+        return jsonify({'status': 'vazio',
+                        'mensagem': 'Nenhuma atividade corresponde aos filtros.'}), 404
+    nome = f"atividades_{_intervalo_nome(info['de'], info['ate'])}.csv"
+    cab = {'Content-Disposition': f'attachment; filename="{nome}"',
+           'X-Linhas': str(info['n']),
+           'X-Ids-Ausentes': str(len(info['ids_ausentes']))}
+    return Response(conteudo, mimetype='text/csv; charset=utf-8', headers=cab)
+
+
+def api_export_pacote():
+    """ZIP completo: atividades (CSV e JSONL), streams e manifesto.
+
+    POST {"ids": [...], "filtros": {...}}. Streams vem so do banco local; ver export.pacote_zip.
+    """
+    corpo = request.get_json(silent=True)
+    ids = corpo.get('ids') if isinstance(corpo, dict) else None
+    if not isinstance(ids, list) or len(ids) > LIMITE_IDS_CSV or \
+            not all(isinstance(i, (str, int)) and not isinstance(i, bool) for i in ids):
+        return jsonify({'erro': 'pedido invalido: esperado {"ids": [...]}'}), 400
+    if not ids:
+        return jsonify({'status': 'vazio',
+                        'mensagem': 'Nenhuma atividade corresponde aos filtros.'}), 404
+    bruto = corpo.get('filtros') if isinstance(corpo.get('filtros'), dict) else {}
+    filtros = {k: str(bruto.get(k, ''))[:200] for k in export.FILTROS_PERMITIDOS}
+    acts = fetch_activities()
+    if not acts:
+        return jsonify({'erro': 'sem atividades disponiveis'}), 503
+    try:
+        conteudo, res = export.pacote_zip(
+            acts, ids, _db.get_streams, filtros=filtros,
+            fonte_atividades=cache_info().get('fonte'), banco_ativo=_db.ENABLED)
+    except export.LimitePacote as e:
+        return jsonify({'status': 'limite',
+                        'mensagem': (f'Pacote limitado a {export.LIMITE_ATIVIDADES_PACOTE} '
+                                     f'atividades por arquivo ({e.n} selecionadas). '
+                                     'Restrinja os filtros, por exemplo por datas.')}), 413
+    except ValueError:
+        return jsonify({'status': 'vazio',
+                        'mensagem': 'Nenhuma atividade corresponde aos filtros.'}), 404
+    intervalo = _intervalo_nome(res['de'], res['ate'])
+    cab = {'Content-Disposition': f'attachment; filename="pacote_atividades_{intervalo}.zip"',
+           'X-Atividades': str(res['n']),
+           'X-Streams-Amostras': str(res['streams_amostras']),
+           'X-Sem-Streams': str(res['sem_streams']),
+           'X-Erros-Leitura': str(res['erros']),
+           'X-Ids-Ausentes': str(len(res['ids_ausentes']))}
+    return Response(conteudo, mimetype='application/zip', headers=cab)
+
+
 BODY = r"""
 <h1>Atividades</h1>
 <div class="sub" id="sub">A carregar...</div>
@@ -57,6 +140,10 @@ BODY = r"""
   <label class="sel">De <input id="dtDe" type="date" style="min-width:auto"></label>
   <label class="sel">Ate <input id="dtAte" type="date" style="min-width:auto"></label>
   <a href="/api/atividades" target="_blank">JSON</a>
+  <button id="btnCsv" type="button">Exportar CSV</button>
+  <button id="btnPacote" type="button" title="Streams do banco local: reduzidos a ate 1500 pontos quando aplicavel, sem stream de tempo e sem unidades. Ver manifest.json no ZIP.">Exportar dados completos</button>
+  <span class="sub">Streams locais: reduzidos (até 1500 pontos), sem tempo e sem unidades</span>
+  <span class="sub" id="msgCsv"></span>
 </div>
 <div class="count" id="count"></div>
 <div class="wrap"><table>
@@ -138,6 +225,54 @@ async function load(){
  }
  render();
 }
+function exportarCsv(){
+ const msg=document.getElementById('msgCsv');
+ const rows=filtrados();
+ if(!rows.length){msg.textContent='Nenhuma atividade corresponde aos filtros.';return;}
+ msg.textContent='A gerar CSV ('+rows.length+')...';
+ fetch('/api/atividades/export.csv',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({ids:rows.map(r=>r.id)})})
+  .then(function(res){
+   if(!res.ok)return res.json().then(function(j){throw new Error(j.mensagem||j.erro||('HTTP '+res.status));});
+   const m=/filename="([^"]+)"/.exec(res.headers.get('Content-Disposition')||'');
+   const nome=m?m[1]:'atividades.csv';
+   return res.blob().then(function(b){return {b:b,nome:nome};});
+  })
+  .then(function(x){
+   const u=URL.createObjectURL(x.b);const a=document.createElement('a');
+   a.href=u;a.download=x.nome;document.body.appendChild(a);a.click();a.remove();
+   setTimeout(function(){URL.revokeObjectURL(u);},1000);
+   msg.textContent=rows.length+' atividades exportadas';})
+  .catch(function(e){msg.textContent='Erro: '+e.message;});
+}
+document.getElementById('btnCsv').onclick=exportarCsv;
+function exportarPacote(){
+ const msg=document.getElementById('msgCsv');
+ const rows=filtrados();
+ if(!rows.length){msg.textContent='Nenhuma atividade corresponde aos filtros.';return;}
+ const filtros={search:document.getElementById('search').value,
+   typeFilter:document.getElementById('typeFilter').value,
+   tagFilter:document.getElementById('tagFilter').value,
+   dtDe:document.getElementById('dtDe').value,dtAte:document.getElementById('dtAte').value};
+ msg.textContent='A gerar pacote ('+rows.length+' atividades)...';
+ fetch('/api/atividades/export.zip',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({ids:rows.map(r=>r.id),filtros:filtros})})
+  .then(function(res){
+   if(!res.ok)return res.json().then(function(j){throw new Error(j.mensagem||j.erro||('HTTP '+res.status));});
+   const m=/filename="([^"]+)"/.exec(res.headers.get('Content-Disposition')||'');
+   const nome=m?m[1]:'pacote_atividades.zip';
+   const erros=res.headers.get('X-Erros-Leitura')||'0';
+   const semS=res.headers.get('X-Sem-Streams')||'0';
+   return res.blob().then(function(b){return {b:b,nome:nome,erros:erros,semS:semS};});
+  })
+  .then(function(x){
+   const u=URL.createObjectURL(x.b);const a=document.createElement('a');
+   a.href=u;a.download=x.nome;document.body.appendChild(a);a.click();a.remove();
+   setTimeout(function(){URL.revokeObjectURL(u);},1000);
+   msg.textContent=rows.length+' atividades exportadas; sem streams locais: '+x.semS+'; erros de leitura: '+x.erros+'. Streams locais estão reduzidos a até 1500 pontos, sem tempo e sem unidades (ver manifest.json).';})
+  .catch(function(e){msg.textContent='Erro: '+e.message;});
+}
+document.getElementById('btnPacote').onclick=exportarPacote;
 ['search','dtDe','dtAte'].forEach(id=>document.getElementById(id).oninput=render);
 ['typeFilter','tagFilter'].forEach(id=>document.getElementById(id).onchange=render);
 load();

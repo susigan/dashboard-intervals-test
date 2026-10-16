@@ -1,0 +1,7 @@
+﻿id,start_date_local,start_date,type,name,source,moving_time,elapsed_time,distance,icu_training_load,trimp,icu_rpe,icu_joules,average_heartrate,max_heartrate,tags,Aerobic,SS,sub_type,telefone_fic
+i100001,2024-03-10T07:00:00,2024-03-10T06:00:00Z,VirtualRide,"Treino ""Limiar"", série 2
+linha dois",ZWIFT,3600,3700,,0,0.0,5,123400.0,150,170,"[""Lactato""]",12.5,0.0,,
+i100002,2024-03-11T06:30:00,,Run,"'=HYPERLINK(""http://exemplo.invalido"",""clique"")",,2400,,,44,47.39868,,,,,,,,,
+i100003,2024-05-02T18:00:00,,WeightTraining,"'-- Força, ação",,1800,,,20,,,,,,"[""a|b"",""Teste""]",,,,'+00 000 000 000
+i100004,2025-01-15T09:00:00,,AlpineSki,"Ski ""São Bento"" 1º dia",,5400,,,37,,,,,,,,,,
+i100005,2025-06-30T05:45:00,,Rowing,Remo ☃ ok,,2000,,5000.0,30,,,,,,,,,,

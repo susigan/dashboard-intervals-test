@@ -221,6 +221,44 @@ def init_schema():
         erro          TEXT,
         criado_em     {ts}
     )""")
+
+    # Fase 1 do modelo progressivo: registo AUDITAVEL de testes de performance.
+    # Append-only: cada decisao e uma revisao nova do mesmo test_id; o estado
+    # atual e a ultima revisao. Sem FK para activities/power_curves de proposito:
+    # um re-sync (ou recriar_power_curves) nunca toca neste registo.
+    # Ver modelo_testes.py e docs/modelo_testes_contrato.md.
+    _exec(f"""CREATE TABLE IF NOT EXISTS modelo_testes_revisoes (
+        test_id        TEXT NOT NULL,
+        revisao        INTEGER NOT NULL,
+        evento         TEXT NOT NULL CHECK (evento IN
+                         ('confirmacao','rejeicao','invalidacao','reconfirmacao')),
+        estado         TEXT NOT NULL CHECK (estado IN ('confirmado','rejeitado')),
+        estado_anterior TEXT,
+        modalidade     TEXT NOT NULL,
+        duracao_s      INTEGER NOT NULL,
+        activity_id    TEXT NOT NULL,
+        data           DATE,
+        hora_local     TEXT,
+        watts          DOUBLE PRECISION NOT NULL,
+        pct_do_melhor  DOUBLE PRECISION,
+        melhor_recente DOUBLE PRECISION,
+        deteccao       {jsn},
+        elegibilidade  TEXT NOT NULL,
+        motivo_elegibilidade TEXT,
+        icu_ignore_power INTEGER,
+        aceita_elegibilidade_desconhecida INTEGER NOT NULL DEFAULT 0,
+        metodo_confirmacao TEXT NOT NULL,
+        motivo         TEXT NOT NULL,
+        responsavel    TEXT,
+        origem_registo TEXT NOT NULL,
+        versao_contrato INTEGER NOT NULL,
+        registado_em   {ts} NOT NULL,
+        revisado_em    {ts} NOT NULL,
+        confirmado_em  {ts},
+        PRIMARY KEY (test_id, revisao)
+    )""")
+    _exec("CREATE INDEX IF NOT EXISTS ix_mtr_mod_dur "
+          "ON modelo_testes_revisoes(modalidade, duracao_s)")
     return True
 
 
@@ -1120,3 +1158,130 @@ def kj_por_zona_real(tipo=None):
                    'z1': float(r[2] or 0), 'z2': float(r[3] or 0),
                    'z3': float(r[4] or 0)}
             for r in rows}
+
+
+# ── registo de testes de performance (Fase 1 do modelo progressivo) ──────────
+# Append-only. Nao ha UPDATE nem DELETE neste modulo para esta tabela: corrigir
+# ou invalidar um teste e inserir uma revisao nova. Nada aqui alimenta calculos.
+
+class ConflitoRevisao(Exception):
+    """A revisao ja existe: outro pedido registou a mesma decisao entretanto."""
+
+
+_COLS_REVISAO = ['test_id', 'revisao', 'evento', 'estado', 'estado_anterior',
+                 'modalidade', 'duracao_s', 'activity_id', 'data', 'hora_local',
+                 'watts', 'pct_do_melhor', 'melhor_recente', 'deteccao',
+                 'elegibilidade', 'motivo_elegibilidade', 'icu_ignore_power',
+                 'aceita_elegibilidade_desconhecida', 'metodo_confirmacao',
+                 'motivo', 'responsavel', 'origem_registo', 'versao_contrato',
+                 'registado_em', 'revisado_em', 'confirmado_em']
+_SEL_REVISAO = ', '.join(f'r.{c}' for c in _COLS_REVISAO)
+
+
+def _iso(v):
+    if v is None:
+        return None
+    return v.isoformat() if hasattr(v, 'isoformat') else str(v)
+
+
+def _revisao_de_linha(linha):
+    r = dict(zip(_COLS_REVISAO, linha))
+    r['data'] = str(r['data'])[:10] if r['data'] is not None else None
+    det = r['deteccao']
+    if isinstance(det, str):
+        try:
+            det = json.loads(det)
+        except ValueError:
+            det = None
+    r['deteccao'] = det
+    for k in ('registado_em', 'revisado_em', 'confirmado_em'):
+        r[k] = _iso(r[k])
+    r['aceita_elegibilidade_desconhecida'] = bool(r['aceita_elegibilidade_desconhecida'])
+    if r['icu_ignore_power'] is not None:
+        r['icu_ignore_power'] = bool(r['icu_ignore_power'])
+    return r
+
+
+def ultima_revisao_teste(test_id):
+    """Ultima revisao gravada de um teste, ou None."""
+    if not ENABLED:
+        return None
+    linha = _exec(f"""SELECT {_SEL_REVISAO} FROM modelo_testes_revisoes r
+                      WHERE r.test_id = ? ORDER BY r.revisao DESC LIMIT 1""",
+                  (test_id,), fetch='one')
+    return _revisao_de_linha(linha) if linha else None
+
+
+def inserir_revisao_teste(rev):
+    """Insere UMA revisao (um unico INSERT: atomico nos dois drivers).
+
+    Levanta ConflitoRevisao se (test_id, revisao) ja existir. Nunca atualiza.
+    """
+    if not ENABLED:
+        raise RuntimeError('sem base de dados')
+    valores = []
+    for c in _COLS_REVISAO:
+        v = rev.get(c)
+        if c == 'deteccao':
+            v = json.dumps(v, ensure_ascii=False) if v is not None else None
+        elif c in ('registado_em', 'revisado_em', 'confirmado_em'):
+            v = _dt(v)
+        elif c == 'icu_ignore_power':
+            v = None if v is None else int(bool(v))
+        elif c == 'aceita_elegibilidade_desconhecida':
+            v = int(bool(v))
+        valores.append(v)
+    sql = (f"INSERT INTO modelo_testes_revisoes ({', '.join(_COLS_REVISAO)}) "
+           f"VALUES ({', '.join('?' * len(_COLS_REVISAO))})")
+    try:
+        _exec(sql, tuple(valores))
+    except Exception:
+        ult = ultima_revisao_teste(rev['test_id'])
+        if ult and ult['revisao'] >= rev['revisao']:
+            raise ConflitoRevisao(f"{rev['test_id']} ja tem a revisao {ult['revisao']}")
+        raise
+    return True
+
+
+def testes_modelo_atuais(tipo=None, duracao=None, estado=None):
+    """Estado atual (ultima revisao) de cada teste registado, filtravel."""
+    if not ENABLED:
+        return []
+    cond, params = [], []
+    if tipo:
+        cond.append("r.modalidade = ?")
+        params.append(tipo)
+    if duracao is not None:
+        cond.append("r.duracao_s = ?")
+        params.append(int(duracao))
+    if estado:
+        cond.append("r.estado = ?")
+        params.append(estado)
+    where = (" AND " + " AND ".join(cond)) if cond else ""
+    rows = _exec(f"""SELECT {_SEL_REVISAO} FROM modelo_testes_revisoes r
+                     WHERE r.revisao = (SELECT MAX(x.revisao) FROM modelo_testes_revisoes x
+                                        WHERE x.test_id = r.test_id){where}
+                     ORDER BY r.modalidade, r.duracao_s, r.data, r.test_id""",
+                 tuple(params), fetch='all') or []
+    return [_revisao_de_linha(l) for l in rows]
+
+
+def revisoes_testes_modelo(test_id=None, tipo=None, duracao=None):
+    """Historico completo (todas as revisoes), por teste, modalidade e/ou duracao."""
+    if not ENABLED:
+        return []
+    cond, params = [], []
+    if test_id:
+        cond.append("r.test_id = ?")
+        params.append(test_id)
+    if tipo:
+        cond.append("r.modalidade = ?")
+        params.append(tipo)
+    if duracao is not None:
+        cond.append("r.duracao_s = ?")
+        params.append(int(duracao))
+    where = ("WHERE " + " AND ".join(cond)) if cond else ""
+    rows = _exec(f"""SELECT {_SEL_REVISAO} FROM modelo_testes_revisoes r {where}
+                     ORDER BY r.modalidade, r.duracao_s, r.data, r.test_id, r.revisao""",
+                 tuple(params), fetch='all') or []
+    return [_revisao_de_linha(l) for l in rows]

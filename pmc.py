@@ -1233,7 +1233,7 @@ def teste_eventos(sessoes, wellness, serie_classica, modalidades, desde=None):
 
 
 def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
-                        minimo_testes=25):
+                        minimo_testes=25, atividades=None):
     """Calibra contra os dias de esforco maximo, nao contra a CP de todas as
     sessoes.
 
@@ -1241,6 +1241,15 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
     suave, nao porque estas pior — isso e ruido a afogar o sinal. Nos dias
     de esforco maximo a CP mede capacidade, e o estimulo foi decidido pelo
     esforco e nao pelo estado, o que reduz a causalidade invertida.
+
+    atividades: dicts originais da API (activities.raw). Servem para marcar a
+    elegibilidade de cada esforco. So entram na serie de calibracao os que tem
+    icu_ignore_power=false (explicito). Ficam de fora: icu_ignore_power=true
+    (inelegivel) e elegibilidade desconhecida (atividades indisponiveis, campo
+    ausente/None, atividade nao encontrada) — "nao validado para este uso",
+    nao "invalido". Continuam detetados e contados na deteccao e nos
+    relatorios; o resultado diz quantos ficaram fora e porque. Se sobrar menos
+    do minimo, devolve 'insuficiente' sem simular calibracao.
     """
     import numpy as np
     import calibracao as _cal
@@ -1256,16 +1265,37 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
     carga_total = np.array([d['load'] for d in serie_classica], dtype=np.float64)
 
     out = {'duracao': secs, 'por_modalidade': {}}
+    mapa = _prot.mapa_ignore_power(atividades)
     for mod in modalidades:
         curvas = db.load_power_curves(mod)
         if not curvas:
             continue
-        det = _prot.detectar_testes(curvas)
-        ancora = _prot.serie_ancora(det, mod, secs)
+        det = _prot.anotar_elegibilidade(_prot.detectar_testes(curvas), mapa)
+        ancora = _prot.serie_ancora(det, mod, secs, somente_elegiveis=True)
+        d_dur = (det.get(mod) or {}).get(secs) or {}
+        elegib = {
+            'n_testes_detetados': d_dur.get('n_testes', 0),
+            'n_testes_elegiveis': d_dur.get('n_elegiveis_calibracao', 0),
+            'n_testes_inelegiveis': d_dur.get('n_inelegiveis_calibracao', 0),
+            'n_testes_desconhecidos': d_dur.get('n_desconhecidos_calibracao', 0),
+            # True = nenhuma observacao detetada ficou com elegibilidade desconhecida
+            'elegibilidade_validada': d_dur.get('n_desconhecidos_calibracao', 0) == 0,
+        }
+        nota_el = ''
+        if elegib['n_testes_inelegiveis']:
+            nota_el += (f" {elegib['n_testes_inelegiveis']} excluido(s) por "
+                        f"{_prot.CRITERIO_ELEGIBILIDADE}.")
+        if elegib['n_testes_desconhecidos']:
+            nota_el += (f" {elegib['n_testes_desconhecidos']} com elegibilidade "
+                        'desconhecida (nao validada para este uso), excluidos '
+                        'da calibracao.')
         if len(ancora) < minimo_testes:
             out['por_modalidade'][mod] = {
-                'n_testes': len(ancora),
-                'motivo': f'so {len(ancora)} testes (precisa de {minimo_testes})'}
+                'n_testes': len(ancora), **elegib,
+                'fonte': 'insuficiente', 'calibrado': False,
+                'lag_referencia': None,
+                'motivo': (f'so {len(ancora)} testes elegiveis (precisa de '
+                           f'{minimo_testes})' + (f';{nota_el}' if nota_el else ''))}
             continue
 
         alvo = np.full(n, np.nan)
@@ -1278,9 +1308,17 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
         r = _cal.calibrar_lag(carga_total, alvo, range(5, 29), None, 'lag_super')
         primeiro = ancora[0]['date']
         ultimo = ancora[-1]['date']
+        # origem do lag: 'dados' = estimado a partir das ancoras; 'referencia' =
+        # valor de referencia usado porque nada foi estimado (nao e calibracao).
+        # `lag` mantem o contrato anterior (inclui o de referencia).
+        fonte = r.get('fonte') or 'referencia'
         out['por_modalidade'][mod] = {
-            'n_testes': len(ancora),
+            'n_testes': len(ancora), **elegib,
+            'efeito_elegibilidade': nota_el.strip() or None,
             'de': primeiro, 'ate': ultimo,
+            'fonte': fonte, 'calibrado': fonte == 'dados',
+            'motivo': r.get('motivo'),
+            'lag_referencia': r.get('valor') if fonte == 'referencia' else None,
             'lag': r.get('valor'), 'r': r.get('r'), 'r2': r.get('r2'),
             'forca': r.get('forca'),
             'p_permutacao': r.get('p_permutacao'),
@@ -1292,6 +1330,10 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
     validos = [(m, v) for m, v in out['por_modalidade'].items()
                if v.get('sobrevive')]
     out['sobrevivem'] = [m for m, _ in validos]
+    out['calibradas'] = [m for m, v in out['por_modalidade'].items()
+                         if v.get('calibrado')]
+    out['em_referencia'] = [m for m, v in out['por_modalidade'].items()
+                            if v.get('fonte') == 'referencia']
     if validos:
         m, v = max(validos, key=lambda x: x[1].get('r2') or 0)
         out['leitura'] = (
@@ -1304,6 +1346,23 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
             'usando so os dias de esforco maximo. Com esta ancora — que e a '
             'melhor disponivel — continua sem haver relacao detectavel entre '
             'carga e performance.')
+    desc = sum(v.get('n_testes_desconhecidos', 0) for v in out['por_modalidade'].values())
+    inel = sum(v.get('n_testes_inelegiveis', 0) for v in out['por_modalidade'].values())
+    out['elegibilidade'] = {
+        'criterio': _prot.CRITERIO_ELEGIBILIDADE,
+        'inelegiveis_excluidos': inel, 'desconhecidos_excluidos': desc,
+        'validada_em_todas': desc == 0}
+    if inel:
+        out['leitura'] += (f' {inel} esforco(s) excluido(s) da serie por '
+                           f'{_prot.CRITERIO_ELEGIBILIDADE}.')
+    if desc:
+        out['leitura'] += (f' Elegibilidade desconhecida em {desc} esforco(s): '
+                           'excluidos da calibracao (nao validados para este uso).')
+    if out['em_referencia']:
+        out['leitura'] += (
+            ' Em ' + ', '.join(out['em_referencia']) + ' o lag mostrado e o '
+            'de referencia (nenhum lag foi estimado a partir dos dados), nao '
+            'uma calibracao.')
     return out
 
 

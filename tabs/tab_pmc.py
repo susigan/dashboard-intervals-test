@@ -424,7 +424,7 @@ def api_calibracao_dados():
     try:
         # a CP de um teste de 2022 e comparavel com a de 2026, ao contrario
         # do HRV — por isso aqui usa-se o historico completo
-        ancora = pmc.calibrar_com_ancora(serie, CICLICOS)
+        ancora = pmc.calibrar_com_ancora(serie, CICLICOS, atividades=acts)
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -662,8 +662,8 @@ BODY = r"""
 <h1>PMC — Performance Management Chart</h1>
 <div class="sub" id="sub">A carregar...</div>
 <div id="sugestoesTeste"></div>
-
-<div id="sugestoesTeste"></div>
+<details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Registo de testes de performance (opcional)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
+<details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
 <div id="faseCard"></div>
@@ -2132,68 +2132,22 @@ function drawLoad(comb,PL,PR,X){
  g.fillStyle='#8b949e';g.font='10px sans-serif';
  g.fillText('Carga por modalidade',PL+4,PT+10);
 }
-// Sugestoes de teste, por modalidade. Cada uma desaparece sozinha assim que
-// fizeres um esforco perto do maximo nessa duracao — nao ha nada a marcar.
-async function carregarSugestoes(){
- let P;
- try{ P=await fetch('/api/protocolo').then(r=>r.json()); }
- catch(e){ return; }
- const el=document.getElementById('sugestoesTeste');
- if(!el)return;
- const sug=P.sugestoes||[];
- const cov=(P.cobertura||{}).por_modalidade||{};
-
- // uma sugestao por modalidade: a mais atrasada
- const porMod={};
- sug.forEach(function(s){
-  if(!porMod[s.modalidade]||s.atraso_dias>porMod[s.modalidade].atraso_dias)
-   porMod[s.modalidade]=s;});
- const mods=Object.keys(porMod);
-
- if(!mods.length){
-  el.innerHTML='<div style="border-left:3px solid #2ECC71;background:#161b22;'+
-   'padding:10px 14px;border-radius:0 6px 6px 0;margin-bottom:14px;font-size:13px">'+
-   '<b>Testes em dia</b> — todas as modalidades tem esforcos maximos recentes.</div>';
-  return;}
-
- const linhas=mods.map(function(m){
-  const s=porMod[m];
-  const cor=s.urgencia==='alta'?'#E74C3C':'#E67E22';
-  // quantos pontos-ancora ja existem nessa modalidade
-  const c=cov[m]||{};
-  const n=(c[s.nome]||{}).n;
-  return '<tr><td style="color:'+((D&&D.cores||{})[m]||'#e6e6e6')+'">'+m+'</td>'+
-   '<td><b>'+s.nome+'</b><br><span style="font-size:11px;color:#8b949e">'+
-    s.mede+'</span></td>'+
-   '<td class="num" style="color:'+cor+'">'+s.dias_desde_ultimo+'d</td>'+
-   '<td class="num">'+Math.round(s.ultimo_valor)+' W<br>'+
-    '<span style="font-size:11px;color:#8b949e">'+s.ultima_data+'</span></td>'+
-   '<td class="num">'+(n!=null?n:'—')+'</td></tr>';}).join('');
-
- el.innerHTML=
-  '<details class="expl" open style="border-left:3px solid #E67E22">'+
-  '<summary>Testes sugeridos ('+mods.length+' modalidades)</summary>'+
-  '<div class="expl-corpo">'+
-  '<p>Nao e preciso marcar nada nem fazer um teste formal. Uma prova, um bloco '+
-  'de intervalos duro ou uma saida em grupo contam — basta ires perto do '+
-  'maximo nessa duracao. A sugestao desaparece sozinha quando isso acontecer.</p>'+
-  '<p class="nota">Cada esforco maximo acrescenta um ponto-ancora. Sao esses '+
-  'pontos que permitem calibrar o modelo aos teus dados em vez de usar valores '+
-  'de outros atletas — e a coluna da direita mostra quantos ja tens.</p>'+
-  '<div class="wrap"><table><thead><tr>'+
-  ['Modalidade','Teste','Desde o ultimo','Ultimo valor','Pontos-ancora']
-   .map((c,i)=>'<th class="'+(i>1?'num':'')+'">'+c+'</th>').join('')+
-  '</tr></thead><tbody>'+linhas+'</tbody></table></div>'+
-  '</div></details>';
-}
-
 // ─── Testes sugeridos ───────────────────────────────────────────────────
 // O painel sai dos dados: cada esforco maximo e detectado sozinho, por isso
 // a sugestao desaparece quando o teste for feito. Nada para marcar a mao.
+// Um unico pedido a /api/protocolo por carregamento (carregarSugestoes, chamada
+// no fim do script); a apresentacao (mostrarSugestoes) so le SUG e pode correr
+// de novo sem pedir nada — load() chama-a quando D ja existe, para recolorir.
+// Assim as sugestoes nao dependem de /api/pmc (falha ou demora).
+let SUG=null;
 async function carregarSugestoes(){
- let d;
- try{ d=await fetch('/api/protocolo').then(r=>r.json()); }
+ try{ SUG=await fetch('/api/protocolo').then(r=>r.json()); }
  catch(e){ return; }
+ mostrarSugestoes();
+}
+function mostrarSugestoes(){
+ const d=SUG;
+ if(!d)return;
  const sug=d.sugestoes||[];
  const el=document.getElementById('sugestoesTeste');
  if(!el)return;
@@ -2218,7 +2172,7 @@ async function carregarSugestoes(){
   // quantos testes ja existem nessa duracao
   let n='';
   const c=(cov[m]||{})[s.nome];
-  if(c)n=c.n+' feitos';
+  if(c)n=c.n+' esforcos detetados';
   return '<div style="flex:1;min-width:190px;background:#161b22;border:1px solid '+
    (urgente?'#E67E22':'#30363d')+';border-radius:8px;padding:10px 13px">'+
    '<div style="color:'+cor+';font-weight:600;font-size:13px">'+m+'</div>'+
@@ -2233,13 +2187,191 @@ async function carregarSugestoes(){
  el.innerHTML='<details class="expl" open style="margin:10px 0"><summary>'+
   'Testes sugeridos ('+Object.keys(porMod).length+' modalidades)</summary>'+
   '<div class="expl-corpo">'+
-  '<p style="font-size:13px">Estes esforcos alimentam a calibracao. Nao sao '+
-  'obrigatorios e nao ha nada para marcar: uma prova, um bloco de intervalos '+
+  '<p style="font-size:13px">Estes esforcos produzem hoje um diagnostico '+
+  '(se a carga explica a performance) e nao atualizam os parametros do '+
+  'modelo. Nao sao obrigatorios e nao ha nada para marcar: uma prova, um bloco de intervalos '+
   'duro ou uma saida forte contam, desde que chegues perto do teu maximo '+
   'nessa duracao. A sugestao desaparece sozinha quando acontecer.</p>'+
   '<div style="display:flex;gap:10px;flex-wrap:wrap">'+cartoes+'</div>'+
   '</div></details>';
 }
+
+// <<registo-testes>>
+// ─── Registo de testes de performance (Fase 1 do modelo progressivo) ──────
+// So regista e consulta. Confirmar um teste NAO calibra nem atualiza o modelo.
+// A lista so e pedida quando o painel e aberto (nunca ao carregar a pagina) e
+// nenhuma decisao e tomada sem um clique explicito e um motivo escrito.
+let REG=null, REG_CARREGADO=false, REG_FILTRO={mod:'',dur:'',est:''}, REG_ABRIR=null, REG_MSG='';
+const REG_MAX=40;
+function regEsc(s){
+ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function regBadge(txt,cor,titulo){
+ return '<span title="'+regEsc(titulo||'')+'" style="display:inline-block;padding:1px 7px;'+
+  'border-radius:10px;font-size:11px;border:1px solid '+cor+';color:'+cor+'">'+regEsc(txt)+'</span>';}
+function regBadgeElegibilidade(e){
+ if(e==='elegivel')return regBadge('elegivel','#2ECC71','icu_ignore_power=false (explicito)');
+ if(e==='inelegivel')return regBadge('inelegivel','#E74C3C','icu_ignore_power=true: potencia ignorada');
+ return regBadge('elegibilidade desconhecida','#E67E22',
+  'icu_ignore_power ausente ou atividade nao encontrada; nao e tratada como elegivel');}
+function regBadgeEstado(e){
+ if(e==='confirmado')return regBadge('confirmado','#2ECC71','confirmado explicitamente');
+ if(e==='rejeitado')return regBadge('rejeitado','#8b949e','rejeitado explicitamente');
+ return regBadge('detetado, sem decisao','#58a6ff','detetado automaticamente; nada foi decidido');}
+function regLista(){
+ const l=(REG&&REG.candidatos)||[];
+ const f=REG_FILTRO;
+ return l.map(function(c,i){return {c:c,i:i};}).filter(function(x){
+  return (!f.mod||x.c.modalidade===f.mod)&&(!f.dur||String(x.c.duracao_s)===f.dur)&&
+   (!f.est||x.c.estado_registo===f.est);
+ }).sort(function(a,b){return a.c.data<b.c.data?1:(a.c.data>b.c.data?-1:0);});}
+function regFormulario(c){
+ const dec=REG_ABRIR.dec, verbo=dec==='confirmar'?'Confirmar':'Rejeitar';
+ const optin=(dec==='confirmar'&&c.requer_aceitar_elegibilidade_desconhecida)?
+  '<label style="display:block;font-size:12px;margin:6px 0"><input type="checkbox" id="regOptin"> '+
+  'Aceito que a elegibilidade (icu_ignore_power) e desconhecida e confirmo mesmo assim. '+
+  'Continua registada como desconhecida.</label>':'';
+ return '<tr><td colspan="8" style="background:#0d1117;padding:10px 12px">'+
+  '<div style="font-size:13px;margin-bottom:4px"><b>'+verbo+'</b> '+regEsc(c.modalidade)+' '+
+  regEsc(c.duracao_s)+' s de '+regEsc(c.data)+' ('+Math.round(c.watts)+' W, atividade '+
+  regEsc(c.activity_id)+')</div>'+
+  '<textarea id="regMotivo" rows="2" maxlength="500" placeholder="Motivo (obrigatorio)" '+
+  'style="width:100%;max-width:560px;background:#161b22;color:#c9d1d9;border:1px solid #30363d;'+
+  'border-radius:6px;padding:6px"></textarea>'+optin+
+  '<div style="margin-top:6px"><button type="button" onclick="regEnviar()">Registar '+
+  (dec==='confirmar'?'confirmacao':'rejeicao')+'</button> '+
+  '<button type="button" onclick="regCancelar()">Cancelar</button></div></td></tr>';}
+function regAcoes(c,i){
+ const b=function(rot,dec,off,tip){
+  return '<button type="button" '+(off?'disabled ':'')+'title="'+regEsc(tip||'')+'" '+
+   'onclick="regAbrir('+i+',\''+dec+'\')">'+rot+'</button> ';};
+ const tipC=c.motivo_nao_confirmavel||c.aviso_elegibilidade||'';
+ if(c.estado_registo==='confirmado')return b('Invalidar (rejeitar)','rejeitar',false,'cria uma revisao nova; o historico fica');
+ if(c.estado_registo==='rejeitado')return b('Reconfirmar','confirmar',!c.confirmavel,tipC);
+ return b('Confirmar','confirmar',!c.confirmavel,tipC)+b('Rejeitar','rejeitar',false,'');}
+function htmlRegisto(d){
+ if(!d||d.status!=='OK'||!Array.isArray(d.candidatos))
+  return '<p class="sub">Nao foi possivel carregar os candidatos.</p>';
+ if(d.persistencia===false)
+  return '<p class="sub">Sem base de dados: o registo nao pode ser gravado.</p>';
+ const mods=Array.from(new Set(d.candidatos.map(function(c){return c.modalidade;})));
+ const sel=function(id,chave,vals){
+  return '<select onchange="regFiltro(\''+chave+'\',this.value)">'+
+   vals.map(function(v){return '<option value="'+regEsc(v[0])+'"'+(REG_FILTRO[chave]===v[0]?' selected':'')+
+    '>'+regEsc(v[1])+'</option>';}).join('')+'</select> ';};
+ const lista=regLista();
+ const mostra=lista.slice(0,REG_MAX);
+ const linhas=mostra.map(function(x){
+  const c=x.c;
+  return '<tr><td>'+regEsc(c.data)+'</td><td>'+regEsc(c.modalidade)+' '+regEsc(c.duracao_s)+' s</td>'+
+   '<td style="font-size:11px;color:#8b949e">'+regEsc(c.activity_id)+'</td>'+
+   '<td class="num">'+Math.round(c.watts)+' W</td>'+
+   '<td class="num">'+(c.pct_do_melhor!=null?c.pct_do_melhor+'%':'')+'</td>'+
+   '<td>'+regBadgeElegibilidade(c.elegibilidade)+'</td><td>'+regBadgeEstado(c.estado_registo)+'</td>'+
+   '<td>'+regAcoes(c,x.i)+'</td></tr>'+
+   ((REG_ABRIR&&REG_ABRIR.i===x.i)?regFormulario(c):'');
+ }).join('');
+ return '<p style="font-size:13px">Aqui escolhes quais esforcos detetados contam como testes de '+
+  'performance. Detetar nao e confirmar: nada e confirmado sozinho. Esta fase so guarda o registo e '+
+  'o historico; <b>confirmar um teste nao calibra nem atualiza o modelo</b>.</p>'+
+  '<p style="font-size:12px;color:#8b949e">Elegibilidade desconhecida quer dizer que o campo '+
+  'icu_ignore_power nao esta disponivel para essa atividade; nunca e tratada como elegivel. '+
+  'Um esforco inelegivel so pode ser rejeitado.</p>'+
+  '<div style="margin:6px 0">'+
+  sel('regSelMod','mod',[['','todas as modalidades']].concat(mods.map(function(m){return [m,m];})))+
+  sel('regSelDur','dur',[['','todas as duracoes'],['60','60 s'],['300','300 s'],['1200','1200 s']])+
+  sel('regSelEst','est',[['','todos os estados'],['pendente','detetado, sem decisao'],
+   ['confirmado','confirmado'],['rejeitado','rejeitado']])+'</div>'+
+  (REG_MSG?'<div style="font-size:13px;margin:6px 0;color:#58a6ff">'+regEsc(REG_MSG)+'</div>':'')+
+  (mostra.length?'<div class="wrap"><table><thead><tr>'+
+   ['Data','Esforco','Atividade','Potencia','% do melhor','Elegibilidade','Estado','Acao'].map(function(h){
+    return '<th>'+h+'</th>';}).join('')+'</tr></thead><tbody>'+linhas+'</tbody></table></div>'+
+   (lista.length>mostra.length?'<div class="sub">A mostrar '+mostra.length+' de '+lista.length+
+    ' (mais recentes primeiro). Usa os filtros para ver os restantes.</div>':''):
+   '<p class="sub">Sem candidatos com estes filtros.</p>');}
+function regRender(){
+ const el=document.getElementById('registoTestesCorpo');
+ if(el)el.innerHTML=htmlRegisto(REG);}
+async function carregarRegisto(){
+ try{ REG=await fetch('/api/protocolo/candidatos').then(function(r){return r.json();}); }
+ catch(e){ REG=null; }
+ REG_CARREGADO=!!REG;
+ regRender();}
+function abrirRegisto(det){
+ if(det&&det.open&&!REG_CARREGADO)carregarRegisto();}
+function regFiltro(chave,v){REG_FILTRO[chave]=v;REG_ABRIR=null;regRender();}
+function regAbrir(i,dec){REG_ABRIR={i:i,dec:dec};REG_MSG='';regRender();}
+function regCancelar(){REG_ABRIR=null;regRender();}
+async function regEnviar(){
+ if(!REG_ABRIR||!REG||!REG.candidatos)return;
+ const c=REG.candidatos[REG_ABRIR.i]; if(!c)return;
+ const motivo=((document.getElementById('regMotivo')||{}).value||'').trim();
+ if(!motivo){REG_MSG='Escreve o motivo antes de registar.';regRender();return;}
+ const optin=!!((document.getElementById('regOptin')||{}).checked);
+ let j;
+ try{
+  j=await fetch('/api/protocolo/testes/decisao',{method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({modalidade:c.modalidade,duracao_s:c.duracao_s,activity_id:c.activity_id,
+    decisao:REG_ABRIR.dec,motivo:motivo,confirmacao_explicita:true,origem_registo:'ui',
+    metodo_confirmacao:'manual',aceita_elegibilidade_desconhecida:optin})
+  }).then(function(r){return r.json();});
+ }catch(e){ REG_MSG='Falha de rede: nada foi registado.'; regRender(); return; }
+ REG_ABRIR=null;
+ REG_MSG=(j&&j.status==='OK')?
+  ((j.alterado?'Registado. ':'Sem alteracao. ')+'Isto nao calibra nem atualiza o modelo.'):
+  ((j&&j.mensagem)||'Nao foi possivel registar.');
+ await carregarRegisto();}
+// <</registo-testes>>
+// <<estimador-experimental>>
+// ─── Estimador experimental (Fase 2 do modelo progressivo) ────────────────
+// So le /api/modelo/estimador, e so quando o painel e aberto. Nao escreve nada,
+// nao altera graficos nem indicadores do PMC e nao foi validado preditivamente.
+let EST_CARREGADO=false;
+function estEsc(s){
+ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function htmlEstimador(j){
+ if(!j||j.status!=='OK')return '<p style="font-size:13px">Nao foi possivel calcular: '+
+  estEsc(j&&j.mensagem?j.mensagem:'sem resposta')+'</p>';
+ const ROT={nao_calibrado:'nao calibrado',estimativa_unica:'1 teste (sem incerteza)',experimental:'experimental'};
+ const lin=(j.itens||[]).map(function(i){
+  const inc=i.incerteza?('&plusmn;'+i.incerteza.sd_w.toFixed(1)+' W (IC95 '+
+   i.incerteza.ic95_w[0].toFixed(0)+'&ndash;'+i.incerteza.ic95_w[1].toFixed(0)+')'):
+   '<span title="'+estEsc(i.motivo_sem_incerteza)+'">n/d</span>';
+  const mot=Object.keys(i.motivos_exclusao||{}).map(function(k){
+   return estEsc(k)+' ('+i.motivos_exclusao[k]+')';}).join('; ');
+  return '<tr><td>'+estEsc(i.modalidade)+'</td><td>P'+estEsc(i.duracao_s)+'</td>'+
+   '<td>'+estEsc(ROT[i.estado_calibracao]||i.estado_calibracao)+'</td>'+
+   '<td>'+i.n_confirmados+'</td><td>'+i.n_usadas+'</td><td>'+i.n_excluidas+'</td>'+
+   '<td>'+(i.nivel_w==null?'&mdash;':i.nivel_w.toFixed(1)+' W')+'</td><td>'+inc+'</td>'+
+   '<td>'+estEsc(i.ultima_observacao||'')+'</td><td style="font-size:11px">'+mot+'</td></tr>';
+ }).join('');
+ return '<p style="font-size:13px"><b>Experimental e nao validado preditivamente.</b> '+
+  'Usa so testes confirmados com icu_ignore_power=false explicito (elegibilidade desconhecida '+
+  'fica de fora). Nao altera o PMC nem os parametros do modelo. A incerteza e a do nivel '+
+  'sob o modelo, nao uma previsao.</p>'+
+  '<table style="font-size:12px;border-collapse:collapse"><thead><tr><th>Modalidade</th><th>Duracao</th>'+
+  '<th>Estado</th><th>Confirmados</th><th>Usados</th><th>Excluidos</th><th>Estimativa</th>'+
+  '<th>Incerteza</th><th>Ultimo teste usado</th><th>Motivos de exclusao</th></tr></thead><tbody>'+
+  lin+'</tbody></table>';
+}
+async function carregarEstimador(){
+ const el=document.getElementById('estimadorExpCorpo');
+ if(!el)return;
+ el.innerHTML='A carregar...';
+ try{
+  const r=await fetch('/api/modelo/estimador');
+  el.innerHTML=htmlEstimador(await r.json());
+  EST_CARREGADO=true;
+ }catch(e){
+  el.innerHTML='<p style="font-size:13px">Erro ao carregar o estimador.</p>';
+ }
+}
+function abrirEstimador(d){
+ if(d&&d.open&&!EST_CARREGADO)carregarEstimador();
+}
+// <</estimador-experimental>>
 
 async function montarExport(){
  let d;
@@ -2291,7 +2423,9 @@ async function load(){
    'padding:9px 12px;margin-bottom:8px;border-radius:0 6px 6px 0;font-size:13px">'+
    al.texto+'</div>';}).join('');
 
- carregarSugestoes();
+ // so' redesenha, com as cores de D; sem novo pedido. Isolado: uma falha so' no
+ // painel de sugestoes (ex.: payload malformado) nao pode impedir o resto de load().
+ try{ mostrarSugestoes(); }catch(e){ console.error('sugestoes:',e); }
 montarExport();
  drawPMC(); mostrarFMT5(); mostrarRegimeHoje();
  try{mostrarEvolucao();}catch(e){console.error('Evolução da performance indisponível nesta carga:',e);}

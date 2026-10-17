@@ -1088,6 +1088,30 @@ def api_debug_wellness_icu():
     })
 
 
+_cache_ignore_power = {'t': None, 'mapa': None}
+TTL_IGNORE_POWER = 300    # segundos; evita reler activities.raw a cada pedido
+
+
+def _mapa_ignore_power():
+    """{activity_id: True|False|None} lido de activities.raw (so leitura, sem
+    chamadas externas). None se as atividades nao estiverem disponiveis; nesse
+    caso a elegibilidade fica 'desconhecida' e nada e excluido."""
+    import time
+    agora = time.monotonic()
+    c = _cache_ignore_power
+    if c['t'] is not None and agora - c['t'] < TTL_IGNORE_POWER:
+        return c['mapa']
+    try:
+        import protocolo
+        mapa = protocolo.mapa_ignore_power(db.load_activities())
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None
+    c['t'], c['mapa'] = (agora, mapa) if mapa is not None else (None, None)
+    return mapa
+
+
 @app.route('/api/protocolo')
 def api_protocolo():
     """Testes maximos detectados e quais estao em atraso.
@@ -1097,20 +1121,272 @@ def api_protocolo():
     import protocolo
     curvas = db.load_power_curves(request.args.get('tipo') or None)
     det = protocolo.detectar_testes(curvas or [])
+    # elegibilidade para calibracao: so anotacao, a deteccao nao muda
+    try:
+        det_anot = protocolo.anotar_elegibilidade(det, _mapa_ignore_power())
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        det_anot = det        # sem anotacao; a deteccao e as sugestoes seguem
+    cobertura = protocolo.cobertura(det)
+    # suficiencia por modalidade: chave aditiva dentro de 'cobertura' (as
+    # chaves de cobertura() e as do topo da resposta mantem-se). Uma falha
+    # aqui nao deve derrubar o resto da resposta.
+    try:
+        cobertura['suficiencia'] = protocolo.suficiencia_por_modalidade(det_anot, curvas or [])
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        cobertura['suficiencia'] = {'erro': f'{type(e).__name__}: {e}'}
     return jsonify({
         'status': 'OK',
-        'cobertura': protocolo.cobertura(det),
+        'cobertura': cobertura,
         'sugestoes': protocolo.sugerir(det),
         'robustez': protocolo.robustez(det),
         # so os recentes na resposta: a lista completa pode ter centenas
         'detectados': {m: {s: {k: v for k, v in d.items() if k != 'testes'}
                            for s, d in durs.items()}
-                       for m, durs in det.items()},
+                       for m, durs in det_anot.items()},
         'como_funciona': (
             f'Uma sessao conta como teste quando o esforco numa duracao chega '
             f'a {int(protocolo.LIMIAR_ESFORCO*100)}% do teu melhor dos ultimos '
             f'{protocolo.JANELA_MELHOR} dias. Nao e preciso marcar nada.'),
     })
+
+
+# ── Registo de testes de performance (Fase 1 do modelo progressivo) ─────────
+# Regista/consulta quais esforcos detetados o utilizador confirma ou rejeita como
+# testes. Nao calibra, nao estima e nao altera nenhum resultado do PMC: nada
+# neste bloco e lido por pmc.py, calibracao.py, ftlm.py ou fmt.py.
+# Contrato: modelo_testes.py e docs/modelo_testes_contrato.md.
+_AVISO_REGISTO = ('Registar um teste so guarda o registo e o historico. Nao calibra '
+                  'nem atualiza o modelo de performance nesta fase.')
+
+
+def _erro_registo(status, mensagem, campo=None):
+    corpo = {'status': 'erro', 'mensagem': mensagem}
+    if campo:
+        corpo['campo'] = campo
+    return jsonify(corpo), status
+
+
+def _filtros_registo(com_pendente):
+    """(filtros, None) ou (None, resposta_de_erro) a partir da query string."""
+    import modelo_testes as mt
+    tipo = request.args.get('tipo') or None
+    if tipo is not None and tipo not in mt.MODALIDADES:
+        return None, _erro_registo(400, f'tipo invalido (use {", ".join(mt.MODALIDADES)})', 'tipo')
+    duracao = request.args.get('duracao')
+    if duracao is not None and duracao != '':
+        try:
+            duracao = int(duracao)
+        except ValueError:
+            duracao = None
+        if duracao not in mt.DURACOES:
+            return None, _erro_registo(
+                400, f'duracao invalida (use {", ".join(map(str, mt.DURACOES))})', 'duracao')
+    else:
+        duracao = None
+    estado = request.args.get('estado') or None
+    validos = mt.ESTADOS_CONSULTA if com_pendente else mt.ESTADOS_GRAVADOS
+    if estado is not None and estado not in validos:
+        return None, _erro_registo(400, f'estado invalido (use {", ".join(validos)})', 'estado')
+    return {'tipo': tipo, 'duracao': duracao, 'estado': estado}, None
+
+
+def _deteccao_atual(tipo, fresco=False):
+    """(deteccao anotada, curvas, atividades). fresco=True ignora a cache de
+    elegibilidade: uma decisao usa sempre a elegibilidade do momento."""
+    import protocolo
+    curvas = db.load_power_curves(tipo) or []
+    det = protocolo.detectar_testes(curvas)
+    atividades = None
+    if fresco:
+        try:
+            atividades = db.load_activities()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        mapa = protocolo.mapa_ignore_power(atividades)
+    else:
+        mapa = _mapa_ignore_power()
+    return protocolo.anotar_elegibilidade(det, mapa), curvas, atividades
+
+
+@app.route('/api/protocolo/candidatos')
+def api_protocolo_candidatos():
+    """Esforcos detetados com elegibilidade e estado no registo.
+
+    ?tipo=Bike ?duracao=1200 ?estado=pendente|confirmado|rejeitado
+    'pendente' = detetado e sem decisao do utilizador (nada e gravado por omissao).
+    """
+    import modelo_testes as mt
+    filtros, erro = _filtros_registo(com_pendente=True)
+    if erro:
+        return erro
+    det_anot, _curvas, _ = _deteccao_atual(filtros['tipo'])
+    atuais_lista = db.testes_modelo_atuais()
+    atuais = {r['test_id']: r for r in atuais_lista}
+    cands = mt.candidatos_com_estado(det_anot, atuais, filtros)
+    return jsonify({
+        'status': 'OK', 'persistencia': bool(db.ENABLED),
+        'contrato_versao': mt.VERSAO_CONTRATO,
+        'n': len(cands), 'candidatos': cands,
+        'resumo_registo': mt.resumo_registo(atuais_lista),
+        'aviso': _AVISO_REGISTO,
+    })
+
+
+@app.route('/api/protocolo/testes')
+def api_protocolo_testes():
+    """Testes registados (estado atual = ultima revisao).
+
+    ?tipo=Bike ?duracao=1200 ?estado=confirmado|rejeitado
+    'situacao_dados' compara os watts registados com a curva atual (informativo).
+    """
+    import modelo_testes as mt
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    testes = db.testes_modelo_atuais(filtros['tipo'], filtros['duracao'], filtros['estado'])
+    por_id = {c['activity_id']: c for c in (db.load_power_curves(filtros['tipo']) or [])}
+    for t in testes:
+        t['situacao_dados'] = mt.situacao_dados(t, por_id)
+    return jsonify({'status': 'OK', 'persistencia': bool(db.ENABLED),
+                    'contrato_versao': mt.VERSAO_CONTRATO,
+                    'n': len(testes), 'testes': testes, 'aviso': _AVISO_REGISTO})
+
+
+@app.route('/api/protocolo/testes/historico')
+def api_protocolo_testes_historico():
+    """Todas as revisoes (confirmacoes, rejeicoes, invalidacoes), mais antigas primeiro.
+
+    ?test_id=Bike:1200:i123 ?tipo=Bike ?duracao=1200
+    """
+    import modelo_testes as mt
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    revs = db.revisoes_testes_modelo(request.args.get('test_id') or None,
+                                     filtros['tipo'], filtros['duracao'])
+    if filtros['estado']:
+        revs = [r for r in revs if r['estado'] == filtros['estado']]
+    return jsonify({'status': 'OK', 'persistencia': bool(db.ENABLED),
+                    'contrato_versao': mt.VERSAO_CONTRATO,
+                    'n': len(revs), 'revisoes': revs})
+
+
+@app.route('/api/protocolo/testes/decisao', methods=['POST'])
+def api_protocolo_testes_decisao():
+    """Confirma ou rejeita um candidato detetado (acao explicita).
+
+    Corpo JSON (Content-Type: application/json):
+      modalidade, duracao_s, activity_id, decisao ('confirmar'|'rejeitar'),
+      motivo (obrigatorio), confirmacao_explicita (true, obrigatorio),
+      aceita_elegibilidade_desconhecida (so para elegibilidade desconhecida),
+      metodo_confirmacao ('manual'), origem_registo, responsavel (opcionais).
+    """
+    import modelo_testes as mt
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados: o registo nao pode ser gravado')
+    if not request.is_json:
+        return _erro_registo(415, 'Content-Type application/json obrigatorio')
+    try:
+        pedido = mt.validar_pedido(request.get_json(silent=True))
+        tid = mt.id_teste(pedido['modalidade'], pedido['duracao_s'], pedido['activity_id'])
+        det_anot, _curvas, atividades = _deteccao_atual(pedido['modalidade'], fresco=True)
+        ultima = db.ultima_revisao_teste(tid)
+        rev = mt.decidir(pedido, det_anot, ultima, mt.agora_utc(),
+                         mt.hora_local_da_atividade(atividades, pedido['activity_id']))
+        if rev is None:
+            return jsonify({'status': 'OK', 'alterado': False, 'teste': ultima,
+                            'mensagem': 'Sem alteracao: o teste ja esta neste estado.',
+                            'aviso': _AVISO_REGISTO})
+        db.inserir_revisao_teste(rev)
+        return jsonify({'status': 'OK', 'alterado': True,
+                        'teste': db.ultima_revisao_teste(tid), 'aviso': _AVISO_REGISTO})
+    except mt.ErroContrato as e:
+        return _erro_registo(e.status, e.mensagem, e.campo)
+    except db.ConflitoRevisao as e:
+        return _erro_registo(409, str(e))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+
+
+# ── Fase 2 do modelo progressivo: estimador EXPERIMENTAL (so leitura) ─────────
+_AVISO_ESTIMADOR = ('Experimental e nao validado preditivamente (Fase 3). Nao altera '
+                    'PMC, CTL, ATL, TSB, CTLgamma, FMT, homeostatico nem ancora. '
+                    'Calculado de novo a cada pedido; nada e gravado.')
+
+
+@app.route('/api/modelo/estimador')
+def api_modelo_estimador():
+    """Nivel estimado por modalidade x duracao, so com testes confirmados e elegiveis.
+
+    ?tipo=Bike ?duracao=300 ?ate=YYYY-MM-DD (por omissao, hoje em UTC).
+    So le (historico do registo, atividades, curvas); nunca escreve.
+    """
+    import modelo_estimador as me
+    import modelo_testes as mt
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    ate = request.args.get('ate') or mt.agora_utc().date().isoformat()
+    if me._data_valida(ate) is None or len(ate) != 10:
+        return _erro_registo(400, 'ate invalido (use YYYY-MM-DD)', 'ate')
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        atividades = db.load_activities()
+        res = me.calcular_estado(db.revisoes_testes_modelo(), atividades,
+                                 db.load_power_curves() or [], ate,
+                                 tipo=filtros['tipo'], duracao=filtros['duracao'])
+    except me.HistoricoAmbiguo as e:
+        return _erro_registo(409, 'historico de testes ambiguo: ' + str(e))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', 'aviso': _AVISO_ESTIMADOR,
+                    'atividades_disponiveis': atividades is not None, **res})
+
+
+_AVISO_VALIDACAO = ('Validacao temporal EXPLORATORIA do estimador experimental. O alvo e o melhor '
+                    'valor da duracao em toda a atividade (nao um teste padronizado). Nao altera q, '
+                    'parametros, elegibilidade nem calculos de producao; nao promove o estimador. '
+                    'Sem dados suficientes o resultado e inconclusivo.')
+
+
+@app.route('/api/modelo/validacao')
+def api_modelo_validacao():
+    """Walk-forward do estimador contra M0 (media expansiva) e M1 (ultimo valor). So leitura.
+
+    ?tipo=Bike ?duracao=300 ?modo=retrospectivo|conhecido_na_epoca|ambos (por omissao, ambos)
+    """
+    import modelo_estimador as me
+    import modelo_validacao as mv
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    modo = request.args.get('modo') or 'ambos'
+    if modo != 'ambos' and modo not in mv.MODOS:
+        return _erro_registo(400, 'modo invalido (use retrospectivo, conhecido_na_epoca ou ambos)', 'modo')
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        res = mv.validar(db.revisoes_testes_modelo(), db.load_activities(),
+                         db.load_power_curves() or [],
+                         modos=mv.MODOS if modo == 'ambos' else (modo,),
+                         tipo=filtros['tipo'], duracao=filtros['duracao'])
+    except me.HistoricoAmbiguo as e:
+        return _erro_registo(409, 'historico de testes ambiguo: ' + str(e))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', 'aviso': _AVISO_VALIDACAO, **res})
 
 
 @app.route('/api/calibracao')

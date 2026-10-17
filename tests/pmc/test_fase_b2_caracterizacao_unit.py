@@ -146,8 +146,10 @@ class LimiaresDeRobustezCoberturaEAtraso(unittest.TestCase):
 
 
 class ContratoAtualDaAncora(unittest.TestCase):
-    """calibrar_com_ancora hoje: lag=valor devolvido por calibrar_lag, inclusive
-    no fallback; minimo de 25; sobrevive = p_permutacao < 0.05."""
+    """calibrar_com_ancora: lag=valor devolvido por calibrar_lag, inclusive no
+    fallback; minimo de 25; sobrevive = p_permutacao < 0.05. (Desde a Fase B2.1
+    so entram observacoes com icu_ignore_power=false explicito, por isso estes
+    testes passam as atividades com o campo a false.)"""
 
     @classmethod
     def setUpClass(cls):
@@ -174,10 +176,12 @@ class ContratoAtualDaAncora(unittest.TestCase):
 
     def _correr(self, curvas_por_mod, resposta_lag, mods=('Bike',)):
         pmc, cal, db = self.pmc, self.cal, self.db
+        atividades = [{'id': c['activity_id'], 'icu_ignore_power': False}
+                      for lst in curvas_por_mod.values() for c in lst]
         with mock.patch.object(db, 'load_power_curves',
                                side_effect=lambda tipo=None, desde=None: curvas_por_mod.get(tipo, [])), \
                 mock.patch.object(cal, 'calibrar_lag', return_value=resposta_lag):
-            return pmc.calibrar_com_ancora(self._serie(), list(mods))
+            return pmc.calibrar_com_ancora(self._serie(), list(mods), atividades=atividades)
 
     def test_minimo_por_omissao_e_25(self):
         self.assertEqual(inspect.signature(self.pmc.calibrar_com_ancora)

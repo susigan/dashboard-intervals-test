@@ -48,8 +48,15 @@ class AncoraFonte(unittest.TestCase):
             raise unittest.SkipTest(f'pmc nao importa: {type(e).__name__}: {e}')
         cls.pmc, cls.cal, cls.db = pmc, calibracao, db
 
-    def _correr(self, curvas_por_mod, resposta_lag=None, mods=None, serie=None):
-        curvas_por_mod = curvas_por_mod
+    @staticmethod
+    def _todas_elegiveis(curvas_por_mod):
+        # icu_ignore_power=false explicito em todas as atividades: so assim entram na calibracao
+        return [{'id': c['activity_id'], 'icu_ignore_power': False}
+                for lst in curvas_por_mod.values() for c in lst]
+
+    def _correr(self, curvas_por_mod, resposta_lag=None, mods=None, serie=None, atividades=None):
+        if atividades is None:
+            atividades = self._todas_elegiveis(curvas_por_mod)
         respostas = resposta_lag if isinstance(resposta_lag, dict) and 'fonte' not in resposta_lag \
             else None
         def lag_por_chamada(*a, **k):
@@ -60,7 +67,8 @@ class AncoraFonte(unittest.TestCase):
         with mock.patch.object(self.db, 'load_power_curves',
                                side_effect=lambda tipo=None, desde=None: curvas_por_mod.get(tipo, [])), \
                 mock.patch.object(self.cal, 'calibrar_lag', side_effect=lag_por_chamada):
-            return self.pmc.calibrar_com_ancora(serie or _serie(), list(mods or curvas_por_mod))
+            return self.pmc.calibrar_com_ancora(serie or _serie(), list(mods or curvas_por_mod),
+                                                atividades=atividades)
 
     # ---- fallback e origem do lag -------------------------------------
     def test_fallback_nao_e_calibracao(self):
@@ -132,7 +140,8 @@ class AncoraFonte(unittest.TestCase):
         with mock.patch.object(self.db, 'load_power_curves',
                                side_effect=lambda tipo=None, desde=None: _curvas('Bike', 28)
                                if tipo == 'Bike' else []):
-            r = self.pmc.calibrar_com_ancora(_serie(), ['Bike'])
+            r = self.pmc.calibrar_com_ancora(_serie(), ['Bike'],
+                                             atividades=self._todas_elegiveis({'Bike': _curvas('Bike', 28)}))
         e = r['por_modalidade']['Bike']
         self.assertEqual(e['n_testes'], 26)
         self.assertEqual((e['fonte'], e['calibrado']), ('referencia', False))
@@ -147,7 +156,8 @@ class AncoraFonte(unittest.TestCase):
         with mock.patch.object(self.db, 'load_power_curves',
                                side_effect=lambda tipo=None, desde=None: _curvas('Bike', 32)) as m, \
                 mock.patch.object(self.cal, 'calibrar_lag', return_value=FALLBACK) as lag:
-            self.pmc.calibrar_com_ancora(_serie(), ['Bike'])
+            self.pmc.calibrar_com_ancora(_serie(), ['Bike'],
+                                         atividades=self._todas_elegiveis({'Bike': _curvas('Bike', 32)}))
         # mesma chamada de sempre ao calculo estatistico (lags 5..28, sem sinal, chave lag_super)
         args = lag.call_args[0]
         self.assertEqual((list(args[2]), args[3], args[4]), (list(range(5, 29)), None, 'lag_super'))

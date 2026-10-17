@@ -226,15 +226,16 @@ def anotar_elegibilidade(deteccao, mapa):
     return out
 
 
-def serie_ancora(deteccao, mod=None, secs=1200, excluir_inelegiveis=False):
+def serie_ancora(deteccao, mod=None, secs=1200, somente_elegiveis=False):
     """Serie de performance so com dias de teste.
 
     E esta que deve alimentar a calibracao em vez da CP de todas as sessoes:
     poucos pontos, mas cada um mede capacidade em vez de escolha de treino.
 
-    excluir_inelegiveis: deixa de fora as observacoes marcadas como
-    'inelegivel' por anotar_elegibilidade(). Observacoes de elegibilidade
-    'desconhecida' (ou sem anotacao) NAO sao excluidas.
+    somente_elegiveis: so entram as observacoes com elegibilidade 'elegivel'
+    (anotar_elegibilidade()). 'inelegivel' fica de fora, e 'desconhecida' (ou
+    sem anotacao) tambem: o que nao foi validado para este uso nao calibra.
+    Isto nao diz que a observacao seja invalida fisiologicamente.
     """
     out = []
     for m, durs in (deteccao or {}).items():
@@ -244,7 +245,7 @@ def serie_ancora(deteccao, mod=None, secs=1200, excluir_inelegiveis=False):
         if not d:
             continue
         for t in d['testes']:
-            if excluir_inelegiveis and t.get('elegibilidade_calibracao') == ELEGIBILIDADE_INELEGIVEL:
+            if somente_elegiveis and t.get('elegibilidade_calibracao') != ELEGIBILIDADE_ELEGIVEL:
                 continue
             out.append({'date': t['date'], 'valor': t['watts'],
                         'modalidade': m, 'activity_id': t['activity_id']})
@@ -376,11 +377,13 @@ def suficiencia_por_modalidade(deteccao, curvas=None, secs=1200,
                     'meses': round(dias / 30.4375, 1), 'n_curvas': len(datas)}
 
         estado = _estado_amostra(n)
-        # se a deteccao foi anotada (anotar_elegibilidade), os inelegiveis nao
-        # contam para o minimo de calibracao; senao, contam todos como hoje
+        # se a deteccao foi anotada (anotar_elegibilidade), so as elegiveis
+        # contam para o minimo de calibracao (inelegiveis e desconhecidas nao);
+        # sem anotacao a elegibilidade nao foi avaliada e contam todos os candidatos
+        anotada = bool(d) and 'n_elegiveis_calibracao' in d
         n_inel = (d or {}).get('n_inelegiveis_calibracao', 0) if d else 0
         n_desc = (d or {}).get('n_desconhecidos_calibracao') if d else None
-        n_util = n - n_inel
+        n_util = d['n_elegiveis_calibracao'] if anotada else n
         atinge = n_util >= minimo_calibracao
         texto = (f'{mod}: {n} candidatos de {nome}'
                  + (f' ({n_dias} dias distintos)' if n else ''))
@@ -396,7 +399,7 @@ def suficiencia_por_modalidade(deteccao, curvas=None, secs=1200,
                       f'{CRITERIO_ELEGIBILIDADE}.')
         if n_desc:
             texto += (f' {n_desc} com elegibilidade desconhecida (nao '
-                      'validada): entram na calibracao, mas assinalados.')
+                      'validada para este uso): excluidos da calibracao.')
         out[mod] = {
             'secs': secs, 'nome': nome,
             'n_candidatos': n, 'n_dias_distintos': n_dias,

@@ -1185,10 +1185,13 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
     esforco e nao pelo estado, o que reduz a causalidade invertida.
 
     atividades: dicts originais da API (activities.raw). Servem para marcar a
-    elegibilidade de cada esforco: os que tem icu_ignore_power=true ficam de
-    fora da serie de calibracao (continuam detetados e contados na deteccao).
-    Com elegibilidade desconhecida (atividades indisponiveis, campo ausente)
-    a observacao NAO e excluida, mas e contada e assinalada no resultado.
+    elegibilidade de cada esforco. So entram na serie de calibracao os que tem
+    icu_ignore_power=false (explicito). Ficam de fora: icu_ignore_power=true
+    (inelegivel) e elegibilidade desconhecida (atividades indisponiveis, campo
+    ausente/None, atividade nao encontrada) — "nao validado para este uso",
+    nao "invalido". Continuam detetados e contados na deteccao e nos
+    relatorios; o resultado diz quantos ficaram fora e porque. Se sobrar menos
+    do minimo, devolve 'insuficiente' sem simular calibracao.
     """
     import numpy as np
     import calibracao as _cal
@@ -1210,13 +1213,14 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
         if not curvas:
             continue
         det = _prot.anotar_elegibilidade(_prot.detectar_testes(curvas), mapa)
-        ancora = _prot.serie_ancora(det, mod, secs, excluir_inelegiveis=True)
+        ancora = _prot.serie_ancora(det, mod, secs, somente_elegiveis=True)
         d_dur = (det.get(mod) or {}).get(secs) or {}
         elegib = {
             'n_testes_detetados': d_dur.get('n_testes', 0),
             'n_testes_elegiveis': d_dur.get('n_elegiveis_calibracao', 0),
             'n_testes_inelegiveis': d_dur.get('n_inelegiveis_calibracao', 0),
             'n_testes_desconhecidos': d_dur.get('n_desconhecidos_calibracao', 0),
+            # True = nenhuma observacao detetada ficou com elegibilidade desconhecida
             'elegibilidade_validada': d_dur.get('n_desconhecidos_calibracao', 0) == 0,
         }
         nota_el = ''
@@ -1225,14 +1229,15 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
                         f"{_prot.CRITERIO_ELEGIBILIDADE}.")
         if elegib['n_testes_desconhecidos']:
             nota_el += (f" {elegib['n_testes_desconhecidos']} com elegibilidade "
-                        'desconhecida (nao validada), usados na mesma.')
+                        'desconhecida (nao validada para este uso), excluidos '
+                        'da calibracao.')
         if len(ancora) < minimo_testes:
             out['por_modalidade'][mod] = {
                 'n_testes': len(ancora), **elegib,
                 'fonte': 'insuficiente', 'calibrado': False,
                 'lag_referencia': None,
-                'motivo': (f'so {len(ancora)} testes (precisa de {minimo_testes})'
-                           + (f';{nota_el}' if nota_el else ''))}
+                'motivo': (f'so {len(ancora)} testes elegiveis (precisa de '
+                           f'{minimo_testes})' + (f';{nota_el}' if nota_el else ''))}
             continue
 
         alvo = np.full(n, np.nan)
@@ -1287,14 +1292,14 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
     inel = sum(v.get('n_testes_inelegiveis', 0) for v in out['por_modalidade'].values())
     out['elegibilidade'] = {
         'criterio': _prot.CRITERIO_ELEGIBILIDADE,
-        'inelegiveis_excluidos': inel, 'desconhecidos_usados': desc,
+        'inelegiveis_excluidos': inel, 'desconhecidos_excluidos': desc,
         'validada_em_todas': desc == 0}
     if inel:
         out['leitura'] += (f' {inel} esforco(s) excluido(s) da serie por '
                            f'{_prot.CRITERIO_ELEGIBILIDADE}.')
     if desc:
         out['leitura'] += (f' Elegibilidade desconhecida em {desc} esforco(s): '
-                           'usados, mas nao validados.')
+                           'excluidos da calibracao (nao validados para este uso).')
     if out['em_referencia']:
         out['leitura'] += (
             ' Em ' + ', '.join(out['em_referencia']) + ' o lag mostrado e o '

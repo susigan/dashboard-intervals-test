@@ -2031,8 +2031,9 @@ function mostrarSugestoes(){
  el.innerHTML='<details class="expl" open style="margin:10px 0"><summary>'+
   'Testes sugeridos ('+Object.keys(porMod).length+' modalidades)</summary>'+
   '<div class="expl-corpo">'+
-  '<p style="font-size:13px">Estes esforcos alimentam a calibracao. Nao sao '+
-  'obrigatorios e nao ha nada para marcar: uma prova, um bloco de intervalos '+
+  '<p style="font-size:13px">Estes esforcos produzem hoje um diagnostico '+
+  '(se a carga explica a performance) e nao atualizam os parametros do '+
+  'modelo. Nao sao obrigatorios e nao ha nada para marcar: uma prova, um bloco de intervalos '+
   'duro ou uma saida forte contam, desde que chegues perto do teu maximo '+
   'nessa duracao. A sugestao desaparece sozinha quando acontecer.</p>'+
   '<div style="display:flex;gap:10px;flex-wrap:wrap">'+cartoes+'</div>'+

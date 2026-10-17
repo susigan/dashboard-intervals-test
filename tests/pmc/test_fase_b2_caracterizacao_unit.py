@@ -129,15 +129,6 @@ class LimiaresDeRobustezCoberturaEAtraso(unittest.TestCase):
                          {'n', 'ultimo', 'dias', 'em_atraso'})
         self.assertEqual(cob['por_modalidade']['Row']['20 min max']['n'], 10)
 
-    def test_cobertura_veredicto_global_por_total_30_e_10(self):
-        # caracteriza o limiar GLOBAL atual (30/10): o texto muda entre faixas
-        def v(n_curvas):
-            return P.cobertura(_detectar(_n_curvas_1200('Bike', n_curvas)))['veredicto']
-        self.assertIn('ha testes suficientes', v(32))        # 30 testes
-        self.assertIn('da para ver tendencia', v(31))        # 29
-        self.assertIn('da para ver tendencia', v(12))        # 10
-        self.assertIn('so 9 testes', v(11))                  # 9
-
     def test_atraso_urgencia_e_filtro_de_modalidades(self):
         det = _detectar(_n_curvas_1200('Bike', 8, rec=40) + _n_curvas_1200('Row', 8, rec=90))
         with mock.patch.object(P, 'datetime', _Relogio):

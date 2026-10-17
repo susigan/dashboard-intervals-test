@@ -49,6 +49,13 @@ TESTES = {
 LIMIAR_ESFORCO = 0.92
 JANELA_MELHOR = 180          # dias para "melhor recente"
 
+# Dimensao da amostra de candidatos a 20 min. Valores ja existentes (antes
+# espalhados como literais em robustez() e em pmc.calibrar_com_ancora), apenas
+# nomeados: nao foram alterados nem unificados.
+ROBUSTEZ_BOM = 30            # robustez(): estado 'bom'
+ROBUSTEZ_PARCIAL = 12        # robustez(): estado 'parcial'
+MINIMO_CALIBRACAO = 25       # = default de pmc.calibrar_com_ancora(minimo_testes)
+
 
 def detectar_testes(curvas, limiar=LIMIAR_ESFORCO, janela=JANELA_MELHOR):
     """Sessoes em que houve esforco maximo, por modalidade e duracao.
@@ -187,9 +194,9 @@ def robustez(deteccao, secs=1200):
         mediana = dias_ord[len(dias_ord) // 2]
 
         n = len(testes)
-        if n >= 30:
+        if n >= ROBUSTEZ_BOM:
             estado, nota = 'bom', 'da para calibrar contra performance real'
-        elif n >= 12:
+        elif n >= ROBUSTEZ_PARCIAL:
             estado, nota = ('parcial',
                             f'{n} pontos — da para tendencia, ainda pouco para '
                             'calibrar (~30)')
@@ -222,17 +229,91 @@ def cobertura(deteccao):
                 'dias': d['dias_desde_ultimo'],
                 'em_atraso': d['em_atraso'],
             }
-    if total >= 30:
-        veredicto = ('ha testes suficientes para calibrar contra performance '
-                     'real em vez da CP de cada sessao')
-    elif total >= 10:
-        veredicto = (f'{total} testes — da para ver tendencia, ainda pouco '
-                     'para calibrar (precisa de ~30)')
+    # Descritivo: o total junta modalidades com amostras muito diferentes e
+    # esforcos so "detetados" (nao confirmados como testes maximos), por isso
+    # nao diz se ha amostra suficiente. Isso avalia-se por modalidade em
+    # suficiencia_por_modalidade().
+    if total:
+        veredicto = (f'{total} esforcos detetados em {len(detalhe)} '
+                     f'modalidade(s), somando todas as duracoes. Detetado nao '
+                     'e o mesmo que teste maximo confirmado, e a suficiencia '
+                     'para calibrar avalia-se por modalidade (ver suficiencia).')
     else:
-        veredicto = (f'so {total} testes detectados. Sem esforcos maximos '
-                     'regulares nao ha ancora de performance; e por isso que '
-                     'a calibracao contra CP falha.')
+        veredicto = ('Nenhum esforco detetado. Sem esforcos perto do maximo '
+                     'nao ha referencia de performance para esta analise.')
     return {'total': total, 'por_modalidade': detalhe, 'veredicto': veredicto}
+
+
+def _estado_amostra(n):
+    """Mesmos limiares de robustez(): 30 'bom', 12 'parcial', senao 'insuficiente'."""
+    if n >= ROBUSTEZ_BOM:
+        return 'bom'
+    if n >= ROBUSTEZ_PARCIAL:
+        return 'parcial'
+    return 'insuficiente'
+
+
+def suficiencia_por_modalidade(deteccao, curvas=None, secs=1200,
+                               minimo_calibracao=MINIMO_CALIBRACAO):
+    """Dimensao da amostra de candidatos, avaliada em cada modalidade.
+
+    Nao usa o total global e nao cria limiares: reutiliza 30/12 (robustez) e
+    25 (calibrar_com_ancora). So mede QUANTIDADE de candidatos a `secs`; nao
+    diz que sejam testes maximos validos. Um historico de potencia curto
+    (p.ex. gravacao de potencia adicionada ha pouco) mostra-se tal como e, sem
+    ser tratado como defeito: a amostra e insuficiente, e o texto diz ha
+    quanto tempo existem curvas de potencia.
+
+    curvas: saida de db.load_power_curves() (para o periodo do historico).
+    """
+    historico = {}
+    for c in curvas or []:
+        mod, d = c.get('type'), str(c.get('date') or '')[:10]
+        if not mod or len(d) != 10:
+            continue
+        historico.setdefault(mod, []).append(d)
+
+    nome = TESTES.get(secs, {}).get('nome', f'{secs} s')
+    out = {}
+    for mod in sorted(set(deteccao or {}) | set(historico)):
+        durs = (deteccao or {}).get(mod) or {}
+        d = durs.get(secs)
+        testes = (d or {}).get('testes') or []
+        n = len(testes)
+        n_dias = len({t['date'] for t in testes})
+
+        hist = None
+        if historico.get(mod):
+            datas = sorted(historico[mod])
+            dias = (datetime.strptime(datas[-1], '%Y-%m-%d')
+                    - datetime.strptime(datas[0], '%Y-%m-%d')).days
+            hist = {'primeiro': datas[0], 'ultimo': datas[-1],
+                    'meses': round(dias / 30.4375, 1), 'n_curvas': len(datas)}
+
+        estado = _estado_amostra(n)
+        atinge = n >= minimo_calibracao
+        texto = (f'{mod}: {n} candidatos de {nome}'
+                 + (f' ({n_dias} dias distintos)' if n else ''))
+        if hist:
+            texto += (f', com {hist["meses"]} meses de historico de potencia '
+                      f'(desde {hist["primeiro"]})')
+        texto += (f'. Amostra: {estado} (limiares {ROBUSTEZ_PARCIAL}/{ROBUSTEZ_BOM}); '
+                  f'minimo para calibrar: {minimo_calibracao} candidatos '
+                  + ('atingido' if atinge else 'nao atingido')
+                  + '. Mede so a quantidade, nao a validade dos candidatos.')
+        out[mod] = {
+            'secs': secs, 'nome': nome,
+            'n_candidatos': n, 'n_dias_distintos': n_dias,
+            'estado': estado,
+            'minimo_calibracao': minimo_calibracao,
+            'atinge_minimo_calibracao': atinge,
+            'ultimo': (d or {}).get('ultimo', {}).get('date') if d else None,
+            'outras_duracoes': {
+                durs[s]['nome']: durs[s]['n_testes'] for s in sorted(durs) if s != secs},
+            'historico_potencia': hist,
+            'texto': texto,
+        }
+    return out
 
 
 def recomendacao_teste_por_tsb(tsb, modalidade_preferida=None):

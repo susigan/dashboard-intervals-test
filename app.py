@@ -1087,9 +1087,19 @@ def api_protocolo():
     import protocolo
     curvas = db.load_power_curves(request.args.get('tipo') or None)
     det = protocolo.detectar_testes(curvas or [])
+    cobertura = protocolo.cobertura(det)
+    # suficiencia por modalidade: chave aditiva dentro de 'cobertura' (as
+    # chaves de cobertura() e as do topo da resposta mantem-se). Uma falha
+    # aqui nao deve derrubar o resto da resposta.
+    try:
+        cobertura['suficiencia'] = protocolo.suficiencia_por_modalidade(det, curvas or [])
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        cobertura['suficiencia'] = {'erro': f'{type(e).__name__}: {e}'}
     return jsonify({
         'status': 'OK',
-        'cobertura': protocolo.cobertura(det),
+        'cobertura': cobertura,
         'sugestoes': protocolo.sugerir(det),
         'robustez': protocolo.robustez(det),
         # so os recentes na resposta: a lista completa pode ter centenas

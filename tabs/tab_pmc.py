@@ -583,6 +583,7 @@ BODY = r"""
 <h1>PMC — Performance Management Chart</h1>
 <div class="sub" id="sub">A carregar...</div>
 <div id="sugestoesTeste"></div>
+<details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Registo de testes de performance (opcional)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
 <div id="faseCard"></div>
@@ -2039,6 +2040,134 @@ function mostrarSugestoes(){
   '<div style="display:flex;gap:10px;flex-wrap:wrap">'+cartoes+'</div>'+
   '</div></details>';
 }
+
+// <<registo-testes>>
+// ─── Registo de testes de performance (Fase 1 do modelo progressivo) ──────
+// So regista e consulta. Confirmar um teste NAO calibra nem atualiza o modelo.
+// A lista so e pedida quando o painel e aberto (nunca ao carregar a pagina) e
+// nenhuma decisao e tomada sem um clique explicito e um motivo escrito.
+let REG=null, REG_CARREGADO=false, REG_FILTRO={mod:'',dur:'',est:''}, REG_ABRIR=null, REG_MSG='';
+const REG_MAX=40;
+function regEsc(s){
+ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function regBadge(txt,cor,titulo){
+ return '<span title="'+regEsc(titulo||'')+'" style="display:inline-block;padding:1px 7px;'+
+  'border-radius:10px;font-size:11px;border:1px solid '+cor+';color:'+cor+'">'+regEsc(txt)+'</span>';}
+function regBadgeElegibilidade(e){
+ if(e==='elegivel')return regBadge('elegivel','#2ECC71','icu_ignore_power=false (explicito)');
+ if(e==='inelegivel')return regBadge('inelegivel','#E74C3C','icu_ignore_power=true: potencia ignorada');
+ return regBadge('elegibilidade desconhecida','#E67E22',
+  'icu_ignore_power ausente ou atividade nao encontrada; nao e tratada como elegivel');}
+function regBadgeEstado(e){
+ if(e==='confirmado')return regBadge('confirmado','#2ECC71','confirmado explicitamente');
+ if(e==='rejeitado')return regBadge('rejeitado','#8b949e','rejeitado explicitamente');
+ return regBadge('detetado, sem decisao','#58a6ff','detetado automaticamente; nada foi decidido');}
+function regLista(){
+ const l=(REG&&REG.candidatos)||[];
+ const f=REG_FILTRO;
+ return l.map(function(c,i){return {c:c,i:i};}).filter(function(x){
+  return (!f.mod||x.c.modalidade===f.mod)&&(!f.dur||String(x.c.duracao_s)===f.dur)&&
+   (!f.est||x.c.estado_registo===f.est);
+ }).sort(function(a,b){return a.c.data<b.c.data?1:(a.c.data>b.c.data?-1:0);});}
+function regFormulario(c){
+ const dec=REG_ABRIR.dec, verbo=dec==='confirmar'?'Confirmar':'Rejeitar';
+ const optin=(dec==='confirmar'&&c.requer_aceitar_elegibilidade_desconhecida)?
+  '<label style="display:block;font-size:12px;margin:6px 0"><input type="checkbox" id="regOptin"> '+
+  'Aceito que a elegibilidade (icu_ignore_power) e desconhecida e confirmo mesmo assim. '+
+  'Continua registada como desconhecida.</label>':'';
+ return '<tr><td colspan="8" style="background:#0d1117;padding:10px 12px">'+
+  '<div style="font-size:13px;margin-bottom:4px"><b>'+verbo+'</b> '+regEsc(c.modalidade)+' '+
+  regEsc(c.duracao_s)+' s de '+regEsc(c.data)+' ('+Math.round(c.watts)+' W, atividade '+
+  regEsc(c.activity_id)+')</div>'+
+  '<textarea id="regMotivo" rows="2" maxlength="500" placeholder="Motivo (obrigatorio)" '+
+  'style="width:100%;max-width:560px;background:#161b22;color:#c9d1d9;border:1px solid #30363d;'+
+  'border-radius:6px;padding:6px"></textarea>'+optin+
+  '<div style="margin-top:6px"><button type="button" onclick="regEnviar()">Registar '+
+  (dec==='confirmar'?'confirmacao':'rejeicao')+'</button> '+
+  '<button type="button" onclick="regCancelar()">Cancelar</button></div></td></tr>';}
+function regAcoes(c,i){
+ const b=function(rot,dec,off,tip){
+  return '<button type="button" '+(off?'disabled ':'')+'title="'+regEsc(tip||'')+'" '+
+   'onclick="regAbrir('+i+',\''+dec+'\')">'+rot+'</button> ';};
+ const tipC=c.motivo_nao_confirmavel||c.aviso_elegibilidade||'';
+ if(c.estado_registo==='confirmado')return b('Invalidar (rejeitar)','rejeitar',false,'cria uma revisao nova; o historico fica');
+ if(c.estado_registo==='rejeitado')return b('Reconfirmar','confirmar',!c.confirmavel,tipC);
+ return b('Confirmar','confirmar',!c.confirmavel,tipC)+b('Rejeitar','rejeitar',false,'');}
+function htmlRegisto(d){
+ if(!d||d.status!=='OK'||!Array.isArray(d.candidatos))
+  return '<p class="sub">Nao foi possivel carregar os candidatos.</p>';
+ if(d.persistencia===false)
+  return '<p class="sub">Sem base de dados: o registo nao pode ser gravado.</p>';
+ const mods=Array.from(new Set(d.candidatos.map(function(c){return c.modalidade;})));
+ const sel=function(id,chave,vals){
+  return '<select onchange="regFiltro(\''+chave+'\',this.value)">'+
+   vals.map(function(v){return '<option value="'+regEsc(v[0])+'"'+(REG_FILTRO[chave]===v[0]?' selected':'')+
+    '>'+regEsc(v[1])+'</option>';}).join('')+'</select> ';};
+ const lista=regLista();
+ const mostra=lista.slice(0,REG_MAX);
+ const linhas=mostra.map(function(x){
+  const c=x.c;
+  return '<tr><td>'+regEsc(c.data)+'</td><td>'+regEsc(c.modalidade)+' '+regEsc(c.duracao_s)+' s</td>'+
+   '<td style="font-size:11px;color:#8b949e">'+regEsc(c.activity_id)+'</td>'+
+   '<td class="num">'+Math.round(c.watts)+' W</td>'+
+   '<td class="num">'+(c.pct_do_melhor!=null?c.pct_do_melhor+'%':'')+'</td>'+
+   '<td>'+regBadgeElegibilidade(c.elegibilidade)+'</td><td>'+regBadgeEstado(c.estado_registo)+'</td>'+
+   '<td>'+regAcoes(c,x.i)+'</td></tr>'+
+   ((REG_ABRIR&&REG_ABRIR.i===x.i)?regFormulario(c):'');
+ }).join('');
+ return '<p style="font-size:13px">Aqui escolhes quais esforcos detetados contam como testes de '+
+  'performance. Detetar nao e confirmar: nada e confirmado sozinho. Esta fase so guarda o registo e '+
+  'o historico; <b>confirmar um teste nao calibra nem atualiza o modelo</b>.</p>'+
+  '<p style="font-size:12px;color:#8b949e">Elegibilidade desconhecida quer dizer que o campo '+
+  'icu_ignore_power nao esta disponivel para essa atividade; nunca e tratada como elegivel. '+
+  'Um esforco inelegivel so pode ser rejeitado.</p>'+
+  '<div style="margin:6px 0">'+
+  sel('regSelMod','mod',[['','todas as modalidades']].concat(mods.map(function(m){return [m,m];})))+
+  sel('regSelDur','dur',[['','todas as duracoes'],['60','60 s'],['300','300 s'],['1200','1200 s']])+
+  sel('regSelEst','est',[['','todos os estados'],['pendente','detetado, sem decisao'],
+   ['confirmado','confirmado'],['rejeitado','rejeitado']])+'</div>'+
+  (REG_MSG?'<div style="font-size:13px;margin:6px 0;color:#58a6ff">'+regEsc(REG_MSG)+'</div>':'')+
+  (mostra.length?'<div class="wrap"><table><thead><tr>'+
+   ['Data','Esforco','Atividade','Potencia','% do melhor','Elegibilidade','Estado','Acao'].map(function(h){
+    return '<th>'+h+'</th>';}).join('')+'</tr></thead><tbody>'+linhas+'</tbody></table></div>'+
+   (lista.length>mostra.length?'<div class="sub">A mostrar '+mostra.length+' de '+lista.length+
+    ' (mais recentes primeiro). Usa os filtros para ver os restantes.</div>':''):
+   '<p class="sub">Sem candidatos com estes filtros.</p>');}
+function regRender(){
+ const el=document.getElementById('registoTestesCorpo');
+ if(el)el.innerHTML=htmlRegisto(REG);}
+async function carregarRegisto(){
+ try{ REG=await fetch('/api/protocolo/candidatos').then(function(r){return r.json();}); }
+ catch(e){ REG=null; }
+ REG_CARREGADO=!!REG;
+ regRender();}
+function abrirRegisto(det){
+ if(det&&det.open&&!REG_CARREGADO)carregarRegisto();}
+function regFiltro(chave,v){REG_FILTRO[chave]=v;REG_ABRIR=null;regRender();}
+function regAbrir(i,dec){REG_ABRIR={i:i,dec:dec};REG_MSG='';regRender();}
+function regCancelar(){REG_ABRIR=null;regRender();}
+async function regEnviar(){
+ if(!REG_ABRIR||!REG||!REG.candidatos)return;
+ const c=REG.candidatos[REG_ABRIR.i]; if(!c)return;
+ const motivo=((document.getElementById('regMotivo')||{}).value||'').trim();
+ if(!motivo){REG_MSG='Escreve o motivo antes de registar.';regRender();return;}
+ const optin=!!((document.getElementById('regOptin')||{}).checked);
+ let j;
+ try{
+  j=await fetch('/api/protocolo/testes/decisao',{method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({modalidade:c.modalidade,duracao_s:c.duracao_s,activity_id:c.activity_id,
+    decisao:REG_ABRIR.dec,motivo:motivo,confirmacao_explicita:true,origem_registo:'ui',
+    metodo_confirmacao:'manual',aceita_elegibilidade_desconhecida:optin})
+  }).then(function(r){return r.json();});
+ }catch(e){ REG_MSG='Falha de rede: nada foi registado.'; regRender(); return; }
+ REG_ABRIR=null;
+ REG_MSG=(j&&j.status==='OK')?
+  ((j.alterado?'Registado. ':'Sem alteracao. ')+'Isto nao calibra nem atualiza o modelo.'):
+  ((j&&j.mensagem)||'Nao foi possivel registar.');
+ await carregarRegisto();}
+// <</registo-testes>>
 
 async function montarExport(){
  let d;

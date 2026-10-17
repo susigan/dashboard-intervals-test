@@ -1207,6 +1207,8 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
         if len(ancora) < minimo_testes:
             out['por_modalidade'][mod] = {
                 'n_testes': len(ancora),
+                'fonte': 'insuficiente', 'calibrado': False,
+                'lag_referencia': None,
                 'motivo': f'so {len(ancora)} testes (precisa de {minimo_testes})'}
             continue
 
@@ -1220,9 +1222,16 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
         r = _cal.calibrar_lag(carga_total, alvo, range(5, 29), None, 'lag_super')
         primeiro = ancora[0]['date']
         ultimo = ancora[-1]['date']
+        # origem do lag: 'dados' = estimado a partir das ancoras; 'referencia' =
+        # valor de referencia usado porque nada foi estimado (nao e calibracao).
+        # `lag` mantem o contrato anterior (inclui o de referencia).
+        fonte = r.get('fonte') or 'referencia'
         out['por_modalidade'][mod] = {
             'n_testes': len(ancora),
             'de': primeiro, 'ate': ultimo,
+            'fonte': fonte, 'calibrado': fonte == 'dados',
+            'motivo': r.get('motivo'),
+            'lag_referencia': r.get('valor') if fonte == 'referencia' else None,
             'lag': r.get('valor'), 'r': r.get('r'), 'r2': r.get('r2'),
             'forca': r.get('forca'),
             'p_permutacao': r.get('p_permutacao'),
@@ -1234,6 +1243,10 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
     validos = [(m, v) for m, v in out['por_modalidade'].items()
                if v.get('sobrevive')]
     out['sobrevivem'] = [m for m, _ in validos]
+    out['calibradas'] = [m for m, v in out['por_modalidade'].items()
+                         if v.get('calibrado')]
+    out['em_referencia'] = [m for m, v in out['por_modalidade'].items()
+                            if v.get('fonte') == 'referencia']
     if validos:
         m, v = max(validos, key=lambda x: x[1].get('r2') or 0)
         out['leitura'] = (
@@ -1246,6 +1259,11 @@ def calibrar_com_ancora(serie_classica, modalidades, secs=1200,
             'usando so os dias de esforco maximo. Com esta ancora — que e a '
             'melhor disponivel — continua sem haver relacao detectavel entre '
             'carga e performance.')
+    if out['em_referencia']:
+        out['leitura'] += (
+            ' Em ' + ', '.join(out['em_referencia']) + ' o lag mostrado e o '
+            'de referencia (nenhum lag foi estimado a partir dos dados), nao '
+            'uma calibracao.')
     return out
 
 

@@ -664,6 +664,7 @@ BODY = r"""
 <div id="sugestoesTeste"></div>
 <details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Deteccao automatica de observacoes MMP (season, all-time, recente)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
 <details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
+<details class="expl" id="validacaoExp" style="margin:10px 0" ontoggle="abrirValidacao(this)"><summary>Validacao preditiva exploratoria do estimador (o que ja da para avaliar e que dados faltam)</summary><div class="expl-corpo" id="validacaoExpCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
 <div id="faseCard"></div>
@@ -2469,6 +2470,88 @@ function abrirEstimador(d){
  if(d&&d.open&&!EST_CARREGADO)carregarEstimador();
 }
 // <</estimador-experimental>>
+// <<validacao-exploratoria>>
+// ─── Validacao preditiva exploratoria (Fase 3) ───────────────────────────
+// So le /api/modelo/validacao, e so quando o painel e aberto. Nao escreve nada, nao altera
+// graficos nem indicadores do PMC e nao muda o estimador. As sugestoes de esforcos sao
+// oportunidades de recolha de dados, nunca uma condicao para a aplicacao funcionar.
+let VAL_CARREGADO=false;
+function htmlValidacao(j){
+ if(!j||j.status!=='OK')return '<p style="font-size:13px">Nao foi possivel calcular: '+
+  estEsc(j&&j.mensagem?j.mensagem:'sem resposta')+'</p>';
+ const SIT={sem_alvos:'sem alvos (provisorio)',amostra_insuficiente:'amostra insuficiente (provisorio)',
+  avaliavel_diferenca_nao_demonstrada:'avaliavel: sem diferenca demonstrada',
+  avaliavel_m2_melhor:'avaliavel: estimador melhor que M0 e M1',
+  avaliavel_m2_pior:'avaliavel: estimador pior que um baseline'};
+ const f1=function(x){return x==null?'&mdash;':Number(x).toFixed(1);};
+ const nz=function(x){return x==null?'&mdash;':estEsc(x);};
+ const retro=((j.modos||{}).retrospectivo||{}).itens||[];
+ const epoca={};((((j.modos||{}).conhecido_na_epoca)||{}).itens||[]).forEach(function(i){
+  epoca[i.modalidade+'|'+i.duracao_s]=i;});
+ const lin=retro.map(function(i){
+  const o=i.orientacao_dados||{},c=i.criterios||{},M=i.metodos||{};
+  const m=function(k){return (M[k]||{});};
+  const e=epoca[i.modalidade+'|'+i.duracao_s];
+  const ht=e&&e.historico_temporal;
+  const ep=e?(nz(e.n_alvos)+' alvos'+(ht&&ht.estado==='sem_historico_temporal'?' (sem historico temporal ainda)':'')):'&mdash;';
+  const fa=o.faltam;
+  let falta='';
+  if(fa){
+   const partes=[];
+   if(o.observacoes_a_acrescentar>0)partes.push('&asymp;'+o.observacoes_a_acrescentar+' esforcos novos em datas distintas');
+   if(fa.dias_cobertura>0)partes.push('cobertura temporal: faltam '+fa.dias_cobertura+' dias');
+   falta=partes.length?partes.join('; '):'criterios de amostra cumpridos';
+  }
+  const tu=o.teste_util;
+  const util=tu?('<br><span style="color:#8b949e">Util: <b>'+estEsc(tu.nome)+'</b> ('+estEsc(tu.mede)+'). '+estEsc(tu.condicao)+'</span>')
+   :(o.motivo_sem_sugestao==='amostra_suficiente_para_avaliar'?'<br><span style="color:#8b949e">Amostra suficiente para avaliar: nao ha teste a sugerir so para aumentar o numero.</span>'
+   :(o.motivo_sem_sugestao?'<br><span style="color:#8b949e">Sem sugestao especifica: '+estEsc(o.motivo_sem_sugestao)+'.</span>':''));
+  const m1=i.n_origens_m1_ordem_ambigua>0?('<br><span style="color:#8b949e">M1: em '+estEsc(i.n_origens_m1_ordem_ambigua)+
+   ' origem(ns) o ultimo dia tinha varias observacoes sem hora real que prove a ordem; M1 usou a media desse dia '+
+   '(fallback metodologico, nao o ultimo valor literal).</span>'):'';
+  const elg=o.excluidas_por_elegibilidade>0?('<br><span style="color:#8b949e">'+o.excluidas_por_elegibilidade+
+   ' esforco(s) detetado(s) ficam fora por elegibilidade (ex.: ignore_parts); a regra nao foi alterada.</span>'):'';
+  return '<tr><td>'+estEsc(i.modalidade)+'</td><td>P'+estEsc(i.duracao_s)+'</td>'+
+   '<td>'+estEsc(SIT[o.situacao]||o.situacao||'')+'</td>'+
+   '<td>'+nz(i.n_alvos)+'/'+nz(c.min_alvos)+' alvos<br>'+nz(i.n_datas_distintas)+'/'+nz(c.min_datas_distintas)+' datas<br>'+
+    nz(i.dias_cobertura)+'/'+nz(c.min_dias_cobertura)+' dias</td>'+
+   '<td>'+f1(m('M0').mae)+' / '+f1(m('M1').mae)+' / '+f1(m('M2').mae)+'</td>'+
+   '<td>'+f1(m('M0').erro_medio)+' / '+f1(m('M1').erro_medio)+' / '+f1(m('M2').erro_medio)+'</td>'+
+   '<td>'+ep+'</td>'+
+   '<td style="font-size:11px">'+estEsc(o.resumo||'')+(falta?('<br><b>'+falta+'</b>'):'')+util+elg+m1+'</td></tr>';
+ }).join('');
+ return '<p style="font-size:13px"><b>Exploratoria; o estimador continua nao validado.</b> Compara, por modalidade e '+
+  'duracao, a previsao do estimador (M2) com a media historica (M0) e o ultimo valor (M1), nos mesmos alvos e '+
+  'usando so dados anteriores a cada alvo. O alvo e o <b>melhor valor da duracao em toda a atividade</b>, nao um '+
+  'teste padronizado, e so inclui esforcos detetados (perto do melhor anterior): mede-se a previsao do proximo '+
+  'esforco detetado, nao a capacidade. <b>Detetar</b>, ser <b>elegivel</b> e <b>validar</b> sao coisas diferentes: '+
+  'ter muitas observacoes nao prova capacidade preditiva. A coluna principal e o modo retrospetivo '+
+  '(exploratorio: usa observacoes detetadas depois do alvo); &ldquo;conhecido na epoca&rdquo; so usa o que ja '+
+  'estava detetado e acumula dados a partir da ativacao.</p>'+
+  '<p style="font-size:12px;color:#8b949e">MAE e vies em W (previsao &minus; observado; negativo = subestima), '+
+  'M0 / M1 / M2. M1 e o ultimo valor; se o ultimo dia tiver varias observacoes sem ordem provada pela hora real, usa a media desse dia (fallback). Resultados de uma unidade nao se generalizam as outras. Os esforcos sugeridos sao oportunidades '+
+  'de recolha de dados, nao obrigacoes; os &ldquo;Testes sugeridos&rdquo; acima respondem a outra pergunta (testes em atraso).</p>'+
+  '<table style="font-size:12px;border-collapse:collapse"><thead><tr><th>Modalidade</th><th>Duracao</th>'+
+  '<th>Situacao</th><th>Amostra</th><th>MAE M0 / M1 / M2</th><th>Vies M0 / M1 / M2</th>'+
+  '<th>Na epoca</th><th>Leitura e dados em falta</th></tr></thead><tbody>'+lin+'</tbody></table>';
+}
+async function carregarValidacao(){
+ const el=document.getElementById('validacaoExpCorpo');
+ if(!el)return;
+ el.innerHTML='A carregar...';
+ try{
+  const r=await fetch('/api/modelo/validacao');
+  const j=await r.json();
+  el.innerHTML=htmlValidacao(j);
+  VAL_CARREGADO=!!(j&&j.status==='OK');      // uma resposta de erro permite nova tentativa
+ }catch(e){
+  el.innerHTML='<p style="font-size:13px">Erro ao carregar a validacao.</p>';
+ }
+}
+function abrirValidacao(d){
+ if(d&&d.open&&!VAL_CARREGADO)carregarValidacao();
+}
+// <</validacao-exploratoria>>
 
 async function montarExport(){
  let d;

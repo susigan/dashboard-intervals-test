@@ -1507,7 +1507,11 @@ def api_modelo_estimador():
 _AVISO_VALIDACAO = ('Validacao temporal EXPLORATORIA do estimador experimental. O alvo e o melhor '
                     'valor da duracao em toda a atividade (nao um teste padronizado). Nao altera q, '
                     'parametros, elegibilidade nem calculos de producao; nao promove o estimador. '
-                    'Sem dados suficientes o resultado e inconclusivo.')
+                    'Sem dados suficientes o resultado e inconclusivo. Os alvos so incluem esforcos '
+                    'detetados (perto do melhor anterior): mede-se a previsao do proximo esforco detetado, '
+                    'nao a capacidade do atleta. O modo retrospetivo usa observacoes detetadas depois da '
+                    'data de cada alvo (exploratorio); so conhecido_na_epoca respeita o instante de deteccao. M1 usa a '
+                    'media do ultimo dia quando a ordem das observacoes desse dia nao esta provada pela hora real.')
 
 
 @app.route('/api/modelo/validacao')
@@ -1537,6 +1541,13 @@ def api_modelo_validacao():
                          modos=mv.MODOS if modo == 'ambos' else (modo,),
                          tipo=filtros['tipo'], duracao=filtros['duracao'],
                          auto=oa.fonte(revisoes) if fonte == 'automatica' else None)
+        # orientacao de dados por unidade: derivada dos campos e criterios JA existentes
+        # (nao altera nenhum calculo nem criterio); os nomes dos esforcos vem do protocolo
+        import protocolo
+        for m in res['modos'].values():
+            for it in m['itens']:
+                it['orientacao_dados'] = mv.orientacao_dados(
+                    it, protocolo.TESTES, protocolo.LIMIAR_ESFORCO)
     except me.HistoricoAmbiguo as e:
         return _erro_registo(409, 'historico de testes ambiguo: ' + str(e))
     except Exception as e:

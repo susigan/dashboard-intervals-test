@@ -1307,6 +1307,33 @@ def api_protocolo_testes_historico():
                     'n': len(revs), 'revisoes': revs})
 
 
+def _candidatos_de_observacoes_auto(pedido, atividades):
+    """Observacoes automaticas ATUAIS deste teste, na forma de candidato do registo, para
+    permitir a sua exclusao (ou reinclusao) manual mesmo quando o protocolo 'recente' nao as
+    detetaria (ex.: maximo de season abaixo do all-time). Elegibilidade do REGISTO
+    (icu_ignore_power), a mesma regra de sempre."""
+    import modelo_observacoes_auto as moa
+    import modelo_testes as mt
+    import protocolo
+    tid = mt.id_teste(pedido['modalidade'], pedido['duracao_s'], pedido['activity_id'])
+    hist = db.observacoes_auto_historico(pedido['modalidade'], pedido['duracao_s'])
+    atuais = [o for o in moa.atuais([r for r in hist if r['test_id'] == tid])]
+    if not atuais:
+        return []
+    mapa = protocolo.mapa_ignore_power(atividades)
+    out = []
+    for o in atuais:
+        est, motivo = protocolo._estado_elegibilidade(o['activity_id'], mapa)
+        out.append({'test_id': o['test_id'], 'modalidade': o['modalidade'],
+                    'duracao_s': o['duracao_s'], 'activity_id': o['activity_id'],
+                    'data': o['data'], 'watts': o['watts'],
+                    'pct_do_melhor': o['pct_da_referencia'],
+                    'melhor_recente': o['referencia_watts'],
+                    'referencia_tipo': o['referencia_tipo'],
+                    'elegibilidade': est, 'motivo_elegibilidade': motivo})
+    return out
+
+
 @app.route('/api/protocolo/testes/decisao', methods=['POST'])
 def api_protocolo_testes_decisao():
     """Confirma ou rejeita um candidato detetado (acao explicita).
@@ -1328,7 +1355,8 @@ def api_protocolo_testes_decisao():
         det_anot, _curvas, atividades = _deteccao_atual(pedido['modalidade'], fresco=True)
         ultima = db.ultima_revisao_teste(tid)
         rev = mt.decidir(pedido, det_anot, ultima, mt.agora_utc(),
-                         mt.hora_local_da_atividade(atividades, pedido['activity_id']))
+                         mt.hora_local_da_atividade(atividades, pedido['activity_id']),
+                         adicionais=_candidatos_de_observacoes_auto(pedido, atividades))
         if rev is None:
             return jsonify({'status': 'OK', 'alterado': False, 'teste': ultima,
                             'mensagem': 'Sem alteracao: o teste ja esta neste estado.',
@@ -1344,6 +1372,92 @@ def api_protocolo_testes_decisao():
         import traceback
         traceback.print_exc()
         return _erro_registo(500, f'{type(e).__name__}: {e}')
+
+
+# ── Observacoes MMP detetadas automaticamente (substitui a confirmacao individual) ──
+# A deteccao regista versoes em modelo_observacoes_auto (so INSERT) depois de cada
+# sincronizacao de curvas. Estimador e validacao usam estas observacoes quando elegiveis; as
+# decisoes manuais (/api/protocolo/testes/decisao) ficam como sobreposicao OPCIONAL de exclusao.
+_AVISO_AUTO = ('Deteccao automatica experimental: um esforco perto de um maximo (recente, season '
+               'ou all-time) e detetado e, se cientificamente elegivel, entra no estimador e na '
+               'validacao sem confirmacao individual. Detetar nao e validar o modelo, e o maximo '
+               'de uma curva nao e um teste laboratorial ou padronizado.')
+
+
+def _fonte_arg():
+    """('automatica'|'confirmacao_manual', None) ou (None, resposta_de_erro)."""
+    fonte = request.args.get('fonte') or 'automatica'
+    if fonte not in ('automatica', 'confirmacao_manual'):
+        return None, _erro_registo(400, 'fonte invalida (use automatica ou confirmacao_manual)',
+                                   'fonte')
+    return fonte, None
+
+
+@app.route('/api/protocolo/observacoes-auto')
+def api_protocolo_observacoes_auto():
+    """Observacoes automaticas ATUAIS, com referencia usada, elegibilidade e exclusao.
+
+    ?tipo=Bike ?duracao=300 ?incluida=sim|nao. So leitura: nao grava nem chama a API externa.
+    """
+    import observacoes_auto as oa
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    incluida = request.args.get('incluida') or None
+    if incluida not in (None, 'sim', 'nao'):
+        return _erro_registo(400, 'incluida invalida (use sim ou nao)', 'incluida')
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        v = oa.vista(filtros['tipo'], filtros['duracao'], incluida)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', 'experimental': True, 'n': len(v['itens']),
+                    'observacoes': v['itens'], 'resumo': v['resumo'],
+                    'n_versoes_substituidas': v['n_versoes_substituidas'],
+                    'n_retiradas': v['n_retiradas'],
+                    'ultima_atualizacao': v['ultima_atualizacao'],
+                    'historico_temporal': v['historico_temporal'],
+                    'criterio': v['criterio_ultimo'],
+                    'limitacoes': list(oa.LIMITACOES), 'aviso': _AVISO_AUTO})
+
+
+@app.route('/api/protocolo/observacoes-auto/historico')
+def api_protocolo_observacoes_auto_historico():
+    """Todas as versoes (atuais, substituidas e retiradas), para auditoria."""
+    import modelo_observacoes_auto as moa
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    hist = db.observacoes_auto_historico()
+    linhas = [{**r, 'estado_versao': moa.estado_versao(r, hist)} for r in hist
+              if (not filtros['tipo'] or r['modalidade'] == filtros['tipo'])
+              and (filtros['duracao'] is None or r['duracao_s'] == filtros['duracao'])
+              and (not request.args.get('test_id') or r['test_id'] == request.args['test_id'])]
+    return jsonify({'status': 'OK', 'n': len(linhas), 'versoes': linhas})
+
+
+@app.route('/api/protocolo/observacoes-auto/atualizar', methods=['POST'])
+def api_protocolo_observacoes_auto_atualizar():
+    """Corre a deteccao sobre as curvas ja sincronizadas e regista versoes novas.
+
+    Idempotente. Nao sincroniza curvas. Pode pedir as fronteiras de season ao calendario
+    (cache de 1 h); sem elas usa SEASON_INICIO_MES.
+    """
+    import observacoes_auto as oa
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        res = oa.atualizar(origem='manual')
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK' if res.get('ok') else 'erro', **res}), (200 if res.get('ok') else 409)
 
 
 # ── Fase 2 do modelo progressivo: estimador EXPERIMENTAL (so leitura) ─────────
@@ -1367,13 +1481,19 @@ def api_modelo_estimador():
     ate = request.args.get('ate') or mt.agora_utc().date().isoformat()
     if me._data_valida(ate) is None or len(ate) != 10:
         return _erro_registo(400, 'ate invalido (use YYYY-MM-DD)', 'ate')
+    fonte, erro = _fonte_arg()
+    if erro:
+        return erro
     if not db.ENABLED:
         return _erro_registo(503, 'sem base de dados')
     try:
+        import observacoes_auto as oa
         atividades = db.load_activities()
-        res = me.calcular_estado(db.revisoes_testes_modelo(), atividades,
+        revisoes = db.revisoes_testes_modelo()
+        res = me.calcular_estado(revisoes, atividades,
                                  db.load_power_curves() or [], ate,
-                                 tipo=filtros['tipo'], duracao=filtros['duracao'])
+                                 tipo=filtros['tipo'], duracao=filtros['duracao'],
+                                 auto=oa.fonte(revisoes) if fonte == 'automatica' else None)
     except me.HistoricoAmbiguo as e:
         return _erro_registo(409, 'historico de testes ambiguo: ' + str(e))
     except Exception as e:
@@ -1404,13 +1524,19 @@ def api_modelo_validacao():
     modo = request.args.get('modo') or 'ambos'
     if modo != 'ambos' and modo not in mv.MODOS:
         return _erro_registo(400, 'modo invalido (use retrospectivo, conhecido_na_epoca ou ambos)', 'modo')
+    fonte, erro = _fonte_arg()
+    if erro:
+        return erro
     if not db.ENABLED:
         return _erro_registo(503, 'sem base de dados')
     try:
-        res = mv.validar(db.revisoes_testes_modelo(), db.load_activities(),
+        import observacoes_auto as oa
+        revisoes = db.revisoes_testes_modelo()
+        res = mv.validar(revisoes, db.load_activities(),
                          db.load_power_curves() or [],
                          modos=mv.MODOS if modo == 'ambos' else (modo,),
-                         tipo=filtros['tipo'], duracao=filtros['duracao'])
+                         tipo=filtros['tipo'], duracao=filtros['duracao'],
+                         auto=oa.fonte(revisoes) if fonte == 'automatica' else None)
     except me.HistoricoAmbiguo as e:
         return _erro_registo(409, 'historico de testes ambiguo: ' + str(e))
     except Exception as e:

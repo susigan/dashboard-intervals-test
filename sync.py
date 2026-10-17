@@ -190,9 +190,20 @@ def sync_power_curves(modalidades=None, anos=None):
         if erros_mod:
             detalhe[mod]['erros'] = erros_mod
 
-    return {'ok': True, 'oldest': oldest, 'total': total, 'athlete_id': id_atleta,
-            'por_modalidade': detalhe, 'tipos_na_base': reais,
-            'segundos': round(time.time() - t0, 2)}
+    resultado = {'ok': True, 'oldest': oldest, 'total': total, 'athlete_id': id_atleta,
+                 'por_modalidade': detalhe, 'tipos_na_base': reais,
+                 'segundos': round(time.time() - t0, 2)}
+    # Deteccao automatica de observacoes MMP (season, all-time, recente): corre sobre as curvas
+    # que acabaram de ser gravadas. So faz INSERT na sua propria tabela; uma falha aqui nunca
+    # estraga a sincronizacao das curvas.
+    try:
+        import observacoes_auto
+        resultado['observacoes_auto'] = observacoes_auto.atualizar(origem='sync')
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        resultado['observacoes_auto'] = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+    return resultado
 
 
 def sync_streams(activity_id):

@@ -285,6 +285,89 @@ def selecionar_observacoes(atuais, atividades, curvas_por_atividade):
     return out
 
 
+def _motivo_observacao_auto_invalida(o):
+    """Motivo de uma observacao automatica nao ser utilizavel, ou None. Nao exige
+    confirmacao manual: a deteccao automatica e o que a cria."""
+    if o.get('modalidade') not in mt.MODALIDADES:
+        return 'modalidade_invalida'
+    d = o.get('duracao_s')
+    if isinstance(d, bool) or d not in mt.DURACOES:
+        return 'duracao_invalida'
+    if not _watts_validos(o.get('watts')):
+        return 'potencia_invalida'
+    if _data_valida(o.get('data')) is None:
+        return 'data_invalida'
+    return None
+
+
+def selecionar_observacoes_auto(obs_atuais, revisoes_atuais, atividades, curvas_por_atividade):
+    """Como selecionar_observacoes, mas a partir das observacoes detetadas automaticamente.
+
+    obs_atuais: versoes ATUAIS (modelo_observacoes_auto.atuais); versoes substituidas ou
+    retiradas nunca chegam aqui. revisoes_atuais: estado_atual_por_teste(historico manual)
+    ou {} -- so serve de SOBREPOSICAO OPCIONAL: uma revisao atual 'rejeitado' exclui a
+    observacao ('exclusao_manual'), mesmo que o valor tenha mudado desde a rejeicao (a
+    rejeicao e um juizo sobre o esforco; so uma nova revisao manual a levanta). Uma revisao
+    'confirmado' nao e necessaria nem acrescenta nada.
+
+    Exclusoes (por esta ordem): exclusao_manual, modalidade/duracao/potencia/data invalidas,
+    inelegivel:... (icu_ignore_power), elegibilidade_desconhecida:... (inclui ignore_parts nao
+    vazio: detetado e mostrado, mas fora do estimador e da validacao), dados_divergente /
+    dados_sem_curva (a curva atual ja nao confere com o valor detetado).
+    Mesma forma de saida que selecionar_observacoes ('n_confirmados' = quantas das
+    observacoes tem tambem confirmacao manual; 'n_detetadas' = quantas observacoes).
+    """
+    revisoes_atuais = revisoes_atuais or {}
+    out = {(m, d): {'n_confirmados': 0, 'n_detetadas': 0, 'usadas': [], 'excluidas': []}
+           for m in mt.MODALIDADES for d in mt.DURACOES}
+    for o in sorted(obs_atuais or [], key=lambda x: str(x.get('test_id'))):
+        k = (o.get('modalidade'), o.get('duracao_s'))
+        if k not in out:
+            continue
+        out[k]['n_detetadas'] += 1
+        rev = revisoes_atuais.get(o['test_id'])
+        if rev is not None and rev.get('estado') == mt.ESTADO_CONFIRMADO:
+            out[k]['n_confirmados'] += 1
+        base = {'test_id': o['test_id'], 'revisao': o.get('versao'),
+                'activity_id': o.get('activity_id'), 'data': o.get('data'),
+                'watts': o.get('watts'), 'origem': 'automatica',
+                'referencia_tipo': o.get('referencia_tipo'),
+                'pct_da_referencia': o.get('pct_da_referencia')}
+        motivo, eleg = None, None
+        if rev is not None and rev.get('estado') == mt.ESTADO_REJEITADO:
+            motivo = 'exclusao_manual'
+            base['exclusao_manual_valor'] = rev.get('watts')
+            base['exclusao_manual_valor_diferente'] = mt.valor_mudou(rev.get('watts'), o.get('watts'))
+        if motivo is None and o.get('referencia_tipo') is None:
+            # sem nenhum ponto anterior nao ha referencia: detetado e registado, mas nao
+            # entra no estimador nem na validacao
+            motivo = 'sem_referencia_anterior'
+        if motivo is None:
+            motivo = _motivo_observacao_auto_invalida(o)
+        if motivo is None:
+            eleg = elegibilidade_aprendizagem(o['activity_id'], atividades)
+            if eleg['estado'] == ELEG_INELEGIVEL:
+                motivo = 'inelegivel:' + eleg['motivo']
+            elif eleg['estado'] == ELEG_DESCONHECIDA:
+                motivo = 'elegibilidade_desconhecida:' + eleg['motivo']
+        if motivo is None:
+            sit = mt.situacao_dados({'activity_id': o['activity_id'], 'duracao_s': o['duracao_s'],
+                                     'watts': o['watts']}, curvas_por_atividade)
+            if sit != 'conforme':
+                motivo = 'dados_' + sit
+        if motivo is not None:
+            out[k]['excluidas'].append({**base, 'motivo': motivo})
+            continue
+        out[k]['usadas'].append({**base, 'hora_local': o.get('hora_local'),
+                                 'elegibilidade_aprendizagem': eleg['estado'],
+                                 'elegibilidade_registo': o.get('elegibilidade'),
+                                 'aceita_elegibilidade_desconhecida': False})
+    for v in out.values():
+        v['usadas'].sort(key=chave_ordem)
+        v['excluidas'].sort(key=lambda e: (e['motivo'], e['test_id']))
+    return out
+
+
 # ── nucleo do estimador (funcoes puras) ─────────────────────────────────────
 
 def estado_inicial():
@@ -395,16 +478,25 @@ def curvas_por_atividade(curvas):
     return {c['activity_id']: c for c in (curvas or []) if isinstance(c, dict) and 'activity_id' in c}
 
 
-def calcular_estado(historico, atividades, curvas, ate, q=Q_DIA, tipo=None, duracao=None):
+def calcular_estado(historico, atividades, curvas, ate, q=Q_DIA, tipo=None, duracao=None,
+                    auto=None):
     """Estado experimental completo, refeito do historico (nada e persistido).
 
     historico: TODAS as revisoes (db.revisoes_testes_modelo()). `ate`: YYYY-MM-DD
     obrigatorio e explicito (a funcao nao le o relogio). Levanta HistoricoAmbiguo.
+    auto: None -> so conta o que o utilizador confirmou (comportamento anterior).
+    Com `auto` (modelo_observacoes_auto.FonteAuto) as observacoes sao as detetadas
+    automaticamente e cientificamente elegiveis; as revisoes manuais ficam como
+    sobreposicao opcional de exclusao.
     """
     if _data_valida(ate) is None:
         raise ValueError('ate tem de ser uma data YYYY-MM-DD')
     atuais = estado_atual_por_teste(historico)
-    sel = selecionar_observacoes(atuais, atividades, curvas_por_atividade(curvas))
+    if auto is None:
+        sel = selecionar_observacoes(atuais, atividades, curvas_por_atividade(curvas))
+    else:
+        sel = selecionar_observacoes_auto(auto.atuais(), atuais, atividades,
+                                          curvas_por_atividade(curvas))
     itens, usadas_para_hash = [], {}
     for (m, d) in sorted(sel):
         if (tipo and m != tipo) or (duracao is not None and d != duracao):
@@ -422,7 +514,8 @@ def calcular_estado(historico, atividades, curvas, ate, q=Q_DIA, tipo=None, dura
             motivos[e['motivo']] = motivos.get(e['motivo'], 0) + 1
         itens.append({
             'modalidade': m, 'duracao_s': d, **ser['resumo'],
-            'n_confirmados': s['n_confirmados'], 'n_usadas': len(usadas),
+            'n_confirmados': s['n_confirmados'], 'n_detetadas': s.get('n_detetadas'),
+            'n_usadas': len(usadas),
             'n_excluidas': len(excl), 'motivos_exclusao': dict(sorted(motivos.items())),
             'excluidas': excl,
             'sequencia_usada': [{'test_id': o['test_id'], 'revisao': o['revisao'],
@@ -433,5 +526,6 @@ def calcular_estado(historico, atividades, curvas, ate, q=Q_DIA, tipo=None, dura
             'trajetoria': ser['trajetoria'],
         })
     return {'experimental': True, 'validado_preditivamente': False,
+            'fonte_observacoes': 'automatica' if auto is not None else 'confirmacao_manual',
             'versao_estimador': VERSAO_ESTIMADOR, 'q_dia': q, 'ate': ate,
             'assinatura': _assinatura(usadas_para_hash, q, ate), 'itens': itens}

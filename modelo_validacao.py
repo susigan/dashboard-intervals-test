@@ -9,7 +9,9 @@ Pergunta
 Por modalidade x duracao (12 unidades independentes, sem misturar nem extrapolar), o
 estimador (M2, q=0.01) preve a proxima observacao melhor do que baselines simples?
   M0  media historica expansiva das observacoes anteriores
-  M1  ultimo valor observado antes da previsao
+  M1  ultimo valor observado antes da previsao. Se o ultimo dia do treino tiver varias
+      observacoes sem ordem provada pela hora local real, usa-se a MEDIA desse dia: um
+      fallback metodologico para nao simular uma sequencia (nao e o ultimo valor literal).
   M2  filtro de nivel local da Fase 2 (previsao pontual = nivel; q predefinido)
 
 O alvo e a potencia da proxima observacao elegivel da mesma modalidade e duracao, tal
@@ -68,7 +70,7 @@ import hashlib
 import json
 import math
 import random
-from datetime import date
+from datetime import date, datetime
 
 import modelo_estimador as E
 
@@ -192,8 +194,43 @@ def previsoes_metodos(treino, alvo_data, q=Q_PADRAO):
         sd = math.sqrt(inc['sd_w'] ** 2 + inc['sigma_ruido_w'] ** 2)
         tq = E.t975(inc['graus_liberdade'])
         ic = [nivel - tq * sd, nivel + tq * sd]
-    return {'M0': sum(w) / len(w), 'M1': w[-1], 'M2': nivel, 'n_treino': len(t),
-            'ic95_predito_m2': ic}, None
+    m1, ambiguo = ultimo_valor(t)
+    return {'M0': sum(w) / len(w), 'M1': m1, 'M2': nivel, 'n_treino': len(t),
+            'm1_ordem_ambigua': ambiguo, 'ic95_predito_m2': ic}, None
+
+
+def _hora_real(o):
+    """Hora local REAL ('YYYY-MM-DDTHH:MM:SS') de uma observacao, ou None.
+
+    So conta um timestamp ISO com hora cujo dia coincide com o da observacao: sem hora, com
+    texto invalido ou de outro dia, a ordem dentro do dia nao se conhece.
+    """
+    v = o.get('hora_local')
+    if not isinstance(v, str) or len(v) < 16 or v[10] not in 'T ' or v[:10] != str(o['data'])[:10]:
+        return None
+    hms = v[11:19] if len(v) >= 19 else v[11:16] + ':00'
+    try:
+        datetime.strptime(hms, '%H:%M:%S')              # horas impossiveis (25:61) nao provam nada
+    except ValueError:
+        return None
+    return v[:10] + 'T' + hms
+
+
+def ultimo_valor(t):
+    """(valor do baseline M1, ordem_ambigua). `t`: treino ordenado (data < alvo).
+
+    M1 = ultimo valor observado. Se o ULTIMO DIA do treino tiver varias observacoes, so a hora
+    local real as ordena; sem ela (ou com horas iguais) a ordem e desconhecida e o activity_id
+    NAO a decide (seria simular uma sequencia que os dados nao provam): M1 passa a ser a media
+    das observacoes desse dia. Com ordem provada, e o valor da mais tardia.
+    """
+    ult = [o for o in t if o['data'] == t[-1]['data']]
+    if len(ult) == 1:
+        return t[-1]['watts'], False
+    horas = [_hora_real(o) for o in ult]
+    if all(horas) and len(set(horas)) == len(horas):
+        return max(zip(horas, (o['watts'] for o in ult)))[1], False
+    return sum(o['watts'] for o in ult) / len(ult), True
 
 
 def _sse_walk_forward(t, q):
@@ -271,6 +308,87 @@ def veredicto(dif):
     return 'diferenca_nao_demonstrada'
 
 
+# ── orientacao de dados por unidade ────────────────────────────────────────
+
+SIT_SEM_ALVOS = 'sem_alvos'
+SIT_INSUFICIENTE = 'amostra_insuficiente'
+SIT_SEM_DIFERENCA = 'avaliavel_diferenca_nao_demonstrada'
+SIT_M2_MELHOR = 'avaliavel_m2_melhor'
+SIT_M2_PIOR = 'avaliavel_m2_pior'
+
+_RESUMO_SITUACAO = {
+    SIT_SEM_ALVOS: 'Sem alvos avaliaveis: nada a concluir sobre o estimador nesta unidade (provisorio).',
+    SIT_INSUFICIENTE: ('Amostra insuficiente: so metricas descritivas. A conclusao e provisoria; '
+                       'nao valida nem rejeita o estimador.'),
+    SIT_SEM_DIFERENCA: ('Amostra suficiente para avaliar, mas sem diferenca demonstrada face aos '
+                        'baselines. Nao prova equivalencia: continua a acumular observacoes.'),
+    SIT_M2_MELHOR: ('Nesta modalidade e duracao o estimador foi melhor que M0 e M1 (margem e incerteza '
+                    'cumpridas). Nao se generaliza as outras unidades.'),
+    SIT_M2_PIOR: ('Nesta modalidade e duracao o estimador foi pior que pelo menos um baseline, com a '
+                  'incerteza a suportar. Nao se generaliza as outras unidades.'),
+}
+
+
+def situacao_da_unidade(item):
+    """Uma de: sem_alvos | amostra_insuficiente | avaliavel_* (so le campos do proprio item)."""
+    est = item.get('estado_suficiencia')
+    if est == EST_SEM_ALVOS:
+        return SIT_SEM_ALVOS
+    if est != EST_AVALIAVEL:                 # descritivo, ou item incompleto: nunca se presume amostra suficiente
+        return SIT_INSUFICIENTE
+    v = item.get('veredicto')
+    if v == 'm2_melhor_que_ambos_baselines':
+        return SIT_M2_MELHOR
+    if v == 'm2_pior_que_algum_baseline':
+        return SIT_M2_PIOR
+    return SIT_SEM_DIFERENCA
+
+
+def orientacao_dados(item, testes=None, limiar=None):
+    """Que dados faltam a uma unidade (modalidade x duracao) e que esforco ajudaria.
+
+    Derivada so dos campos do item de `avaliar` e dos criterios de suficiencia JA existentes
+    (nao cria criterios nem altera nenhum). `testes`: {duracao_s: {'nome','mede'}} (protocolo
+    existente); `limiar`: fracao da referencia que define um esforco maximo (so para o texto).
+    Sem amostra suficiente descreve o que falta e sugere UM esforco util; com amostra suficiente
+    nao sugere mais testes so para aumentar o numero. Um esforco e uma OPORTUNIDADE de recolha
+    de dados, nunca uma condicao para a aplicacao funcionar.
+    """
+    sit = situacao_da_unidade(item)
+    crit = item.get('criterios') or {}
+    n, d, dias = item.get('n_alvos') or 0, item.get('n_datas_distintas') or 0, item.get('dias_cobertura') or 0
+    out = {'situacao': sit,
+           'conclusao': 'provisoria' if sit in (SIT_SEM_ALVOS, SIT_INSUFICIENTE) else 'avaliada_exploratoria',
+           'resumo': _RESUMO_SITUACAO[sit], 'faltam': None, 'observacoes_a_acrescentar': 0,
+           'teste_util': None, 'motivo_sem_sugestao': None,
+           'excluidas_por_elegibilidade': sum(
+               v for k, v in (item.get('motivos_exclusao_observacoes') or {}).items()
+               if str(k).startswith(('elegibilidade_desconhecida', 'inelegivel'))),
+           'como_contribui': ('Cada esforco novo, detetado e elegivel, passa a ser um alvo futuro e a '
+                              'entrar no treino das previsoes seguintes; nunca altera previsoes passadas.')}
+    if sit not in (SIT_SEM_ALVOS, SIT_INSUFICIENTE):
+        out['motivo_sem_sugestao'] = 'amostra_suficiente_para_avaliar'
+        return out
+    f = {'alvos': max(0, crit.get('min_alvos', MIN_ALVOS_AVALIAVEL) - n),
+         'datas_distintas': max(0, crit.get('min_datas_distintas', MIN_DATAS_AVALIAVEL) - d),
+         'dias_cobertura': max(0, crit.get('min_dias_cobertura', MIN_DIAS_AVALIAVEL) - dias)}
+    out['faltam'] = f
+    # cada esforco novo, numa data nova, acrescenta 1 alvo e 1 data
+    out['observacoes_a_acrescentar'] = max(f['alvos'], f['datas_distintas'])
+    info = (testes or {}).get(item.get('duracao_s'))
+    if not info:
+        out['motivo_sem_sugestao'] = 'duracao_sem_protocolo_definido'
+        return out
+    pct = f' (>= {round(limiar * 100)}% de uma referencia anterior)' if limiar else ''
+    out['teste_util'] = {
+        'modalidade': item.get('modalidade'), 'duracao_s': item.get('duracao_s'),
+        'nome': info.get('nome'), 'mede': info.get('mede'),
+        'condicao': ('Conta se for um esforco maximo nesta duracao' + pct + ', numa atividade com '
+                     'icu_ignore_power=false explicito e sem ignore_parts. Nao e um teste padronizado '
+                     'nem obrigatorio; uma prova, um bloco duro ou uma saida forte servem.')}
+    return out
+
+
 # ── orquestracao ────────────────────────────────────────────────────────────
 
 def _dia(v):
@@ -288,6 +406,7 @@ def _avaliar_chave(modo, mod, dur, alvos, treino_de, n_conf, motivos_sel, q, gre
     """alvos: observacoes usaveis (estado atual). treino_de(alvo) -> observacoes conhecidas."""
     excl, prev = {}, []
     perdido_epoca = 0
+    m1_ambiguo = 0
     for a in alvos:
         treino = treino_de(a)
         base_retro = [o for o in alvos if o['data'] < a['data']]
@@ -296,6 +415,7 @@ def _avaliar_chave(modo, mod, dur, alvos, treino_de, n_conf, motivos_sel, q, gre
         if p is None:
             excl[motivo] = excl.get(motivo, 0) + 1
             continue
+        m1_ambiguo += 1 if p['m1_ordem_ambigua'] else 0
         prev.append({'test_id': a['test_id'], 'data': a['data'], 'y': a['watts'],
                      'treino': [o for o in treino if o['data'] < a['data']], **p})
     er = {m: [r[m] - r['y'] for r in prev] for m in ('M0', 'M1', 'M2')}
@@ -344,6 +464,7 @@ def _avaliar_chave(modo, mod, dur, alvos, treino_de, n_conf, motivos_sel, q, gre
         'motivos_exclusao_observacoes': motivos_sel,
         'origens_excluidas': dict(sorted(excl.items())),
         'n_origens_excluidas': sum(excl.values()),
+        'n_origens_m1_ordem_ambigua': m1_ambiguo,
         'treino_perdido_por_modo': perdido_epoca if modo == 'conhecido_na_epoca' else 0,
         'metodos': {m: metricas(er[m]) for m in ('M0', 'M1', 'M2')},
         'diferencas_m2_menos_baseline': dif,
@@ -352,7 +473,7 @@ def _avaliar_chave(modo, mod, dur, alvos, treino_de, n_conf, motivos_sel, q, gre
         'sensibilidade_q': sens,
         'selecao_q_aninhada': aninhada,
         'previsoes': [{k: r[k] for k in ('test_id', 'data', 'y', 'n_treino', 'M0', 'M1', 'M2',
-                                         'ic95_predito_m2')} for r in prev],
+                                         'm1_ordem_ambigua', 'ic95_predito_m2')} for r in prev],
     }
 
 

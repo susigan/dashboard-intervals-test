@@ -76,3 +76,25 @@ Erros: `{"status":"erro","mensagem":...,"campo":...}` com 400/404/409/415/503.
   e testado só em SQLite: o caminho Postgres não pôde ser exercitado offline e deve ser
   verificado pelo Saurio antes do deploy (`init_schema` cria a tabela no arranque).
 * O registo não é usado por nenhum cálculo: as Fases 2 em diante decidirão como (e se).
+
+## Versão do valor e revisão de candidatos (aditivo)
+
+- **Identidade** do candidato: `test_id` = `modalidade:duracao_s:activity_id` (inalterada).
+  **Versão do valor** = `watts` atual da curva em `power_curves`, comparado com
+  `math.isclose(rel_tol=1e-9, abs_tol=1e-6)`. Mudanças só de metadados (nome, data, flags) não
+  são mudança de potência. Nada é persistido como "pendente": calcula-se por pedido,
+  comparando a curva atual com a última revisão. Sem alteração de esquema.
+- Valor mudado desde a última revisão ⇒ o candidato volta a `estado_registo = 'pendente'`
+  (campos aditivos `valor_atualizado`, `estado_ultima_revisao`, `decisao_anterior`,
+  `valor_igual_a_revisao`). As revisões anteriores permanecem intactas (append-only);
+  a decisão nova entra como revisão seguinte, mesmo com estado igual ao anterior (o evento
+  segue a regra de `_evento`), desde que o `watts` seja diferente.
+  Voltar a um valor antigo conta como valor novo (pendente), sem apagar revisões.
+- Elegibilidade do estimador (aditivo): `elegibilidade_estimador`,
+  `motivo_elegibilidade_estimador`, `elegivel_para_estimador`. Pode diferir da do registo
+  (`ignore_parts` não vazio ⇒ desconhecida para o estimador). Regras de confirmação inalteradas.
+- `GET /api/protocolo/candidatos` devolve também `resumo_pendencias`.
+- `POST /api/protocolo/testes/decisao` aceita `watts_vistos` (opcional): se a curva já mudou,
+  responde 409 sem gravar.
+- O estimador/validação só usam revisão confirmada, elegível e cujo `watts` coincide com a
+  curva atual; pendentes e revisões desatualizadas ficam de fora (`dados_divergente`).

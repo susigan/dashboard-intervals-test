@@ -1103,13 +1103,40 @@ def _mapa_ignore_power():
         return c['mapa']
     try:
         import protocolo
-        mapa = protocolo.mapa_ignore_power(db.load_activities())
+        atividades = db.load_activities()
+        mapa = protocolo.mapa_ignore_power(atividades)
+        elig = _mapa_elegibilidade_estimador(atividades) if atividades is not None else None
     except Exception:
         import traceback
         traceback.print_exc()
         return None
     c['t'], c['mapa'] = (agora, mapa) if mapa is not None else (None, None)
+    c['elig'] = elig            # mesma leitura, mesma validade da cache (so aditivo)
     return mapa
+
+
+def _mapa_elegibilidade_estimador(atividades):
+    """{activity_id: elegibilidade que o ESTIMADOR aplica} (modelo_estimador, regra
+    canonica: icu_ignore_power e ignore_parts). Uma passagem sobre as atividades."""
+    import modelo_estimador as me
+    grupos = {}
+    for a in atividades or []:
+        if isinstance(a, dict) and a.get('id') is not None:
+            grupos.setdefault(a['id'], []).append(a)
+    return {aid: me.elegibilidade_aprendizagem(aid, g) for aid, g in grupos.items()}
+
+
+def _elegibilidade_estimador():
+    """callable(activity_id) -> elegibilidade do estimador, com a mesma cache TTL."""
+    import modelo_estimador as me
+    _mapa_ignore_power()                       # renova a cache se preciso
+    elig = _cache_ignore_power.get('elig')
+
+    def para(aid):
+        if elig is None:                       # atividades indisponiveis
+            return me.elegibilidade_aprendizagem(aid, None)
+        return elig.get(aid) or me.elegibilidade_aprendizagem(aid, [])
+    return para
 
 
 @app.route('/api/protocolo')
@@ -1218,7 +1245,9 @@ def api_protocolo_candidatos():
     """Esforcos detetados com elegibilidade e estado no registo.
 
     ?tipo=Bike ?duracao=1200 ?estado=pendente|confirmado|rejeitado
-    'pendente' = detetado e sem decisao do utilizador (nada e gravado por omissao).
+    'pendente' = detetado e sem decisao do utilizador sobre a VERSAO ATUAL do valor:
+    sem revisao, ou com watts diferentes dos da ultima revisao (valor atualizado;
+    a decisao anterior fica no historico). Nada e gravado por omissao.
     """
     import modelo_testes as mt
     filtros, erro = _filtros_registo(com_pendente=True)
@@ -1227,12 +1256,14 @@ def api_protocolo_candidatos():
     det_anot, _curvas, _ = _deteccao_atual(filtros['tipo'])
     atuais_lista = db.testes_modelo_atuais()
     atuais = {r['test_id']: r for r in atuais_lista}
-    cands = mt.candidatos_com_estado(det_anot, atuais, filtros)
+    cands = mt.candidatos_com_estado(det_anot, atuais, filtros, _elegibilidade_estimador(),
+                                     db.revisoes_testes_modelo())
     return jsonify({
         'status': 'OK', 'persistencia': bool(db.ENABLED),
         'contrato_versao': mt.VERSAO_CONTRATO,
         'n': len(cands), 'candidatos': cands,
         'resumo_registo': mt.resumo_registo(atuais_lista),
+        'resumo_pendencias': mt.resumo_pendencias(cands),
         'aviso': _AVISO_REGISTO,
     })
 

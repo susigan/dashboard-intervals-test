@@ -1305,6 +1305,44 @@ def api_protocolo_testes_decisao():
         return _erro_registo(500, f'{type(e).__name__}: {e}')
 
 
+# ── Fase 2 do modelo progressivo: estimador EXPERIMENTAL (so leitura) ─────────
+_AVISO_ESTIMADOR = ('Experimental e nao validado preditivamente (Fase 3). Nao altera '
+                    'PMC, CTL, ATL, TSB, CTLgamma, FMT, homeostatico nem ancora. '
+                    'Calculado de novo a cada pedido; nada e gravado.')
+
+
+@app.route('/api/modelo/estimador')
+def api_modelo_estimador():
+    """Nivel estimado por modalidade x duracao, so com testes confirmados e elegiveis.
+
+    ?tipo=Bike ?duracao=300 ?ate=YYYY-MM-DD (por omissao, hoje em UTC).
+    So le (historico do registo, atividades, curvas); nunca escreve.
+    """
+    import modelo_estimador as me
+    import modelo_testes as mt
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    ate = request.args.get('ate') or mt.agora_utc().date().isoformat()
+    if me._data_valida(ate) is None or len(ate) != 10:
+        return _erro_registo(400, 'ate invalido (use YYYY-MM-DD)', 'ate')
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        atividades = db.load_activities()
+        res = me.calcular_estado(db.revisoes_testes_modelo(), atividades,
+                                 db.load_power_curves() or [], ate,
+                                 tipo=filtros['tipo'], duracao=filtros['duracao'])
+    except me.HistoricoAmbiguo as e:
+        return _erro_registo(409, 'historico de testes ambiguo: ' + str(e))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', 'aviso': _AVISO_ESTIMADOR,
+                    'atividades_disponiveis': atividades is not None, **res})
+
+
 @app.route('/api/calibracao')
 def api_calibracao():
     """Parametros calibrados nos dados do atleta, com a evidencia.

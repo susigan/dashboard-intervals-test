@@ -584,6 +584,7 @@ BODY = r"""
 <div class="sub" id="sub">A carregar...</div>
 <div id="sugestoesTeste"></div>
 <details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Registo de testes de performance (opcional)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
+<details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
 <div id="faseCard"></div>
@@ -2168,6 +2169,55 @@ async function regEnviar(){
   ((j&&j.mensagem)||'Nao foi possivel registar.');
  await carregarRegisto();}
 // <</registo-testes>>
+// <<estimador-experimental>>
+// ─── Estimador experimental (Fase 2 do modelo progressivo) ────────────────
+// So le /api/modelo/estimador, e so quando o painel e aberto. Nao escreve nada,
+// nao altera graficos nem indicadores do PMC e nao foi validado preditivamente.
+let EST_CARREGADO=false;
+function estEsc(s){
+ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function htmlEstimador(j){
+ if(!j||j.status!=='OK')return '<p style="font-size:13px">Nao foi possivel calcular: '+
+  estEsc(j&&j.mensagem?j.mensagem:'sem resposta')+'</p>';
+ const ROT={nao_calibrado:'nao calibrado',estimativa_unica:'1 teste (sem incerteza)',experimental:'experimental'};
+ const lin=(j.itens||[]).map(function(i){
+  const inc=i.incerteza?('&plusmn;'+i.incerteza.sd_w.toFixed(1)+' W (IC95 '+
+   i.incerteza.ic95_w[0].toFixed(0)+'&ndash;'+i.incerteza.ic95_w[1].toFixed(0)+')'):
+   '<span title="'+estEsc(i.motivo_sem_incerteza)+'">n/d</span>';
+  const mot=Object.keys(i.motivos_exclusao||{}).map(function(k){
+   return estEsc(k)+' ('+i.motivos_exclusao[k]+')';}).join('; ');
+  return '<tr><td>'+estEsc(i.modalidade)+'</td><td>P'+estEsc(i.duracao_s)+'</td>'+
+   '<td>'+estEsc(ROT[i.estado_calibracao]||i.estado_calibracao)+'</td>'+
+   '<td>'+i.n_confirmados+'</td><td>'+i.n_usadas+'</td><td>'+i.n_excluidas+'</td>'+
+   '<td>'+(i.nivel_w==null?'&mdash;':i.nivel_w.toFixed(1)+' W')+'</td><td>'+inc+'</td>'+
+   '<td>'+estEsc(i.ultima_observacao||'')+'</td><td style="font-size:11px">'+mot+'</td></tr>';
+ }).join('');
+ return '<p style="font-size:13px"><b>Experimental e nao validado preditivamente.</b> '+
+  'Usa so testes confirmados com icu_ignore_power=false explicito (elegibilidade desconhecida '+
+  'fica de fora). Nao altera o PMC nem os parametros do modelo. A incerteza e a do nivel '+
+  'sob o modelo, nao uma previsao.</p>'+
+  '<table style="font-size:12px;border-collapse:collapse"><thead><tr><th>Modalidade</th><th>Duracao</th>'+
+  '<th>Estado</th><th>Confirmados</th><th>Usados</th><th>Excluidos</th><th>Estimativa</th>'+
+  '<th>Incerteza</th><th>Ultimo teste usado</th><th>Motivos de exclusao</th></tr></thead><tbody>'+
+  lin+'</tbody></table>';
+}
+async function carregarEstimador(){
+ const el=document.getElementById('estimadorExpCorpo');
+ if(!el)return;
+ el.innerHTML='A carregar...';
+ try{
+  const r=await fetch('/api/modelo/estimador');
+  el.innerHTML=htmlEstimador(await r.json());
+  EST_CARREGADO=true;
+ }catch(e){
+  el.innerHTML='<p style="font-size:13px">Erro ao carregar o estimador.</p>';
+ }
+}
+function abrirEstimador(d){
+ if(d&&d.open&&!EST_CARREGADO)carregarEstimador();
+}
+// <</estimador-experimental>>
 
 async function montarExport(){
  let d;

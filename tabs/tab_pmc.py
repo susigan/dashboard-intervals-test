@@ -2230,6 +2230,15 @@ function regBadgeEstadoCand(c){
    ' &rarr; agora '+regW(c.watts)+' W'+
    (c.valor_igual_a_revisao?'<br>igual ao valor da revisao '+regEsc(c.valor_igual_a_revisao):'')+'</div>';}
  return regBadgeEstado(c.estado_registo);}
+function regIgnoreParts(c){return c&&c.motivo_elegibilidade_estimador==='ignore_parts_nao_associavel_ao_trecho';}
+function regAvisoEstimador(c){
+ // visibilidade e decisao manual != elegibilidade cientifica do estimador
+ if(regIgnoreParts(c))
+  return 'Esta atividade tem ignore_parts. Pode ser revista e confirmada ou rejeitada manualmente: '+
+   'ignore_parts nao impede o registo. A observacao continua excluida do estimador e da validacao '+
+   'enquanto a elegibilidade cientifica nao permitir a sua utilizacao.';
+ return 'O estimador nao usaria este esforco ('+regEsc(c.motivo_elegibilidade_estimador||c.elegibilidade_estimador)+
+  '). Confirmar so regista a decisao; o esforco continua fora do modelo.';}
 function regBadgeEstimador(c){
  if(c.elegibilidade_estimador==null)
   return regBadge('estimador: n/d','#8b949e','o servidor nao informou a elegibilidade do estimador');
@@ -2237,10 +2246,11 @@ function regBadgeEstimador(c){
  if(c.elegivel_para_estimador)
   return regBadge('estimador: aceitaria','#2ECC71',
    'se confirmado e a curva se mantiver, a elegibilidade e aceite pelo estimador');
- const txt=m==='ignore_parts_nao_associavel_ao_trecho'?'ignore_parts presente':
+ const txt=regIgnoreParts(c)?'ignore_parts presente: pode registar a decisao; fora do estimador e da validacao':
   (m==='icu_ignore_power=true'?'icu_ignore_power=true':(m||c.elegibilidade_estimador));
- return regBadge('estimador: nao usaria','#E74C3C','o estimador exclui este esforco ('+m+
-  '); confirmar so regista a decisao, nao o faz entrar no modelo')+
+ return regBadge('estimador: nao usaria','#E74C3C',regIgnoreParts(c)?
+  'ignore_parts nao impede o registo; a observacao fica fora do estimador e da validacao ate a elegibilidade cientifica o permitir':
+  'o estimador exclui este esforco ('+m+'); confirmar so regista a decisao, nao o faz entrar no modelo')+
   '<div style="font-size:11px;color:#8b949e;margin-top:2px">'+regEsc(txt)+'</div>';}
 function regLista(){
  const l=(REG&&REG.candidatos)||[];
@@ -2264,9 +2274,7 @@ function regFormulario(c){
    regTextoDecisaoAnterior(c)+'. Esta decisao e sobre o valor novo ('+regW(c.watts)+' W); '+
    'a anterior fica no historico.</div>':'')+
   ((c.elegibilidade_estimador!=null&&!c.elegivel_para_estimador&&dec==='confirmar')?
-   '<div style="font-size:12px;color:#E74C3C;margin-bottom:4px">O estimador nao usaria este esforco ('+
-   regEsc(c.motivo_elegibilidade_estimador||c.elegibilidade_estimador)+'). Confirmar so regista a '+
-   'decisao; o esforco continua fora do modelo.</div>':'')+
+   '<div style="font-size:12px;color:#E74C3C;margin-bottom:4px">'+regAvisoEstimador(c)+'</div>':'')+
   '<textarea id="regMotivo" rows="2" maxlength="500" placeholder="Motivo (obrigatorio)" '+
   'style="width:100%;max-width:560px;background:#161b22;color:#c9d1d9;border:1px solid #30363d;'+
   'border-radius:6px;padding:6px"></textarea>'+optin+

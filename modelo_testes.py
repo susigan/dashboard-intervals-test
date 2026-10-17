@@ -111,6 +111,10 @@ def candidatos(deteccao_anotada):
     for mod, durs in (deteccao_anotada or {}).items():
         for secs, d in (durs or {}).items():
             for t in d.get('testes') or []:
+                # so potencia numerica, finita e positiva gera candidato (bool, NaN, inf,
+                # nulo ou <= 0 nao); a deteccao e os limiares ficam como estao
+                if not (_numero(t.get('watts')) and t['watts'] > 0):
+                    continue
                 eleg = t.get('elegibilidade_calibracao') or protocolo.ELEGIBILIDADE_DESCONHECIDA
                 motivo = t.get('motivo_elegibilidade')
                 if 'elegibilidade_calibracao' not in t:

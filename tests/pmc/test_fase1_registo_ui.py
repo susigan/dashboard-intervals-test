@@ -179,7 +179,7 @@ class UiRegisto(unittest.TestCase):
         self.assertIn('>Confirmar</button>', h)
         self.assertIn('>Rejeitar</button>', h)
         self.assertIn('O valor mudou', r['form0'])
-        self.assertIn('o esforco continua fora do modelo', r['form1'])
+        self.assertIn('continua excluida do estimador e da validacao', r['form1'])   # texto de ignore_parts (C)
         # POST: um so, com a versao vista, sem enviar watts como valor a gravar
         self.assertEqual(r['post']['watts_vistos'], 225)
         self.assertNotIn('watts', r['post'])
@@ -196,6 +196,20 @@ class UiRegisto(unittest.TestCase):
         self.assertNotRegex(r['msg'], r'(?i)^registado')
         self.assertEqual((r['posts'], r['gets']), (1, 2))   # recarrega a lista
         self.assertEqual(r['watts'], 305)                    # valor atual apresentado
+
+    def test_ignore_parts_texto_explicito_sobre_registo_e_estimador(self):
+        self.need_node()
+        r = self.res['ignore_parts_texto']
+        f = r['formIp']
+        self.assertIn('Pode ser revista e confirmada ou rejeitada manualmente', f)
+        self.assertIn('ignore_parts nao impede o registo', f)
+        self.assertRegex(f, r'continua excluida do estimador e da validacao')
+        self.assertIn('elegibilidade cientifica', f)
+        self.assertIn('pode registar a decisao; fora do estimador e da validacao', r['lista'])
+        # outro motivo de exclusao mantem o aviso generico (nao herda o texto de ignore_parts)
+        self.assertIn('Confirmar so regista a decisao', r['formOutro'])
+        self.assertEqual(f.count('Esta atividade tem ignore_parts'), 1)
+        self.assertEqual(r['formOutro'].count('Esta atividade tem ignore_parts'), 0)   # so a ignore_parts
 
 
 if __name__ == '__main__':

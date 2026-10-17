@@ -149,5 +149,17 @@ async function cenario(nome, fn) {
     return {msg: api.MSG, gets: chamadas.filter(c => c.metodo === 'GET').length,
             posts: chamadas.filter(c => c.metodo === 'POST').length, watts: api.REG.candidatos[0].watts};
   });
+  await run('ignore_parts_texto', async ({api, el, corpo, set}) => {
+    const P = {status: 'OK', persistencia: true, n: 2, candidatos: [
+      cand({test_id: 'Bike:1200:i1', activity_id: 'i1', elegibilidade_estimador: 'desconhecida',
+            motivo_elegibilidade_estimador: 'ignore_parts_nao_associavel_ao_trecho', elegivel_para_estimador: false}),
+      cand({test_id: 'Bike:1200:i2', activity_id: 'i2', elegibilidade_estimador: 'inelegivel',
+            motivo_elegibilidade_estimador: 'icu_ignore_power=true', elegivel_para_estimador: false})]};
+    set({get: P}); await api.carregarRegisto();
+    const lista = corpo();
+    api.regAbrir(0, 'confirmar'); const formIp = corpo(); api.regCancelar();
+    api.regAbrir(1, 'confirmar'); const formOutro = corpo(); api.regCancelar();
+    return {lista, formIp, formOutro};
+  });
   console.log(JSON.stringify(out));
 })();

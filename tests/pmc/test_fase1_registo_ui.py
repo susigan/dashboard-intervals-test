@@ -159,6 +159,44 @@ class UiRegisto(unittest.TestCase):
         self.assertEqual((f['row_tem_bike'], f['row_tem_row']), (False, True))
         self.assertEqual(f['conf_linhas'], 1)
 
+    def test_revisao_mmp_estados_motivos_e_acoes(self):
+        self.need_node()
+        r = self.res['revisao_mmp']
+        h = r['html']
+        # valor mudado: pendente, decisao anterior e valores antigo/novo visiveis
+        self.assertIn('pendente: valor mudou', h)
+        self.assertRegex(h, r'decisao anterior: confirmado \(revisao 1\) sobre 220 W')
+        self.assertIn('agora 225 W', h)
+        # elegibilidade do estimador e motivo de exclusao
+        self.assertIn('estimador: aceitaria', h)
+        self.assertIn('estimador: nao usaria', h)
+        self.assertIn('ignore_parts presente', h)
+        # resumo sem confirmacao em lote
+        self.assertRegex(h, r'Pendentes: 2 \(1 sem decisao, 1 com valor mudado\)')
+        self.assertIn('Nada e confirmado em lote', h)
+        self.assertNotRegex(h, r'(?i)confirmar tudo|confirmar todos')
+        # acoes explicitas disponiveis
+        self.assertIn('>Confirmar</button>', h)
+        self.assertIn('>Rejeitar</button>', h)
+        self.assertIn('O valor mudou', r['form0'])
+        self.assertIn('o esforco continua fora do modelo', r['form1'])
+        # POST: um so, com a versao vista, sem enviar watts como valor a gravar
+        self.assertEqual(r['post']['watts_vistos'], 225)
+        self.assertNotIn('watts', r['post'])
+        # filtros por data
+        self.assertTrue(r['dep_i2'] and not r['dep_i1'])
+        self.assertTrue(r['ate_i1'] and not r['ate_i2'])
+        self.assertEqual(r['pend_linhas'], 2)
+
+    def test_409_valor_mudou_nao_diz_sucesso_e_recarrega(self):
+        self.need_node()
+        r = self.res['conflito_409_valor_mudou']
+        self.assertIn('curva foi atualizada', r['msg'])
+        self.assertIn('nada foi registado', r['msg'])
+        self.assertNotRegex(r['msg'], r'(?i)^registado')
+        self.assertEqual((r['posts'], r['gets']), (1, 2))   # recarrega a lista
+        self.assertEqual(r['watts'], 305)                    # valor atual apresentado
+
 
 if __name__ == '__main__':
     unittest.main()

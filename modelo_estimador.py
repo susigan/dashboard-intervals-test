@@ -122,7 +122,7 @@ def estado_atual_por_teste(historico):
             problemas.append(f'{tid}: revisoes {sorted(nums)} nao sao 1..{len(nums)} (lacuna ou repeticao)')
             continue
         revs = sorted(revs, key=lambda r: r['revisao'])
-        anterior = None
+        anterior, anterior_watts = None, None
         for r in revs:
             if r.get('estado') not in mt.ESTADOS_GRAVADOS:
                 problemas.append(f'{tid}#{r["revisao"]}: estado invalido {r.get("estado")!r}')
@@ -130,13 +130,15 @@ def estado_atual_por_teste(historico):
             if r.get('estado_anterior') != anterior:
                 problemas.append(f'{tid}#{r["revisao"]}: estado_anterior incoerente')
                 break
-            if r['estado'] == anterior:
+            # mesmo estado so e legitimo como decisao sobre uma NOVA versao do valor
+            # (watts diferentes da revisao anterior); com o mesmo valor e uma repeticao
+            if r['estado'] == anterior and not mt.valor_mudou(anterior_watts, r.get('watts')):
                 problemas.append(f'{tid}#{r["revisao"]}: estado repetido')
                 break
             if r.get('evento') != mt._evento(anterior, r['estado']):
                 problemas.append(f'{tid}#{r["revisao"]}: evento incoerente com a transicao')
                 break
-            anterior = r['estado']
+            anterior, anterior_watts = r['estado'], r.get('watts')
         else:
             ultima = revs[-1]
             try:

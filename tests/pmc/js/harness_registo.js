@@ -107,5 +107,47 @@ async function cenario(nome, fn) {
     api.regFiltro('mod', ''); api.regFiltro('est', 'confirmado'); const conf = corpo();
     return {row_tem_bike: /Bike 1200 s/.test(row), row_tem_row: /Row 300 s/.test(row), conf_linhas: (conf.match(/<tr><td>20/g) || []).length};
   });
+  await run('revisao_mmp', async ({api, chamadas, el, corpo, set}) => {
+    const P = {status: 'OK', persistencia: true, n: 3,
+      resumo_pendencias: {pendentes: 2, pendentes_sem_decisao: 1, pendentes_valor_atualizado: 1},
+      candidatos: [
+        cand({test_id: 'Bike:1200:i1', activity_id: 'i1', data: '2026-09-01', watts: 225,
+              estado_registo: 'pendente', revisao: 1, valor_atualizado: true,
+              estado_ultima_revisao: 'confirmado',
+              decisao_anterior: {revisao: 1, estado: 'confirmado', watts: 220},
+              elegibilidade_estimador: 'elegivel', motivo_elegibilidade_estimador: null,
+              elegivel_para_estimador: true}),
+        cand({test_id: 'Bike:1200:i2', activity_id: 'i2', data: '2026-10-05', watts: 300,
+              elegibilidade_estimador: 'desconhecida',
+              motivo_elegibilidade_estimador: 'ignore_parts_nao_associavel_ao_trecho',
+              elegivel_para_estimador: false}),
+        cand({test_id: 'Row:300:i4', modalidade: 'Row', duracao_s: 300, activity_id: 'i4',
+              data: '2026-09-20', estado_registo: 'confirmado', revisao: 1,
+              elegibilidade_estimador: 'elegivel', elegivel_para_estimador: true})]};
+    set({get: P}); await api.carregarRegisto();
+    const html = corpo();
+    api.regAbrir(0, 'confirmar'); const form0 = corpo();
+    el('regMotivo').value = 'novo valor revisto'; await api.regEnviar();
+    const post = chamadas.filter(c => c.metodo === 'POST')[0];
+    set({get: P}); await api.carregarRegisto();
+    api.regAbrir(1, 'confirmar'); const form1 = corpo(); api.regCancelar();
+    api.regFiltro('de', '2026-10-01'); const dep = corpo();
+    api.regFiltro('de', ''); api.regFiltro('ate', '2026-09-10'); const ate = corpo();
+    api.regFiltro('ate', ''); api.regFiltro('est', 'pendente'); const pend = corpo();
+    return {html, form0, form1, post: post && post.corpo,
+            dep_i1: /Bike 1200 s de 2026-09-01/.test(dep), dep_i2: /2026-10-05/.test(dep),
+            ate_i2: /2026-10-05/.test(ate), ate_i1: /2026-09-01/.test(ate),
+            pend_linhas: (pend.match(/<tr><td>20/g) || []).length};
+  });
+  await run('conflito_409_valor_mudou', async ({api, chamadas, el, set}) => {
+    const novo = Object.assign({}, PAYLOAD, {candidatos: PAYLOAD.candidatos.map((c, k) => k === 0 ?
+      Object.assign({}, c, {watts: 305, valor_atualizado: true,
+        decisao_anterior: {revisao: 1, estado: 'confirmado', watts: 300.4}}) : c)});
+    await api.carregarRegisto();
+    set({post: {status: 'erro', campo: 'watts_vistos', mensagem: 'o valor mudou'}, get: novo});
+    api.regAbrir(0, 'confirmar'); el('regMotivo').value = 'x'; await api.regEnviar();
+    return {msg: api.MSG, gets: chamadas.filter(c => c.metodo === 'GET').length,
+            posts: chamadas.filter(c => c.metodo === 'POST').length, watts: api.REG.candidatos[0].watts};
+  });
   console.log(JSON.stringify(out));
 })();

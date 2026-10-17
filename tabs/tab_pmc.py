@@ -2201,7 +2201,7 @@ function mostrarSugestoes(){
 // So regista e consulta. Confirmar um teste NAO calibra nem atualiza o modelo.
 // A lista so e pedida quando o painel e aberto (nunca ao carregar a pagina) e
 // nenhuma decisao e tomada sem um clique explicito e um motivo escrito.
-let REG=null, REG_CARREGADO=false, REG_FILTRO={mod:'',dur:'',est:''}, REG_ABRIR=null, REG_MSG='';
+let REG=null, REG_CARREGADO=false, REG_FILTRO={mod:'',dur:'',est:'',de:'',ate:''}, REG_ABRIR=null, REG_MSG='';
 const REG_MAX=40;
 function regEsc(s){
  return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
@@ -2218,12 +2218,37 @@ function regBadgeEstado(e){
  if(e==='confirmado')return regBadge('confirmado','#2ECC71','confirmado explicitamente');
  if(e==='rejeitado')return regBadge('rejeitado','#8b949e','rejeitado explicitamente');
  return regBadge('detetado, sem decisao','#58a6ff','detetado automaticamente; nada foi decidido');}
+function regW(v){return (v==null||isNaN(Number(v)))?'?':String(Math.round(Number(v)*10)/10);}
+function regTextoDecisaoAnterior(c){
+ const d=c&&c.decisao_anterior; if(!d)return '';
+ return 'decisao anterior: '+regEsc(d.estado)+' (revisao '+regEsc(d.revisao)+') sobre '+regW(d.watts)+' W';}
+function regBadgeEstadoCand(c){
+ if(c.valor_atualizado){
+  return regBadge('pendente: valor mudou','#E67E22','a curva da Intervals.icu tem outro valor; '+
+   'a decisao anterior fica no historico mas nao vale para este valor')+
+   '<div style="font-size:11px;color:#8b949e;margin-top:2px">'+regTextoDecisaoAnterior(c)+
+   ' &rarr; agora '+regW(c.watts)+' W'+
+   (c.valor_igual_a_revisao?'<br>igual ao valor da revisao '+regEsc(c.valor_igual_a_revisao):'')+'</div>';}
+ return regBadgeEstado(c.estado_registo);}
+function regBadgeEstimador(c){
+ if(c.elegibilidade_estimador==null)
+  return regBadge('estimador: n/d','#8b949e','o servidor nao informou a elegibilidade do estimador');
+ const m=c.motivo_elegibilidade_estimador||'';
+ if(c.elegivel_para_estimador)
+  return regBadge('estimador: aceitaria','#2ECC71',
+   'se confirmado e a curva se mantiver, a elegibilidade e aceite pelo estimador');
+ const txt=m==='ignore_parts_nao_associavel_ao_trecho'?'ignore_parts presente':
+  (m==='icu_ignore_power=true'?'icu_ignore_power=true':(m||c.elegibilidade_estimador));
+ return regBadge('estimador: nao usaria','#E74C3C','o estimador exclui este esforco ('+m+
+  '); confirmar so regista a decisao, nao o faz entrar no modelo')+
+  '<div style="font-size:11px;color:#8b949e;margin-top:2px">'+regEsc(txt)+'</div>';}
 function regLista(){
  const l=(REG&&REG.candidatos)||[];
  const f=REG_FILTRO;
  return l.map(function(c,i){return {c:c,i:i};}).filter(function(x){
   return (!f.mod||x.c.modalidade===f.mod)&&(!f.dur||String(x.c.duracao_s)===f.dur)&&
-   (!f.est||x.c.estado_registo===f.est);
+   (!f.est||x.c.estado_registo===f.est)&&
+   (!f.de||String(x.c.data)>=f.de)&&(!f.ate||String(x.c.data)<=f.ate);
  }).sort(function(a,b){return a.c.data<b.c.data?1:(a.c.data>b.c.data?-1:0);});}
 function regFormulario(c){
  const dec=REG_ABRIR.dec, verbo=dec==='confirmar'?'Confirmar':'Rejeitar';
@@ -2231,10 +2256,17 @@ function regFormulario(c){
   '<label style="display:block;font-size:12px;margin:6px 0"><input type="checkbox" id="regOptin"> '+
   'Aceito que a elegibilidade (icu_ignore_power) e desconhecida e confirmo mesmo assim. '+
   'Continua registada como desconhecida.</label>':'';
- return '<tr><td colspan="8" style="background:#0d1117;padding:10px 12px">'+
+ return '<tr><td colspan="9" style="background:#0d1117;padding:10px 12px">'+
   '<div style="font-size:13px;margin-bottom:4px"><b>'+verbo+'</b> '+regEsc(c.modalidade)+' '+
-  regEsc(c.duracao_s)+' s de '+regEsc(c.data)+' ('+Math.round(c.watts)+' W, atividade '+
+  regEsc(c.duracao_s)+' s de '+regEsc(c.data)+' ('+regW(c.watts)+' W, atividade '+
   regEsc(c.activity_id)+')</div>'+
+  (c.valor_atualizado?'<div style="font-size:12px;color:#E67E22;margin-bottom:4px">O valor mudou: '+
+   regTextoDecisaoAnterior(c)+'. Esta decisao e sobre o valor novo ('+regW(c.watts)+' W); '+
+   'a anterior fica no historico.</div>':'')+
+  ((c.elegibilidade_estimador!=null&&!c.elegivel_para_estimador&&dec==='confirmar')?
+   '<div style="font-size:12px;color:#E74C3C;margin-bottom:4px">O estimador nao usaria este esforco ('+
+   regEsc(c.motivo_elegibilidade_estimador||c.elegibilidade_estimador)+'). Confirmar so regista a '+
+   'decisao; o esforco continua fora do modelo.</div>':'')+
   '<textarea id="regMotivo" rows="2" maxlength="500" placeholder="Motivo (obrigatorio)" '+
   'style="width:100%;max-width:560px;background:#161b22;color:#c9d1d9;border:1px solid #30363d;'+
   'border-radius:6px;padding:6px"></textarea>'+optin+
@@ -2265,9 +2297,10 @@ function htmlRegisto(d){
   const c=x.c;
   return '<tr><td>'+regEsc(c.data)+'</td><td>'+regEsc(c.modalidade)+' '+regEsc(c.duracao_s)+' s</td>'+
    '<td style="font-size:11px;color:#8b949e">'+regEsc(c.activity_id)+'</td>'+
-   '<td class="num">'+Math.round(c.watts)+' W</td>'+
+   '<td class="num">'+regW(c.watts)+' W</td>'+
    '<td class="num">'+(c.pct_do_melhor!=null?c.pct_do_melhor+'%':'')+'</td>'+
-   '<td>'+regBadgeElegibilidade(c.elegibilidade)+'</td><td>'+regBadgeEstado(c.estado_registo)+'</td>'+
+   '<td>'+regBadgeElegibilidade(c.elegibilidade)+'</td><td>'+regBadgeEstimador(c)+'</td>'+
+   '<td>'+regBadgeEstadoCand(c)+'</td>'+
    '<td>'+regAcoes(c,x.i)+'</td></tr>'+
    ((REG_ABRIR&&REG_ABRIR.i===x.i)?regFormulario(c):'');
  }).join('');
@@ -2280,11 +2313,19 @@ function htmlRegisto(d){
   '<div style="margin:6px 0">'+
   sel('regSelMod','mod',[['','todas as modalidades']].concat(mods.map(function(m){return [m,m];})))+
   sel('regSelDur','dur',[['','todas as duracoes'],['60','60 s'],['300','300 s'],['1200','1200 s']])+
-  sel('regSelEst','est',[['','todos os estados'],['pendente','detetado, sem decisao'],
-   ['confirmado','confirmado'],['rejeitado','rejeitado']])+'</div>'+
+  sel('regSelEst','est',[['','todos os estados'],['pendente','pendente (sem decisao ou valor mudou)'],
+   ['confirmado','confirmado'],['rejeitado','rejeitado']])+
+  '<label style="font-size:12px;color:#8b949e">de <input type="date" value="'+regEsc(REG_FILTRO.de)+
+  '" onchange="regFiltro(\'de\',this.value)"></label> '+
+  '<label style="font-size:12px;color:#8b949e">ate <input type="date" value="'+regEsc(REG_FILTRO.ate)+
+  '" onchange="regFiltro(\'ate\',this.value)"></label></div>'+
+  (d.resumo_pendencias?'<div style="font-size:12px;color:#8b949e;margin:4px 0">Pendentes: '+
+   regEsc(d.resumo_pendencias.pendentes)+' ('+regEsc(d.resumo_pendencias.pendentes_sem_decisao)+
+   ' sem decisao, '+regEsc(d.resumo_pendencias.pendentes_valor_atualizado)+
+   ' com valor mudado). Nada e confirmado em lote.</div>':'')+
   (REG_MSG?'<div style="font-size:13px;margin:6px 0;color:#58a6ff">'+regEsc(REG_MSG)+'</div>':'')+
   (mostra.length?'<div class="wrap"><table><thead><tr>'+
-   ['Data','Esforco','Atividade','Potencia','% do melhor','Elegibilidade','Estado','Acao'].map(function(h){
+   ['Data','Esforco','Atividade','Potencia','% do melhor','Elegibilidade (registo)','Estimador','Estado','Acao'].map(function(h){
     return '<th>'+h+'</th>';}).join('')+'</tr></thead><tbody>'+linhas+'</tbody></table></div>'+
    (lista.length>mostra.length?'<div class="sub">A mostrar '+mostra.length+' de '+lista.length+
     ' (mais recentes primeiro). Usa os filtros para ver os restantes.</div>':''):
@@ -2314,13 +2355,17 @@ async function regEnviar(){
    headers:{'Content-Type':'application/json'},
    body:JSON.stringify({modalidade:c.modalidade,duracao_s:c.duracao_s,activity_id:c.activity_id,
     decisao:REG_ABRIR.dec,motivo:motivo,confirmacao_explicita:true,origem_registo:'ui',
-    metodo_confirmacao:'manual',aceita_elegibilidade_desconhecida:optin})
+    metodo_confirmacao:'manual',aceita_elegibilidade_desconhecida:optin,
+    watts_vistos:c.watts})
   }).then(function(r){return r.json();});
  }catch(e){ REG_MSG='Falha de rede: nada foi registado.'; regRender(); return; }
  REG_ABRIR=null;
+ const desatualizado=!!(j&&j.status!=='OK'&&j.campo==='watts_vistos');
  REG_MSG=(j&&j.status==='OK')?
   ((j.alterado?'Registado. ':'Sem alteracao. ')+'Isto nao calibra nem atualiza o modelo.'):
-  ((j&&j.mensagem)||'Nao foi possivel registar.');
+  (desatualizado?'A curva foi atualizada depois de abrires esta lista: nada foi registado. '+
+   'A lista foi recarregada e o valor atual esta pendente de revisao; o historico anterior fica intacto.':
+   ((j&&j.mensagem)||'Nao foi possivel registar.'));
  await carregarRegisto();}
 // <</registo-testes>>
 // <<estimador-experimental>>

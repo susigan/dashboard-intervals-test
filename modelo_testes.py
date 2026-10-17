@@ -140,22 +140,55 @@ def _confirmabilidade(c):
     return True, False, None
 
 
-def candidatos_com_estado(deteccao_anotada, atuais, filtros=None):
-    """Candidatos + estado no registo ('pendente' se nao ha decisao).
+def candidatos_com_estado(deteccao_anotada, atuais, filtros=None, elig_estimador=None,
+                          historico=None):
+    """Candidatos + estado no registo para a VERSAO ATUAL do valor.
+
+    Identidade do candidato = test_id (modalidade:duracao_s:activity_id). Versao do
+    valor = watts da curva atual. O candidato esta 'pendente' se nao ha revisao OU se
+    os watts atuais diferem dos da ultima revisao (valor atualizado na Intervals.icu):
+    a decisao anterior fica intacta no historico, e a nova versao espera decisao.
+    Nenhum estado 'pendente' e gravado: calcula-se a cada pedido.
 
     atuais: {test_id: ultima revisao}. filtros: {'tipo','duracao','estado'}.
+    elig_estimador: callable(activity_id) -> elegibilidade de aprendizagem que o
+    ESTIMADOR aplica (injetada por quem chama: este modulo nao conhece o estimador);
+    opcional, aditivo.
+    historico: todas as revisoes (opcional) para assinalar o regresso a um valor anterior.
     """
     f = filtros or {}
+    por_teste = {}
+    for r in historico or []:
+        por_teste.setdefault(r.get('test_id'), []).append(r)
     out = []
     for c in candidatos(deteccao_anotada):
         rev = (atuais or {}).get(c['test_id'])
+        atualizado = rev is not None and not mesmo_valor(rev.get('watts'), c['watts'])
+        estado = ESTADO_PENDENTE if (rev is None or atualizado) else rev['estado']
         confirmavel, opt_in, porque = _confirmabilidade(c)
+        igual = None
+        if atualizado:
+            iguais = [r['revisao'] for r in por_teste.get(c['test_id'], [])
+                      if mesmo_valor(r.get('watts'), c['watts'])]
+            igual = max(iguais) if iguais else None
         c = {**c,
-             'estado_registo': rev['estado'] if rev else ESTADO_PENDENTE,
+             'estado_registo': estado,
              'revisao': rev['revisao'] if rev else None,
              'confirmavel': confirmavel, 'requer_aceitar_elegibilidade_desconhecida': opt_in,
              'motivo_nao_confirmavel': None if confirmavel else porque,
-             'aviso_elegibilidade': porque if confirmavel and opt_in else None}
+             'aviso_elegibilidade': porque if confirmavel and opt_in else None,
+             # aditivos (versao do valor)
+             'valor_atualizado': bool(atualizado),
+             'estado_ultima_revisao': rev['estado'] if rev else None,
+             'decisao_anterior': ({'revisao': rev['revisao'], 'estado': rev['estado'],
+                                   'watts': rev.get('watts'), 'data': rev.get('data'),
+                                   'revisado_em': rev.get('revisado_em')} if rev else None),
+             'valor_igual_a_revisao': igual}
+        if elig_estimador is not None:
+            e = elig_estimador(c['activity_id'])
+            c['elegibilidade_estimador'] = e['estado']
+            c['motivo_elegibilidade_estimador'] = e.get('motivo')
+            c['elegivel_para_estimador'] = e['estado'] == 'elegivel'
         if f.get('tipo') and c['modalidade'] != f['tipo']:
             continue
         if f.get('duracao') is not None and c['duracao_s'] != f['duracao']:
@@ -164,6 +197,14 @@ def candidatos_com_estado(deteccao_anotada, atuais, filtros=None):
             continue
         out.append(c)
     return out
+
+
+def resumo_pendencias(candidatos_estado):
+    """Contagem aditiva sobre a lista devolvida por candidatos_com_estado."""
+    pend = [c for c in candidatos_estado if c['estado_registo'] == ESTADO_PENDENTE]
+    return {'pendentes': len(pend),
+            'pendentes_sem_decisao': sum(1 for c in pend if not c.get('valor_atualizado')),
+            'pendentes_valor_atualizado': sum(1 for c in pend if c.get('valor_atualizado'))}
 
 
 # ── validacao do pedido de decisao ───────────────────────────────────────
@@ -221,7 +262,11 @@ def validar_pedido(corpo):
         raise ErroContrato(400, 'aceita_elegibilidade_desconhecida tem de ser booleano',
                            'aceita_elegibilidade_desconhecida')
     resp = _texto(corpo.get('responsavel'), 'responsavel', False, MAX_RESPONSAVEL)
-    return {'modalidade': mod, 'duracao_s': dur, 'activity_id': aid, 'decisao': dec,
+    vistos = corpo.get('watts_vistos')
+    if vistos is not None and (isinstance(vistos, bool) or not isinstance(vistos, (int, float))
+                               or not math.isfinite(vistos) or vistos <= 0):
+        raise ErroContrato(400, 'watts_vistos tem de ser um numero positivo', 'watts_vistos')
+    return {'watts_vistos': vistos, 'modalidade': mod, 'duracao_s': dur, 'activity_id': aid, 'decisao': dec,
             'motivo': motivo, 'metodo_confirmacao': metodo, 'origem_registo': origem,
             'aceita_elegibilidade_desconhecida': optin, 'responsavel': resp}
 
@@ -229,7 +274,9 @@ def validar_pedido(corpo):
 # ── decisao ──────────────────────────────────────────────────────────────
 
 def _evento(anterior, novo):
-    if anterior is None:
+    # anterior == novo so chega aqui quando o VALOR mudou (nova versao do valor):
+    # e uma nova confirmacao/rejeicao desse valor; estado_anterior fica registado.
+    if anterior is None or anterior == novo:
         return EVENTO_CONFIRMACAO if novo == ESTADO_CONFIRMADO else EVENTO_REJEICAO
     if anterior == ESTADO_CONFIRMADO and novo == ESTADO_REJEITADO:
         return EVENTO_INVALIDACAO
@@ -269,9 +316,15 @@ def decidir(pedido, deteccao_anotada, ultima_revisao, agora, hora_local=None):
             raise ErroContrato(409, porque + ' (aceita_elegibilidade_desconhecida=true)',
                                'aceita_elegibilidade_desconhecida')
 
+    vistos = pedido.get('watts_vistos')
+    if vistos is not None and not mesmo_valor(vistos, cand['watts']):
+        raise ErroContrato(409, f'o valor mudou desde que o viu ({vistos} W visto, '
+                                f'{cand["watts"]} W atual): recarregue e decida de novo',
+                           'watts_vistos')
+
     anterior = ultima_revisao['estado'] if ultima_revisao else None
-    if anterior == novo:
-        return None                                  # idempotente: sem revisao nova
+    if anterior == novo and mesmo_valor(ultima_revisao.get('watts'), cand['watts']):
+        return None            # idempotente: mesmo estado E mesma versao do valor
 
     return {
         'test_id': tid,
@@ -300,6 +353,23 @@ def decidir(pedido, deteccao_anotada, ultima_revisao, agora, hora_local=None):
 
 
 # ── consulta do registo ─────────────────────────────────────────────────
+
+def mesmo_valor(a, b):
+    """True se dois watts sao a MESMA versao do valor (mesma tolerancia de
+    situacao_dados). Valor ausente ou nao numerico nunca e igual a nada."""
+    if not (_numero(a) and _numero(b)):
+        return False
+    return math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-6)
+
+
+def _numero(v):
+    return not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
+
+
+def valor_mudou(antes, depois):
+    """True so se AMBOS os valores sao numeros e diferem (versao nova do valor)."""
+    return _numero(antes) and _numero(depois) and not mesmo_valor(antes, depois)
+
 
 def situacao_dados(revisao, curvas_por_atividade):
     """Compara os watts registados com a curva atual da atividade.

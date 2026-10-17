@@ -1343,6 +1343,42 @@ def api_modelo_estimador():
                     'atividades_disponiveis': atividades is not None, **res})
 
 
+_AVISO_VALIDACAO = ('Validacao temporal EXPLORATORIA do estimador experimental. O alvo e o melhor '
+                    'valor da duracao em toda a atividade (nao um teste padronizado). Nao altera q, '
+                    'parametros, elegibilidade nem calculos de producao; nao promove o estimador. '
+                    'Sem dados suficientes o resultado e inconclusivo.')
+
+
+@app.route('/api/modelo/validacao')
+def api_modelo_validacao():
+    """Walk-forward do estimador contra M0 (media expansiva) e M1 (ultimo valor). So leitura.
+
+    ?tipo=Bike ?duracao=300 ?modo=retrospectivo|conhecido_na_epoca|ambos (por omissao, ambos)
+    """
+    import modelo_estimador as me
+    import modelo_validacao as mv
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    modo = request.args.get('modo') or 'ambos'
+    if modo != 'ambos' and modo not in mv.MODOS:
+        return _erro_registo(400, 'modo invalido (use retrospectivo, conhecido_na_epoca ou ambos)', 'modo')
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        res = mv.validar(db.revisoes_testes_modelo(), db.load_activities(),
+                         db.load_power_curves() or [],
+                         modos=mv.MODOS if modo == 'ambos' else (modo,),
+                         tipo=filtros['tipo'], duracao=filtros['duracao'])
+    except me.HistoricoAmbiguo as e:
+        return _erro_registo(409, 'historico de testes ambiguo: ' + str(e))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', 'aviso': _AVISO_VALIDACAO, **res})
+
+
 @app.route('/api/calibracao')
 def api_calibracao():
     """Parametros calibrados nos dados do atleta, com a evidencia.

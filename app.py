@@ -1078,6 +1078,30 @@ def api_debug_wellness_icu():
     })
 
 
+_cache_ignore_power = {'t': None, 'mapa': None}
+TTL_IGNORE_POWER = 300    # segundos; evita reler activities.raw a cada pedido
+
+
+def _mapa_ignore_power():
+    """{activity_id: True|False|None} lido de activities.raw (so leitura, sem
+    chamadas externas). None se as atividades nao estiverem disponiveis; nesse
+    caso a elegibilidade fica 'desconhecida' e nada e excluido."""
+    import time
+    agora = time.monotonic()
+    c = _cache_ignore_power
+    if c['t'] is not None and agora - c['t'] < TTL_IGNORE_POWER:
+        return c['mapa']
+    try:
+        import protocolo
+        mapa = protocolo.mapa_ignore_power(db.load_activities())
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None
+    c['t'], c['mapa'] = (agora, mapa) if mapa is not None else (None, None)
+    return mapa
+
+
 @app.route('/api/protocolo')
 def api_protocolo():
     """Testes maximos detectados e quais estao em atraso.
@@ -1087,12 +1111,19 @@ def api_protocolo():
     import protocolo
     curvas = db.load_power_curves(request.args.get('tipo') or None)
     det = protocolo.detectar_testes(curvas or [])
+    # elegibilidade para calibracao: so anotacao, a deteccao nao muda
+    try:
+        det_anot = protocolo.anotar_elegibilidade(det, _mapa_ignore_power())
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        det_anot = det        # sem anotacao; a deteccao e as sugestoes seguem
     cobertura = protocolo.cobertura(det)
     # suficiencia por modalidade: chave aditiva dentro de 'cobertura' (as
     # chaves de cobertura() e as do topo da resposta mantem-se). Uma falha
     # aqui nao deve derrubar o resto da resposta.
     try:
-        cobertura['suficiencia'] = protocolo.suficiencia_por_modalidade(det, curvas or [])
+        cobertura['suficiencia'] = protocolo.suficiencia_por_modalidade(det_anot, curvas or [])
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1105,7 +1136,7 @@ def api_protocolo():
         # so os recentes na resposta: a lista completa pode ter centenas
         'detectados': {m: {s: {k: v for k, v in d.items() if k != 'testes'}
                            for s, d in durs.items()}
-                       for m, durs in det.items()},
+                       for m, durs in det_anot.items()},
         'como_funciona': (
             f'Uma sessao conta como teste quando o esforco numa duracao chega '
             f'a {int(protocolo.LIMIAR_ESFORCO*100)}% do teu melhor dos ultimos '

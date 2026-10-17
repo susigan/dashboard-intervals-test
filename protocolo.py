@@ -147,11 +147,94 @@ def sugerir(deteccao, modalidades_activas=None):
     return sug
 
 
-def serie_ancora(deteccao, mod=None, secs=1200):
+# Elegibilidade de uma observacao para calibracao. A DETECAO nao muda: so se
+# anota cada esforco detetado. Criterio atual: icu_ignore_power.
+ELEGIBILIDADE_ELEGIVEL = 'elegivel'          # icu_ignore_power == False (explicito)
+ELEGIBILIDADE_INELEGIVEL = 'inelegivel'      # icu_ignore_power == True
+ELEGIBILIDADE_DESCONHECIDA = 'desconhecida'  # nao foi possivel determinar
+CRITERIO_ELEGIBILIDADE = 'icu_ignore_power'
+
+
+def mapa_ignore_power(atividades):
+    """{activity_id: True|False|None} a partir das atividades originais da API
+    (db.load_activities() / activities.raw). None se as atividades nao
+    estiverem disponiveis. Valor None = campo ausente ou nao booleano.
+    Ids repetidos: True prevalece (conservador)."""
+    if atividades is None:
+        return None
+    mapa = {}
+    for a in atividades:
+        if not isinstance(a, dict) or a.get('id') is None:
+            continue
+        v = a.get(CRITERIO_ELEGIBILIDADE)
+        v = v if isinstance(v, bool) else None
+        aid = a['id']
+        if aid in mapa and mapa[aid] is True:
+            continue
+        mapa[aid] = v
+    return mapa
+
+
+def _estado_elegibilidade(activity_id, mapa):
+    if mapa is None:
+        return ELEGIBILIDADE_DESCONHECIDA, 'atividades_indisponiveis'
+    if activity_id not in mapa:
+        return ELEGIBILIDADE_DESCONHECIDA, 'atividade_nao_encontrada'
+    v = mapa[activity_id]
+    if v is True:
+        return ELEGIBILIDADE_INELEGIVEL, CRITERIO_ELEGIBILIDADE
+    if v is False:
+        return ELEGIBILIDADE_ELEGIVEL, None
+    return ELEGIBILIDADE_DESCONHECIDA, 'campo_ausente'
+
+
+def anotar_elegibilidade(deteccao, mapa):
+    """Copia de `deteccao` com a elegibilidade de cada esforco detetado.
+
+    NAO exclui nada: n_testes, ultimo, dias, atraso e a lista de testes ficam
+    iguais; so se acrescentam 'elegibilidade_calibracao' e
+    'motivo_elegibilidade' a cada esforco e, por duracao,
+    n_elegiveis/n_inelegiveis/n_desconhecidos_calibracao (somam n_testes).
+    O objeto recebido nao e alterado.
+    """
+    out = {}
+    for mod, durs in (deteccao or {}).items():
+        out[mod] = {}
+        for secs, d in durs.items():
+            cache = {}
+
+            def nota(t):
+                k = t['activity_id']
+                if k not in cache:
+                    est, motivo = _estado_elegibilidade(k, mapa)
+                    cache[k] = {'elegibilidade_calibracao': est, 'motivo_elegibilidade': motivo}
+                return {**t, **cache[k]}
+
+            testes = [nota(t) for t in d.get('testes') or []]
+            contagem = {e: sum(1 for t in testes if t['elegibilidade_calibracao'] == e)
+                        for e in (ELEGIBILIDADE_ELEGIVEL, ELEGIBILIDADE_INELEGIVEL,
+                                  ELEGIBILIDADE_DESCONHECIDA)}
+            novo = {**d, 'testes': testes,
+                    'n_elegiveis_calibracao': contagem[ELEGIBILIDADE_ELEGIVEL],
+                    'n_inelegiveis_calibracao': contagem[ELEGIBILIDADE_INELEGIVEL],
+                    'n_desconhecidos_calibracao': contagem[ELEGIBILIDADE_DESCONHECIDA]}
+            if d.get('ultimo') is not None:
+                novo['ultimo'] = nota(d['ultimo'])
+            if 'recentes' in d:
+                novo['recentes'] = [nota(t) for t in d['recentes']]
+            out[mod][secs] = novo
+    return out
+
+
+def serie_ancora(deteccao, mod=None, secs=1200, excluir_inelegiveis=False):
     """Serie de performance so com dias de teste.
 
     E esta que deve alimentar a calibracao em vez da CP de todas as sessoes:
     poucos pontos, mas cada um mede capacidade em vez de escolha de treino.
+
+    excluir_inelegiveis: deixa de fora as observacoes marcadas como
+    'inelegivel' por anotar_elegibilidade(). Observacoes de elegibilidade
+    'desconhecida' (ou sem anotacao) NAO sao excluidas.
     """
     out = []
     for m, durs in (deteccao or {}).items():
@@ -161,6 +244,8 @@ def serie_ancora(deteccao, mod=None, secs=1200):
         if not d:
             continue
         for t in d['testes']:
+            if excluir_inelegiveis and t.get('elegibilidade_calibracao') == ELEGIBILIDADE_INELEGIVEL:
+                continue
             out.append({'date': t['date'], 'valor': t['watts'],
                         'modalidade': m, 'activity_id': t['activity_id']})
     out.sort(key=lambda x: x['date'])
@@ -291,7 +376,12 @@ def suficiencia_por_modalidade(deteccao, curvas=None, secs=1200,
                     'meses': round(dias / 30.4375, 1), 'n_curvas': len(datas)}
 
         estado = _estado_amostra(n)
-        atinge = n >= minimo_calibracao
+        # se a deteccao foi anotada (anotar_elegibilidade), os inelegiveis nao
+        # contam para o minimo de calibracao; senao, contam todos como hoje
+        n_inel = (d or {}).get('n_inelegiveis_calibracao', 0) if d else 0
+        n_desc = (d or {}).get('n_desconhecidos_calibracao') if d else None
+        n_util = n - n_inel
+        atinge = n_util >= minimo_calibracao
         texto = (f'{mod}: {n} candidatos de {nome}'
                  + (f' ({n_dias} dias distintos)' if n else ''))
         if hist:
@@ -301,9 +391,18 @@ def suficiencia_por_modalidade(deteccao, curvas=None, secs=1200,
                   f'minimo para calibrar: {minimo_calibracao} candidatos '
                   + ('atingido' if atinge else 'nao atingido')
                   + '. Mede so a quantidade, nao a validade dos candidatos.')
+        if n_inel:
+            texto += (f' {n_inel} excluido(s) da calibracao por '
+                      f'{CRITERIO_ELEGIBILIDADE}.')
+        if n_desc:
+            texto += (f' {n_desc} com elegibilidade desconhecida (nao '
+                      'validada): entram na calibracao, mas assinalados.')
         out[mod] = {
             'secs': secs, 'nome': nome,
             'n_candidatos': n, 'n_dias_distintos': n_dias,
+            'n_utilizaveis_calibracao': n_util,
+            'n_inelegiveis_calibracao': n_inel,
+            'n_desconhecidos_calibracao': n_desc,
             'estado': estado,
             'minimo_calibracao': minimo_calibracao,
             'atinge_minimo_calibracao': atinge,

@@ -347,7 +347,7 @@ def api_calibracao_dados():
     try:
         # a CP de um teste de 2022 e comparavel com a de 2026, ao contrario
         # do HRV — por isso aqui usa-se o historico completo
-        ancora = pmc.calibrar_com_ancora(serie, CICLICOS)
+        ancora = pmc.calibrar_com_ancora(serie, CICLICOS, atividades=acts)
     except Exception as e:
         import traceback
         traceback.print_exc()

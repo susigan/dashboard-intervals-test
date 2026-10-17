@@ -225,9 +225,15 @@ class InterfaceSemDuplicacao(unittest.TestCase):
         fim = js.index('\nfunction ', ini)
         self.assertIn('mostrarSugestoes();', js[ini:fim])
         self.assertIn("try{ mostrarSugestoes(); }catch(e){ console.error('sugestoes:',e); }", js[ini:fim])
-        # o isolamento e so' da chamada das sugestoes: load() nao fica dentro de um try geral
-        self.assertEqual(js[ini:fim].count('try{'), 2)   # o fetch de /api/pmc (ja existia) + este
-        self.assertNotIn('carregarSugestoes', js[ini:fim])
+        # o isolamento e so' de chamadas localizadas: load() nao fica dentro de um try geral.
+        # Os try{ de load() sao exatamente: (1) o fetch de /api/pmc, (2) as sugestoes,
+        # (3) a evolucao da performance (acrescentada na main). Um quarto try{ ou um try
+        # a envolver o corpo obriga a rever este teste.
+        corpo = js[ini:fim]
+        self.assertEqual(corpo.count('try{'), 3)
+        self.assertTrue(corpo.startswith("async function load(){\n let d;\n try{ d=await fetch('/api/pmc')"))
+        self.assertIn("try{mostrarEvolucao();}catch(e){", corpo)
+        self.assertNotIn('carregarSugestoes', corpo)
 
     def test_rotulo_nao_afirma_teste_formal(self):
         self.assertNotIn("' feitos'", self.tp.JS)

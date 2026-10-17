@@ -297,16 +297,22 @@ def hora_local_da_atividade(atividades, activity_id):
     return None
 
 
-def decidir(pedido, deteccao_anotada, ultima_revisao, agora, hora_local=None):
+def decidir(pedido, deteccao_anotada, ultima_revisao, agora, hora_local=None, adicionais=None):
     """Nova revisao para o pedido, ou None se nao ha nada a mudar.
 
     pedido: saida de validar_pedido. deteccao_anotada: dados ATUAIS do servidor.
     ultima_revisao: ultima revisao gravada deste test_id (ou None).
     agora: datetime (UTC). Levanta ErroContrato (404 candidato inexistente,
     409 regra de elegibilidade).
+    adicionais: candidatos extra (mesma forma que candidatos()) vindos das observacoes
+    detetadas automaticamente por season/all-time, para que tambem possam ser excluidos
+    manualmente. A deteccao do protocolo tem prioridade se o test_id estiver nas duas.
     """
     tid = id_teste(pedido['modalidade'], pedido['duracao_s'], pedido['activity_id'])
     cand = next((c for c in candidatos(deteccao_anotada) if c['test_id'] == tid), None)
+    if cand is None:
+        cand = next((c for c in (adicionais or []) if c.get('test_id') == tid
+                     and _numero(c.get('watts')) and c['watts'] > 0), None)
     if cand is None:
         raise ErroContrato(404, f'{tid} nao e um candidato detetado nos dados atuais')
 
@@ -341,7 +347,9 @@ def decidir(pedido, deteccao_anotada, ultima_revisao, agora, hora_local=None):
         'watts': cand['watts'], 'pct_do_melhor': cand['pct_do_melhor'],
         'melhor_recente': cand['melhor_recente'],
         'deteccao': {'limiar_esforco': protocolo.LIMIAR_ESFORCO,
-                     'janela_dias': protocolo.JANELA_MELHOR},
+                     'janela_dias': protocolo.JANELA_MELHOR,
+                     **({'fonte': 'automatica', 'referencia_tipo': cand['referencia_tipo']}
+                        if cand.get('referencia_tipo') else {})},
         'elegibilidade': cand['elegibilidade'],
         'motivo_elegibilidade': cand['motivo_elegibilidade'],
         'icu_ignore_power': _icu_ignore_power_de(cand['elegibilidade']),

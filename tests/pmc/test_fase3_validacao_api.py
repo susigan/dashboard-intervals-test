@@ -67,6 +67,9 @@ class Base(F.Base):
             self.db.inserir_revisao_teste(_linha(i, quando))
 
     def val(self, **q):
+        # caminho da Fase 3 (observacoes = revisoes confirmadas); a fonte automatica tem os
+        # seus testes em test_mmp_deteccao_automatica.py
+        q = {'fonte': 'confirmacao_manual', **q}
         url = URL + ('?' + '&'.join(f'{k}={v}' for k, v in q.items()) if q else '')
         r = self.c.get(url)
         return r.status_code, r.get_json()
@@ -180,7 +183,7 @@ class RegressaoProducao(Base):
 
     def test_sem_tabelas_novas(self):
         nomes = {r[0] for r in self.db._exec("SELECT name FROM sqlite_master WHERE type='table'", fetch='all')}
-        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_testes_revisoes'})
+        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_observacoes_auto', 'modelo_testes_revisoes'})
 
 
 if __name__ == '__main__':

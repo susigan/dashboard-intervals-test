@@ -662,7 +662,7 @@ BODY = r"""
 <h1>PMC — Performance Management Chart</h1>
 <div class="sub" id="sub">A carregar...</div>
 <div id="sugestoesTeste"></div>
-<details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Registo de testes de performance (opcional)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
+<details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Deteccao automatica de observacoes MMP (season, all-time, recente)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
 <details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
@@ -2197,152 +2197,187 @@ function mostrarSugestoes(){
 }
 
 // <<registo-testes>>
-// ─── Registo de testes de performance (Fase 1 do modelo progressivo) ──────
-// So regista e consulta. Confirmar um teste NAO calibra nem atualiza o modelo.
-// A lista so e pedida quando o painel e aberto (nunca ao carregar a pagina) e
-// nenhuma decisao e tomada sem um clique explicito e um motivo escrito.
-let REG=null, REG_CARREGADO=false, REG_FILTRO={mod:'',dur:'',est:'',de:'',ate:''}, REG_ABRIR=null, REG_MSG='';
+// ─── Deteccao automatica de observacoes MMP (substitui o fluxo Confirmar/Rejeitar) ───
+// Os esforcos perto de um maximo (melhor recente, season ou all-time) sao detetados e
+// registados sozinhos depois de cada sincronizacao de curvas; entram no estimador e na
+// validacao se forem cientificamente elegiveis, SEM confirmacao individual. Detetar nao e
+// validar o modelo. A unica acao manual e uma exclusao OPCIONAL (nunca um requisito de inclusao).
+// A lista so e pedida quando o painel e aberto; nenhuma acao manual sem clique e motivo escrito.
+let REG=null, REG_CARREGADO=false, REG_FILTRO={mod:'',dur:'',inc:'',ref:''}, REG_ABRIR=null, REG_MSG='';
 const REG_MAX=40;
+const REG_REF={recente:'melhor recente',season:'season',all_time:'all-time'};
 function regEsc(s){
  return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
   .replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function regBadge(txt,cor,titulo){
  return '<span title="'+regEsc(titulo||'')+'" style="display:inline-block;padding:1px 7px;'+
   'border-radius:10px;font-size:11px;border:1px solid '+cor+';color:'+cor+'">'+regEsc(txt)+'</span>';}
-function regBadgeElegibilidade(e){
- if(e==='elegivel')return regBadge('elegivel','#2ECC71','icu_ignore_power=false (explicito)');
- if(e==='inelegivel')return regBadge('inelegivel','#E74C3C','icu_ignore_power=true: potencia ignorada');
+function regW(v){return (v==null||isNaN(Number(v)))?'?':String(Math.round(Number(v)*10)/10);}
+function regPct(v){return (v==null||isNaN(Number(v)))?'?':(Math.round(Number(v)*10)/10).toFixed(1)+'%';}
+function regNota(txt){return '<div style="font-size:11px;color:#8b949e;margin-top:2px">'+txt+'</div>';}
+function regTemporal(h){
+ if(!h)return '';
+ return '<div style="font-size:12px;margin:4px 0;color:#c9d1d9">Historico temporal ('+regEsc(h.estado||'?')+'): '+
+  regEsc(h.n_conhecidas_no_dia_ou_antes)+' de '+regEsc(h.n_observacoes)+' observacoes foram detetadas no dia do '+
+  'esforco ou antes; '+regEsc(h.n_conhecidas_so_depois)+' so depois; '+regEsc(h.n_sem_data_de_deteccao_verificavel)+
+  ' sem data de deteccao verificavel. '+regEsc(h.nota||'')+' A validacao retrospetiva usa todas as observacoes '+
+  'atuais; a validacao &quot;conhecido na epoca&quot; so usa as ja detetadas antes da data de cada alvo.</div>';}
+function regCurta(o){
+ const r=o.referencias&&o.referencias[o.referencia_tipo];
+ const m=REG&&REG.criterio?REG.criterio.min_pontos_serie:null;
+ if(!r||m==null||r.n_pontos==null||r.n_pontos>=m)return '';
+ return ' '+regBadge('referencia curta: '+r.n_pontos+' pts','#d29922',
+  'a referencia tem menos pontos anteriores do que o minimo de serie ('+m+'); detetada, mas pouco robusta. '+
+  'Nao e um criterio de exclusao');}
+function regOrdemDia(o){
+ const n=o.ordem_mesmo_dia&&o.ordem_mesmo_dia.ambiguos;
+ return n>0?regNota(n+' esforco(s) do mesmo dia sem hora que prove a ordem ficaram fora da referencia'):'';}
+function regReferencia(o){
+ if(o.referencia_tipo==null)return '<b>sem referencia anterior</b>'+regNota('primeiro ponto da serie: nao ha com que o comparar; nao entra no estimador');
+ const t=REG_REF[o.referencia_tipo]||o.referencia_tipo||'?';
+ const outras=Object.keys(o.referencias||{}).filter(function(k){return k!==o.referencia_tipo;})
+  .map(function(k){const r=o.referencias[k];
+   return regEsc(REG_REF[k]||k)+' '+regPct(r.pct)+(r.qualifica?' (qualifica)':'')+', '+regEsc(r.n_pontos)+' pts';});
+ return '<b>'+regEsc(t)+'</b>'+(o.referencia_tipo==='season'&&o.season?' ('+regEsc(o.season)+')':'')+
+  ': '+regW(o.referencia_watts)+' W'+regCurta(o)+
+  regNota('o esforco e '+regPct(o.pct_da_referencia)+' desta referencia'+
+   ((o.referencias&&o.referencias[o.referencia_tipo]&&o.referencias[o.referencia_tipo].n_pontos!=null)?
+    ' ('+regEsc(o.referencias[o.referencia_tipo].n_pontos)+' pts na referencia)':'')+
+   (outras.length?'<br>outras: '+outras.join('; '):''))+regOrdemDia(o);}
+function regBadgeDeteccao(o){
+ const sr=o.estado_deteccao==='sem_referencia_anterior';
+ return (sr?regBadge('sem referencia','#d29922','sem pontos anteriores para comparar; registada mas nao usada'):regBadge('detetada','#58a6ff','detetada automaticamente; nao precisa de confirmacao'))+
+  regNota('v'+regEsc(o.versao)+(o.detetado_em?' &middot; '+regEsc(String(o.detetado_em).slice(0,10)):'')+
+   (o.versoes_anteriores&&o.versoes_anteriores.length?' &middot; '+o.versoes_anteriores.length+' versao(oes) anterior(es)':''));}
+function regIgnoreParts(o){return !!(o&&o.ignore_parts_presente);}
+function regBadgeElegibilidade(o){
+ const e=o.elegibilidade_cientifica;
+ if(e==='elegivel')return regBadge('elegivel','#2ECC71','icu_ignore_power=false (explicito) e sem ignore_parts');
+ if(e==='inelegivel')return regBadge('inelegivel','#E74C3C','icu_ignore_power=true: a Intervals.icu ignora a potencia desta atividade');
+ if(regIgnoreParts(o))return regBadge('ignore_parts: detetado, nao elegivel','#E67E22',
+  'ignore_parts presente: o segmento valido nao pode ser identificado; fica visivel mas fora do estimador e da validacao');
  return regBadge('elegibilidade desconhecida','#E67E22',
   'icu_ignore_power ausente ou atividade nao encontrada; nao e tratada como elegivel');}
-function regBadgeEstado(e){
- if(e==='confirmado')return regBadge('confirmado','#2ECC71','confirmado explicitamente');
- if(e==='rejeitado')return regBadge('rejeitado','#8b949e','rejeitado explicitamente');
- return regBadge('detetado, sem decisao','#58a6ff','detetado automaticamente; nada foi decidido');}
-function regW(v){return (v==null||isNaN(Number(v)))?'?':String(Math.round(Number(v)*10)/10);}
-function regTextoDecisaoAnterior(c){
- const d=c&&c.decisao_anterior; if(!d)return '';
- return 'decisao anterior: '+regEsc(d.estado)+' (revisao '+regEsc(d.revisao)+') sobre '+regW(d.watts)+' W';}
-function regBadgeEstadoCand(c){
- if(c.valor_atualizado){
-  return regBadge('pendente: valor mudou','#E67E22','a curva da Intervals.icu tem outro valor; '+
-   'a decisao anterior fica no historico mas nao vale para este valor')+
-   '<div style="font-size:11px;color:#8b949e;margin-top:2px">'+regTextoDecisaoAnterior(c)+
-   ' &rarr; agora '+regW(c.watts)+' W'+
-   (c.valor_igual_a_revisao?'<br>igual ao valor da revisao '+regEsc(c.valor_igual_a_revisao):'')+'</div>';}
- return regBadgeEstado(c.estado_registo);}
-function regIgnoreParts(c){return c&&c.motivo_elegibilidade_estimador==='ignore_parts_nao_associavel_ao_trecho';}
-function regAvisoEstimador(c){
- // visibilidade e decisao manual != elegibilidade cientifica do estimador
- if(regIgnoreParts(c))
-  return 'Esta atividade tem ignore_parts. Pode ser revista e confirmada ou rejeitada manualmente: '+
-   'ignore_parts nao impede o registo. A observacao continua excluida do estimador e da validacao '+
-   'enquanto a elegibilidade cientifica nao permitir a sua utilizacao.';
- return 'O estimador nao usaria este esforco ('+regEsc(c.motivo_elegibilidade_estimador||c.elegibilidade_estimador)+
-  '). Confirmar so regista a decisao; o esforco continua fora do modelo.';}
-function regBadgeEstimador(c){
- if(c.elegibilidade_estimador==null)
-  return regBadge('estimador: n/d','#8b949e','o servidor nao informou a elegibilidade do estimador');
- const m=c.motivo_elegibilidade_estimador||'';
- if(c.elegivel_para_estimador)
-  return regBadge('estimador: aceitaria','#2ECC71',
-   'se confirmado e a curva se mantiver, a elegibilidade e aceite pelo estimador');
- const txt=regIgnoreParts(c)?'ignore_parts presente: pode registar a decisao; fora do estimador e da validacao':
-  (m==='icu_ignore_power=true'?'icu_ignore_power=true':(m||c.elegibilidade_estimador));
- return regBadge('estimador: nao usaria','#E74C3C',regIgnoreParts(c)?
-  'ignore_parts nao impede o registo; a observacao fica fora do estimador e da validacao ate a elegibilidade cientifica o permitir':
-  'o estimador exclui este esforco ('+m+'); confirmar so regista a decisao, nao o faz entrar no modelo')+
-  '<div style="font-size:11px;color:#8b949e;margin-top:2px">'+regEsc(txt)+'</div>';}
+function regMotivoTexto(m){
+ if(!m)return '';
+ if(m==='exclusao_manual')return 'exclusao manual';
+ if(m==='sem_referencia_anterior')return 'sem referencia anterior (primeiro ponto da serie)';
+ if(m==='inelegivel:icu_ignore_power=true')return 'icu_ignore_power=true (potencia ignorada)';
+ if(m==='elegibilidade_desconhecida:ignore_parts_nao_associavel_ao_trecho')
+  return 'ignore_parts presente: segmento valido nao identificado';
+ if(m.indexOf('elegibilidade_desconhecida:')===0)return 'elegibilidade desconhecida ('+m.slice(27)+')';
+ if(m==='dados_divergente')return 'a curva atual ja nao confere com o valor detetado';
+ if(m==='dados_sem_curva')return 'curva removida ou sem esta duracao';
+ return m;}
+function regBadgeUso(o){
+ if(o.incluida_no_estimador)
+  return regBadge('entra no estimador e na validacao','#2ECC71','elegivel e sem exclusao; sem confirmacao individual');
+ return regBadge('fora do estimador e da validacao','#E74C3C','excluida cientificamente ou manualmente')+
+  regNota(regEsc(regMotivoTexto(o.motivo_exclusao)));}
+function regExclusaoManual(o){
+ const m=o.exclusao_manual; if(!m)return '<span style="color:#8b949e">&mdash;</span>';
+ return regBadge('excluida manualmente','#8b949e','revisao '+m.revisao+' (rejeitada) no registo')+
+  regNota('sobre '+regW(m.watts)+' W'+(m.valor_diferente?' &middot; o valor mudou desde a exclusao (a exclusao mantem-se)':'')+
+   (m.motivo?'<br>'+regEsc(m.motivo):''));}
+function regTags(o){
+ const t=(o.tags&&o.tags.tempo_ou_distancia)||[]; if(!t.length)return '';
+ return ' '+t.map(function(x){return regBadge('tag '+x.texto,'#8b949e',
+  x.tipo==='tempo'?(o.tags.coincide_duracao?'tag de tempo que coincide com a duracao':'tag de tempo'):
+  'tag de distancia: informativa, nao convertida em duracao');}).join(' ');}
 function regLista(){
- const l=(REG&&REG.candidatos)||[];
+ const l=(REG&&REG.observacoes)||[];
  const f=REG_FILTRO;
- return l.map(function(c,i){return {c:c,i:i};}).filter(function(x){
-  return (!f.mod||x.c.modalidade===f.mod)&&(!f.dur||String(x.c.duracao_s)===f.dur)&&
-   (!f.est||x.c.estado_registo===f.est)&&
-   (!f.de||String(x.c.data)>=f.de)&&(!f.ate||String(x.c.data)<=f.ate);
- }).sort(function(a,b){return a.c.data<b.c.data?1:(a.c.data>b.c.data?-1:0);});}
-function regFormulario(c){
- const dec=REG_ABRIR.dec, verbo=dec==='confirmar'?'Confirmar':'Rejeitar';
- const optin=(dec==='confirmar'&&c.requer_aceitar_elegibilidade_desconhecida)?
-  '<label style="display:block;font-size:12px;margin:6px 0"><input type="checkbox" id="regOptin"> '+
-  'Aceito que a elegibilidade (icu_ignore_power) e desconhecida e confirmo mesmo assim. '+
-  'Continua registada como desconhecida.</label>':'';
+ return l.map(function(o,i){return {o:o,i:i};}).filter(function(x){
+  return (!f.mod||x.o.modalidade===f.mod)&&(!f.dur||String(x.o.duracao_s)===f.dur)&&
+   (!f.ref||x.o.referencia_tipo===f.ref)&&
+   (!f.inc||(f.inc==='sim')===!!x.o.incluida_no_estimador);
+ }).sort(function(a,b){return a.o.data<b.o.data?1:(a.o.data>b.o.data?-1:0);});}
+function regFormulario(o){
+ const dec=REG_ABRIR.dec, rem=dec==='confirmar';
  return '<tr><td colspan="9" style="background:#0d1117;padding:10px 12px">'+
-  '<div style="font-size:13px;margin-bottom:4px"><b>'+verbo+'</b> '+regEsc(c.modalidade)+' '+
-  regEsc(c.duracao_s)+' s de '+regEsc(c.data)+' ('+regW(c.watts)+' W, atividade '+
-  regEsc(c.activity_id)+')</div>'+
-  (c.valor_atualizado?'<div style="font-size:12px;color:#E67E22;margin-bottom:4px">O valor mudou: '+
-   regTextoDecisaoAnterior(c)+'. Esta decisao e sobre o valor novo ('+regW(c.watts)+' W); '+
-   'a anterior fica no historico.</div>':'')+
-  ((c.elegibilidade_estimador!=null&&!c.elegivel_para_estimador&&dec==='confirmar')?
-   '<div style="font-size:12px;color:#E74C3C;margin-bottom:4px">'+regAvisoEstimador(c)+'</div>':'')+
+  '<div style="font-size:13px;margin-bottom:4px"><b>'+(rem?'Remover a exclusao manual de':'Excluir manualmente')+'</b> '+
+  regEsc(o.modalidade)+' '+regEsc(o.duracao_s)+' s de '+regEsc(o.data)+' ('+regW(o.watts)+' W, atividade '+
+  regEsc(o.activity_id)+')</div>'+
+  '<div style="font-size:12px;color:#8b949e;margin-bottom:4px">'+(rem?
+   'Isto so levanta a exclusao; a observacao continua sujeita a elegibilidade cientifica.':
+   'Opcional: a observacao passa a ficar fora do estimador e da validacao. O historico fica guardado e '+
+   'a exclusao pode ser levantada depois.')+'</div>'+
   '<textarea id="regMotivo" rows="2" maxlength="500" placeholder="Motivo (obrigatorio)" '+
   'style="width:100%;max-width:560px;background:#161b22;color:#c9d1d9;border:1px solid #30363d;'+
-  'border-radius:6px;padding:6px"></textarea>'+optin+
+  'border-radius:6px;padding:6px"></textarea>'+
   '<div style="margin-top:6px"><button type="button" onclick="regEnviar()">Registar '+
-  (dec==='confirmar'?'confirmacao':'rejeicao')+'</button> '+
+  (rem?'remocao da exclusao':'exclusao')+'</button> '+
   '<button type="button" onclick="regCancelar()">Cancelar</button></div></td></tr>';}
-function regAcoes(c,i){
- const b=function(rot,dec,off,tip){
-  return '<button type="button" '+(off?'disabled ':'')+'title="'+regEsc(tip||'')+'" '+
-   'onclick="regAbrir('+i+',\''+dec+'\')">'+rot+'</button> ';};
- const tipC=c.motivo_nao_confirmavel||c.aviso_elegibilidade||'';
- if(c.estado_registo==='confirmado')return b('Invalidar (rejeitar)','rejeitar',false,'cria uma revisao nova; o historico fica');
- if(c.estado_registo==='rejeitado')return b('Reconfirmar','confirmar',!c.confirmavel,tipC);
- return b('Confirmar','confirmar',!c.confirmavel,tipC)+b('Rejeitar','rejeitar',false,'');}
+function regAcoes(o,i){
+ const b=function(rot,dec,tip){
+  return '<button type="button" title="'+regEsc(tip||'')+'" onclick="regAbrir('+i+',\''+dec+'\')">'+rot+'</button> ';};
+ if(o.exclusao_manual)
+  return o.elegibilidade_cientifica==='elegivel'?b('Remover exclusao','confirmar','levanta a exclusao manual; fica no historico'):'';
+ return b('Excluir (opcional)','rejeitar','exclusao manual opcional; a inclusao nunca exige confirmacao');}
 function htmlRegisto(d){
- if(!d||d.status!=='OK'||!Array.isArray(d.candidatos))
-  return '<p class="sub">Nao foi possivel carregar os candidatos.</p>';
- if(d.persistencia===false)
-  return '<p class="sub">Sem base de dados: o registo nao pode ser gravado.</p>';
- const mods=Array.from(new Set(d.candidatos.map(function(c){return c.modalidade;})));
- const sel=function(id,chave,vals){
+ if(!d||d.status!=='OK'||!Array.isArray(d.observacoes))
+  return '<p class="sub">Nao foi possivel carregar as observacoes.</p>';
+ const mods=Array.from(new Set(d.observacoes.map(function(o){return o.modalidade;})));
+ const sel=function(chave,vals){
   return '<select onchange="regFiltro(\''+chave+'\',this.value)">'+
    vals.map(function(v){return '<option value="'+regEsc(v[0])+'"'+(REG_FILTRO[chave]===v[0]?' selected':'')+
     '>'+regEsc(v[1])+'</option>';}).join('')+'</select> ';};
  const lista=regLista();
  const mostra=lista.slice(0,REG_MAX);
  const linhas=mostra.map(function(x){
-  const c=x.c;
-  return '<tr><td>'+regEsc(c.data)+'</td><td>'+regEsc(c.modalidade)+' '+regEsc(c.duracao_s)+' s</td>'+
-   '<td style="font-size:11px;color:#8b949e">'+regEsc(c.activity_id)+'</td>'+
-   '<td class="num">'+regW(c.watts)+' W</td>'+
-   '<td class="num">'+(c.pct_do_melhor!=null?c.pct_do_melhor+'%':'')+'</td>'+
-   '<td>'+regBadgeElegibilidade(c.elegibilidade)+'</td><td>'+regBadgeEstimador(c)+'</td>'+
-   '<td>'+regBadgeEstadoCand(c)+'</td>'+
-   '<td>'+regAcoes(c,x.i)+'</td></tr>'+
-   ((REG_ABRIR&&REG_ABRIR.i===x.i)?regFormulario(c):'');
+  const o=x.o;
+  return '<tr><td>'+regEsc(o.modalidade)+' '+regEsc(o.duracao_s)+' s'+regTags(o)+'</td>'+
+   '<td>'+regEsc(o.data)+'<div style="font-size:11px;color:#8b949e">'+regEsc(o.activity_id)+'</div></td>'+
+   '<td class="num">'+regW(o.watts)+' W</td>'+
+   '<td>'+regReferencia(o)+'</td>'+
+   '<td>'+regBadgeDeteccao(o)+'</td>'+
+   '<td>'+regBadgeElegibilidade(o)+'</td>'+
+   '<td>'+regBadgeUso(o)+'</td>'+
+   '<td>'+regExclusaoManual(o)+'</td>'+
+   '<td>'+regAcoes(o,x.i)+'</td></tr>'+
+   ((REG_ABRIR&&REG_ABRIR.i===x.i)?regFormulario(o):'');
  }).join('');
- return '<p style="font-size:13px">Aqui escolhes quais esforcos detetados contam como testes de '+
-  'performance. Detetar nao e confirmar: nada e confirmado sozinho. Esta fase so guarda o registo e '+
-  'o historico; <b>confirmar um teste nao calibra nem atualiza o modelo</b>.</p>'+
-  '<p style="font-size:12px;color:#8b949e">Elegibilidade desconhecida quer dizer que o campo '+
-  'icu_ignore_power nao esta disponivel para essa atividade; nunca e tratada como elegivel. '+
-  'Um esforco inelegivel so pode ser rejeitado.</p>'+
+ const c=d.criterio||{};
+ const total=d.observacoes.length;
+ const incl=d.observacoes.filter(function(o){return o.incluida_no_estimador;}).length;
+ return '<p style="font-size:13px">Os esforcos perto de um maximo (melhor recente, season ou all-time) sao '+
+  '<b>detetados e registados automaticamente</b> depois de cada sincronizacao de curvas. Os que forem '+
+  'cientificamente elegiveis entram no estimador e na validacao <b>sem confirmacao individual</b>. '+
+  'Detetar nao e validar o modelo, e o maximo de uma curva nao e um teste laboratorial ou padronizado.</p>'+
+  '<ul style="font-size:12px;color:#8b949e;margin:4px 0 8px 18px">'+
+  (Array.isArray(d.limitacoes)?d.limitacoes.map(function(t){return '<li>'+regEsc(t)+'</li>';}).join(''):'')+'</ul>'+
+  '<div style="font-size:12px;color:#8b949e;margin:4px 0">Limiar de proximidade '+
+  regEsc(c.limiar_proximidade!=null?c.limiar_proximidade:'?')+' &middot; janela recente '+
+  regEsc(c.janela_recente_dias!=null?c.janela_recente_dias:'?')+' d &middot; historico sincronizado '+
+  regEsc(c.anos_historico!=null?c.anos_historico:'?')+' anos &middot; fronteiras de season: '+
+  regEsc(c.season_fonte||'?')+' &middot; ultima deteccao '+
+  regEsc(d.ultima_atualizacao?String(d.ultima_atualizacao).slice(0,16).replace('T',' '):'nunca')+
+  '</div>'+
+  regTemporal(d.historico_temporal)+
+  '<div style="font-size:12px;margin:4px 0">'+total+' observacoes detetadas, '+incl+
+  ' entram no estimador e '+(total-incl)+' ficam de fora. '+
+  '<button type="button" onclick="regAtualizar()" title="Corre a deteccao sobre as curvas ja sincronizadas; '+
+  'nao sincroniza curvas">Atualizar deteccao</button></div>'+
   '<div style="margin:6px 0">'+
-  sel('regSelMod','mod',[['','todas as modalidades']].concat(mods.map(function(m){return [m,m];})))+
-  sel('regSelDur','dur',[['','todas as duracoes'],['60','60 s'],['300','300 s'],['1200','1200 s']])+
-  sel('regSelEst','est',[['','todos os estados'],['pendente','pendente (sem decisao ou valor mudou)'],
-   ['confirmado','confirmado'],['rejeitado','rejeitado']])+
-  '<label style="font-size:12px;color:#8b949e">de <input type="date" value="'+regEsc(REG_FILTRO.de)+
-  '" onchange="regFiltro(\'de\',this.value)"></label> '+
-  '<label style="font-size:12px;color:#8b949e">ate <input type="date" value="'+regEsc(REG_FILTRO.ate)+
-  '" onchange="regFiltro(\'ate\',this.value)"></label></div>'+
-  (d.resumo_pendencias?'<div style="font-size:12px;color:#8b949e;margin:4px 0">Pendentes: '+
-   regEsc(d.resumo_pendencias.pendentes)+' ('+regEsc(d.resumo_pendencias.pendentes_sem_decisao)+
-   ' sem decisao, '+regEsc(d.resumo_pendencias.pendentes_valor_atualizado)+
-   ' com valor mudado). Nada e confirmado em lote.</div>':'')+
+  sel('mod',[['','todas as modalidades']].concat(mods.map(function(m){return [m,m];})))+
+  sel('dur',[['','todas as duracoes'],['60','60 s'],['300','300 s'],['1200','1200 s']])+
+  sel('ref',[['','todas as referencias'],['recente','melhor recente'],['season','season'],['all_time','all-time']])+
+  sel('inc',[['','estimador: todas'],['sim','entram no estimador'],['nao','ficam de fora']])+'</div>'+
   (REG_MSG?'<div style="font-size:13px;margin:6px 0;color:#58a6ff">'+regEsc(REG_MSG)+'</div>':'')+
   (mostra.length?'<div class="wrap"><table><thead><tr>'+
-   ['Data','Esforco','Atividade','Potencia','% do melhor','Elegibilidade (registo)','Estimador','Estado','Acao'].map(function(h){
+   ['Esforco','Atividade e data','Potencia observada','Referencia usada','Estado de deteccao',
+    'Elegibilidade cientifica','Estimador e validacao','Exclusao manual','Acao (opcional)'].map(function(h){
     return '<th>'+h+'</th>';}).join('')+'</tr></thead><tbody>'+linhas+'</tbody></table></div>'+
    (lista.length>mostra.length?'<div class="sub">A mostrar '+mostra.length+' de '+lista.length+
     ' (mais recentes primeiro). Usa os filtros para ver os restantes.</div>':''):
-   '<p class="sub">Sem candidatos com estes filtros.</p>');}
+   '<p class="sub">'+(total?'Sem observacoes com estes filtros.':
+    'Ainda nao ha observacoes detetadas. A deteccao corre depois de cada sincronizacao de curvas; '+
+    'tambem podes carregar em Atualizar deteccao.')+'</p>');}
 function regRender(){
  const el=document.getElementById('registoTestesCorpo');
  if(el)el.innerHTML=htmlRegisto(REG);}
 async function carregarRegisto(){
- try{ REG=await fetch('/api/protocolo/candidatos').then(function(r){return r.json();}); }
+ try{ REG=await fetch('/api/protocolo/observacoes-auto').then(function(r){return r.json();}); }
  catch(e){ REG=null; }
  REG_CARREGADO=!!REG;
  regRender();}
@@ -2351,28 +2386,35 @@ function abrirRegisto(det){
 function regFiltro(chave,v){REG_FILTRO[chave]=v;REG_ABRIR=null;regRender();}
 function regAbrir(i,dec){REG_ABRIR={i:i,dec:dec};REG_MSG='';regRender();}
 function regCancelar(){REG_ABRIR=null;regRender();}
+async function regAtualizar(){
+ let j;
+ try{ j=await fetch('/api/protocolo/observacoes-auto/atualizar',{method:'POST'}).then(function(r){return r.json();}); }
+ catch(e){ REG_MSG='Falha de rede: a deteccao nao foi corrida.'; regRender(); return; }
+ REG_MSG=(j&&j.status==='OK')?
+  ('Deteccao corrida: '+regEsc(j.novas_versoes)+' versao(oes) nova(s), '+regEsc(j.retiradas)+' retirada(s). '+
+   'Isto nao valida o modelo.'):((j&&(j.mensagem||j.erro))||'Nao foi possivel correr a deteccao.');
+ await carregarRegisto();}
 async function regEnviar(){
- if(!REG_ABRIR||!REG||!REG.candidatos)return;
- const c=REG.candidatos[REG_ABRIR.i]; if(!c)return;
+ if(!REG_ABRIR||!REG||!REG.observacoes)return;
+ const o=REG.observacoes[REG_ABRIR.i]; if(!o)return;
  const motivo=((document.getElementById('regMotivo')||{}).value||'').trim();
  if(!motivo){REG_MSG='Escreve o motivo antes de registar.';regRender();return;}
- const optin=!!((document.getElementById('regOptin')||{}).checked);
  let j;
  try{
   j=await fetch('/api/protocolo/testes/decisao',{method:'POST',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({modalidade:c.modalidade,duracao_s:c.duracao_s,activity_id:c.activity_id,
+   body:JSON.stringify({modalidade:o.modalidade,duracao_s:o.duracao_s,activity_id:o.activity_id,
     decisao:REG_ABRIR.dec,motivo:motivo,confirmacao_explicita:true,origem_registo:'ui',
-    metodo_confirmacao:'manual',aceita_elegibilidade_desconhecida:optin,
-    watts_vistos:c.watts})
+    metodo_confirmacao:'manual',aceita_elegibilidade_desconhecida:false,
+    watts_vistos:o.watts})
   }).then(function(r){return r.json();});
  }catch(e){ REG_MSG='Falha de rede: nada foi registado.'; regRender(); return; }
  REG_ABRIR=null;
  const desatualizado=!!(j&&j.status!=='OK'&&j.campo==='watts_vistos');
  REG_MSG=(j&&j.status==='OK')?
-  ((j.alterado?'Registado. ':'Sem alteracao. ')+'Isto nao calibra nem atualiza o modelo.'):
-  (desatualizado?'A curva foi atualizada depois de abrires esta lista: nada foi registado. '+
-   'A lista foi recarregada e o valor atual esta pendente de revisao; o historico anterior fica intacto.':
+  ((j.alterado?'Registado. ':'Sem alteracao. ')+'A exclusao manual e opcional e nao valida o modelo.'):
+  (desatualizado?'O valor mudou depois de abrires esta lista: nada foi registado. '+
+   'A lista foi recarregada com o valor atual.':
    ((j&&j.mensagem)||'Nao foi possivel registar.'));
  await carregarRegisto();}
 // <</registo-testes>>
@@ -2396,16 +2438,18 @@ function htmlEstimador(j){
    return estEsc(k)+' ('+i.motivos_exclusao[k]+')';}).join('; ');
   return '<tr><td>'+estEsc(i.modalidade)+'</td><td>P'+estEsc(i.duracao_s)+'</td>'+
    '<td>'+estEsc(ROT[i.estado_calibracao]||i.estado_calibracao)+'</td>'+
-   '<td>'+i.n_confirmados+'</td><td>'+i.n_usadas+'</td><td>'+i.n_excluidas+'</td>'+
+   '<td>'+(i.n_detetadas==null?'&mdash;':i.n_detetadas)+'</td><td>'+i.n_confirmados+'</td><td>'+i.n_usadas+'</td><td>'+i.n_excluidas+'</td>'+
    '<td>'+(i.nivel_w==null?'&mdash;':i.nivel_w.toFixed(1)+' W')+'</td><td>'+inc+'</td>'+
    '<td>'+estEsc(i.ultima_observacao||'')+'</td><td style="font-size:11px">'+mot+'</td></tr>';
  }).join('');
  return '<p style="font-size:13px"><b>Experimental e nao validado preditivamente.</b> '+
-  'Usa so testes confirmados com icu_ignore_power=false explicito (elegibilidade desconhecida '+
-  'fica de fora). Nao altera o PMC nem os parametros do modelo. A incerteza e a do nivel '+
+  'Usa as observacoes detetadas automaticamente (melhor recente, season ou all-time), sem '+
+  'confirmacao individual, desde que tenham icu_ignore_power=false explicito e nao tenham '+
+  'ignore_parts (elegibilidade desconhecida fica de fora). Confirmados e so a contagem das que '+
+  'tambem tem confirmacao manual; uma exclusao manual retira a observacao. Nao altera o PMC nem os parametros do modelo. A incerteza e a do nivel '+
   'sob o modelo, nao uma previsao.</p>'+
   '<table style="font-size:12px;border-collapse:collapse"><thead><tr><th>Modalidade</th><th>Duracao</th>'+
-  '<th>Estado</th><th>Confirmados</th><th>Usados</th><th>Excluidos</th><th>Estimativa</th>'+
+  '<th>Estado</th><th>Detetadas</th><th>Confirmados</th><th>Usados</th><th>Excluidos</th><th>Estimativa</th>'+
   '<th>Incerteza</th><th>Ultimo teste usado</th><th>Motivos de exclusao</th></tr></thead><tbody>'+
   lin+'</tbody></table>';
 }

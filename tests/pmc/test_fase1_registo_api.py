@@ -461,7 +461,9 @@ class ConfirmarNaoAtualizaOModelo(Base):
         nomes = {r[0] for r in self.db._exec(
             "SELECT name FROM sqlite_master WHERE type='table'", fetch='all')}
         self.assertIn('modelo_testes_revisoes', nomes)
-        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_testes_revisoes'})
+        # a deteccao automatica acrescenta UMA tabela (so INSERT); nao ha tabelas de versoes do
+        # registo manual nem ponteiros de producao
+        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_observacoes_auto', 'modelo_testes_revisoes'})
 
     def test_registo_e_append_only_no_codigo(self):
         src = open(os.path.join(ROOT, 'db.py'), encoding='utf-8').read()

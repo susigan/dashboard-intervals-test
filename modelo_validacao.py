@@ -76,6 +76,12 @@ VERSAO_VALIDACAO = 1
 Q_PADRAO = E.Q_DIA
 GRELHA_Q = (0.001, 0.003, 0.01, 0.03, 0.1)
 MODOS = ('retrospectivo', 'conhecido_na_epoca')
+DESCRICAO_MODO = {
+    'retrospectivo': ('Usa todas as observacoes atuais, incluindo as detetadas depois da data de cada alvo '
+                      '(conhecimento retrospetivo).'),
+    'conhecido_na_epoca': ('So usa observacoes ja detetadas (detetado_em) antes da data de cada alvo; o '
+                           'historico anterior a ativacao da deteccao automatica nao pode ser reconstruido '
+                           'e nao entra.')}
 
 MIN_ALVOS_AVALIAVEL = 20
 MIN_DATAS_AVALIAVEL = 15
@@ -351,19 +357,35 @@ def _avaliar_chave(modo, mod, dur, alvos, treino_de, n_conf, motivos_sel, q, gre
 
 
 def avaliar(historico, atividades, curvas, modo='retrospectivo', q=Q_PADRAO, grelha_q=GRELHA_Q,
-            tipo=None, duracao=None):
-    """Validacao walk-forward de um modo. Levanta HistoricoAmbiguo / ValueError."""
+            tipo=None, duracao=None, auto=None):
+    """Validacao walk-forward de um modo. Levanta HistoricoAmbiguo / ValueError.
+
+    auto: None -> observacoes = revisoes confirmadas (comportamento anterior). Com `auto`
+    (modelo_observacoes_auto.FonteAuto) as observacoes sao as detetadas automaticamente e
+    elegiveis, sem confirmacao manual; as revisoes manuais so excluem (sobreposicao opcional).
+    No modo conhecido_na_epoca uma observacao so conta desde a sua primeira prova
+    verificavel (`detetado_em`, ou o `revisado_em` de uma revisao manual do mesmo valor);
+    nao ha preenchimento retroativo, por isso o treino pode ser vazio para datas antigas.
+    """
     if modo not in MODOS:
         raise ValueError(f'modo invalido: {modo}')
     atuais = E.estado_atual_por_teste(historico)
     cpa = E.curvas_por_atividade(curvas)
-    atual = E.selecionar_observacoes(atuais, atividades, cpa)
+    if auto is None:
+        atual = E.selecionar_observacoes(atuais, atividades, cpa)
+    else:
+        atual = E.selecionar_observacoes_auto(auto.atuais(), atuais, atividades, cpa)
     cache = {}
 
     def na_epoca(corte):
         if corte not in cache:
             parcial = [r for r in (historico or []) if (_dia(r.get('revisado_em')) or '9999') < corte]
-            cache[corte] = E.selecionar_observacoes(E.estado_atual_por_teste(parcial), atividades, cpa)
+            ep = E.estado_atual_por_teste(parcial)
+            if auto is None:
+                cache[corte] = E.selecionar_observacoes(ep, atividades, cpa)
+            else:
+                cache[corte] = E.selecionar_observacoes_auto(auto.conhecidas_antes(corte), ep,
+                                                             atividades, cpa)
         return cache[corte]
 
     itens = []
@@ -379,15 +401,24 @@ def avaliar(historico, atividades, curvas, modo='retrospectivo', q=Q_PADRAO, gre
         motivos = {}
         for e in s['excluidas']:
             motivos[e['motivo']] = motivos.get(e['motivo'], 0) + 1
-        itens.append(_avaliar_chave(modo, m, d, alvos, treino_de, s['n_confirmados'],
-                                    dict(sorted(motivos.items())), q, grelha_q))
-    return {'modo': modo, 'itens': itens}
+        item = _avaliar_chave(modo, m, d, alvos, treino_de, s['n_confirmados'],
+                              dict(sorted(motivos.items())), q, grelha_q)
+        item['n_detetadas'] = s.get('n_detetadas')
+        if auto is not None and modo == 'conhecido_na_epoca':
+            item['historico_temporal'] = auto.resumo_temporal([o['test_id'] for o in alvos])
+        itens.append(item)
+    res = {'modo': modo, 'itens': itens,
+           'fonte_observacoes': 'automatica' if auto is not None else 'confirmacao_manual'}
+    if auto is not None:
+        res['descricao_modo'] = DESCRICAO_MODO[modo]
+    return res
 
 
 def validar(historico, atividades, curvas, modos=MODOS, q=Q_PADRAO, grelha_q=GRELHA_Q,
-            tipo=None, duracao=None):
+            tipo=None, duracao=None, auto=None):
     """Resultado completo (um ou mais modos) com configuracao e assinatura."""
-    res = {m: avaliar(historico, atividades, curvas, m, q, grelha_q, tipo, duracao) for m in modos}
+    res = {m: avaliar(historico, atividades, curvas, m, q, grelha_q, tipo, duracao, auto)
+           for m in modos}
     cfg = {'versao_validacao': VERSAO_VALIDACAO, 'versao_estimador': E.VERSAO_ESTIMADOR,
            'q_predefinido': q, 'grelha_q': list(grelha_q), 'n_bootstrap': N_BOOT,
            'semente_base': SEMENTE, 'margem_relativa': MARGEM_RELATIVA,

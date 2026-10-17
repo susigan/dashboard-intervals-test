@@ -24,6 +24,9 @@ URL = '/api/modelo/estimador'
 
 class Base(F.Base):
     def estim(self, **q):
+        # estes testes cobrem o caminho da Fase 2 (observacoes = revisoes confirmadas); a fonte
+        # automatica tem os seus testes em test_mmp_deteccao_automatica.py
+        q = {'fonte': 'confirmacao_manual', **q}
         url = URL + ('?' + '&'.join(f'{k}={v}' for k, v in q.items()) if q else '')
         r = self.c.get(url)
         return r.status_code, r.get_json()
@@ -193,7 +196,7 @@ class RegressaoProducao(Base):
     def test_sem_tabelas_novas_nem_ponteiro_de_producao(self):
         nomes = {r[0] for r in self.db._exec(
             "SELECT name FROM sqlite_master WHERE type='table'", fetch='all')}
-        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_testes_revisoes'})
+        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_observacoes_auto', 'modelo_testes_revisoes'})
 
     def test_o_estimador_nao_escreve_na_base(self):
         src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()

@@ -259,6 +259,42 @@ def init_schema():
     )""")
     _exec("CREATE INDEX IF NOT EXISTS ix_mtr_mod_dur "
           "ON modelo_testes_revisoes(modalidade, duracao_s)")
+
+    # Observacoes MMP detetadas automaticamente (experimental). So INSERT: cada versao e
+    # uma linha nova de (test_id, versao); a versao atual e a ultima, as anteriores ficam
+    # 'substituidas' (estado derivado da cadeia) e uma 'retirada' e uma linha nova.
+    # Sem FK para activities/power_curves de proposito: um re-sync (ou
+    # recriar_power_curves) nunca toca nesta tabela. Ver modelo_observacoes_auto.py.
+    _exec(f"""CREATE TABLE IF NOT EXISTS modelo_observacoes_auto (
+        test_id        TEXT NOT NULL,
+        versao         INTEGER NOT NULL,
+        evento         TEXT NOT NULL CHECK (evento IN ('detetada','retirada')),
+        substitui_versao INTEGER,
+        modalidade     TEXT NOT NULL,
+        duracao_s      INTEGER NOT NULL,
+        activity_id    TEXT NOT NULL,
+        data           DATE,
+        hora_local     TEXT,
+        watts          DOUBLE PRECISION NOT NULL,
+        referencia_tipo TEXT CHECK (referencia_tipo IN ('recente','season','all_time')),
+        referencia_watts DOUBLE PRECISION,
+        pct_da_referencia DOUBLE PRECISION,
+        referencias    {jsn},
+        season         TEXT,
+        elegibilidade  TEXT NOT NULL,
+        motivo_exclusao TEXT,
+        icu_ignore_power INTEGER,
+        ignore_parts_presente INTEGER,
+        tags           {jsn},
+        criterio       {jsn},
+        origem         TEXT NOT NULL,
+        motivo_retirada TEXT,
+        versao_contrato INTEGER NOT NULL,
+        detetado_em    {ts} NOT NULL,
+        PRIMARY KEY (test_id, versao)
+    )""")
+    _exec("CREATE INDEX IF NOT EXISTS ix_moa_mod_dur "
+          "ON modelo_observacoes_auto(modalidade, duracao_s)")
     return True
 
 
@@ -1285,3 +1321,83 @@ def revisoes_testes_modelo(test_id=None, tipo=None, duracao=None):
                      ORDER BY r.modalidade, r.duracao_s, r.data, r.test_id, r.revisao""",
                  tuple(params), fetch='all') or []
     return [_revisao_de_linha(l) for l in rows]
+
+
+# ── Observacoes MMP automaticas (so INSERT) ─────────────────────────────────
+
+class ConflitoObservacao(Exception):
+    """A versao ja existe: outro pedido gravou a mesma observacao entretanto."""
+
+
+_COLS_OBS_AUTO = ['test_id', 'versao', 'evento', 'substitui_versao', 'modalidade',
+                  'duracao_s', 'activity_id', 'data', 'hora_local', 'watts',
+                  'referencia_tipo', 'referencia_watts', 'pct_da_referencia',
+                  'referencias', 'season', 'elegibilidade', 'motivo_exclusao',
+                  'icu_ignore_power', 'ignore_parts_presente', 'tags', 'criterio',
+                  'origem', 'motivo_retirada', 'versao_contrato', 'detetado_em']
+_JSON_OBS_AUTO = ('referencias', 'tags', 'criterio')
+_BOOL_OBS_AUTO = ('icu_ignore_power', 'ignore_parts_presente')
+
+
+def _obs_auto_de_linha(linha):
+    r = dict(zip(_COLS_OBS_AUTO, linha))
+    r['data'] = str(r['data'])[:10] if r['data'] is not None else None
+    for k in _JSON_OBS_AUTO:
+        v = r[k]
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except ValueError:
+                v = None
+        r[k] = v
+    for k in _BOOL_OBS_AUTO:
+        if r[k] is not None:
+            r[k] = bool(r[k])
+    r['detetado_em'] = _iso(r['detetado_em'])
+    return r
+
+
+def inserir_observacao_auto(obs):
+    """Insere UMA versao (um unico INSERT). Levanta ConflitoObservacao se
+    (test_id, versao) ja existir. Nunca atualiza nem apaga."""
+    if not ENABLED:
+        raise RuntimeError('sem base de dados')
+    valores = []
+    for c in _COLS_OBS_AUTO:
+        v = obs.get(c)
+        if c in _JSON_OBS_AUTO:
+            v = json.dumps(v, ensure_ascii=False, default=str) if v is not None else None
+        elif c == 'detetado_em':
+            v = _dt(v)
+        elif c in _BOOL_OBS_AUTO:
+            v = None if v is None else int(bool(v))
+        valores.append(v)
+    sql = (f"INSERT INTO modelo_observacoes_auto ({', '.join(_COLS_OBS_AUTO)}) "
+           f"VALUES ({', '.join('?' * len(_COLS_OBS_AUTO))})")
+    try:
+        _exec(sql, tuple(valores))
+    except Exception:
+        existe = _exec("SELECT 1 FROM modelo_observacoes_auto WHERE test_id = ? AND versao = ?",
+                       (obs['test_id'], obs['versao']), fetch='one')
+        if existe:
+            raise ConflitoObservacao(f"{obs['test_id']} ja tem a versao {obs['versao']}")
+        raise
+    return True
+
+
+def observacoes_auto_historico(tipo=None, duracao=None):
+    """Todas as versoes (inclui substituidas e retiradas), por ordem de teste e versao."""
+    if not ENABLED:
+        return []
+    cond, params = [], []
+    if tipo:
+        cond.append("modalidade = ?")
+        params.append(tipo)
+    if duracao is not None:
+        cond.append("duracao_s = ?")
+        params.append(int(duracao))
+    where = ("WHERE " + " AND ".join(cond)) if cond else ""
+    rows = _exec(f"""SELECT {', '.join(_COLS_OBS_AUTO)} FROM modelo_observacoes_auto {where}
+                     ORDER BY modalidade, duracao_s, data, test_id, versao""",
+                 tuple(params), fetch='all') or []
+    return [_obs_auto_de_linha(l) for l in rows]

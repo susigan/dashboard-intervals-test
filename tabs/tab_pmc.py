@@ -584,8 +584,6 @@ BODY = r"""
 <div class="sub" id="sub">A carregar...</div>
 <div id="sugestoesTeste"></div>
 
-<div id="sugestoesTeste"></div>
-
 <div class="cards" id="kpis"></div>
 <div id="faseCard"></div>
 <div id="alertas"></div>
@@ -1978,68 +1976,22 @@ function drawLoad(comb,PL,PR,X){
  g.fillStyle='#8b949e';g.font='10px sans-serif';
  g.fillText('Carga por modalidade',PL+4,PT+10);
 }
-// Sugestoes de teste, por modalidade. Cada uma desaparece sozinha assim que
-// fizeres um esforco perto do maximo nessa duracao — nao ha nada a marcar.
-async function carregarSugestoes(){
- let P;
- try{ P=await fetch('/api/protocolo').then(r=>r.json()); }
- catch(e){ return; }
- const el=document.getElementById('sugestoesTeste');
- if(!el)return;
- const sug=P.sugestoes||[];
- const cov=(P.cobertura||{}).por_modalidade||{};
-
- // uma sugestao por modalidade: a mais atrasada
- const porMod={};
- sug.forEach(function(s){
-  if(!porMod[s.modalidade]||s.atraso_dias>porMod[s.modalidade].atraso_dias)
-   porMod[s.modalidade]=s;});
- const mods=Object.keys(porMod);
-
- if(!mods.length){
-  el.innerHTML='<div style="border-left:3px solid #2ECC71;background:#161b22;'+
-   'padding:10px 14px;border-radius:0 6px 6px 0;margin-bottom:14px;font-size:13px">'+
-   '<b>Testes em dia</b> — todas as modalidades tem esforcos maximos recentes.</div>';
-  return;}
-
- const linhas=mods.map(function(m){
-  const s=porMod[m];
-  const cor=s.urgencia==='alta'?'#E74C3C':'#E67E22';
-  // quantos pontos-ancora ja existem nessa modalidade
-  const c=cov[m]||{};
-  const n=(c[s.nome]||{}).n;
-  return '<tr><td style="color:'+((D&&D.cores||{})[m]||'#e6e6e6')+'">'+m+'</td>'+
-   '<td><b>'+s.nome+'</b><br><span style="font-size:11px;color:#8b949e">'+
-    s.mede+'</span></td>'+
-   '<td class="num" style="color:'+cor+'">'+s.dias_desde_ultimo+'d</td>'+
-   '<td class="num">'+Math.round(s.ultimo_valor)+' W<br>'+
-    '<span style="font-size:11px;color:#8b949e">'+s.ultima_data+'</span></td>'+
-   '<td class="num">'+(n!=null?n:'—')+'</td></tr>';}).join('');
-
- el.innerHTML=
-  '<details class="expl" open style="border-left:3px solid #E67E22">'+
-  '<summary>Testes sugeridos ('+mods.length+' modalidades)</summary>'+
-  '<div class="expl-corpo">'+
-  '<p>Nao e preciso marcar nada nem fazer um teste formal. Uma prova, um bloco '+
-  'de intervalos duro ou uma saida em grupo contam — basta ires perto do '+
-  'maximo nessa duracao. A sugestao desaparece sozinha quando isso acontecer.</p>'+
-  '<p class="nota">Cada esforco maximo acrescenta um ponto-ancora. Sao esses '+
-  'pontos que permitem calibrar o modelo aos teus dados em vez de usar valores '+
-  'de outros atletas — e a coluna da direita mostra quantos ja tens.</p>'+
-  '<div class="wrap"><table><thead><tr>'+
-  ['Modalidade','Teste','Desde o ultimo','Ultimo valor','Pontos-ancora']
-   .map((c,i)=>'<th class="'+(i>1?'num':'')+'">'+c+'</th>').join('')+
-  '</tr></thead><tbody>'+linhas+'</tbody></table></div>'+
-  '</div></details>';
-}
-
 // ─── Testes sugeridos ───────────────────────────────────────────────────
 // O painel sai dos dados: cada esforco maximo e detectado sozinho, por isso
 // a sugestao desaparece quando o teste for feito. Nada para marcar a mao.
+// Um unico pedido a /api/protocolo por carregamento (carregarSugestoes, chamada
+// no fim do script); a apresentacao (mostrarSugestoes) so le SUG e pode correr
+// de novo sem pedir nada — load() chama-a quando D ja existe, para recolorir.
+// Assim as sugestoes nao dependem de /api/pmc (falha ou demora).
+let SUG=null;
 async function carregarSugestoes(){
- let d;
- try{ d=await fetch('/api/protocolo').then(r=>r.json()); }
+ try{ SUG=await fetch('/api/protocolo').then(r=>r.json()); }
  catch(e){ return; }
+ mostrarSugestoes();
+}
+function mostrarSugestoes(){
+ const d=SUG;
+ if(!d)return;
  const sug=d.sugestoes||[];
  const el=document.getElementById('sugestoesTeste');
  if(!el)return;
@@ -2064,7 +2016,7 @@ async function carregarSugestoes(){
   // quantos testes ja existem nessa duracao
   let n='';
   const c=(cov[m]||{})[s.nome];
-  if(c)n=c.n+' feitos';
+  if(c)n=c.n+' esforcos detetados';
   return '<div style="flex:1;min-width:190px;background:#161b22;border:1px solid '+
    (urgente?'#E67E22':'#30363d')+';border-radius:8px;padding:10px 13px">'+
    '<div style="color:'+cor+';font-weight:600;font-size:13px">'+m+'</div>'+
@@ -2137,7 +2089,9 @@ async function load(){
    'padding:9px 12px;margin-bottom:8px;border-radius:0 6px 6px 0;font-size:13px">'+
    al.texto+'</div>';}).join('');
 
- carregarSugestoes();
+ // so' redesenha, com as cores de D; sem novo pedido. Isolado: uma falha so' no
+ // painel de sugestoes (ex.: payload malformado) nao pode impedir o resto de load().
+ try{ mostrarSugestoes(); }catch(e){ console.error('sugestoes:',e); }
 montarExport();
  drawPMC(); mostrarFMT5(); mostrarRegimeHoje(); mostrarHomeo(); mostrarAlos();
  mostrarDtrimpDkj(); mostrarEficienciaKj();

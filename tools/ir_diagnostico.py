@@ -229,6 +229,8 @@ def escolher_dias(n, layout, n_dias, rng, burn=60):
         for c in cs:
             sel += list(c + rng.choice(np.arange(120), min(max(1, n // 3), 120), replace=False))
         return np.unique(np.clip(sel, burn, n_dias - 1))
+    if layout == 'regular':                   # espacamento (quase) constante
+        return np.unique(np.linspace(burn, n_dias - 1, n).astype(int))
     if layout == 'lacuna12m':                 # sem nenhuma observacao num bloco continuo de 365 dias
         mid = n_dias // 2
         msk = (dias < mid - 182) | (dias > mid + 182)
@@ -252,6 +254,8 @@ def simular_um(cargas, chave='A', n=60, layout='uniforme', amplitude=15.0, ruido
         out.update(parametros=P, rel={k: abs(P[k] - tr[k]) / tr[k] for k in ('k1', 'k2', 't1', 't2')},
                    r2=r['metricas']['r2'],
                    t_no_limite=any(d['parametro'] in ('t1', 't2') for d in r['identificabilidade']['parametros_no_limite']))
+        # 'falso selo': o modelo diz identificavel mas T1 ou T2 estao a mais de 25 % da verdade (so vale em sintetico)
+        out['selo_falso'] = bool(r['estado'] == 'ajustado_identificavel' and max(out['rel']['t1'], out['rel']['t2']) > 0.25)
     return out
 
 

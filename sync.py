@@ -203,6 +203,17 @@ def sync_power_curves(modalidades=None, anos=None):
         import traceback
         traceback.print_exc()
         resultado['observacoes_auto'] = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+    # Modelo IR (experimental): recalibra so as unidades cujas observacoes MMP elegiveis (ou a
+    # carga ate ao ultimo esforco) mudaram; sem mudancas nao grava nada. Falhar nunca estraga
+    # a sincronizacao.
+    try:
+        import modelo_ir_servico
+        resultado['modelo_ir'] = modelo_ir_servico.apos_deteccao(
+            resultado.get('observacoes_auto'), origem='sync')
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        resultado['modelo_ir'] = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
     return resultado
 
 

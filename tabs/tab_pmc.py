@@ -665,6 +665,7 @@ BODY = r"""
 <details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Deteccao automatica de observacoes MMP (season, all-time, recente)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
 <details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
 <details class="expl" id="validacaoExp" style="margin:10px 0" ontoggle="abrirValidacao(this)"><summary>Validacao preditiva exploratoria do estimador (o que ja da para avaliar e que dados faltam)</summary><div class="expl-corpo" id="validacaoExpCorpo">A carregar...</div></details>
+<details class="expl" id="irExp" style="margin:10px 0" ontoggle="abrirIR(this)"><summary>Modelo IR por modalidade: curvas de influencia (experimental, ajuste historico)</summary><div class="expl-corpo" id="irExpCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
 <div id="faseCard"></div>
@@ -2552,6 +2553,146 @@ function abrirValidacao(d){
  if(d&&d.open&&!VAL_CARREGADO)carregarValidacao();
 }
 // <</validacao-exploratoria>>
+
+// <<modelo-ir>>
+// ─── Modelo IR: curvas de influencia por modalidade e duracao ─────────────
+// So le /api/modelo/ir/influencia (ULTIMO ajuste guardado), e so quando o painel e aberto ou o
+// seletor muda. Nao recalibra, nao escreve, nao altera PMC/CTL/ATL/TSB nem o homeostatico.
+// E a descricao de um ajuste dentro da amostra, nao uma previsao validada.
+const IR_MODS=['Bike','Row','Run','Ski'], IR_DURS=[[60,'1 min (60 s)'],[300,'5 min (300 s)'],[1200,'20 min (1200 s)']];
+const IR_COR={pos:'#3fb950',neg:'#f85149',liq:'#5DADE2',ativ:'#d29922',obs:'#c9d1d9'};
+let IR_MONTADO=false, IR_J=null, IR_SEQ=0;
+function irEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function irNum(x,d){return (x==null||!isFinite(x))?'&mdash;':Number(x).toFixed(d==null?2:d);}
+function irShell(){
+ const el=document.getElementById('irExpCorpo'); if(!el)return;
+ el.innerHTML=
+  '<p style="font-size:13px"><b>Experimental, ajuste historico (dentro da amostra), nao validado preditivamente.</b> '+
+  'Mostra como a equacao do ultimo ajuste (P = P0 + K1&middot;E &minus; K2&middot;G) reparte a carga da modalidade em '+
+  'componente positiva e negativa. Nao altera o PMC.</p>'+
+  '<div class="controls">'+
+  '<label class="sel">Modalidade <select id="irMod">'+IR_MODS.map(function(m){return '<option value="'+m+'">'+m+'</option>';}).join('')+'</select></label>'+
+  '<label class="sel">Duracao <select id="irDur">'+IR_DURS.map(function(d){return '<option value="'+d[0]+'"'+(d[0]===1200?' selected':'')+'>'+d[1]+'</option>';}).join('')+'</select></label>'+
+  '<label class="sel">Atividade <select id="irAtiv"><option value="">Nenhuma</option></select></label></div>'+
+  '<div id="irInfo"></div>'+
+  '<div class="chartbox"><div class="legend" id="lgIrComp"></div><canvas id="chIrComp" height="240"></canvas></div>'+
+  '<div class="chartbox"><div class="legend" id="lgIrLiq"></div><canvas id="chIrLiq" height="240"></canvas></div>';
+ ['irMod','irDur','irAtiv'].forEach(function(id){
+  const e=document.getElementById(id); if(e)e.onchange=function(){ if(id!=='irAtiv'){document.getElementById('irAtiv').value='';} carregarIR(); };});
+ IR_MONTADO=true;
+}
+function irInfoHtml(j){
+ if(!j||j.status!=='OK')return '<p style="font-size:13px">Nao foi possivel calcular: '+irEsc(j&&j.mensagem?j.mensagem:'sem resposta')+'</p>';
+ if(j.estado==='sem_ajuste')return '<p style="font-size:13px">'+irEsc(j.leitura)+'</p>';
+ const ok=j.parametros_identificados===true;
+ const aviso=(j.estado==='ajustado_identificavel')?
+  '<div style="border-left:3px solid #3fb950;padding:4px 10px;margin:6px 0;font-size:13px">'+irEsc(j.leitura)+'</div>':
+  '<div style="border-left:3px solid #d29922;padding:4px 10px;margin:6px 0;font-size:13px"><b>Atencao:</b> '+
+  irEsc(!j.parametros&&j.leitura?j.leitura+'. '+(j.aviso_parametros||''):(j.aviso_parametros||j.leitura))+
+  ((j.avisos_identificabilidade||[]).length?' ('+j.avisos_identificabilidade.map(irEsc).join(', ')+')':'')+'</div>';
+ let params='';
+ if(j.parametros){
+  const P=j.parametros, nc=ok?'':' <span title="parametro nao identificavel: nao confirmado" style="color:#d29922">(nao confirmado)</span>';
+  params='<table style="font-size:12px;border-collapse:collapse"><thead><tr><th>P0 (W)</th><th>K1</th><th>K2</th><th>T1 (dias)</th><th>T2 (dias)</th></tr></thead><tbody><tr>'+
+   ['p0','k1','k2','t1','t2'].map(function(k){return '<td>'+irNum(P[k],k==='k1'||k==='k2'?4:1)+nc+'</td>';}).join('')+'</tr></tbody></table>';}
+ const dados='<p style="font-size:12px;color:#8b949e">Ajuste v'+irEsc(j.versao_ajuste)+' ('+irEsc(String(j.ajustado_em||'').slice(0,16))+', motivo: '+irEsc(j.motivo_ajuste)+
+  '). <b>'+irEsc(j.n_obs)+'</b> observacoes, de '+irEsc(j.data_ini||'—')+' a '+irEsc(j.data_fim||'—')+
+  '. Erro dentro da amostra: SSE '+irNum(j.funcao_objetivo,1)+', RMSE '+irNum(j.rmse,1)+' W, R&sup2; '+irNum(j.r2,3)+
+  '. Convergencia: '+(j.convergiu?'sim':(j.convergiu===false?'nao':'&mdash;'))+
+  (j.p0_origem?'. P0 inicial: '+irEsc(j.p0_origem):'')+'.'+
+  (j.ajuste_desatualizado?' <b style="color:#d29922">A carga mudou desde este ajuste: so entra na proxima recalibracao (nada foi recalculado agora).</b>':'')+
+  (j.ajuste_valido_anterior&&!j.parametros?' Ultimo ajuste valido anterior: v'+irEsc(j.ajuste_valido_anterior.versao_ajuste)+'.':'')+'</p>';
+ let tr='',ad='';
+ if(j.tratamento_da_carga){const t=j.tratamento_da_carga;
+  tr='<p style="font-size:12px;color:#8b949e">Carga do proprio dia: '+irEsc(t.proprio_dia)+'. Dias sem treino: '+irEsc(t.dias_sem_treino)+'. '+irEsc(t.estado_inicial)+'.</p>';}
+ if(j.verificacao_aditividade){const v=j.verificacao_aditividade;
+  ad='<p style="font-size:12px;color:#8b949e">Soma das contribuicoes de '+irEsc(v.n_atividades)+' atividades = resposta agregada: diferenca maxima '+
+   Number(Math.max(v.max_abs_dif_positiva,v.max_abs_dif_negativa,v.max_abs_dif_liquida)).toExponential(1)+' W.</p>';}
+ return aviso+params+dados+tr+ad+
+  '<p style="font-size:12px;color:#8b949e">'+irEsc(j.aviso)+'</p>';
+}
+function irAtivOpcoes(j){
+ const sel=document.getElementById('irAtiv'); if(!sel)return;
+ const atual=sel.value, lista=(j&&j.atividades)||[];
+ let h='<option value="">Nenhuma</option>';
+ lista.forEach(function(a){h+='<option value="'+irEsc(a.id)+'">'+irEsc(a.data)+' &middot; '+irEsc(a.nome||'atividade')+' &middot; carga '+irNum(a.carga,0)+'</option>';});
+ if(atual&&!lista.some(function(a){return a.id===atual;}))h+='<option value="'+irEsc(atual)+'">'+irEsc(atual)+'</option>';
+ sel.innerHTML=h; sel.value=atual;
+}
+// grafico de linhas simples sobre os dias da serie (eixo unico, em watts)
+function irDesenhar(canvasId,legId,j,series,opts){
+ opts=opts||{};
+ const lg=document.getElementById(legId);
+ if(lg)lg.innerHTML=series.concat(opts.pontos?[{nome:opts.pontos.nome,cor:IR_COR.obs}]:[]).map(function(x){
+  return '<span><i style="background:'+x.cor+'"></i>'+irEsc(x.nome)+'</span>';}).join('');
+ const o=ctx(canvasId,240); if(!o)return;
+ const g=o.g,W=o.W,H=o.H, cu=j&&j.curvas;
+ if(!cu||!cu.datas||!cu.datas.length){noData(g,W,H,(j&&j.aviso_parametros)||'Sem curva para esta selecao');return;}
+ const n=cu.datas.length, PL=54,PR=14,PT=12,PB=26,w=W-PL-PR,h=H-PT-PB;
+ let mn=Infinity,mx=-Infinity;
+ series.forEach(function(s){s.vals.forEach(function(v){if(v==null)return;if(v<mn)mn=v;if(v>mx)mx=v;});});
+ if(opts.pontos)opts.pontos.dados.forEach(function(p){if(p.y<mn)mn=p.y;if(p.y>mx)mx=p.y;});
+ if(opts.zero){if(mn>0)mn=0;if(mx<0)mx=0;}
+ if(!isFinite(mn)){noData(g,W,H);return;}
+ if(mx===mn)mx=mn+1;
+ const m=(mx-mn)*0.08; mn-=m; mx+=m;
+ const X=function(i){return PL+w*(n>1?i/(n-1):0.5);}, Y=function(v){return PT+h-(v-mn)/(mx-mn)*h;};
+ g.strokeStyle='#21262d';g.lineWidth=1;g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
+ for(let k=0;k<=4;k++){const v=mn+(mx-mn)*k/4,y=Y(v);g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.fillText(v.toFixed(Math.abs(mx-mn)<10?1:0),PL-6,y+3);}
+ if(opts.zero){g.strokeStyle='#484f58';g.beginPath();g.moveTo(PL,Y(0));g.lineTo(PL+w,Y(0));g.stroke();}
+ // dias depois da ultima observacao do ajuste: fora da amostra do ajuste
+ const f=cu.fora_do_ajuste_desde, fi=f?cu.datas.indexOf(f):-1;
+ if(fi>=0){g.fillStyle='rgba(139,148,158,0.12)';g.fillRect(X(fi),PT,PL+w-X(fi),h);g.fillStyle='#8b949e';g.textAlign='right';g.fillText('fora do ajuste ▸',Math.max(PL+60,X(fi)-4),PT+10);}
+ g.fillStyle='#8b949e';
+ for(let k=0;k<=4;k++){const i=Math.round((n-1)*k/4);g.textAlign=k===0?'left':(k===4?'right':'center');g.fillText(cu.datas[i].slice(0,7),X(i),H-8);}
+ series.forEach(function(s){
+  g.strokeStyle=s.cor;g.lineWidth=s.fino?1:1.8;g.setLineDash(s.tracejado?[5,4]:[]);g.beginPath();let ini=false;
+  s.vals.forEach(function(v,i){if(v==null){ini=false;return;}const x=X(i),y=Y(v);if(!ini){g.moveTo(x,y);ini=true;}else g.lineTo(x,y);});
+  g.stroke();g.setLineDash([]);});
+ if(opts.pontos){g.fillStyle=IR_COR.obs;opts.pontos.dados.forEach(function(p){g.beginPath();g.arc(X(p.i),Y(p.y),3,0,6.2832);g.fill();});}
+ registarTip(canvasId,function(x){
+  const i=Math.max(0,Math.min(n-1,Math.round((x-PL)/w*(n-1))));
+  if(x<PL||x>PL+w)return '';
+  let hh='<div class="th">'+irEsc(cu.datas[i])+(f&&cu.datas[i]>=f?' (fora do ajuste)':'')+'</div>';
+  series.forEach(function(s){const v=s.vals[i];hh+=linhaTip(s.cor,irEsc(s.nome),v==null?'&mdash;':v.toFixed(1)+' W');});
+  hh+=linhaTip('#8b949e','Carga do dia',irNum(cu.carga_dia[i],0));
+  return hh;});
+}
+// series a desenhar (puro: so transforma o payload; os testes inspecionam-no)
+function irSeries(j){
+ const cu=j&&j.curvas; if(!cu||!j.parametros)return null;
+ const ca=j.contribuicao_atividade;
+ const comp=[{nome:'Positiva K1\u00b7E',cor:IR_COR.pos,vals:cu.positiva},
+  {nome:'Negativa \u2212K2\u00b7G',cor:IR_COR.neg,vals:cu.negativa.map(function(v){return -v;})},
+  {nome:'Resposta liquida (sem P0)',cor:IR_COR.liq,vals:cu.liquida.map(function(v){return v-j.parametros.p0;})}];
+ if(ca)comp.push({nome:'Atividade '+ca.atividade.data+' (liquida)',cor:IR_COR.ativ,tracejado:true,vals:ca.liquida});
+ const ix={};cu.datas.forEach(function(d,i){ix[d]=i;});
+ const pts=(j.observacoes||[]).filter(function(o){return ix[o.data]!=null;}).map(function(o){return {i:ix[o.data],y:o.watts};});
+ return {comp:comp,
+  liq:[{nome:'Resposta liquida prevista (P0 + K1\u00b7E \u2212 K2\u00b7G)',cor:IR_COR.liq,vals:cu.liquida}],pts:pts};
+}
+function irRedesenhar(){
+ const j=IR_J, S=irSeries(j);
+ const info=document.getElementById('irInfo'); if(info)info.innerHTML=irInfoHtml(j);
+ if(!S){irDesenhar('chIrComp','lgIrComp',j,[]);irDesenhar('chIrLiq','lgIrLiq',j,[]);return;}
+ irDesenhar('chIrComp','lgIrComp',j,S.comp,{zero:true});
+ irDesenhar('chIrLiq','lgIrLiq',j,S.liq,{pontos:{nome:'Melhor valor da duracao (observado)',dados:S.pts}});
+}
+async function carregarIR(){
+ if(!IR_MONTADO)irShell();
+ const mod=document.getElementById('irMod').value, dur=document.getElementById('irDur').value, at=document.getElementById('irAtiv').value;
+ const seq=++IR_SEQ;
+ let j=null;
+ try{ j=await fetch('/api/modelo/ir/influencia?tipo='+encodeURIComponent(mod)+'&duracao='+encodeURIComponent(dur)+(at?'&atividade='+encodeURIComponent(at):'')).then(function(r){return r.json();}); }
+ catch(e){ j=null; }
+ if(seq!==IR_SEQ)return;                       // resposta antiga de uma selecao anterior
+ IR_J=j; irAtivOpcoes(j); irRedesenhar();
+}
+function abrirIR(d){
+ if(d&&d.open&&!IR_MONTADO)carregarIR();
+}
+// <</modelo-ir>>
+
 
 async function montarExport(){
  let d;

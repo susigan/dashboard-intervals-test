@@ -5894,6 +5894,41 @@ def api_modelo_ir_validacao():
     return jsonify({'status': 'OK', **res})
 
 
+@app.route('/api/carga/distribuicao')
+def api_carga_distribuicao():
+    """Distribuicao OBSERVADA da carga entre Bike/Row/Run/Ski numa janela movel, por Training Load ou TRIMP
+    (metodo=) e a comparacao entre os dois. So leitura da BD local:
+    sem API externa, sem escritas. Musculacao e restantes tipos ficam fora antes de qualquer soma."""
+    import distribuicao_carga as dcg
+    try:
+        janela = int(request.args.get('janela', dcg.JANELA_PADRAO))
+        dias = int(request.args.get('dias', dcg.HORIZONTE_PADRAO))
+    except ValueError:
+        return _erro_registo(400, 'janela e dias devem ser inteiros')
+    metodo = request.args.get('metodo', dcg.METODO_PADRAO)
+    if metodo not in dcg.METODOS:
+        return _erro_registo(400, f'metodo invalido (use {", ".join(dcg.METODOS)})', 'metodo')
+    if janela not in dcg.JANELAS:
+        return _erro_registo(400, f'janela invalida (use {", ".join(map(str, dcg.JANELAS))})', 'janela')
+    if not (1 <= dias <= dcg.HORIZONTE_MAX):
+        return _erro_registo(400, f'dias fora de 1..{dcg.HORIZONTE_MAX}', 'dias')
+    ate = request.args.get('ate') or None
+    if ate is not None:
+        try:
+            datetime.strptime(ate, '%Y-%m-%d')
+        except ValueError:
+            return _erro_registo(400, 'ate deve ser AAAA-MM-DD', 'ate')
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        res = dcg.distribuicao(db.load_activities() or [], janela=janela, ate=ate, dias=dias, metodo=metodo)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', **res})
+
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))
     print(f"Starting server on port {port}")

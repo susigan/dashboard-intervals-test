@@ -665,6 +665,8 @@ BODY = r"""
 <details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Deteccao automatica de observacoes MMP (season, all-time, recente)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
 <details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
 <details class="expl" id="validacaoExp" style="margin:10px 0" ontoggle="abrirValidacao(this)"><summary>Validacao preditiva exploratoria do estimador (o que ja da para avaliar e que dados faltam)</summary><div class="expl-corpo" id="validacaoExpCorpo">A carregar...</div></details>
+<details class="expl" id="irExp" style="margin:10px 0" ontoggle="abrirIR(this)"><summary>Modelo IR por modalidade: curvas de influencia (experimental, ajuste historico)</summary><div class="expl-corpo" id="irExpCorpo">A carregar...</div></details>
+<details class="expl" id="distCargaExp" style="margin:10px 0" ontoggle="abrirDistCarga(this)"><summary>Distribuicao da carga por modalidade (Bike, Row, Run, Ski): Training Load ou TRIMP, observada, sem musculacao</summary><div class="expl-corpo" id="distCargaExpCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
 <div id="faseCard"></div>
@@ -2552,6 +2554,357 @@ function abrirValidacao(d){
  if(d&&d.open&&!VAL_CARREGADO)carregarValidacao();
 }
 // <</validacao-exploratoria>>
+// <<distribuicao-carga>>
+// ─── Distribuicao OBSERVADA da carga entre Bike/Row/Run/Ski (janela movel), por Training Load ou TRIMP ─────
+// So le GET /api/carga/distribuicao, e so quando o painel e aberto ou um seletor muda. Nao escreve, nao
+// recalcula nada, nao altera PMC/CTL/ATL/TSB, IR nem MMP. A musculacao e excluida no servidor antes de
+// qualquer soma: o payload so tem as quatro modalidades. Nao e influencia fisiologica nem equilibrio ideal.
+const DC_MODS=['Bike','Row','Run','Ski'];
+const DC_JANELAS=[7,28,42,90], DC_HORIZ=[[90,'90 dias'],[180,'180 dias'],[365,'1 ano'],[730,'2 anos']];
+const DC_METODOS=[['training_load','Training Load'],['trimp','TRIMP']];
+const DC_COR_ESTADO={sem_treino:'#484f58',carga_ausente:'#d29922'};
+const DC_MOTIVOS=[['sem_valor','sem valor'],['valor_invalido','valor invalido'],['fc_ignorada','FC marcada para ignorar']];
+let DC_MONTADO=false, DC_J=null, DC_SEQ=0;
+function dcEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function dcNum(x,d){return (x==null||!isFinite(x))?'&mdash;':Number(x).toFixed(d==null?1:d);}
+function dcSinal(x,d){return (x==null||!isFinite(x))?'&mdash;':((x>0?'+':'')+Number(x).toFixed(d==null?1:d));}
+function dcRotAus(j){return (j&&j.metodo==='trimp')?'sem TRIMP valido':'carga em falta';}
+function dcShell(){
+ const el=document.getElementById('distCargaExpCorpo'); if(!el)return;
+ el.innerHTML=
+  '<p style="font-size:13px"><b>Distribuicao OBSERVADA da carga registada.</b> Cada barra mostra, para o dia, a parte da carga '+
+  'da janela atribuida a cada modalidade, pelo metodo escolhido. Nao mede influencia fisiologica, nao define equilibrio ideal e nao prova '+
+  'efeito no desempenho. Musculacao e restantes tipos nao entram em nenhum calculo deste painel.</p>'+
+  '<div class="controls">'+
+  '<label class="sel">Metodo <select id="dcMet">'+DC_METODOS.map(function(m){return '<option value="'+m[0]+'"'+(m[0]==='training_load'?' selected':'')+'>'+m[1]+'</option>';}).join('')+'</select></label>'+
+  '<label class="sel">Janela <select id="dcJan">'+DC_JANELAS.map(function(w){return '<option value="'+w+'"'+(w===28?' selected':'')+'>'+w+' dias</option>';}).join('')+'</select></label>'+
+  '<label class="sel">Periodo <select id="dcHoriz">'+DC_HORIZ.map(function(h){return '<option value="'+h[0]+'"'+(h[0]===365?' selected':'')+'>'+h[1]+'</option>';}).join('')+'</select></label></div>'+
+  '<div id="dcInfo"></div>'+
+  '<div class="chartbox"><div class="legend" id="lgDc"></div><canvas id="chDc" height="260"></canvas></div>'+
+  '<div id="dcNotas"></div>'+
+  '<h4 style="margin:16px 0 4px">Comparacao entre metodos (mesmas janelas e datas)</h4>'+
+  '<div id="dcComp"></div>'+
+  '<div class="chartbox"><div class="legend" id="lgDcDif"></div><canvas id="chDcDif" height="220"></canvas></div>';
+ ['dcMet','dcJan','dcHoriz'].forEach(function(id){const e=document.getElementById(id); if(e)e.onchange=function(){carregarDistCarga();};});
+ DC_MONTADO=true;
+}
+// puro: transforma o payload nas colunas a desenhar (os testes inspecionam-no)
+function dcSeries(j){
+ if(!j||j.status!=='OK'||j.estado!=='ok'||!j.serie)return null;
+ const S=j.serie, mods=(j.modalidades||DC_MODS).filter(function(m){return DC_MODS.indexOf(m)>=0;});
+ return {datas:S.datas, mods:mods, estado:S.estado, pct:S.pct, carga:S.carga, total:S.total,
+  aus:S.n_ausentes_janela, eleg:S.n_elegiveis_janela, val:S.n_validas_janela, dif:S.dif_max_pp_entre_metodos, cores:j.cores||{}};
+}
+function dcMediana(v){const a=(v||[]).filter(function(x){return x!=null&&isFinite(x);}).sort(function(x,y){return x-y;});
+ return a.length?(a.length%2?a[(a.length-1)/2]:(a[a.length/2-1]+a[a.length/2])/2):null;}
+function dcMotivosTxt(sd){
+ const p=DC_MOTIVOS.filter(function(m){return sd&&sd[m[0]]>0;}).map(function(m){return m[1]+': '+sd[m[0]];});
+ return p.length?p.join('; '):'nenhuma';
+}
+function dcCoberturaHtml(j,S,k){
+ const c=j.cobertura; if(!c||!c.total)return '';
+ const rot=j.rotulo_metodo||'', t=c.total, inc=t.validas<t.elegiveis;
+ let h='<p style="font-size:12px;color:#8b949e">Cobertura na janela: <b>'+dcEsc(t.elegiveis)+'</b> atividades elegiveis (Bike, Row, Run, Ski), '+
+  '<b>'+dcEsc(t.validas)+'</b> com '+dcEsc(rot)+' valido, <b>'+dcEsc(t.elegiveis-t.validas)+'</b> excluidas por falta de dados ('+dcEsc(dcMotivosTxt(t.sem_dados))+').</p>';
+ if(inc)h+='<div style="border-left:3px solid #d29922;padding:4px 10px;margin:6px 0;font-size:13px"><b>Cobertura incompleta:</b> a distribuicao por '+dcEsc(rot)+
+  ' representa apenas as '+dcEsc(t.validas)+' de '+dcEsc(t.elegiveis)+' atividades com '+dcEsc(rot)+' valido. Nao e a distribuicao completa da carga real.</div>';
+ return h;
+}
+function dcInfoHtml(j){
+ if(!j||j.status!=='OK')return '<p style="font-size:13px">Nao foi possivel calcular: '+dcEsc(j&&j.mensagem?j.mensagem:'sem resposta')+'</p>';
+ if(j.estado!=='ok')return '<p style="font-size:13px">'+dcEsc(j.leitura||'sem dados')+'</p>';
+ const S=dcSeries(j), n=S.datas.length, k=n-1, ok=S.estado[k]==='ok'||S.estado[k]==='ok_com_ausentes', cob=j.cobertura||{};
+ let t='<p style="font-size:13px">Metodo <b>'+dcEsc(j.rotulo_metodo)+'</b>. Janela de <b>'+dcEsc(j.janela_dias)+' dias</b> que termina em <b>'+dcEsc(S.datas[k])+
+  '</b> e inclui esse dia. Unidade: '+dcEsc(j.unidade)+'.</p>';
+ if(!ok){
+  t+='<div style="border-left:3px solid #d29922;padding:4px 10px;margin:6px 0;font-size:13px">Sem percentagens para este dia: '+
+   (S.estado[k]==='carga_ausente'?'houve atividades sem '+dcEsc(j.rotulo_metodo)+' valido e nenhum valor registado na janela':'nao houve treino de Bike, Row, Run ou Ski na janela')+'.</div>';
+ } else {
+  t+='<table style="font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left">Modalidade</th><th>% da janela</th><th>'+dcEsc(j.rotulo_metodo)+' na janela</th><th>Atividades validas/elegiveis</th></tr></thead><tbody>'+
+   S.mods.map(function(m){const c=cob[m]||{};return '<tr><td><i style="display:inline-block;width:10px;height:10px;background:'+dcEsc(S.cores[m]||'#888')+';margin-right:6px"></i>'+dcEsc(m)+'</td>'+
+    '<td style="text-align:right">'+dcNum(S.pct[m][k],1)+'%</td><td style="text-align:right">'+dcNum(S.carga[m][k],0)+'</td>'+
+    '<td style="text-align:right">'+(c.elegiveis==null?'&mdash;':dcEsc(c.validas)+'/'+dcEsc(c.elegiveis))+'</td></tr>';}).join('')+
+   '<tr><td><b>Total (denominador)</b></td><td style="text-align:right"><b>100%</b></td><td style="text-align:right"><b>'+dcNum(S.total[k],0)+'</b></td>'+
+   '<td style="text-align:right">'+(cob.total?dcEsc(cob.total.validas)+'/'+dcEsc(cob.total.elegiveis):'&mdash;')+'</td></tr></tbody></table>';
+  if(S.estado[k]==='ok_com_ausentes')t+='<p style="font-size:12px;color:#d29922">'+dcEsc(S.aus[k])+' atividade(s) desta janela nao tem '+dcEsc(j.rotulo_metodo)+' valido e ficaram fora da soma (nao foram contadas como zero nem substituidas pelo outro metodo).</p>';
+ }
+ return t+dcCoberturaHtml(j,S,k);
+}
+function dcNotasHtml(j){
+ if(!j||j.estado!=='ok')return '';
+ const f=j.fonte_da_carga_pct||{}, pt=(j.parametros_trimp||{}).fc_max_usada_por_modalidade||{};
+ let extra='';
+ if(j.metodo==='trimp'){
+  extra='<table style="font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left">FC max usada no TRIMP (n atividades)</th><th>Valores</th></tr></thead><tbody>'+
+   DC_MODS.map(function(m){const q=pt[m]||{},ks=Object.keys(q);return '<tr><td>'+dcEsc(m)+'</td><td style="text-align:right">'+
+    (ks.length?ks.map(function(x){return dcEsc(x)+' bpm ('+dcEsc(q[x])+')';}).join(', '):'&mdash;')+'</td></tr>';}).join('')+'</tbody></table>'+
+   '<p style="font-size:12px;color:#8b949e">'+dcEsc((j.parametros_trimp||{}).nota||'')+'</p>';
+ } else {
+  extra='<table style="font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left">Fonte da carga no periodo</th><th>Potencia</th><th>FC</th><th>Ritmo</th><th>Outra</th></tr></thead><tbody>'+
+   DC_MODS.map(function(m){const q=f[m]||{};return '<tr><td>'+dcEsc(m)+'</td>'+['power_load','hr_load','pace_load','outra'].map(function(c){
+    return '<td style="text-align:right">'+(q[c]==null?'&mdash;':dcNum(q[c],0)+'%')+'</td>';}).join('')+'</tr>';}).join('')+'</tbody></table>';
+ }
+ return '<p style="font-size:12px;color:#8b949e">'+dcEsc(j.formula)+'. '+dcEsc(j.semantica_janela)+'. '+dcEsc(j.exclusoes)+'</p>'+
+  '<p style="font-size:12px;color:#8b949e"><b>Definicao do metodo.</b> '+dcEsc(j.definicao_metodo)+' Nao foi aplicado nenhum fator de conversao.</p>'+extra+
+  '<p style="font-size:12px;color:#8b949e">'+dcEsc(j.aviso)+'</p>';
+}
+function dcCompHtml(j){
+ if(!j||j.estado!=='ok'||!j.comparacao)return '';
+ const c=j.comparacao, n=c.datas.length, k=n-1, cu=c.controlo_mesmas_atividades||{};
+ const tl=c.pct.training_load, tr=c.pct.trimp, ctl=cu.dif_pp||{};
+ const ok=c.dif_pp[DC_MODS[0]][k]!=null;
+ let h='<p style="font-size:13px">Dia de referencia <b>'+dcEsc(c.datas[k])+'</b>, janela de <b>'+dcEsc(j.janela_dias)+' dias</b> nos dois metodos. Diferenca = TRIMP menos Training Load, em pontos percentuais.</p>';
+ h+='<table style="font-size:12px;border-collapse:collapse"><thead><tr><th style="text-align:left">Modalidade</th><th>% Training Load</th><th>% TRIMP</th><th>Diferenca (pp)</th><th>Dif. mesmas atividades (pp)</th>'+
+  '<th>Training Load (unid. icu)</th><th>TRIMP (unid. TRIMP)</th></tr></thead><tbody>'+
+  DC_MODS.map(function(m){return '<tr><td><i style="display:inline-block;width:10px;height:10px;background:'+dcEsc((j.cores||{})[m]||'#888')+';margin-right:6px"></i>'+dcEsc(m)+'</td>'+
+   '<td style="text-align:right">'+dcNum(tl[m][k],1)+'%</td><td style="text-align:right">'+dcNum(tr[m][k],1)+'%</td>'+
+   '<td style="text-align:right">'+dcSinal(c.dif_pp[m][k],1)+'</td><td style="text-align:right">'+dcSinal((ctl[m]||[])[k],1)+'</td>'+
+   '<td style="text-align:right">'+dcNum(c.carga_absoluta.training_load[m][k],0)+'</td><td style="text-align:right">'+dcNum(c.carga_absoluta.trimp[m][k],0)+'</td></tr>';}).join('')+
+  '<tr><td><b>Total</b></td><td style="text-align:right">'+(tl[DC_MODS[0]][k]==null?'&mdash;':'100%')+'</td><td style="text-align:right">'+(tr[DC_MODS[0]][k]==null?'&mdash;':'100%')+'</td>'+
+  '<td style="text-align:right">&mdash;</td><td style="text-align:right">&mdash;</td>'+
+  '<td style="text-align:right"><b>'+dcNum(c.total_absoluto.training_load[k],0)+'</b></td><td style="text-align:right"><b>'+dcNum(c.total_absoluto.trimp[k],0)+'</b></td></tr></tbody></table>';
+ const ct=c.cobertura_ultima_janela||{}, a=(ct.training_load||{}).total||{}, b=(ct.trimp||{}).total||{};
+ h+='<p style="font-size:12px;color:#8b949e">Cobertura na janela: Training Load '+dcEsc(a.validas)+'/'+dcEsc(a.elegiveis)+' atividades validas; TRIMP '+dcEsc(b.validas)+'/'+dcEsc(b.elegiveis)+
+  ' (excluidas por falta de dados: '+dcEsc(dcMotivosTxt(b.sem_dados))+'); com os dois valores validos: '+dcEsc(c.n_validas_ambos_janela[k])+'.</p>';
+ if(!ok)h+='<div style="border-left:3px solid #d29922;padding:4px 10px;margin:6px 0;font-size:13px">Sem diferenca neste dia: um dos metodos nao tem denominador valido e positivo.</div>';
+ const med=dcMediana(c.dif_max_pp), mx=(c.dif_max_pp||[]).reduce(function(m,x){return x!=null&&x>m?x:m;},0), medc=dcMediana(cu.dif_max_pp);
+ h+='<p style="font-size:12px;color:#8b949e">Diferenca maxima entre modalidades: '+dcNum(c.dif_max_pp[k],1)+' pp no dia de referencia (mediana '+dcNum(med,1)+', maximo '+dcNum(mx,1)+
+  ' no periodo); so com as atividades que tem os dois valores validos: mediana '+dcNum(medc,1)+' pp. Uma diferenca grande indica que a distribuicao depende da metrica escolhida; uma diferenca pequena nao prova que as metricas sejam equivalentes. '+
+  dcEsc(c.aviso)+'</p>';
+ return h;
+}
+function dcDesenhar(j){
+ const lg=document.getElementById('lgDc');
+ const S=dcSeries(j);
+ if(lg)lg.innerHTML=(S?S.mods:DC_MODS).map(function(m){return '<span><i style="background:'+dcEsc((S&&S.cores[m])||'#888')+'"></i>'+dcEsc(m)+'</span>';}).join('')+
+  '<span><i style="background:'+DC_COR_ESTADO.sem_treino+'"></i>sem treino na janela</span>'+
+  '<span><i style="background:'+DC_COR_ESTADO.carga_ausente+'"></i>'+dcEsc(dcRotAus(j))+'</span>';
+ const o=ctx('chDc',260); if(!o)return;
+ const g=o.g,W=o.W,H=o.H;
+ if(!S){noData(g,W,H,(j&&(j.leitura||j.mensagem))||'Sem dados para esta selecao');return;}
+ const n=S.datas.length, PL=40,PR=10,PT=10,PB=34,w=W-PL-PR,h=H-PT-PB, bw=Math.max(1,w/n);
+ const X=function(i){return PL+w*i/n;};
+ g.font='10px sans-serif';g.fillStyle='#8b949e';g.strokeStyle='#21262d';g.lineWidth=1;g.textAlign='right';
+ for(let k=0;k<=4;k++){const v=25*k,y=PT+h-h*v/100;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.fillText(v+'%',PL-5,y+3);}
+ for(let i=0;i<n;i++){
+  const x=X(i), st=S.estado[i];
+  if(st==='ok'||st==='ok_com_ausentes'){
+   let acc=0;
+   S.mods.forEach(function(m){const p=S.pct[m][i]; if(p==null)return;
+    g.fillStyle=S.cores[m]||'#888'; const y1=PT+h-h*(acc+p)/100, y0=PT+h-h*acc/100;
+    g.fillRect(x,y1,Math.ceil(bw),Math.max(0,y0-y1)); acc+=p;});
+   if(st==='ok_com_ausentes'){g.fillStyle=DC_COR_ESTADO.carga_ausente;g.fillRect(x,PT+h+3,Math.ceil(bw),4);}
+  } else {
+   g.fillStyle=DC_COR_ESTADO[st]||'#484f58'; g.globalAlpha=0.5; g.fillRect(x,PT,Math.ceil(bw),h); g.globalAlpha=1;
+  }
+ }
+ g.fillStyle='#8b949e';
+ for(let k=0;k<=4;k++){const i=Math.min(n-1,Math.round((n-1)*k/4));g.textAlign=k===0?'left':(k===4?'right':'center');g.fillText(S.datas[i].slice(0,7),PL+w*(i+0.5)/n,H-8);}
+ registarTip('chDc',function(x){
+  if(x<PL||x>PL+w)return '';
+  const i=Math.max(0,Math.min(n-1,Math.floor((x-PL)/w*n)));
+  const st=S.estado[i];
+  let hh='<div class="th">'+dcEsc(S.datas[i])+' &middot; '+dcEsc(j.rotulo_metodo)+' &middot; janela '+dcEsc(j.janela_dias)+' dias</div>';
+  if(st==='sem_treino'||st==='carga_ausente'){
+   return hh+linhaTip(DC_COR_ESTADO[st],st==='sem_treino'?'Sem treino na janela':dcRotAus(j)[0].toUpperCase()+dcRotAus(j).slice(1)+' (sem percentagens)',S.aus[i]?S.aus[i]+' atividade(s) sem valor valido':'');}
+  S.mods.forEach(function(m){hh+=linhaTip(S.cores[m]||'#888',dcEsc(m),dcNum(S.pct[m][i],1)+'% &middot; '+dcNum(S.carga[m][i],0));});
+  hh+=linhaTip('#8b949e','Total da janela',dcNum(S.total[i],0));
+  hh+=linhaTip('#8b949e','Atividades validas/elegiveis',S.val[i]+'/'+S.eleg[i]);
+  if(S.aus[i])hh+=linhaTip(DC_COR_ESTADO.carga_ausente,'Atividades sem valor valido (fora da soma)',String(S.aus[i]));
+  return hh;});
+}
+// diferenca em pontos percentuais entre metodos, por modalidade (TRIMP menos Training Load)
+function dcDesenharDif(j){
+ const lg=document.getElementById('lgDcDif');
+ const c=(j&&j.estado==='ok')?j.comparacao:null;
+ if(lg)lg.innerHTML=DC_MODS.map(function(m){return '<span><i style="background:'+dcEsc(((j&&j.cores)||{})[m]||'#888')+'"></i>'+dcEsc(m)+'</span>';}).join('')+'<span>diferenca = TRIMP &minus; Training Load (pp)</span>';
+ const o=ctx('chDcDif',220); if(!o)return;
+ const g=o.g,W=o.W,H=o.H;
+ if(!c){noData(g,W,H,(j&&(j.leitura||j.mensagem))||'Sem dados para esta selecao');return;}
+ const n=c.datas.length, PL=40,PR=10,PT=10,PB=26,w=W-PL-PR,h=H-PT-PB;
+ let mx=1; DC_MODS.forEach(function(m){c.dif_pp[m].forEach(function(v){if(v!=null&&Math.abs(v)>mx)mx=Math.abs(v);});});
+ mx=Math.ceil(mx/5)*5;
+ const X=function(i){return PL+w*(n>1?i/(n-1):0.5);}, Y=function(v){return PT+h/2-(v/mx)*(h/2);};
+ g.font='10px sans-serif';g.strokeStyle='#21262d';g.lineWidth=1;g.fillStyle='#8b949e';g.textAlign='right';
+ [-mx,-mx/2,0,mx/2,mx].forEach(function(v){const y=Y(v);g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.fillText(dcSinal(v,0),PL-5,y+3);});
+ g.strokeStyle='#484f58';g.beginPath();g.moveTo(PL,Y(0));g.lineTo(PL+w,Y(0));g.stroke();
+ g.fillStyle='#8b949e';
+ for(let k=0;k<=4;k++){const i=Math.round((n-1)*k/4);g.textAlign=k===0?'left':(k===4?'right':'center');g.fillText(c.datas[i].slice(0,7),X(i),H-8);}
+ DC_MODS.forEach(function(m){
+  g.strokeStyle=(j.cores||{})[m]||'#888';g.lineWidth=1.6;g.beginPath();let ini=false;
+  c.dif_pp[m].forEach(function(v,i){if(v==null){ini=false;return;}const x=X(i),y=Y(v);if(!ini){g.moveTo(x,y);ini=true;}else g.lineTo(x,y);});
+  g.stroke();});
+ registarTip('chDcDif',function(x){
+  if(x<PL||x>PL+w)return '';
+  const i=Math.max(0,Math.min(n-1,Math.round((x-PL)/w*(n-1))));
+  let hh='<div class="th">'+dcEsc(c.datas[i])+' &middot; janela '+dcEsc(j.janela_dias)+' dias</div>';
+  if(c.dif_pp[DC_MODS[0]][i]==null)return hh+linhaTip('#d29922','Sem diferenca','um dos metodos sem denominador valido');
+  DC_MODS.forEach(function(m){hh+=linhaTip((j.cores||{})[m]||'#888',dcEsc(m),dcSinal(c.dif_pp[m][i],1)+' pp &middot; TL '+dcNum(c.pct.training_load[m][i],1)+'% / TRIMP '+dcNum(c.pct.trimp[m][i],1)+'%');});
+  hh+=linhaTip('#8b949e','Validas TL / TRIMP / ambos',c.n_validas_janela.training_load[i]+' / '+c.n_validas_janela.trimp[i]+' / '+c.n_validas_ambos_janela[i]);
+  return hh;});
+}
+// tabelas largas (comparacao com 7 colunas) rolam na horizontal em vez de alargar a pagina em ecras estreitos
+function dcRolavel(h){return String(h).replace(/<table/g,'<div style="overflow-x:auto"><table').replace(/<\/table>/g,'</table></div>');}
+function dcRedesenhar(){
+ const j=DC_J, info=document.getElementById('dcInfo'), nt=document.getElementById('dcNotas'), cp=document.getElementById('dcComp');
+ const tp=document.getElementById('__tip'); if(tp&&tp.style)tp.style.display='none';   // nao deixar uma tooltip da selecao anterior
+ if(info)info.innerHTML=dcRolavel(dcInfoHtml(j)); if(nt)nt.innerHTML=dcRolavel(dcNotasHtml(j)); if(cp)cp.innerHTML=dcRolavel(dcCompHtml(j));
+ dcDesenhar(j); dcDesenharDif(j);
+}
+async function carregarDistCarga(){
+ if(!DC_MONTADO)dcShell();
+ const met=document.getElementById('dcMet').value, jan=document.getElementById('dcJan').value, hz=document.getElementById('dcHoriz').value;
+ const seq=++DC_SEQ;
+ let j=null;
+ try{ j=await fetch('/api/carga/distribuicao?metodo='+encodeURIComponent(met)+'&janela='+encodeURIComponent(jan)+'&dias='+encodeURIComponent(hz)).then(function(r){return r.json();}); }
+ catch(e){ j=null; }
+ if(seq!==DC_SEQ)return;                       // resposta antiga de uma selecao anterior
+ DC_J=j; dcRedesenhar();
+}
+function abrirDistCarga(d){
+ if(d&&d.open&&!DC_MONTADO)carregarDistCarga();
+}
+// <</distribuicao-carga>>
+
+// <<modelo-ir>>
+// ─── Modelo IR: curvas de influencia por modalidade e duracao ─────────────
+// So le /api/modelo/ir/influencia (ULTIMO ajuste guardado), e so quando o painel e aberto ou o
+// seletor muda. Nao recalibra, nao escreve, nao altera PMC/CTL/ATL/TSB nem o homeostatico.
+// E a descricao de um ajuste dentro da amostra, nao uma previsao validada.
+const IR_MODS=['Bike','Row','Run','Ski'], IR_DURS=[[60,'1 min (60 s)'],[300,'5 min (300 s)'],[1200,'20 min (1200 s)']];
+const IR_COR={pos:'#3fb950',neg:'#f85149',liq:'#5DADE2',ativ:'#d29922',obs:'#c9d1d9'};
+let IR_MONTADO=false, IR_J=null, IR_SEQ=0;
+function irEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function irNum(x,d){return (x==null||!isFinite(x))?'&mdash;':Number(x).toFixed(d==null?2:d);}
+function irShell(){
+ const el=document.getElementById('irExpCorpo'); if(!el)return;
+ el.innerHTML=
+  '<p style="font-size:13px"><b>Experimental, ajuste historico (dentro da amostra), nao validado preditivamente.</b> '+
+  'Mostra como a equacao do ultimo ajuste (P = P0 + K1&middot;E &minus; K2&middot;G) reparte a carga da modalidade em '+
+  'componente positiva e negativa. Nao altera o PMC.</p>'+
+  '<div class="controls">'+
+  '<label class="sel">Modalidade <select id="irMod">'+IR_MODS.map(function(m){return '<option value="'+m+'">'+m+'</option>';}).join('')+'</select></label>'+
+  '<label class="sel">Duracao <select id="irDur">'+IR_DURS.map(function(d){return '<option value="'+d[0]+'"'+(d[0]===1200?' selected':'')+'>'+d[1]+'</option>';}).join('')+'</select></label>'+
+  '<label class="sel">Atividade <select id="irAtiv"><option value="">Nenhuma</option></select></label></div>'+
+  '<div id="irInfo"></div>'+
+  '<div class="chartbox"><div class="legend" id="lgIrComp"></div><canvas id="chIrComp" height="240"></canvas></div>'+
+  '<div class="chartbox"><div class="legend" id="lgIrLiq"></div><canvas id="chIrLiq" height="240"></canvas></div>';
+ ['irMod','irDur','irAtiv'].forEach(function(id){
+  const e=document.getElementById(id); if(e)e.onchange=function(){ if(id!=='irAtiv'){document.getElementById('irAtiv').value='';} carregarIR(); };});
+ IR_MONTADO=true;
+}
+function irInfoHtml(j){
+ if(!j||j.status!=='OK')return '<p style="font-size:13px">Nao foi possivel calcular: '+irEsc(j&&j.mensagem?j.mensagem:'sem resposta')+'</p>';
+ if(j.estado==='sem_ajuste')return '<p style="font-size:13px">'+irEsc(j.leitura)+'</p>';
+ const ok=j.parametros_identificados===true;
+ const aviso=(j.estado==='ajustado_identificavel')?
+  '<div style="border-left:3px solid #3fb950;padding:4px 10px;margin:6px 0;font-size:13px">'+irEsc(j.leitura)+'</div>':
+  '<div style="border-left:3px solid #d29922;padding:4px 10px;margin:6px 0;font-size:13px"><b>Atencao:</b> '+
+  irEsc(!j.parametros&&j.leitura?j.leitura+'. '+(j.aviso_parametros||''):(j.aviso_parametros||j.leitura))+
+  ((j.avisos_identificabilidade||[]).length?' ('+j.avisos_identificabilidade.map(irEsc).join(', ')+')':'')+'</div>';
+ let params='';
+ if(j.parametros){
+  const P=j.parametros, nc=ok?'':' <span title="parametro nao identificavel: nao confirmado" style="color:#d29922">(nao confirmado)</span>';
+  params='<table style="font-size:12px;border-collapse:collapse"><thead><tr><th>P0 (W)</th><th>K1</th><th>K2</th><th>T1 (dias)</th><th>T2 (dias)</th></tr></thead><tbody><tr>'+
+   ['p0','k1','k2','t1','t2'].map(function(k){return '<td>'+irNum(P[k],k==='k1'||k==='k2'?4:1)+nc+'</td>';}).join('')+'</tr></tbody></table>';}
+ const dados='<p style="font-size:12px;color:#8b949e">Ajuste v'+irEsc(j.versao_ajuste)+' ('+irEsc(String(j.ajustado_em||'').slice(0,16))+', motivo: '+irEsc(j.motivo_ajuste)+
+  '). <b>'+irEsc(j.n_obs)+'</b> observacoes, de '+irEsc(j.data_ini||'—')+' a '+irEsc(j.data_fim||'—')+
+  '. Erro dentro da amostra: SSE '+irNum(j.funcao_objetivo,1)+', RMSE '+irNum(j.rmse,1)+' W, R&sup2; '+irNum(j.r2,3)+
+  '. Convergencia: '+(j.convergiu?'sim':(j.convergiu===false?'nao':'&mdash;'))+
+  (j.p0_origem?'. P0 inicial: '+irEsc(j.p0_origem):'')+'.'+
+  (j.ajuste_desatualizado?' <b style="color:#d29922">A carga mudou desde este ajuste: so entra na proxima recalibracao (nada foi recalculado agora).</b>':'')+
+  (j.ajuste_valido_anterior&&!j.parametros?' Ultimo ajuste valido anterior: v'+irEsc(j.ajuste_valido_anterior.versao_ajuste)+'.':'')+'</p>';
+ let tr='',ad='';
+ if(j.tratamento_da_carga){const t=j.tratamento_da_carga;
+  tr='<p style="font-size:12px;color:#8b949e">Carga do proprio dia: '+irEsc(t.proprio_dia)+'. Dias sem treino: '+irEsc(t.dias_sem_treino)+'. '+irEsc(t.estado_inicial)+'.</p>';}
+ if(j.verificacao_aditividade){const v=j.verificacao_aditividade;
+  ad='<p style="font-size:12px;color:#8b949e">Soma das contribuicoes de '+irEsc(v.n_atividades)+' atividades = resposta agregada: diferenca maxima '+
+   Number(Math.max(v.max_abs_dif_positiva,v.max_abs_dif_negativa,v.max_abs_dif_liquida)).toExponential(1)+' W.</p>';}
+ return aviso+params+dados+tr+ad+
+  '<p style="font-size:12px;color:#8b949e">'+irEsc(j.aviso)+'</p>';
+}
+function irAtivOpcoes(j){
+ const sel=document.getElementById('irAtiv'); if(!sel)return;
+ const atual=sel.value, lista=(j&&j.atividades)||[];
+ let h='<option value="">Nenhuma</option>';
+ lista.forEach(function(a){h+='<option value="'+irEsc(a.id)+'">'+irEsc(a.data)+' &middot; '+irEsc(a.nome||'atividade')+' &middot; carga '+irNum(a.carga,0)+'</option>';});
+ if(atual&&!lista.some(function(a){return a.id===atual;}))h+='<option value="'+irEsc(atual)+'">'+irEsc(atual)+'</option>';
+ sel.innerHTML=h; sel.value=atual;
+}
+// grafico de linhas simples sobre os dias da serie (eixo unico, em watts)
+function irDesenhar(canvasId,legId,j,series,opts){
+ opts=opts||{};
+ const lg=document.getElementById(legId);
+ if(lg)lg.innerHTML=series.concat(opts.pontos?[{nome:opts.pontos.nome,cor:IR_COR.obs}]:[]).map(function(x){
+  return '<span><i style="background:'+x.cor+'"></i>'+irEsc(x.nome)+'</span>';}).join('');
+ const o=ctx(canvasId,240); if(!o)return;
+ const g=o.g,W=o.W,H=o.H, cu=j&&j.curvas;
+ if(!cu||!cu.datas||!cu.datas.length){noData(g,W,H,(j&&j.aviso_parametros)||'Sem curva para esta selecao');return;}
+ const n=cu.datas.length, PL=54,PR=14,PT=12,PB=26,w=W-PL-PR,h=H-PT-PB;
+ let mn=Infinity,mx=-Infinity;
+ series.forEach(function(s){s.vals.forEach(function(v){if(v==null)return;if(v<mn)mn=v;if(v>mx)mx=v;});});
+ if(opts.pontos)opts.pontos.dados.forEach(function(p){if(p.y<mn)mn=p.y;if(p.y>mx)mx=p.y;});
+ if(opts.zero){if(mn>0)mn=0;if(mx<0)mx=0;}
+ if(!isFinite(mn)){noData(g,W,H);return;}
+ if(mx===mn)mx=mn+1;
+ const m=(mx-mn)*0.08; mn-=m; mx+=m;
+ const X=function(i){return PL+w*(n>1?i/(n-1):0.5);}, Y=function(v){return PT+h-(v-mn)/(mx-mn)*h;};
+ g.strokeStyle='#21262d';g.lineWidth=1;g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
+ for(let k=0;k<=4;k++){const v=mn+(mx-mn)*k/4,y=Y(v);g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.fillText(v.toFixed(Math.abs(mx-mn)<10?1:0),PL-6,y+3);}
+ if(opts.zero){g.strokeStyle='#484f58';g.beginPath();g.moveTo(PL,Y(0));g.lineTo(PL+w,Y(0));g.stroke();}
+ // dias depois da ultima observacao do ajuste: fora da amostra do ajuste
+ const f=cu.fora_do_ajuste_desde, fi=f?cu.datas.indexOf(f):-1;
+ if(fi>=0){g.fillStyle='rgba(139,148,158,0.12)';g.fillRect(X(fi),PT,PL+w-X(fi),h);g.fillStyle='#8b949e';g.textAlign='right';g.fillText('fora do ajuste ▸',Math.max(PL+60,X(fi)-4),PT+10);}
+ g.fillStyle='#8b949e';
+ for(let k=0;k<=4;k++){const i=Math.round((n-1)*k/4);g.textAlign=k===0?'left':(k===4?'right':'center');g.fillText(cu.datas[i].slice(0,7),X(i),H-8);}
+ series.forEach(function(s){
+  g.strokeStyle=s.cor;g.lineWidth=s.fino?1:1.8;g.setLineDash(s.tracejado?[5,4]:[]);g.beginPath();let ini=false;
+  s.vals.forEach(function(v,i){if(v==null){ini=false;return;}const x=X(i),y=Y(v);if(!ini){g.moveTo(x,y);ini=true;}else g.lineTo(x,y);});
+  g.stroke();g.setLineDash([]);});
+ if(opts.pontos){g.fillStyle=IR_COR.obs;opts.pontos.dados.forEach(function(p){g.beginPath();g.arc(X(p.i),Y(p.y),3,0,6.2832);g.fill();});}
+ registarTip(canvasId,function(x){
+  const i=Math.max(0,Math.min(n-1,Math.round((x-PL)/w*(n-1))));
+  if(x<PL||x>PL+w)return '';
+  let hh='<div class="th">'+irEsc(cu.datas[i])+(f&&cu.datas[i]>=f?' (fora do ajuste)':'')+'</div>';
+  series.forEach(function(s){const v=s.vals[i];hh+=linhaTip(s.cor,irEsc(s.nome),v==null?'&mdash;':v.toFixed(1)+' W');});
+  hh+=linhaTip('#8b949e','Carga do dia',irNum(cu.carga_dia[i],0));
+  return hh;});
+}
+// series a desenhar (puro: so transforma o payload; os testes inspecionam-no)
+function irSeries(j){
+ const cu=j&&j.curvas; if(!cu||!j.parametros)return null;
+ const ca=j.contribuicao_atividade;
+ const comp=[{nome:'Positiva K1\u00b7E',cor:IR_COR.pos,vals:cu.positiva},
+  {nome:'Negativa \u2212K2\u00b7G',cor:IR_COR.neg,vals:cu.negativa.map(function(v){return -v;})},
+  {nome:'Resposta liquida (sem P0)',cor:IR_COR.liq,vals:cu.liquida.map(function(v){return v-j.parametros.p0;})}];
+ if(ca)comp.push({nome:'Atividade '+ca.atividade.data+' (liquida)',cor:IR_COR.ativ,tracejado:true,vals:ca.liquida});
+ const ix={};cu.datas.forEach(function(d,i){ix[d]=i;});
+ const pts=(j.observacoes||[]).filter(function(o){return ix[o.data]!=null;}).map(function(o){return {i:ix[o.data],y:o.watts};});
+ return {comp:comp,
+  liq:[{nome:'Resposta liquida prevista (P0 + K1\u00b7E \u2212 K2\u00b7G)',cor:IR_COR.liq,vals:cu.liquida}],pts:pts};
+}
+function irRedesenhar(){
+ const j=IR_J, S=irSeries(j);
+ const info=document.getElementById('irInfo'); if(info)info.innerHTML=irInfoHtml(j);
+ if(!S){irDesenhar('chIrComp','lgIrComp',j,[]);irDesenhar('chIrLiq','lgIrLiq',j,[]);return;}
+ irDesenhar('chIrComp','lgIrComp',j,S.comp,{zero:true});
+ irDesenhar('chIrLiq','lgIrLiq',j,S.liq,{pontos:{nome:'Melhor valor da duracao (observado)',dados:S.pts}});
+}
+async function carregarIR(){
+ if(!IR_MONTADO)irShell();
+ const mod=document.getElementById('irMod').value, dur=document.getElementById('irDur').value, at=document.getElementById('irAtiv').value;
+ const seq=++IR_SEQ;
+ let j=null;
+ try{ j=await fetch('/api/modelo/ir/influencia?tipo='+encodeURIComponent(mod)+'&duracao='+encodeURIComponent(dur)+(at?'&atividade='+encodeURIComponent(at):'')).then(function(r){return r.json();}); }
+ catch(e){ j=null; }
+ if(seq!==IR_SEQ)return;                       // resposta antiga de uma selecao anterior
+ IR_J=j; irAtivOpcoes(j); irRedesenhar();
+}
+function abrirIR(d){
+ if(d&&d.open&&!IR_MONTADO)carregarIR();
+}
+// <</modelo-ir>>
+
 
 async function montarExport(){
  let d;

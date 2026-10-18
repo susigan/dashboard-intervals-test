@@ -295,6 +295,41 @@ def init_schema():
     )""")
     _exec("CREATE INDEX IF NOT EXISTS ix_moa_mod_dur "
           "ON modelo_observacoes_auto(modalidade, duracao_s)")
+
+    # Ajustes do modelo Impulse-Response (experimental): historico AUDITAVEL por modalidade e
+    # duracao. So INSERT (versao_ajuste crescente por unidade): um ajuste novo nunca substitui
+    # nem apaga o anterior, e o 'motivo' diz porque foi feito. Sem FK de proposito (um re-sync
+    # nao toca aqui). Ver modelo_ir.py e modelo_ir_servico.py.
+    _exec(f"""CREATE TABLE IF NOT EXISTS modelo_ir_ajustes (
+        modalidade     TEXT NOT NULL,
+        duracao_s      INTEGER NOT NULL,
+        versao_ajuste  INTEGER NOT NULL,
+        ajustado_em    {ts} NOT NULL,
+        origem         TEXT NOT NULL,
+        motivo         TEXT NOT NULL,
+        estado         TEXT NOT NULL,
+        p0             DOUBLE PRECISION,
+        k1             DOUBLE PRECISION,
+        k2             DOUBLE PRECISION,
+        t1             DOUBLE PRECISION,
+        t2             DOUBLE PRECISION,
+        n_obs          INTEGER NOT NULL,
+        data_ini       DATE,
+        data_fim       DATE,
+        funcao_objetivo DOUBLE PRECISION,
+        r2             DOUBLE PRECISION,
+        rmse           DOUBLE PRECISION,
+        convergiu      INTEGER,
+        p0_inicial     DOUBLE PRECISION,
+        p0_origem      TEXT,
+        assinatura     TEXT NOT NULL,
+        versao_modelo  INTEGER NOT NULL,
+        configuracao   {jsn},
+        metricas       {jsn},
+        identificabilidade {jsn},
+        entradas       {jsn},
+        PRIMARY KEY (modalidade, duracao_s, versao_ajuste)
+    )""")
     return True
 
 
@@ -1401,3 +1436,94 @@ def observacoes_auto_historico(tipo=None, duracao=None):
                      ORDER BY modalidade, duracao_s, data, test_id, versao""",
                  tuple(params), fetch='all') or []
     return [_obs_auto_de_linha(l) for l in rows]
+
+
+# ── Ajustes do modelo IR (so INSERT) ───────────────────────────────────────
+
+class ConflitoAjusteIR(Exception):
+    """A versao de ajuste ja existe: outro pedido gravou o mesmo ajuste entretanto."""
+
+
+_COLS_IR = ['modalidade', 'duracao_s', 'versao_ajuste', 'ajustado_em', 'origem', 'motivo',
+            'estado', 'p0', 'k1', 'k2', 't1', 't2', 'n_obs', 'data_ini', 'data_fim',
+            'funcao_objetivo', 'r2', 'rmse', 'convergiu', 'p0_inicial', 'p0_origem',
+            'assinatura', 'versao_modelo', 'configuracao', 'metricas', 'identificabilidade',
+            'entradas']
+_JSON_IR = ('configuracao', 'metricas', 'identificabilidade', 'entradas')
+
+
+def _ajuste_ir_de_linha(linha):
+    r = dict(zip(_COLS_IR, linha))
+    for k in ('data_ini', 'data_fim'):
+        r[k] = str(r[k])[:10] if r[k] is not None else None
+    for k in _JSON_IR:
+        v = r[k]
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except ValueError:
+                v = None
+        r[k] = v
+    if r['convergiu'] is not None:
+        r['convergiu'] = bool(r['convergiu'])
+    r['ajustado_em'] = _iso(r['ajustado_em'])
+    return r
+
+
+def inserir_ajuste_ir(aj):
+    """Insere UM ajuste (um unico INSERT). Levanta ConflitoAjusteIR se (modalidade, duracao_s,
+    versao_ajuste) ja existir. Nunca atualiza nem apaga."""
+    if not ENABLED:
+        raise RuntimeError('sem base de dados')
+    valores = []
+    for c in _COLS_IR:
+        v = aj.get(c)
+        if c in _JSON_IR:
+            v = json.dumps(v, ensure_ascii=False, default=str) if v is not None else None
+        elif c == 'ajustado_em':
+            v = _dt(v)
+        elif c == 'convergiu':
+            v = None if v is None else int(bool(v))
+        valores.append(v)
+    sql = (f"INSERT INTO modelo_ir_ajustes ({', '.join(_COLS_IR)}) "
+           f"VALUES ({', '.join('?' * len(_COLS_IR))})")
+    try:
+        _exec(sql, tuple(valores))
+    except Exception:
+        existe = _exec("SELECT 1 FROM modelo_ir_ajustes WHERE modalidade = ? AND duracao_s = ? "
+                       "AND versao_ajuste = ?",
+                       (aj['modalidade'], aj['duracao_s'], aj['versao_ajuste']), fetch='one')
+        if existe:
+            raise ConflitoAjusteIR(f"{aj['modalidade']}:{aj['duracao_s']} ja tem a versao "
+                                   f"{aj['versao_ajuste']}")
+        raise
+    return True
+
+
+def ajustes_ir_historico(tipo=None, duracao=None):
+    """Todos os ajustes (do mais antigo ao mais recente por unidade)."""
+    if not ENABLED:
+        return []
+    cond, params = [], []
+    if tipo:
+        cond.append("modalidade = ?")
+        params.append(tipo)
+    if duracao is not None:
+        cond.append("duracao_s = ?")
+        params.append(int(duracao))
+    where = ("WHERE " + " AND ".join(cond)) if cond else ""
+    rows = _exec(f"""SELECT {', '.join(_COLS_IR)} FROM modelo_ir_ajustes {where}
+                     ORDER BY modalidade, duracao_s, versao_ajuste""",
+                 tuple(params), fetch='all') or []
+    return [_ajuste_ir_de_linha(l) for l in rows]
+
+
+def ultimo_ajuste_ir(tipo, duracao):
+    """Ajuste mais recente de uma unidade, ou None."""
+    if not ENABLED:
+        return None
+    row = _exec(f"""SELECT {', '.join(_COLS_IR)} FROM modelo_ir_ajustes
+                    WHERE modalidade = ? AND duracao_s = ?
+                    ORDER BY versao_ajuste DESC LIMIT 1""",
+                (tipo, int(duracao)), fetch='one')
+    return _ajuste_ir_de_linha(row) if row else None

@@ -1457,6 +1457,8 @@ def api_protocolo_observacoes_auto_atualizar():
         import traceback
         traceback.print_exc()
         return _erro_registo(500, f'{type(e).__name__}: {e}')
+    import modelo_ir_servico as mis
+    res['modelo_ir'] = mis.apos_deteccao(res, origem='manual')   # so recalibra o que mudou
     return jsonify({'status': 'OK' if res.get('ok') else 'erro', **res}), (200 if res.get('ok') else 409)
 
 
@@ -5761,6 +5763,170 @@ api_moxy.registar(app)
 
 import api_recovery
 api_recovery.registar(app)
+
+
+# ── Modelo Impulse-Response (IR) experimental ─────────────────────────────────
+@app.route('/api/modelo/ir')
+def api_modelo_ir():
+    """Ultimo ajuste do IR por modalidade x duracao (e historico com ?historico=1). So leitura.
+
+    ?tipo=Bike ?duracao=300 ?historico=1
+    """
+    import modelo_ir_servico as mis
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        res = mis.vista(filtros['tipo'], filtros['duracao'],
+                        historico=request.args.get('historico') in ('1', 'true'))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', **res})
+
+
+@app.route('/api/modelo/ir/recalibrar', methods=['POST'])
+def api_modelo_ir_recalibrar():
+    """Recalibra o IR so onde as entradas mudaram (idempotente). Corpo JSON opcional:
+    {"forcar": true, "tipo": "Bike", "duracao_s": 300}. Nao chama a API externa nem escreve
+    fora de modelo_ir_ajustes (so INSERT)."""
+    import modelo_ir_servico as mis
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    corpo = request.get_json(silent=True) or {}
+    try:
+        res = mis.recalibrar(origem='manual', forcar=bool(corpo.get('forcar')),
+                             tipo=corpo.get('tipo') or None, duracao=corpo.get('duracao_s'))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK' if res.get('ok') else 'erro', **res}), (200 if res.get('ok') else 409)
+
+
+@app.route('/api/modelo/ir/influencia')
+def api_modelo_ir_influencia():
+    """Curvas de influencia do ULTIMO ajuste IR de uma modalidade x duracao (so leitura; nao
+    recalibra). ?tipo=Bike&duracao=300 (obrigatorios) &atividade=<id> &ate=YYYY-MM-DD"""
+    import modelo_ir_servico as mis
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    if not filtros['tipo'] or filtros['duracao'] is None:
+        return _erro_registo(400, 'tipo e duracao obrigatorios', 'tipo')
+    ate = request.args.get('ate') or None
+    if ate is not None:
+        try:
+            import datetime as _dt
+            _dt.date.fromisoformat(ate)
+        except ValueError:
+            return _erro_registo(400, 'ate invalido (use YYYY-MM-DD)', 'ate')
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        res = mis.curva_influencia(filtros['tipo'], filtros['duracao'],
+                                   atividade_id=request.args.get('atividade') or None, ate=ate)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', **res}), (404 if res.get('erro') == 'atividade_nao_encontrada' else 200)
+
+
+@app.route('/api/modelo/ir/global')
+def api_modelo_ir_global():
+    """Modelo IR GLOBAL de referencia para UMA duracao (analise separada; so leitura; nao persistida;
+    nao altera os ajustes por modalidade). ?duracao=300 (obrigatorio). Nao aceita ?tipo.
+    ?rapido=1 salta o bootstrap da homogeneidade (so F indicativo, anti-conservador)."""
+    import modelo_ir_servico as mis
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    if filtros['tipo']:
+        return _erro_registo(400, 'o modelo global junta as modalidades: nao aceita tipo', 'tipo')
+    if filtros['duracao'] is None:
+        return _erro_registo(400, 'duracao obrigatoria (um grupo = uma duracao)', 'duracao')
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        res = mis.analise_global(filtros['duracao'],
+                                 config={'bootstrap_B': 0} if request.args.get('rapido') in ('1', 'true') else None)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', **res})
+
+
+@app.route('/api/modelo/ir/validacao')
+def api_modelo_ir_validacao():
+    """Walk-forward do IR contra M0/M1/M2 (so leitura; recalibra por alvo, por isso e lento).
+
+    ?tipo=Bike (obrigatorio) ?duracao=300 ?modo=retrospectivo|conhecido_na_epoca|ambos
+    """
+    import modelo_estimador as me
+    import modelo_ir_servico as mis
+    import modelo_validacao as mv
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    if not filtros['tipo']:
+        return _erro_registo(400, 'tipo obrigatorio (a avaliacao reajusta o modelo por alvo)', 'tipo')
+    modo = request.args.get('modo') or 'ambos'
+    if modo != 'ambos' and modo not in mv.MODOS:
+        return _erro_registo(400, 'modo invalido (use retrospectivo, conhecido_na_epoca ou ambos)', 'modo')
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        res = mis.validar_preditivo(db.observacoes_auto_historico(), db.revisoes_testes_modelo(),
+                                    db.load_activities(), db.load_power_curves() or [],
+                                    modos=mv.MODOS if modo == 'ambos' else (modo,),
+                                    tipo=filtros['tipo'], duracao=filtros['duracao'])
+    except me.HistoricoAmbiguo as e:
+        return _erro_registo(409, 'historico de testes ambiguo: ' + str(e))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', **res})
+
+
+@app.route('/api/carga/distribuicao')
+def api_carga_distribuicao():
+    """Distribuicao OBSERVADA da carga entre Bike/Row/Run/Ski numa janela movel, por Training Load ou TRIMP
+    (metodo=) e a comparacao entre os dois. So leitura da BD local:
+    sem API externa, sem escritas. Musculacao e restantes tipos ficam fora antes de qualquer soma."""
+    import distribuicao_carga as dcg
+    try:
+        janela = int(request.args.get('janela', dcg.JANELA_PADRAO))
+        dias = int(request.args.get('dias', dcg.HORIZONTE_PADRAO))
+    except ValueError:
+        return _erro_registo(400, 'janela e dias devem ser inteiros')
+    metodo = request.args.get('metodo', dcg.METODO_PADRAO)
+    if metodo not in dcg.METODOS:
+        return _erro_registo(400, f'metodo invalido (use {", ".join(dcg.METODOS)})', 'metodo')
+    if janela not in dcg.JANELAS:
+        return _erro_registo(400, f'janela invalida (use {", ".join(map(str, dcg.JANELAS))})', 'janela')
+    if not (1 <= dias <= dcg.HORIZONTE_MAX):
+        return _erro_registo(400, f'dias fora de 1..{dcg.HORIZONTE_MAX}', 'dias')
+    ate = request.args.get('ate') or None
+    if ate is not None:
+        try:
+            datetime.strptime(ate, '%Y-%m-%d')
+        except ValueError:
+            return _erro_registo(400, 'ate deve ser AAAA-MM-DD', 'ate')
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        res = dcg.distribuicao(db.load_activities() or [], janela=janela, ate=ate, dias=dias, metodo=metodo)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', **res})
 
 
 if __name__ == '__main__':

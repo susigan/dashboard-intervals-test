@@ -196,7 +196,7 @@ class RegressaoProducao(Base):
     def test_sem_tabelas_novas_nem_ponteiro_de_producao(self):
         nomes = {r[0] for r in self.db._exec(
             "SELECT name FROM sqlite_master WHERE type='table'", fetch='all')}
-        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_observacoes_auto', 'modelo_testes_revisoes'})
+        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_ir_ajustes', 'modelo_observacoes_auto', 'modelo_testes_revisoes'})
 
     def test_o_estimador_nao_escreve_na_base(self):
         src = open(os.path.join(ROOT, 'app.py'), encoding='utf-8').read()

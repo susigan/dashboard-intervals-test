@@ -561,22 +561,30 @@ class CausalidadeNoWalkForward(_ServicoBase):
 class ContratosEUI(_ServicoBase):
     def test_15_a_escolha_do_modelo_no_cp_model_nao_foi_alterada(self):
         arq = ['utils/cp_model.py', 'tabs/tab_cp_model.py', 'drive_db_perfil.py', 'perfil_schema.py']
+        # Base de comparacao = ancestral comum com origin/main (antes das alteracoes do IR). NAO o HEAD: depois do
+        # commit o diff contra HEAD e vazio e o teste deixaria de provar o que afirma (e a asserção seguinte
+        # falharia). Se a base nao existir (clone raso, sem origin/main) o teste e ignorado, nao aprovado.
         try:
-            sub = subprocess.run(['git', '-C', ROOT, 'diff', '--stat', 'HEAD', '--'] + arq,
+            mb = subprocess.run(['git', '-C', ROOT, 'merge-base', 'HEAD', 'origin/main'],
+                                capture_output=True, text=True, timeout=30)
+            if mb.returncode != 0 or not mb.stdout.strip():
+                self.skipTest('sem origin/main para determinar a base de comparacao')
+            base = mb.stdout.strip()
+            sub = subprocess.run(['git', '-C', ROOT, 'diff', '--stat', base, '--'] + arq,
                                  capture_output=True, text=True, timeout=30)
-            api = subprocess.run(['git', '-C', ROOT, 'diff', '-U0', 'HEAD', '--', 'api_cp.py'],
+            api = subprocess.run(['git', '-C', ROOT, 'diff', '-U0', base, '--', 'api_cp.py'],
                                  capture_output=True, text=True, timeout=30)
-        except Exception as e:                                       # pragma: no cover
+        except (OSError, subprocess.SubprocessError) as e:           # pragma: no cover
             self.skipTest(f'git indisponivel: {e}')
         if sub.returncode != 0:
             self.skipTest('nao e um repositorio git')
         self.assertEqual(sub.stdout.strip(), '', 'o CP Model foi alterado:\n' + sub.stdout)
         # api_cp.py: unica alteracao permitida = o gancho do IR depois da gravacao (calculo, escolha do modelo,
-        # persistencia e durações ficam como estavam); a unica linha removida e o fecho do jsonify, reescrito
-        # para acrescentar a chave `modelo_ir`
+        # persistencia e duracoes ficam como estavam); a unica linha removida e o fecho do jsonify, reescrito
+        # para acrescentar a chave `modelo_ir`. Sem alteracao (base == HEAD) tambem passa.
         linhas = [l for l in api.stdout.splitlines() if l[:1] in '+-' and not l.startswith(('+++', '---'))]
         removidas = [l for l in linhas if l.startswith('-')]
-        self.assertEqual(removidas, ["-                            'escrito': escrito, 'drive': detalhe})"])
+        self.assertLessEqual(set(removidas), {"-                            'escrito': escrito, 'drive': detalhe})"})
         for l in (x for x in linhas if x.startswith('+')):
             self.assertRegex(l, r"modelo_ir|_mis|ir_res|_e\b|try:|except|'escrito': escrito, 'drive': detalhe,|IR:")
         # e o resolvedor so le: o instantaneo passado nao e mutado

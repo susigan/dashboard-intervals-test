@@ -1,6 +1,7 @@
-"""UI das curvas de influencia do modelo IR: o JS real, com DOM/canvas/fetch simulados (node).
+"""UI das curvas de influencia IR conjuntas: o JS real, com DOM/canvas/fetch simulados (node).
 
 As respostas do servidor sao as REAIS (tests/pmc/ir_payload.py), nao escritas a mao. Offline.
+Testes de IMPLEMENTACAO da interface: nao validam o modelo nem a sua capacidade preditiva.
 
     python -m pytest tests/pmc/test_modelo_ir_ui.py
 """
@@ -20,7 +21,8 @@ for p in (ROOT, HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-U = '/api/modelo/ir/influencia?tipo=%s&duracao=%s'
+U = '/api/modelo/ir/conjunto?duracao=%s'
+MODS = ['Bike', 'Row', 'Run', 'Ski']
 
 
 class UiCurvasIR(unittest.TestCase):
@@ -53,7 +55,8 @@ class UiCurvasIR(unittest.TestCase):
             self.skipTest('node nao disponivel')
 
     def bloco(self):
-        return self.js[self.js.index('// <<modelo-ir>>'):self.js.index('// <</modelo-ir>>')]
+        b = self.js[self.js.index('// <<modelo-ir>>'):self.js.index('// <</modelo-ir>>')]
+        return re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), b)   # \uXXXX == caractere literal
 
     # ---- estrutura estatica ------------------------------------------------
     def test_painel_integrado_na_pagina_pmc_fechado_por_omissao(self):
@@ -61,8 +64,12 @@ class UiCurvasIR(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertNotIn(' open', m.group(0))
         self.assertIn('ontoggle="abrirIR(this)"', m.group(0))
-        self.assertIn('class="expl"', m.group(0))                         # o componente existente
+        self.assertIn('class="expl"', m.group(0))
         self.assertIn('id="irExpCorpo"', self.body)
+
+    def test_os_outros_paineis_experimentais_continuam_na_pagina(self):
+        for i in ('registoTestes', 'estimadorExp', 'validacaoExp', 'distCargaExp'):
+            self.assertIn(f'id="{i}"', self.body, i)
 
     def test_nada_e_pedido_ao_carregar_a_pagina_e_so_ha_leitura(self):
         topo = [l for l in self.js.split('\n') if re.match(r'^(await )?(carregarIR|abrirIR|irShell)\(', l)]
@@ -70,39 +77,47 @@ class UiCurvasIR(unittest.TestCase):
         b = self.bloco()
         self.assertNotIn("method:'POST'", b)
         self.assertNotIn('recalibrar', b)
-        self.assertEqual(re.findall(r"fetch\('([^']+)'", b), ['/api/modelo/ir/influencia?tipo='])
+        self.assertEqual(re.findall(r"fetch\('([^']+)'", b), ['/api/modelo/ir/conjunto?duracao='])
 
-    def test_reutiliza_helpers_e_componentes_existentes_sem_pagina_paralela(self):
+    def test_interface_simplificada_sem_seletores_antigos(self):
         b = self.bloco()
-        for h in ("ctx(canvasId,240)", 'noData(', 'registarTip(', 'linhaTip('):
+        for velho in ('irMod', 'irAtiv', 'chIrComp', 'chIrLiq', 'lgIrComp', 'lgIrLiq'):
+            self.assertNotIn(velho, b, velho)
+        for novo in ('irDur', 'chIrConj', 'lgIrConj', 'irTabela', 'irAvisos', 'irEscala', 'irOverall'):
+            self.assertIn(novo, b, novo)
+
+    def test_reutiliza_helpers_e_componentes_existentes(self):
+        b = self.bloco()
+        for h in ("ctx('chIrConj',300)", 'noData(', 'registarTip(', 'linhaTip('):
             self.assertIn(h, b)
         self.assertIn('class="chartbox"', b)
         self.assertIn('class="legend"', b)
-        self.assertNotIn('<canvas', self.body.split('id="irExp"')[1].split('</details>')[0])   # canvases so no shell JS
+        self.assertNotIn('<canvas', self.body.split('id="irExp"')[1].split('</details>')[0])
+
+    def test_nenhuma_fase_de_treino_previsao_competicao_ou_taper(self):
+        b = self.bloco()
+        self.assertNotRegex(b, r'(?i)\b(build|peak|taper|competi\w+|fases? de treino|previs\w+ de (desempenho|forma))\b')
 
     def test_texto_nao_afirma_validacao_nem_fisiologia_confirmada(self):
         b = self.bloco()
         self.assertIn('nao validado preditivamente', b)
-        sem_negacao = b.replace('nao confirmado', '')       # unica forma admitida: a negacao
+        self.assertIn('nem prova que as modalidades sejam fisiologicamente compar\u00e1veis', b)
+        sem_negacao = b.replace('n\u00e3o constantes confirmadas', '').replace('n\u00e3o confirmad', '').replace('nao confirmado', '')
         self.assertNotRegex(sem_negacao, r'(?i)\b(confirmad[oa]s?|comprovad[oa]s?)\b')
-        self.assertNotRegex(b, r'(?i)constantes fisiologicas')
 
     # ---- contrato com o servidor ------------------------------------------
     def test_o_servidor_devolve_as_chaves_que_a_ui_le(self):
-        j = self.real['bike1200_ativ']
-        for k in ('estado', 'parametros', 'parametros_identificados', 'aviso_parametros', 'leitura', 'aviso', 'n_obs',
-                  'data_ini', 'data_fim', 'funcao_objetivo', 'rmse', 'r2', 'convergiu', 'versao_ajuste', 'ajustado_em',
-                  'motivo_ajuste', 'p0_origem', 'avisos_identificabilidade', 'ajuste_desatualizado',
-                  'tratamento_da_carga', 'verificacao_aditividade', 'curvas', 'observacoes', 'atividades',
-                  'contribuicao_atividade'):
+        j = self.real['normal']
+        for k in ('status', 'estado', 'datas', 'modalidades_ordem', 'cores', 'modalidades', 'overall', 'convencao_temporal'):
             self.assertIn(k, j, k)
-        for k in ('datas', 'positiva', 'negativa', 'liquida', 'carga_dia', 'fora_do_ajuste_desde'):
-            self.assertIn(k, j['curvas'], k)
-        n = len(j['curvas']['datas'])
-        for k in ('positiva', 'negativa', 'liquida', 'carga_dia'):
-            self.assertEqual(len(j['curvas'][k]), n)
-        for k in ('positiva', 'negativa', 'liquida'):
-            self.assertEqual(len(j['contribuicao_atividade'][k]), n)
+        for m in MODS:
+            it = j['modalidades'][m]
+            for k in ('tem_curva', 'estado', 'leitura', 'parametros', 'parametros_identificados', 'avisos_identificabilidade',
+                      'no_limite', 'ajuste', 'lag_dias', 'fora_do_ajuste_desde', 'plausibilidade', 'w', 'pct', 'ajuste_desatualizado'):
+                self.assertIn(k, it, (m, k))
+            self.assertEqual(len(it['pct']['liquida']), len(j['datas']))
+        for k in ('disponivel', 'motivo', 'falta'):
+            self.assertIn(k, j['overall'])
 
     # ---- comportamento (node) ----------------------------------------------
     def test_nao_pede_nada_ao_definir_nem_com_o_painel_fechado(self):
@@ -110,146 +125,216 @@ class UiCurvasIR(unittest.TestCase):
         self.assertEqual(self.res['definir_nao_pede_nada']['chamadas'], 0)
         self.assertEqual(self.res['fechado_nao_pede']['chamadas'], 0)
 
-    def test_abrir_pede_um_unico_get_com_os_defaults_e_nao_repete(self):
+    def test_abrir_pede_um_unico_get_com_o_default_1200_e_nao_repete(self):
         self.need_node()
-        self.assertEqual(self.res['abrir_pede_um_get_uma_vez']['chamadas'], [U % ('Bike', 1200)])
+        self.assertEqual(self.res['abrir_pede_um_get_uma_vez']['chamadas'], [{'url': U % 1200, 'metodo': 'GET'}])
 
-    def test_mostra_parametros_dados_do_ajuste_erro_convergencia_e_avisos(self):
+    def test_quatro_modalidades_com_as_cores_do_projeto_num_unico_canvas(self):
         self.need_node()
-        r, j = self.res['render_completo'], self.real['bike1200']
-        info = r['info']
-        for k, nd in (('p0', 1), ('t1', 1), ('t2', 1)):
-            self.assertIn(f'{j["parametros"][k]:.{nd}f}', info)
-        self.assertIn(f'{j["parametros"]["k1"]:.4f}', info)
-        self.assertIn(f'<b>{j["n_obs"]}</b> observacoes', info)
-        self.assertIn(j['data_ini'], info)
-        self.assertIn(j['data_fim'], info)
-        self.assertIn('Erro dentro da amostra', info)
-        self.assertIn('Convergencia: sim', info)
-        self.assertIn(f'Ajuste v{j["versao_ajuste"]}', info)
-        self.assertIn('o esforco nao explica o proprio valor', info)
-        self.assertIn('Dias sem treino: carga 0', info)
-        self.assertIn(f'Soma das contribuicoes de {j["verificacao_aditividade"]["n_atividades"]} atividades', info)
-        self.assertIn('Nao e previsao validada', info)
-
-    def test_desenha_os_dois_graficos_com_componentes_liquida_e_observacoes(self):
-        self.need_node()
-        r, j = self.res['render_completo'], self.real['bike1200']
-        for leg in ('Positiva', 'Negativa', 'Resposta liquida'):
-            self.assertIn(leg, r['leg1'])
-        self.assertIn('Melhor valor da duracao (observado)', r['leg2'])
-        a, b = r['canvases']['chIrComp'], r['canvases']['chIrLiq']
-        self.assertEqual((a['stroke'], b['stroke']), (9, 6))                 # 5 grelha + 1 zero + 3 series ; 5 + 1
-        self.assertGreater(a['lineTo'], 3 * (len(j['curvas']['datas']) - 2))
-        self.assertEqual(b['arc'], len(j['observacoes']))                    # um ponto por observacao usada
-        self.assertIn('fora do ajuste \u25b8', a['texts'])
+        r = self.res['render_normal']
+        self.assertEqual(r['canvases'], ['chIrConj'])
+        cores = {s['mod']: s['cor'] for s in r['series']}
+        self.assertEqual(cores, {'Bike': '#E74C3C', 'Row': '#3498DB', 'Run': '#2ECC71', 'Ski': '#9B59B6'})
+        self.assertEqual(len(r['series']), 12)                                    # 4 modalidades x 3 componentes
+        for m, c in cores.items():
+            self.assertIn(f'background:{c}', r['leg'])
         self.assertEqual(r['semData'], [])
-        self.assertIn('Carga do dia', r['tip'])
-        self.assertEqual(r['tipFora'], '')
+        self.assertTrue(all(s['n'] == len(self.real['normal']['datas']) for s in r['series']))
 
-    def test_seletores_pedem_a_combinacao_certa_e_nao_misturam(self):
+    def test_liquida_espessa_continua_e_componentes_finas_com_estilos_diferentes(self):
         self.need_node()
-        self.assertEqual(self.res['trocar_modalidade_e_duracao']['a'],
-                         [U % ('Bike', 1200), U % ('Bike', 300)])
-        self.assertEqual(self.res['trocar_modalidade_e_duracao']['chamadas'][-1], U % ('Row', 300))
-        self.assertIn('ainda nao ha ajuste', self.res['trocar_modalidade_e_duracao']['infoRow'])
+        s = self.res['render_normal']['series']
+        bike = {x['comp']: x for x in s if x['mod'] == 'Bike'}
+        self.assertGreater(bike['liquida']['lw'], 2 * bike['positiva']['lw'])
+        self.assertEqual(bike['liquida']['dash'], '')                              # continua
+        self.assertNotEqual(bike['positiva']['dash'], bike['negativa']['dash'])
+        self.assertNotEqual(bike['positiva']['dash'], '')
+        self.assertNotEqual(bike['negativa']['dash'], '')
 
-    def test_escolher_atividade_pede_a_contribuicao_e_mostra_a_curva_da_atividade(self):
+    def test_nao_identificavel_tem_traco_distinto_e_aviso_visivel(self):
         self.need_node()
-        r = self.res['escolher_atividade']
-        self.assertEqual(r['chamadas'][-1], U % ('Bike', 1200) + '&atividade=' + self.real['ativ_id'])
-        self.assertIn('Atividade ', r['leg'])
-        self.assertEqual(r['ativ'], self.real['ativ_id'])
-        d = self.real['bike1200_ativ']['contribuicao_atividade']['atividade']['data']
-        self.assertIn(d, r['leg'])
+        r = self.res['render_normal']
+        por = {(x['mod'], x['comp']): x for x in r['series']}
+        self.assertFalse(por[('Bike', 'liquida')]['nid'])
+        self.assertTrue(por[('Row', 'liquida')]['nid'])
+        for c in ('liquida', 'positiva', 'negativa'):
+            self.assertNotEqual(por[('Bike', c)]['dash'], por[('Row', c)]['dash'], c)
+        self.assertNotEqual(por[('Row', 'liquida')]['dash'], '')                    # tracejada
+        self.assertIn('Row ⚠', r['leg'])
+        self.assertNotIn('Bike ⚠', r['leg'])
+        self.assertIn('NÃO identificáveis', r['avisos'])
 
-    def test_mudar_modalidade_ou_duracao_limpa_a_atividade(self):
+    def test_legenda_tem_modalidades_componentes_e_overall_desativado_com_motivo(self):
         self.need_node()
-        r = self.res['mudar_modalidade_limpa_atividade']
-        self.assertEqual(r['ativ'], '')
-        self.assertNotIn('atividade=', r['chamadas'][-1])
+        r = self.res['render_normal']
+        for m in MODS:
+            self.assertIn(f"irAlternar('mod','{m}')", r['leg'])
+        for c in ('liquida', 'positiva', 'negativa'):
+            self.assertIn(f"irAlternar('comp','{c}')", r['leg'])
+        ov = re.search(r'<span[^>]*data-mod="Overall"[^>]*>', r['leg']).group(0)
+        self.assertIn('aria-disabled="true"', ov)
+        self.assertNotIn('onclick', ov)
+        self.assertIn('title="', ov)
+        self.assertIn('indispon', r['leg'])
+        self.assertIn(self.real['normal']['overall']['falta'][0][:20].replace('&', '&amp;'), r['overall'])
+        self.assertIn('indispon', r['overall'])
 
-    def test_sem_ajuste_nao_desenha_curva_e_diz_que_nada_foi_calculado(self):
+    def test_legenda_so_redesenha_nao_pede_nada_ao_servidor(self):
         self.need_node()
-        r = self.res['sem_ajuste']
-        self.assertIn('nada foi calculado agora', r['info'])
-        self.assertEqual(r['comLinhas'], 0)
+        r = self.res['legenda_alterna_sem_pedir_nada']
+        self.assertEqual(r['antes']['chamadas'], 1)
+        self.assertEqual(r['depoisChamadas'], 1)                                    # nenhum pedido novo
+        self.assertTrue(r['so_liquida0'])                                           # por omissao so a liquida (legibilidade)
+        self.assertIn('class="tog off" data-comp="positiva"', r['legInicial'])      # mas positiva/negativa estao a um clique
+        self.assertIn('class="tog off" data-comp="negativa"', r['legInicial'])
+        self.assertGreater(r['s1'], r['s0'])                                        # ligar positiva+negativa acrescenta tracos
+        self.assertLess(r['s2'], r['s1'])                                           # desligar a Bike remove os seus
+        self.assertIn('class="tog off" data-mod="Bike"', r['semBike'])
+
+    def test_todas_as_series_desligadas_diz_isso_em_vez_de_desenhar(self):
+        self.need_node()
+        self.assertEqual(self.res['todas_desligadas']['semData'], ['Todas as séries estão desligadas'])
+
+    def test_tooltip_mostra_data_modalidade_componente_percentagem_e_watts(self):
+        self.need_node()
+        r, j = self.res['render_normal'], self.real['normal']
+        self.assertIn('class="th">', r['tip'])
+        for m in MODS:
+            self.assertIn(m + ' · liquida', r['tip'])
+        self.assertIn('% de P0', r['tip'])
+        self.assertIn(' W', r['tip'])
+        self.assertIn('data-cor="#E74C3C"', r['tip'])                               # cor da modalidade
+        self.assertEqual(r['tipFora'], '')                                          # fora da area do grafico
+
+    def test_tooltip_antes_da_origem_diz_ausente_e_nunca_zero(self):
+        self.need_node()
+        r, j = self.res['render_normal'], self.real['normal']
+        self.assertEqual(j['datas'][0], j['modalidades']['Bike']['inicio_serie'])
+        self.assertGreater(j['datas'].index(j['modalidades']['Ski']['inicio_serie']), 0)
+        self.assertIn('Ski · liquida (não identific.):ainda sem série (antes da origem)', r['tipInicio'])
+        self.assertIn('Bike · liquida:0.0 % de P0', r['tipInicio'])          # Bike existe e vale 0 na origem
+
+    def test_fora_do_ajuste_marcado_na_dica_e_no_traco_esmaecido(self):
+        self.need_node()
+        m = self.res['misto']
+        self.assertIn('(fora do ajuste)', m['tip'])
+        self.assertTrue(any(t['a'] < 1 for t in m['tracos']))                       # troco esmaecido
+        self.assertTrue(any(t['a'] == 1 for t in m['tracos']))
+        self.assertIn('Trecho esmaecido = depois da última observação do ajuste', self.res['render_normal']['escala'])
+
+    def test_magnitude_acima_de_100_pct_e_assinalada_na_dica_e_no_aviso_sem_cortar(self):
+        self.need_node()
+        m = self.res['misto']
+        self.assertIn('⚠ &gt;100 % de P0', m['tip'])
+        self.assertIn('magnitude acima de 100 % de P0 (sem corte)', m['avisos'])
+        self.assertIn('Run</b>', m['avisos'])
+        run = self.real['misto']['modalidades']['Run']
+        self.assertLess(min(v for v in run['pct']['liquida'] if v is not None), -100)  # payload nao cortado
+        self.assertIn('−100 % de P0', ' '.join(m['texts']))                    # guia, nao corte
+
+    def test_sem_ajuste_e_dados_insuficientes_nao_geram_serie_nem_zeros(self):
+        self.need_node()
+        r = self.res['sem_ajuste_e_p0_invalido']
+        self.assertEqual(sorted({s.split(':')[0] for s in r['series']}), ['Ski', 'Row'][::-1] and ['Row', 'Ski'])
+        self.assertIn('(sem curva)', r['leg'])
+        self.assertIn('Run</b>: ainda nao ha ajuste', r['avisos'])
+        m = self.res['misto']
+        self.assertIn('Ski</b>: dados insuficientes', m['avisos'])
+        self.assertNotIn('Ski', {s['mod'] for s in m['series']})
+
+    def test_p0_invalido_diz_que_a_normalizacao_e_impossivel_e_nao_desenha_percentagens(self):
+        self.need_node()
+        r = self.res['sem_ajuste_e_p0_invalido']
+        self.assertIn('Normalização impossível', r['escala'])
+        self.assertIn('Bike', r['escala'].split('Normalização impossível')[1])
+        self.assertNotIn('Bike', {s.split(':')[0] for s in r['series']})
+
+    def test_sem_nenhuma_curva_diz_que_nada_foi_calculado(self):
+        self.need_node()
+        r = self.res['sem_curvas']
+        self.assertIn('Nenhuma modalidade tem curva', r['info'])
+        self.assertEqual((r['tracos'], r['series']), (0, 0))
         self.assertTrue(r['semData'])
+        self.assertEqual(r['semData'][-1], 'Sem curvas para esta duração')
 
-    def test_nao_identificavel_vem_marcado_como_nao_confirmado(self):
+    def test_tabela_de_parametros_compacta_com_marca_de_nao_confirmado(self):
         self.need_node()
-        info = self.res['nao_identificavel']['info']
-        self.assertIn('Atencao', info)
-        self.assertIn('NAO identificaveis', info)
-        self.assertEqual(info.count('(nao confirmado)'), 5)               # os 5 parametros
-        self.assertIn('parametro_no_limite:t1', info)
-        self.assertIn('#d29922', info)
+        t, j = self.res['render_normal']['tabela'], self.real['normal']
+        for h in ('P0 (W)', 'K1', 'K2', 'T1 (d)', 'T2 (d)', 'N obs.', 'No limite'):
+            self.assertIn(h, t)
+        self.assertIn('overflow-x:auto', t)                                          # nao alarga o ecra pequeno
+        for m in MODS:
+            self.assertIn(f'<b>{m}</b>', t)
+        p = j['modalidades']['Bike']['parametros']
+        self.assertIn(f'{p["p0"]:.1f}', t)
+        self.assertIn(f'{p["k1"]:.4f}', t)
+        self.assertEqual(j['modalidades']['Bike']['estado'], 'identificavel')
+        self.assertIn('identificável</td>', t)
+        self.assertIn('NÃO identificável', t)
+        self.assertGreaterEqual(t.count('nao confirmado'), 3 * 5)                    # 3 modalidades x 5 parametros
+        self.assertIn('Detalhes dos ajustes', t)
+        self.assertIn('RMSE', t)
 
-    def test_identificavel_nao_traz_marca_de_nao_confirmado(self):
+    def test_tabela_mostra_parametros_no_limite(self):
         self.need_node()
-        self.assertNotIn('(nao confirmado)', self.res['render_completo']['info'])
+        self.assertIn('t1 (inferior)', self.res['misto']['tabela'])
 
-    def test_dados_insuficientes_nao_mostram_parametros_nem_curva(self):
+    def test_tabela_mostra_a_origem_do_p0_fixo_vinda_do_cp_model(self):
         self.need_node()
-        r = self.res['insuficiente']
-        self.assertNotIn('<table', r['info'].split('Ajuste v')[0])
-        self.assertIn('sem parametros utilizaveis', r['info'])
-        self.assertEqual(r['linhas'], 0)
-        self.assertTrue(r['semData'])
+        t = self.res['render_normal']['tabela']
+        self.assertIn('Origem do P0 (fixo)', t)
+        self.assertIn('P0 = CP (270.0 W · M1)', t)              # P0 = CP e o modelo do CP que o deu
+        self.assertIn('ref. 2025-01-01', t)                     # data de referencia dos dados do CP
+        self.assertIn('conhecida 2026-09-30', t)                # momento em que o IR passou a conhecer a referencia
+        self.assertIn('· v2', t)
+        self.assertIn('P0 livre (ajuste anterior ao CP Model)', t)   # ajustes antigos nao se passam por CP
+        self.assertIn('P0 fixo, origem: cp_model_confirmado:M1', t)
 
-    def test_cada_estado_sem_parametros_mostra_o_seu_motivo(self):
-        # auditoria: 'insuficiente' e 'nao convergiu' mostravam a mesma frase generica e o
-        # utilizador nao sabia qual era o caso
+    def test_motivo_do_bloqueio_do_p0_e_visivel_e_nao_ha_seletor_de_modelo_do_cp(self):
         self.need_node()
-        ins, sem = self.res['insuficiente']['info'], self.res['sem_convergencia']['info']
-        self.assertIn('dados insuficientes', ins)
-        self.assertNotIn('nao convergiu', ins)
-        self.assertIn('nao convergiu', sem)
-        self.assertNotIn('dados insuficientes', sem)
-        for r in (self.res['sem_convergencia'],):
-            self.assertNotIn('<table', r['info'].split('Ajuste v')[0])
-            self.assertEqual(r['linhas'], 0)
-            self.assertTrue(r['semData'])
+        a = self.res['render_normal']['avisos']
+        self.assertIn('sem P0 válido (P0 = CP do CP Model)', a)  # sem resultado de CP valido para a modalidade
+        self.assertIn('último ajuste guardado', a)
+        self.assertIn('não foi criado ajuste novo', a)
+        s = self.res['sem_cp']
+        self.assertGreaterEqual(s['avisos'].count('sem P0 válido (P0 = CP do CP Model)'), 4)
+        for h in (self.res['render_normal']['tabela'], a, s['tabela']):
+            self.assertNotIn('<select', h)                      # nenhum segundo seletor M1/M2/M3
+        self.assertNotRegex(self.bloco(), r'M1 \(WLS|M2 \(WLS|M3 \(NL|modelo_escolhido|/api/cp/')   # a UI do IR nao escolhe nem chama o CP
 
-    def test_series_desenhadas_sao_as_do_servidor_com_o_sinal_certo(self):
+    def test_ajuste_com_referencia_antiga_e_falha_do_solver_sao_visiveis(self):
         self.need_node()
-        r, j = self.res['series'], self.real['bike1200_ativ']
-        pos, neg, liq, ativ = r['s']['comp']
-        cu = j['curvas']
-        self.assertEqual(pos['vals'], cu['positiva'])
-        self.assertTrue(all(v <= 0 for v in neg['vals']))                         # negativa desenhada abaixo de zero
-        self.assertEqual([-v for v in neg['vals']], cu['negativa'])
-        for a, b, c in zip(pos['vals'], neg['vals'], liq['vals']):                 # liquida (sem P0) = positiva + negativa
-            self.assertAlmostEqual(a + b, c, delta=2e-3)
-        self.assertEqual(ativ['vals'], j['contribuicao_atividade']['liquida'])
-        self.assertTrue(ativ['tracejado'])
-        self.assertEqual(r['s']['liq'][0]['vals'], cu['liquida'])                 # absoluta (inclui P0)
-        self.assertAlmostEqual(r['s']['liq'][0]['vals'][0] - r['P0'], liq['vals'][0], delta=2e-3)
-        self.assertEqual(len(r['s']['pts']), j['n_obs'])
-        for p in r['s']['pts']:
-            self.assertEqual(p['y'], next(o['watts'] for o in j['observacoes'] if o['data'] == cu['datas'][p['i']]))
+        a = self.res['desatualizado_e_falha']['avisos']
+        self.assertIn('referência de P0 mais antiga (v1)', a)         # o ajuste mostrado usa v1 e ja existe a v2
+        self.assertIn('última registada (v2)', a)
+        self.assertIn('NÃO foram reestimados com o P0 mais recente', a)
+        self.assertIn('o Solver falhou ao reestimar com o P0 novo', a)
+        self.assertIn('RuntimeError: boom', a)
+        self.assertIn('Não há ajuste válido anterior', a)
+        self.assertNotIn('recalibrar', a)                              # so informa: a UI nao recalibra
 
-    def test_sem_curva_nao_ha_series(self):
+    def test_trocar_duracao_pede_a_nova_combinacao(self):
         self.need_node()
-        self.assertIsNone(self.res['series']['vazio'])
-        self.assertIsNone(self.res['series']['sem'])
+        self.assertEqual([c['url'] for c in self.res['trocar_duracao']['chamadas']], [U % 1200, U % 300])
+        self.assertTrue(all(c['metodo'] == 'GET' for c in self.res['trocar_duracao']['chamadas']))
 
-    def test_falha_de_rede_mostra_mensagem(self):
+    def test_falha_de_rede_mostra_mensagem_e_nada_de_tabela(self):
         self.need_node()
-        self.assertIn('Nao foi possivel calcular', self.res['falha_de_rede']['info'])
+        r = self.res['falha_de_rede']
+        self.assertIn('Nao foi possivel calcular', r['info'])
+        self.assertEqual(r['tabela'], '')
 
     def test_resposta_antiga_nao_sobrepoe_a_selecao_nova(self):
         self.need_node()
-        r = self.res['resposta_antiga_nao_sobrepoe_a_nova']
-        self.assertEqual(r['J'], 300)
-        self.assertTrue(r['info'])
+        # a resposta lenta (1200: 4 modalidades) chega depois da de 300 (cenario 'misto': 3) e e descartada
+        self.assertEqual(self.res['resposta_antiga_nao_sobrepoe_a_nova']['n_mod'], 3)
 
-    def test_texto_da_base_de_dados_e_escapado(self):
+    def test_texto_vindo_da_base_de_dados_e_escapado(self):
         self.need_node()
         r = self.res['xss_escapado']
-        for h in (r['opcoes'], r['info'], r['leg']):
+        for h in (r['avisos'], r['tabela'], r['leg']):
             self.assertNotIn('<img', h)
-        self.assertIn('&lt;img src=x onerror=alert(1)&gt;', r['opcoes'])
+        self.assertIn('&lt;img src=x onerror=alert(1)&gt;', r['tabela'])
 
 
 if __name__ == '__main__':

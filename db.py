@@ -330,6 +330,30 @@ def init_schema():
         entradas       {jsn},
         PRIMARY KEY (modalidade, duracao_s, versao_ajuste)
     )""")
+
+    # Referencias de P0 do modelo IR (derivadas do CP Model confirmado): historico AUDITAVEL. So INSERT
+    # (versao_referencia crescente por modalidade x duracao). `conhecida_desde` e o instante em que o IR
+    # registou a referencia e nunca se reescreve (nao ha preenchimento retroativo): e o que a validacao
+    # walk-forward usa. Ver modelo_ir_p0.py e modelo_ir_servico.py.
+    _exec(f"""CREATE TABLE IF NOT EXISTS modelo_ir_p0_referencias (
+        modalidade       TEXT NOT NULL,
+        duracao_s        INTEGER NOT NULL,
+        versao_referencia INTEGER NOT NULL,
+        conhecida_desde  {ts} NOT NULL,
+        valor_p0         DOUBLE PRECISION NOT NULL,
+        formulacao       TEXT NOT NULL,
+        modelo_cp        TEXT NOT NULL,
+        cp_w             DOUBLE PRECISION NOT NULL,
+        wp_j             DOUBLE PRECISION,
+        cp_data_referencia DATE,
+        cp_data_gravacao TEXT,
+        cp_resultado_ref {jsn},
+        parametros       {jsn},
+        assinatura       TEXT NOT NULL,
+        versao_modulo    INTEGER NOT NULL,
+        origem           TEXT NOT NULL,
+        PRIMARY KEY (modalidade, duracao_s, versao_referencia)
+    )""")
     return True
 
 
@@ -1516,6 +1540,90 @@ def ajustes_ir_historico(tipo=None, duracao=None):
                      ORDER BY modalidade, duracao_s, versao_ajuste""",
                  tuple(params), fetch='all') or []
     return [_ajuste_ir_de_linha(l) for l in rows]
+
+
+# ── Referencias de P0 do IR (so INSERT) ───────────────────────────────────
+
+class ConflitoReferenciaP0(Exception):
+    """A versao da referencia ja existe: outro pedido gravou a mesma entretanto."""
+
+
+_COLS_P0 = ['modalidade', 'duracao_s', 'versao_referencia', 'conhecida_desde', 'valor_p0', 'formulacao',
+            'modelo_cp', 'cp_w', 'wp_j', 'cp_data_referencia', 'cp_data_gravacao', 'cp_resultado_ref',
+            'parametros', 'assinatura', 'versao_modulo', 'origem']
+_JSON_P0 = ('cp_resultado_ref', 'parametros')
+
+
+def _p0_de_linha(linha):
+    r = dict(zip(_COLS_P0, linha))
+    r['cp_data_referencia'] = str(r['cp_data_referencia'])[:10] if r['cp_data_referencia'] is not None else None
+    for k in _JSON_P0:
+        v = r[k]
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except ValueError:
+                v = None
+        r[k] = v
+    r['conhecida_desde'] = _iso(r['conhecida_desde'])
+    return r
+
+
+def inserir_referencia_p0(ref):
+    """Insere UMA referencia (um unico INSERT). Levanta ConflitoReferenciaP0 se a versao ja existir.
+    Nunca atualiza nem apaga."""
+    if not ENABLED:
+        raise RuntimeError('sem base de dados')
+    valores = []
+    for c in _COLS_P0:
+        v = ref.get(c)
+        if c in _JSON_P0:
+            v = json.dumps(v, ensure_ascii=False, default=str) if v is not None else None
+        elif c == 'conhecida_desde':
+            v = _dt(v)
+        valores.append(v)
+    sql = (f"INSERT INTO modelo_ir_p0_referencias ({', '.join(_COLS_P0)}) "
+           f"VALUES ({', '.join('?' * len(_COLS_P0))})")
+    try:
+        _exec(sql, tuple(valores))
+    except Exception:
+        existe = _exec("SELECT 1 FROM modelo_ir_p0_referencias WHERE modalidade = ? AND duracao_s = ? "
+                       "AND versao_referencia = ?",
+                       (ref['modalidade'], ref['duracao_s'], ref['versao_referencia']), fetch='one')
+        if existe:
+            raise ConflitoReferenciaP0(f"{ref['modalidade']}:{ref['duracao_s']} ja tem a versao "
+                                       f"{ref['versao_referencia']}")
+        raise
+    return True
+
+
+def referencias_p0_historico(tipo=None, duracao=None):
+    """Todas as referencias (da mais antiga a mais recente por unidade)."""
+    if not ENABLED:
+        return []
+    cond, params = [], []
+    if tipo:
+        cond.append("modalidade = ?")
+        params.append(tipo)
+    if duracao is not None:
+        cond.append("duracao_s = ?")
+        params.append(int(duracao))
+    where = ("WHERE " + " AND ".join(cond)) if cond else ""
+    rows = _exec(f"""SELECT {', '.join(_COLS_P0)} FROM modelo_ir_p0_referencias {where}
+                     ORDER BY modalidade, duracao_s, versao_referencia""",
+                 tuple(params), fetch='all') or []
+    return [_p0_de_linha(l) for l in rows]
+
+
+def ultima_referencia_p0(tipo, duracao):
+    """Referencia mais recente de uma unidade, ou None."""
+    if not ENABLED:
+        return None
+    row = _exec(f"""SELECT {', '.join(_COLS_P0)} FROM modelo_ir_p0_referencias
+                    WHERE modalidade = ? AND duracao_s = ?
+                    ORDER BY versao_referencia DESC LIMIT 1""",
+                (tipo, int(duracao)), fetch='one')
+    return _p0_de_linha(row) if row else None
 
 
 def ultimo_ajuste_ir(tipo, duracao):

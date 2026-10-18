@@ -414,11 +414,18 @@ def registar(app):
             conn.commit()
             ok, detalhe = ddp.upload()
             conn.close()
+            # IR: o P0 vem do CP gravado; actualiza-se so o que mudou (nunca falha a gravacao)
+            try:
+                import modelo_ir_servico as _mis
+                ir_res = _mis.apos_cp_gravado({'escrito': escrito}, modalidade)
+            except Exception as _e:
+                ir_res = {'ok': False, 'erro': f'{type(_e).__name__}: {_e}'}
             return jsonify({'status': 'ok' if ok else 'gravado_sem_upload',
                             'data_referencia': data_ref,
                             'data_gravacao': agora,
                             'modalidade': modalidade, 'season': season,
-                            'escrito': escrito, 'drive': detalhe})
+                            'escrito': escrito, 'drive': detalhe,
+                            'modelo_ir': ir_res})
         except Exception as e:
             return jsonify({'status': 'erro', 'mensagem': str(e),
                             'trace': traceback.format_exc()}), 500

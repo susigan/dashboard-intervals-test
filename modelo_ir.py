@@ -243,8 +243,9 @@ def _limites_dict(cfg, lo=None, hi=None):
     return d
 
 
-def _superficie(cargas, idx, y, lo, hi, cfg):
-    """SSE(T1,T2) com (P0,K1,K2) por minimos quadrados limitados (projecao variavel)."""
+def _superficie(cargas, idx, y, lo, hi, cfg, p0=None):
+    """SSE(T1,T2) com (P0,K1,K2) por minimos quadrados limitados (projecao variavel).
+    p0 != None: P0 fixo (nao e estimado); so (K1,K2) sao resolvidos, sobre y - P0."""
     L = cfg['limites']
     g = int(cfg['grelha_t'])
     t1s = np.exp(np.linspace(math.log(L['t1'][0]), math.log(L['t1'][1]), g))
@@ -257,10 +258,15 @@ def _superficie(cargas, idx, y, lo, hi, cfg):
     ones = np.ones(len(idx))
     for i in range(g):
         for j in range(g):
-            A = np.column_stack([ones, E[i], -G[j]])
-            r = lsq_linear(A, y, bounds=(lo[:3], hi[:3]), method='bvls')
+            if p0 is None:
+                A = np.column_stack([ones, E[i], -G[j]])
+                r = lsq_linear(A, y, bounds=(lo[:3], hi[:3]), method='bvls')
+                coef[(i, j)] = r.x
+            else:
+                A = np.column_stack([E[i], -G[j]])
+                r = lsq_linear(A, y - p0, bounds=(lo[1:3], hi[1:3]), method='bvls')
+                coef[(i, j)] = np.array([p0, r.x[0], r.x[1]])
             sse[i, j] = float(np.dot(r.fun, r.fun))
-            coef[(i, j)] = r.x
     return t1s, t2s, sse, coef
 
 
@@ -272,7 +278,7 @@ def _cruza(t_a, s_a, t_b, s_b, crit):
     return t_a + min(1.0, max(0.0, f)) * (t_b - t_a)
 
 
-def _perfil(cargas, idx, y, lo, hi, cfg, x_melhor, k, pontos=41):
+def _perfil(cargas, idx, y, lo, hi, cfg, x_melhor, k, pontos=41, p0=None):
     """SSE de perfil de T1 (k=3) ou T2 (k=4): T fixo numa grelha fina (inclui o otimo), a outra
     constante de tempo otimizada numa grelha (inclui a otima) e (P0,K1,K2) exatos por minimos
     quadrados limitados. Devolve (valores_de_T, sse_de_perfil)."""
@@ -292,8 +298,12 @@ def _perfil(cargas, idx, y, lo, hi, cfg, x_melhor, k, pontos=41):
         melhor = np.inf
         for c_o in comp_o:
             e, g = (c_t, c_o) if k == 3 else (c_o, c_t)
-            A = np.column_stack([ones, e, -g])
-            r = lsq_linear(A, y, bounds=(lo[:3], hi[:3]), method='bvls')
+            if p0 is None:
+                A = np.column_stack([ones, e, -g])
+                r = lsq_linear(A, y, bounds=(lo[:3], hi[:3]), method='bvls')
+            else:
+                A = np.column_stack([e, -g])
+                r = lsq_linear(A, y - p0, bounds=(lo[1:3], hi[1:3]), method='bvls')
             s = float(np.dot(r.fun, r.fun))
             if s < melhor:
                 melhor = s
@@ -316,7 +326,18 @@ def _escolhe_celulas(sse, k):
     return escolhidas
 
 
-def _polir(x0, cargas, idx, y, lo, hi, lag):
+def _polir(x0, cargas, idx, y, lo, hi, lag, p0=None):
+    if p0 is not None:
+        # P0 fixo: so (K1,K2,T1,T2) variam; x0 vem com 5 entradas (a 1.a e o P0 e e ignorada)
+        escala4 = np.array([0.5, 0.5, 10.0, 3.0])
+
+        def res4(x):
+            e = _desloca(_decai(cargas, x[2]), lag)[idx]
+            g = _desloca(_decai(cargas, x[3]), lag)[idx]
+            return p0 + x[0] * e - x[1] * g - y
+
+        x04 = np.minimum(np.maximum(np.asarray(x0, dtype=float)[1:], lo[1:]), hi[1:])
+        return least_squares(res4, x04, bounds=(lo[1:], hi[1:]), x_scale=escala4, method='trf', max_nfev=400)
     ref = float(np.median(y))
     escala = np.array([0.1 * ref, 0.5, 0.5, 10.0, 3.0])
 
@@ -330,12 +351,15 @@ def _polir(x0, cargas, idx, y, lo, hi, lag):
     return r
 
 
-def ajustar(cargas, idx, y, config=None, p0_ini=None, datas=None):
+def ajustar(cargas, idx, y, config=None, p0_ini=None, datas=None, p0_fixo=None):
     """Estima P0, K1, K2, T1, T2 minimizando a soma dos quadrados dos erros.
 
     cargas: carga diaria (vetor, dia 0 = primeiro dia). idx: indice do dia de cada observacao.
     y: watts observados. datas: datas ISO das observacoes (so para cobertura/relatorio).
     p0_ini: P0 de partida (ver p0_inicial); sem ele usa-se a mediana de y.
+    p0_fixo: P0 FIXO (referencia do CP Model): nao e estimado nem pode ser alterado pelo otimizador;
+    so K1, K2, T1 e T2 sao estimados (4 parametros livres, gl = n - 4). Sem inicializacao
+    alternativa: nao ha mediana nem ano anterior neste modo.
 
     Estrategia: (1) superficie SSE(T1,T2) com os parametros lineares resolvidos exatamente;
     (2) polimento nao linear dos 5 parametros a partir das melhores celulas separadas, do ponto
@@ -343,6 +367,11 @@ def ajustar(cargas, idx, y, config=None, p0_ini=None, datas=None):
     equivalentes divergentes, condicionamento, intervalo de perfil de T1/T2).
     """
     cfg = _cfg(config)
+    if p0_fixo is not None:
+        if isinstance(p0_fixo, bool) or not isinstance(p0_fixo, (int, float)) or not math.isfinite(p0_fixo) or p0_fixo <= 0:
+            raise ValueError('p0_fixo tem de ser um numero finito > 0')
+        p0_fixo = float(p0_fixo)
+    n_livres = 5 if p0_fixo is None else 4
     cargas = np.asarray(cargas, dtype=float)
     idx = np.asarray(idx, dtype=int)
     y = np.asarray(y, dtype=float)
@@ -368,9 +397,11 @@ def ajustar(cargas, idx, y, config=None, p0_ini=None, datas=None):
         return _insuficiente('alvo_sem_variacao', n, obs_info, cfg)
 
     lo, hi = _limites_vetor(y, cfg)
-    t1s, t2s, sse_g, coef_g = _superficie(cargas, idx, y, lo, hi, cfg)
+    if p0_fixo is not None:
+        lo[0] = hi[0] = p0_fixo          # so para relatorio: P0 nao e variavel
+    t1s, t2s, sse_g, coef_g = _superficie(cargas, idx, y, lo, hi, cfg, p0_fixo)
     ref = float(np.median(y))
-    p0_part = float(p0_ini) if p0_ini is not None else ref
+    p0_part = p0_fixo if p0_fixo is not None else (float(p0_ini) if p0_ini is not None else ref)
 
     partidas = []
     for (i, j) in _escolhe_celulas(sse_g, int(cfg['n_polimentos'])):
@@ -385,12 +416,13 @@ def ajustar(cargas, idx, y, config=None, p0_ini=None, datas=None):
     solucoes = []
     for origem, x0 in partidas:
         try:
-            r = _polir(x0, cargas, idx, y, lo, hi, lag)
+            r = _polir(x0, cargas, idx, y, lo, hi, lag, p0_fixo)
         except Exception:
             continue
         if not np.all(np.isfinite(r.x)):
             continue
-        solucoes.append({'origem': origem, 'x': r.x, 'sse': float(2.0 * r.cost), 'res': r})
+        xs = r.x if p0_fixo is None else np.concatenate([[p0_fixo], r.x])
+        solucoes.append({'origem': origem, 'x': xs, 'sse': float(2.0 * r.cost), 'res': r})
     if not solucoes:
         return {**_insuficiente('sem_solucao_numerica', n, obs_info, cfg, lo, hi),
                 'estado': EST_SEM_CONVERGENCIA}
@@ -398,7 +430,7 @@ def ajustar(cargas, idx, y, config=None, p0_ini=None, datas=None):
     melhor = solucoes[0]
     x = melhor['x']
     sse = melhor['sse']
-    gl = n - 5
+    gl = n - n_livres
     sst = float(np.sum((y - y.mean()) ** 2))
     metricas = {
         'sse': sse, 'rmse': math.sqrt(sse / n), 'n': n, 'gl': gl,
@@ -413,7 +445,7 @@ def ajustar(cargas, idx, y, config=None, p0_ini=None, datas=None):
     amp = hi - lo
     no_limite = []
     for k, nome in enumerate(NOMES):
-        if amp[k] <= 0:
+        if amp[k] <= 0:            # inclui o P0 fixo (amplitude 0): nao se estima, nao pode estar "no limite"
             continue
         m = cfg['margem_limite'] * amp[k]
         if x[k] <= lo[k] + m:
@@ -436,14 +468,17 @@ def ajustar(cargas, idx, y, config=None, p0_ini=None, datas=None):
     # (c) condicionamento do jacobiano (colunas na escala da amplitude do limite)
     cond, erros_padrao = None, None
     try:
-        J = melhor['res'].jac * amp[None, :]
+        J = melhor['res'].jac * (amp if p0_fixo is None else amp[1:])[None, :]
         sv = np.linalg.svd(J, compute_uv=False)
         cond = float(sv[0] / sv[-1]) if sv[-1] > 0 else float('inf')
         if not math.isfinite(cond) or cond > cfg['cond_max']:
             avisos.append('mal_condicionado')
         elif gl > 0:
             cov = (sse / gl) * np.linalg.inv(melhor['res'].jac.T @ melhor['res'].jac)
-            erros_padrao = {nome: float(math.sqrt(max(cov[k, k], 0.0))) for k, nome in enumerate(NOMES)}
+            nomes_livres = NOMES if p0_fixo is None else NOMES[1:]
+            erros_padrao = {nome: float(math.sqrt(max(cov[k, k], 0.0))) for k, nome in enumerate(nomes_livres)}
+            if p0_fixo is not None:
+                erros_padrao = {'p0': None, **erros_padrao}
     except Exception:
         avisos.append('mal_condicionado')
 
@@ -453,7 +488,7 @@ def ajustar(cargas, idx, y, config=None, p0_ini=None, datas=None):
         crit = sse * (1.0 + _f.ppf(cfg['perfil_nivel'], 1, gl) / gl)
         ic_perfil = {}
         for nome, k in (('t1', 3), ('t2', 4)):
-            ts, prof = _perfil(cargas, idx, y, lo, hi, cfg, x, k)
+            ts, prof = _perfil(cargas, idx, y, lo, hi, cfg, x, k, p0=p0_fixo)
             ok = np.where(prof <= crit)[0]
             if ok.size == 0:
                 ic_perfil[nome] = [float(x[k]), float(x[k])]
@@ -471,7 +506,8 @@ def ajustar(cargas, idx, y, config=None, p0_ini=None, datas=None):
         'solucoes_equivalentes': [{'origem': s['origem'], 'sse': s['sse'],
                                    **{nome: float(s['x'][k]) for k, nome in enumerate(NOMES)}}
                                   for s in alt[:8]],
-        'n_partidas': len(solucoes)}
+        'n_partidas': len(solucoes), 'p0_fixo': p0_fixo is not None,
+        'parametros_livres': [nm for nm in NOMES if not (p0_fixo is not None and nm == 'p0')]}
     convergiu = bool(melhor['res'].status > 0)
     if not convergiu:
         estado = EST_SEM_CONVERGENCIA
@@ -488,7 +524,7 @@ def ajustar(cargas, idx, y, config=None, p0_ini=None, datas=None):
                              'origem_melhor_partida': melhor['origem']},
             'identificabilidade': ident, 'obs': obs_info,
             'limites': _limites_dict(cfg, lo, hi), 'p0_inicial_usado': p0_part,
-            'lag_dias': lag}
+            'p0_fixo': p0_fixo, 'lag_dias': lag}
 
 
 # ── previsao e avaliacao preditiva (sem fuga temporal) ───────────────────────
@@ -511,11 +547,13 @@ def prever(carga_por_dia, params, data_alvo, lag_dias=1):
     return float(p[-1])
 
 
-def ajustar_observacoes(observacoes, carga_por_dia, referencia, config=None, p0_obs=None):
+def ajustar_observacoes(observacoes, carga_por_dia, referencia, config=None, p0_obs=None, p0_fixo=None):
     """Ajuste a partir de observacoes {data, watts, test_id} e carga {data: carga}.
 
     p0_obs: observacoes usadas para escolher o P0 de partida (por defeito as proprias, o que so
     e correto para o ajuste historico). `referencia` (YYYY-MM-DD) define o 'ano anterior'.
+    p0_fixo: P0 de referencia (CP Model), fixo neste ajuste. Com ele NAO se chama p0_inicial: nem o
+    ano anterior nem as primeiras observacoes nem a mediana podem substituir a referencia.
     """
     obs = sorted(observacoes, key=lambda o: (str(o['data'])[:10], str(o.get('test_id'))))
     if not obs:
@@ -526,6 +564,12 @@ def ajustar_observacoes(observacoes, carga_por_dia, referencia, config=None, p0_
     idx = [(date.fromisoformat(str(o['data'])[:10]) - date.fromisoformat(d0)).days for o in obs]
     y = [float(o['watts']) for o in obs]
     datas = [str(o['data'])[:10] for o in obs]
+    if p0_fixo is not None:
+        r = ajustar(cargas, idx, y, config, None, datas, p0_fixo=p0_fixo)
+        r['p0_inicial'] = {'valor': float(p0_fixo), 'origem': 'p0_fixo_referencia_cp', 'detalhe': None,
+                           'referencia': referencia}
+        r['serie_ini'] = d0
+        return r
     v, origem, det = p0_inicial(obs if p0_obs is None else p0_obs, referencia)
     r = ajustar(cargas, idx, y, config, v, datas)
     r['p0_inicial'] = {'valor': v, 'origem': origem or 'mediana_dos_alvos', 'detalhe': det,
@@ -534,7 +578,7 @@ def ajustar_observacoes(observacoes, carga_por_dia, referencia, config=None, p0_
     return r
 
 
-def avaliar_preditivo(alvos, treino_de, carga_por_dia, config=None, metodos_base=None):
+def avaliar_preditivo(alvos, treino_de, carga_por_dia, config=None, metodos_base=None, p0_de=None):
     """Walk-forward: para cada alvo recalibra SO com o que era conhecido antes dele e preve.
 
     alvos: [{test_id, data, watts}]; treino_de(alvo) -> observacoes conhecidas (o chamador
@@ -544,6 +588,10 @@ def avaliar_preditivo(alvos, treino_de, carga_por_dia, config=None, metodos_base
 
     Devolve previsoes por alvo {y, ir, ...}, SEM metricas agregadas (ver o servico, que compara
     com M0/M1/M2 nos mesmos alvos). O erro dentro da amostra NAO e usado aqui.
+
+    p0_de(alvo) -> P0 de referencia JA CONHECIDO antes do alvo (ou None). Com p0_de, um alvo sem
+    referencia nao e previsto ('sem_referencia_p0_conhecida'): nunca se usa uma referencia futura nem
+    se cai para um P0 livre. Sem p0_de mantem-se o comportamento anterior (P0 livre).
     """
     cfg = _cfg(config)
     if int(cfg['lag_dias']) < 1:
@@ -559,7 +607,14 @@ def avaliar_preditivo(alvos, treino_de, carga_por_dia, config=None, metodos_base
             saida.append(reg)
             continue
         cargas_conhecidas = {k: v for k, v in carga_por_dia.items() if k[:10] < d}
-        r = ajustar_observacoes(treino, cargas_conhecidas, d, {**cfg, 'perfil': False})
+        p0_alvo = None
+        if p0_de is not None:
+            p0_alvo = p0_de(a)
+            if p0_alvo is None:
+                reg['motivo'] = 'sem_referencia_p0_conhecida'
+                saida.append(reg)
+                continue
+        r = ajustar_observacoes(treino, cargas_conhecidas, d, {**cfg, 'perfil': False}, p0_fixo=p0_alvo)
         reg['estado_ajuste'] = r['estado']
         reg['p0_origem'] = (r.get('p0_inicial') or {}).get('origem')
         if r['parametros'] is None:

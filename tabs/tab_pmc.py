@@ -665,7 +665,7 @@ BODY = r"""
 <details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Deteccao automatica de observacoes MMP (season, all-time, recente)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
 <details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
 <details class="expl" id="validacaoExp" style="margin:10px 0" ontoggle="abrirValidacao(this)"><summary>Validacao preditiva exploratoria do estimador (o que ja da para avaliar e que dados faltam)</summary><div class="expl-corpo" id="validacaoExpCorpo">A carregar...</div></details>
-<details class="expl" id="irExp" style="margin:10px 0" ontoggle="abrirIR(this)"><summary>Modelo IR por modalidade: curvas de influencia (experimental, ajuste historico)</summary><div class="expl-corpo" id="irExpCorpo">A carregar...</div></details>
+<details class="expl" id="irExp" style="margin:10px 0" ontoggle="abrirIR(this)"><summary>Modelo IR: curvas de influencia por modalidade (experimental, ajuste historico)</summary><div class="expl-corpo" id="irExpCorpo">A carregar...</div></details>
 <details class="expl" id="distCargaExp" style="margin:10px 0" ontoggle="abrirDistCarga(this)"><summary>Distribuicao da carga por modalidade (Bike, Row, Run, Ski): Training Load ou TRIMP, observada, sem musculacao</summary><div class="expl-corpo" id="distCargaExpCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
@@ -2767,12 +2767,17 @@ function abrirDistCarga(d){
 // <</distribuicao-carga>>
 
 // <<modelo-ir>>
-// ─── Modelo IR: curvas de influencia por modalidade e duracao ─────────────
-// So le /api/modelo/ir/influencia (ULTIMO ajuste guardado), e so quando o painel e aberto ou o
-// seletor muda. Nao recalibra, nao escreve, nao altera PMC/CTL/ATL/TSB nem o homeostatico.
-// E a descricao de um ajuste dentro da amostra, nao uma previsao validada.
-const IR_MODS=['Bike','Row','Run','Ski'], IR_DURS=[[60,'1 min (60 s)'],[300,'5 min (300 s)'],[1200,'20 min (1200 s)']];
-const IR_COR={pos:'#3fb950',neg:'#f85149',liq:'#5DADE2',ativ:'#d29922',obs:'#c9d1d9'};
+// ─── Modelo IR: curvas de influencia de TODAS as modalidades num so grafico ─────────────
+// So le /api/modelo/ir/conjunto (ULTIMO ajuste guardado de cada modalidade), uma vez ao abrir o painel e
+// quando a duracao muda. Os botoes da legenda so mostram/escondem series ja carregadas: nao recalculam,
+// nao escrevem, nao recalibram e nao alteram PMC/CTL/ATL/TSB/FTLM/MMP.
+// Escala comum = % do P0 do PROPRIO ajuste (apenas apresentacao). Descreve um ajuste dentro da amostra,
+// nao uma previsao validada. 'Overall' so existe quando o servidor o declarar disponivel.
+const IR_DURS=[[60,'1 min (60 s)'],[300,'5 min (300 s)'],[1200,'20 min (1200 s)']];
+const IR_COMPS=[{k:'liquida',nome:'Líquida (positiva − negativa)',curto:'líquida'},
+ {k:'positiva',nome:'Positiva K1·E',curto:'positiva'},{k:'negativa',nome:'Negativa −K2·G',curto:'negativa'}];
+// por omissao so a linha liquida (espessa); positiva e negativa ligam-se na legenda (12 linhas diarias sao ilegiveis)
+const IR_OFF={mod:{},comp:{positiva:true,negativa:true}};
 let IR_MONTADO=false, IR_J=null, IR_SEQ=0;
 function irEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function irNum(x,d){return (x==null||!isFinite(x))?'&mdash;':Number(x).toFixed(d==null?2:d);}
@@ -2780,125 +2785,195 @@ function irShell(){
  const el=document.getElementById('irExpCorpo'); if(!el)return;
  el.innerHTML=
   '<p style="font-size:13px"><b>Experimental, ajuste historico (dentro da amostra), nao validado preditivamente.</b> '+
-  'Mostra como a equacao do ultimo ajuste (P = P0 + K1&middot;E &minus; K2&middot;G) reparte a carga da modalidade em '+
-  'componente positiva e negativa. Nao altera o PMC.</p>'+
-  '<div class="controls">'+
-  '<label class="sel">Modalidade <select id="irMod">'+IR_MODS.map(function(m){return '<option value="'+m+'">'+m+'</option>';}).join('')+'</select></label>'+
-  '<label class="sel">Duracao <select id="irDur">'+IR_DURS.map(function(d){return '<option value="'+d[0]+'"'+(d[0]===1200?' selected':'')+'>'+d[1]+'</option>';}).join('')+'</select></label>'+
-  '<label class="sel">Atividade <select id="irAtiv"><option value="">Nenhuma</option></select></label></div>'+
+  'Cada modalidade usa o seu ultimo ajuste guardado: resposta completa = P0 + positiva (K1&middot;E) &minus; negativa (K2&middot;G). '+
+  'Nao altera o PMC e nada e recalibrado ao abrir ou mudar a duracao.</p>'+
+  '<div class="controls"><label class="sel">Duracao <select id="irDur">'+IR_DURS.map(function(d){return '<option value="'+d[0]+'"'+(d[0]===1200?' selected':'')+'>'+d[1]+'</option>';}).join('')+'</select></label></div>'+
   '<div id="irInfo"></div>'+
-  '<div class="chartbox"><div class="legend" id="lgIrComp"></div><canvas id="chIrComp" height="240"></canvas></div>'+
-  '<div class="chartbox"><div class="legend" id="lgIrLiq"></div><canvas id="chIrLiq" height="240"></canvas></div>';
- ['irMod','irDur','irAtiv'].forEach(function(id){
-  const e=document.getElementById(id); if(e)e.onchange=function(){ if(id!=='irAtiv'){document.getElementById('irAtiv').value='';} carregarIR(); };});
+  '<div class="chartbox"><div class="legend" id="lgIrConj"></div><canvas id="chIrConj" height="300"></canvas></div>'+
+  '<div id="irEscala" style="font-size:12px;color:#8b949e"></div>'+
+  '<div id="irAvisos"></div><div id="irTabela"></div><div id="irOverall"></div>';
+ const e=document.getElementById('irDur'); if(e)e.onchange=function(){carregarIR();};
  IR_MONTADO=true;
+}
+function irEstado(e){return {identificavel:['identificável','#3fb950'],nao_identificavel:['NÃO identificável','#d29922'],
+ sem_ajuste:['sem ajuste','#8b949e'],dados_insuficientes:['dados insuficientes','#8b949e'],sem_convergencia:['não convergiu','#8b949e'],
+ sem_atividades:['sem atividades','#8b949e']}[e]||[e||'—','#8b949e'];}
+// estilo por componente; ajuste NAO identificavel => traco distinto (mais aberto) alem do aviso
+function irEstilo(comp,nid){
+ if(comp==='liquida')return {lw:2.6,dash:nid?[9,4]:[]};
+ if(comp==='positiva')return {lw:1.2,dash:nid?[9,3,2,3]:[6,3]};
+ return {lw:1.3,dash:nid?[1,5]:[2,3]};
+}
+// series a desenhar (puro: so transforma o payload; os testes inspecionam-no). Valores em % de P0, watts guardados.
+function irSeries(j){
+ if(!j||j.status!=='OK'||!j.modalidades)return [];
+ const out=[];
+ (j.modalidades_ordem||[]).forEach(function(m){
+  const it=j.modalidades[m]; if(!it||!it.tem_curva||!it.pct)return;
+  const nid=!it.parametros_identificados, fi=it.fora_do_ajuste_desde?j.datas.indexOf(it.fora_do_ajuste_desde):-1;
+  IR_COMPS.forEach(function(c){
+   out.push({mod:m,comp:c.k,nome:m+' — '+c.nome,cor:(j.cores||{})[m]||it.cor||'#8b949e',nid:nid,
+    fora:fi,vals:it.pct[c.k],w:it.w[c.k],estilo:irEstilo(c.k,nid)});});});
+ return out;
+}
+function irVisivel(s){return !IR_OFF.mod[s.mod]&&!IR_OFF.comp[s.comp];}
+function irAlternar(tipo,k){
+ IR_OFF[tipo][k]=!IR_OFF[tipo][k]; irRedesenhar(true);      // so redesenha: nao ha pedido ao servidor
+}
+function irLegendaHtml(j){
+ if(!j||j.status!=='OK'||!j.modalidades)return '';
+ let h='';
+ (j.modalidades_ordem||[]).forEach(function(m){
+  const it=j.modalidades[m]||{}, cor=(j.cores||{})[m]||'#8b949e', sem=!it.tem_curva||!it.pct, off=IR_OFF.mod[m];
+  const aviso=(it.tem_curva&&!it.parametros_identificados)?' ⚠':'';
+  h+='<span class="tog'+((off||sem)?' off':'')+'" data-mod="'+irEsc(m)+'" '+(sem?'title="'+irEsc(it.leitura||'sem curva')+'" aria-disabled="true"':'onclick="irAlternar(\'mod\',\''+irEsc(m)+'\')" role="button"')+'>'+
+   '<i style="background:'+irEsc(cor)+'"></i>'+irEsc(m)+aviso+(sem?' (sem curva)':'')+'</span>';});
+ const ov=j.overall||{};
+ h+='<span class="tog off" data-mod="Overall" aria-disabled="true" title="'+irEsc(ov.motivo||'Overall indisponivel')+'"><i style="background:#484f58"></i>Overall (indisponível)</span>';
+ h+='<span style="margin-left:10px"></span>';
+ IR_COMPS.forEach(function(c){
+  const st=irEstilo(c.k,false);
+  h+='<span class="tog'+(IR_OFF.comp[c.k]?' off':'')+'" data-comp="'+c.k+'" role="button" onclick="irAlternar(\'comp\',\''+c.k+'\')">'+
+   '<svg width="26" height="8" style="vertical-align:middle;margin-right:4px"><line x1="0" y1="4" x2="26" y2="4" stroke="#c9d1d9" stroke-width="'+st.lw+'" stroke-dasharray="'+st.dash.join(',')+'"/></svg>'+irEsc(c.nome)+'</span>';});
+ return h;
+}
+function irEscalaHtml(j){
+ if(!j||j.status!=='OK'||!j.modalidades)return '';
+ const sem=(j.modalidades_ordem||[]).filter(function(m){const it=j.modalidades[m];return it&&it.tem_curva&&!it.pct;});
+ return 'Eixo: % do P0 do ajuste de cada modalidade (positiva/P0, −negativa/P0, líquida/P0). A normalização é só de apresentação: '+
+  'não altera o modelo nem prova que as modalidades sejam fisiologicamente comparáveis. Os watts originais estão na dica (tooltip). '+
+  'Trecho esmaecido = depois da última observação do ajuste (fora da amostra). Linhas a tracejado largo e ⚠ = parâmetros não identificáveis. '+
+  'Guias a ±100 % de P0 apenas marcam a escala: nenhum valor é cortado.'+
+  (sem.length?' <b style="color:#d29922">Normalização impossível (P0 inválido ou não positivo): sem curva em % para '+sem.map(irEsc).join(', ')+'.</b>':'');
+}
+function irP0Origem(it){
+ const p=it&&it.p0; if(!p)return '';
+ const u=p.usado_no_ajuste;
+ if(u)return 'P0 = CP ('+irNum(u.valor_p0,1)+' W · '+irEsc(String(u.modelo_cp||'').replace(/ \(.*$/,''))+') · ref. '+irEsc(u.cp_data_referencia||'—')+' · conhecida '+irEsc(String(u.conhecida_desde||'').slice(0,10)||'—')+' · v'+irEsc(u.versao_referencia==null?'—':u.versao_referencia);
+ return (it.ajuste&&it.ajuste.versao_ajuste!=null)?'P0 livre (ajuste anterior ao CP Model)':'—';
+}
+function irAvisosHtml(j){
+ if(!j||j.status!=='OK'||!j.modalidades)return '';
+ const L=[];
+ (j.modalidades_ordem||[]).forEach(function(m){
+  const it=j.modalidades[m]||{};
+  const pa=it.p0&&it.p0.atual;
+  if(pa&&pa.valida===false)L.push(['#d29922','<b>'+irEsc(m)+'</b>: sem P0 válido (P0 = CP do CP Model) para esta modalidade — '+irEsc(pa.detalhe||pa.motivo||'')+
+   (it.ajuste&&it.ajuste.versao_ajuste!=null?'. Mantém-se o último ajuste guardado; não foi criado ajuste novo.':'. Não há ajuste.')]);
+  if(it.p0&&it.p0.desatualizado)L.push(['#f85149','<b>'+irEsc(m)+'</b>: o ajuste mostrado usa uma referência de P0 mais antiga (v'+irEsc(it.ajuste_valido_anterior&&it.ajuste_valido_anterior.versao_referencia_p0!=null?it.ajuste_valido_anterior.versao_referencia_p0:(((it.p0.usado_no_ajuste||{}).versao_referencia)==null?'—':it.p0.usado_no_ajuste.versao_referencia))+
+   ') do que a última registada (v'+irEsc(((it.p0.ultima_referencia||{}).versao_referencia)==null?'—':it.p0.ultima_referencia.versao_referencia)+'): K1, K2, T1 e T2 NÃO foram reestimados com o P0 mais recente.']);
+  if(it.excecao_solver)L.push(['#f85149','<b>'+irEsc(m)+'</b>: o Solver falhou ao reestimar com o P0 novo ('+irEsc(it.excecao_solver)+'). '+
+   (it.ajuste_valido_anterior?'O último ajuste válido (v'+irEsc(it.ajuste_valido_anterior.versao_ajuste)+', P0 '+irNum(it.ajuste_valido_anterior.p0,1)+' W) fica no histórico mas não é apresentado como atual.':'Não há ajuste válido anterior.')]);
+  if(!it.tem_curva){L.push(['#8b949e','<b>'+irEsc(m)+'</b>: '+irEsc(it.leitura||'sem curva')]);return;}
+  if(it.extrapolacao_antes_das_observacoes)L.push(['#d29922','<b>'+irEsc(m)+'</b>: a curva começa '+irEsc(it.extrapolacao_antes_das_observacoes.dias)+' dias antes da primeira observação do ajuste ('+irEsc(it.extrapolacao_antes_das_observacoes.ate)+'): esse trecho é extrapolação.']);
+  if(it.compatibilidade_p0_alvo&&it.compatibilidade_p0_alvo.mediana_alvos_sobre_p0!=null)L.push(['#8b949e','<b>'+irEsc(m)+'</b>: mediana dos alvos = '+irNum(100*it.compatibilidade_p0_alvo.mediana_alvos_sobre_p0,0)+' % de P0 (=CP); o alvo é o melhor valor da duração na atividade, não um teste máximo.']);
+  if(!it.parametros_identificados)L.push(['#d29922','<b>'+irEsc(m)+'</b>: parâmetros NÃO identificáveis — a curva descreve o ajuste, não constantes confirmadas'+
+   ((it.no_limite||[]).length?' (no limite: '+it.no_limite.map(function(x){return irEsc(x.parametro)+' '+irEsc(x.lado);}).join(', ')+')':'')+'.']);
+  const pl=it.plausibilidade;
+  if(pl&&pl.excede){
+   const t=['positiva','negativa','liquida'].filter(function(k){return pl.dias_acima[k]>0;}).map(function(k){return k+': máx. '+irNum(pl.max_abs_pct[k],0)+' % em '+pl.dias_acima[k]+' dias';});
+   L.push(['#f85149','<b>'+irEsc(m)+'</b>: magnitude acima de '+irNum(pl.limite_pct,0)+' % de P0 (sem corte) — '+t.join('; ')+'. Tratar como artefacto de ajuste até prova em contrário.']);}
+  if(it.ajuste_desatualizado)L.push(['#d29922','<b>'+irEsc(m)+'</b>: a carga mudou desde o ajuste; só entra na próxima recalibração (nada foi recalculado agora).']);
+ });
+ const ct=j.convencao_temporal||{};
+ if(ct.lags_diferentes)L.push(['#d29922','As modalidades têm desfasamentos (lag) diferentes ('+irEsc((ct.lag_dias||[]).join(', '))+' dias): não são directamente alinháveis dia a dia.']);
+ if(!L.length)return '';
+ return '<div style="margin:6px 0">'+L.map(function(x){return '<div style="border-left:3px solid '+x[0]+';padding:2px 10px;margin:3px 0;font-size:12.5px">'+x[1]+'</div>';}).join('')+'</div>';
+}
+function irTabelaHtml(j){
+ if(!j||j.status!=='OK'||!j.modalidades)return '';
+ let r='',d='';
+ (j.modalidades_ordem||[]).forEach(function(m){
+  const it=j.modalidades[m]||{}, e=irEstado(it.estado), P=it.parametros, aj=it.ajuste||{}, ok=it.parametros_identificados===true;
+  const cel=function(k,dd){return '<td style="text-align:right">'+(P?irNum(P[k],dd)+(ok?'':'<span title="parametro nao identificavel: nao confirmado" style="color:#d29922"> *</span>'):'&mdash;')+'</td>';};
+  r+='<tr><td><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+irEsc((j.cores||{})[m]||'#888')+';margin-right:5px"></i><b>'+irEsc(m)+'</b></td>'+
+   '<td style="color:'+e[1]+'">'+irEsc(e[0])+'</td>'+cel('p0',1)+cel('k1',4)+cel('k2',4)+cel('t1',1)+cel('t2',1)+
+   '<td style="text-align:right">'+irEsc(aj.n_obs==null?'—':aj.n_obs)+'</td>'+
+   '<td>'+((it.no_limite||[]).length?it.no_limite.map(function(x){return irEsc(x.parametro)+' ('+irEsc(x.lado)+')';}).join(', '):'&mdash;')+'</td>'+
+   '<td style="font-size:11.5px">'+(irP0Origem(it)||'&mdash;')+'</td></tr>';
+  d+='<p style="font-size:12px;margin:4px 0"><b>'+irEsc(m)+'</b>: '+(it.ajuste&&it.ajuste.versao_ajuste!=null?
+   'ajuste v'+irEsc(aj.versao_ajuste)+' ('+irEsc(String(aj.ajustado_em||'').slice(0,16))+'), observações de '+irEsc(aj.data_ini||'—')+' a '+irEsc(aj.data_fim||'—')+
+   '; erro dentro da amostra: SSE '+irNum(aj.funcao_objetivo,1)+', RMSE '+irNum(aj.rmse,1)+' W, R² '+irNum(aj.r2,3)+
+   '; convergência: '+(aj.convergiu?'sim':(aj.convergiu===false?'não':'—'))+(aj.p0_origem?'; P0 fixo, origem: '+irEsc(aj.p0_origem):'')+
+   '; lag '+irEsc(it.lag_dias==null?'—':it.lag_dias)+' dia(s)'+
+   ((it.avisos_identificabilidade||[]).length?'; avisos: '+it.avisos_identificabilidade.map(irEsc).join(', '):'')
+   :irEsc(it.leitura||'sem ajuste'))+'</p>';});
+ return '<div style="overflow-x:auto"><table style="font-size:12px;border-collapse:collapse;min-width:640px"><thead><tr><th style="text-align:left">Modalidade</th><th style="text-align:left">Ajuste</th>'+
+  '<th>P0 (W)</th><th>K1</th><th>K2</th><th>T1 (d)</th><th>T2 (d)</th><th>N obs.</th><th style="text-align:left">No limite</th><th style="text-align:left">Origem do P0 (fixo)</th></tr></thead><tbody>'+r+'</tbody></table></div>'+
+  '<p style="font-size:11.5px;color:#8b949e;margin:3px 0"><span style="color:#d29922">*</span> parâmetro não identificável: não confirmado. Valores do último ajuste guardado, nada recalculado.</p>'+
+  '<details><summary style="font-size:12px;cursor:pointer">Detalhes dos ajustes (erro, convergência, lag, avisos)</summary>'+d+'</details>';
+}
+function irOverallHtml(j){
+ const o=j&&j.overall; if(!o)return '';
+ return '<details><summary style="font-size:12px;cursor:pointer">Overall: indisponível — porquê e o que falta</summary><p style="font-size:12px;margin:4px 0">'+irEsc(o.motivo)+'</p>'+
+  '<ul style="font-size:12px;margin:2px 0 6px 18px">'+(o.falta||[]).map(function(x){return '<li>'+irEsc(x)+'</li>';}).join('')+'</ul></details>';
 }
 function irInfoHtml(j){
  if(!j||j.status!=='OK')return '<p style="font-size:13px">Nao foi possivel calcular: '+irEsc(j&&j.mensagem?j.mensagem:'sem resposta')+'</p>';
- if(j.estado==='sem_ajuste')return '<p style="font-size:13px">'+irEsc(j.leitura)+'</p>';
- const ok=j.parametros_identificados===true;
- const aviso=(j.estado==='ajustado_identificavel')?
-  '<div style="border-left:3px solid #3fb950;padding:4px 10px;margin:6px 0;font-size:13px">'+irEsc(j.leitura)+'</div>':
-  '<div style="border-left:3px solid #d29922;padding:4px 10px;margin:6px 0;font-size:13px"><b>Atencao:</b> '+
-  irEsc(!j.parametros&&j.leitura?j.leitura+'. '+(j.aviso_parametros||''):(j.aviso_parametros||j.leitura))+
-  ((j.avisos_identificabilidade||[]).length?' ('+j.avisos_identificabilidade.map(irEsc).join(', ')+')':'')+'</div>';
- let params='';
- if(j.parametros){
-  const P=j.parametros, nc=ok?'':' <span title="parametro nao identificavel: nao confirmado" style="color:#d29922">(nao confirmado)</span>';
-  params='<table style="font-size:12px;border-collapse:collapse"><thead><tr><th>P0 (W)</th><th>K1</th><th>K2</th><th>T1 (dias)</th><th>T2 (dias)</th></tr></thead><tbody><tr>'+
-   ['p0','k1','k2','t1','t2'].map(function(k){return '<td>'+irNum(P[k],k==='k1'||k==='k2'?4:1)+nc+'</td>';}).join('')+'</tr></tbody></table>';}
- const dados='<p style="font-size:12px;color:#8b949e">Ajuste v'+irEsc(j.versao_ajuste)+' ('+irEsc(String(j.ajustado_em||'').slice(0,16))+', motivo: '+irEsc(j.motivo_ajuste)+
-  '). <b>'+irEsc(j.n_obs)+'</b> observacoes, de '+irEsc(j.data_ini||'—')+' a '+irEsc(j.data_fim||'—')+
-  '. Erro dentro da amostra: SSE '+irNum(j.funcao_objetivo,1)+', RMSE '+irNum(j.rmse,1)+' W, R&sup2; '+irNum(j.r2,3)+
-  '. Convergencia: '+(j.convergiu?'sim':(j.convergiu===false?'nao':'&mdash;'))+
-  (j.p0_origem?'. P0 inicial: '+irEsc(j.p0_origem):'')+'.'+
-  (j.ajuste_desatualizado?' <b style="color:#d29922">A carga mudou desde este ajuste: so entra na proxima recalibracao (nada foi recalculado agora).</b>':'')+
-  (j.ajuste_valido_anterior&&!j.parametros?' Ultimo ajuste valido anterior: v'+irEsc(j.ajuste_valido_anterior.versao_ajuste)+'.':'')+'</p>';
- let tr='',ad='';
- if(j.tratamento_da_carga){const t=j.tratamento_da_carga;
-  tr='<p style="font-size:12px;color:#8b949e">Carga do proprio dia: '+irEsc(t.proprio_dia)+'. Dias sem treino: '+irEsc(t.dias_sem_treino)+'. '+irEsc(t.estado_inicial)+'.</p>';}
- if(j.verificacao_aditividade){const v=j.verificacao_aditividade;
-  ad='<p style="font-size:12px;color:#8b949e">Soma das contribuicoes de '+irEsc(v.n_atividades)+' atividades = resposta agregada: diferenca maxima '+
-   Number(Math.max(v.max_abs_dif_positiva,v.max_abs_dif_negativa,v.max_abs_dif_liquida)).toExponential(1)+' W.</p>';}
- return aviso+params+dados+tr+ad+
-  '<p style="font-size:12px;color:#8b949e">'+irEsc(j.aviso)+'</p>';
+ if(j.estado==='sem_curvas')return '<p style="font-size:13px"><b>Nenhuma modalidade tem curva para esta duração.</b> Nada foi calculado nem desenhado (sem zeros artificiais); ver o estado de cada modalidade abaixo.</p>';
+ return '';
 }
-function irAtivOpcoes(j){
- const sel=document.getElementById('irAtiv'); if(!sel)return;
- const atual=sel.value, lista=(j&&j.atividades)||[];
- let h='<option value="">Nenhuma</option>';
- lista.forEach(function(a){h+='<option value="'+irEsc(a.id)+'">'+irEsc(a.data)+' &middot; '+irEsc(a.nome||'atividade')+' &middot; carga '+irNum(a.carga,0)+'</option>';});
- if(atual&&!lista.some(function(a){return a.id===atual;}))h+='<option value="'+irEsc(atual)+'">'+irEsc(atual)+'</option>';
- sel.innerHTML=h; sel.value=atual;
-}
-// grafico de linhas simples sobre os dias da serie (eixo unico, em watts)
-function irDesenhar(canvasId,legId,j,series,opts){
- opts=opts||{};
- const lg=document.getElementById(legId);
- if(lg)lg.innerHTML=series.concat(opts.pontos?[{nome:opts.pontos.nome,cor:IR_COR.obs}]:[]).map(function(x){
-  return '<span><i style="background:'+x.cor+'"></i>'+irEsc(x.nome)+'</span>';}).join('');
- const o=ctx(canvasId,240); if(!o)return;
- const g=o.g,W=o.W,H=o.H, cu=j&&j.curvas;
- if(!cu||!cu.datas||!cu.datas.length){noData(g,W,H,(j&&j.aviso_parametros)||'Sem curva para esta selecao');return;}
- const n=cu.datas.length, PL=54,PR=14,PT=12,PB=26,w=W-PL-PR,h=H-PT-PB;
- let mn=Infinity,mx=-Infinity;
- series.forEach(function(s){s.vals.forEach(function(v){if(v==null)return;if(v<mn)mn=v;if(v>mx)mx=v;});});
- if(opts.pontos)opts.pontos.dados.forEach(function(p){if(p.y<mn)mn=p.y;if(p.y>mx)mx=p.y;});
- if(opts.zero){if(mn>0)mn=0;if(mx<0)mx=0;}
- if(!isFinite(mn)){noData(g,W,H);return;}
+// grafico unico, eixo unico (% de P0), eixo diario comum; valores ausentes (antes da origem) interrompem a linha
+function irDesenhar(j){
+ const lg=document.getElementById('lgIrConj'); if(lg)lg.innerHTML=irLegendaHtml(j);
+ const o=ctx('chIrConj',300); if(!o)return;
+ const g=o.g,W=o.W,H=o.H;
+ if(!j||j.status!=='OK'||j.estado==='sem_curvas'||!j.datas||!j.datas.length){noData(g,W,H,(j&&j.status==='OK')?'Sem curvas para esta duração':'Sem dados');return;}
+ const S=irSeries(j).filter(irVisivel), n=j.datas.length, PL=54,PR=14,PT=12,PB=26,w=W-PL-PR,h=H-PT-PB;
+ if(!S.length){noData(g,W,H,'Todas as séries estão desligadas');return;}
+ let mn=0,mx=0;
+ S.forEach(function(s){s.vals.forEach(function(v){if(v==null)return;if(v<mn)mn=v;if(v>mx)mx=v;});});
  if(mx===mn)mx=mn+1;
- const m=(mx-mn)*0.08; mn-=m; mx+=m;
+ const m=(mx-mn)*0.04; mn-=m; mx+=m;
+ // graduacao "redonda" (1, 2, 5 x 10^k) em vez de 5 divisoes arbitrarias
+ const bruto=(mx-mn)/4, pot=Math.pow(10,Math.floor(Math.log(bruto)/Math.LN10)), mult=[1,2,5,10].filter(function(q){return q*pot>=bruto;})[0], passo=mult*pot;
+ mn=Math.floor(mn/passo)*passo; mx=Math.ceil(mx/passo)*passo;
  const X=function(i){return PL+w*(n>1?i/(n-1):0.5);}, Y=function(v){return PT+h-(v-mn)/(mx-mn)*h;};
- g.strokeStyle='#21262d';g.lineWidth=1;g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
- for(let k=0;k<=4;k++){const v=mn+(mx-mn)*k/4,y=Y(v);g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.fillText(v.toFixed(Math.abs(mx-mn)<10?1:0),PL-6,y+3);}
- if(opts.zero){g.strokeStyle='#484f58';g.beginPath();g.moveTo(PL,Y(0));g.lineTo(PL+w,Y(0));g.stroke();}
- // dias depois da ultima observacao do ajuste: fora da amostra do ajuste
- const f=cu.fora_do_ajuste_desde, fi=f?cu.datas.indexOf(f):-1;
- if(fi>=0){g.fillStyle='rgba(139,148,158,0.12)';g.fillRect(X(fi),PT,PL+w-X(fi),h);g.fillStyle='#8b949e';g.textAlign='right';g.fillText('fora do ajuste ▸',Math.max(PL+60,X(fi)-4),PT+10);}
+ g.strokeStyle='#21262d';g.lineWidth=1;g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';g.setLineDash([]);
+ for(let v=mn;v<=mx+passo/1e6;v+=passo){const y=Y(v);g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.fillText(Math.round(v)+' %',PL-6,y+3);}
+ g.strokeStyle='#484f58';g.beginPath();g.moveTo(PL,Y(0));g.lineTo(PL+w,Y(0));g.stroke();
+ [100,-100].forEach(function(v){if(v>=mn&&v<=mx){g.strokeStyle='#30363d';g.setLineDash([2,4]);g.beginPath();g.moveTo(PL,Y(v));g.lineTo(PL+w,Y(v));g.stroke();g.setLineDash([]);
+  g.fillStyle='#6e7681';g.textAlign='left';g.fillText((v>0?'+':'−')+'100 % de P0',PL+4,Y(v)+(v>0?-3:10));}});
  g.fillStyle='#8b949e';
- for(let k=0;k<=4;k++){const i=Math.round((n-1)*k/4);g.textAlign=k===0?'left':(k===4?'right':'center');g.fillText(cu.datas[i].slice(0,7),X(i),H-8);}
- series.forEach(function(s){
-  g.strokeStyle=s.cor;g.lineWidth=s.fino?1:1.8;g.setLineDash(s.tracejado?[5,4]:[]);g.beginPath();let ini=false;
-  s.vals.forEach(function(v,i){if(v==null){ini=false;return;}const x=X(i),y=Y(v);if(!ini){g.moveTo(x,y);ini=true;}else g.lineTo(x,y);});
-  g.stroke();g.setLineDash([]);});
- if(opts.pontos){g.fillStyle=IR_COR.obs;opts.pontos.dados.forEach(function(p){g.beginPath();g.arc(X(p.i),Y(p.y),3,0,6.2832);g.fill();});}
- registarTip(canvasId,function(x){
-  const i=Math.max(0,Math.min(n-1,Math.round((x-PL)/w*(n-1))));
+ for(let k=0;k<=4;k++){const i=Math.round((n-1)*k/4);g.textAlign=k===0?'left':(k===4?'right':'center');g.fillText(j.datas[i].slice(0,7),X(i),H-8);}
+ // finas por baixo, liquida (espessa) por cima
+ S.slice().sort(function(a,b){return (a.comp==='liquida'?1:0)-(b.comp==='liquida'?1:0);}).forEach(function(s){
+  g.strokeStyle=s.cor;g.lineWidth=s.estilo.lw;g.setLineDash(s.estilo.dash);
+  [[0,s.fora>=0?s.fora:n,1],[s.fora>=0?Math.max(0,s.fora-1):n,n,0.4]].forEach(function(seg){
+   if(seg[0]>=seg[1])return;
+   g.globalAlpha=seg[2];g.beginPath();let ini=false;
+   for(let i=seg[0];i<seg[1];i++){const v=s.vals[i];if(v==null){ini=false;continue;}const x=X(i),y=Y(v);if(!ini){g.moveTo(x,y);ini=true;}else g.lineTo(x,y);}
+   g.stroke();});
+  g.globalAlpha=1;g.setLineDash([]);});
+ registarTip('chIrConj',function(x){
   if(x<PL||x>PL+w)return '';
-  let hh='<div class="th">'+irEsc(cu.datas[i])+(f&&cu.datas[i]>=f?' (fora do ajuste)':'')+'</div>';
-  series.forEach(function(s){const v=s.vals[i];hh+=linhaTip(s.cor,irEsc(s.nome),v==null?'&mdash;':v.toFixed(1)+' W');});
-  hh+=linhaTip('#8b949e','Carga do dia',irNum(cu.carga_dia[i],0));
+  const i=Math.max(0,Math.min(n-1,Math.round((x-PL)/w*(n-1))));
+  let hh='<div class="th">'+irEsc(j.datas[i])+'</div>';
+  const vistos={};
+  S.forEach(function(s){
+   const v=s.vals[i], wv=s.w[i];
+   const f=(s.fora>=0&&i>=s.fora)?' (fora do ajuste)':'', big=(v!=null&&Math.abs(v)>100)?' ⚠ &gt;100 % de P0':'';
+   hh+=linhaTip(s.cor,irEsc(s.mod)+' · '+irEsc(s.comp)+(s.nid?' (não identific.)':''),
+    v==null?'ainda sem série (antes da origem)':irNum(v,1)+' % de P0 &middot; '+irNum(s.comp==='negativa'?-wv:wv,1)+' W'+f+big);});
   return hh;});
 }
-// series a desenhar (puro: so transforma o payload; os testes inspecionam-no)
-function irSeries(j){
- const cu=j&&j.curvas; if(!cu||!j.parametros)return null;
- const ca=j.contribuicao_atividade;
- const comp=[{nome:'Positiva K1\u00b7E',cor:IR_COR.pos,vals:cu.positiva},
-  {nome:'Negativa \u2212K2\u00b7G',cor:IR_COR.neg,vals:cu.negativa.map(function(v){return -v;})},
-  {nome:'Resposta liquida (sem P0)',cor:IR_COR.liq,vals:cu.liquida.map(function(v){return v-j.parametros.p0;})}];
- if(ca)comp.push({nome:'Atividade '+ca.atividade.data+' (liquida)',cor:IR_COR.ativ,tracejado:true,vals:ca.liquida});
- const ix={};cu.datas.forEach(function(d,i){ix[d]=i;});
- const pts=(j.observacoes||[]).filter(function(o){return ix[o.data]!=null;}).map(function(o){return {i:ix[o.data],y:o.watts};});
- return {comp:comp,
-  liq:[{nome:'Resposta liquida prevista (P0 + K1\u00b7E \u2212 K2\u00b7G)',cor:IR_COR.liq,vals:cu.liquida}],pts:pts};
-}
-function irRedesenhar(){
- const j=IR_J, S=irSeries(j);
- const info=document.getElementById('irInfo'); if(info)info.innerHTML=irInfoHtml(j);
- if(!S){irDesenhar('chIrComp','lgIrComp',j,[]);irDesenhar('chIrLiq','lgIrLiq',j,[]);return;}
- irDesenhar('chIrComp','lgIrComp',j,S.comp,{zero:true});
- irDesenhar('chIrLiq','lgIrLiq',j,S.liq,{pontos:{nome:'Melhor valor da duracao (observado)',dados:S.pts}});
+function irRedesenhar(soDesenho){
+ const j=IR_J;
+ if(!soDesenho){
+  const set=function(id,h){const e=document.getElementById(id); if(e)e.innerHTML=h;};
+  set('irInfo',irInfoHtml(j)); set('irEscala',irEscalaHtml(j)); set('irAvisos',irAvisosHtml(j)); set('irTabela',irTabelaHtml(j)); set('irOverall',irOverallHtml(j));
+ }
+ irDesenhar(j);
 }
 async function carregarIR(){
  if(!IR_MONTADO)irShell();
- const mod=document.getElementById('irMod').value, dur=document.getElementById('irDur').value, at=document.getElementById('irAtiv').value;
+ const dur=document.getElementById('irDur').value;
  const seq=++IR_SEQ;
  let j=null;
- try{ j=await fetch('/api/modelo/ir/influencia?tipo='+encodeURIComponent(mod)+'&duracao='+encodeURIComponent(dur)+(at?'&atividade='+encodeURIComponent(at):'')).then(function(r){return r.json();}); }
+ try{ j=await fetch('/api/modelo/ir/conjunto?duracao='+encodeURIComponent(dur)).then(function(r){return r.json();}); }
  catch(e){ j=null; }
  if(seq!==IR_SEQ)return;                       // resposta antiga de uma selecao anterior
- IR_J=j; irAtivOpcoes(j); irRedesenhar();
+ IR_J=j; irRedesenhar();
 }
 function abrirIR(d){
  if(d&&d.open&&!IR_MONTADO)carregarIR();

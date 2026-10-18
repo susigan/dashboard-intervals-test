@@ -21,6 +21,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import test_mmp_deteccao_automatica as T  # noqa: E402
+import cp_fixture as CPF  # noqa: E402
 import modelo_ir as ir  # noqa: E402
 import modelo_ir_servico as mis  # noqa: E402
 import modelo_validacao as V  # noqa: E402
@@ -66,6 +67,10 @@ class _Base(T.BaseDB):
 
     def setUp(self):
         self.CURVAS, self.ATIV = cenario()
+        # P0 vem do CP Model confirmado: instantaneos sinteticos (nunca a base de perfil real)
+        self.cp_loader = CPF.patch_loader()
+        self.cp_loader.start()
+        self.addCleanup(self.cp_loader.stop)
         super().setUp()
         self.ativ = copy.deepcopy(self.ATIV)        # BaseDB.setUp usa atividades sem carga: trocamos
 
@@ -140,8 +145,11 @@ class RecalibracaoEHistorico(_Base):
     def test_unidades_sem_observacoes_nao_geram_linhas(self):
         self.prepara()
         self.rec()
+        # P0 = CP e igual para todas as duracoes (60 s inclusive): so geram linhas as unidades COM observacoes
         self.assertEqual({(l['modalidade'], l['duracao_s']) for l in db.ajustes_ir_historico()},
                          {('Bike', 60), ('Bike', 300), ('Bike', 1200)})
+        self.assertEqual({l['p0_inicial'] for l in db.ajustes_ir_historico()}, {CPF.CP_PADRAO})
+        self.assertEqual(self.rec()['unidades']['Row:1200']['acao'], 'sem_observacoes')
 
     def test_sem_novas_observacoes_nao_recalcula_nem_grava(self):
         self.prepara()
@@ -151,7 +159,7 @@ class RecalibracaoEHistorico(_Base):
             r = self.rec()
             r2 = self.rec(agora=AGORA + timedelta(hours=5))          # outra hora, mesmo ano
         for u in r['unidades'].values():
-            self.assertIn(u['acao'], ('inalterado', 'sem_observacoes'))
+            self.assertIn(u['acao'], ('inalterado', 'sem_observacoes', mis.ACAO_BLOQUEADO))
         self.assertEqual(r2['n_ajustadas'], 0)
         self.assertEqual(len(db.ajustes_ir_historico()), n)
 
@@ -288,7 +296,7 @@ class RecalibracaoEHistorico(_Base):
             self.assertEqual(l['identificabilidade']['avisos'], [])
         else:
             self.assertTrue(l['identificabilidade']['avisos'])
-        self.assertIn(mis._leitura(l)[:20], mis.vista()['itens'][2]['leitura'])
+        self.assertIn(mis._leitura(l)[:20], next(i for i in mis.vista()['itens'] if i['duracao_s'] == 1200)['leitura'])
 
     def test_pocas_observacoes_nao_e_apresentado_como_ajuste(self):
         c, a = cenario(n_semanas=12)
@@ -305,29 +313,30 @@ class RecalibracaoEHistorico(_Base):
 
 
 class InicializacaoDeP0NoServico(_Base):
-    def test_usa_o_ultimo_mmp_elegivel_do_ano_anterior(self):
+    """O P0 deixou de ser inicializado por MMP do ano anterior / medianas: vem do CP Model e e fixo."""
+
+    def test_p0_vem_do_cp_model_e_nao_do_mmp_do_ano_anterior(self):
         self.prepara()
         self.rec()                                                   # agora = 2026-10-17 -> ano anterior 2025
         l = self.linhas()[0]
-        self.assertEqual(l['p0_origem'], 'ano_anterior')
-        obs25 = [o for o in l['entradas']['observacoes'] if o['data'].startswith('2025')]
-        ult = max(o['data'] for o in obs25)
-        esperado = np.mean([o['watts'] for o in obs25 if o['data'] == ult])
-        self.assertAlmostEqual(l['p0_inicial'], float(esperado), places=6)
-        self.assertEqual(l['metricas']['p0_inicial_detalhe']['data'], ult)
+        self.assertEqual(l['p0_origem'], 'cp_model_confirmado:M1 (WLS-P)')
+        self.assertNotIn(l['p0_origem'], ('ano_anterior', 'primeiras_observacoes', 'mediana_dos_alvos'))
+        self.assertEqual(l['p0_inicial'], 290.0)                     # P0 = CP (exato)
+        self.assertIsNone(l['metricas']['p0_inicial_detalhe'])
 
-    def test_sem_historico_do_ano_anterior_usa_alternativa_documentada(self):
+    def test_mudar_a_data_nao_muda_a_origem_do_p0(self):
         self.prepara()
         self.rec(agora=datetime(2031, 3, 1, 12, 0, 0))               # ano anterior (2030) sem dados
         l = self.linhas()[0]
-        self.assertEqual(l['p0_origem'], 'primeiras_observacoes')
-        self.assertIsNotNone(l['p0_inicial'])
+        self.assertEqual(l['p0_origem'], 'cp_model_confirmado:M1 (WLS-P)')
+        self.assertEqual(l['p0_inicial'], 290.0)
 
-    def test_p0_e_recalibrado_e_pode_ficar_longe_da_inicializacao(self):
+    def test_p0_do_ajuste_e_exatamente_o_da_referencia_e_nao_foi_estimado(self):
         self.prepara()
         self.rec()
         l = self.linhas()[0]
-        self.assertNotAlmostEqual(l['p0'], l['p0_inicial'], places=1)   # nao ficou fixo no valor inicial
+        self.assertEqual(l['p0'], l['p0_inicial'])                    # P0 fixo: igual a referencia
+        self.assertEqual(l['entradas']['p0_ref']['valor_p0'], l['p0'])
 
 
 class AtualizacaoAutomatica(_Base):
@@ -894,7 +903,8 @@ class GuardasDeIsolamentoIR(_Base):
                 if r[0].startswith('modelo')}
 
     def test_so_a_tabela_prevista_foi_autorizada_e_uma_tabela_inesperada_seria_detetada(self):
-        esperado = {'modelo_ir_ajustes', 'modelo_observacoes_auto', 'modelo_testes_revisoes'}
+        esperado = {'modelo_ir_ajustes', 'modelo_ir_p0_referencias', 'modelo_observacoes_auto',
+                    'modelo_testes_revisoes'}
         self.assertEqual(self._tabelas_modelo(), esperado)
         db._exec('CREATE TABLE modelo_intrusa (x INTEGER)')
         try:
@@ -957,6 +967,7 @@ class GuardasDeIsolamentoIR(_Base):
 
 class AvaliacaoPreditivaSemFuga(_Base):
     def val(self, modos=('retrospectivo',), **kw):
+        kw.setdefault('referencias_p0', [CPF.referencia_p0('Bike', 1200)])      # conhecida desde 2020
         return mis.validar_preditivo(db.observacoes_auto_historico(), db.revisoes_testes_modelo(),
                                      self.ativ, db.load_power_curves() or [], modos=modos,
                                      tipo='Bike', duracao=1200, **kw)

@@ -5836,6 +5836,39 @@ def api_modelo_ir_influencia():
     return jsonify({'status': 'OK', **res}), (404 if res.get('erro') == 'atividade_nao_encontrada' else 200)
 
 
+@app.route('/api/modelo/ir/conjunto')
+def api_modelo_ir_conjunto():
+    """Curvas de influencia IR das quatro modalidades para UMA duracao, num eixo diario comum e em
+    % do P0 do proprio ajuste (com os watts originais). SO LEITURA: usa o ULTIMO ajuste guardado de
+    cada modalidade; nao recalibra, nao grava, nao chama a API externa. ?duracao=1200 (obrigatorio)
+    &ate=YYYY-MM-DD. Nao aceita ?tipo (inclui todas as modalidades)."""
+    import modelo_ir_servico as mis
+    filtros, erro = _filtros_registo(com_pendente=False)
+    if erro:
+        return erro
+    if filtros['tipo']:
+        return _erro_registo(400, 'o conjunto inclui todas as modalidades: nao aceita tipo', 'tipo')
+    if filtros['duracao'] is None:
+        return _erro_registo(400, 'duracao obrigatoria (cada ajuste e de uma duracao)', 'duracao')
+    ate = request.args.get('ate') or None
+    if ate is not None:
+        try:
+            import datetime as _dt
+            _dt.date.fromisoformat(ate)
+        except ValueError:
+            return _erro_registo(400, 'ate invalido (use YYYY-MM-DD)', 'ate')
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        inst_cp, _erro_cp = mis.carregar_instantaneos_cp()      # so leitura do CP Model
+        res = mis.curvas_conjuntas(filtros['duracao'], ate=ate, instantaneos_cp=inst_cp)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', **res})
+
+
 @app.route('/api/modelo/ir/global')
 def api_modelo_ir_global():
     """Modelo IR GLOBAL de referencia para UMA duracao (analise separada; so leitura; nao persistida;

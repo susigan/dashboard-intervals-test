@@ -21,8 +21,19 @@ for p in (ROOT, HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-U = '/api/modelo/ir/conjunto?duracao=%s'
+U = '/api/modelo/ir/conjunto'
 MODS = ['Bike', 'Row', 'Run', 'Ski']
+
+
+import ir_duracao_legado as _LEG  # noqa: E402
+
+
+def setUpModule():
+    _LEG.iniciar()
+
+
+def tearDownModule():
+    _LEG.parar()
 
 
 class UiCurvasIR(unittest.TestCase):
@@ -77,13 +88,13 @@ class UiCurvasIR(unittest.TestCase):
         b = self.bloco()
         self.assertNotIn("method:'POST'", b)
         self.assertNotIn('recalibrar', b)
-        self.assertEqual(re.findall(r"fetch\('([^']+)'", b), ['/api/modelo/ir/conjunto?duracao='])
+        self.assertEqual(re.findall(r"fetch\('([^']+)'", b), ['/api/modelo/ir/conjunto'])
 
     def test_interface_simplificada_sem_seletores_antigos(self):
         b = self.bloco()
         for velho in ('irMod', 'irAtiv', 'chIrComp', 'chIrLiq', 'lgIrComp', 'lgIrLiq'):
             self.assertNotIn(velho, b, velho)
-        for novo in ('irDur', 'chIrConj', 'lgIrConj', 'irTabela', 'irAvisos', 'irEscala', 'irOverall'):
+        for novo in ('chIrConj', 'irMmp3', 'lgIrConj', 'irTabela', 'irAvisos', 'irEscala', 'irOverall'):
             self.assertIn(novo, b, novo)
 
     def test_reutiliza_helpers_e_componentes_existentes(self):
@@ -102,7 +113,8 @@ class UiCurvasIR(unittest.TestCase):
         b = self.bloco()
         self.assertIn('nao validado preditivamente', b)
         self.assertIn('nem prova que as modalidades sejam fisiologicamente compar\u00e1veis', b)
-        sem_negacao = b.replace('n\u00e3o constantes confirmadas', '').replace('n\u00e3o confirmad', '').replace('nao confirmado', '')
+        sem_negacao = b.replace('n\u00e3o constantes confirmadas', '').replace('n\u00e3o confirmad', '').replace('nao confirmado', '')\
+            .replace('sem CP confirmado', '').replace('CP confirmado', '')    # o CP gravado no CP Model, nao fisiologia
         self.assertNotRegex(sem_negacao, r'(?i)\b(confirmad[oa]s?|comprovad[oa]s?)\b')
 
     # ---- contrato com o servidor ------------------------------------------
@@ -127,7 +139,7 @@ class UiCurvasIR(unittest.TestCase):
 
     def test_abrir_pede_um_unico_get_com_o_default_1200_e_nao_repete(self):
         self.need_node()
-        self.assertEqual(self.res['abrir_pede_um_get_uma_vez']['chamadas'], [{'url': U % 1200, 'metodo': 'GET'}])
+        self.assertEqual(self.res['abrir_pede_um_get_uma_vez']['chamadas'], [{'url': U, 'metodo': 'GET'}])
 
     def test_quatro_modalidades_com_as_cores_do_projeto_num_unico_canvas(self):
         self.need_node()
@@ -255,7 +267,7 @@ class UiCurvasIR(unittest.TestCase):
         self.assertIn('Nenhuma modalidade tem curva', r['info'])
         self.assertEqual((r['tracos'], r['series']), (0, 0))
         self.assertTrue(r['semData'])
-        self.assertEqual(r['semData'][-1], 'Sem curvas para esta duração')
+        self.assertEqual(r['semData'][-1], 'Sem ajuste válido: nenhuma curva desenhada')
 
     def test_tabela_de_parametros_compacta_com_marca_de_nao_confirmado(self):
         self.need_node()
@@ -279,44 +291,48 @@ class UiCurvasIR(unittest.TestCase):
         self.need_node()
         self.assertIn('t1 (inferior)', self.res['misto']['tabela'])
 
-    def test_tabela_mostra_a_origem_do_p0_fixo_vinda_do_cp_model(self):
+    def test_tabela_mostra_a_origem_do_p0_fixo_vinda_do_ultimo_yes(self):
         self.need_node()
         t = self.res['render_normal']['tabela']
         self.assertIn('Origem do P0 (fixo)', t)
-        self.assertIn('P0 = CP (270.0 W · M1)', t)              # P0 = CP e o modelo do CP que o deu
-        self.assertIn('ref. 2025-01-01', t)                     # data de referencia dos dados do CP
-        self.assertIn('conhecida 2026-09-30', t)                # momento em que o IR passou a conhecer a referencia
-        self.assertIn('· v2', t)
-        self.assertIn('P0 livre (ajuste anterior ao CP Model)', t)   # ajustes antigos nao se passam por CP
-        self.assertIn('P0 fixo, origem: cp_model_confirmado:M1', t)
+        self.assertIn('P0 = MMP3 do último YES (270.0 W)', t)     # P0 = MMP3 do ultimo YES (nao o CP)
+        self.assertIn('Bike:1200:seam-270.0', t)                  # identificador do registo de origem
+        self.assertIn('2025-01-01 07:00', t)                      # data/hora do registo
+        self.assertIn('· v2', t)                                  # versao da referencia
+        self.assertIn('P0 livre (ajuste anterior)', t)            # ajustes antigos nao se passam pela regra nova
+        self.assertIn('P0 fixo, origem: mmp3_ultimo_yes:Bike:1200:seam-270.0', t)
+        self.assertNotRegex(t, r'P0 = CP|CP confirmado|CP Model')
 
-    def test_motivo_do_bloqueio_do_p0_e_visivel_e_nao_ha_seletor_de_modelo_do_cp(self):
+    def test_ausencia_de_referencia_mmp3_e_explicita_e_nao_ha_seletor_nem_chamada_ao_cp(self):
         self.need_node()
         a = self.res['render_normal']['avisos']
-        self.assertIn('sem P0 válido (P0 = CP do CP Model)', a)  # sem resultado de CP valido para a modalidade
-        self.assertIn('último ajuste guardado', a)
-        self.assertIn('não foi criado ajuste novo', a)
+        self.assertNotIn('sem referência MMP3 válida', a)          # ha YES: nao se avisa
         s = self.res['sem_cp']
-        self.assertGreaterEqual(s['avisos'].count('sem P0 válido (P0 = CP do CP Model)'), 4)
+        self.assertGreaterEqual(s['avisos'].count('sem referência MMP3 válida'), 4)
+        self.assertIn('nenhum registo YES', s['avisos'])
+        self.assertIn('não se usa CP, FTP/eFTP nem outra duração', s['avisos'])
+        self.assertIn('Mantém-se o último ajuste guardado; não foi criado ajuste novo', s['avisos'])
         for h in (self.res['render_normal']['tabela'], a, s['tabela']):
-            self.assertNotIn('<select', h)                      # nenhum segundo seletor M1/M2/M3
-        self.assertNotRegex(self.bloco(), r'M1 \(WLS|M2 \(WLS|M3 \(NL|modelo_escolhido|/api/cp/')   # a UI do IR nao escolhe nem chama o CP
+            self.assertNotIn('<select', h)                        # nenhum seletor de modelo
+        self.assertNotRegex(self.bloco(), r'M1 \(WLS|M2 \(WLS|M3 \(NL|modelo_escolhido|/api/cp/')   # a UI do IR nao chama o CP
 
     def test_ajuste_com_referencia_antiga_e_falha_do_solver_sao_visiveis(self):
         self.need_node()
         a = self.res['desatualizado_e_falha']['avisos']
         self.assertIn('referência de P0 mais antiga (v1)', a)         # o ajuste mostrado usa v1 e ja existe a v2
-        self.assertIn('última registada (v2)', a)
+        self.assertIn('do que a atual (v2)', a)
         self.assertIn('NÃO foram reestimados com o P0 mais recente', a)
         self.assertIn('o Solver falhou ao reestimar com o P0 novo', a)
         self.assertIn('RuntimeError: boom', a)
         self.assertIn('Não há ajuste válido anterior', a)
         self.assertNotIn('recalibrar', a)                              # so informa: a UI nao recalibra
 
-    def test_trocar_duracao_pede_a_nova_combinacao(self):
+    def test_nao_ha_seletor_de_duracao_e_o_pedido_nao_leva_duracao(self):
+        self.assertNotIn('irDur', self.body + self.js)
+        self.assertNotIn('IR_DURS', self.js)
+        self.assertNotIn('duracao=', self.bloco())
         self.need_node()
-        self.assertEqual([c['url'] for c in self.res['trocar_duracao']['chamadas']], [U % 1200, U % 300])
-        self.assertTrue(all(c['metodo'] == 'GET' for c in self.res['trocar_duracao']['chamadas']))
+        self.assertEqual([c['url'] for c in self.res['abrir_pede_um_get_uma_vez']['chamadas']], [U])
 
     def test_falha_de_rede_mostra_mensagem_e_nada_de_tabela(self):
         self.need_node()
@@ -326,7 +342,7 @@ class UiCurvasIR(unittest.TestCase):
 
     def test_resposta_antiga_nao_sobrepoe_a_selecao_nova(self):
         self.need_node()
-        # a resposta lenta (1200: 4 modalidades) chega depois da de 300 (cenario 'misto': 3) e e descartada
+        # a resposta lenta (normal: 4 modalidades) chega depois da mais recente (cenario 'misto': 3) e e descartada
         self.assertEqual(self.res['resposta_antiga_nao_sobrepoe_a_nova']['n_mod'], 3)
 
     def test_texto_vindo_da_base_de_dados_e_escapado(self):

@@ -9,7 +9,7 @@ const REAL = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
 const i0 = todo.indexOf('// <<modelo-ir>>'), i1 = todo.indexOf('// <</modelo-ir>>');
 if (i0 < 0 || i1 < i0) { console.log(JSON.stringify({erro: 'marcadores nao encontrados'})); process.exit(2); }
 const bloco = todo.slice(i0, i1);
-const U = (d) => `/api/modelo/ir/conjunto?duracao=${d}`;
+const U = '/api/modelo/ir/conjunto';            // um ajuste por modalidade (MMP3): sem seletor de duracao
 
 function fakeG(rec) {
   const g = {globalAlpha: 1, lineWidth: 1, strokeStyle: '', fillStyle: ''};
@@ -27,19 +27,19 @@ async function cenario(nome, fn) {
   const els = {}, chamadas = [], canvases = {}, tips = {}, semData = [];
   const el = (id) => {
     if (!els[id]) { let h = ''; const o = {value: '', checked: false, onchange: null};
-      if (id === 'irDur') o.value = '1200';                                       // padrao do <select> real
       Object.defineProperty(o, 'innerHTML', {get: () => h, set: v => { h = v; }}); els[id] = o; }
     return els[id];
   };
   const respostas = {};
-  const mapa = {[U(1200)]: REAL.normal, [U(300)]: REAL.misto, [U(60)]: REAL.sem_curvas};
+  const mapa = {[U]: REAL.normal};
   let falha = false; const atrasos = {};
   const fetch = (url, opts) => {
     chamadas.push({url, metodo: (opts && opts.method) || 'GET'});
     if (falha) return Promise.reject(new Error('rede'));
     const corpo = (url in respostas) ? respostas[url] : mapa[url];
     const p = () => Promise.resolve({json: () => Promise.resolve(corpo)});
-    return atrasos[url] ? new Promise(r => setTimeout(() => r(p()), atrasos[url])) : p();
+    const d = atrasos[url]; delete atrasos[url];                  // o atraso aplica-se so ao pedido seguinte
+    return d ? new Promise(r => setTimeout(() => r(p()), d)) : p();
   };
   const sandbox = {
     document: {getElementById: el}, fetch, Array, Set, Math, JSON, String, Object, Number, Promise, Date, isFinite,
@@ -69,7 +69,7 @@ async function cenario(nome, fn) {
   await run('render_normal', async ({api, els, canvases, tips, semData, esperar}) => {
     api.abrirIR({open: true}); await esperar();
     return {corpo: els.irExpCorpo.innerHTML, leg: els.lgIrConj.innerHTML, escala: els.irEscala.innerHTML, avisos: els.irAvisos.innerHTML,
-            tabela: els.irTabela.innerHTML, overall: els.irOverall.innerHTML, info: els.irInfo.innerHTML, canvas: canvases.chIrConj, semData,
+            tabela: els.irTabela.innerHTML, overall: els.irOverall.innerHTML, mmp3: els.irMmp3.innerHTML, info: els.irInfo.innerHTML, canvas: canvases.chIrConj, semData,
             tip: tips.chIrConj(300), tipInicio: tips.chIrConj(54), tipFora: tips.chIrConj(2),
             canvases: Object.keys(canvases), series: api.irSeries(api.J).map(s => ({mod: s.mod, comp: s.comp, cor: s.cor, nid: s.nid, n: s.vals.length, lw: s.estilo.lw, dash: s.estilo.dash.join(',')}))};
   });
@@ -87,52 +87,43 @@ async function cenario(nome, fn) {
     ['Bike', 'Row', 'Run', 'Ski'].forEach(m => api.irAlternar('mod', m));
     return {semData};
   });
-  await run('trocar_duracao', async ({api, el, els, chamadas, esperar}) => {
-    api.abrirIR({open: true}); await esperar();
-    el('irDur').value = '300'; els.irDur.onchange(); await esperar();
-    return {chamadas: chamadas.slice(), avisos: els.irAvisos.innerHTML, leg: els.lgIrConj.innerHTML, tabela: els.irTabela.innerHTML,
-            tracos: undefined};
-  });
-  await run('misto', async ({api, el, els, canvases, tips, esperar}) => {
-    api.abrirIR({open: true}); await esperar();
-    el('irDur').value = '300'; els.irDur.onchange(); await esperar();
+  await run('misto', async ({api, els, respostas, canvases, tips, esperar}) => {
+    respostas[U] = REAL.misto; api.abrirIR({open: true}); await esperar();
     return {avisos: els.irAvisos.innerHTML, leg: els.lgIrConj.innerHTML, tabela: els.irTabela.innerHTML, tracos: canvases.chIrConj.tracos,
             dashes: canvases.chIrConj.dashes, tip: tips.chIrConj(560), texts: canvases.chIrConj.texts,
             series: api.irSeries(api.J).map(s => ({mod: s.mod, comp: s.comp, nid: s.nid, dash: s.estilo.dash.join(',')}))};
   });
-  await run('sem_curvas', async ({api, el, els, canvases, semData, chamadas, esperar}) => {
-    api.abrirIR({open: true}); await esperar();
-    el('irDur').value = '60'; els.irDur.onchange(); await esperar();
+  await run('sem_curvas', async ({api, els, respostas, canvases, semData, chamadas, esperar}) => {
+    respostas[U] = REAL.sem_curvas; api.abrirIR({open: true}); await esperar();
     return {info: els.irInfo.innerHTML, semData, leg: els.lgIrConj.innerHTML, avisos: els.irAvisos.innerHTML,
             tracos: canvases.chIrConj.tracos.length, series: api.irSeries(api.J).length, escala: els.irEscala.innerHTML};
   });
   await run('sem_ajuste_e_p0_invalido', async ({api, els, respostas, canvases, esperar}) => {
-    respostas[U(1200)] = REAL.sem_ajuste_e_p0_invalido; api.abrirIR({open: true}); await esperar();
+    respostas[U] = REAL.sem_ajuste_e_p0_invalido; api.abrirIR({open: true}); await esperar();
     return {leg: els.lgIrConj.innerHTML, avisos: els.irAvisos.innerHTML, escala: els.irEscala.innerHTML, tabela: els.irTabela.innerHTML,
             series: api.irSeries(api.J).map(s => s.mod + ':' + s.comp), tracos: canvases.chIrConj.tracos.length};
   });
   await run('desatualizado_e_falha', async ({api, els, respostas, esperar}) => {
-    respostas[U(1200)] = REAL.desatualizado_e_falha; api.abrirIR({open: true}); await esperar();
+    respostas[U] = REAL.desatualizado_e_falha; api.abrirIR({open: true}); await esperar();
     return {avisos: els.irAvisos.innerHTML, tabela: els.irTabela.innerHTML};
   });
   await run('sem_cp', async ({api, els, respostas, esperar}) => {
-    respostas[U(1200)] = REAL.sem_cp; api.abrirIR({open: true}); await esperar();
+    respostas[U] = REAL.sem_cp; api.abrirIR({open: true}); await esperar();
     return {avisos: els.irAvisos.innerHTML, tabela: els.irTabela.innerHTML};
   });
   await run('falha_de_rede', async ({api, els, semData, falhar, esperar}) => {
     falhar(true); api.abrirIR({open: true}); await esperar();
     return {info: els.irInfo.innerHTML, semData, tabela: els.irTabela.innerHTML};
   });
-  await run('resposta_antiga_nao_sobrepoe_a_nova', async ({api, el, els, atraso, esperar}) => {
-    atraso(U(1200), 80);
-    api.abrirIR({open: true});                                        // 1.o pedido, lento
-    await esperar(5); el('irDur').value = '300'; els.irDur.onchange();   // 2.o pedido, rapido
+  await run('resposta_antiga_nao_sobrepoe_a_nova', async ({api, respostas, atraso, esperar}) => {
+    atraso(U, 80);
+    api.carregarIR();                                                 // 1.o pedido (normal, 4 modalidades), lento
+    await esperar(5); respostas[U] = REAL.misto; api.carregarIR();    // 2.o pedido (misto, 3 modalidades), rapido
     await esperar(150);
     return {n_mod: api.J.modalidades_com_curva.length};
   });
-  await run('xss_escapado', async ({api, el, els, esperar}) => {
-    api.abrirIR({open: true}); await esperar();
-    el('irDur').value = '300'; els.irDur.onchange(); await esperar();
+  await run('xss_escapado', async ({api, els, respostas, esperar}) => {
+    respostas[U] = REAL.misto; api.abrirIR({open: true}); await esperar();
     return {avisos: els.irAvisos.innerHTML, tabela: els.irTabela.innerHTML, leg: els.lgIrConj.innerHTML};
   });
   process.stdout.write(JSON.stringify(out) + '\n', () => process.exit(0));

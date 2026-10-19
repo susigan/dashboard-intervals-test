@@ -34,6 +34,17 @@ D0 = date(2025, 1, 6)
 AGORA = datetime(2026, 10, 17, 12, 0, 0)
 
 
+import ir_duracao_legado as _LEG  # noqa: E402
+
+
+def setUpModule():
+    _LEG.iniciar()
+
+
+def tearDownModule():
+    _LEG.parar()
+
+
 def cenario(n_semanas=64, verdade=None, semente=5, extra=0.6, ruido=0.0, tipo='Bike', prefixo='b'):
     """(curvas, atividades): uma sessao-teste por semana (curva com 1200 s = previsao do IR) e
     sessoes extra (so carga) nos outros dias. As cargas determinam o desempenho via IR (lag 1)."""
@@ -67,10 +78,8 @@ class _Base(T.BaseDB):
 
     def setUp(self):
         self.CURVAS, self.ATIV = cenario()
-        # P0 vem do CP Model confirmado: instantaneos sinteticos (nunca a base de perfil real)
-        self.cp_loader = CPF.patch_loader()
-        self.cp_loader.start()
-        self.addCleanup(self.cp_loader.stop)
+        # P0 global injetado pelo assento (ir_duracao_legado); a regra real esta em test_ir_p0_global.py
+        _LEG.definir_p0()
         super().setUp()
         self.ativ = copy.deepcopy(self.ATIV)        # BaseDB.setUp usa atividades sem carga: trocamos
 
@@ -111,8 +120,10 @@ class CargaPorModalidade(unittest.TestCase):
 
 
 class RecalibracaoEHistorico(_Base):
-    def test_sem_deteccao_nao_ha_nada_para_ajustar(self):
-        r = self.rec()
+    def test_sem_curvas_nao_ha_nada_para_ajustar(self):
+        # as observacoes do IR derivam das curvas (power_curves): sem curvas nao ha alvos
+        with mock.patch.object(db, 'load_power_curves', return_value=[]):
+            r = self.rec()
         self.assertTrue(r['ok'])
         self.assertTrue(all(u['acao'] == 'sem_observacoes' for u in r['unidades'].values()))
         self.assertEqual(self.linhas(), [])
@@ -147,8 +158,8 @@ class RecalibracaoEHistorico(_Base):
         self.rec()
         # P0 = CP e igual para todas as duracoes (60 s inclusive): so geram linhas as unidades COM observacoes
         self.assertEqual({(l['modalidade'], l['duracao_s']) for l in db.ajustes_ir_historico()},
-                         {('Bike', 60), ('Bike', 300), ('Bike', 1200)})
-        self.assertEqual({l['p0_inicial'] for l in db.ajustes_ir_historico()}, {CPF.CP_PADRAO})
+                         {('Bike', 1200)})        # uma unidade por modalidade: so a duracao operacional
+        self.assertEqual({l['p0_inicial'] for l in db.ajustes_ir_historico()}, {_LEG.P0_PADRAO})
         self.assertEqual(self.rec()['unidades']['Row:1200']['acao'], 'sem_observacoes')
 
     def test_sem_novas_observacoes_nao_recalcula_nem_grava(self):
@@ -258,7 +269,7 @@ class RecalibracaoEHistorico(_Base):
         self.assertEqual(len(db.ajustes_ir_historico()), len(depois))
 
     def test_unidade_com_poucos_dados_fica_registada_como_insuficiente_e_as_outras_ajustam(self):
-        row_c = [cv(f'row{i}', 'Row', (D0 + timedelta(days=14 * i)).isoformat(), w300=300.0 + (i % 3))
+        row_c = [cv(f'row{i}', 'Row', (D0 + timedelta(days=14 * i)).isoformat(), w1200=300.0 + (i % 3))
                  for i in range(10)]
         row_a = [{'id': f'row{i}', 'type': 'Rowing',
                   'start_date_local': (D0 + timedelta(days=14 * i)).isoformat() + 'T07:00:00',
@@ -269,8 +280,8 @@ class RecalibracaoEHistorico(_Base):
         self.prepara()
         r = self.rec()
         self.assertEqual(r['unidades']['Bike:1200']['acao'], 'ajustado')
-        self.assertEqual(r['unidades']['Row:300']['estado'], ir.EST_INSUFICIENTE)
-        (l,) = db.ajustes_ir_historico('Row', 300)
+        self.assertEqual(r['unidades']['Row:1200']['estado'], ir.EST_INSUFICIENTE)
+        (l,) = db.ajustes_ir_historico('Row', 1200)
         self.assertIsNone(l['t1'])
         self.assertIsNone(l['p0'])
         self.assertIsNone(l['funcao_objetivo'])
@@ -319,7 +330,7 @@ class InicializacaoDeP0NoServico(_Base):
         self.prepara()
         self.rec()                                                   # agora = 2026-10-17 -> ano anterior 2025
         l = self.linhas()[0]
-        self.assertEqual(l['p0_origem'], 'cp_model_confirmado:M1 (WLS-P)')
+        self.assertEqual(l['p0_origem'], 'mmp3_ultimo_yes:Bike:1200:seam-290.0')
         self.assertNotIn(l['p0_origem'], ('ano_anterior', 'primeiras_observacoes', 'mediana_dos_alvos'))
         self.assertEqual(l['p0_inicial'], 290.0)                     # P0 = CP (exato)
         self.assertIsNone(l['metricas']['p0_inicial_detalhe'])
@@ -328,7 +339,7 @@ class InicializacaoDeP0NoServico(_Base):
         self.prepara()
         self.rec(agora=datetime(2031, 3, 1, 12, 0, 0))               # ano anterior (2030) sem dados
         l = self.linhas()[0]
-        self.assertEqual(l['p0_origem'], 'cp_model_confirmado:M1 (WLS-P)')
+        self.assertEqual(l['p0_origem'], 'mmp3_ultimo_yes:Bike:1200:seam-290.0')
         self.assertEqual(l['p0_inicial'], 290.0)
 
     def test_p0_do_ajuste_e_exatamente_o_da_referencia_e_nao_foi_estimado(self):
@@ -445,8 +456,14 @@ class AtualizacaoAutomatica(_Base):
         self.assertEqual(ls[0], v1)                                  # o ajuste valido ficou intacto
         self.assertIsNone(ls[1]['k1'])
         j = self.c.get('/api/modelo/ir/influencia?tipo=Bike&duracao=1200').get_json()
-        self.assertIsNone(j['curvas'])                               # o falhado nao desenha curva
-        self.assertEqual(j['ajuste_valido_anterior']['versao_ajuste'], 1)
+        # o ultimo ajuste VALIDO fica preservado e e apresentado como DESATUALIZADO, nunca como o ajuste novo
+        self.assertTrue(j['ajuste_apresentado_e_antigo'])
+        self.assertEqual(j['versao_ajuste'], 1)
+        self.assertEqual(j['parametros']['k1'], v1['k1'])
+        self.assertEqual(j['tentativa_mais_recente']['versao_ajuste'], 2)
+        self.assertEqual(j['tentativa_mais_recente']['estado'], ir.EST_SEM_CONVERGENCIA)
+        self.assertTrue(j['p0_desatualizado'])
+        self.assertIsNotNone(j['curvas'])
         # sem novas entradas a falha nao e repetida em cada sync; forcar tenta de novo
         self.assertEqual(self.rec(agora=AGORA + timedelta(days=3))['unidades']['Bike:1200']['acao'], 'inalterado')
         r3 = self.rec(agora=AGORA + timedelta(days=3), forcar=True)['unidades']['Bike:1200']
@@ -632,7 +649,7 @@ class CurvasDeInfluencia(_Base):
 
     def test_validacao_dos_parametros_do_pedido(self):
         self.assertEqual(self.c.get('/api/modelo/ir/influencia').status_code, 400)
-        self.assertEqual(self.c.get('/api/modelo/ir/influencia?tipo=Bike').status_code, 400)
+        self.assertEqual(self.c.get('/api/modelo/ir/influencia?tipo=Bike').status_code, 200)   # duracao opcional
         self.assertEqual(self.c.get('/api/modelo/ir/influencia?tipo=Foo&duracao=300').status_code, 400)
         self.assertEqual(self.c.get('/api/modelo/ir/influencia?tipo=Bike&duracao=999').status_code, 400)
         self.assertEqual(self.c.get(self.URL + '&ate=ontem').status_code, 400)
@@ -643,12 +660,12 @@ class CurvasDeInfluencia(_Base):
         a = self.c.get('/api/modelo/ir/influencia?tipo=Bike&duracao=300').get_json()
         b = self.c.get(self.URL).get_json()
         for k in ir.NOMES:
-            self.assertEqual(a['parametros'][k], db.ultimo_ajuste_ir('Bike', 300)[k])
             self.assertEqual(b['parametros'][k], db.ultimo_ajuste_ir('Bike', 1200)[k])
-        self.assertEqual((a['duracao_s'], b['duracao_s']), (300, 1200))
-        self.assertNotEqual(a['parametros'], b['parametros'])
+        self.assertEqual(b['duracao_s'], 1200)
+        # as duracoes antigas nao sao operacionais: nao ha ajuste nelas e nada e herdado do operacional
+        self.assertEqual(a['estado'], 'sem_ajuste')
         # uma modalidade sem ajuste nao herda a de outra
-        self.assertEqual(self.c.get('/api/modelo/ir/influencia?tipo=Row&duracao=300').get_json()['estado'], 'sem_ajuste')
+        self.assertEqual(self.c.get('/api/modelo/ir/influencia?tipo=Row').get_json()['estado'], 'sem_ajuste')
 
     def test_carga_de_outra_modalidade_nao_entra_na_curva(self):
         antes = self.pronto()
@@ -708,17 +725,26 @@ class CurvasDeInfluencia(_Base):
                  't1': None, 't2': None, 'versao_ajuste': real['versao_ajuste'] + 1}
         with mock.patch.object(db, 'ultimo_ajuste_ir', return_value=falso):
             j = self.c.get(self.URL).get_json()
+        # ha um ajuste valido anterior: apresenta-se como antigo/desatualizado, com a tentativa mais recente a vista
+        self.assertTrue(j['ajuste_apresentado_e_antigo'])
+        self.assertEqual(j['versao_ajuste'], real['versao_ajuste'])
+        self.assertEqual(j['tentativa_mais_recente']['estado'], ir.EST_INSUFICIENTE)
+        # sem NENHUM ajuste valido na historia: sem parametros e sem curva
+        with mock.patch.object(db, 'ultimo_ajuste_ir', return_value=falso), \
+                mock.patch.object(db, 'ajustes_ir_historico', return_value=[falso]):
+            j = self.c.get(self.URL).get_json()
         self.assertIsNone(j['parametros'])
         self.assertIsNone(j['curvas'])
-        self.assertEqual(j['ajuste_valido_anterior']['versao_ajuste'], real['versao_ajuste'])
 
     def test_sem_convergencia_nao_desenha_curva(self):
         self.prepara()
         self.rec()
         real = db.ultimo_ajuste_ir('Bike', 1200)
-        with mock.patch.object(db, 'ultimo_ajuste_ir', return_value={**real, 'estado': ir.EST_SEM_CONVERGENCIA}):
+        sc = {**real, 'estado': ir.EST_SEM_CONVERGENCIA, 'versao_ajuste': real['versao_ajuste'] + 1}
+        with mock.patch.object(db, 'ultimo_ajuste_ir', return_value=sc), \
+                mock.patch.object(db, 'ajustes_ir_historico', return_value=[sc]):
             j = self.c.get(self.URL).get_json()
-        self.assertIsNone(j['curvas'])
+        self.assertIsNone(j['curvas'])                      # sem ajuste valido nao se desenha curva
 
     def test_historico_de_ajustes_fica_preservado_ao_ler(self):
         self.prepara()

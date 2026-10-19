@@ -9,22 +9,20 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 XSS = '<img src=x onerror=alert(1)>'
-URL = '/api/modelo/ir/conjunto?duracao=%s'
+URL = '/api/modelo/ir/conjunto'
 
 
 def gerar():
     import test_modelo_ir_conjunto as T
     import modelo_ir as ir
     import modelo_ir_servico as mis
-    import cp_fixture as CPF
 
     out = {}
     app = T.APP.app
-    # P0 do CP Model: instantaneos SINTETICOS (nunca a base de perfil real)
-    # so Bike e Row tem resultado de CP gravado: Run e Ski ficam bloqueadas (sem P0) com o ultimo ajuste preservado
-    cp_ctx = mock.patch.object(mis, 'carregar_instantaneos_cp', side_effect=lambda: (
-        [i for i in CPF.instantaneos_padrao() if i['modalidade'] in ('Bike', 'Row')], None))
-    cp_ctx.start()
+    import ir_duracao_legado as _LEG
+    import modelo_ir_p0 as p0m
+    _LEG.definir_p0(270.0)      # P0 global injetado (MMP3 do ultimo YES); 'sem_cp' = nenhum YES
+    reg = _LEG._falso_global({})['registo']
     with mock.patch.object(T.db, 'ENABLED', True):
         def obter(ajs, at, dur=1200):
             m = T._Mock()
@@ -35,19 +33,18 @@ def gerar():
             for p in ps:
                 p.start()
             try:
-                return app.test_client().get(URL % dur).get_json()
+                return app.test_client().get(URL).get_json()
             finally:
                 for p in ps:
                     p.stop()
 
         ajs, at = T.cenario_base()
         # Bike: ajuste com P0 fixo vindo do CP Model; as outras: ajustes antigos de P0 livre (sem referencia)
-        ajs['Bike']['p0_origem'] = 'cp_model_confirmado:M1 (WLS-P)'
+        ajs['Bike']['p0_origem'] = 'mmp3_ultimo_yes:' + reg['test_id']
         ajs['Bike']['entradas']['p0_ref'] = {
-            'versao_referencia': 2, 'valor_p0': 270.0, 'formulacao': 'p0_igual_cp',
-            'modelo_cp': 'M1 (WLS-P)', 'cp_w': 270.0, 'wp_j': 24000.0, 'cp_data_referencia': '2025-01-01',
-            'cp_data_gravacao': '2025-01-02 10:00:00', 'conhecida_desde': '2026-09-30T09:00:00',
-            'assinatura': 'abc', 'cp_resultado_id': 1}
+            'versao_referencia': 2, 'valor_p0': 270.0, 'formulacao': 'p0_mmp3_ultimo_yes', 'origem': 'mmp3_ultimo_yes',
+            'registo': {k: reg[k] for k in ('test_id', 'activity_id', 'modalidade', 'data', 'inicio', 'watts')},
+            'conhecida_desde': '2026-09-30T09:00:00', 'assinatura': p0m.assinatura_referencia(reg)}
         out['normal'] = obter(ajs, at)                              # 4 modalidades, uma nao identificavel
         ajs, at = T.cenario_base()
         ajs['Row'] = T.aj('Row', ir.EST_NAO_IDENTIFICAVEL, p0=250.0, k1=0.03, k2=0.04, t1=20.0, t2=1.0,
@@ -82,8 +79,10 @@ def gerar():
         with mock.patch.object(T.db, 'ultima_referencia_p0',
                                side_effect=lambda t, d: dict(ref_nova) if t in ('Bike', 'Row') else None):
             out['desatualizado_e_falha'] = obter(ajs, at)
-        cp_ctx.stop()
-        with mock.patch.object(mis, 'carregar_instantaneos_cp', side_effect=lambda: ([], None)):
+        _LEG.sem_p0()
+        try:
             ajs, at = T.cenario_base()
-            out['sem_cp'] = obter(ajs, at)                          # sem resultado de CP: tudo bloqueado
+            out['sem_cp'] = obter(ajs, at)                          # nenhum registo YES: sem referencia MMP3
+        finally:
+            _LEG.definir_p0(270.0)
     return out

@@ -36,6 +36,17 @@ MODS = ['Bike', 'Row', 'Run', 'Ski']
 D0 = date(2025, 3, 3)
 
 
+import ir_duracao_legado as _LEG  # noqa: E402
+
+
+def setUpModule():
+    _LEG.iniciar()
+
+
+def tearDownModule():
+    _LEG.parar()
+
+
 def dia(i):
     return (D0 + timedelta(days=i)).isoformat()
 
@@ -57,7 +68,7 @@ def aj(mod, estado=ir.EST_NAO_IDENTIFICAVEL, dur=1200, p0=300.0, k1=0.02, k2=0.0
             't1': t1 if ok else None, 't2': t2 if ok else None, 'n_obs': 20,
             'data_ini': dia(primeira_obs) if ok else None, 'data_fim': dia(ultima_obs) if ok else None,
             'funcao_objetivo': 10.0, 'r2': 0.9, 'rmse': 2.5, 'convergiu': estado != ir.EST_SEM_CONVERGENCIA,
-            'p0_inicial': p0, 'p0_origem': 'primeiras_observacoes', 'assinatura': 'x', 'versao_modelo': 1,
+            'p0_inicial': p0, 'p0_origem': 'cp_model_confirmado:M1 (WLS-P)', 'assinatura': 'x', 'versao_modelo': 1,
             'configuracao': {'ir': {'lag_dias': lag}}, 'metricas': {'motivo_insuficiente': 'menos_de_15_observacoes'},
             'identificabilidade': {'avisos': avisos or []},
             'entradas': {'observacoes': obs, 'carga_digest': 'x', 'referencia': dia(ultima_obs), 'p0_inicial': p0}}
@@ -550,7 +561,7 @@ class RotaApi(_Mock, unittest.TestCase):
         self.assertEqual(j['modalidades_com_curva'], MODS)
 
     def test_parametros_invalidos_400(self):
-        for q, campo in (('', 'duracao'), ('?duracao=123', 'duracao'), ('?duracao=abc', 'duracao'),
+        for q, campo in (('?duracao=300', 'duracao'), ('?duracao=123', 'duracao'), ('?duracao=abc', 'duracao'),
                          ('?duracao=1200&tipo=Bike', 'tipo'), ('?duracao=1200&ate=ontem', 'ate'),
                          ('?duracao=1200&ate=2026-13-45', 'ate')):
             r = self.c.get(self.u + q)
@@ -589,7 +600,7 @@ class SemEscritasNaBase(unittest.TestCase):
                 return {t: sorted(map(repr, db._exec(f'SELECT * FROM "{t}"', fetch='all') or []))
                         for t in tabelas if t != 'sqlite_sequence'}
             antes, c0 = foto(), conteudo()
-            for q in ('?duracao=1200', '?duracao=300', '?duracao=60', '?duracao=1200&ate=2030-01-01'):
+            for q in ('', '?duracao=1200', '?duracao=1200&ate=2030-01-01'):
                 r = base.c.get('/api/modelo/ir/conjunto' + q)
                 self.assertEqual(r.status_code, 200, q)
             self.assertEqual(foto(), antes)

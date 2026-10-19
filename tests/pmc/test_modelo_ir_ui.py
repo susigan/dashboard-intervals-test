@@ -21,8 +21,19 @@ for p in (ROOT, HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-U = '/api/modelo/ir/conjunto?duracao=%s'
+U = '/api/modelo/ir/conjunto'
 MODS = ['Bike', 'Row', 'Run', 'Ski']
+
+
+import ir_duracao_legado as _LEG  # noqa: E402
+
+
+def setUpModule():
+    _LEG.iniciar()
+
+
+def tearDownModule():
+    _LEG.parar()
 
 
 class UiCurvasIR(unittest.TestCase):
@@ -77,13 +88,13 @@ class UiCurvasIR(unittest.TestCase):
         b = self.bloco()
         self.assertNotIn("method:'POST'", b)
         self.assertNotIn('recalibrar', b)
-        self.assertEqual(re.findall(r"fetch\('([^']+)'", b), ['/api/modelo/ir/conjunto?duracao='])
+        self.assertEqual(re.findall(r"fetch\('([^']+)'", b), ['/api/modelo/ir/conjunto'])
 
     def test_interface_simplificada_sem_seletores_antigos(self):
         b = self.bloco()
         for velho in ('irMod', 'irAtiv', 'chIrComp', 'chIrLiq', 'lgIrComp', 'lgIrLiq'):
             self.assertNotIn(velho, b, velho)
-        for novo in ('irDur', 'chIrConj', 'lgIrConj', 'irTabela', 'irAvisos', 'irEscala', 'irOverall'):
+        for novo in ('chIrConj', 'irMmp3', 'lgIrConj', 'irTabela', 'irAvisos', 'irEscala', 'irOverall'):
             self.assertIn(novo, b, novo)
 
     def test_reutiliza_helpers_e_componentes_existentes(self):
@@ -102,7 +113,8 @@ class UiCurvasIR(unittest.TestCase):
         b = self.bloco()
         self.assertIn('nao validado preditivamente', b)
         self.assertIn('nem prova que as modalidades sejam fisiologicamente compar\u00e1veis', b)
-        sem_negacao = b.replace('n\u00e3o constantes confirmadas', '').replace('n\u00e3o confirmad', '').replace('nao confirmado', '')
+        sem_negacao = b.replace('n\u00e3o constantes confirmadas', '').replace('n\u00e3o confirmad', '').replace('nao confirmado', '')\
+            .replace('sem CP confirmado', '').replace('CP confirmado', '')    # o CP gravado no CP Model, nao fisiologia
         self.assertNotRegex(sem_negacao, r'(?i)\b(confirmad[oa]s?|comprovad[oa]s?)\b')
 
     # ---- contrato com o servidor ------------------------------------------
@@ -127,7 +139,7 @@ class UiCurvasIR(unittest.TestCase):
 
     def test_abrir_pede_um_unico_get_com_o_default_1200_e_nao_repete(self):
         self.need_node()
-        self.assertEqual(self.res['abrir_pede_um_get_uma_vez']['chamadas'], [{'url': U % 1200, 'metodo': 'GET'}])
+        self.assertEqual(self.res['abrir_pede_um_get_uma_vez']['chamadas'], [{'url': U, 'metodo': 'GET'}])
 
     def test_quatro_modalidades_com_as_cores_do_projeto_num_unico_canvas(self):
         self.need_node()
@@ -255,7 +267,7 @@ class UiCurvasIR(unittest.TestCase):
         self.assertIn('Nenhuma modalidade tem curva', r['info'])
         self.assertEqual((r['tracos'], r['series']), (0, 0))
         self.assertTrue(r['semData'])
-        self.assertEqual(r['semData'][-1], 'Sem curvas para esta duração')
+        self.assertEqual(r['semData'][-1], 'Sem ajuste válido: nenhuma curva desenhada')
 
     def test_tabela_de_parametros_compacta_com_marca_de_nao_confirmado(self):
         self.need_node()
@@ -313,10 +325,12 @@ class UiCurvasIR(unittest.TestCase):
         self.assertIn('Não há ajuste válido anterior', a)
         self.assertNotIn('recalibrar', a)                              # so informa: a UI nao recalibra
 
-    def test_trocar_duracao_pede_a_nova_combinacao(self):
+    def test_nao_ha_seletor_de_duracao_e_o_pedido_nao_leva_duracao(self):
+        self.assertNotIn('irDur', self.body + self.js)
+        self.assertNotIn('IR_DURS', self.js)
+        self.assertNotIn('duracao=', self.bloco())
         self.need_node()
-        self.assertEqual([c['url'] for c in self.res['trocar_duracao']['chamadas']], [U % 1200, U % 300])
-        self.assertTrue(all(c['metodo'] == 'GET' for c in self.res['trocar_duracao']['chamadas']))
+        self.assertEqual([c['url'] for c in self.res['abrir_pede_um_get_uma_vez']['chamadas']], [U])
 
     def test_falha_de_rede_mostra_mensagem_e_nada_de_tabela(self):
         self.need_node()
@@ -326,7 +340,7 @@ class UiCurvasIR(unittest.TestCase):
 
     def test_resposta_antiga_nao_sobrepoe_a_selecao_nova(self):
         self.need_node()
-        # a resposta lenta (1200: 4 modalidades) chega depois da de 300 (cenario 'misto': 3) e e descartada
+        # a resposta lenta (normal: 4 modalidades) chega depois da mais recente (cenario 'misto': 3) e e descartada
         self.assertEqual(self.res['resposta_antiga_nao_sobrepoe_a_nova']['n_mod'], 3)
 
     def test_texto_vindo_da_base_de_dados_e_escapado(self):

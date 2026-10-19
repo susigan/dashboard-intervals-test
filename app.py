@@ -1197,8 +1197,9 @@ def _erro_registo(status, mensagem, campo=None):
     return jsonify(corpo), status
 
 
-def _filtros_registo(com_pendente):
-    """(filtros, None) ou (None, resposta_de_erro) a partir da query string."""
+def _filtros_registo(com_pendente, duracoes_extra=()):
+    """(filtros, None) ou (None, resposta_de_erro) a partir da query string.
+    duracoes_extra: duracoes validas alem de mt.DURACOES (o IR aceita 180 s = MMP3)."""
     import modelo_testes as mt
     tipo = request.args.get('tipo') or None
     if tipo is not None and tipo not in mt.MODALIDADES:
@@ -1209,9 +1210,10 @@ def _filtros_registo(com_pendente):
             duracao = int(duracao)
         except ValueError:
             duracao = None
-        if duracao not in mt.DURACOES:
+        validas = tuple(sorted(set(mt.DURACOES) | set(duracoes_extra)))
+        if duracao not in validas:
             return None, _erro_registo(
-                400, f'duracao invalida (use {", ".join(map(str, mt.DURACOES))})', 'duracao')
+                400, f'duracao invalida (use {", ".join(map(str, validas))})', 'duracao')
     else:
         duracao = None
     estado = request.args.get('estado') or None
@@ -5768,12 +5770,12 @@ api_recovery.registar(app)
 # ── Modelo Impulse-Response (IR) experimental ─────────────────────────────────
 @app.route('/api/modelo/ir')
 def api_modelo_ir():
-    """Ultimo ajuste do IR por modalidade x duracao (e historico com ?historico=1). So leitura.
+    """Ultimo ajuste do IR por modalidade (MMP3, 180 s; e historico com ?historico=1). So leitura.
 
-    ?tipo=Bike ?duracao=300 ?historico=1
+    ?tipo=Bike ?historico=1. ?duracao=60|300|1200 consulta so o historico dos ajustes antigos (descontinuados).
     """
     import modelo_ir_servico as mis
-    filtros, erro = _filtros_registo(com_pendente=False)
+    filtros, erro = _filtros_registo(com_pendente=False, duracoes_extra=(180,))
     if erro:
         return erro
     if not db.ENABLED:
@@ -5809,14 +5811,16 @@ def api_modelo_ir_recalibrar():
 
 @app.route('/api/modelo/ir/influencia')
 def api_modelo_ir_influencia():
-    """Curvas de influencia do ULTIMO ajuste IR de uma modalidade x duracao (so leitura; nao
-    recalibra). ?tipo=Bike&duracao=300 (obrigatorios) &atividade=<id> &ate=YYYY-MM-DD"""
+    """Curvas de influencia do ULTIMO ajuste IR de uma modalidade (MMP3, 180 s; so leitura; nao
+    recalibra). ?tipo=Bike (obrigatorio; duracao opcional, por omissao 180) &atividade=<id> &ate=YYYY-MM-DD"""
     import modelo_ir_servico as mis
-    filtros, erro = _filtros_registo(com_pendente=False)
+    filtros, erro = _filtros_registo(com_pendente=False, duracoes_extra=(180,))
     if erro:
         return erro
-    if not filtros['tipo'] or filtros['duracao'] is None:
-        return _erro_registo(400, 'tipo e duracao obrigatorios', 'tipo')
+    if not filtros['tipo']:
+        return _erro_registo(400, 'tipo obrigatorio', 'tipo')
+    if filtros['duracao'] is None:
+        filtros['duracao'] = mis.DURACAO_IR
     ate = request.args.get('ate') or None
     if ate is not None:
         try:
@@ -5838,18 +5842,19 @@ def api_modelo_ir_influencia():
 
 @app.route('/api/modelo/ir/conjunto')
 def api_modelo_ir_conjunto():
-    """Curvas de influencia IR das quatro modalidades para UMA duracao, num eixo diario comum e em
-    % do P0 do proprio ajuste (com os watts originais). SO LEITURA: usa o ULTIMO ajuste guardado de
-    cada modalidade; nao recalibra, nao grava, nao chama a API externa. ?duracao=1200 (obrigatorio)
-    &ate=YYYY-MM-DD. Nao aceita ?tipo (inclui todas as modalidades)."""
+    """Curvas de influencia IR das quatro modalidades (um ajuste por modalidade, sobre o MMP3 de 180 s), num
+    eixo diario comum e em % do P0 (= CP confirmado) do proprio ajuste, com o contexto MMP3 e o estado do ajuste.
+    SO LEITURA: usa o ULTIMO ajuste guardado de cada modalidade; nao recalibra nem grava. &ate=YYYY-MM-DD.
+    Nao aceita ?tipo. ?duracao so e aceite se for 180 (as duracoes antigas foram descontinuadas)."""
     import modelo_ir_servico as mis
-    filtros, erro = _filtros_registo(com_pendente=False)
+    filtros, erro = _filtros_registo(com_pendente=False, duracoes_extra=(180,))
     if erro:
         return erro
     if filtros['tipo']:
         return _erro_registo(400, 'o conjunto inclui todas as modalidades: nao aceita tipo', 'tipo')
-    if filtros['duracao'] is None:
-        return _erro_registo(400, 'duracao obrigatoria (cada ajuste e de uma duracao)', 'duracao')
+    if filtros['duracao'] not in (None, mis.DURACAO_IR):
+        return _erro_registo(400, f'duracao descontinuada: o IR so tem ajuste sobre o MMP3 ({mis.DURACAO_IR} s)',
+                             'duracao')
     ate = request.args.get('ate') or None
     if ate is not None:
         try:
@@ -5861,7 +5866,10 @@ def api_modelo_ir_conjunto():
         return _erro_registo(503, 'sem base de dados')
     try:
         inst_cp, _erro_cp = mis.carregar_instantaneos_cp()      # so leitura do CP Model
-        res = mis.curvas_conjuntas(filtros['duracao'], ate=ate, instantaneos_cp=inst_cp)
+        import observacoes_auto as _oa
+        marcos, _fonte = _oa.obter_marcos()                       # calendario de seasons (cache); falhar -> ano civil
+        res = mis.curvas_conjuntas(mis.DURACAO_IR, ate=ate, instantaneos_cp=inst_cp, marcos=marcos,
+                                   revisoes=db.revisoes_testes_modelo())
     except Exception as e:
         import traceback
         traceback.print_exc()

@@ -9,7 +9,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 XSS = '<img src=x onerror=alert(1)>'
-URL = '/api/modelo/ir/conjunto?duracao=%s'
+URL = '/api/modelo/ir/conjunto'
 
 
 def gerar():
@@ -35,7 +35,7 @@ def gerar():
             for p in ps:
                 p.start()
             try:
-                return app.test_client().get(URL % dur).get_json()
+                return app.test_client().get(URL).get_json()
             finally:
                 for p in ps:
                     p.stop()

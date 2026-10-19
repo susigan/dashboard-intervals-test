@@ -193,16 +193,17 @@ def tag_coincide_duracao(tags_teste, duracao_s):
 
 # ── curvas ─────────────────────────────────────────────────────────────────
 
-def limpar_curvas(curvas):
-    """Copia das curvas so com as duracoes do protocolo e potencias validas.
-    Curvas sem data valida ou sem id sao descartadas. Nao altera o argumento."""
+def limpar_curvas(curvas, duracoes=None):
+    """Copia das curvas so com as duracoes do protocolo (ou `duracoes`, p.ex. o MMP3 do IR) e potencias
+    validas. Curvas sem data valida ou sem id sao descartadas. Nao altera o argumento."""
+    duracoes = protocolo.TESTES if duracoes is None else duracoes
     out = []
     for c in curvas or []:
         if not isinstance(c, dict) or c.get('activity_id') is None or _data(c.get('date')) is None:
             continue
         secs, watts = [], []
         for s, w in zip(c.get('secs') or [], c.get('watts') or []):
-            if s in protocolo.TESTES and potencia_valida(w):
+            if s in duracoes and potencia_valida(w):
                 secs.append(s)
                 watts.append(float(w))
         out.append({'activity_id': c['activity_id'], 'type': c.get('type'),
@@ -238,7 +239,7 @@ def _sem_referencia(mod, secs, p, n_serie, ambiguos=0):
             'hora_local_real': p['hora'], 'n_pontos_serie': n_serie}
 
 
-def detetar(curvas, ignorar_ids=(), season_de=None, limiar=None, janela=None, horas=None):
+def detetar(curvas, ignorar_ids=(), season_de=None, limiar=None, janela=None, horas=None, testes=None):
     """Esforcos detetados, com as tres referencias, por modalidade e duracao do protocolo.
 
     curvas: db.load_power_curves(). ignorar_ids: activity_id com icu_ignore_power=true
@@ -257,17 +258,18 @@ def detetar(curvas, ignorar_ids=(), season_de=None, limiar=None, janela=None, ho
     """
     limiar = LIMIAR_PROXIMIDADE if limiar is None else limiar
     janela = JANELA_RECENTE if janela is None else janela
+    testes = protocolo.TESTES if testes is None else testes     # por omissao 60/300/1200 (comportamento anterior)
     ignorar = set(ignorar_ids or ())
     season_de = season_de or (lambda d: str(d)[:4])
     horas = horas or {}
 
     por_mod = {}
-    for c in limpar_curvas(curvas):
+    for c in limpar_curvas(curvas, testes):
         por_mod.setdefault(c['type'], []).append(c)
 
     out = []
     for mod, lista in por_mod.items():
-        for secs, info in protocolo.TESTES.items():
+        for secs, info in testes.items():
             pontos = []
             for c in lista:
                 for s, w in zip(c['secs'], c['watts']):

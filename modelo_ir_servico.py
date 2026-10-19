@@ -21,11 +21,16 @@ import modelo_estimador as E
 import modelo_ir as ir
 import modelo_ir_global as G
 import modelo_ir_p0 as p0m
+import modelo_mmp3 as mmp3
 import modelo_observacoes_auto as moa
 import modelo_testes as mt
 import modelo_validacao as V
 
-VERSAO_SERVICO = 2
+VERSAO_SERVICO = 3
+
+# UM ajuste por modalidade, sobre o MMP3 (180 s). As duracoes antigas (60/300/1200 s) deixam de ser unidades
+# operacionais do IR: os ajustes e referencias antigos ficam na base (so leitura), nao se recalibram.
+DURACAO_IR = mmp3.DURACAO_S
 
 MOTIVO_PRIMEIRO = 'primeiro_ajuste'
 MOTIVO_NOVAS = 'novas_observacoes'
@@ -84,11 +89,41 @@ def selecionar(historico_obs, revisoes, atividades, curvas):
                                          E.estado_atual_por_teste(revisoes or []), atividades, cpa)
 
 
+def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
+    """{modalidade: (observacoes_para_o_IR, esforcos_avaliados)} a partir das curvas (`power_curves`) e das
+    atividades, so com dados ate `ate` (sem futuro). Reutiliza a deteccao existente e a elegibilidade do projeto;
+    uma rejeicao manual no registo de testes (mesmo test_id) exclui o esforco."""
+    import protocolo
+    mapa = protocolo.mapa_ignore_power(atividades) or {}
+    ignorar = {aid for aid, v in mapa.items() if v is True}
+    horas = {}
+    for a in atividades or []:
+        v = a.get('start_date_local') if isinstance(a, dict) else None
+        if isinstance(v, str) and len(v) >= 16 and a.get('id') is not None:
+            horas.setdefault(a['id'], v)
+    cache = {}
+
+    def eleg(aid):
+        if aid not in cache:
+            cache[aid] = E.elegibilidade_aprendizagem(aid, atividades)['estado']
+        return cache[aid]
+    rejeitados = {t for t, r in E.estado_atual_por_teste(revisoes or []).items()
+                  if r.get('estado') == mt.ESTADO_REJEITADO}
+    out = {}
+    for mod in mt.MODALIDADES:
+        esf = mmp3.avaliar_esforcos(curvas, mod, ate, ignorar, eleg, marcos, horas)
+        obs = [o for o in mmp3.observacoes_ir(esf) if o['test_id'] not in rejeitados]
+        out[mod] = (obs, esf)
+    return out
+
+
 def _cfg_efetiva(config_ir=None):
     c = ir._cfg(config_ir)
     return {'ir': c, 'versao_modelo': ir.VERSAO_IR, 'versao_servico': VERSAO_SERVICO,
+            'duracao_alvo_s': DURACAO_IR,
             'carga': 'icu_training_load das atividades da mesma modalidade, somada por dia',
-            'alvo': 'melhor valor da duracao em toda a atividade (nao teste padronizado)',
+            'alvo': 'MMP3 (180 s) de esforcos elegiveis: melhor valor de 180 s em toda a atividade (nao teste '
+                    'padronizado)',
             # P0 nao e estimado: e EXATAMENTE o CP do resultado guardado no CP Model e fica FIXO em cada
             # ajuste. Faz parte da configuracao para que um ajuste antigo (P0 livre, ou P0 = CP + W'/d)
             # nao conte como atual.
@@ -219,7 +254,7 @@ def compatibilidade_p0_alvo(obs, p0):
 
 
 def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=None, duracao=None,
-               dados=None, instantaneos_cp=None):
+               dados=None, instantaneos_cp=None, marcos=None):
     """Ajusta cada unidade cujas entradas mudaram. Idempotente: sem mudancas nao grava nada.
 
     P0 = CP do resultado guardado no CP Model (modelo_ir_p0.resolver_p0) e fica fixo no ajuste; so K1,
@@ -251,8 +286,14 @@ def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=Non
         curvas = db.load_power_curves() or []
     else:
         historico_obs, revisoes, atividades, curvas = dados
+    if duracao is not None and duracao != DURACAO_IR:
+        return {'ok': False, 'erro': 'duracao_nao_operacional',
+                'detalhe': f'o IR so tem um ajuste por modalidade, sobre o MMP3 ({DURACAO_IR} s)'}
+    if marcos is None and dados is None:
+        import observacoes_auto as oa            # calendario de seasons (cache); falhar cai no ano civil
+        marcos, _fonte = oa.obter_marcos()
     try:
-        sel = selecionar(historico_obs, revisoes, atividades, curvas)
+        entradas = entradas_mmp3(curvas, atividades, referencia, marcos, revisoes)
     except E.HistoricoAmbiguo as e:
         return {'ok': False, 'erro': 'historico_de_testes_ambiguo', 'detalhe': str(e)}
     if instantaneos_cp is None:
@@ -266,11 +307,12 @@ def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=Non
     cfg = _cfg_efetiva(config_ir)
     cfg_assin = ir.assinatura(cfg)
     unidades, n_aj, n_in, n_bl, n_fa = {}, 0, 0, 0, 0
-    for (mod, dur) in sorted(sel):
-        if (tipo and mod != tipo) or (duracao is not None and dur != duracao):
+    for mod in mt.MODALIDADES:
+        dur = DURACAO_IR
+        if tipo and mod != tipo:
             continue
         chave = f'{mod}:{dur}'
-        obs = _obs_min(sel[(mod, dur)]['usadas'])
+        obs = sorted(entradas[mod][0], key=lambda x: (x['data'], x['test_id']))
         prev = db.ultimo_ajuste_ir(mod, dur)
         if not obs and prev is None:
             unidades[chave] = {'acao': 'sem_observacoes'}
@@ -357,7 +399,9 @@ def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=Non
 # ── leitura ───────────────────────────────────────────────────────────────
 
 def vista(tipo=None, duracao=None, historico=False):
-    """Ultimo ajuste por unidade (e todo o historico se pedido). So leitura."""
+    """Ultimo ajuste por unidade (e todo o historico se pedido). So leitura. Por omissao so a unidade operacional
+    (MMP3, 180 s); os ajustes das duracoes antigas continuam consultaveis com `duracao` explicita (historico)."""
+    duracao = DURACAO_IR if duracao is None else duracao
     todos = db.ajustes_ir_historico(tipo, duracao)
     por_unidade = {}
     for r in todos:
@@ -449,13 +493,27 @@ def curva_influencia(tipo, duracao, atividade_id=None, ate=None, atividades=None
                 'leitura': 'ainda nao ha ajuste IR para esta modalidade e duracao (corre-se com a '
                            'deteccao/sync ou em /api/modelo/ir/recalibrar); nada foi calculado agora'}
     anterior = None
+    validos = (ir.EST_IDENTIFICAVEL, ir.EST_NAO_IDENTIFICAVEL)
+    tentativa = None
+    if aj['estado'] not in validos:
+        # a tentativa mais recente falhou/nao convergiu/ficou sem dados: o ultimo ajuste VALIDO fica preservado e e
+        # apresentado como DESATUALIZADO (estimado com um P0 mais antigo), nunca como se fosse o ajuste novo
+        ultimo_valido = next((r for r in reversed(db.ajustes_ir_historico(tipo, duracao)) if r['estado'] in validos), None)
+        if ultimo_valido is not None:
+            tentativa = {'versao_ajuste': aj['versao_ajuste'], 'estado': aj['estado'], 'ajustado_em': aj['ajustado_em'],
+                         'motivo': aj['motivo'], 'excecao': (aj.get('metricas') or {}).get('excecao')}
+            aj = ultimo_valido
     for r in reversed(db.ajustes_ir_historico(tipo, duracao)):
-        if r['estado'] in (ir.EST_IDENTIFICAVEL, ir.EST_NAO_IDENTIFICAVEL) and r['versao_ajuste'] != aj['versao_ajuste']:
+        if r['estado'] in validos and r['versao_ajuste'] != aj['versao_ajuste']:
             anterior = {'versao_ajuste': r['versao_ajuste'], 'estado': r['estado'],
                         'ajustado_em': r['ajustado_em'], 'p0': r['p0'],
                         'versao_referencia_p0': ((r.get('entradas') or {}).get('p0_ref') or {}).get(
                             'versao_referencia')}
             break
+    if tentativa is not None:                    # o ajuste valido preservado e o apresentado: identifica-se a si proprio
+        anterior = {'versao_ajuste': aj['versao_ajuste'], 'estado': aj['estado'], 'ajustado_em': aj['ajustado_em'],
+                    'p0': aj['p0'],
+                    'versao_referencia_p0': ((aj.get('entradas') or {}).get('p0_ref') or {}).get('versao_referencia')}
     ref_atual = db.ultima_referencia_p0(tipo, duracao)
     ref_aj = (aj.get('entradas') or {}).get('p0_ref')
     # o ajuste mostrado foi estimado com uma referencia de P0 mais antiga que a ultima registada (ex.: o Solver
@@ -464,6 +522,8 @@ def curva_influencia(tipo, duracao, atividade_id=None, ate=None, atividades=None
     # a tentativa mais recente (com o P0 novo) falhou/nao convergiu: os parametros validos que existem sao de um
     # ajuste anterior, estimado com outro P0; nada esta recalibrado com a referencia mais recente
     if anterior is not None and aj['estado'] not in (ir.EST_IDENTIFICAVEL, ir.EST_NAO_IDENTIFICAVEL):
+        p0_desatualizado = True
+    if tentativa is not None:
         p0_desatualizado = True
     datas_obs = sorted({str(o['data'])[:10] for o in (aj.get('entradas') or {}).get('observacoes') or []})
     maior_vazio = None
@@ -482,7 +542,13 @@ def curva_influencia(tipo, duracao, atividade_id=None, ate=None, atividades=None
             'p0_referencia': ref_aj, 'p0_desatualizado': p0_desatualizado,
             'compatibilidade_p0_alvo': (aj.get('metricas') or {}).get('compatibilidade_p0_alvo'),
             'intervalo_maximo_sem_observacoes': maior_vazio,
-            'excecao_solver': (aj.get('metricas') or {}).get('excecao')}
+            'excecao_solver': (tentativa or {}).get('excecao') or (aj.get('metricas') or {}).get('excecao'),
+            'tentativa_mais_recente': tentativa,
+            'ajuste_apresentado_e_antigo': tentativa is not None}
+    if not str(aj.get('p0_origem') or '').startswith('cp_model_confirmado'):
+        # ajuste anterior a regra P0 = CP (P0 livre): incompativel, nunca se desenha como se fosse atual
+        return {**base, **meta, 'parametros': None, 'curvas': None, 'p0_incompativel': True,
+                'aviso_parametros': 'ajuste anterior a regra P0 = CP confirmado (P0 livre): incompativel, nao se desenha curva'}
     if aj['estado'] not in (ir.EST_IDENTIFICAVEL, ir.EST_NAO_IDENTIFICAVEL):
         return {**base, **meta, 'parametros': None, 'curvas': None,
                 'aviso_parametros': 'sem parametros utilizaveis neste ajuste: nao se desenha curva'}
@@ -553,6 +619,97 @@ def curva_influencia(tipo, duracao, atividade_id=None, ate=None, atividades=None
             'verificacao_aditividade': verif, 'contribuicao_atividade': contrib,
             'atividades': recentes[:MAX_ATIVIDADES_LISTA],
             'atividades_truncadas': len(recentes) > MAX_ATIVIDADES_LISTA}
+
+
+
+# ── MMP3 e CP Model: contexto e impacto (SO LEITURA; nada e gravado, o CP Model nao e alterado) ────────────
+
+def impacto_cp_model(mod, curvas, ate, marcos=None, instantaneos_cp=None, modo='coerente'):
+    """Como o ponto MMP3 entra no CP Model e que CP resultaria AGORA, separado do CP confirmado.
+
+    Reutiliza `cp_model.pontos_de_curvas` (selecao dos MMP, season da data, duplicados) e `calcular_cp_completo`
+    (M1/M2/M3 e restantes), exatamente como a gravacao do CP, so com curvas ate `ate`. O 180 s e uma duracao EXTRA
+    em todas as modalidades: so os modelos de 3 parametros o consomem; M1/M2/M3 usam as duracoes classicas e nao
+    mudam por causa do MMP3 (nao substitui um ponto de 5, 12 ou 20 min). Os resultados calculados aqui sao
+    PROVISORIOS (`provisorio: True`); o CP confirmado e o gravado em cp_resultados (a selecao do utilizador) e e
+    o unico que define o P0. Nunca escolhe o modelo de menor SEE% como confirmado."""
+    cpm = p0m._cp_model()
+    from config import season_de
+    ate = str(ate)[:10]
+    registos = [{'date': str(c['date'])[:10], 'secs': c.get('secs'), 'watts': c.get('watts'),
+                 'season': season_de(str(c['date'])[:10], marcos or None)}
+                for c in curvas or [] if isinstance(c, dict) and c.get('type') == mod and str(c.get('date'))[:10] <= ate]
+    out = {'modalidade': mod, 'provisorio': True, 'ate': ate, 'duracao_mmp3_s': DURACAO_IR,
+           'duracao_so_em_modelos_3p': DURACAO_IR not in cpm.DURACOES_CLASSICAS.get(mod, []),
+           'ponto_mmp3': None, 'modelos_provisorios': {}, 'cp_gravado': None}
+    try:
+        dados = cpm.pontos_de_curvas(registos, mod, season_activa=season_de(ate, marcos or None), modo=modo)
+        datas = dados.get('datas') or {}
+        full = {int(t): w for w, t in (dados.get('all_mmp_pts_full') or [])}
+        if DURACAO_IR in full:
+            out['ponto_mmp3'] = {'watts': full[DURACAO_IR], 'data': datas.get(str(DURACAO_IR))}
+        res = cpm.calcular_cp_completo(dados, mod)
+        for nome, m in (res.get('modelos') or {}).items():
+            out['modelos_provisorios'][nome] = {'cp': m.get('cp'), 'wp': m.get('wp'), 'see_pct': m.get('see_pct'),
+                                                 'n_pts': m.get('n_pts'), 'classico': bool(m.get('classico'))}
+        out['melhor_see_classico_provisorio'] = (res.get('melhor') or {}).get('nome')
+    except Exception as e:                                   # nunca estraga a vista do IR
+        out['erro'] = f'{type(e).__name__}: {e}'
+    inst = p0m.instantaneo_em_vigor(mod, instantaneos_cp)
+    if inst is not None:
+        out['cp_gravado'] = {'cp_w': inst.get('cp_w'), 'modelo': inst.get('modelo_escolhido'),
+                             'data_referencia': str(inst.get('data_referencia'))[:10] if inst.get('data_referencia') else None,
+                             'id': inst.get('id'), 'fonte': 'cp_resultados (gravado)'}
+        prov = out['modelos_provisorios'].get(inst.get('modelo_escolhido')) or {}
+        out['provisorio_difere_do_confirmado'] = (
+            None if prov.get('cp') is None or inst.get('cp_w') is None else abs(prov['cp'] - float(inst['cp_w'])) > 0.051)
+    return out
+
+
+def contexto_mmp3(curvas, atividades, ate, marcos=None, instantaneos_cp=None, revisoes=None):
+    """{modalidade: contexto MMP3 + impacto no CP Model}, so leitura, so com dados ate `ate`."""
+    import protocolo
+    mapa = protocolo.mapa_ignore_power(atividades) or {}
+    ignorar = {aid for aid, v in mapa.items() if v is True}
+    horas = {a['id']: a['start_date_local'] for a in atividades or []
+             if isinstance(a, dict) and a.get('id') is not None and isinstance(a.get('start_date_local'), str)
+             and len(a['start_date_local']) >= 16}
+    cache = {}
+
+    def eleg(aid):
+        if aid not in cache:
+            cache[aid] = E.elegibilidade_aprendizagem(aid, atividades)['estado']
+        return cache[aid]
+    out = {}
+    for mod in mt.MODALIDADES:
+        c = mmp3.contexto(curvas, mod, ate, ignorar, eleg, marcos, horas)
+        c['cp_model'] = impacto_cp_model(mod, curvas, ate, marcos, instantaneos_cp)
+        out[mod] = c
+    return out
+
+
+# estados de apresentacao do ajuste do IR (um por modalidade)
+EI_VALIDO = 'valido'
+EI_DESATUALIZADO = 'desatualizado'
+EI_NAO_IDENT = 'nao_identificavel'
+EI_SEM_CP = 'sem_cp_confirmado'
+EI_ERRO_SOLVER = 'erro_solver'
+EI_SEM_AJUSTE = 'sem_ajuste'
+
+
+def estado_ir(j, p0_atual):
+    """Estado do ajuste de uma modalidade a partir da resposta de `curva_influencia` e do P0 atual (resolver_p0)."""
+    if j.get('estado') == 'sem_ajuste':
+        return EI_SEM_CP if (p0_atual is not None and p0_atual.get('valida') is False) else EI_SEM_AJUSTE
+    if j.get('p0_incompativel'):
+        return EI_SEM_CP
+    if j.get('excecao_solver') or j.get('tentativa_mais_recente'):
+        return EI_ERRO_SOLVER
+    if j.get('p0_desatualizado'):               # P0 mais antigo que a ultima referencia (a carga nova so e aviso)
+        return EI_DESATUALIZADO
+    if j.get('estado') in (ir.EST_INSUFICIENTE, ir.EST_SEM_CONVERGENCIA):
+        return j['estado']
+    return EI_VALIDO if j.get('estado') == ir.EST_IDENTIFICAVEL else EI_NAO_IDENT
 
 
 # ── curvas de influencia CONJUNTAS (uma duracao, todas as modalidades; so leitura) ───────────
@@ -643,13 +800,15 @@ def _estado_p0(mod, duracao, instantaneos_cp, aj_ref, desatualizado=False):
     return out
 
 
-def curvas_conjuntas(duracao, ate=None, atividades=None, instantaneos_cp=None):
+def curvas_conjuntas(duracao=None, ate=None, atividades=None, instantaneos_cp=None, curvas=None, marcos=None,
+                     revisoes=None):
     """Curvas de influencia das quatro modalidades para UMA duracao, num eixo diario comum.
 
     SO LEITURA: reutiliza `curva_influencia` (ultimo ajuste guardado de cada modalidade), nunca recalibra
     nem grava. Antes da origem de uma modalidade os valores sao None (nao ha serie, nao e zero); sem ajuste
     ou com dados insuficientes nao ha curva. Escala: % do P0 do proprio ajuste (so se P0 for finito e > 0).
     Nada e cortado: a plausibilidade (> 100 % do P0) apenas se assinala."""
+    duracao = DURACAO_IR if duracao is None else duracao
     mods = list(config.CICLICOS)
     base = {'experimental': True, 'tipo_analise': 'curvas_influencia_ir_conjunto', 'aviso': AVISO_CONJUNTO,
             'duracao_s': duracao, 'modalidades_ordem': mods,
@@ -661,6 +820,10 @@ def curvas_conjuntas(duracao, ate=None, atividades=None, instantaneos_cp=None):
     if atividades is None:
         atividades = db.load_activities()
     js = {m: curva_influencia(m, duracao, ate=ate, atividades=atividades) for m in mods}
+    hoje = (ate or mt.agora_utc().date().isoformat())
+    if curvas is None:
+        curvas = db.load_power_curves() or []
+    ctx3 = contexto_mmp3(curvas, atividades, hoje, marcos, instantaneos_cp, revisoes)
     series = {m: j['curvas'] for m, j in js.items() if j.get('curvas')}
     datas = []
     if series:
@@ -699,7 +862,10 @@ def curvas_conjuntas(duracao, ate=None, atividades=None, instantaneos_cp=None):
                 'motivo_normalizacao': None, 'inicio_serie': None, 'fora_do_ajuste_desde': None,
                 'plausibilidade': None, 'w': None, 'pct': None,
                 'p0': _estado_p0(m, duracao, instantaneos_cp, j.get('p0_referencia'),
-                                 bool(j.get('p0_desatualizado')))}
+                                 bool(j.get('p0_desatualizado'))),
+                'mmp3': ctx3[m], 'tentativa_mais_recente': j.get('tentativa_mais_recente'),
+                'ajuste_apresentado_e_antigo': bool(j.get('ajuste_apresentado_e_antigo'))}
+        item['estado_ir'] = estado_ir(j, (item['p0'] or {}).get('atual') if instantaneos_cp is not None else None)
         c = series.get(m)
         if c and datas:
             p0 = P['p0']

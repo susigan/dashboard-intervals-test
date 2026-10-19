@@ -41,6 +41,17 @@ ESQUEMA_CP = """CREATE TABLE cp_resultados (
     UNIQUE (modalidade, season, data_referencia))"""
 
 
+import ir_duracao_legado as _LEG  # noqa: E402
+
+
+def setUpModule():
+    _LEG.iniciar()
+
+
+def tearDownModule():
+    _LEG.parar()
+
+
 def modelo(cp=270.0, wp=24000.0, pontos=((300, 350.0), (720, 303.3), (1200, 290.0)), see=1.0, classico=True, k=2):
     return {'classico': classico, 'cp': round(cp, 1), 'wp': round(wp), 'wp_kj': round(wp / 1000.0, 2),
             'see_pct': see, 'n_pts': len(pontos), 'k_params': k,
@@ -133,10 +144,10 @@ class CadeiaCpParaIr(_Cadeia):
         self.assertEqual(l['entradas']['p0_ref']['cp_resultado_id'], ref['cp_resultado_ref']['id'])
         self.assertEqual(l['p0'], 270.0)                                 # P0 fixo: o Solver nao o mexeu
         self.assertEqual(l['identificabilidade']['parametros_livres'], ['k1', 'k2', 't1', 't2'])
-        # todas as duracoes da modalidade partilham o mesmo P0 (a duracao identifica o alvo, nao o P0)
-        for d in (60, 300, 1200):
-            self.assertEqual(self.refs('Bike', d)[0]['valor_p0'], 270.0, d)
-            self.assertEqual(len(self.aj(d)), 1, d)
+        # uma unidade por modalidade: as duracoes antigas nao geram referencia nem ajuste
+        for d in (60, 300):
+            self.assertEqual(self.refs('Bike', d), [], d)
+            self.assertEqual(self.aj(d), [], d)
 
     def test_cp_alterado_cria_referencia_nova_aciona_o_solver_e_preserva_o_anterior(self):
         self.prepara()
@@ -309,21 +320,22 @@ class Independencia(_Cadeia):
         self.assertEqual((self.refs('Bike', 1200), self.aj()), antes)
         self.assertEqual(db.referencias_p0_historico('Run'), [])        # Run sem observacoes no teste: nada a ajustar
 
-    def test_a_duracao_nao_altera_o_p0_e_as_tres_ajustam_como_antes(self):
+    def test_so_a_duracao_operacional_ajusta_e_o_p0_continua_a_ser_o_cp(self):
         self.prepara()
-        j = self.guardar(data_ref='2026-01-10', pontos=((720, 303.0), (900, 295.0), (1200, 290.0)))    # sem pontos a 60/300 s
-        for d in (60, 300, 1200):
-            self.assertEqual(j['modelo_ir']['unidades'][f'Bike:{d}']['acao'], 'ajustado', d)
-            self.assertEqual(self.refs('Bike', d)[-1]['valor_p0'], 270.0, d)
-        self.assertEqual({self.aj(d)[-1]['p0'] for d in (60, 300, 1200)}, {270.0})
+        j = self.guardar(data_ref='2026-01-10', pontos=((720, 303.0), (900, 295.0), (1200, 290.0)))
+        self.assertEqual(sorted(k for k in j['modelo_ir']['unidades'] if k.startswith('Bike')), ['Bike:1200'])
+        self.assertEqual(j['modelo_ir']['unidades']['Bike:1200']['acao'], 'ajustado')
+        self.assertEqual(self.refs('Bike', 1200)[-1]['valor_p0'], 270.0)
+        self.assertEqual(self.aj(1200)[-1]['p0'], 270.0)
 
-    def test_mudar_o_cp_reajusta_todas_as_duracoes_da_modalidade(self):
+    def test_mudar_o_cp_reajusta_a_unidade_operacional_e_preserva_a_anterior(self):
         self.prepara()
         self.guardar(data_ref='2026-01-10')
         self.guardar(data_ref='2026-02-10', cp=268.0)
-        for d in (60, 300, 1200):
-            self.assertEqual([r['valor_p0'] for r in self.refs('Bike', d)], [270.0, 268.0], d)
-            self.assertEqual(len(self.aj(d)), 2, d)
+        self.assertEqual([r['valor_p0'] for r in self.refs('Bike', 1200)], [270.0, 268.0])
+        self.assertEqual(len(self.aj(1200)), 2)
+        for d in (60, 300):
+            self.assertEqual(self.refs('Bike', d), [], d)
 
 
 # ── CP invalido / Solver que falha ────────────────────────────────────────────────────────
@@ -368,9 +380,12 @@ class BloqueiosEFalhas(_Cadeia):
         self.assertNotIn(linhas[-1]['estado'], ('identificavel', 'nao_identificavel')) if len(linhas) > 1 else None
         # o estado visivel: P0 novo (280) NAO e apresentado com os parametros antigos como se fossem recalibrados
         c = self.c.get('/api/modelo/ir/conjunto?duracao=1200').get_json()['modalidades']['Bike']
-        self.assertEqual(c['estado'], 'sem_convergencia')
-        self.assertFalse(c['tem_curva'])                                  # nenhuma curva com parametros antigos + P0 novo
-        self.assertIsNone(c['parametros'])
+        # o ultimo ajuste VALIDO fica preservado e e apresentado como antigo; o estado diz que o Solver falhou
+        self.assertEqual(c['estado_ir'], mis.EI_ERRO_SOLVER)
+        self.assertTrue(c['ajuste_apresentado_e_antigo'])
+        self.assertEqual(c['parametros']['k1'], a1['k1'])
+        self.assertEqual(c['parametros']['p0'], 270.0)                    # o P0 antigo, nunca o novo (280)
+        self.assertEqual(c['tentativa_mais_recente']['estado'], 'sem_convergencia')
         self.assertIn('solver rebentou', c['excecao_solver'])
         self.assertTrue(c['p0_desatualizado'])
         self.assertTrue(c['p0']['desatualizado'])

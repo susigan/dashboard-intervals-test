@@ -28,6 +28,15 @@ import modelo_ir as ir  # noqa: E402
 import modelo_ir_p0 as p0m  # noqa: E402
 import modelo_ir_servico as mis  # noqa: E402
 import test_modelo_ir_servico as S  # noqa: E402
+import ir_duracao_legado as _LEG  # noqa: E402
+
+
+def setUpModule():
+    _LEG.iniciar()
+
+
+def tearDownModule():
+    _LEG.parar()
 
 T, db, AGORA = S.T, S.db, S.AGORA
 ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
@@ -421,10 +430,10 @@ class SemP0Valido(_ServicoBase):
         self.assertEqual(db.ajustes_ir_historico(), [])
         self.assertEqual(db.referencias_p0_historico(), [])
 
-    def test_todas_as_duracoes_ajustam_com_o_mesmo_p0_igual_ao_cp(self):
+    def test_a_unidade_operacional_unica_ajusta_com_p0_igual_ao_cp(self):
         self.prepara()
         r = self.rec(instantaneos_cp=CPF.instantaneos_padrao())
-        for d in (60, 300, 1200):
+        for d in (mis.DURACAO_IR,):          # uma unica duracao operacional por modalidade (180 s; 1200 s no seam de teste)
             self.assertEqual(r['unidades'][f'Bike:{d}']['acao'], 'ajustado', d)
             self.assertEqual(db.ultima_referencia_p0('Bike', d)['valor_p0'], CP, d)
             self.assertEqual(db.ultimo_ajuste_ir('Bike', d)['p0'], CP, d)

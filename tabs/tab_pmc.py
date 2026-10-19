@@ -2773,7 +2773,7 @@ function abrirDistCarga(d){
 // nao escrevem, nao recalibram e nao alteram PMC/CTL/ATL/TSB/FTLM/MMP.
 // Escala comum = % do P0 do PROPRIO ajuste (apenas apresentacao). Descreve um ajuste dentro da amostra,
 // nao uma previsao validada. 'Overall' so existe quando o servidor o declarar disponivel.
-const IR_DURS=[[60,'1 min (60 s)'],[300,'5 min (300 s)'],[1200,'20 min (1200 s)']];
+// um ajuste por modalidade, sobre o MMP3 (180 s); o seletor de duracao foi removido
 const IR_COMPS=[{k:'liquida',nome:'Líquida (positiva − negativa)',curto:'líquida'},
  {k:'positiva',nome:'Positiva K1·E',curto:'positiva'},{k:'negativa',nome:'Negativa −K2·G',curto:'negativa'}];
 // por omissao so a linha liquida (espessa); positiva e negativa ligam-se na legenda (12 linhas diarias sao ilegiveis)
@@ -2786,16 +2786,16 @@ function irShell(){
  el.innerHTML=
   '<p style="font-size:13px"><b>Experimental, ajuste historico (dentro da amostra), nao validado preditivamente.</b> '+
   'Cada modalidade usa o seu ultimo ajuste guardado: resposta completa = P0 + positiva (K1&middot;E) &minus; negativa (K2&middot;G). '+
-  'Nao altera o PMC e nada e recalibrado ao abrir ou mudar a duracao.</p>'+
-  '<div class="controls"><label class="sel">Duracao <select id="irDur">'+IR_DURS.map(function(d){return '<option value="'+d[0]+'"'+(d[0]===1200?' selected':'')+'>'+d[1]+'</option>';}).join('')+'</select></label></div>'+
-  '<div id="irInfo"></div>'+
+  'Um ajuste por modalidade, sobre o MMP3 (180 s). O P0 é o CP confirmado no CP Model (nunca o MMP3); só K1, K2, T1 e T2 são estimados. '+
+  'Nao altera o PMC e nada e recalibrado ao abrir o painel.</p>'+
+  '<div id="irInfo"></div><div id="irMmp3"></div>'+
   '<div class="chartbox"><div class="legend" id="lgIrConj"></div><canvas id="chIrConj" height="300"></canvas></div>'+
   '<div id="irEscala" style="font-size:12px;color:#8b949e"></div>'+
   '<div id="irAvisos"></div><div id="irTabela"></div><div id="irOverall"></div>';
- const e=document.getElementById('irDur'); if(e)e.onchange=function(){carregarIR();};
  IR_MONTADO=true;
 }
-function irEstado(e){return {identificavel:['identificável','#3fb950'],nao_identificavel:['NÃO identificável','#d29922'],
+function irEstado(e){return {valido:['válido','#3fb950'],desatualizado:['DESATUALIZADO','#f85149'],erro_solver:['erro do Solver','#f85149'],
+ sem_cp_confirmado:['sem CP confirmado','#d29922'],identificavel:['identificável','#3fb950'],nao_identificavel:['NÃO identificável','#d29922'],
  sem_ajuste:['sem ajuste','#8b949e'],dados_insuficientes:['dados insuficientes','#8b949e'],sem_convergencia:['não convergiu','#8b949e'],
  sem_atividades:['sem atividades','#8b949e']}[e]||[e||'—','#8b949e'];}
 // estilo por componente; ajuste NAO identificavel => traco distinto (mais aberto) alem do aviso
@@ -2884,10 +2884,11 @@ function irTabelaHtml(j){
  if(!j||j.status!=='OK'||!j.modalidades)return '';
  let r='',d='';
  (j.modalidades_ordem||[]).forEach(function(m){
-  const it=j.modalidades[m]||{}, e=irEstado(it.estado), P=it.parametros, aj=it.ajuste||{}, ok=it.parametros_identificados===true;
+  const it=j.modalidades[m]||{}, e=irEstado(it.estado_ir||it.estado), P=it.parametros, aj=it.ajuste||{}, ok=it.parametros_identificados===true;
   const cel=function(k,dd){return '<td style="text-align:right">'+(P?irNum(P[k],dd)+(ok?'':'<span title="parametro nao identificavel: nao confirmado" style="color:#d29922"> *</span>'):'&mdash;')+'</td>';};
   r+='<tr><td><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+irEsc((j.cores||{})[m]||'#888')+';margin-right:5px"></i><b>'+irEsc(m)+'</b></td>'+
-   '<td style="color:'+e[1]+'">'+irEsc(e[0])+'</td>'+cel('p0',1)+cel('k1',4)+cel('k2',4)+cel('t1',1)+cel('t2',1)+
+   '<td style="color:'+e[1]+'">'+irEsc(e[0])+'</td>'+
+   '<td style="font-size:11.5px">'+(aj.versao_ajuste!=null?'v'+irEsc(aj.versao_ajuste)+' · '+irEsc(String(aj.ajustado_em||'').slice(0,10))+(it.ajuste_apresentado_e_antigo?' (antigo)':''):'&mdash;')+'</td>'+cel('p0',1)+cel('k1',4)+cel('k2',4)+cel('t1',1)+cel('t2',1)+
    '<td style="text-align:right">'+irEsc(aj.n_obs==null?'—':aj.n_obs)+'</td>'+
    '<td>'+((it.no_limite||[]).length?it.no_limite.map(function(x){return irEsc(x.parametro)+' ('+irEsc(x.lado)+')';}).join(', '):'&mdash;')+'</td>'+
    '<td style="font-size:11.5px">'+(irP0Origem(it)||'&mdash;')+'</td></tr>';
@@ -2899,9 +2900,28 @@ function irTabelaHtml(j){
    ((it.avisos_identificabilidade||[]).length?'; avisos: '+it.avisos_identificabilidade.map(irEsc).join(', '):'')
    :irEsc(it.leitura||'sem ajuste'))+'</p>';});
  return '<div style="overflow-x:auto"><table style="font-size:12px;border-collapse:collapse;min-width:640px"><thead><tr><th style="text-align:left">Modalidade</th><th style="text-align:left">Ajuste</th>'+
-  '<th>P0 (W)</th><th>K1</th><th>K2</th><th>T1 (d)</th><th>T2 (d)</th><th>N obs.</th><th style="text-align:left">No limite</th><th style="text-align:left">Origem do P0 (fixo)</th></tr></thead><tbody>'+r+'</tbody></table></div>'+
+  '<th>Versão</th><th>P0 (W)</th><th>K1</th><th>K2</th><th>T1 (d)</th><th>T2 (d)</th><th>N obs.</th><th style="text-align:left">No limite</th><th style="text-align:left">Origem do P0 (fixo)</th></tr></thead><tbody>'+r+'</tbody></table></div>'+
   '<p style="font-size:11.5px;color:#8b949e;margin:3px 0"><span style="color:#d29922">*</span> parâmetro não identificável: não confirmado. Valores do último ajuste guardado, nada recalculado.</p>'+
   '<details><summary style="font-size:12px;cursor:pointer">Detalhes dos ajustes (erro, convergência, lag, avisos)</summary>'+d+'</details>';
+}
+function irMmp3Html(j){
+ if(!j||j.status!=='OK'||!j.modalidades)return '';
+ let r='';
+ (j.modalidades_ordem||[]).forEach(function(m){
+  const x=(j.modalidades[m]||{}).mmp3; if(!x)return;
+  const ini=x.mmp3_inicial_temporada, pr=x.mmp3_pr_atual, ue=x.ultimo_esforco||{}, cm=x.cp_model||{}, cf=cm.cp_gravado;
+  const w=function(o){return o?irNum(o.watts,0)+' W <span style="color:#8b949e">('+irEsc(o.data)+')</span>':'&mdash;';};
+  r+='<tr><td><b>'+irEsc(m)+'</b></td>'+
+   '<td>'+(ini?w(ini):'<span title="'+irEsc(x.mmp3_inicial_indisponivel||'')+'" style="color:#8b949e">indisponível</span>')+'</td>'+
+   '<td>'+w(pr)+'</td>'+
+   '<td>'+irEsc(ue.texto||'Sem teste elegível')+(ue.data?' <span style="color:#8b949e">('+irEsc(ue.data)+(ue.pr?' · PR':'')+')</span>':'')+'</td>'+
+   '<td>'+(cf?irNum(cf.cp_w,1)+' W · '+irEsc(String(cf.modelo||'').replace(/ \(.*$/,''))+' · ref. '+irEsc(cf.data_referencia||'—'):'<span style="color:#d29922">sem CP confirmado</span>')+'</td></tr>';});
+ return '<details open><summary style="font-size:12.5px;cursor:pointer"><b>Referência MMP3 (180 s)</b> — contexto; não é o CP nem o P0</summary>'+
+  '<div style="overflow-x:auto"><table style="font-size:12px;border-collapse:collapse;min-width:620px"><thead><tr><th style="text-align:left">Modalidade</th>'+
+  '<th style="text-align:left">MMP3 inicial da temporada</th><th style="text-align:left">PR atual</th><th style="text-align:left">Último esforço de 3 min</th>'+
+  '<th style="text-align:left">CP confirmado (= P0)</th></tr></thead><tbody>'+r+'</tbody></table></div>'+
+  '<p style="font-size:11.5px;color:#8b949e;margin:3px 0">Elegibilidade do esforço (Yes/No) é separada do recorde (PR): um teste pode ser elegível abaixo do melhor. '+
+  'O MMP3 só alimenta os modelos de CP de 3 parâmetros; M1/M2/M3 não mudam por causa dele. Cálculos de CP aqui são provisórios; só o CP gravado define o P0.</p></details>';
 }
 function irOverallHtml(j){
  const o=j&&j.overall; if(!o)return '';
@@ -2910,7 +2930,7 @@ function irOverallHtml(j){
 }
 function irInfoHtml(j){
  if(!j||j.status!=='OK')return '<p style="font-size:13px">Nao foi possivel calcular: '+irEsc(j&&j.mensagem?j.mensagem:'sem resposta')+'</p>';
- if(j.estado==='sem_curvas')return '<p style="font-size:13px"><b>Nenhuma modalidade tem curva para esta duração.</b> Nada foi calculado nem desenhado (sem zeros artificiais); ver o estado de cada modalidade abaixo.</p>';
+ if(j.estado==='sem_curvas')return '<p style="font-size:13px"><b>Nenhuma modalidade tem curva (sem ajuste válido).</b> Nada foi calculado nem desenhado (sem zeros artificiais); ver o estado de cada modalidade abaixo.</p>';
  return '';
 }
 // grafico unico, eixo unico (% de P0), eixo diario comum; valores ausentes (antes da origem) interrompem a linha
@@ -2918,7 +2938,7 @@ function irDesenhar(j){
  const lg=document.getElementById('lgIrConj'); if(lg)lg.innerHTML=irLegendaHtml(j);
  const o=ctx('chIrConj',300); if(!o)return;
  const g=o.g,W=o.W,H=o.H;
- if(!j||j.status!=='OK'||j.estado==='sem_curvas'||!j.datas||!j.datas.length){noData(g,W,H,(j&&j.status==='OK')?'Sem curvas para esta duração':'Sem dados');return;}
+ if(!j||j.status!=='OK'||j.estado==='sem_curvas'||!j.datas||!j.datas.length){noData(g,W,H,(j&&j.status==='OK')?'Sem ajuste válido: nenhuma curva desenhada':'Sem dados');return;}
  const S=irSeries(j).filter(irVisivel), n=j.datas.length, PL=54,PR=14,PT=12,PB=26,w=W-PL-PR,h=H-PT-PB;
  if(!S.length){noData(g,W,H,'Todas as séries estão desligadas');return;}
  let mn=0,mx=0;
@@ -2961,16 +2981,15 @@ function irRedesenhar(soDesenho){
  const j=IR_J;
  if(!soDesenho){
   const set=function(id,h){const e=document.getElementById(id); if(e)e.innerHTML=h;};
-  set('irInfo',irInfoHtml(j)); set('irEscala',irEscalaHtml(j)); set('irAvisos',irAvisosHtml(j)); set('irTabela',irTabelaHtml(j)); set('irOverall',irOverallHtml(j));
+  set('irInfo',irInfoHtml(j)); set('irEscala',irEscalaHtml(j)); set('irAvisos',irAvisosHtml(j)); set('irTabela',irTabelaHtml(j)); set('irMmp3',irMmp3Html(j)); set('irOverall',irOverallHtml(j));
  }
  irDesenhar(j);
 }
 async function carregarIR(){
  if(!IR_MONTADO)irShell();
- const dur=document.getElementById('irDur').value;
  const seq=++IR_SEQ;
  let j=null;
- try{ j=await fetch('/api/modelo/ir/conjunto?duracao='+encodeURIComponent(dur)).then(function(r){return r.json();}); }
+ try{ j=await fetch('/api/modelo/ir/conjunto').then(function(r){return r.json();}); }
  catch(e){ j=null; }
  if(seq!==IR_SEQ)return;                       // resposta antiga de uma selecao anterior
  IR_J=j; irRedesenhar();

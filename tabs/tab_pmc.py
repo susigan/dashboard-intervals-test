@@ -2909,19 +2909,35 @@ function irTabelaHtml(j){
   '<details><summary style="font-size:12px;cursor:pointer">Detalhes dos ajustes (erro, convergência, lag, avisos)</summary>'+d+'</details>';
 }
 function irP0DiagHtml(g){
- const d=g&&g.diagnostico; if(!d||!d.total||g.registo)return '';
- const t=d.total, mot={sem_esforcos_180s:'não há nenhuma atividade com potência válida de 180 s',
-  nenhuma_atividade_com_tag_3min:'nenhuma atividade tem a tag de 3 min reconhecida (a tag é obrigatória: ex. 3min, 3 min, 180s)',
-  nenhum_esforco_cumpre_todos_os_criterios:'há atividades com a tag, mas nenhuma cumpre todos os critérios (potência ≥ '+irNum(100*(d.limiar||0.92),0)+' % do melhor MMP3 anterior, dados válidos)'}[d.motivo_sem_yes]||'';
- const li=[['Atividades com potência válida de 180 s',t.n_180],['Com tag 3min reconhecida',t.n_tag_3min],['Excluídas por ausência da tag',t.n_sem_tag],
+ const d=g&&g.diagnostico; if(!d||!d.total)return '';
+ const lim=irNum(100*(d.limiar||0.92),0);
+ const mot={sem_esforcos_180s:'não há nenhuma atividade com potência válida de 180 s',
+  nenhuma_atividade_com_tag_3min:'nenhuma atividade tem tag de 3 min nem um intervalo de 3 min com potência próxima do MMP3',
+  nenhum_esforco_cumpre_todos_os_criterios:'há sinais de teste (tag ou intervalo), mas nenhum esforço cumpre todos os critérios (potência ≥ '+lim+' % do melhor MMP3 anterior, dados válidos)'}[d.motivo_sem_yes]||'';
+ const linhas=function(t){return [['Intervalos (grupos com potência) analisados',t.n_intervalos_analisados],['Atividades com intervalos',t.n_atividades_com_intervalos],
+  ['Candidatos por duração (175–185 s)',t.n_candidatos_duracao_3min],['…que cumprem o limiar de potência ('+lim+' %)',t.n_candidatos_potencia_3min],
+  ['Candidatos mais longos (186–360 s) com potência próxima — só para verificar',t.n_candidatos_longos_potencia],
+  ['A verificar (repetições, pico noutro trecho ou intervalo longo)',t.n_a_verificar],
+  ['Testes por tag manual (YES)',t.n_confirmados_tag_manual],['Elegíveis automaticamente por intervalo (YES)',t.n_elegiveis_automaticos],
+  ['Atividades com potência válida de 180 s',t.n_180],['Com tag 3min reconhecida',t.n_tag_3min],['Excluídas por ausência de sinal de teste (sem tag)',t.n_sem_tag],
   ['Excluídas por potência ignorada',t.n_potencia_ignorada],['Elegibilidade desconhecida',t.n_elegibilidade_desconhecida],
   ['Sem amostra/referência anterior suficiente',t.n_amostra_ou_referencia_insuficiente],
-  ['Cumprem a proximidade (≥ '+irNum(100*(d.limiar||0.92),0)+' %) mas não os demais critérios',t.n_proximidade_ok_sem_outros],
-  ['Com tag e dados válidos, abaixo do limiar',t.n_abaixo_limiar]];
- const pm=Object.keys(d.por_modalidade||{}).map(function(m){const x=d.por_modalidade[m];return irEsc(m)+': '+irEsc(x.n_180)+' c/ 180 s, '+irEsc(x.n_tag_3min)+' c/ tag 3min';}).join(' · ');
- return '<details style="margin:2px 0 6px"><summary style="font-size:12px;cursor:pointer">Porque não existe YES'+(mot?' — '+irEsc(mot):'')+'</summary>'+
+  ['Cumprem a proximidade ('+lim+' %) mas não os demais critérios',t.n_proximidade_ok_sem_outros],['Com sinal e dados válidos, abaixo do limiar',t.n_abaixo_limiar]];};
+ const t=d.total, li=linhas(t);
+ const pm=Object.keys(d.por_modalidade||{}).map(function(m){const x=d.por_modalidade[m];return '<tr><td><b>'+irEsc(m)+'</b></td><td>'+irEsc(x.n_180)+'</td><td>'+irEsc(x.n_intervalos_analisados)+'</td><td>'+
+  irEsc(x.n_candidatos_duracao_3min)+'</td><td>'+irEsc(x.n_candidatos_potencia_3min)+'</td><td>'+irEsc(x.n_confirmados_tag_manual)+'</td><td>'+irEsc(x.n_elegiveis_automaticos)+'</td><td>'+irEsc(x.n_a_verificar)+'</td></tr>';}).join('');
+ return '<details style="margin:2px 0 6px"'+(g.registo?'':' open')+'><summary style="font-size:12px;cursor:pointer">'+(g.registo?'Diagnóstico da deteção de testes':'Porque não existe YES'+(mot?' — '+irEsc(mot):''))+'</summary>'+
   '<ul style="font-size:12px;margin:2px 0 4px 18px">'+li.map(function(x){return '<li>'+irEsc(x[0])+': <b>'+irEsc(x[1])+'</b></li>';}).join('')+'</ul>'+
-  '<p style="font-size:11.5px;color:#8b949e;margin:2px 0">'+pm+'. Marque como teste a atividade realmente executada como esforço máximo de 3 min; a tag não é criada automaticamente.</p></details>';
+  '<div style="overflow-x:auto"><table style="font-size:11.5px;border-collapse:collapse"><thead><tr><th style="text-align:left">Modalidade</th><th>180 s</th><th>Intervalos</th><th>3 min (duração)</th><th>3 min (potência)</th><th>Tag manual</th><th>Auto</th><th>A verificar</th></tr></thead><tbody>'+pm+'</tbody></table></div>'+
+  '<p style="font-size:11.5px;color:#8b949e;margin:2px 0">Sinal de teste = tag 3min <i>ou</i> um intervalo isolado de 175–185 s com potência ≥ '+lim+' % do melhor MMP3 anterior (origem <code>intervalo_detectado</code>). Repetições, intervalos de 5 min e picos noutro trecho ficam <b>a verificar</b>: nunca YES automático. O limiar não está validado fisiologicamente para intervalos.</p></details>';
+}
+function irSolverTxt(s){
+ if(!s)return '<span style="color:#8b949e">—</span>';
+ const t={nao_executado:['não executado','#8b949e'],dados_insuficientes:['dados insuficientes','#d29922'],falha:['falhou','#f85149'],
+  executado_nao_identificavel:['executado — parâmetros não identificáveis','#d29922'],executado_ok:['executado — ajuste válido','#3fb950']}[s.estado]||[s.estado,'#8b949e'];
+ const mt={sem_p0:'sem P0 (nenhum YES)',sem_observacoes:'sem observações YES',sem_ajuste_gravado:'ainda sem recalibração'}[s.motivo]||s.motivo||'';
+ return '<span style="color:'+t[1]+'">'+irEsc(t[0])+'</span>'+(mt?' <span style="color:#8b949e">('+irEsc(mt)+')</span>':'')+
+  '<br><span style="color:#8b949e">YES: '+irEsc(s.n_observacoes_yes)+' / mín. '+irEsc(s.min_obs)+(s.faltam_observacoes?' (faltam '+irEsc(s.faltam_observacoes)+')':'')+'</span>';
 }
 function irP0GlobalHtml(j){
  const g=j&&j.p0_global; if(!g)return '';
@@ -2930,7 +2946,7 @@ function irP0GlobalHtml(j){
  return '<div style="border-left:3px solid '+est[1]+';padding:3px 10px;margin:6px 0;font-size:12.5px"><b>P0 global (as 4 modalidades): '+(r?irNum(r.watts,1)+' W':'&mdash;')+'</b> · '+
   'origem: MMP3 do último registo YES · referência <b style="color:'+est[1]+'">'+irEsc(est[0])+'</b>'+
   (r?'<br><span style="color:#8b949e">registo '+irEsc(r.test_id)+' ('+irEsc(r.modalidade)+') · '+irEsc(String(r.inicio||r.data||'').replace('T',' ').slice(0,16))+
-  ' · '+irEsc(g.n_yes)+' registo(s) YES no total. Não é o melhor valor histórico nem o PR; o CP Model não é usado.</span>'
+  ' · '+irEsc(g.n_yes)+' registo(s) YES no total · classificado por <b>'+irEsc(r.origem_classificacao||'—')+'</b>'+(r.motivo_decisao?' ('+irEsc(r.motivo_decisao)+')':'')+'. Não é o melhor valor histórico nem o PR; o CP Model não é usado.</span>'
   :'<br><span style="color:#8b949e">Sem P0 não há recalibração nem curva nova; não há fallback para CP, FTP/eFTP nem outra duração.</span>')+irP0DiagHtml(g)+'</div>';
 }
 function irMmp3Html(j){
@@ -2947,11 +2963,11 @@ function irMmp3Html(j){
    '<td>'+(ini?w(ini):'<span title="'+irEsc(x.mmp3_inicial_indisponivel||'')+'" style="color:#8b949e">indisponível</span>')+'</td>'+
    '<td>'+w(pr)+'</td>'+
    '<td>'+irEsc(ue.texto||'Sem teste elegível')+(ue.data?' <span style="color:#8b949e">('+irEsc(ue.data)+(ue.pr?' · PR':'')+')</span>':'')+'</td>'+
-   '<td>'+rec+'</td></tr>';});
+   '<td>'+rec+'</td><td>'+irSolverTxt(it.solver)+'</td></tr>';});
  return irP0GlobalHtml(j)+'<details open><summary style="font-size:12.5px;cursor:pointer"><b>Referência MMP3 (180 s) por modalidade</b> — contexto</summary>'+
   '<div style="overflow-x:auto"><table style="font-size:12px;border-collapse:collapse;min-width:620px"><thead><tr><th style="text-align:left">Modalidade</th>'+
   '<th style="text-align:left">MMP3 inicial da temporada</th><th style="text-align:left">PR atual</th><th style="text-align:left">Último esforço de 3 min</th>'+
-  '<th style="text-align:left">Recalibrada com o P0 atual?</th></tr></thead><tbody>'+r+'</tbody></table></div>'+
+  '<th style="text-align:left">Recalibrada com o P0 atual?</th><th style="text-align:left">Solver</th></tr></thead><tbody>'+r+'</tbody></table></div>'+
   '<p style="font-size:11.5px;color:#8b949e;margin:3px 0">Elegibilidade do esforço (Yes/No) é separada do recorde (PR): um teste pode ser elegível abaixo do melhor. '+
   'O MMP3 só alimenta os modelos de CP de 3 parâmetros; M1/M2/M3 não mudam por causa dele e o CP Model não define o P0 do IR.</p></details>';
 }

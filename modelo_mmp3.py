@@ -7,8 +7,11 @@ aqui altera o CP Model.
 Regra do YES (decisao do utilizador, 2026-10-19; substitui o OR recente/season/all-time)
 ------------------------------------------------------------------------------------
 Atualizar a Power Curve NAO cria um teste: um esforco de 180 s e `YES` quando, cumulativamente,
-  1. a atividade tem a TAG de tempo de 3 min ('3min', '3 min', '180s', ...; `moa.tag_coincide_duracao`): o atleta declara
-     que foi um teste (um treino sem tag nunca e YES);
+  1. SINAL DE TESTE (regra 3, 2026-10-19): (a) a TAG de tempo de 3 min da atividade ('3min', '3 min', '180s', ...;
+     `moa.tag_coincide_duracao`; origem `tag_manual`), OU (b) um intervalo isolado de 175-185 s da propria atividade
+     com potencia media >= 0,92 x melhor MMP3 anterior e >= 0,92 x o pico de 180 s (`modelo_mmp3_intervalos`; origem
+     `intervalo_detectado`). Repeticoes, intervalos de 5 min e picos noutro trecho ficam `a_verificar`, nunca YES. Um
+     treino sem sinal nunca e YES;
   2. a potencia nao e ignorada (`icu_ignore_power`) e a elegibilidade e conhecida;
   3. existe referencia valida ANTERIOR e a amostra minima existente (>= 5 pontos validos de 180 s da modalidade);
   4. potencia_180s / melhor_MMP3_valido_ANTERIOR >= LIMIAR (0,92, inclusivo; direcao: esforco sobre a referencia).
@@ -39,6 +42,7 @@ Estado do teste (separado do recorde): `elegivel` nao exige PR; um esforco pode 
 """
 from datetime import date
 
+import modelo_mmp3_intervalos as mi
 import modelo_observacoes_auto as moa
 import modelo_testes as mt
 import protocolo
@@ -66,10 +70,10 @@ M_SEM_REFERENCIA = 'sem_referencia_anterior'
 M_AMOSTRA = 'amostra_minima_nao_atingida'
 M_ABAIXO = 'abaixo_do_limiar_de_todas_as_referencias'
 M_REJEITADO = 'rejeitado_manualmente'
-M_SEM_TAG = 'sem_tag_3min'
+M_SEM_TAG = 'sem_tag_3min'                  # sem tag e sem intervalo de 3 min elegivel
 
 ORIGEM_P0 = 'mmp3_ultimo_yes'
-VERSAO_REGRA_P0 = 2                                    # 2: YES = tag 3 min + razao ao melhor anterior (all-time)
+VERSAO_REGRA_P0 = 3        # 3: YES = (tag 3 min | intervalo de 3 min detetado) + razao ao melhor anterior (all-time)
 
 
 def inicio_season(data, marcos=None):
@@ -134,7 +138,7 @@ def tem_tag_3min(tags):
 
 
 def avaliar_esforcos(curvas, modalidade, ate, ignorar_ids=(), elegibilidade_fn=None, marcos=None, horas=None,
-                     limiar=LIMIAR, tags=None):
+                     limiar=LIMIAR, tags=None, atividades_por_id=None):
     """Todos os esforcos de 180 s da modalidade com data <= ate, avaliados so com dados ate essa data (sem futuro).
 
     elegibilidade_fn(activity_id) -> 'elegivel' | 'inelegivel' | 'desconhecida'. Sem funcao, a elegibilidade e
@@ -146,6 +150,7 @@ def avaliar_esforcos(curvas, modalidade, ate, ignorar_ids=(), elegibilidade_fn=N
     ate = str(ate)[:10]
     ignorar = set(ignorar_ids or ())
     tags = {} if tags is None else tags
+    atividades_por_id = atividades_por_id or {}
     cur = [c for c in curvas or [] if isinstance(c, dict) and c.get('type') == modalidade
            and str(c.get('date'))[:10] <= ate]
     brutos = {}
@@ -165,7 +170,8 @@ def avaliar_esforcos(curvas, modalidade, ate, ignorar_ids=(), elegibilidade_fn=N
                 'inicio': hora if isinstance(hora, str) and len(hora) >= 16 and hora[:10] == b['date'] else None,
                 'tag_3min': tem_tag_3min(tags.get(aid)), 'pr': False, 'pct_do_melhor': None,
                 'melhor_anterior_watts': None, 'melhor_anterior_data': None, 'limiar': limiar,
-                'qualifica': None, 'motivo': None}
+                'qualifica': None, 'motivo': None, 'origem_classificacao': None, 'classe_intervalo': None,
+                'intervalo': None, 'a_verificar': False, 'motivo_decisao': None}
         eleg = (elegibilidade_fn(aid) if elegibilidade_fn else None) or 'desconhecida'
         c = cands.get(aid)
         ref = ((c or {}).get('referencias') or {}).get('all_time')       # SO o melhor anterior (all-time causal)
@@ -173,12 +179,26 @@ def avaliar_esforcos(curvas, modalidade, ate, ignorar_ids=(), elegibilidade_fn=N
             razao = b['watts'] / ref['referencia_watts']
             base.update(melhor_anterior_watts=ref['referencia_watts'], melhor_anterior_data=ref['referencia_data'],
                         pct_do_melhor=round(100.0 * razao, 1), pr=razao >= 1.0, qualifica=razao >= limiar)
+        iv = mi.classificar(atividades_por_id.get(aid), b['watts'], ref['referencia_watts'] if ref else None, limiar)
+        base.update(classe_intervalo=iv['classe'], intervalo=iv['intervalo'], a_verificar=iv['classe'] in mi.A_VERIFICAR,
+                    n_grupos_intervalos=iv['n_grupos_potencia'], n_grupos_3min=iv['n_grupos_3min'],
+                    n_grupos_3min_potencia_ok=iv['n_grupos_3min_potencia_ok'],
+                    n_grupos_longos_potencia_ok=iv['n_grupos_longos_potencia_ok'])
+        if base['tag_3min']:
+            base.update(origem_classificacao=mi.ORIGEM_TAG, motivo_decisao='tag de 3 min na atividade')
+        elif iv['classe'] == mi.C_AUTO:
+            base.update(origem_classificacao=mi.ORIGEM_INTERVALO, motivo_decisao=(
+                'intervalo isolado de %ds a %.0f W (>= %.2f x melhor anterior e x pico de 180 s)'
+                % (iv['intervalo']['duracao_s'], iv['intervalo']['watts'], limiar)))
+        sinal = base['origem_classificacao'] is not None
         if eleg == 'inelegivel':
             out.append({**base, 'estado': E_NAO_ELEGIVEL, 'motivo': M_IGNORE_POWER})
         elif eleg != 'elegivel':
             out.append({**base, 'estado': E_INSUFICIENTE, 'motivo': M_ELEG_DESCONHECIDA})
-        elif not base['tag_3min']:
-            out.append({**base, 'estado': E_NAO_ELEGIVEL, 'motivo': M_SEM_TAG})   # curva atualizada != teste declarado
+        elif not sinal:
+            # curva atualizada != teste declarado/detetado; candidatos a_verificar ficam sinalizados, nunca YES
+            out.append({**base, 'estado': E_NAO_ELEGIVEL, 'motivo': M_SEM_TAG,
+                        'motivo_decisao': 'sem tag 3min e sem intervalo isolado de 3 min elegivel (%s)' % iv['classe']})
         elif c is None:
             out.append({**base, 'estado': E_INSUFICIENTE, 'motivo': M_AMOSTRA})
         elif not ref:
@@ -220,6 +240,16 @@ def diagnostico_esforcos(esforcos_por_modalidade, limiar=LIMIAR):
                                                    and e.get('pct_do_melhor') is not None
                                                    and e['pct_do_melhor'] >= round(100.0 * limiar, 1)),
                 'n_abaixo_limiar': sum(1 for e in esf if e['motivo'] == M_ABAIXO),
+                'n_intervalos_analisados': sum(e.get('n_grupos_intervalos') or 0 for e in esf),
+                'n_atividades_com_intervalos': sum(1 for e in esf if e.get('n_grupos_intervalos')),
+                'n_candidatos_duracao_3min': sum(1 for e in esf if e.get('n_grupos_3min')),
+                'n_candidatos_potencia_3min': sum(1 for e in esf if e.get('n_grupos_3min_potencia_ok')),
+                'n_candidatos_longos_potencia': sum(1 for e in esf if e.get('n_grupos_longos_potencia_ok')),
+                'n_a_verificar': sum(1 for e in esf if e.get('a_verificar') and e['estado'] != E_ELEGIVEL),
+                'n_confirmados_tag_manual': sum(1 for e in esf if e['estado'] == E_ELEGIVEL
+                                                and e.get('origem_classificacao') == mi.ORIGEM_TAG),
+                'n_elegiveis_automaticos': sum(1 for e in esf if e['estado'] == E_ELEGIVEL
+                                               and e.get('origem_classificacao') == mi.ORIGEM_INTERVALO),
                 'n_yes': sum(1 for e in esf if e['estado'] == E_ELEGIVEL)}
     por_mod = {m: conta(lst) for m, lst in esforcos_por_modalidade.items()}
     total = conta([e for lst in esforcos_por_modalidade.values() for e in lst])
@@ -227,7 +257,7 @@ def diagnostico_esforcos(esforcos_por_modalidade, limiar=LIMIAR):
         motivo = None
     elif total['n_180'] == 0:
         motivo = 'sem_esforcos_180s'
-    elif total['n_tag_3min'] == 0:
+    elif total['n_tag_3min'] == 0 and total['n_candidatos_potencia_3min'] == 0:
         motivo = 'nenhuma_atividade_com_tag_3min'
     else:
         motivo = 'nenhum_esforco_cumpre_todos_os_criterios'
@@ -251,7 +281,8 @@ def p0_global(esforcos_por_modalidade):
                 'registo': None}
     r = max(yes, key=_chave_tempo)
     return {**diag, 'estado': 'valida', 'registo': {k: r.get(k) for k in (
-        'test_id', 'activity_id', 'modalidade', 'data', 'inicio', 'watts', 'pr', 'pct_do_melhor')}}
+        'test_id', 'activity_id', 'modalidade', 'data', 'inicio', 'watts', 'pr', 'pct_do_melhor',
+        'origem_classificacao', 'motivo_decisao', 'classe_intervalo')}}
 
 
 def texto_estado(estado, watts=None, pr_watts=None):
@@ -285,11 +316,11 @@ def estado_no_dia(esforcos, data, pr_watts=None):
 
 
 def contexto(curvas, modalidade, ate, ignorar_ids=(), elegibilidade_fn=None, marcos=None, horas=None, limiar=LIMIAR,
-             esforcos=None, tags=None):
+             esforcos=None, tags=None, atividades_por_id=None):
     """Contexto MMP3 de uma modalidade para a UI: referencias, ultimo esforco de 180 s e o seu estado.
     `esforcos`: avaliacao ja feita (a mesma que alimenta o P0 global e o ajuste); por omissao avalia-se aqui."""
     esf = esforcos if esforcos is not None else avaliar_esforcos(curvas, modalidade, ate, ignorar_ids,
-                                                                  elegibilidade_fn, marcos, horas, limiar, tags)
+                                                                  elegibilidade_fn, marcos, horas, limiar, tags, atividades_por_id)
     ref = referencias(curvas, modalidade, ate, ignorar_ids, marcos)
     pr_w = (ref['mmp3_pr_atual'] or {}).get('watts')
     ult = esf[-1]['data'] if esf else None

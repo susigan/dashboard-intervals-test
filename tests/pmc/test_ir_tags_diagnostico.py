@@ -135,8 +135,8 @@ class DiagnosticoSemYes(unittest.TestCase):
         g = mm.p0_global(self.esforcos(True))
         sem = {k: v for k, v in g.items() if k != 'diagnostico'}
         self.assertEqual(set(sem), {'origem', 'duracao_s', 'versao_regra', 'n_yes', 'n_esforcos', 'n_dados_insuficientes',
-                                    'estado', 'registo'})
-        self.assertEqual(g['versao_regra'], 2)                           # regra de elegibilidade intacta
+                                    'estado', 'registo'})                # so `diagnostico` foi acrescentado
+        self.assertEqual(g['versao_regra'], 3)                           # regra 3: tag manual OU intervalo detetado
 
 
 @unittest.skipIf(shutil.which('node') is None, 'node indisponivel')
@@ -164,10 +164,10 @@ class DiagnosticoNaInterface(unittest.TestCase):
         g = mm.p0_global(esf)
         h = self.render(g)
         self.assertIn('Porque não existe YES', h)
-        self.assertIn('nenhuma atividade tem a tag de 3 min reconhecida', h)
+        self.assertIn('nenhuma atividade tem tag de 3 min nem um intervalo de 3 min', h)
         self.assertIn('Atividades com potência válida de 180 s: <b>6</b>', h)
         self.assertIn('Com tag 3min reconhecida: <b>0</b>', h)
-        self.assertIn('Excluídas por ausência da tag: <b>6</b>', h)
+        self.assertIn('Excluídas por ausência de sinal de teste (sem tag): <b>6</b>', h)
         self.assertIn('não há fallback para CP, FTP/eFTP', h)
 
     def test_com_p0_nao_mostra_o_diagnostico(self):

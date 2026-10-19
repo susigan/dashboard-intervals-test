@@ -58,3 +58,37 @@ validam o IR de MMP3. O CP Model (M1/M2/M3 e restantes) não foi alterado e não
 
 **Limitações.** O P0 é um valor único para quatro modalidades; os ajustes são em amostra (histórico), com P0 de hoje
 aplicado a todo o histórico; sem validação preditiva do IR de MMP3; identificabilidade não demonstrada.
+
+## Regra v3 — deteção de testes a partir dos intervalos das atividades
+
+**Fonte dos intervalos.** `activities.raw.interval_summary` (lista, ou texto JSON de lista, de itens como `"1x 2m56s 189w"`:
+repetições × duração, valor médio, unidade `w`/`bpm`; itens de ritmo como `"3x 4m9s 5:10"` não são potência e são descartados).
+Não há início/fim, tipo nem id de intervalo na cópia local; `/activity/{id}/intervals` e `icu_intervals_json` só existem via API
+(não usados). Os intervalos são **evidência anexada ao esforço** (máximo móvel de 180 s da `power_curves`): o valor do P0 é sempre
+o MMP3 do esforço, nunca a média do intervalo.
+
+**Sinais de teste.** `tag_manual` (tag de 3 min, continua válida e tem prioridade) ou `intervalo_detectado`.
+Um intervalo só promove a YES se: é único (n = 1), dura 175–185 s, tem potência média ≥ 0,92 × melhor MMP3 anterior (causal,
+sem a própria atividade) **e** ≥ 0,92 × o máximo móvel de 180 s da atividade; e o esforço passa a regra de proximidade
+(≥ 0,92), referência com amostra ≥ 5, potência não ignorada e elegibilidade conhecida.
+
+**Janela ±5 s.** Justificada pelo histograma real: 151 grupos estruturados concentram-se em 179–182 s; fora disso aparecem
+durações de outro tipo de treino.
+
+**Classes (`classe_intervalo`)**: `intervalo_3min_automatico` (YES); `a_verificar_repeticoes` (n ≥ 2);
+`a_verificar_pico_fora` (o pico de 180 s está noutro trecho); `a_verificar_intervalo_longo` (186–360 s próximo do MMP3:
+média de 5 min **não** equivale a máximo móvel de 180 s); `intervalo_3min_abaixo_limiar`; `sem_intervalo_3min`;
+`sem_dados_de_intervalos`. Tudo o que não é provado fica `a_verificar`, nunca YES.
+
+**Mantém-se**: P0 global = MMP3 do YES mais recente de todo o histórico, igual para Bike/Row/Run/Ski; comparação causal;
+limiar 0,92; sem fallback para CP/FTP/eFTP/outras durações; treino forte comum nunca vira teste; um esforço por atividade
+(sem dupla contagem entre intervalos e máximo móvel).
+
+**Diagnóstico** (`p0_global.diagnostico`, por modalidade e total): intervalos analisados, candidatos por duração e por
+potência, longos, `a_verificar`, confirmados por tag, elegíveis automáticos, motivos de exclusão, último YES (atividade,
+data, modalidade, potência) e estado do Solver (`estado_solver`): `nao_executado` (sem P0 / sem observações),
+`dados_insuficientes` (faltam N observações), `executado_nao_identificavel`, `executado_ok`, `falha`.
+
+**Limitações fisiológicas não validadas**: o limiar 0,92 não foi calibrado para 3 min; a média de um intervalo de ~3 min
+pode ser inferior ao máximo móvel real; a janela ±5 s foi derivada de um único atleta/histórico; intervalos sem início/fim
+não permitem confirmar que o esforço de 180 s coincide com o intervalo.

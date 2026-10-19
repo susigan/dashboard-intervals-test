@@ -202,6 +202,38 @@ def _chave_tempo(e):
     return (e['data'], (e.get('inicio') or '')[11:19], str(e['activity_id']))
 
 
+def diagnostico_esforcos(esforcos_por_modalidade, limiar=LIMIAR):
+    """Contagens (a partir dos MESMOS esforcos avaliados; nenhum calculo novo) que explicam porque existe ou nao um YES.
+
+    Por modalidade e no total: n_180 (potencia valida de 180 s), n_tag_3min (tag de 3 min reconhecida), n_sem_tag,
+    n_potencia_ignorada, n_elegibilidade_desconhecida, n_amostra_ou_referencia_insuficiente, n_proximidade_ok_sem_outros
+    (razao >= limiar mas NAO YES: falta tag, potencia ignorada/desconhecida ou rejeicao manual), n_abaixo_limiar (com tag e
+    elegibilidade ok mas razao < limiar), n_yes."""
+    def conta(esf):
+        return {'n_180': len(esf),
+                'n_tag_3min': sum(1 for e in esf if e.get('tag_3min')),
+                'n_sem_tag': sum(1 for e in esf if not e.get('tag_3min')),
+                'n_potencia_ignorada': sum(1 for e in esf if e['motivo'] == M_IGNORE_POWER),
+                'n_elegibilidade_desconhecida': sum(1 for e in esf if e['motivo'] == M_ELEG_DESCONHECIDA),
+                'n_amostra_ou_referencia_insuficiente': sum(1 for e in esf if e['motivo'] in (M_AMOSTRA, M_SEM_REFERENCIA)),
+                'n_proximidade_ok_sem_outros': sum(1 for e in esf if e['estado'] != E_ELEGIVEL and e.get('qualifica')
+                                                   and e.get('pct_do_melhor') is not None
+                                                   and e['pct_do_melhor'] >= round(100.0 * limiar, 1)),
+                'n_abaixo_limiar': sum(1 for e in esf if e['motivo'] == M_ABAIXO),
+                'n_yes': sum(1 for e in esf if e['estado'] == E_ELEGIVEL)}
+    por_mod = {m: conta(lst) for m, lst in esforcos_por_modalidade.items()}
+    total = conta([e for lst in esforcos_por_modalidade.values() for e in lst])
+    if total['n_yes']:
+        motivo = None
+    elif total['n_180'] == 0:
+        motivo = 'sem_esforcos_180s'
+    elif total['n_tag_3min'] == 0:
+        motivo = 'nenhuma_atividade_com_tag_3min'
+    else:
+        motivo = 'nenhum_esforco_cumpre_todos_os_criterios'
+    return {'total': total, 'por_modalidade': por_mod, 'motivo_sem_yes': motivo, 'limiar': limiar}
+
+
 def p0_global(esforcos_por_modalidade):
     """P0 GLOBAL = MMP3 do esforco `YES` mais recente (por data/hora efetiva) entre TODAS as modalidades.
 
@@ -212,7 +244,8 @@ def p0_global(esforcos_por_modalidade):
     yes = [e for e in todos if e['estado'] == E_ELEGIVEL]
     diag = {'origem': ORIGEM_P0, 'duracao_s': DURACAO_S, 'versao_regra': VERSAO_REGRA_P0, 'n_yes': len(yes),
             'n_esforcos': len(todos),
-            'n_dados_insuficientes': sum(1 for e in todos if e['estado'] == E_INSUFICIENTE)}
+            'n_dados_insuficientes': sum(1 for e in todos if e['estado'] == E_INSUFICIENTE),
+            'diagnostico': diagnostico_esforcos(esforcos_por_modalidade)}
     if not yes:
         return {**diag, 'estado': 'dados_insuficientes' if diag['n_dados_insuficientes'] else 'ausente',
                 'registo': None}

@@ -1640,7 +1640,8 @@ class Regressao(unittest.TestCase):
     def test_modulo_puro_nao_importa_db_nem_flask(self):
         src = open(os.path.join(ROOT, 'modelo_observacoes_auto.py'), encoding='utf-8').read()
         imports = sorted(set(re.findall(r'^\s*(?:import|from)\s+(\w+)', src, re.M)))
-        self.assertEqual(imports, ['datetime', 'math', 'modelo_testes', 'protocolo', 're'])
+        # json: stdlib, necessario para o texto JSON das tags (nao ha db nem flask)
+        self.assertEqual(imports, ['datetime', 'json', 'math', 'modelo_testes', 'protocolo', 're'])
 
     def test_estimador_e_validacao_continuam_puros(self):
         for f, esperado in (('modelo_estimador.py', ['datetime', 'hashlib', 'json', 'math', 'modelo_testes']),

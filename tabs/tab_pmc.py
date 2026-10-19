@@ -2908,6 +2908,21 @@ function irTabelaHtml(j){
   '<p style="font-size:11.5px;color:#8b949e;margin:3px 0"><span style="color:#d29922">*</span> parâmetro não identificável: não confirmado. Valores do último ajuste guardado, nada recalculado.</p>'+
   '<details><summary style="font-size:12px;cursor:pointer">Detalhes dos ajustes (erro, convergência, lag, avisos)</summary>'+d+'</details>';
 }
+function irP0DiagHtml(g){
+ const d=g&&g.diagnostico; if(!d||!d.total||g.registo)return '';
+ const t=d.total, mot={sem_esforcos_180s:'não há nenhuma atividade com potência válida de 180 s',
+  nenhuma_atividade_com_tag_3min:'nenhuma atividade tem a tag de 3 min reconhecida (a tag é obrigatória: ex. 3min, 3 min, 180s)',
+  nenhum_esforco_cumpre_todos_os_criterios:'há atividades com a tag, mas nenhuma cumpre todos os critérios (potência ≥ '+irNum(100*(d.limiar||0.92),0)+' % do melhor MMP3 anterior, dados válidos)'}[d.motivo_sem_yes]||'';
+ const li=[['Atividades com potência válida de 180 s',t.n_180],['Com tag 3min reconhecida',t.n_tag_3min],['Excluídas por ausência da tag',t.n_sem_tag],
+  ['Excluídas por potência ignorada',t.n_potencia_ignorada],['Elegibilidade desconhecida',t.n_elegibilidade_desconhecida],
+  ['Sem amostra/referência anterior suficiente',t.n_amostra_ou_referencia_insuficiente],
+  ['Cumprem a proximidade (≥ '+irNum(100*(d.limiar||0.92),0)+' %) mas não os demais critérios',t.n_proximidade_ok_sem_outros],
+  ['Com tag e dados válidos, abaixo do limiar',t.n_abaixo_limiar]];
+ const pm=Object.keys(d.por_modalidade||{}).map(function(m){const x=d.por_modalidade[m];return irEsc(m)+': '+irEsc(x.n_180)+' c/ 180 s, '+irEsc(x.n_tag_3min)+' c/ tag 3min';}).join(' · ');
+ return '<details style="margin:2px 0 6px"><summary style="font-size:12px;cursor:pointer">Porque não existe YES'+(mot?' — '+irEsc(mot):'')+'</summary>'+
+  '<ul style="font-size:12px;margin:2px 0 4px 18px">'+li.map(function(x){return '<li>'+irEsc(x[0])+': <b>'+irEsc(x[1])+'</b></li>';}).join('')+'</ul>'+
+  '<p style="font-size:11.5px;color:#8b949e;margin:2px 0">'+pm+'. Marque como teste a atividade realmente executada como esforço máximo de 3 min; a tag não é criada automaticamente.</p></details>';
+}
 function irP0GlobalHtml(j){
  const g=j&&j.p0_global; if(!g)return '';
  const r=g.registo;
@@ -2916,7 +2931,7 @@ function irP0GlobalHtml(j){
   'origem: MMP3 do último registo YES · referência <b style="color:'+est[1]+'">'+irEsc(est[0])+'</b>'+
   (r?'<br><span style="color:#8b949e">registo '+irEsc(r.test_id)+' ('+irEsc(r.modalidade)+') · '+irEsc(String(r.inicio||r.data||'').replace('T',' ').slice(0,16))+
   ' · '+irEsc(g.n_yes)+' registo(s) YES no total. Não é o melhor valor histórico nem o PR; o CP Model não é usado.</span>'
-  :'<br><span style="color:#8b949e">Sem P0 não há recalibração nem curva nova; não há fallback para CP, FTP/eFTP nem outra duração.</span>')+'</div>';
+  :'<br><span style="color:#8b949e">Sem P0 não há recalibração nem curva nova; não há fallback para CP, FTP/eFTP nem outra duração.</span>')+irP0DiagHtml(g)+'</div>';
 }
 function irMmp3Html(j){
  if(!j||j.status!=='OK'||!j.modalidades)return '';

@@ -1,3 +1,5 @@
+> **SUBSTITUÍDO** por [modelo_ir_p0_mmp3.md](modelo_ir_p0_mmp3.md): o P0 do IR já não é o CP do CP Model. Este documento fica como histórico da regra anterior.
+
 # Modelo IR — P0 = CP e recalibração automática
 
 Estado: **experimental**. Decisão final: **P0 = CP**, exatamente o valor de CP (`cp_w`, em W) do resultado

@@ -68,7 +68,7 @@ def aj(mod, estado=ir.EST_NAO_IDENTIFICAVEL, dur=1200, p0=300.0, k1=0.02, k2=0.0
             't1': t1 if ok else None, 't2': t2 if ok else None, 'n_obs': 20,
             'data_ini': dia(primeira_obs) if ok else None, 'data_fim': dia(ultima_obs) if ok else None,
             'funcao_objetivo': 10.0, 'r2': 0.9, 'rmse': 2.5, 'convergiu': estado != ir.EST_SEM_CONVERGENCIA,
-            'p0_inicial': p0, 'p0_origem': 'cp_model_confirmado:M1 (WLS-P)', 'assinatura': 'x', 'versao_modelo': 1,
+            'p0_inicial': p0, 'p0_origem': 'mmp3_ultimo_yes:Bike:1200:seam-290.0', 'assinatura': 'x', 'versao_modelo': 1,
             'configuracao': {'ir': {'lag_dias': lag}}, 'metricas': {'motivo_insuficiente': 'menos_de_15_observacoes'},
             'identificabilidade': {'avisos': avisos or []},
             'entradas': {'observacoes': obs, 'carga_digest': 'x', 'referencia': dia(ultima_obs), 'p0_inicial': p0}}
@@ -549,9 +549,6 @@ class RotaApi(_Mock, unittest.TestCase):
         self.addCleanup(p.stop)
         self.c = APP.app.test_client()
         self.u = '/api/modelo/ir/conjunto'
-        cp = mock.patch.object(mis, 'carregar_instantaneos_cp', return_value=([], None))   # nunca a base de perfil real
-        cp.start()
-        self.addCleanup(cp.stop)
 
     def test_ok(self):
         r = self.c.get(self.u + '?duracao=1200')

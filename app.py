@@ -5843,7 +5843,7 @@ def api_modelo_ir_influencia():
 @app.route('/api/modelo/ir/conjunto')
 def api_modelo_ir_conjunto():
     """Curvas de influencia IR das quatro modalidades (um ajuste por modalidade, sobre o MMP3 de 180 s), num
-    eixo diario comum e em % do P0 (= CP confirmado) do proprio ajuste, com o contexto MMP3 e o estado do ajuste.
+    eixo diario comum e em % do P0 (global = MMP3 do ultimo YES) do proprio ajuste, com o contexto MMP3 e o estado do ajuste.
     SO LEITURA: usa o ULTIMO ajuste guardado de cada modalidade; nao recalibra nem grava. &ate=YYYY-MM-DD.
     Nao aceita ?tipo. ?duracao so e aceite se for 180 (as duracoes antigas foram descontinuadas)."""
     import modelo_ir_servico as mis
@@ -5865,11 +5865,9 @@ def api_modelo_ir_conjunto():
     if not db.ENABLED:
         return _erro_registo(503, 'sem base de dados')
     try:
-        inst_cp, _erro_cp = mis.carregar_instantaneos_cp()      # so leitura do CP Model
         import observacoes_auto as _oa
         marcos, _fonte = _oa.obter_marcos()                       # calendario de seasons (cache); falhar -> ano civil
-        res = mis.curvas_conjuntas(mis.DURACAO_IR, ate=ate, instantaneos_cp=inst_cp, marcos=marcos,
-                                   revisoes=db.revisoes_testes_modelo())
+        res = mis.curvas_conjuntas(mis.DURACAO_IR, ate=ate, marcos=marcos, revisoes=db.revisoes_testes_modelo())
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -5904,7 +5902,8 @@ def api_modelo_ir_global():
 
 @app.route('/api/modelo/ir/validacao')
 def api_modelo_ir_validacao():
-    """Walk-forward do IR contra M0/M1/M2 (so leitura; recalibra por alvo, por isso e lento).
+    """LEGADO: walk-forward do IR contra M0/M1/M2 sobre as observacoes de 60/300/1200 s (so leitura; recalibra
+    por alvo, por isso e lento). Nao valida o IR baseado em MMP3 (180 s).
 
     ?tipo=Bike (obrigatorio) ?duracao=300 ?modo=retrospectivo|conhecido_na_epoca|ambos
     """
@@ -5932,7 +5931,8 @@ def api_modelo_ir_validacao():
         import traceback
         traceback.print_exc()
         return _erro_registo(500, f'{type(e).__name__}: {e}')
-    return jsonify({'status': 'OK', **res})
+    return jsonify({'status': 'OK', **res, 'legado': True,
+                    'aviso_legado': 'LEGADO (60/300/1200 s): nao valida o IR baseado em MMP3 (180 s) nem o alimenta'})
 
 
 @app.route('/api/carga/distribuicao')

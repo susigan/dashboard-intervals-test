@@ -1,8 +1,8 @@
 """Servico do modelo IR: liga modelo_ir (puro) as observacoes MMP, as atividades e a base.
 
-  * recalibrar(): para cada modalidade x duracao, ajusta P0, K1, K2, T1, T2 aos MMP elegiveis
-    (os mesmos que o estimador e a validacao usam) e a carga da MESMA modalidade
-    (icu_training_load). So grava quando as ENTRADAS mudaram (assinatura) e nunca substitui o
+  * recalibrar(): para cada modalidade (unica duracao operacional: MMP3, 180 s), ajusta K1, K2, T1, T2 aos esforcos
+    MMP3 `YES` e a carga da MESMA modalidade (icu_training_load), com P0 FIXO = MMP3 do `YES` mais recente
+    (global, igual nas quatro modalidades; nunca o CP). So grava quando as ENTRADAS mudaram (assinatura) e nunca substitui o
     historico: cada ajuste e uma linha nova de modelo_ir_ajustes, com o motivo.
   * vista(): ultimo ajuste por unidade (e, se pedido, o historico). So leitura.
   * validar_preditivo(): walk-forward (treino estritamente anterior) contra M0/M1/M2, separado
@@ -36,9 +36,9 @@ MOTIVO_PRIMEIRO = 'primeiro_ajuste'
 MOTIVO_NOVAS = 'novas_observacoes'
 MOTIVO_ALTERADAS = 'observacoes_removidas_ou_alteradas'
 MOTIVO_CARGA = 'carga_alterada'
-MOTIVO_REF_P0 = 'referencia_p0_alterada'      # nova referencia (nova revisao/modelo) com o MESMO valor de CP
-MOTIVO_CP = 'cp_alterado'                      # o valor de CP (= P0) mudou
-ACAO_BLOQUEADO = 'bloqueado_sem_p0'
+MOTIVO_REF_P0 = 'referencia_p0_alterada'      # novo registo YES de origem com o MESMO valor de P0
+MOTIVO_CP = 'p0_alterado'                      # o valor de P0 (MMP3 do ultimo YES) mudou
+ACAO_BLOQUEADO = 'bloqueado_sem_p0'      # sem registo MMP3 YES: sem P0, sem ajuste novo
 ACAO_FALHOU = 'solver_falhou'
 MOTIVO_CONFIG = 'configuracao_ou_versao_alterada'
 MOTIVO_FORCADO = 'forcado'
@@ -89,10 +89,8 @@ def selecionar(historico_obs, revisoes, atividades, curvas):
                                          E.estado_atual_por_teste(revisoes or []), atividades, cpa)
 
 
-def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
-    """{modalidade: (observacoes_para_o_IR, esforcos_avaliados)} a partir das curvas (`power_curves`) e das
-    atividades, so com dados ate `ate` (sem futuro). Reutiliza a deteccao existente e a elegibilidade do projeto;
-    uma rejeicao manual no registo de testes (mesmo test_id) exclui o esforco."""
+def _ignorar_e_horas(atividades):
+    """({activity_id com icu_ignore_power}, {activity_id: start_date_local com hora}) das atividades."""
     import protocolo
     mapa = protocolo.mapa_ignore_power(atividades) or {}
     ignorar = {aid for aid, v in mapa.items() if v is True}
@@ -101,6 +99,15 @@ def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
         v = a.get('start_date_local') if isinstance(a, dict) else None
         if isinstance(v, str) and len(v) >= 16 and a.get('id') is not None:
             horas.setdefault(a['id'], v)
+    return ignorar, horas
+
+
+def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
+    """{modalidade: (observacoes_para_o_IR, esforcos_avaliados)} a partir das curvas (`power_curves`) e das
+    atividades, so com dados ate `ate` (sem futuro). Reutiliza a deteccao existente e a elegibilidade do projeto.
+    Uma rejeicao manual no registo de testes (mesmo test_id) retira o esforco de `YES` (passa a nao elegivel,
+    motivo `rejeitado_manualmente`): o mesmo conjunto alimenta o P0 global e o ajuste, sem segunda fonte."""
+    ignorar, horas = _ignorar_e_horas(atividades)
     cache = {}
 
     def eleg(aid):
@@ -111,10 +118,16 @@ def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
                   if r.get('estado') == mt.ESTADO_REJEITADO}
     out = {}
     for mod in mt.MODALIDADES:
-        esf = mmp3.avaliar_esforcos(curvas, mod, ate, ignorar, eleg, marcos, horas)
-        obs = [o for o in mmp3.observacoes_ir(esf) if o['test_id'] not in rejeitados]
-        out[mod] = (obs, esf)
+        esf = [({**e, 'estado': mmp3.E_NAO_ELEGIVEL, 'motivo': mmp3.M_REJEITADO}
+                if e['estado'] == mmp3.E_ELEGIVEL and e['test_id'] in rejeitados else e)
+               for e in mmp3.avaliar_esforcos(curvas, mod, ate, ignorar, eleg, marcos, horas)]
+        out[mod] = (mmp3.observacoes_ir(esf), esf)
     return out
+
+
+def p0_global_das_entradas(entradas):
+    """P0 global (modelo_mmp3.p0_global) a partir de `entradas_mmp3`."""
+    return mmp3.p0_global({m: v[1] for m, v in entradas.items()})
 
 
 def _cfg_efetiva(config_ir=None):
@@ -124,58 +137,37 @@ def _cfg_efetiva(config_ir=None):
             'carga': 'icu_training_load das atividades da mesma modalidade, somada por dia',
             'alvo': 'MMP3 (180 s) de esforcos elegiveis: melhor valor de 180 s em toda a atividade (nao teste '
                     'padronizado)',
-            # P0 nao e estimado: e EXATAMENTE o CP do resultado guardado no CP Model e fica FIXO em cada
-            # ajuste. Faz parte da configuracao para que um ajuste antigo (P0 livre, ou P0 = CP + W'/d)
-            # nao conte como atual.
-            'p0': {'modo': 'igual_ao_cp_do_resultado_guardado', 'formulacao': p0m.FORMULA_ID,
+            # P0 nao e estimado: e EXATAMENTE o MMP3 do esforco YES mais recente (global) e fica FIXO em cada
+            # ajuste. Faz parte da configuracao para que um ajuste antigo (P0 livre, ou P0 = CP) nao conte
+            # como atual.
+            'p0': {'modo': 'mmp3_ultimo_yes_global', 'formulacao': p0m.FORMULA_ID,
                    'versao': p0m.VERSAO_P0, 'parametros_estimados': ['k1', 'k2', 't1', 't2']}}
 
 
-# ── P0 de referencia vindo do CP Model (so leitura do CP; a referencia fica no historico do IR) ──
-
-_COLS_CP = ('id', 'data_referencia', 'data_gravacao', 'modalidade', 'season', 'modelo_escolhido', 'cp_w',
-            'wp_j', 'see_pct', 'n_pts', 'k_params', 'modelos_json', 'origem')
-
-
-def carregar_instantaneos_cp():
-    """Resultados do CP Model gravados (cp_resultados, SO LEITURA) -> (lista de dicts, erro|None).
-
-    E a mesma tabela e a mesma noção de 'confirmado' do /api/cp/actual (instantaneo gravado). Nunca
-    levanta: se a base de perfil nao estiver acessivel devolve ([], motivo) e o IR bloqueia por falta de
-    P0 (nunca cai para outro P0)."""
-    try:
-        import drive_db_perfil as ddp
-        conn = ddp.get_conn()
-        try:
-            cur = conn.execute(f"SELECT {', '.join(_COLS_CP)} FROM cp_resultados WHERE cp_w IS NOT NULL")
-            return [dict(zip(_COLS_CP, r)) for r in cur.fetchall()], None
-        finally:
-            conn.close()
-    except Exception as e:
-        return [], f'{type(e).__name__}: {e}'
+# ── P0 global de referencia (MMP3 do ultimo YES); a referencia fica no historico do IR ──
 
 
 def garantir_referencia_p0(res, agora, origem='sync'):
-    """Persiste (so INSERT, idempotente) a referencia de P0 valida `res`. Devolve (ref, criada).
+    """Persiste (so INSERT, idempotente) a referencia de P0 valida `res` da unidade. Devolve (ref, criada).
 
-    Se a referencia mais recente da unidade tem a mesma assinatura (mesma formulacao P0 = CP, modalidade,
-    modelo, CP e data de referencia do resultado) nao grava nada: repetir a gravacao, ou mudar so W' (ou o
-    SEE%/pontos) sem mudar a data de referencia, nao cria versao. Uma assinatura nova cria a versao seguinte
-    com `conhecida_desde = agora`; as anteriores e as suas datas de conhecimento nunca sao reescritas."""
+    Se a referencia mais recente da unidade tem a mesma assinatura (mesma regra, mesmo registo YES de origem,
+    mesma data/hora e valor) nao grava nada. Um registo de origem novo cria a versao seguinte da unidade com
+    `conhecida_desde = agora`; as anteriores nunca sao reescritas. A referencia e global: as quatro unidades
+    recebem o mesmo registo de origem e a mesma assinatura (cada uma com a sua versao_referencia)."""
     mod, dur = res['modalidade'], res['duracao_s']
     ult = db.ultima_referencia_p0(mod, dur)
     if ult is not None and ult['assinatura'] == res['assinatura']:
         return ult, False
-    inst = res['instantaneo']
+    reg = res['registo']
     ref = {'modalidade': mod, 'duracao_s': dur,
            'versao_referencia': (ult['versao_referencia'] + 1) if ult else 1,
            'conhecida_desde': agora, 'valor_p0': res['valor_p0'], 'formulacao': res['formulacao'],
-           'modelo_cp': res['modelo_cp'], 'cp_w': res['cp_w'], 'wp_j': res['wp_j'],
-           'cp_data_referencia': inst.get('data_referencia'), 'cp_data_gravacao': inst.get('data_gravacao'),
-           'cp_resultado_ref': inst,
-           # W', SEE%, n_pts e os pontos do CP ficam so como informacao/proveniencia: nao definem o P0
-           'parametros': {k: res.get(k) for k in ('equacao', 'see_pct', 'n_pts', 'k_params', 'pontos_usados',
-                                                    'avisos_cp', 'coincide_com_menor_see_classico')},
+           # colunas herdadas do desenho com CP: aqui guardam a proveniencia MMP3 (ver modelo_ir_p0)
+           'modelo_cp': res['origem'], 'cp_w': res['valor_p0'], 'wp_j': None,
+           'cp_data_referencia': reg['data'], 'cp_data_gravacao': reg.get('inicio') or reg['data'],
+           'cp_resultado_ref': dict(reg),
+           'parametros': {'equacao': res['equacao'], 'origem': res['origem'], 'versao_regra': res['versao_regra'],
+                          'duracao_s': mmp3.DURACAO_S, 'n_yes': res['n_yes'], 'registo': dict(reg)},
            'assinatura': res['assinatura'], 'versao_modulo': p0m.VERSAO_P0, 'origem': origem}
     try:
         db.inserir_referencia_p0(ref)
@@ -188,11 +180,12 @@ def _ref_resumo(r):
     """Campos da referencia que acompanham um ajuste (e a UI)."""
     if not r:
         return None
-    p = r.get('parametros') or {}
-    return {k: r.get(k) for k in ('versao_referencia', 'valor_p0', 'formulacao', 'modelo_cp', 'cp_w', 'wp_j',
-                                  'cp_data_referencia', 'cp_data_gravacao', 'conhecida_desde', 'assinatura')} | {
-        'cp_resultado_id': (r.get('cp_resultado_ref') or {}).get('id'),
-        'see_pct': p.get('see_pct'), 'avisos_cp': p.get('avisos_cp') or []}
+    reg = (r.get('parametros') or {}).get('registo') or r.get('cp_resultado_ref') or {}
+    return {'versao_referencia': r.get('versao_referencia'), 'valor_p0': r.get('valor_p0'),
+            'formulacao': r.get('formulacao'), 'origem': (r.get('parametros') or {}).get('origem'),
+            'conhecida_desde': r.get('conhecida_desde'), 'assinatura': r.get('assinatura'),
+            'registo': {k: reg.get(k) for k in ('test_id', 'activity_id', 'modalidade', 'data', 'inicio', 'watts')}
+            if reg else None}
 
 
 def _obs_min(usadas):
@@ -202,7 +195,7 @@ def _obs_min(usadas):
 
 def _entradas(obs, carga_dia, referencia, p0_ini, p0_ref=None):
     """Resumo JSON das entradas de UM ajuste (serve a assinatura e a auditoria).
-    p0_ref: resumo da referencia de P0 (CP Model) usada, ligada ao ajuste."""
+    p0_ref: resumo da referencia de P0 global (MMP3 do ultimo YES) usada, ligada ao ajuste."""
     ate = max((o['data'] for o in obs), default=None)
     cargas = sorted((d, round(v, 3)) for d, v in carga_dia.items() if ate and d <= ate and v > 0)
     return {'observacoes': obs, 'carga_ate': ate,
@@ -230,8 +223,8 @@ def _motivo(prev, ent, cfg_assin, forcar):
         return MOTIVO_ALTERADAS
     if pe.get('carga_digest') != ent['carga_digest']:
         return MOTIVO_CARGA
-    # o que sobra e a referencia de P0: valor de CP diferente (cp_alterado) ou so nova revisao/modelo com o
-    # mesmo CP (referencia_p0_alterada)
+    # o que sobra e a referencia de P0: valor diferente (p0_alterado) ou so novo registo YES com o mesmo valor
+    # (referencia_p0_alterada)
     ant_p0 = (pe.get('p0_ref') or {}).get('valor_p0')
     nov_p0 = (ent.get('p0_ref') or {}).get('valor_p0')
     return MOTIVO_CP if (ant_p0 is None or nov_p0 is None or ant_p0 != nov_p0) else MOTIVO_REF_P0
@@ -254,23 +247,22 @@ def compatibilidade_p0_alvo(obs, p0):
 
 
 def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=None, duracao=None,
-               dados=None, instantaneos_cp=None, marcos=None):
+               dados=None, marcos=None):
     """Ajusta cada unidade cujas entradas mudaram. Idempotente: sem mudancas nao grava nada.
 
-    P0 = CP do resultado guardado no CP Model (modelo_ir_p0.resolver_p0) e fica fixo no ajuste; so K1,
-    K2, T1, T2 sao estimados. Sem P0 valido para a unidade NAO se cria ajuste (acao 'bloqueado_sem_p0'):
-    o ultimo ajuste valido fica intacto e nao ha P0 livre, mediana ou MMP de substituicao. Uma mudanca de
-    CP (ou uma gravacao nova do CP, ex. a revisao anual) cria uma referencia nova e, porque a assinatura do
-    ajuste inclui a referencia, o Solver volta a correr: K1, K2, T1, T2 sao reestimados com o P0 novo e
-    gravados como versao nova. Mudar so W' (mesma gravacao) nao o faz. Se o Solver falhar (excecao) grava-se
-    a tentativa falhada (estado sem_convergencia, `acao: solver_falhou`): o ajuste anterior fica intacto
-    na historia mas deixa de ser o atual; volta a tentar na chamada seguinte.
+    P0 GLOBAL = MMP3 do esforco `YES` mais recente entre as quatro modalidades (modelo_ir_p0): fixo no ajuste;
+    so K1, K2, T1, T2 sao estimados. Sem nenhum `YES` NAO se cria ajuste (acao 'bloqueado_sem_p0'): os ultimos
+    ajustes validos ficam intactos e nao ha P0 de substituicao (nem CP, nem FTP/eFTP, nem outra duracao). Um
+    registo `YES` mais recente cria uma referencia nova em cada modalidade e, porque a assinatura do ajuste
+    inclui a referencia, o Solver volta a correr nas quatro: K1, K2, T1, T2 sao reestimados com o P0 novo e
+    gravados como versao nova. Sem mudanca de P0, de observacoes ou de carga nao se grava nada. Se o Solver
+    falhar numa modalidade (excecao) grava-se a tentativa falhada dessa modalidade (estado sem_convergencia,
+    `acao: solver_falhou`): o ajuste anterior fica intacto na historia mas deixa de ser o atual e nunca se
+    apresenta como recalibrado; as outras modalidades nao sao afetadas. Volta a tentar na chamada seguinte.
 
     Devolve {'ok', 'unidades': {'Bike:300': {...}}, 'n_ajustadas', 'n_inalteradas', 'n_bloqueadas', ...}.
     Nunca levanta por dados maus: falhar o IR nao pode estragar a sincronizacao.
     dados: (historico_obs, revisoes, atividades, curvas) para testes; por omissao le da base.
-    instantaneos_cp: linhas de cp_resultados (testes). Se omitido le-se a base de perfil, salvo com `dados`
-    injetados (testes): ai nao se toca na base de perfil e considera-se que nao ha resultados de CP.
     """
     if not db.ENABLED:
         return {'ok': False, 'erro': 'sem base de dados'}
@@ -296,13 +288,7 @@ def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=Non
         entradas = entradas_mmp3(curvas, atividades, referencia, marcos, revisoes)
     except E.HistoricoAmbiguo as e:
         return {'ok': False, 'erro': 'historico_de_testes_ambiguo', 'detalhe': str(e)}
-    if instantaneos_cp is None:
-        if dados is None:
-            instantaneos_cp, erro_cp = carregar_instantaneos_cp()
-        else:
-            instantaneos_cp, erro_cp = [], None
-    else:
-        erro_cp = None
+    global_ = p0_global_das_entradas(entradas)         # UM P0 para as quatro modalidades
     cargas, info_carga = carga_por_modalidade(atividades)
     cfg = _cfg_efetiva(config_ir)
     cfg_assin = ir.assinatura(cfg)
@@ -317,12 +303,11 @@ def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=Non
         if not obs and prev is None:
             unidades[chave] = {'acao': 'sem_observacoes'}
             continue
-        res_p0 = p0m.resolver_p0(mod, dur, instantaneos_cp)
+        res_p0 = p0m.resolver_p0(mod, dur, global_)
         if not res_p0['valida']:
             # sem P0 valido: nenhuma versao nova, nenhum P0 de substituicao; o ultimo ajuste fica como esta
             unidades[chave] = {'acao': ACAO_BLOQUEADO, 'motivo': res_p0['motivo'],
-                               'detalhe': res_p0['detalhe'],
-                               'erro_leitura_cp': erro_cp,
+                               'detalhe': res_p0['detalhe'], 'estado_referencia': global_['estado'],
                                'ultimo_ajuste': None if prev is None else {
                                    'versao_ajuste': prev['versao_ajuste'], 'estado': prev['estado'],
                                    'p0': prev['p0'], 'p0_origem': prev['p0_origem']}}
@@ -330,7 +315,7 @@ def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=Non
             continue
         ref, _criada = garantir_referencia_p0(res_p0, agora, origem)
         p0v = float(ref['valor_p0'])
-        p0o = f"cp_model_confirmado:{ref['modelo_cp']}"
+        p0o = f"{p0m.ORIGEM}:{res_p0['registo']['test_id']}"
         ent = _entradas(obs, cargas[mod], referencia, p0v, _ref_resumo(ref))
         sig = ir.assinatura({'cfg': cfg_assin, 'obs': [(o['test_id'], o['versao'], o['data'], o['watts'])
                                                        for o in obs],
@@ -392,7 +377,8 @@ def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=Non
         unidades[chave] = {'acao': 'ajustado', 'versao_ajuste': linha['versao_ajuste'],
                            'estado': r['estado'], 'motivo': linha['motivo'], 'n_obs': len(obs),
                            'versao_referencia_p0': ref['versao_referencia'], 'p0': p0v}
-    return {'ok': True, 'unidades': unidades, 'n_ajustadas': n_aj, 'n_inalteradas': n_in,
+    return {'ok': True, 'p0_global': {k: v for k, v in global_.items()},
+            'unidades': unidades, 'n_ajustadas': n_aj, 'n_inalteradas': n_in,
             'n_bloqueadas': n_bl, 'n_falhadas': n_fa, 'carga': info_carga, 'versao_modelo': ir.VERSAO_IR}
 
 
@@ -538,17 +524,18 @@ def curva_influencia(tipo, duracao, atividade_id=None, ate=None, atividades=None
             'convergiu': aj['convergiu'], 'p0_origem': aj['p0_origem'],
             'avisos_identificabilidade': (aj.get('identificabilidade') or {}).get('avisos') or [],
             'ajuste_valido_anterior': anterior, 'versao_modelo': aj['versao_modelo'],
-            # referencia de P0 (CP Model) que este ajuste usou; None num ajuste antigo de P0 livre
+            # referencia de P0 (MMP3 do ultimo YES) que este ajuste usou; None num ajuste antigo de P0 livre
             'p0_referencia': ref_aj, 'p0_desatualizado': p0_desatualizado,
             'compatibilidade_p0_alvo': (aj.get('metricas') or {}).get('compatibilidade_p0_alvo'),
             'intervalo_maximo_sem_observacoes': maior_vazio,
             'excecao_solver': (tentativa or {}).get('excecao') or (aj.get('metricas') or {}).get('excecao'),
             'tentativa_mais_recente': tentativa,
             'ajuste_apresentado_e_antigo': tentativa is not None}
-    if not str(aj.get('p0_origem') or '').startswith('cp_model_confirmado'):
-        # ajuste anterior a regra P0 = CP (P0 livre): incompativel, nunca se desenha como se fosse atual
+    if not str(aj.get('p0_origem') or '').startswith(p0m.ORIGEM):
+        # ajuste de outra regra de P0 (P0 livre, P0 = CP): incompativel, nunca se desenha como se fosse atual
         return {**base, **meta, 'parametros': None, 'curvas': None, 'p0_incompativel': True,
-                'aviso_parametros': 'ajuste anterior a regra P0 = CP confirmado (P0 livre): incompativel, nao se desenha curva'}
+                'aviso_parametros': 'ajuste de uma regra de P0 anterior (nao e o MMP3 do ultimo YES): incompativel, '
+                                    'nao se desenha curva'}
     if aj['estado'] not in (ir.EST_IDENTIFICAVEL, ir.EST_NAO_IDENTIFICAVEL):
         return {**base, **meta, 'parametros': None, 'curvas': None,
                 'aviso_parametros': 'sem parametros utilizaveis neste ajuste: nao se desenha curva'}
@@ -624,16 +611,24 @@ def curva_influencia(tipo, duracao, atividade_id=None, ate=None, atividades=None
 
 # ── MMP3 e CP Model: contexto e impacto (SO LEITURA; nada e gravado, o CP Model nao e alterado) ────────────
 
-def impacto_cp_model(mod, curvas, ate, marcos=None, instantaneos_cp=None, modo='coerente'):
-    """Como o ponto MMP3 entra no CP Model e que CP resultaria AGORA, separado do CP confirmado.
+def _cp_model():
+    """Constantes/funcoes do CP Model (so leitura). Importado sem alterar nada nele."""
+    import os
+    import sys
+    u = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'utils')
+    if u not in sys.path:
+        sys.path.insert(0, u)
+    import cp_model as cpm
+    return cpm
 
-    Reutiliza `cp_model.pontos_de_curvas` (selecao dos MMP, season da data, duplicados) e `calcular_cp_completo`
-    (M1/M2/M3 e restantes), exatamente como a gravacao do CP, so com curvas ate `ate`. O 180 s e uma duracao EXTRA
-    em todas as modalidades: so os modelos de 3 parametros o consomem; M1/M2/M3 usam as duracoes classicas e nao
-    mudam por causa do MMP3 (nao substitui um ponto de 5, 12 ou 20 min). Os resultados calculados aqui sao
-    PROVISORIOS (`provisorio: True`); o CP confirmado e o gravado em cp_resultados (a selecao do utilizador) e e
-    o unico que define o P0. Nunca escolhe o modelo de menor SEE% como confirmado."""
-    cpm = p0m._cp_model()
+
+def impacto_cp_model(mod, curvas, ate, marcos=None, modo='coerente'):
+    """INFORMATIVO: como o ponto MMP3 (180 s) entra no CP Model e que CP resultaria AGORA. Reutiliza
+    `cp_model.pontos_de_curvas` e `calcular_cp_completo` (a mesma selecao dos MMP, season e duplicados da gravacao do
+    CP), so com curvas ate `ate`. O 180 s e uma duracao EXTRA em todas as modalidades: so os modelos de 3
+    parametros o consomem; M1/M2/M3 nao mudam e o ponto nao substitui um de 5, 12 ou 20 min. Os resultados sao
+    PROVISORIOS e NAO influenciam o IR: o P0 vem do MMP3 do ultimo YES, nao do CP Model."""
+    cpm = _cp_model()
     from config import season_de
     ate = str(ate)[:10]
     registos = [{'date': str(c['date'])[:10], 'secs': c.get('secs'), 'watts': c.get('watts'),
@@ -641,7 +636,7 @@ def impacto_cp_model(mod, curvas, ate, marcos=None, instantaneos_cp=None, modo='
                 for c in curvas or [] if isinstance(c, dict) and c.get('type') == mod and str(c.get('date'))[:10] <= ate]
     out = {'modalidade': mod, 'provisorio': True, 'ate': ate, 'duracao_mmp3_s': DURACAO_IR,
            'duracao_so_em_modelos_3p': DURACAO_IR not in cpm.DURACOES_CLASSICAS.get(mod, []),
-           'ponto_mmp3': None, 'modelos_provisorios': {}, 'cp_gravado': None}
+           'ponto_mmp3': None, 'modelos_provisorios': {}, 'influencia_no_ir': False}
     try:
         dados = cpm.pontos_de_curvas(registos, mod, season_activa=season_de(ate, marcos or None), modo=modo)
         datas = dados.get('datas') or {}
@@ -655,54 +650,39 @@ def impacto_cp_model(mod, curvas, ate, marcos=None, instantaneos_cp=None, modo='
         out['melhor_see_classico_provisorio'] = (res.get('melhor') or {}).get('nome')
     except Exception as e:                                   # nunca estraga a vista do IR
         out['erro'] = f'{type(e).__name__}: {e}'
-    inst = p0m.instantaneo_em_vigor(mod, instantaneos_cp)
-    if inst is not None:
-        out['cp_gravado'] = {'cp_w': inst.get('cp_w'), 'modelo': inst.get('modelo_escolhido'),
-                             'data_referencia': str(inst.get('data_referencia'))[:10] if inst.get('data_referencia') else None,
-                             'id': inst.get('id'), 'fonte': 'cp_resultados (gravado)'}
-        prov = out['modelos_provisorios'].get(inst.get('modelo_escolhido')) or {}
-        out['provisorio_difere_do_confirmado'] = (
-            None if prov.get('cp') is None or inst.get('cp_w') is None else abs(prov['cp'] - float(inst['cp_w'])) > 0.051)
     return out
 
 
-def contexto_mmp3(curvas, atividades, ate, marcos=None, instantaneos_cp=None, revisoes=None):
-    """{modalidade: contexto MMP3 + impacto no CP Model}, so leitura, so com dados ate `ate`."""
-    import protocolo
-    mapa = protocolo.mapa_ignore_power(atividades) or {}
-    ignorar = {aid for aid, v in mapa.items() if v is True}
-    horas = {a['id']: a['start_date_local'] for a in atividades or []
-             if isinstance(a, dict) and a.get('id') is not None and isinstance(a.get('start_date_local'), str)
-             and len(a['start_date_local']) >= 16}
-    cache = {}
-
-    def eleg(aid):
-        if aid not in cache:
-            cache[aid] = E.elegibilidade_aprendizagem(aid, atividades)['estado']
-        return cache[aid]
+def contexto_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
+    """({modalidade: contexto MMP3 + impacto informativo no CP Model}, p0_global), so leitura, so com dados ate `ate`.
+    Os esforcos avaliados sao os mesmos que alimentam o ajuste e o P0 global (uma unica fonte)."""
+    ignorar, _horas = _ignorar_e_horas(atividades)
+    ent = entradas_mmp3(curvas, atividades, ate, marcos, revisoes)
     out = {}
     for mod in mt.MODALIDADES:
-        c = mmp3.contexto(curvas, mod, ate, ignorar, eleg, marcos, horas)
-        c['cp_model'] = impacto_cp_model(mod, curvas, ate, marcos, instantaneos_cp)
+        c = mmp3.contexto(curvas, mod, ate, ignorar, None, marcos, esforcos=ent[mod][1])
+        c['cp_model'] = impacto_cp_model(mod, curvas, ate, marcos)
         out[mod] = c
-    return out
+    return out, p0_global_das_entradas(ent)
 
 
 # estados de apresentacao do ajuste do IR (um por modalidade)
 EI_VALIDO = 'valido'
 EI_DESATUALIZADO = 'desatualizado'
 EI_NAO_IDENT = 'nao_identificavel'
-EI_SEM_CP = 'sem_cp_confirmado'
+EI_SEM_CP = 'sem_referencia_mmp3'      # nao existe nenhum registo MMP3 YES: sem P0, sem curva
 EI_ERRO_SOLVER = 'erro_solver'
 EI_SEM_AJUSTE = 'sem_ajuste'
 
 
 def estado_ir(j, p0_atual):
-    """Estado do ajuste de uma modalidade a partir da resposta de `curva_influencia` e do P0 atual (resolver_p0)."""
+    """Estado do ajuste de uma modalidade a partir da resposta de `curva_influencia` e do P0 global atual."""
     if j.get('estado') == 'sem_ajuste':
         return EI_SEM_CP if (p0_atual is not None and p0_atual.get('valida') is False) else EI_SEM_AJUSTE
+    if p0_atual is not None and p0_atual.get('valida') is False:
+        return EI_SEM_CP                       # nao existe registo MMP3 YES: nenhum ajuste e "atual"
     if j.get('p0_incompativel'):
-        return EI_SEM_CP
+        return EI_DESATUALIZADO                # ajuste de outra regra de P0: nao foi recalibrado com a atual
     if j.get('excecao_solver') or j.get('tentativa_mais_recente'):
         return EI_ERRO_SOLVER
     if j.get('p0_desatualizado'):               # P0 mais antigo que a ultima referencia (a carga nova so e aviso)
@@ -781,27 +761,29 @@ OVERALL_INDISPONIVEL = {
     'referencia': '/api/modelo/ir/global?duracao=<s>'}
 
 
-def _estado_p0(mod, duracao, instantaneos_cp, aj_ref, desatualizado=False):
-    """Estado do P0 de uma modalidade para a UI: o que o ultimo ajuste usou e o que o CP Model permite hoje.
-    So leitura (nao grava nada). instantaneos_cp None = estado atual do CP nao consultado."""
+def _estado_p0(mod, duracao, global_, aj_ref, desatualizado=False):
+    """Estado do P0 de uma modalidade para a UI: o que o ultimo ajuste usou e o P0 global de hoje (MMP3 do ultimo
+    YES). So leitura. `desatualizado`: o ajuste mostrado usou outra referencia que a atual."""
     ult = db.ultima_referencia_p0(mod, duracao)
     out = {'usado_no_ajuste': aj_ref,
-           'origem_ajuste': ('cp_model_confirmado' if aj_ref else 'p0_livre_anterior_ao_cp_model'),
-           'ultima_referencia': _ref_resumo(ult),
-           # o ajuste mostrado usou uma referencia anterior a ultima: nao foi recalibrado com o P0 mais recente
-           'desatualizado': bool(desatualizado or (ult is not None and (aj_ref or {}).get('assinatura') != ult['assinatura'])),
-           'atual': None}
-    if instantaneos_cp is not None:
-        r = p0m.resolver_p0(mod, duracao, instantaneos_cp)
-        out['atual'] = ({'valida': True, 'valor_p0': r['valor_p0'], 'modelo_cp': r['modelo_cp'],
-                         'instantaneo': r['instantaneo'], 'avisos_cp': r['avisos_cp']} if r['valida'] else
-                        {'valida': False, 'motivo': r['motivo'], 'detalhe': r['detalhe'],
-                         'instantaneo': r.get('instantaneo')})
+           'origem_ajuste': (p0m.ORIGEM if (aj_ref or {}).get('formulacao') == p0m.FORMULA_ID else
+                             ('outra_regra_de_p0' if aj_ref else 'p0_livre_anterior')),
+           'ultima_referencia': _ref_resumo(ult), 'atual': None}
+    des = bool(desatualizado or (ult is not None and (aj_ref or {}).get('assinatura') != ult['assinatura']))
+    r = p0m.resolver_p0(mod, duracao, global_)
+    if r['valida']:
+        out['atual'] = {'valida': True, 'valor_p0': r['valor_p0'], 'origem': r['origem'], 'registo': r['registo'],
+                        'estado_referencia': r['estado_referencia'], 'assinatura': r['assinatura'],
+                        'versao_regra': r['versao_regra']}
+        des = des or bool(aj_ref and aj_ref.get('assinatura') != r['assinatura'])
+    else:
+        out['atual'] = {'valida': False, 'motivo': r['motivo'], 'detalhe': r['detalhe'],
+                        'estado_referencia': r['estado_referencia']}
+    out['desatualizado'] = des
     return out
 
 
-def curvas_conjuntas(duracao=None, ate=None, atividades=None, instantaneos_cp=None, curvas=None, marcos=None,
-                     revisoes=None):
+def curvas_conjuntas(duracao=None, ate=None, atividades=None, curvas=None, marcos=None, revisoes=None):
     """Curvas de influencia das quatro modalidades para UMA duracao, num eixo diario comum.
 
     SO LEITURA: reutiliza `curva_influencia` (ultimo ajuste guardado de cada modalidade), nunca recalibra
@@ -823,7 +805,7 @@ def curvas_conjuntas(duracao=None, ate=None, atividades=None, instantaneos_cp=No
     hoje = (ate or mt.agora_utc().date().isoformat())
     if curvas is None:
         curvas = db.load_power_curves() or []
-    ctx3 = contexto_mmp3(curvas, atividades, hoje, marcos, instantaneos_cp, revisoes)
+    ctx3, global_ = contexto_mmp3(curvas, atividades, hoje, marcos, revisoes)
     series = {m: j['curvas'] for m, j in js.items() if j.get('curvas')}
     datas = []
     if series:
@@ -861,11 +843,10 @@ def curvas_conjuntas(duracao=None, ate=None, atividades=None, instantaneos_cp=No
                 'lag_dias': j.get('lag_dias'), 'tem_curva': False, 'normalizacao': None,
                 'motivo_normalizacao': None, 'inicio_serie': None, 'fora_do_ajuste_desde': None,
                 'plausibilidade': None, 'w': None, 'pct': None,
-                'p0': _estado_p0(m, duracao, instantaneos_cp, j.get('p0_referencia'),
-                                 bool(j.get('p0_desatualizado'))),
+                'p0': _estado_p0(m, duracao, global_, j.get('p0_referencia'), bool(j.get('p0_desatualizado'))),
                 'mmp3': ctx3[m], 'tentativa_mais_recente': j.get('tentativa_mais_recente'),
                 'ajuste_apresentado_e_antigo': bool(j.get('ajuste_apresentado_e_antigo'))}
-        item['estado_ir'] = estado_ir(j, (item['p0'] or {}).get('atual') if instantaneos_cp is not None else None)
+        item['estado_ir'] = estado_ir({**j, 'p0_desatualizado': item['p0']['desatualizado']}, item['p0']['atual'])
         c = series.get(m)
         if c and datas:
             p0 = P['p0']
@@ -897,7 +878,7 @@ def curvas_conjuntas(duracao=None, ate=None, atividades=None, instantaneos_cp=No
         itens[m] = item
     com_curva = [m for m in mods if itens[m]['tem_curva']]
     lags.discard(None)
-    return {**base, 'estado': 'ok' if com_curva else 'sem_curvas', 'datas': datas,
+    return {**base, 'p0_global': global_, 'estado': 'ok' if com_curva else 'sem_curvas', 'datas': datas,
             'data_ini': datas[0] if datas else None, 'data_fim': datas[-1] if datas else None,
             'modalidades_com_curva': com_curva,
             'modalidades_sem_curva': [m for m in mods if m not in com_curva],
@@ -1002,7 +983,8 @@ def validar_preditivo(historico_obs, revisoes, atividades, curvas, modos=V.MODOS
     conhecido_na_epoca, so as ja detetadas antes do alvo); cargas ate ao dia anterior; o IR e
     reajustado SO com isso e preve o alvo. O erro de ajuste historico nunca entra aqui.
     auto: FonteAuto (modelo_observacoes_auto); sem ele usa as observacoes atuais do historico.
-    P0: fixo e igual a referencia do CP Model mais recente JA CONHECIDA do IR antes da data do alvo
+    LEGADO (60/300/1200 s): nao valida o IR baseado em MMP3 (180 s) nem o alimenta.
+    P0: fixo e igual a referencia de P0 mais recente JA CONHECIDA do IR antes da data do alvo
     (`conhecida_desde` estritamente anterior), nos dois modos; sem ela o alvo nao e previsto
     ('sem_referencia_p0_conhecida'). referencias_p0: historico de referencias (testes); omisso = base.
     """
@@ -1106,20 +1088,9 @@ def _contar(prev, campo):
 
 
 def apos_cp_gravado(resultado_cp, modalidade, origem='cp_model'):
-    """Gancho para quem acabou de GRAVAR um resultado do CP Model (api_cp: /api/perfil/guardar): resolve de novo o
-    P0 das unidades dessa modalidade e recalibra so o que mudou, pelo mesmo `recalibrar` do sync. Nunca levanta:
-    falhar o IR nao pode estragar a gravacao do CP. So age se o CP foi mesmo gravado (`escrito` com 'cp'); gravar
-    so perfil ou limiares nao altera cp_resultados. Sem alteracao efetiva do P0 nem dos dados e idempotente."""
-    if not isinstance(resultado_cp, dict) or not (resultado_cp.get('escrito') or {}).get('cp'):
-        return {'ok': False, 'ignorado': 'cp_nao_gravado'}
-    if modalidade not in config.CICLICOS:
-        return {'ok': False, 'ignorado': 'modalidade_sem_ir'}
-    try:
-        return recalibrar(origem=origem, tipo=modalidade)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+    """Mantido por compatibilidade com o gancho de api_cp (/api/perfil/guardar): o P0 do IR NAO depende do CP
+    Model (e o MMP3 do ultimo YES), por isso gravar um CP nao recalibra nada nem toca no IR."""
+    return {'ok': False, 'ignorado': 'p0_do_ir_nao_depende_do_cp'}
 
 
 def apos_deteccao(resultado_deteccao, origem='sync'):

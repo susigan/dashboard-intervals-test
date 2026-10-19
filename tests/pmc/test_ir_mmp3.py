@@ -23,7 +23,6 @@ for _p in (HERE, ROOT, os.path.join(ROOT, 'utils')):
 os.environ.setdefault('INTERVALS_ICU_API_KEY', 'valor-ficticio-de-teste')
 import numpy as np  # noqa: E402
 
-import cp_fixture as CPF  # noqa: E402
 import modelo_ir as ir  # noqa: E402
 import modelo_ir_servico as mis  # noqa: E402
 import modelo_mmp3 as mm  # noqa: E402
@@ -256,20 +255,11 @@ class EntradaNoCpModel(unittest.TestCase):
             self.assertEqual(com[nome]['n_pts'], sem[nome]['n_pts'], nome)
             self.assertEqual(com[nome]['wp'], sem[nome]['wp'], nome)
 
-    def test_10_a_selecao_gravada_do_utilizador_e_preservada_e_nao_ha_menor_see(self):
-        inst = [CPF.instantaneo('Bike', cp=281.0, modelo='M2 (WLS-1/t)', id=7, data_referencia='2026-03-01')]
-        r = mis.impacto_cp_model('Bike', curvas_cp(), '2026-12-31', instantaneos_cp=inst)
-        g = r['cp_gravado']
-        self.assertEqual((g['modelo'], g['cp_w'], g['id']), ('M2 (WLS-1/t)', 281.0, 7))
-        self.assertEqual(g['fonte'], 'cp_resultados (gravado)')
-        # os modelos calculados agora sao provisorios e podem diferir; nunca substituem o gravado
-        self.assertIn('provisorio_difere_do_confirmado', r)
-        self.assertTrue(r['provisorio'])
-        p = mis.p0m.resolver_p0('Bike', 180, inst)
-        self.assertEqual((p['modelo_cp'], p['valor_p0']), ('M2 (WLS-1/t)', 281.0))
 
-    def test_sem_cp_gravado_nao_ha_confirmado(self):
-        self.assertIsNone(mis.impacto_cp_model('Bike', curvas_cp(), '2026-12-31', instantaneos_cp=[])['cp_gravado'])
+    def test_nao_ha_cp_gravado_nem_influencia_no_ir(self):
+        r = mis.impacto_cp_model('Bike', curvas_cp(), '2026-12-31')
+        self.assertNotIn('cp_gravado', r)
+        self.assertFalse(r['influencia_no_ir'])           # o CP Model e informativo: nao define o P0 do IR
 
     def test_so_leitura_nao_altera_as_curvas_nem_chama_gravacao(self):
         cv = copy.deepcopy(curvas_cp())
@@ -278,245 +268,6 @@ class EntradaNoCpModel(unittest.TestCase):
             mis.impacto_cp_model('Bike', cv, '2026-12-31')
         self.assertEqual(cv, antes)
 
-
-# ═══ C. P0 = CP confirmado, Solver e historico (servico real sobre SQLite temporaria, 180 s real) ═════
-
-VERDADE = dict(p0=290.0, k1=0.01, k2=0.03, t1=45.0, t2=8.0)
-D0 = date(2025, 1, 6)
-AGORA = datetime(2026, 10, 17, 12, 0, 0)
-
-
-def cenario180(n_semanas=64, semente=5, extra=0.6, tipo='Bike', prefixo='b'):
-    """Uma sessao-teste por semana cujo MMP3 e a previsao do IR com carga real; mais sessoes so de carga."""
-    rng = np.random.default_rng(semente)
-    n_dias = n_semanas * 7
-    carga = np.where(rng.random(n_dias) < extra, rng.uniform(30, 120, n_dias), 0.0)
-    for s in range(n_semanas):
-        carga[s * 7 + 3] = max(carga[s * 7 + 3], 60.0)
-    v = VERDADE
-    perf = ir.desempenho(carga, v['p0'], v['k1'], v['k2'], v['t1'], v['t2'], 1)
-    cvs, ativ = [], []
-    for i in range(n_dias):
-        dia = (D0 + timedelta(days=i)).isoformat()
-        teste = (i % 7 == 3)
-        if carga[i] <= 0 and not teste:
-            continue
-        aid = f'{prefixo}{i}'
-        ativ.append({'id': aid, 'type': 'Ride', 'start_date_local': dia + 'T07:00:00',
-                     'icu_training_load': float(carga[i]), 'icu_ignore_power': False})
-        if teste:
-            cvs.append(c180(aid, tipo, dia, float(perf[i])))
-    return cvs, ativ
-
-
-class _Base180(S._Base):
-    def setUp(self):
-        p = mock.patch.object(S, 'cenario', side_effect=lambda *a, **k: cenario180())
-        p.start()
-        self.addCleanup(p.stop)
-        o = mock.patch.object(oa, 'obter_marcos', return_value=(None, oa.FONTE_SEASON_MES))     # sem rede
-        o.start()
-        self.addCleanup(o.stop)
-        super().setUp()
-
-    def troca_cp(self, lista):
-        self.cp_loader.stop()
-        self.cp_loader = CPF.patch_loader(lista)
-        self.cp_loader.start()
-        self.addCleanup(self.cp_loader.stop)
-
-    def linhas180(self, mod='Bike'):
-        return db.ajustes_ir_historico(mod, 180)
-
-
-class SolverEP0(_Base180):
-    def test_13_um_ajuste_por_modalidade_em_180_s_com_p0_fixo_e_so_k1_k2_t1_t2_livres(self):
-        chamadas = []
-        real = ir.ajustar_observacoes
-
-        def espia(*a, **k):
-            chamadas.append(k.get('p0_fixo'))
-            return real(*a, **k)
-        with mock.patch.object(ir, 'ajustar_observacoes', side_effect=espia):
-            r = self.rec()
-        self.assertEqual(sorted(r['unidades']), ['Bike:180', 'Row:180', 'Run:180', 'Ski:180'])
-        self.assertEqual(r['unidades']['Bike:180']['acao'], 'ajustado')
-        self.assertEqual(chamadas, [CPF.CP_PADRAO])                   # Solver correu com P0 FIXO = CP gravado
-        (l,) = self.linhas180()
-        self.assertEqual((l['duracao_s'], l['p0']), (180, CPF.CP_PADRAO))
-        self.assertEqual(l['identificabilidade']['parametros_livres'], ['k1', 'k2', 't1', 't2'])
-        self.assertTrue(l['p0_origem'].startswith('cp_model_confirmado:'))
-        for d in (60, 300, 1200):
-            self.assertEqual(db.ajustes_ir_historico('Bike', d), [], d)
-        self.assertEqual(l['configuracao']['duracao_alvo_s'], 180)
-
-    def test_p0_nunca_vem_do_mmp3_nem_de_outras_duracoes(self):
-        self.rec()
-        (l,) = self.linhas180()
-        mmp3_max = max(c['watts'][0] for c in self.CURVAS)
-        self.assertNotEqual(l['p0'], mmp3_max)
-        self.assertEqual(l['p0'], CPF.CP_PADRAO)
-        self.assertEqual(mis.p0m.resolver_p0('Bike', 180, CPF.instantaneos_padrao())['valor_p0'], CPF.CP_PADRAO)
-        self.assertEqual(mis.p0m.resolver_p0('Bike', 60, CPF.instantaneos_padrao())['valor_p0'], CPF.CP_PADRAO)
-
-    def test_12_cp_inalterado_nao_cria_versao_duplicada_nem_recalibra(self):
-        self.rec()
-        n_ref, n_aj = len(db.referencias_p0_historico('Bike', 180)), len(self.linhas180())
-        with mock.patch.object(ir, 'ajustar_observacoes', side_effect=AssertionError('recalibrou sem motivo')):
-            r = self.rec(agora=AGORA + timedelta(hours=6))
-            self.troca_cp([i for i in CPF.instantaneos_padrao()])      # mesma gravacao outra vez
-            r2 = self.rec(agora=AGORA + timedelta(hours=7))
-        self.assertEqual(r['unidades']['Bike:180']['acao'], 'inalterado')
-        self.assertEqual(r2['unidades']['Bike:180']['acao'], 'inalterado')
-        self.assertEqual((len(db.referencias_p0_historico('Bike', 180)), len(self.linhas180())), (n_ref, n_aj))
-
-    def test_11_novo_cp_gravado_cria_nova_referencia_e_reajusta_com_o_novo_p0(self):
-        self.rec()
-        v1 = copy.deepcopy(self.linhas180()[0])
-        chamadas = []
-        real = ir.ajustar_observacoes
-
-        def espia(*a, **k):
-            chamadas.append(k.get('p0_fixo'))
-            return real(*a, **k)
-        novo = [CPF.instantaneo('Bike', cp=284.0, id=9, data_referencia='2026-03-01', data_gravacao='2026-03-02 10:00:00',
-                                pontos=CPF.PONTOS_PADRAO)] + [i for i in CPF.instantaneos_padrao() if i['modalidade'] != 'Bike']
-        self.troca_cp(novo)
-        with mock.patch.object(ir, 'ajustar_observacoes', side_effect=espia):
-            r = self.rec(agora=AGORA + timedelta(days=1))
-        u = r['unidades']['Bike:180']
-        self.assertEqual((u['acao'], u['motivo'], u['versao_referencia_p0']), ('ajustado', mis.MOTIVO_CP, 2))
-        self.assertEqual(chamadas, [284.0])
-        refs = db.referencias_p0_historico('Bike', 180)
-        self.assertEqual([x['valor_p0'] for x in refs], [CPF.CP_PADRAO, 284.0])
-        self.assertEqual((refs[1]['modelo_cp'], refs[1]['cp_data_referencia']), ('M1 (WLS-P)', '2026-03-01'))
-        ls = self.linhas180()
-        self.assertEqual([x['versao_ajuste'] for x in ls], [1, 2])
-        self.assertEqual((ls[1]['p0'], ls[1]['p0_inicial']), (284.0, 284.0))
-        self.assertEqual(ls[0], v1)                                    # 16. o ajuste e a referencia antigos ficam intactos
-
-    def test_14_falha_do_solver_preserva_o_ultimo_ajuste_valido_e_marca_o_estado(self):
-        self.rec()
-        v1 = copy.deepcopy(self.linhas180()[0])
-        self.troca_cp([CPF.instantaneo('Bike', cp=284.0, id=9, data_referencia='2026-03-01',
-                                       data_gravacao='2026-03-02 10:00:00')] +
-                      [i for i in CPF.instantaneos_padrao() if i['modalidade'] != 'Bike'])
-        with mock.patch.object(ir, 'ajustar_observacoes', side_effect=RuntimeError('solver rebentou')):
-            r = self.rec(agora=AGORA + timedelta(days=1))
-        self.assertEqual(r['unidades']['Bike:180']['acao'], mis.ACAO_FALHOU)
-        self.assertEqual(self.linhas180()[0], v1)
-        j = self.c.get('/api/modelo/ir/conjunto').get_json()['modalidades']['Bike']
-        self.assertEqual(j['estado_ir'], mis.EI_ERRO_SOLVER)
-        self.assertTrue(j['ajuste_apresentado_e_antigo'])
-        self.assertEqual(j['parametros']['p0'], CPF.CP_PADRAO)          # o antigo, nunca apresentado como novo
-        self.assertEqual(j['p0']['atual']['valor_p0'], 284.0)
-        self.assertIn('solver rebentou', j['excecao_solver'])
-
-    def test_sem_cp_confirmado_nao_ha_ajuste_nem_curva_ficticia(self):
-        self.troca_cp([])
-        r = self.rec()
-        self.assertEqual(r['unidades']['Bike:180']['acao'], mis.ACAO_BLOQUEADO)
-        self.assertEqual(self.linhas180(), [])
-        j = self.c.get('/api/modelo/ir/conjunto').get_json()
-        it = j['modalidades']['Bike']
-        self.assertEqual(it['estado_ir'], mis.EI_SEM_CP)
-        self.assertFalse(it['tem_curva'])
-        self.assertIsNone(it['parametros'])
-        self.assertEqual(j['estado'], 'sem_curvas')
-        self.assertEqual(j['modalidades_com_curva'], [])
-
-    def test_ajuste_antigo_de_p0_livre_nao_e_desenhado(self):
-        self.rec()
-        with mock.patch.object(db, 'ultimo_ajuste_ir',
-                               side_effect=lambda m, d: {**db.ajustes_ir_historico(m, d)[-1], 'p0_origem': 'primeiras_observacoes'}):
-            j = self.c.get('/api/modelo/ir/influencia?tipo=Bike').get_json()
-        self.assertTrue(j['p0_incompativel'])
-        self.assertIsNone(j['curvas'])
-        self.assertIsNone(j['parametros'])
-
-    def test_15_recalibracao_numa_data_passada_nao_usa_dados_futuros(self):
-        corte = D0 + timedelta(days=300)
-        self.rec(agora=datetime(corte.year, corte.month, corte.day, 12))
-        (l,) = self.linhas180()
-        datas = [o['data'] for o in l['entradas']['observacoes']]
-        self.assertTrue(datas)
-        self.assertLessEqual(max(datas), corte.isoformat())
-        self.assertLessEqual(l['data_fim'], corte.isoformat())
-        esperado = mm.observacoes_ir(mm.avaliar_esforcos([c for c in self.CURVAS if c['date'] <= corte.isoformat()],
-                                                         'Bike', corte.isoformat(), (), ELEG))
-        self.assertEqual(l['n_obs'], len(esperado))
-
-    def test_16_historico_preservado_ao_ler_e_ao_recalibrar(self):
-        self.rec()
-        antes = [dict(r) for r in self.linhas180()]
-        refs = copy.deepcopy(db.referencias_p0_historico('Bike', 180))
-        self.c.get('/api/modelo/ir/conjunto')
-        self.c.get('/api/modelo/ir?historico=1')
-        self.rec(agora=AGORA + timedelta(hours=3))
-        self.assertEqual(self.linhas180(), antes)
-        self.assertEqual(db.referencias_p0_historico('Bike', 180), refs)
-
-    def test_ajustes_das_duracoes_antigas_ficam_na_base_e_nao_sao_recalibrados(self):
-        legado = {**{c: None for c in db._COLS_IR}, 'modalidade': 'Bike', 'duracao_s': 1200, 'versao_ajuste': 1,
-                  'ajustado_em': AGORA, 'origem': 'teste', 'motivo': 'primeiro_ajuste', 'estado': ir.EST_IDENTIFICAVEL,
-                  'p0': 290.0, 'k1': 0.01, 'k2': 0.03, 't1': 45.0, 't2': 8.0, 'n_obs': 20, 'assinatura': 'legado',
-                  'versao_modelo': ir.VERSAO_IR, 'configuracao': {}, 'metricas': {}, 'entradas': {}}
-        db.inserir_ajuste_ir(legado)
-        self.rec()
-        self.assertEqual(len(db.ajustes_ir_historico('Bike', 1200)), 1)              # intacto, nao recalibrado
-        v = self.c.get('/api/modelo/ir?tipo=Bike').get_json()
-        self.assertEqual([i['duracao_s'] for i in v['itens']], [180])                # a vista operacional so mostra 180
-        h = self.c.get('/api/modelo/ir?tipo=Bike&duracao=1200&historico=1').get_json()
-        self.assertEqual(len(h['historico']), 1)                                     # o historico antigo continua consultavel
-
-
-class IntegracaoEEndpoints(_Base180):
-    def test_18_endpoints_existentes_continuam_a_responder(self):
-        self.rec()
-        self.assertEqual(self.c.get('/api/modelo/ir').status_code, 200)
-        self.assertEqual(self.c.get('/api/modelo/ir?tipo=Bike&duracao=180').status_code, 200)
-        j = self.c.get('/api/modelo/ir/influencia?tipo=Bike&duracao=180').get_json()
-        self.assertEqual((j['duracao_s'], j['estado']), (180, ir.EST_IDENTIFICAVEL if j['estado'] == ir.EST_IDENTIFICAVEL else j['estado']))
-        self.assertIsNotNone(j['curvas'])
-        self.assertEqual(self.c.get('/api/modelo/ir/influencia?tipo=Bike').status_code, 200)       # duracao opcional
-        self.assertEqual(self.c.get('/api/modelo/ir/conjunto?duracao=180').status_code, 200)
-        self.assertEqual(self.c.get('/api/modelo/ir/conjunto?duracao=300').status_code, 400)       # descontinuada
-        self.assertEqual(self.c.get('/api/modelo/ir/conjunto?tipo=Bike').status_code, 400)
-        ok = self.c.post('/api/modelo/ir/recalibrar', json={'duracao_s': 180, 'tipo': 'Bike'})
-        self.assertEqual(ok.status_code, 200)
-        nao = self.c.post('/api/modelo/ir/recalibrar', json={'duracao_s': 300})
-        self.assertEqual(nao.status_code, 409)
-        self.assertEqual(nao.get_json()['erro'], 'duracao_nao_operacional')
-
-    def test_conjunto_traz_o_contexto_mmp3_por_modalidade_e_o_estado_do_ajuste(self):
-        self.rec()
-        j = self.c.get('/api/modelo/ir/conjunto').get_json()
-        self.assertEqual(j['duracao_s'], 180)
-        b = j['modalidades']['Bike']
-        self.assertEqual(b['estado_ir'], mis.EI_VALIDO if b['parametros_identificados'] else mis.EI_NAO_IDENT)
-        m = b['mmp3']
-        self.assertEqual(m['duracao_s'], 180)
-        for k in ('mmp3_inicial_temporada', 'mmp3_pr_atual', 'ultimo_esforco', 'cp_model', 'inicio_season'):
-            self.assertIn(k, m)
-        self.assertEqual(m['cp_model']['cp_gravado']['cp_w'], CPF.CP_PADRAO)
-        self.assertEqual(b['p0']['atual']['valor_p0'], CPF.CP_PADRAO)
-        self.assertEqual(j['modalidades']['Row']['estado_ir'], mis.EI_SEM_AJUSTE)
-        json.dumps(j)
-
-    def test_contexto_nao_grava_nada(self):
-        self.rec()
-        tabelas = [r[0] for r in db._exec("SELECT name FROM sqlite_master WHERE type='table'", fetch='all')]
-
-        def foto():
-            return {t: sorted(map(repr, db._exec(f'SELECT * FROM "{t}"', fetch='all') or []))
-                    for t in tabelas if t != 'sqlite_sequence'}
-        antes = foto()
-        self.c.get('/api/modelo/ir/conjunto')
-        self.c.get('/api/modelo/ir/influencia?tipo=Bike')
-        self.assertEqual(foto(), antes)
-
-
-# ═══ D. Revisao final: cenarios adicionais (pontos antigos intactos, provisorio, isolamento por modalidade) ═════
 
 class PontosAntigosIntactos(unittest.TestCase):
     def test_4_o_ponto_de_180_s_nao_substitui_mmp1_5_12_20_60(self):
@@ -533,52 +284,6 @@ class PontosAntigosIntactos(unittest.TestCase):
             self.assertIn(t, {x[0] for x in com})
 
 
-class ProvisorioEIsolamento(_Base180):
-    def troca(self, lista):
-        self.troca_cp(lista)
-
-    def test_6_cp_provisorio_ou_nao_selecionado_nao_altera_p0(self):
-        self.rec()
-        refs = copy.deepcopy(db.referencias_p0_historico('Bike', 180))
-        n = len(self.linhas180())
-        r = mis.impacto_cp_model('Bike', curvas_cp(), '2026-12-31', instantaneos_cp=CPF.instantaneos_padrao())
-        self.assertTrue(r['provisorio'])
-        provis = {x['cp'] for x in r['modelos_provisorios'].values() if x.get('cp')}
-        self.assertTrue(provis and any(abs(c - CPF.CP_PADRAO) > 0.5 for c in provis))   # provisorios diferem do gravado
-        with mock.patch.object(ir, 'ajustar_observacoes', side_effect=AssertionError('P0 nao devia mudar')):
-            r2 = self.rec(agora=AGORA + timedelta(hours=5))
-        self.assertEqual(r2['unidades']['Bike:180']['acao'], 'inalterado')
-        self.assertEqual(db.referencias_p0_historico('Bike', 180), refs)
-        self.assertEqual(len(self.linhas180()), n)
-        self.assertEqual(self.linhas180()[-1]['p0'], CPF.CP_PADRAO)
-
-    def test_10_cada_modalidade_mantem_o_seu_mmp3_cp_p0_e_historico(self):
-        cr, ar = cenario180(semente=11, tipo='Row', prefixo='r')
-        for a in ar:
-            a['type'] = 'Rowing'
-        self.curvs += cr
-        self.ativ += ar
-        self.troca_cp([CPF.instantaneo('Bike', cp=290.0, id=1), CPF.instantaneo('Row', cp=250.0, id=2)])
-        self.sync()
-        self.prepara()
-        self.rec()
-        b, r = db.ajustes_ir_historico('Bike', 180), db.ajustes_ir_historico('Row', 180)
-        self.assertEqual((b[-1]['p0'], r[-1]['p0']), (290.0, 250.0))
-        self.assertEqual(db.ultima_referencia_p0('Bike', 180)['valor_p0'], 290.0)
-        self.assertEqual(db.ultima_referencia_p0('Row', 180)['valor_p0'], 250.0)
-        ob = {o['test_id'] for o in b[-1]['entradas']['observacoes']}
-        orow = {o['test_id'] for o in r[-1]['entradas']['observacoes']}
-        self.assertTrue(ob and orow and not (ob & orow))
-        self.assertTrue(all(t.startswith('Bike:180:') for t in ob))
-        self.assertTrue(all(t.startswith('Row:180:') for t in orow))
-        n_b = len(db.ajustes_ir_historico('Bike', 180))
-        self.troca_cp([CPF.instantaneo('Bike', cp=290.0, id=1),
-                       CPF.instantaneo('Row', cp=255.0, id=3, data_referencia='2026-03-01',
-                                       data_gravacao='2026-03-02 10:00:00')])
-        self.rec(agora=AGORA + timedelta(days=1))
-        self.assertEqual(len(db.ajustes_ir_historico('Bike', 180)), n_b)        # Bike nao recalibra por CP de Row
-        self.assertEqual(db.ultima_referencia_p0('Row', 180)['valor_p0'], 255.0)
-        self.assertEqual(len(db.referencias_p0_historico('Row', 180)), 2)
 
 
 class InterfaceEstatica(unittest.TestCase):
@@ -592,11 +297,17 @@ class InterfaceEstatica(unittest.TestCase):
         self.assertNotIn('IR_DURS', self.ir)
 
     def test_estados_distintos_na_interface(self):
-        for k in ('sem_cp_confirmado', 'erro_solver', 'desatualizado', 'nao_identificavel', 'valido'):
+        for k in ('sem_referencia_mmp3', 'erro_solver', 'desatualizado', 'nao_identificavel', 'valido'):
             self.assertIn(k, self.ir, k)
 
     def test_painel_preditivo_antigo_nao_se_apresenta_como_validacao_do_ir_mmp3(self):
         self.assertIn('Nao valida o IR baseado em MMP3', self.src)
+        self.assertIn('LEGADO', self.src)
+
+    def test_ui_nao_afirma_que_o_cp_e_a_origem_do_p0(self):
+        self.assertNotRegex(self.ir, r'P0 = CP|CP confirmado|\(= P0\)|cp_gravado')
+        self.assertIn('MMP3 do último', self.ir)
+        self.assertIn('P0 global', self.ir)
 
 
 if __name__ == '__main__':

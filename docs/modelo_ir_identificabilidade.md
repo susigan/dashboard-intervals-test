@@ -29,7 +29,7 @@ Estado: **diagnóstico**. Nada neste documento altera a equação, os limites, o
    só se o alvo for compatível em escala com o CP (ver `modelo_ir_p0_cp.md`, `compatibilidade_p0_alvo`).
 
 Hipóteses **não** resolvidas: dados de produção (a cópia local pode diferir); o critério de seleção ≥ 92 % da
-referência recente; o desajuste alvo (melhor de 60/300/1200 s numa atividade) vs P0 = CP.
+referência recente; o desajuste alvo (melhor de 60/300/1200 s numa atividade) vs P0 (regra anterior: CP).
 
 ## 2. Auditoria da equação e do objetivo
 

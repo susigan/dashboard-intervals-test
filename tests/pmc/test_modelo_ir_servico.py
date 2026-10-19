@@ -78,10 +78,8 @@ class _Base(T.BaseDB):
 
     def setUp(self):
         self.CURVAS, self.ATIV = cenario()
-        # P0 vem do CP Model confirmado: instantaneos sinteticos (nunca a base de perfil real)
-        self.cp_loader = CPF.patch_loader()
-        self.cp_loader.start()
-        self.addCleanup(self.cp_loader.stop)
+        # P0 global injetado pelo assento (ir_duracao_legado); a regra real esta em test_ir_p0_global.py
+        _LEG.definir_p0()
         super().setUp()
         self.ativ = copy.deepcopy(self.ATIV)        # BaseDB.setUp usa atividades sem carga: trocamos
 
@@ -161,7 +159,7 @@ class RecalibracaoEHistorico(_Base):
         # P0 = CP e igual para todas as duracoes (60 s inclusive): so geram linhas as unidades COM observacoes
         self.assertEqual({(l['modalidade'], l['duracao_s']) for l in db.ajustes_ir_historico()},
                          {('Bike', 1200)})        # uma unidade por modalidade: so a duracao operacional
-        self.assertEqual({l['p0_inicial'] for l in db.ajustes_ir_historico()}, {CPF.CP_PADRAO})
+        self.assertEqual({l['p0_inicial'] for l in db.ajustes_ir_historico()}, {_LEG.P0_PADRAO})
         self.assertEqual(self.rec()['unidades']['Row:1200']['acao'], 'sem_observacoes')
 
     def test_sem_novas_observacoes_nao_recalcula_nem_grava(self):
@@ -332,7 +330,7 @@ class InicializacaoDeP0NoServico(_Base):
         self.prepara()
         self.rec()                                                   # agora = 2026-10-17 -> ano anterior 2025
         l = self.linhas()[0]
-        self.assertEqual(l['p0_origem'], 'cp_model_confirmado:M1 (WLS-P)')
+        self.assertEqual(l['p0_origem'], 'mmp3_ultimo_yes:Bike:1200:seam-290.0')
         self.assertNotIn(l['p0_origem'], ('ano_anterior', 'primeiras_observacoes', 'mediana_dos_alvos'))
         self.assertEqual(l['p0_inicial'], 290.0)                     # P0 = CP (exato)
         self.assertIsNone(l['metricas']['p0_inicial_detalhe'])
@@ -341,7 +339,7 @@ class InicializacaoDeP0NoServico(_Base):
         self.prepara()
         self.rec(agora=datetime(2031, 3, 1, 12, 0, 0))               # ano anterior (2030) sem dados
         l = self.linhas()[0]
-        self.assertEqual(l['p0_origem'], 'cp_model_confirmado:M1 (WLS-P)')
+        self.assertEqual(l['p0_origem'], 'mmp3_ultimo_yes:Bike:1200:seam-290.0')
         self.assertEqual(l['p0_inicial'], 290.0)
 
     def test_p0_do_ajuste_e_exatamente_o_da_referencia_e_nao_foi_estimado(self):

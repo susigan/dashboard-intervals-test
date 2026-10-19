@@ -291,34 +291,36 @@ class UiCurvasIR(unittest.TestCase):
         self.need_node()
         self.assertIn('t1 (inferior)', self.res['misto']['tabela'])
 
-    def test_tabela_mostra_a_origem_do_p0_fixo_vinda_do_cp_model(self):
+    def test_tabela_mostra_a_origem_do_p0_fixo_vinda_do_ultimo_yes(self):
         self.need_node()
         t = self.res['render_normal']['tabela']
         self.assertIn('Origem do P0 (fixo)', t)
-        self.assertIn('P0 = CP (270.0 W · M1)', t)              # P0 = CP e o modelo do CP que o deu
-        self.assertIn('ref. 2025-01-01', t)                     # data de referencia dos dados do CP
-        self.assertIn('conhecida 2026-09-30', t)                # momento em que o IR passou a conhecer a referencia
-        self.assertIn('· v2', t)
-        self.assertIn('P0 livre (ajuste anterior ao CP Model)', t)   # ajustes antigos nao se passam por CP
-        self.assertIn('P0 fixo, origem: cp_model_confirmado:M1', t)
+        self.assertIn('P0 = MMP3 do último YES (270.0 W)', t)     # P0 = MMP3 do ultimo YES (nao o CP)
+        self.assertIn('Bike:1200:seam-270.0', t)                  # identificador do registo de origem
+        self.assertIn('2025-01-01 07:00', t)                      # data/hora do registo
+        self.assertIn('· v2', t)                                  # versao da referencia
+        self.assertIn('P0 livre (ajuste anterior)', t)            # ajustes antigos nao se passam pela regra nova
+        self.assertIn('P0 fixo, origem: mmp3_ultimo_yes:Bike:1200:seam-270.0', t)
+        self.assertNotRegex(t, r'P0 = CP|CP confirmado|CP Model')
 
-    def test_motivo_do_bloqueio_do_p0_e_visivel_e_nao_ha_seletor_de_modelo_do_cp(self):
+    def test_ausencia_de_referencia_mmp3_e_explicita_e_nao_ha_seletor_nem_chamada_ao_cp(self):
         self.need_node()
         a = self.res['render_normal']['avisos']
-        self.assertIn('sem P0 válido (P0 = CP do CP Model)', a)  # sem resultado de CP valido para a modalidade
-        self.assertIn('último ajuste guardado', a)
-        self.assertIn('não foi criado ajuste novo', a)
+        self.assertNotIn('sem referência MMP3 válida', a)          # ha YES: nao se avisa
         s = self.res['sem_cp']
-        self.assertGreaterEqual(s['avisos'].count('sem P0 válido (P0 = CP do CP Model)'), 4)
+        self.assertGreaterEqual(s['avisos'].count('sem referência MMP3 válida'), 4)
+        self.assertIn('nenhum registo YES', s['avisos'])
+        self.assertIn('não se usa CP, FTP/eFTP nem outra duração', s['avisos'])
+        self.assertIn('Mantém-se o último ajuste guardado; não foi criado ajuste novo', s['avisos'])
         for h in (self.res['render_normal']['tabela'], a, s['tabela']):
-            self.assertNotIn('<select', h)                      # nenhum segundo seletor M1/M2/M3
-        self.assertNotRegex(self.bloco(), r'M1 \(WLS|M2 \(WLS|M3 \(NL|modelo_escolhido|/api/cp/')   # a UI do IR nao escolhe nem chama o CP
+            self.assertNotIn('<select', h)                        # nenhum seletor de modelo
+        self.assertNotRegex(self.bloco(), r'M1 \(WLS|M2 \(WLS|M3 \(NL|modelo_escolhido|/api/cp/')   # a UI do IR nao chama o CP
 
     def test_ajuste_com_referencia_antiga_e_falha_do_solver_sao_visiveis(self):
         self.need_node()
         a = self.res['desatualizado_e_falha']['avisos']
         self.assertIn('referência de P0 mais antiga (v1)', a)         # o ajuste mostrado usa v1 e ja existe a v2
-        self.assertIn('última registada (v2)', a)
+        self.assertIn('do que a atual (v2)', a)
         self.assertIn('NÃO foram reestimados com o P0 mais recente', a)
         self.assertIn('o Solver falhou ao reestimar com o P0 novo', a)
         self.assertIn('RuntimeError: boom', a)

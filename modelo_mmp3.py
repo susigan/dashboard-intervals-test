@@ -1,7 +1,8 @@
 """MMP3 (180 s) como referencia operacional do IR: referencias por season, elegibilidade do esforco e estado do teste.
 
-Modulo PURO (sem base, sem rede, sem relogio). Nao e o CP: o MMP3 so detecta/classifica esforcos; o P0 do IR continua a
-ser o CP gravado no CP Model (modelo_ir_p0). Nada aqui altera o CP Model.
+Modulo PURO (sem base, sem rede, sem relogio). O P0 GLOBAL do IR e o MMP3 do esforco `YES` (estado elegivel) MAIS
+RECENTE entre as quatro modalidades (`p0_global`): nao e o melhor historico nem o PR, e nao vem do CP Model. Nada
+aqui altera o CP Model.
 
 Reutilizado (nenhum segundo calculo de potencia media)
 ------------------------------------------------------
@@ -51,6 +52,10 @@ M_ELEG_DESCONHECIDA = 'elegibilidade_da_potencia_desconhecida'
 M_SEM_REFERENCIA = 'sem_referencia_anterior'
 M_AMOSTRA = 'amostra_minima_nao_atingida'
 M_ABAIXO = 'abaixo_do_limiar_de_todas_as_referencias'
+M_REJEITADO = 'rejeitado_manualmente'
+
+ORIGEM_P0 = 'mmp3_ultimo_yes'
+VERSAO_REGRA_P0 = 1
 
 
 def inicio_season(data, marcos=None):
@@ -133,8 +138,11 @@ def avaliar_esforcos(curvas, modalidade, ate, ignorar_ids=(), elegibilidade_fn=N
         testes=testes_mmp3()) if c['modalidade'] == modalidade}
     out = []
     for aid, b in sorted(brutos.items(), key=lambda kv: (kv[1]['date'], str(kv[0]))):
+        hora = (horas or {}).get(aid)
         base = {'test_id': mt.id_teste(modalidade, DURACAO_S, aid), 'data': b['date'], 'watts': b['watts'],
-                'activity_id': aid, 'pr': False, 'pct_do_melhor': None, 'melhor_anterior_watts': None,
+                'modalidade': modalidade, 'activity_id': aid,
+                'inicio': hora if isinstance(hora, str) and len(hora) >= 16 and hora[:10] == b['date'] else None,
+                'pr': False, 'pct_do_melhor': None, 'melhor_anterior_watts': None,
                 'qualifica': None, 'motivo': None}
         eleg = (elegibilidade_fn(aid) if elegibilidade_fn else None) or 'desconhecida'
         c = cands.get(aid)
@@ -164,6 +172,31 @@ def observacoes_ir(esforcos):
     """Alvos do IR = esforcos ELEGIVEIS (com ou sem PR). Formato das observacoes do servico do IR."""
     return [{'test_id': e['test_id'], 'versao': 1, 'data': e['data'], 'watts': float(e['watts'])}
             for e in esforcos if e['estado'] == E_ELEGIVEL]
+
+
+def _chave_tempo(e):
+    """Ordem cronologica efetiva: data/hora real de inicio da atividade quando conhecida (a mesma que a deteccao
+    existente usa dentro do dia), depois activity_id (desempate deterministico)."""
+    return (e['data'], (e.get('inicio') or '')[11:19], str(e['activity_id']))
+
+
+def p0_global(esforcos_por_modalidade):
+    """P0 GLOBAL = MMP3 do esforco `YES` mais recente (por data/hora efetiva) entre TODAS as modalidades.
+
+    esforcos_por_modalidade: {modalidade: [esforcos de avaliar_esforcos]} (ja so com dados ate a data de analise).
+    Devolve {'estado': 'valida'|'ausente'|'dados_insuficientes', 'registo': esforco|None, 'n_yes', ...}.
+    NAO e o melhor valor, nem o PR, nem o CP: sem nenhum `YES` nao ha P0 (sem fallback para outra fonte)."""
+    todos = [e for lst in esforcos_por_modalidade.values() for e in lst]
+    yes = [e for e in todos if e['estado'] == E_ELEGIVEL]
+    diag = {'origem': ORIGEM_P0, 'duracao_s': DURACAO_S, 'versao_regra': VERSAO_REGRA_P0, 'n_yes': len(yes),
+            'n_esforcos': len(todos),
+            'n_dados_insuficientes': sum(1 for e in todos if e['estado'] == E_INSUFICIENTE)}
+    if not yes:
+        return {**diag, 'estado': 'dados_insuficientes' if diag['n_dados_insuficientes'] else 'ausente',
+                'registo': None}
+    r = max(yes, key=_chave_tempo)
+    return {**diag, 'estado': 'valida', 'registo': {k: r.get(k) for k in (
+        'test_id', 'activity_id', 'modalidade', 'data', 'inicio', 'watts', 'pr', 'pct_do_melhor')}}
 
 
 def texto_estado(estado, watts=None, pr_watts=None):
@@ -196,9 +229,12 @@ def estado_no_dia(esforcos, data, pr_watts=None):
             'motivo': None, 'n_esforcos_no_dia': len(do_dia)}
 
 
-def contexto(curvas, modalidade, ate, ignorar_ids=(), elegibilidade_fn=None, marcos=None, horas=None, limiar=LIMIAR):
-    """Contexto MMP3 de uma modalidade para a UI: referencias, ultimo esforco de 180 s e o seu estado."""
-    esf = avaliar_esforcos(curvas, modalidade, ate, ignorar_ids, elegibilidade_fn, marcos, horas, limiar)
+def contexto(curvas, modalidade, ate, ignorar_ids=(), elegibilidade_fn=None, marcos=None, horas=None, limiar=LIMIAR,
+             esforcos=None):
+    """Contexto MMP3 de uma modalidade para a UI: referencias, ultimo esforco de 180 s e o seu estado.
+    `esforcos`: avaliacao ja feita (a mesma que alimenta o P0 global e o ajuste); por omissao avalia-se aqui."""
+    esf = esforcos if esforcos is not None else avaliar_esforcos(curvas, modalidade, ate, ignorar_ids,
+                                                                  elegibilidade_fn, marcos, horas, limiar)
     ref = referencias(curvas, modalidade, ate, ignorar_ids, marcos)
     pr_w = (ref['mmp3_pr_atual'] or {}).get('watts')
     ult = esf[-1]['data'] if esf else None

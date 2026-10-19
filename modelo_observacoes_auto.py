@@ -57,6 +57,7 @@ valor).
 
 Modulo puro: sem base de dados, sem Flask, sem rede, sem relogio.
 """
+import json
 import math
 import re
 from datetime import datetime, timedelta
@@ -164,13 +165,25 @@ def analisar_tag(texto):
 
 
 def tags_da_atividade(atividade):
-    """Lista de tags (texto) de uma atividade da API. Aceita lista ou texto separado por
-    virgulas; vazio/ausente -> []."""
+    """Lista de tags (texto) de uma atividade da API. Aceita lista nativa (`["3min", "Moxy"]`), texto JSON dessa
+    lista (`'["3min", "Moxy"]'`, como alguns armazenamentos/exportacoes guardam) ou texto separado por virgulas
+    (`"3min, Moxy"`); vazio/ausente/nulo -> []. Texto que parece JSON mas e invalido cai no ramo das virgulas
+    (comportamento anterior): nada e adivinhado e uma tag desconhecida nunca vira tag de teste (isso e `analisar_tag`)."""
     if not isinstance(atividade, dict):
         return []
     tt = atividade.get('tags')
     if isinstance(tt, str):
-        itens = [x.strip() for x in tt.split(',')]
+        txt = tt.strip()
+        itens = None
+        if txt[:1] == '[':
+            try:
+                dec = json.loads(txt)
+            except ValueError:
+                dec = None
+            if isinstance(dec, list):
+                itens = [str(x).strip() for x in dec if isinstance(x, (str, int, float)) and not isinstance(x, bool)]
+        if itens is None:
+            itens = [x.strip() for x in txt.split(',')]
     elif isinstance(tt, (list, tuple)):
         itens = [str(x).strip() for x in tt if x is not None]
     else:

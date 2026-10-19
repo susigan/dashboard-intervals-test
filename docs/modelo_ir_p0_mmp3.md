@@ -5,12 +5,42 @@
 histórico, nem o PR, nem o CP do CP Model, nem FTP/eFTP, nem outra duração. Sem nenhum `YES` não há P0 (estado
 `ausente` ou `dados_insuficientes`): não se cria ajuste novo e a UI diz que não existe referência MMP3 válida.
 
-**YES.** Estado `elegivel` de `modelo_mmp3.avaliar_esforcos`: a deteção existente (`modelo_observacoes_auto.detetar`, com
-as referências causais recente / season / all-time) aplicada à potência de 180 s de `power_curves`, com a proximidade
-existente `protocolo.LIMIAR_ESFORCO` (0,92, inclusivo), a amostra mínima existente (>= 5 pontos válidos) e a
-elegibilidade da potência do projeto (`icu_ignore_power`). Não exige PR. Uma rejeição manual no registo de testes retira
-o esforço de YES. **Decisão do utilizador (2026-10-18):** manter o 0,92 do detetor existente também para 180 s (não
-existe tolerância específica de 180 s no código, testes ou docs; o 0,92 estava documentado para 60/300/1200 s).
+**YES (regra versão 2, decisão do utilizador 2026-10-19).** Atualizar a Power Curve **não** é um teste. Um esforço de
+180 s é `YES` (`modelo_mmp3.avaliar_esforcos`) quando, cumulativamente:
+
+1. a atividade tem a **tag de tempo de 3 min** (`3min`, `3 min`, `180s`…; `modelo_observacoes_auto.tag_coincide_duracao`);
+   sem tag => `NO` com motivo `sem_tag_3min` (testado antes da suficiência de dados);
+2. a potência não é ignorada (`icu_ignore_power` => `NO`) e a elegibilidade é conhecida (desconhecida => `dados_insuficientes`);
+3. existe referência válida **anterior** e a amostra mínima existente (>= 5 pontos válidos de 180 s da modalidade);
+4. `watts_180s / melhor_MMP3_valido_anterior >= 0,92` (inclusivo; esforço sobre referência).
+
+A referência é **só o melhor MMP3 válido anterior** (all-time causal da modalidade, sem o próprio esforço — que fica fora
+da série —, sem atividades ignoradas, sem dados posteriores). As referências `recente` e `season` do detetor deixam de
+qualificar. Superar o recorde (razão >= 1) é YES; ficar abaixo, até 0,92 do recorde, também. Não exige PR. Uma rejeição
+manual no registo de testes retira o esforço de YES. O 0,92 (`protocolo.LIMIAR_ESFORCO`) **não foi alterado** e não está
+calibrado para 3 min (decisão de 2026-10-18).
+
+*Porque mudou.* A regra anterior era um OR sobre as referências recente / season / all-time. Row 18/10/2026: 318 W (treino
+da season, season anterior 253 W, all-time 401 W) era YES porque 318 / 300 (season, ela própria feita de treinos
+253 -> 268 -> 290 -> 300) = 106 %, embora 318 / 401 = 79,3 %. A atividade não era a sua própria referência (o esforço
+avaliado é excluído), mas os treinos validavam-se em cadeia. Na regra nova: sem tag => NO (`sem_tag_3min`); com tag,
+318 / 401 = 79,3 % < 0,92 => NO (`abaixo_do_limiar`).
+
+*Efeito no histórico.* O YES é derivado em tempo de execução de `power_curves` + tags das atividades; nada persistido é
+reescrito. As referências P0 e os ajustes são append-only: com a regra nova a assinatura da referência muda
+(`VERSAO_P0 = 4`, `VERSAO_REGRA_P0 = 2`) e, se o último YES mudar, o próximo `recalibrar` grava uma referência nova e um
+ajuste novo nas quatro modalidades; as linhas antigas ficam preservadas (auditáveis) e o ajuste antigo aparece
+desatualizado. Não há reclassificação em massa nem reprocessamento automático do histórico.
+
+**Recalibração e sync (fluxo).** `POST /api/modelo/ir/recalibrar` (corpo JSON opcional `forcar`, `tipo`, `duracao_s`) é
+**só POST**: um GET devolve 405 (foi o que o navegador mostrou; a rota existe em `main`). Respostas: 200 ok, 409 erro de
+validação/entrada, 503 sem base, 500 exceção. A UI atual não tem botão que a chame; se o tiver, deve usar
+`fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})` e tratar 200 / 409 / 503 / 500.
+Ordem: (1) `GET /api/sync` só se houver dados novos/desatualizados (`sync_activities` + `sync_power_curves`; este corre a
+deteção e o gancho `apos_deteccao`); (2) elegibilidade MMP3 e referência global; (3) recalibração do IR com o P0
+global válido (`recalibrar`; não chama o sync nem a API externa; sem YES não recalibra); (4) confirmar os quatro ajustes
+(`unidades` na resposta / `/api/modelo/ir/conjunto`). `POST /api/protocolo/observacoes-auto/atualizar` corre a deteção
+sobre as curvas guardadas e o gancho, sem sync.
 
 **Referência persistida.** `modelo_ir_p0_referencias` (só INSERT, sem alteração de esquema), uma linha por modalidade
 com o mesmo registo de origem e a mesma assinatura. Colunas herdadas: `cp_w` = valor MMP3, `modelo_cp` =

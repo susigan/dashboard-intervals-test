@@ -137,7 +137,7 @@ def serie(vals, mod='Bike', ano='2025', fim=None):
 
 class ElegibilidadeYes(unittest.TestCase):
     def estado(self, cv, aid, mod='Bike', ate='2026-12-31', eleg=ELEG):
-        return next(e for e in mm.avaliar_esforcos(cv, mod, ate, (), eleg) if e['activity_id'] == aid)
+        return next(e for e in mm.avaliar_esforcos(cv, mod, ate, (), eleg, tags=M.TAGS) if e['activity_id'] == aid)
 
     def test_6_usa_a_observacao_de_180_s_e_a_proximidade_existente(self):
         import protocolo
@@ -163,14 +163,14 @@ class ElegibilidadeYes(unittest.TestCase):
         desc = self.estado(cv, 'Bike-a5', eleg=lambda a: 'desconhecida')
         self.assertEqual(desc['estado'], mm.E_INSUFICIENTE)
         for eleg in (lambda a: 'inelegivel', lambda a: 'desconhecida'):
-            g = mm.p0_global({'Bike': mm.avaliar_esforcos(cv, 'Bike', '2026-12-31', (), eleg)})
+            g = mm.p0_global({'Bike': mm.avaliar_esforcos(cv, 'Bike', '2026-12-31', (), eleg, tags=M.TAGS)})
             self.assertIsNone(g['registo'])
 
     def test_8_um_teste_elegivel_nao_precisa_de_ser_pr(self):
         cv = serie([300.0, 310.0, 320.0, 340.0, 330.0, 335.0])         # a5 (335) < PR 340 e elegivel
         e = self.estado(cv, 'Bike-a5')
         self.assertEqual((e['estado'], e['pr']), (mm.E_ELEGIVEL, False))
-        g = mm.p0_global({'Bike': mm.avaliar_esforcos(cv, 'Bike', '2026-12-31', (), ELEG)})
+        g = mm.p0_global({'Bike': mm.avaliar_esforcos(cv, 'Bike', '2026-12-31', (), ELEG, tags=M.TAGS)})
         self.assertEqual(g['registo']['watts'], 335.0)                 # P0 = ultimo YES, nao o PR de 340
 
     def test_icu_ignore_power_nao_alimenta_as_referencias(self):
@@ -199,7 +199,8 @@ def gerar(mod, n_semanas=N_SEM, semente=5, extra=0.6, pre=''):
             continue
         aid = f'{pre}{mod}-{i}'
         ativ.append({'id': aid, 'type': TIPO_ATIV[mod], 'start_date_local': dia + f'T0{DOW[mod]}:00:00',
-                     'icu_training_load': float(carga[i]), 'icu_ignore_power': False})
+                     'icu_training_load': float(carga[i]), 'icu_ignore_power': False,
+                     'tags': ['3min'] if teste else []})
         if teste:
             cvs.append(M.c180(aid, mod, dia, float(perf[i])))
     return cvs, ativ
@@ -212,6 +213,10 @@ def quatro_modalidades():
         cv += c
         at += a
     return cv, at
+
+
+def S_tags(ativ):
+    return {a['id']: a.get('tags') or [] for a in ativ}
 
 
 class _Base4(S._Base):
@@ -228,12 +233,14 @@ class _Base4(S._Base):
         """Acrescenta um esforco de 180 s (e a sua atividade) e sincroniza as curvas."""
         self.curvs.append(M.c180(aid, mod, dia, w))
         self.ativ.append({'id': aid, 'type': TIPO_ATIV[mod], 'start_date_local': f'{dia}T{hora}',
-                          'icu_training_load': carga, 'icu_ignore_power': False})
+                          'icu_training_load': carga, 'icu_ignore_power': False,
+                          'tags': ['3min']})
         self.sync()
 
     def esforcos(self, ate='2030-01-01'):
         return {m: mm.avaliar_esforcos([c for c in self.curvs if c['type'] == m], m, ate, (), ELEG,
-                                       horas={a['id']: a['start_date_local'] for a in self.ativ}) for m in MODS}
+                                       horas={a['id']: a['start_date_local'] for a in self.ativ},
+                                       tags=S_tags(self.ativ)) for m in MODS}
 
     def oraculo(self, ate='2030-01-01'):
         """Ultimo YES por (data, hora, id): calculado a mao, independente de p0_global."""
@@ -416,7 +423,8 @@ class P0GlobalNoServico(_Base4):
         com_futuro = mm.p0_global({m: v for m, v in self.esforcos(corte).items()})
         so_passado = mm.p0_global({m: mm.avaliar_esforcos([c for c in self.curvs if c['type'] == m and c['date'] <= corte],
                                                           m, corte, (), ELEG,
-                                                          horas={a['id']: a['start_date_local'] for a in self.ativ})
+                                                          horas={a['id']: a['start_date_local'] for a in self.ativ},
+                                                          tags=S_tags(self.ativ))
                                    for m in MODS})
         self.assertEqual(com_futuro, so_passado)
 

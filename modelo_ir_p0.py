@@ -4,7 +4,8 @@ Regra (decisao final, substitui "P0 = CP confirmado")
 -----------------------------------------------------
     P0 = MMP3 (180 s) do registo elegivel (`YES`) MAIS RECENTE, o MESMO valor para Bike, Row, Run e Ski
 
-  * "YES" e o estado `elegivel` de modelo_mmp3 (deteccao existente + elegibilidade da potencia). Um YES nao exige PR.
+  * "YES" e o estado `elegivel` de modelo_mmp3: tag de 3 min na atividade, potencia nao ignorada e
+    watts / melhor MMP3 valido ANTERIOR >= 0,92 (ver o docstring de modelo_mmp3). Um YES nao exige PR.
   * "Mais recente" = data/hora efetiva do inicio da atividade (a mesma ordem que a deteccao existente usa dentro do
     dia; sem hora, desempata o activity_id). NAO e o melhor valor historico nem o PR atual.
   * Um registo `NO` posterior nao substitui o ultimo `YES`.
@@ -22,7 +23,7 @@ import math
 import modelo_ir as ir
 import modelo_mmp3 as mm
 
-VERSAO_P0 = 3
+VERSAO_P0 = 4                    # 4: YES = tag 3 min + razao ao melhor anterior (modelo_mmp3.VERSAO_REGRA_P0 = 2)
 FORMULA_ID = 'p0_mmp3_ultimo_yes'
 ORIGEM = mm.ORIGEM_P0
 EQUACAO = 'P0 = MMP3 (180 s) do esforco YES mais recente, partilhado por Bike, Row, Run e Ski  [W]'

@@ -34,6 +34,15 @@ MODS = ('Bike', 'Row', 'Run', 'Ski')
 ELEG = lambda aid: 'elegivel'  # noqa: E731
 
 
+class _Tag3min(dict):
+    """Todas as atividades trazem a tag de 3 min (o teste declarado); sobrepoe-se onde o teste a contraria."""
+    def get(self, k, d=None):
+        return super().get(k, ['3min'])
+
+
+TAGS = _Tag3min()
+
+
 def c180(aid, mod, dia, w, extra=None):
     """Curva de uma atividade com o MMP3 (180 s) e, opcionalmente, outras duracoes {secs: watts}."""
     pts = {180: w, **(extra or {})}
@@ -55,7 +64,7 @@ def curvas(mod='Bike', serie=SERIE):
 
 
 def ctx(cv, mod='Bike', ate='2026-06-15', **kw):
-    return mm.contexto(cv, mod, ate, (), kw.pop('eleg', ELEG), kw.pop('marcos', None), **kw)
+    return mm.contexto(cv, mod, ate, (), kw.pop('eleg', ELEG), kw.pop('marcos', None), tags=kw.pop('tags', TAGS), **kw)
 
 
 # ═══ A. Referencias e estado do teste (modulo puro) ═══════════════════════════════════════════════
@@ -103,7 +112,7 @@ class Referencias(unittest.TestCase):
 
 class EstadoDoTeste(unittest.TestCase):
     def esforcos(self, cv=None, mod='Bike', ate='2026-06-15', **kw):
-        return mm.avaliar_esforcos(cv or curvas(mod), mod, ate, (), kw.pop('eleg', ELEG), **kw)
+        return mm.avaliar_esforcos(cv or curvas(mod), mod, ate, (), kw.pop('eleg', ELEG), tags=kw.pop('tags', TAGS), **kw)
 
     def por_dia(self, esf, dia, pr=None):
         return mm.estado_no_dia(esf, dia, pr)
@@ -156,13 +165,13 @@ class EstadoDoTeste(unittest.TestCase):
         self.assertEqual((ig['estado'], ig['motivo']), (mm.E_NAO_ELEGIVEL, mm.M_IGNORE_POWER))
         desc = self.por_dia(self.esforcos(eleg=lambda a: 'desconhecida'), '2026-04-01')
         self.assertEqual((desc['estado'], desc['motivo']), (mm.E_INSUFICIENTE, mm.M_ELEG_DESCONHECIDA))
-        sem_fn = self.por_dia(mm.avaliar_esforcos(curvas(), 'Bike', '2026-06-15'), '2026-04-01')
+        sem_fn = self.por_dia(mm.avaliar_esforcos(curvas(), 'Bike', '2026-06-15', tags=TAGS), '2026-04-01')
         self.assertEqual(sem_fn['estado'], mm.E_INSUFICIENTE)          # sem informacao nunca se presume elegivel
 
     def test_7_cada_uma_das_quatro_modalidades(self):
         cv = sum((curvas(m) for m in MODS), [])
         for m in MODS:
-            esf = mm.avaliar_esforcos(cv, m, '2026-06-15', (), ELEG)
+            esf = mm.avaliar_esforcos(cv, m, '2026-06-15', (), ELEG, tags=TAGS)
             self.assertEqual(self.por_dia(esf, '2026-04-01')['texto'], 'Yes — 330 W', m)
             self.assertEqual({e['activity_id'] for e in esf}, {f'{m}-{a}' for a, _d, _w in SERIE}, m)   # sem mistura
             self.assertEqual(mm.referencias(cv, m, '2026-06-15')['mmp3_pr_atual']['watts'], 345.0, m)
@@ -170,7 +179,7 @@ class EstadoDoTeste(unittest.TestCase):
     def test_8_outras_duracoes_nao_sao_mmp3(self):
         so_outras = [{'activity_id': f'o{i}', 'type': 'Bike', 'date': f'2026-0{1 + i % 5}-1{i % 9}', 'weight': 70.0,
                       'secs': [300, 720, 1200], 'watts': [400.0, 350.0, 330.0]} for i in range(8)]
-        self.assertEqual(mm.avaliar_esforcos(so_outras, 'Bike', '2026-12-31', (), ELEG), [])
+        self.assertEqual(mm.avaliar_esforcos(so_outras, 'Bike', '2026-12-31', (), ELEG, tags=TAGS), [])
         misto = curvas() + [c180('y1', 'Bike', '2026-03-03', 100.0, {300: 500.0, 1200: 450.0})]
         e = self.por_dia(self.esforcos(misto), '2026-03-03')
         self.assertEqual(e['watts'], 100.0)                           # 180 s, nunca o 300 s (500) nem o 1200 s (450)

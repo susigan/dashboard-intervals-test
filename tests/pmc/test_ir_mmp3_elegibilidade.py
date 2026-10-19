@@ -232,3 +232,85 @@ class InterfaceUsaMetodoCorreto(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# ═══ Complemento (PR #37): historico global e atualizacao por temporada ═══════════════════════════════
+
+def _hist(extra26):
+    """Bike: 2025 com YES em 2025-07-10 (a5, 285 W vs 300 W anterior); `extra26` = [(id, data, watts, tag)] em 2026."""
+    cv, tg = linha('Bike', [300.0] * 5 + [285.0], ano='2025')            # a0..a5 em 2025-01..06 (+ a5 = 2025-06-10)
+    for aid, d, w, tag in extra26:
+        cv.append(M.c180(aid, 'Bike', d, w))
+        tg[aid] = ['3min'] if tag else []
+    return cv, tg
+
+
+def _p0(cv, tg, ate='2026-10-19'):
+    return mm.p0_global({'Bike': list(aval(cv, tg, ate=ate).values())})
+
+
+class HistoricoGlobalESeason(unittest.TestCase):
+    def test_a_yes_de_temporada_anterior_continua_a_ser_o_p0(self):
+        cv, tg = _hist([('Bike-t1', '2026-03-10', 200.0, False)])      # 2026 so tem um treino sem tag
+        g = _p0(cv, tg)
+        self.assertEqual((g['estado'], g['registo']['watts'], g['registo']['data']), ('valida', 285.0, '2025-06-10'))
+        self.assertNotEqual(mm.inicio_season('2025-06-10')[:4], mm.inicio_season('2026-03-10')[:4])   # outra season
+
+    def test_b_temporada_nova_sem_yes_preserva_o_p0_anterior(self):
+        cv, tg = _hist([('Bike-t1', '2026-02-10', 250.0, True), ('Bike-t2', '2026-05-10', 260.0, True)])   # NO (<0,92)
+        r = aval(cv, tg)
+        self.assertEqual({r['Bike-t1']['estado'], r['Bike-t2']['estado']}, {mm.E_NAO_ELEGIVEL})
+        self.assertEqual(_p0(cv, tg)['registo']['test_id'], r['Bike-a5']['test_id'])
+
+    def test_c_novo_yes_elegivel_atualiza_o_p0_com_o_seu_mmp3_sem_se_usar_a_si_proprio(self):
+        cv, tg = _hist([('Bike-n1', '2026-06-10', 290.0, True)])         # 290 / 300 (melhor anterior) = 96,7 %
+        e = aval(cv, tg)['Bike-n1']
+        self.assertEqual((e['estado'], e['melhor_anterior_watts']), (mm.E_ELEGIVEL, 300.0))
+        g = _p0(cv, tg)
+        self.assertEqual((g['registo']['watts'], g['registo']['activity_id']), (290.0, 'Bike-n1'))
+        for m in G.MODS:                                                # o mesmo P0 nas quatro modalidades
+            self.assertEqual(p0m.resolver_p0(m, 180, g)['valor_p0'], 290.0)
+
+    def test_d_treino_submaximo_que_atualiza_a_power_curve_da_season_nao_muda_o_p0(self):
+        # 2026: treinos sem tag a subir o MMP3 da season (200 -> 230 -> 270): a season muda, o P0 nao
+        extra = [('Bike-s1', '2026-02-10', 200.0, False), ('Bike-s2', '2026-04-10', 230.0, False),
+                 ('Bike-s3', '2026-06-10', 270.0, False)]
+        cv, tg = _hist(extra)
+        ref_antes = mm.referencias(cv, 'Bike', '2026-01-31')['mmp3_pr_atual']['watts']
+        ref_depois = mm.referencias(cv, 'Bike', '2026-10-19')['mmp3_pr_atual']['watts']
+        self.assertGreaterEqual(ref_depois, ref_antes)                  # o valor de referencia mostrado evolui
+        r = aval(cv, tg)
+        self.assertTrue(all(r[a]['estado'] == mm.E_NAO_ELEGIVEL and r[a]['motivo'] == mm.M_SEM_TAG
+                            for a in ('Bike-s1', 'Bike-s2', 'Bike-s3')))
+        self.assertEqual(_p0(cv, tg)['registo']['watts'], 285.0)
+        # mesmo com tag, 270 / 300 = 90 % < 0,92: a season submaxima tambem nao cria YES nem muda o P0
+        cv2, tg2 = _hist([(a, d, w, True) for a, d, w, _t in extra])
+        self.assertEqual(_p0(cv2, tg2)['registo']['watts'], 285.0)
+
+    def test_e_nunca_houve_yes_mostra_ausencia_sem_fallback(self):
+        cv, tg = linha('Bike', [400.0] * 5 + [200.0], tags=set(), ano='2026')   # so treinos, nenhum com tag
+        g = _p0(cv, tg)
+        self.assertIsNone(g['registo'])
+        res = p0m.resolver_p0('Bike', 180, g)
+        self.assertEqual((res['valida'], res['motivo']), (False, p0m.M_SEM_YES))
+
+    def test_f_a_pesquisa_do_ultimo_yes_nao_se_limita_a_season_atual(self):
+        src = inspect.getsource(mm.avaliar_esforcos) + inspect.getsource(mm.p0_global)
+        self.assertNotIn('inicio_season', src)                          # nenhum filtro por season
+        self.assertIn('<= ate', src)    # so o corte causal (data de analise)
+
+
+class ServicoPreservaOP0(G._Base4):
+    def test_g_treino_submaximo_sem_tag_nao_cria_referencia_nova(self):
+        self.rec()
+        antes = {m: len(self.refs(m)) for m in G.MODS}
+        p0_antes = self.oraculo()['watts']
+        d = (G.FIM + __import__('datetime').timedelta(days=5)).isoformat()
+        for k, m in enumerate(G.MODS):                                   # treino forte mas SEM tag, MMP3 da season sobe
+            self.curvs.append(M.c180(f'{m}-treino', m, d, 1000.0))
+            self.ativ.append({'id': f'{m}-treino', 'type': G.TIPO_ATIV[m], 'start_date_local': f'{d}T18:00:00',
+                              'icu_training_load': 50.0, 'icu_ignore_power': False, 'tags': []})
+        self.sync()
+        self.rec()
+        self.assertEqual(self.oraculo()['watts'], p0_antes)
+        self.assertEqual({m: len(self.refs(m)) for m in G.MODS}, antes)  # nenhuma referencia/ajuste novo

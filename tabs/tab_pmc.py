@@ -2522,7 +2522,9 @@ function htmlValidacao(j){
    '<td>'+ep+'</td>'+
    '<td style="font-size:11px">'+estEsc(o.resumo||'')+(falta?('<br><b>'+falta+'</b>'):'')+util+elg+m1+'</td></tr>';
  }).join('');
- return '<p style="font-size:13px"><b>Exploratoria; o estimador continua nao validado.</b> Compara, por modalidade e '+
+ return '<p style="font-size:13px;color:#E67E22"><b>Nao valida o IR baseado em MMP3.</b> Este painel usa as observacoes '+
+  'automaticas de 60/300/1200 s do estimador anterior; o IR atual (MMP3 de 180 s, P0 = CP confirmado) ainda nao tem validacao preditiva.</p>'+
+  '<p style="font-size:13px"><b>Exploratoria; o estimador continua nao validado.</b> Compara, por modalidade e '+
   'duracao, a previsao do estimador (M2) com a media historica (M0) e o ultimo valor (M1), nos mesmos alvos e '+
   'usando so dados anteriores a cada alvo. O alvo e o <b>melhor valor da duracao em toda a atividade</b>, nao um '+
   'teste padronizado, e so inclui esforcos detetados (perto do melhor anterior): mede-se a previsao do proximo '+

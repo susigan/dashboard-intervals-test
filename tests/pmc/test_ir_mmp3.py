@@ -516,5 +516,88 @@ class IntegracaoEEndpoints(_Base180):
         self.assertEqual(foto(), antes)
 
 
+# ═══ D. Revisao final: cenarios adicionais (pontos antigos intactos, provisorio, isolamento por modalidade) ═════
+
+class PontosAntigosIntactos(unittest.TestCase):
+    def test_4_o_ponto_de_180_s_nao_substitui_mmp1_5_12_20_60(self):
+        import cp_model as cpm
+        def pts(com):
+            regs = [{'date': c['date'], 'secs': c['secs'], 'watts': c['watts'], 'season': '2026'} for c in curvas_cp(com)]
+            d = cpm.pontos_de_curvas(regs, 'Bike', season_activa='2026', modo='coerente')
+            return sorted((int(t), w) for w, t in d['all_mmp_pts_full'])
+        com, sem = pts(True), pts(False)
+        self.assertEqual([p for p in com if p[0] != 180], sem)         # todas as outras duracoes identicas, ponto a ponto
+        self.assertEqual(len(com), len(sem) + 1)
+        self.assertEqual(sum(1 for t, _ in com if t == 180), 1)
+        for t in (300, 720, 1200):                                     # classicas 5/12/20 min continuam presentes
+            self.assertIn(t, {x[0] for x in com})
+
+
+class ProvisorioEIsolamento(_Base180):
+    def troca(self, lista):
+        self.troca_cp(lista)
+
+    def test_6_cp_provisorio_ou_nao_selecionado_nao_altera_p0(self):
+        self.rec()
+        refs = copy.deepcopy(db.referencias_p0_historico('Bike', 180))
+        n = len(self.linhas180())
+        r = mis.impacto_cp_model('Bike', curvas_cp(), '2026-12-31', instantaneos_cp=CPF.instantaneos_padrao())
+        self.assertTrue(r['provisorio'])
+        provis = {x['cp'] for x in r['modelos_provisorios'].values() if x.get('cp')}
+        self.assertTrue(provis and any(abs(c - CPF.CP_PADRAO) > 0.5 for c in provis))   # provisorios diferem do gravado
+        with mock.patch.object(ir, 'ajustar_observacoes', side_effect=AssertionError('P0 nao devia mudar')):
+            r2 = self.rec(agora=AGORA + timedelta(hours=5))
+        self.assertEqual(r2['unidades']['Bike:180']['acao'], 'inalterado')
+        self.assertEqual(db.referencias_p0_historico('Bike', 180), refs)
+        self.assertEqual(len(self.linhas180()), n)
+        self.assertEqual(self.linhas180()[-1]['p0'], CPF.CP_PADRAO)
+
+    def test_10_cada_modalidade_mantem_o_seu_mmp3_cp_p0_e_historico(self):
+        cr, ar = cenario180(semente=11, tipo='Row', prefixo='r')
+        for a in ar:
+            a['type'] = 'Rowing'
+        self.curvs += cr
+        self.ativ += ar
+        self.troca_cp([CPF.instantaneo('Bike', cp=290.0, id=1), CPF.instantaneo('Row', cp=250.0, id=2)])
+        self.sync()
+        self.prepara()
+        self.rec()
+        b, r = db.ajustes_ir_historico('Bike', 180), db.ajustes_ir_historico('Row', 180)
+        self.assertEqual((b[-1]['p0'], r[-1]['p0']), (290.0, 250.0))
+        self.assertEqual(db.ultima_referencia_p0('Bike', 180)['valor_p0'], 290.0)
+        self.assertEqual(db.ultima_referencia_p0('Row', 180)['valor_p0'], 250.0)
+        ob = {o['test_id'] for o in b[-1]['entradas']['observacoes']}
+        orow = {o['test_id'] for o in r[-1]['entradas']['observacoes']}
+        self.assertTrue(ob and orow and not (ob & orow))
+        self.assertTrue(all(t.startswith('Bike:180:') for t in ob))
+        self.assertTrue(all(t.startswith('Row:180:') for t in orow))
+        n_b = len(db.ajustes_ir_historico('Bike', 180))
+        self.troca_cp([CPF.instantaneo('Bike', cp=290.0, id=1),
+                       CPF.instantaneo('Row', cp=255.0, id=3, data_referencia='2026-03-01',
+                                       data_gravacao='2026-03-02 10:00:00')])
+        self.rec(agora=AGORA + timedelta(days=1))
+        self.assertEqual(len(db.ajustes_ir_historico('Bike', 180)), n_b)        # Bike nao recalibra por CP de Row
+        self.assertEqual(db.ultima_referencia_p0('Row', 180)['valor_p0'], 255.0)
+        self.assertEqual(len(db.referencias_p0_historico('Row', 180)), 2)
+
+
+class InterfaceEstatica(unittest.TestCase):
+    def setUp(self):
+        with open(os.path.join(ROOT, 'tabs', 'tab_pmc.py'), encoding='utf-8') as f:
+            self.src = f.read()
+        self.ir = self.src[self.src.index('// <<modelo-ir>>'):self.src.index('// <</modelo-ir>>')]
+
+    def test_sem_seletor_de_duracao_no_ir(self):
+        self.assertNotIn('irDur', self.ir)
+        self.assertNotIn('IR_DURS', self.ir)
+
+    def test_estados_distintos_na_interface(self):
+        for k in ('sem_cp_confirmado', 'erro_solver', 'desatualizado', 'nao_identificavel', 'valido'):
+            self.assertIn(k, self.ir, k)
+
+    def test_painel_preditivo_antigo_nao_se_apresenta_como_validacao_do_ir_mmp3(self):
+        self.assertIn('Nao valida o IR baseado em MMP3', self.src)
+
+
 if __name__ == '__main__':
     unittest.main()

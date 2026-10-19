@@ -26,7 +26,7 @@ import modelo_observacoes_auto as moa
 import modelo_testes as mt
 import modelo_validacao as V
 
-VERSAO_SERVICO = 3
+VERSAO_SERVICO = 4
 
 # UM ajuste por modalidade, sobre o MMP3 (180 s). As duracoes antigas (60/300/1200 s) deixam de ser unidades
 # operacionais do IR: os ajustes e referencias antigos ficam na base (so leitura), nao se recalibram.
@@ -102,12 +102,22 @@ def _ignorar_e_horas(atividades):
     return ignorar, horas
 
 
+def _tags_por_atividade(atividades):
+    """{activity_id: [tags]} (uniao por id) das atividades originais da API."""
+    out = {}
+    for a in atividades or []:
+        if isinstance(a, dict) and a.get('id') is not None:
+            out.setdefault(a['id'], set()).update(moa.tags_da_atividade(a))
+    return {k: sorted(v) for k, v in out.items()}
+
+
 def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
     """{modalidade: (observacoes_para_o_IR, esforcos_avaliados)} a partir das curvas (`power_curves`) e das
     atividades, so com dados ate `ate` (sem futuro). Reutiliza a deteccao existente e a elegibilidade do projeto.
     Uma rejeicao manual no registo de testes (mesmo test_id) retira o esforco de `YES` (passa a nao elegivel,
     motivo `rejeitado_manualmente`): o mesmo conjunto alimenta o P0 global e o ajuste, sem segunda fonte."""
     ignorar, horas = _ignorar_e_horas(atividades)
+    tags = _tags_por_atividade(atividades)
     cache = {}
 
     def eleg(aid):
@@ -120,7 +130,7 @@ def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
     for mod in mt.MODALIDADES:
         esf = [({**e, 'estado': mmp3.E_NAO_ELEGIVEL, 'motivo': mmp3.M_REJEITADO}
                 if e['estado'] == mmp3.E_ELEGIVEL and e['test_id'] in rejeitados else e)
-               for e in mmp3.avaliar_esforcos(curvas, mod, ate, ignorar, eleg, marcos, horas)]
+               for e in mmp3.avaliar_esforcos(curvas, mod, ate, ignorar, eleg, marcos, horas, tags=tags)]
         out[mod] = (mmp3.observacoes_ir(esf), esf)
     return out
 
@@ -135,8 +145,10 @@ def _cfg_efetiva(config_ir=None):
     return {'ir': c, 'versao_modelo': ir.VERSAO_IR, 'versao_servico': VERSAO_SERVICO,
             'duracao_alvo_s': DURACAO_IR,
             'carga': 'icu_training_load das atividades da mesma modalidade, somada por dia',
-            'alvo': 'MMP3 (180 s) de esforcos elegiveis: melhor valor de 180 s em toda a atividade (nao teste '
-                    'padronizado)',
+            'alvo': 'MMP3 (180 s) de esforcos YES: atividade com tag 3 min e potencia >= %.2f x o melhor MMP3 valido '
+                    'anterior (regra %d)' % (mmp3.LIMIAR, mmp3.VERSAO_REGRA_P0),
+            'regra_yes': {'versao': mmp3.VERSAO_REGRA_P0, 'tag_tempo_s': mmp3.DURACAO_S, 'limiar': mmp3.LIMIAR,
+                          'referencia': 'melhor_mmp3_valido_anterior'},
             # P0 nao e estimado: e EXATAMENTE o MMP3 do esforco YES mais recente (global) e fica FIXO em cada
             # ajuste. Faz parte da configuracao para que um ajuste antigo (P0 livre, ou P0 = CP) nao conte
             # como atual.
@@ -660,7 +672,7 @@ def contexto_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
     ent = entradas_mmp3(curvas, atividades, ate, marcos, revisoes)
     out = {}
     for mod in mt.MODALIDADES:
-        c = mmp3.contexto(curvas, mod, ate, ignorar, None, marcos, esforcos=ent[mod][1])
+        c = mmp3.contexto(curvas, mod, ate, ignorar, None, marcos, esforcos=ent[mod][1])   # tags ja nas entradas
         c['cp_model'] = impacto_cp_model(mod, curvas, ate, marcos)
         out[mod] = c
     return out, p0_global_das_entradas(ent)

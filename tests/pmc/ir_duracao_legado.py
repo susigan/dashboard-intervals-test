@@ -40,7 +40,8 @@ def _falso_global(entradas):
 def iniciar(duracao=1200, p0=P0_PADRAO):
     definir_p0(p0)
     for alvo, nome, val in ((mmp3, 'DURACAO_S', duracao), (mis, 'DURACAO_IR', duracao),
-                            (mis, 'p0_global_das_entradas', _falso_global)):
+                            (mis, 'p0_global_das_entradas', _falso_global),
+                            (mmp3, 'tem_tag_3min', lambda tags: True)):   # a regra da tag tem os seus testes proprios
         pt = mock.patch.object(alvo, nome, val)
         pt.start()
         _P.append(pt)

@@ -22,11 +22,12 @@ import modelo_ir as ir
 import modelo_ir_global as G
 import modelo_ir_p0 as p0m
 import modelo_mmp3 as mmp3
+import modelo_mmp3_intervalos as mi
 import modelo_observacoes_auto as moa
 import modelo_testes as mt
 import modelo_validacao as V
 
-VERSAO_SERVICO = 4
+VERSAO_SERVICO = 5
 
 # UM ajuste por modalidade, sobre o MMP3 (180 s). As duracoes antigas (60/300/1200 s) deixam de ser unidades
 # operacionais do IR: os ajustes e referencias antigos ficam na base (so leitura), nao se recalibram.
@@ -111,6 +112,15 @@ def _tags_por_atividade(atividades):
     return {k: sorted(v) for k, v in out.items()}
 
 
+def _atividades_por_id(atividades):
+    """{activity_id: atividade} (a primeira de cada id): so a leitura dos intervalos da PROPRIA atividade."""
+    out = {}
+    for a in atividades or []:
+        if isinstance(a, dict) and a.get('id') is not None:
+            out.setdefault(a['id'], a)
+    return out
+
+
 def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
     """{modalidade: (observacoes_para_o_IR, esforcos_avaliados)} a partir das curvas (`power_curves`) e das
     atividades, so com dados ate `ate` (sem futuro). Reutiliza a deteccao existente e a elegibilidade do projeto.
@@ -118,6 +128,7 @@ def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
     motivo `rejeitado_manualmente`): o mesmo conjunto alimenta o P0 global e o ajuste, sem segunda fonte."""
     ignorar, horas = _ignorar_e_horas(atividades)
     tags = _tags_por_atividade(atividades)
+    por_id = _atividades_por_id(atividades)
     cache = {}
 
     def eleg(aid):
@@ -130,7 +141,8 @@ def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
     for mod in mt.MODALIDADES:
         esf = [({**e, 'estado': mmp3.E_NAO_ELEGIVEL, 'motivo': mmp3.M_REJEITADO}
                 if e['estado'] == mmp3.E_ELEGIVEL and e['test_id'] in rejeitados else e)
-               for e in mmp3.avaliar_esforcos(curvas, mod, ate, ignorar, eleg, marcos, horas, tags=tags)]
+               for e in mmp3.avaliar_esforcos(curvas, mod, ate, ignorar, eleg, marcos, horas, tags=tags,
+                                               atividades_por_id=por_id)]
         out[mod] = (mmp3.observacoes_ir(esf), esf)
     return out
 
@@ -145,10 +157,12 @@ def _cfg_efetiva(config_ir=None):
     return {'ir': c, 'versao_modelo': ir.VERSAO_IR, 'versao_servico': VERSAO_SERVICO,
             'duracao_alvo_s': DURACAO_IR,
             'carga': 'icu_training_load das atividades da mesma modalidade, somada por dia',
-            'alvo': 'MMP3 (180 s) de esforcos YES: atividade com tag 3 min e potencia >= %.2f x o melhor MMP3 valido '
+            'alvo': 'MMP3 (180 s) de esforcos YES: atividade com tag 3 min ou intervalo isolado de 3 min detetado, e potencia >= %.2f x o melhor MMP3 valido '
                     'anterior (regra %d)' % (mmp3.LIMIAR, mmp3.VERSAO_REGRA_P0),
             'regra_yes': {'versao': mmp3.VERSAO_REGRA_P0, 'tag_tempo_s': mmp3.DURACAO_S, 'limiar': mmp3.LIMIAR,
-                          'referencia': 'melhor_mmp3_valido_anterior'},
+                          'referencia': 'melhor_mmp3_valido_anterior',
+                          'sinais': [mi.ORIGEM_TAG, mi.ORIGEM_INTERVALO],
+                          'janela_intervalo_3min_s': list(mi.JANELA_3MIN)},
             # P0 nao e estimado: e EXATAMENTE o MMP3 do esforco YES mais recente (global) e fica FIXO em cada
             # ajuste. Faz parte da configuracao para que um ajuste antigo (P0 livre, ou P0 = CP) nao conte
             # como atual.
@@ -672,7 +686,7 @@ def contexto_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
     ent = entradas_mmp3(curvas, atividades, ate, marcos, revisoes)
     out = {}
     for mod in mt.MODALIDADES:
-        c = mmp3.contexto(curvas, mod, ate, ignorar, None, marcos, esforcos=ent[mod][1])   # tags ja nas entradas
+        c = mmp3.contexto(curvas, mod, ate, ignorar, None, marcos, esforcos=ent[mod][1])   # tags/intervalos ja nas entradas
         c['cp_model'] = impacto_cp_model(mod, curvas, ate, marcos)
         out[mod] = c
     return out, p0_global_das_entradas(ent)
@@ -745,6 +759,28 @@ def _estado_conjunto(j):
     if not j.get('curvas'):
         return 'sem_atividades'
     return 'identificavel' if e == ir.EST_IDENTIFICAVEL else 'nao_identificavel'
+
+
+def estado_solver(j, p0_atual, n_yes, cfg=None):
+    """Estado do SOLVER de uma modalidade (so leitura), separado de P0 e de identificabilidade:
+    nao_executado (sem P0 valido, ou sem ajuste gravado), dados_insuficientes (o Solver foi chamado e recusou por
+    falta de observacoes/datas/cobertura), falha (nao convergiu ou excecao), executado_nao_identificavel,
+    executado_ok. Nunca se diz que falhou quando nunca foi chamado. `faltam_observacoes` = min_obs - YES atuais."""
+    c = ir._cfg(cfg)
+    base = {'n_observacoes_yes': n_yes, 'min_obs': c['min_obs'], 'min_datas_distintas': c['min_datas_distintas'],
+            'min_dias_cobertura': c['min_dias_cobertura'], 'faltam_observacoes': max(0, c['min_obs'] - n_yes)}
+    e = j.get('estado')
+    if p0_atual is not None and p0_atual.get('valida') is False:
+        return {**base, 'estado': 'nao_executado', 'motivo': 'sem_p0'}
+    if e == 'sem_ajuste':
+        return {**base, 'estado': 'nao_executado', 'motivo': 'sem_observacoes' if not n_yes else 'sem_ajuste_gravado'}
+    if e == ir.EST_INSUFICIENTE:
+        return {**base, 'estado': 'dados_insuficientes', 'motivo': (j.get('motivo_insuficiente') or j.get('motivo'))}
+    if e == ir.EST_SEM_CONVERGENCIA or j.get('excecao_solver'):
+        return {**base, 'estado': 'falha', 'motivo': 'excecao_ou_sem_convergencia'}
+    if e == ir.EST_IDENTIFICAVEL:
+        return {**base, 'estado': 'executado_ok', 'motivo': None}
+    return {**base, 'estado': 'executado_nao_identificavel', 'motivo': None}
 
 
 def _plausibilidade(pct):
@@ -859,6 +895,7 @@ def curvas_conjuntas(duracao=None, ate=None, atividades=None, curvas=None, marco
                 'mmp3': ctx3[m], 'tentativa_mais_recente': j.get('tentativa_mais_recente'),
                 'ajuste_apresentado_e_antigo': bool(j.get('ajuste_apresentado_e_antigo'))}
         item['estado_ir'] = estado_ir({**j, 'p0_desatualizado': item['p0']['desatualizado']}, item['p0']['atual'])
+        item['solver'] = estado_solver(j, item['p0']['atual'], (ctx3[m] or {}).get('n_elegiveis') or 0)
         c = series.get(m)
         if c and datas:
             p0 = P['p0']

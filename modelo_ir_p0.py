@@ -23,7 +23,7 @@ import math
 import modelo_ir as ir
 import modelo_mmp3 as mm
 
-VERSAO_P0 = 4                    # 4: YES = tag 3 min + razao ao melhor anterior (modelo_mmp3.VERSAO_REGRA_P0 = 2)
+VERSAO_P0 = 5                    # 5: YES = (tag 3 min | intervalo de 3 min detetado) + razao ao melhor anterior (regra 3)
 FORMULA_ID = 'p0_mmp3_ultimo_yes'
 ORIGEM = mm.ORIGEM_P0
 EQUACAO = 'P0 = MMP3 (180 s) do esforco YES mais recente, partilhado por Bike, Row, Run e Ski  [W]'

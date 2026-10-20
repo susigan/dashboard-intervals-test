@@ -929,8 +929,8 @@ class GuardasDeIsolamentoIR(_Base):
                 if r[0].startswith('modelo')}
 
     def test_so_a_tabela_prevista_foi_autorizada_e_uma_tabela_inesperada_seria_detetada(self):
-        esperado = {'modelo_ir_ajustes', 'modelo_ir_p0_referencias', 'modelo_observacoes_auto',
-                    'modelo_testes_revisoes'}
+        esperado = {'modelo_ir_ajustes', 'modelo_ir_p0_referencias', 'modelo_mmp3_yes_historico', 'modelo_mmp3_yes_revisoes',
+                    'modelo_observacoes_auto', 'modelo_testes_revisoes'}      # + historico de YES (append-only)
         self.assertEqual(self._tabelas_modelo(), esperado)
         db._exec('CREATE TABLE modelo_intrusa (x INTEGER)')
         try:

@@ -92,3 +92,85 @@ data, modalidade, potência) e estado do Solver (`estado_solver`): `nao_executad
 **Limitações fisiológicas não validadas**: o limiar 0,92 não foi calibrado para 3 min; a média de um intervalo de ~3 min
 pode ser inferior ao máximo móvel real; a janela ±5 s foi derivada de um único atleta/histórico; intervalos sem início/fim
 não permitem confirmar que o esforço de 180 s coincide com o intervalo.
+
+## Regra v4 — três referências separadas, histórico de YES e modo exploratório
+
+Mesma regra de YES que a v3 (no snapshot local, os YES são idênticos nas duas versões; ver limitações). O que muda é a
+separação das referências e a persistência do histórico.
+
+**1. Deteção sazonal (candidatos).** Por temporada (`season`, a partir dos marcos reais de SEASON_START, com fallback
+documentado para o ano civil) e modalidade. Um esforço que supera o recorde da temporada e não tem recorde all-time
+qualificado fica **`a_verificar`** (estado explícito; motivo `recorde_de_temporada_sem_recorde_all_time` ou
+`primeiro_candidato_da_temporada`), nunca YES automático. O contexto de deteção (`ref_temporada_watts`, `pct_da_temporada`)
+é informativo.
+
+**2. Histórico de YES.** Tabela `modelo_mmp3_yes_historico` (append-only; chave `(test_id, regra_versao)`; inserção
+`ON CONFLICT DO NOTHING`; nunca se atualiza nem se apaga). Gravada em `recalibrar` (caminho de produção) com os efeitos
+elegíveis de hoje. Um YES gravado:
+- continua no P0 mesmo que a temporada mude;
+- continua no P0 mesmo que deixe de ser elegível nos esforços vivos (ex.: tag alterada depois);
+- só sai por **rejeição manual** atual (`rejeitados_manualmente`, mesma regra das observações do IR).
+Sem base de dados o histórico é vazio (`[]`) e o resultado é o de antes.
+
+**3. P0.** `p0_global` = MMP3 do YES mais recente entre histórico e esforços vivos. Não é a referência de deteção nem o
+recorde sazonal da Power Curve (não se usa o MMP3 sazonal como P0). `a_verificar` e NO nunca substituem o último YES.
+Sem nenhum YES: `ausente` (sem fallback para CP, FTP ou outra duração). Só com esforços insuficientes:
+`dados_insuficientes`. Os dois estados são distintos na interface e no diagnóstico.
+
+**Migração.** Linhas novas apenas; nada é reescrito. Um YES passa a ser gravado quando a regra o aceita; nenhuma linha
+antiga é recalculada. A regra v3 não tem linhas na tabela nova; a v4 começa a gravar a partir da próxima recalibração.
+
+**Modo exploratório (não validado).** Endpoint `/api/modelo/ir/exploratorio` (`?duracao=60|300|1200`) e bloco próprio na
+página PMC ("IR EXPLORATÓRIO — histórico, não validado"). Recupera a leitura histórica do IR (commit 83cc6cc) com P0 **livre**
+estimado por unidade, durações históricas 60/300/1200 s e o mesmo Solver. Regras: nada é persistido (`persistido: false`);
+não lê nem substitui ajustes guardados; não usa o P0 do IR de 180 s nem o histórico de YES; não partilha parâmetros,
+observações nem estados com o IR calibrado; sem dados suficientes não desenha curva (motivo registado). Uma curva
+desenhada só mostra o ajuste dentro da amostra: não é validação fisiológica.
+
+**Esquema.** Uma tabela nova (`modelo_mmp3_yes_historico`). Não há alteração de tabelas existentes.
+
+**Limitações.** O snapshot local tem poucos YES e não cobre temporadas reais (datas de SEASON_START indisponíveis sem API);
+a equivalência v3/v4 foi verificada só nesse snapshot. O bloco de candidatos por temporada e modalidade na página PMC
+ainda não foi implementado (só o bloco exploratório e o diagnóstico existente). Os limiares (0,92; 175–185 s; amostra ≥ 5)
+continuam não validados.
+
+## Regra v5 — identificação de candidatos MMP3 sem exigir tag de 3 min
+
+Identificação: o candidato é o MMP3 canónico de 180 s de cada atividade, comparado de forma causal com a referência
+anterior da mesma modalidade (limiar 0,92, inalterado). A tag de 3 min deixa de ser exigida para identificar.
+
+Estados:
+- **YES**: MMP3 ≥ 0,92 com sinal estrutural (tag 3 min, ou um intervalo isolado de 175–185 s com potência ≥ 0,92).
+- **A_VERIFICAR**: MMP3 ≥ 0,92 sem sinal estrutural, recordes sazonais e intervalos longos/repetições. Nunca YES
+  automático; aguarda confirmação manual.
+- **NO**: MMP3 abaixo do limiar. Falta de tag ou de intervalos não é motivo de NO.
+- **dados_insuficientes**: amostra ou referência insuficiente, ou elegibilidade desconhecida. Sempre com motivo explícito.
+
+Comparação com o P0 (apenas apresentação, o P0 não se altera sem confirmação): `comparar_p0` devolve
+`abaixo` / `igualado` / `superado` com diferença em W e em %. `comparacoes_candidatos` compara cada candidato com o
+P0 anterior causal (último YES estritamente anterior, excluindo rejeitados).
+
+Confirmação manual: `POST /api/protocolo/testes/decisao` aceita 180 s. Os candidatos MMP3 entram por
+`mis.candidatos_mmp3`. Uma confirmação persiste-se como revisão append-only; se o valor mudou desde a confirmação,
+o estado mantém-se A_VERIFICAR com motivo `valor_mudou_desde_a_confirmacao`. Após a decisão corre
+`recalibrar(origem='confirmacao_manual')`.
+
+Rejeições: preservadas na reavaliação (`rejeitados_manualmente`); a rejeição não retira potência física às referências.
+
+Modo exploratório: usa só a referência all-time causal, a mesma da identificação calibrada; não persiste nem substitui.
+
+Sincronização (verificado no código, sem chamadas à API):
+- `/api/sync` incremental: atualiza atividades dos últimos 21 dias (`dias_recuo`); curvas de potência dos últimos
+  5 anos em cada chamada. Tags e `interval_summary` de atividades mais antigas só se atualizam com `/api/sync/full`.
+- Não há agendador interno no repositório (Procfile: `web: python app.py`); o disparo diário é externo e não verificado.
+- Curvas sem potência são ignoradas (linhas antigas ficam). Atividades apagadas no Intervals não são removidas.
+
+Limitações:
+- Candidatos iguais à referência sem sinal (histórico plano) geram muitos A_VERIFICAR (ex.: Bike 300 W ×3 → 100 %).
+- Testes ponta a ponta (confirmação persistida, YES no histórico, P0, valor desatualizado, idempotência, rejeição,
+  falha de recalibração, sincronização, deduplicação e fonte alterada) estão em
+  `tests/pmc/test_ir_confirmacao_e2e.py`, sobre base SQLite temporária.
+- A confirmação grava a revisão e só depois recalibra: duas escritas sem transação única. Se a recalibração falhar,
+  fica a revisão sem o YES; a sincronização seguinte completa o histórico (testado).
+- Decisões em aberto: janela de sincronização incremental, tratamento de candidatos planos, sinalização de YES cuja
+  fonte mudou, agendador diário externo.

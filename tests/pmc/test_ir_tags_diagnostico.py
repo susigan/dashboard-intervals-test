@@ -68,7 +68,8 @@ class ParserDeTags(unittest.TestCase):
                'icu_ignore_power': False, 'tags': None} for i in range(6)]
         e = {x['activity_id']: x for x in mm.avaliar_esforcos(cv, 'Bike', '2026-01-01', (), M.ELEG,
                                                               tags=mis._tags_por_atividade(at))}
-        self.assertEqual(e['Bike-5']['motivo'], mm.M_SEM_TAG)
+        # regra 5: 400 W e recorde (133 %) sem tag: candidato A_VERIFICAR, nunca YES automatico
+        self.assertEqual((e['Bike-5']['estado'], e['Bike-5']['motivo']), (mm.E_A_VERIFICAR, mm.M_SEM_SINAL))
 
 
 class TagEmTextoJsonChegaAoYes(unittest.TestCase):
@@ -86,7 +87,8 @@ class TagEmTextoJsonChegaAoYes(unittest.TestCase):
         for formato in (['3min'], '["3min"]', '3min'):
             self.assertEqual(estado(formato)['estado'], mm.E_ELEGIVEL, formato)
         for formato in (None, '["5min"]', '["Moxy"]'):
-            self.assertEqual(estado(formato)['estado'], mm.E_NAO_ELEGIVEL, formato)
+            # sem sinal de 3 min: MMP3 96,7 % e candidato A_VERIFICAR (nunca YES automatico)
+            self.assertEqual(estado(formato)['estado'], mm.E_A_VERIFICAR, formato)
         self.assertEqual(estado('["3min"]')['pct_do_melhor'], 96.7)      # 290 / 300: regra e limiar inalterados
 
 
@@ -135,8 +137,8 @@ class DiagnosticoSemYes(unittest.TestCase):
         g = mm.p0_global(self.esforcos(True))
         sem = {k: v for k, v in g.items() if k != 'diagnostico'}
         self.assertEqual(set(sem), {'origem', 'duracao_s', 'versao_regra', 'n_yes', 'n_esforcos', 'n_dados_insuficientes',
-                                    'estado', 'registo'})                # so `diagnostico` foi acrescentado
-        self.assertEqual(g['versao_regra'], 3)                           # regra 3: tag manual OU intervalo detetado
+                                    'estado', 'registo', 'n_yes_historicos'})   # so `diagnostico` (+ contagem de YES historicos) foi acrescentado
+        self.assertEqual(g['versao_regra'], 5)                           # regra 5: identificacao sem tag, confirmacao manual
 
 
 @unittest.skipIf(shutil.which('node') is None, 'node indisponivel')

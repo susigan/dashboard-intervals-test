@@ -890,6 +890,53 @@ def api_sync():
     return jsonify(res)
 
 
+@app.route('/api/sync/reconciliar')
+def api_sync_reconciliar():
+    """Reconciliacao direcionada de atividades antigas (tags, interval_summary, icu_ignore_power).
+
+    1 pedido a API para a janela [hoje-dias_fim, hoje-dias_inicio]. Com ?curvas=1 refaz tambem as curvas de potencia
+    (sync_power_curves, custo de 4 pedidos). Se algo mudou, volta a correr a deteccao e o IR, como a sincronizacao.
+    """
+    import modelo_ir_servico as mis_r
+    dias_inicio = request.args.get('dias_inicio', 21, type=int)
+    dias_fim = request.args.get('dias_fim', 120, type=int)
+    res = sync.reconciliar_antigas(dias_inicio, dias_fim)
+    if res.get('ok') and request.args.get('curvas') == '1':
+        try:
+            res['curvas'] = sync.sync_power_curves(anos=max(1, -(-dias_fim // 365)))
+        except Exception as e:
+            res['curvas'] = {'ok': False, 'erro': str(e)}
+    if res.get('ok') and (res.get('alteradas') or res.get('novas') or request.args.get('curvas') == '1'):
+        invalidar_cache()
+        try:
+            import observacoes_auto
+            res['observacoes_auto'] = observacoes_auto.atualizar(origem='reconciliacao')
+        except Exception as e:
+            res['observacoes_auto'] = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+        try:
+            res['modelo_ir'] = mis_r.apos_deteccao(res.get('observacoes_auto'), origem='reconciliacao')
+        except Exception as e:
+            res['modelo_ir'] = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+    return jsonify(res)
+
+
+@app.route('/api/protocolo/divergencias')
+def api_protocolo_divergencias():
+    """Confirmacoes manuais cujo MMP3 atual difere do valor confirmado (so leitura; nova decisao explicita)."""
+    import modelo_ir_servico as mis_d
+    import modelo_testes as mt
+    import observacoes_auto as oa_d
+    try:
+        marcos, _fonte = oa_d.obter_marcos()
+    except Exception:
+        marcos = None
+    curvas = db.load_power_curves() or []
+    atividades = db.load_activities() or []
+    hoje = mt.agora_utc().date().isoformat()
+    return jsonify({'status': 'OK', 'divergencias': mis_d.divergencias_yes(
+        curvas, atividades, hoje, marcos, db.revisoes_testes_modelo())})
+
+
 @app.route('/api/sync/full')
 def api_sync_full():
     """Sync completo: puxa ANOS_HISTORICO anos. Correr uma vez no inicio."""
@@ -1347,6 +1394,7 @@ def api_protocolo_testes_decisao():
       metodo_confirmacao ('manual'), origem_registo, responsavel (opcionais).
     """
     import modelo_testes as mt
+    import modelo_ir_servico as mis
     if not db.ENABLED:
         return _erro_registo(503, 'sem base de dados: o registo nao pode ser gravado')
     if not request.is_json:
@@ -1354,18 +1402,57 @@ def api_protocolo_testes_decisao():
     try:
         pedido = mt.validar_pedido(request.get_json(silent=True))
         tid = mt.id_teste(pedido['modalidade'], pedido['duracao_s'], pedido['activity_id'])
-        det_anot, _curvas, atividades = _deteccao_atual(pedido['modalidade'], fresco=True)
+        mmp3 = pedido['duracao_s'] == mis.DURACAO_IR
+        if mmp3:
+            # candidatos MMP3 de 180 s: a MESMA identificacao do IR (mmp3.avaliar_esforcos), sem outro calculo
+            atividades = db.load_activities()
+            curvas_mmp3 = db.load_power_curves() or []
+            try:
+                import observacoes_auto as oa
+                marcos_mmp3, _fonte = oa.obter_marcos()
+            except Exception:
+                marcos_mmp3 = None
+            det_anot = {}
+            adicionais = mis.candidatos_mmp3(curvas_mmp3, atividades or [], mt.agora_utc().date().isoformat(),
+                                             marcos_mmp3, db.revisoes_testes_modelo(), pedido['modalidade'])
+        else:
+            det_anot, _curvas, atividades = _deteccao_atual(pedido['modalidade'], fresco=True)
+            adicionais = _candidatos_de_observacoes_auto(pedido, atividades)
         ultima = db.ultima_revisao_teste(tid)
         rev = mt.decidir(pedido, det_anot, ultima, mt.agora_utc(),
                          mt.hora_local_da_atividade(atividades, pedido['activity_id']),
-                         adicionais=_candidatos_de_observacoes_auto(pedido, atividades))
+                         adicionais=adicionais)
         if rev is None:
+            # repeticao sem alteracao: se a confirmacao ja existe mas a sua linha YES falta, repara-a (idempotente)
+            reparado = 0
+            if mmp3 and pedido['decisao'] == 'confirmar':
+                try:
+                    reparado = mis.garantir_yes_confirmacao(tid, curvas_mmp3, atividades or [],
+                                                            mt.agora_utc().date().isoformat(), marcos_mmp3,
+                                                            db.revisoes_testes_modelo())
+                except Exception as e:
+                    reparado = f'erro: {type(e).__name__}: {e}'
             return jsonify({'status': 'OK', 'alterado': False, 'teste': ultima,
                             'mensagem': 'Sem alteracao: o teste ja esta neste estado.',
-                            'aviso': _AVISO_REGISTO})
-        db.inserir_revisao_teste(rev)
+                            'yes_reparado': reparado, 'aviso': _AVISO_REGISTO})
+        recalibracao = None
+        if mmp3 and rev['estado'] == mt.ESTADO_CONFIRMADO:
+            # revisao + linha YES na MESMA transacao (tudo ou nada). A linha e calculada antes de gravar.
+            linhas = mis.linhas_yes_confirmacao(rev, curvas_mmp3, atividades or [],
+                                                mt.agora_utc().date().isoformat(), marcos_mmp3,
+                                                db.revisoes_testes_modelo())
+            db.confirmar_revisao_e_yes(rev, linhas)
+        else:
+            db.inserir_revisao_teste(rev)
+        if mmp3:
+            # a confirmacao/rejeicao entra no IR de imediato (idempotente; nunca levanta)
+            try:
+                recalibracao = mis.recalibrar(origem='confirmacao_manual')
+            except Exception as e:
+                recalibracao = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
         return jsonify({'status': 'OK', 'alterado': True,
-                        'teste': db.ultima_revisao_teste(tid), 'aviso': _AVISO_REGISTO})
+                        'teste': db.ultima_revisao_teste(tid), 'recalibracao': recalibracao,
+                        'aviso': _AVISO_REGISTO})
     except mt.ErroContrato as e:
         return _erro_registo(e.status, e.mensagem, e.campo)
     except db.ConflitoRevisao as e:
@@ -5898,6 +5985,32 @@ def api_modelo_ir_global():
         traceback.print_exc()
         return _erro_registo(500, f'{type(e).__name__}: {e}')
     return jsonify({'status': 'OK', **res})
+
+
+@app.route('/api/modelo/ir/exploratorio')
+def api_modelo_ir_exploratorio():
+    """Modo IR EXPLORATORIO historico (nao validado): por modalidade e duracao (60/300/1200 s), P0 livre por
+    unidade, sobre o historico do detetor. SO LEITURA: nao persiste, nao substitui ajustes e nao usa o P0 do IR
+    de 180 s. ?duracao=60|300|1200 (opcional; sem ele devolve as tres). Erros devolvem status ERRO com o motivo."""
+    import modelo_ir_servico as mis
+    import modelo_ir_exploratorio as mex
+    duracoes = None
+    if request.args.get('duracao') not in (None, ''):
+        try:
+            d = int(request.args.get('duracao'))
+        except (TypeError, ValueError):
+            return jsonify({'status': 'ERRO', 'mensagem': 'duracao invalida'}), 400
+        if d not in mex.DURACOES_HISTORICAS:
+            return jsonify({'status': 'ERRO', 'mensagem': 'duracao fora das historicas '
+                            + ', '.join(str(x) for x in mex.DURACOES_HISTORICAS)}), 400
+        duracoes = (d,)
+    try:
+        res = mis.analise_exploratoria(duracoes)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'status': 'ERRO', 'mensagem': f'{type(e).__name__}: {e}', 'persistido': False}), 500
+    return jsonify(res)
 
 
 @app.route('/api/modelo/ir/validacao')

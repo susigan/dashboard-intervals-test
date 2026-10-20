@@ -53,11 +53,13 @@ class Caso318(unittest.TestCase):
     def test_1_esforco_submaximo_que_atualiza_a_curva_da_season_nao_e_automaticamente_yes(self):
         cv, tg = self.cenario(tag=False)
         e = aval(cv, tg, 'Row')['Row-c3']
-        self.assertEqual((e['estado'], e['motivo']), (mm.E_NAO_ELEGIVEL, mm.M_SEM_TAG))
+        # regra 5: 318 / 401 = 79 % do all-time < 0,92 -> NO por abaixo do limiar (nao por falta de tag)
+        self.assertEqual((e['estado'], e['motivo']), (mm.E_NAO_ELEGIVEL, mm.M_ABAIXO))
         # Mesmo COM tag: 318 / 401 = 79,3 % < 0,92 -> NO (a season de treino nao qualifica ninguem)
         cv, tg = self.cenario(tag=True)
         e = aval(cv, tg, 'Row')['Row-c3']
-        self.assertEqual((e['estado'], e['motivo']), (mm.E_NAO_ELEGIVEL, mm.M_ABAIXO))
+        # sem recorde all-time qualificado, o recorde da season fica a verificar (nunca YES automatico)
+        self.assertEqual((e['estado'], e['motivo']), (mm.E_A_VERIFICAR, mm.M_RECORDE_SAZONAL))
         self.assertEqual((e['melhor_anterior_watts'], e['pct_do_melhor']), (401.0, 79.3))
         self.assertFalse(e['pr'])
         # a cadeia de treinos (253 -> 268 -> ... ) nao se valida a si propria
@@ -78,7 +80,7 @@ class Caso318(unittest.TestCase):
         self.assertEqual((e['estado'], e['pr'], e['melhor_anterior_watts']), (mm.E_ELEGIVEL, True, 300.0))
         # sem tag, o mesmo recorde nao e teste
         cv, tg = linha('Bike', [300.0] * 5 + [330.0], tags={0, 1, 2, 3, 4})
-        self.assertEqual(aval(cv, tg)['Bike-a5']['estado'], mm.E_NAO_ELEGIVEL)
+        self.assertEqual(aval(cv, tg)['Bike-a5']['estado'], mm.E_A_VERIFICAR)   # recorde sem sinal: candidato, nunca YES
 
     def test_4_esforco_abaixo_do_recorde_pode_ser_elegivel_se_cumpre_a_proximidade(self):
         cv, tg = linha('Bike', [300.0] * 5 + [285.0])                    # 95 % do melhor anterior, sem PR
@@ -116,7 +118,7 @@ class Caso318(unittest.TestCase):
             g = mm.p0_global({'Bike': list(aval(cv, tg, eleg=eleg).values())})
             self.assertIsNone(g['registo'])
         # nunca YES sem informacao de tags
-        self.assertEqual(mm.avaliar_esforcos(cv, 'Bike', '2026-12-31', (), ELEG)[-1]['estado'], mm.E_NAO_ELEGIVEL)
+        self.assertEqual(mm.avaliar_esforcos(cv, 'Bike', '2026-12-31', (), ELEG)[-1]['estado'], mm.E_A_VERIFICAR)   # sem tag: candidato, nao YES
 
     def test_7_um_no_posterior_nao_substitui_o_ultimo_yes(self):
         cv, tg = linha('Bike', [300.0] * 5 + [290.0, 100.0, 120.0])
@@ -206,8 +208,11 @@ class FluxoDeRecalibracao(G._Base4):
             c['secs'], c['watts'] = [300], [c['watts'][0]]
         self.sync()
         r = self.c.post('/api/modelo/ir/recalibrar', json={'forcar': True}).get_json()
-        self.assertEqual(r['p0_global']['estado'], 'ausente')
-        self.assertEqual({u['acao'] for u in r['unidades'].values()} & {'ajustado'}, set())
+        # um YES ja gravado (historico, numa recalibracao anterior) continua valido mesmo com os dados alterados:
+        # nao se perde por os esforcos vivos mudarem. Sem historico, o resultado seria 'ausente'.
+        self.assertEqual(r['p0_global']['estado'], 'valida')
+        self.assertEqual(r['p0_global']['registo']['origem_registo'], 'historico')
+        # com P0 valido (do historico) o ajuste pode correr: o que se exige e que nao usa o sync (asserts acima)
 
 
 class InterfaceUsaMetodoCorreto(unittest.TestCase):
@@ -259,7 +264,9 @@ class HistoricoGlobalESeason(unittest.TestCase):
     def test_b_temporada_nova_sem_yes_preserva_o_p0_anterior(self):
         cv, tg = _hist([('Bike-t1', '2026-02-10', 250.0, True), ('Bike-t2', '2026-05-10', 260.0, True)])   # NO (<0,92)
         r = aval(cv, tg)
-        self.assertEqual({r['Bike-t1']['estado'], r['Bike-t2']['estado']}, {mm.E_NAO_ELEGIVEL})
+        # nenhum candidato da season nova vira YES; podem ficar a verificar (recorde de season) ou nao elegiveis
+        self.assertTrue({r['Bike-t1']['estado'], r['Bike-t2']['estado']} <= {mm.E_A_VERIFICAR, mm.E_NAO_ELEGIVEL})
+        self.assertNotIn(mm.E_ELEGIVEL, {r['Bike-t1']['estado'], r['Bike-t2']['estado']})
         self.assertEqual(_p0(cv, tg)['registo']['test_id'], r['Bike-a5']['test_id'])
 
     def test_c_novo_yes_elegivel_atualiza_o_p0_com_o_seu_mmp3_sem_se_usar_a_si_proprio(self):
@@ -280,7 +287,7 @@ class HistoricoGlobalESeason(unittest.TestCase):
         ref_depois = mm.referencias(cv, 'Bike', '2026-10-19')['mmp3_pr_atual']['watts']
         self.assertGreaterEqual(ref_depois, ref_antes)                  # o valor de referencia mostrado evolui
         r = aval(cv, tg)
-        self.assertTrue(all(r[a]['estado'] == mm.E_NAO_ELEGIVEL and r[a]['motivo'] == mm.M_SEM_TAG
+        self.assertTrue(all(r[a]['estado'] == mm.E_NAO_ELEGIVEL and r[a]['motivo'] == mm.M_ABAIXO
                             for a in ('Bike-s1', 'Bike-s2', 'Bike-s3')))
         self.assertEqual(_p0(cv, tg)['registo']['watts'], 285.0)
         # mesmo com tag, 270 / 300 = 90 % < 0,92: a season submaxima tambem nao cria YES nem muda o P0
@@ -295,7 +302,10 @@ class HistoricoGlobalESeason(unittest.TestCase):
         self.assertEqual((res['valida'], res['motivo']), (False, p0m.M_SEM_YES))
 
     def test_f_a_pesquisa_do_ultimo_yes_nao_se_limita_a_season_atual(self):
-        src = inspect.getsource(mm.avaliar_esforcos) + inspect.getsource(mm.p0_global)
+        # le o ficheiro (nao inspect.getsource: a linecache pode devolver um bloco deslocado na suite completa)
+        texto = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'modelo_mmp3.py'), encoding='utf-8').read()
+        corpo = lambda nome, prox: texto[texto.index(f'def {nome}('):texto.index(f'def {prox}(')]
+        src = corpo('avaliar_esforcos', 'observacoes_ir') + corpo('p0_global', 'texto_estado')
         self.assertNotIn('inicio_season', src)                          # nenhum filtro por season
         self.assertIn('<= ate', src)    # so o corte causal (data de analise)
 

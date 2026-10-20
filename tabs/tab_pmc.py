@@ -666,6 +666,7 @@ BODY = r"""
 <details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
 <details class="expl" id="validacaoExp" style="margin:10px 0" ontoggle="abrirValidacao(this)"><summary>LEGADO &mdash; Validacao preditiva exploratoria do estimador de 60/300/1200 s (nao valida o IR de MMP3)</summary><div class="expl-corpo" id="validacaoExpCorpo">A carregar...</div></details>
 <details class="expl" id="irExp" style="margin:10px 0" ontoggle="abrirIR(this)"><summary>Modelo IR: curvas de influencia por modalidade (experimental, ajuste historico)</summary><div class="expl-corpo" id="irExpCorpo">A carregar...</div></details>
+<details class="expl" id="irExploratorio" style="margin:10px 0" ontoggle="abrirIRExploratorio(this)"><summary>IR EXPLORATORIO &mdash; historico, nao validado (P0 livre por unidade; 60/300/1200 s)</summary><div class="expl-corpo" id="irExploratorioCorpo">A carregar...</div></details>
 <details class="expl" id="distCargaExp" style="margin:10px 0" ontoggle="abrirDistCarga(this)"><summary>Distribuicao da carga por modalidade (Bike, Row, Run, Ski): Training Load ou TRIMP, observada, sem musculacao</summary><div class="expl-corpo" id="distCargaExpCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
@@ -2917,7 +2918,7 @@ function irP0DiagHtml(g){
  const linhas=function(t){return [['Intervalos (grupos com potência) analisados',t.n_intervalos_analisados],['Atividades com intervalos',t.n_atividades_com_intervalos],
   ['Candidatos por duração (175–185 s)',t.n_candidatos_duracao_3min],['…que cumprem o limiar de potência ('+lim+' %)',t.n_candidatos_potencia_3min],
   ['Candidatos mais longos (186–360 s) com potência próxima — só para verificar',t.n_candidatos_longos_potencia],
-  ['A verificar (repetições, pico noutro trecho ou intervalo longo)',t.n_a_verificar],
+  ['A verificar (sem tag/intervalo, repetições, pico noutro trecho ou intervalo longo)',t.n_a_verificar],
   ['Testes por tag manual (YES)',t.n_confirmados_tag_manual],['Elegíveis automaticamente por intervalo (YES)',t.n_elegiveis_automaticos],
   ['Atividades com potência válida de 180 s',t.n_180],['Com tag 3min reconhecida',t.n_tag_3min],['Excluídas por ausência de sinal de teste (sem tag)',t.n_sem_tag],
   ['Excluídas por potência ignorada',t.n_potencia_ignorada],['Elegibilidade desconhecida',t.n_elegibilidade_desconhecida],
@@ -3046,6 +3047,96 @@ function abrirIR(d){
  if(d&&d.open&&!IR_MONTADO)carregarIR();
 }
 // <</modelo-ir>>
+// <<ir-exploratorio>>
+// ─── IR EXPLORATORIO (historico, nao validado) ─────────────────────────────────────────────
+// So LE /api/modelo/ir/exploratorio: P0 livre por unidade, duracoes historicas 60/300/1200 s. Nada e gravado,
+// nada substitui o IR calibrado (180 s, P0 fixo) e nao se misturam parametros, observacoes ou estados.
+// Sem ajuste (ou com dados insuficientes) nao ha curva: o motivo e mostrado, nunca uma curva artificial.
+var IRX_J=null, IRX_SEQ=0, IRX_MONTADO=false;
+function irxEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function irxNum(x,d){return (x==null||!isFinite(x))?'&mdash;':Number(x).toFixed(d==null?2:d);}
+function irxRotulo(){return '<div style="border-left:3px solid #d29922;padding:3px 10px;margin:6px 0;font-size:12.5px">'+
+  '<b style="color:#d29922">Exploratório — não validado.</b> P0 livre estimado por unidade, ajuste dentro da amostra, '+
+  'observações do detetor histórico (sem exigir YES). Não é guardado, não é uma calibração e não se relaciona com o IR calibrado.</div>';}
+function irxTabela(j){
+  var L='';
+  (j.itens||[]).forEach(function(it){
+    var p=it.parametros, m=it.metricas||{};
+    var c=function(v,d){return '<td style="text-align:right">'+(p?irxNum(v,d):'&mdash;')+'</td>';};
+    L+='<tr><td><b>'+irxEsc(it.modalidade)+'</b></td><td style="text-align:right">'+irxEsc(it.duracao_s)+' s</td>'+
+      '<td style="text-align:right">'+irxEsc(it.n_obs)+'</td><td style="text-align:right">'+irxEsc(it.n_datas_distintas)+'</td>'+
+      '<td style="font-size:11.5px">'+irxEsc(it.data_ini||'&mdash;')+' a '+irxEsc(it.data_fim||'&mdash;')+'</td>'+
+      c(p&&p.p0,1)+c(p&&p.k1,4)+c(p&&p.k2,4)+c(p&&p.t1,1)+c(p&&p.t2,1)+
+      '<td style="text-align:right">'+irxNum(m.r2,3)+'</td><td style="text-align:right">'+irxNum(m.rmse,1)+'</td>'+
+      '<td style="color:'+(it.curva?'#3fb950':'#8b949e')+'">'+irxEsc(it.estado)+(it.motivo?' ('+irxEsc(it.motivo)+')':'')+'</td></tr>';
+  });
+  return '<div style="overflow-x:auto"><table style="font-size:12px;border-collapse:collapse;min-width:760px"><thead><tr>'+
+    '<th style="text-align:left">Modalidade</th><th>Duração</th><th>N obs.</th><th>Datas</th><th style="text-align:left">Período</th>'+
+    '<th>P0 livre (W)</th><th>K1</th><th>K2</th><th>T1 (d)</th><th>T2 (d)</th><th>R²</th><th>RMSE (W)</th>'+
+    '<th style="text-align:left">Estado</th></tr></thead><tbody>'+L+'</tbody></table></div>';
+}
+function irxAvisos(j){
+  var L=[];
+  (j.itens||[]).forEach(function(it){
+    var u='<b>'+irxEsc(it.modalidade)+' '+irxEsc(it.duracao_s)+' s</b>: ';
+    (it.avisos||[]).forEach(function(a){L.push(u+'identificabilidade — '+irxEsc(a));});
+    if(it.estado==='ajustado_nao_identificavel')L.push(u+'parâmetros não identificáveis: a curva descreve o ajuste, não a fisiologia.');
+    if(!it.curva)L.push(u+'sem curva — '+irxEsc(it.motivo||it.estado)+' (observações: '+irxEsc(it.n_obs)+').');
+  });
+  return L.length?'<ul style="font-size:12px;margin:4px 0 4px 18px">'+L.map(function(x){return '<li>'+x+'</li>';}).join('')+'</ul>':'';
+}
+function irxDesenhar(){
+  var j=IRX_J; if(!j||j.status!=='OK')return;
+  var el=document.getElementById('irxDur'); var dur=el?Number(el.value):300;
+  var o=ctx('chIrx',300); if(!o)return; var g=o.g,W=o.W,H=o.H;
+  var its=(j.itens||[]).filter(function(it){return it.duracao_s===dur&&it.curva;});
+  var leg=document.getElementById('irxLeg');
+  if(!its.length){noData(g,W,H,'Sem curva nesta duração: nenhuma unidade com ajuste (ver motivos acima)');
+    if(leg)leg.innerHTML='<span style="color:#d29922">Exploratório — não validado</span>';return;}
+  var set={}; its.forEach(function(it){it.curva.datas.forEach(function(d){set[d]=1;});});
+  var datas=Object.keys(set).sort(), pos={}; datas.forEach(function(d,i){pos[d]=i;});
+  var mn=Infinity,mx=-Infinity;
+  its.forEach(function(it){it.curva.liquida.forEach(function(v){if(v<mn)mn=v;if(v>mx)mx=v;});});
+  if(!isFinite(mn)){noData(g,W,H,'Sem valores');return;}
+  if(mx===mn)mx=mn+1;
+  var PL=54,PR=14,PT=12,PB=26,w=W-PL-PR,h=H-PT-PB;
+  var X=function(i){return PL+w*(datas.length>1?i/(datas.length-1):0.5);}, Y=function(v){return PT+h-(v-mn)/(mx-mn)*h;};
+  var COR=(j.cores||{});
+  g.strokeStyle='#21262d';g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
+  for(var k=0;k<=4;k++){var v=mn+(mx-mn)*k/4,y=Y(v);g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.fillText(Math.round(v)+' W',PL-6,y+3);}
+  its.forEach(function(it){
+    g.strokeStyle=COR[it.modalidade]||'#8b949e';g.lineWidth=1.6;g.beginPath();var ini=false;
+    it.curva.datas.forEach(function(d,i){var x=X(pos[d]),y=Y(it.curva.liquida[i]);if(!ini){g.moveTo(x,y);ini=true;}else g.lineTo(x,y);});
+    g.stroke();
+  });
+  g.fillStyle='#8b949e';g.textAlign='left';g.fillText(datas[0].slice(0,7),PL,H-8);
+  g.textAlign='right';g.fillText(datas[datas.length-1].slice(0,7),PL+w,H-8);
+  if(leg)leg.innerHTML=its.map(function(it){return '<span style="margin-right:12px"><i style="display:inline-block;width:10px;height:10px;background:'+irxEsc(COR[it.modalidade]||'#8b949e')+';margin-right:4px"></i>'+irxEsc(it.modalidade)+'</span>';}).join('')+
+    ' <span style="color:#d29922">Exploratório — não validado (linha líquida = P0 livre + K1·E − K2·G)</span>';
+}
+function irxRender(erro){
+  var el=document.getElementById('irExploratorioCorpo'); if(!el)return;
+  var j=IRX_J;
+  if(erro||!j){el.innerHTML=irxRotulo()+'<p style="color:#f85149;font-size:12.5px">Não foi possível obter o modo exploratório: '+irxEsc(erro||'sem resposta')+'</p>';return;}
+  if(j.status!=='OK'){el.innerHTML=irxRotulo()+'<p style="color:#f85149;font-size:12.5px">Erro no modo exploratório: '+irxEsc(j.mensagem||'desconhecido')+'</p>';return;}
+  var ops=(j.duracoes||[]).map(function(d){return '<option value="'+irxEsc(d)+'"'+(d===300?' selected':'')+'>'+irxEsc(d)+' s</option>';}).join('');
+  el.innerHTML=irxRotulo()+'<div id="irxAv"></div><div id="irxTab"></div>'+
+    '<div style="margin:8px 0;font-size:12px">Duração da curva: <select id="irxDur" onchange="irxDesenhar()">'+ops+'</select></div>'+
+    '<div class="chartbox"><canvas id="chIrx" height="300"></canvas></div><div id="irxLeg" style="font-size:12px;margin-top:4px"></div>';
+  document.getElementById('irxAv').innerHTML=irxAvisos(j);
+  document.getElementById('irxTab').innerHTML=irxTabela(j);
+  irxDesenhar();
+}
+async function carregarIRExploratorio(){
+  IRX_MONTADO=true; var seq=++IRX_SEQ, j=null, erro=null;
+  try{ j=await fetch('/api/modelo/ir/exploratorio').then(function(r){return r.json();}); }
+  catch(e){ erro='falha de rede ('+(e&&e.message?e.message:e)+')'; }
+  if(seq!==IRX_SEQ)return;                      // resposta antiga
+  IRX_J=j; irxRender(erro);
+}
+function abrirIRExploratorio(d){ if(d&&d.open&&!IRX_MONTADO)carregarIRExploratorio(); }
+// <</ir-exploratorio>>
+
 
 
 async function montarExport(){

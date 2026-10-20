@@ -373,6 +373,26 @@ def init_schema():
         registado_em         {ts} NOT NULL,
         PRIMARY KEY (test_id, regra_versao)
     )""")
+    # Revisao manual de um YES (append-only). Nova tabela, para NAO alterar a chave de modelo_mmp3_yes_historico
+    # em producao: cada confirmacao manual (revisao n >= 1) grava a sua linha; a automatica fica na tabela antiga
+    # como revisao 0. Ver yes_historico(): prevalece a revisao mais recente.
+    _exec(f"""CREATE TABLE IF NOT EXISTS modelo_mmp3_yes_revisoes (
+        test_id              TEXT NOT NULL,
+        revisao              INTEGER NOT NULL,
+        regra_versao         INTEGER NOT NULL,
+        activity_id          TEXT NOT NULL,
+        modalidade           TEXT NOT NULL,
+        data                 TEXT NOT NULL,
+        inicio               TEXT,
+        watts                DOUBLE PRECISION NOT NULL,
+        season               TEXT,
+        origem_classificacao TEXT,
+        classe_intervalo     TEXT,
+        motivo_decisao      TEXT,
+        referencia_watts    DOUBLE PRECISION,
+        registado_em         {ts} NOT NULL,
+        PRIMARY KEY (test_id, revisao, regra_versao)
+    )""")
     return True
 
 
@@ -1326,13 +1346,43 @@ def ultima_revisao_teste(test_id):
     return _revisao_de_linha(linha) if linha else None
 
 
-def inserir_revisao_teste(rev):
-    """Insere UMA revisao (um unico INSERT: atomico nos dois drivers).
+def transacao(operacoes):
+    """Executa [(sql, params)] numa UNICA transacao: tudo ou nada. Em erro faz rollback e relanca a excecao.
 
-    Levanta ConflitoRevisao se (test_id, revisao) ja existir. Nunca atualiza.
+    Postgres (autocommit=True): BEGIN/COMMIT explicitos via conn.transaction(). SQLite: BEGIN + COMMIT manuais
+    (o _exec normal faz commit por instrucao, por isso aqui usa-se o cursor diretamente).
     """
     if not ENABLED:
         raise RuntimeError('sem base de dados')
+    with _lock:
+        conn = _connect()
+        if conn is None:
+            raise RuntimeError('sem base de dados')
+        if DRIVER == 'postgres':
+            with conn.transaction():
+                cur = conn.cursor()
+                try:
+                    for sql, params in operacoes:
+                        cur.execute(_q(sql), params or ())
+                finally:
+                    cur.close()
+            return True
+        try:
+            conn.execute('BEGIN')
+            cur = conn.cursor()
+            try:
+                for sql, params in operacoes:
+                    cur.execute(_q(sql), params or ())
+            finally:
+                cur.close()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return True
+
+
+def _sql_revisao(rev):
     valores = []
     for c in _COLS_REVISAO:
         v = rev.get(c)
@@ -1347,14 +1397,75 @@ def inserir_revisao_teste(rev):
         valores.append(v)
     sql = (f"INSERT INTO modelo_testes_revisoes ({', '.join(_COLS_REVISAO)}) "
            f"VALUES ({', '.join('?' * len(_COLS_REVISAO))})")
+    return sql, tuple(valores)
+
+
+def _conflito_revisao(rev, erro):
+    ult = ultima_revisao_teste(rev['test_id'])
+    if ult and ult['revisao'] >= rev['revisao']:
+        return ConflitoRevisao(f"{rev['test_id']} ja tem a revisao {ult['revisao']}")
+    return erro
+
+
+def inserir_revisao_teste(rev):
+    """Insere UMA revisao (um unico INSERT: atomico nos dois drivers).
+
+    Levanta ConflitoRevisao se (test_id, revisao) ja existir. Nunca atualiza.
+    """
+    if not ENABLED:
+        raise RuntimeError('sem base de dados')
+    sql, valores = _sql_revisao(rev)
     try:
-        _exec(sql, tuple(valores))
-    except Exception:
-        ult = ultima_revisao_teste(rev['test_id'])
-        if ult and ult['revisao'] >= rev['revisao']:
-            raise ConflitoRevisao(f"{rev['test_id']} ja tem a revisao {ult['revisao']}")
-        raise
+        _exec(sql, valores)
+    except Exception as e:
+        raise _conflito_revisao(rev, e)
     return True
+
+
+def confirmar_revisao_e_yes(rev, linhas_yes):
+    """Grava a revisao CONFIRMADA e as suas linhas YES na MESMA transacao (tudo ou nada).
+
+    Sem estados parciais: ou ficam a revisao e o YES, ou nada. linhas_yes sao calculadas antes (sem escrita).
+    Idempotente nas linhas YES (ON CONFLICT DO NOTHING); a revisao repetida levanta ConflitoRevisao e nada e gravado.
+    """
+    sql, valores = _sql_revisao(rev)
+    marca = _ts_yes(rev.get('registado_em'))
+    ops = [(sql, valores)] + [_sql_yes_revisao(dict(l, registado_em=l.get('registado_em') or marca))
+                              for l in (linhas_yes or [])]
+    try:
+        transacao(ops)
+    except Exception as e:
+        raise _conflito_revisao(rev, e)
+    return True
+
+
+def _ts_yes(v):
+    """registado_em normalizado como as revisoes (_dt): datetime ou texto ISO ('T'), nunca os dois formatos."""
+    if v is None:
+        return _now()
+    if isinstance(v, str):
+        return v if DRIVER == 'postgres' else v.replace(' ', 'T', 1)
+    return _dt(v)
+
+
+def _sql_yes_revisao(l):
+    cols = _COLS_YES[:-1] + ['revisao']
+    sql = (f"INSERT INTO modelo_mmp3_yes_revisoes ({', '.join(cols + ['registado_em'])}) "
+           f"VALUES ({', '.join('?' * (len(cols) + 1))}) ON CONFLICT (test_id, revisao, regra_versao) DO NOTHING")
+    valores = [l.get(c) for c in cols] + [_ts_yes(l.get('registado_em'))]
+    return sql, tuple(valores)
+
+
+def gravar_yes_revisao(linhas, agora_iso):
+    """Grava linhas YES de revisoes manuais (append-only, idempotente). Cada linha traz 'revisao'."""
+    if not ENABLED or not linhas:
+        return 0
+    ops = []
+    for l in linhas:
+        l = dict(l, registado_em=l.get('registado_em') or agora_iso)
+        ops.append(_sql_yes_revisao(l))
+    transacao(ops)
+    return len(linhas)
 
 
 def testes_modelo_atuais(tipo=None, duracao=None, estado=None):
@@ -1618,6 +1729,7 @@ def inserir_referencia_p0(ref):
 
 _COLS_YES = ['test_id', 'regra_versao', 'activity_id', 'modalidade', 'data', 'inicio', 'watts', 'season',
              'origem_classificacao', 'classe_intervalo', 'motivo_decisao', 'referencia_watts', 'registado_em']
+_COLS_YES_REV = _COLS_YES[:-1] + ['revisao', 'registado_em']
 
 
 def gravar_yes_historico(linhas, agora_iso):
@@ -1634,19 +1746,26 @@ def gravar_yes_historico(linhas, agora_iso):
 
 
 def yes_historico():
-    """Todos os YES gravados, um por teste (o primeiro registado; uma versao nova da regra nao duplica o teste)."""
+    """YES efetivo por teste. Automatico (revisao 0) = primeiro registo da tabela antiga, como antes. Uma
+    confirmacao manual (revisao n >= 1, tabela modelo_mmp3_yes_revisoes) PREVALECE sobre o automatico, e a revisao
+    mais recente prevalece sobre a anterior. Nenhuma linha e apagada: a decisao original fica na tabela."""
     if not ENABLED:
         return []
     rows = _exec(f"SELECT {', '.join(_COLS_YES)} FROM modelo_mmp3_yes_historico "
                  f"ORDER BY registado_em, test_id", fetch='all') or []
-    vistos, out = set(), []
+    rev_rows = _exec(f"SELECT {', '.join(_COLS_YES_REV)} FROM modelo_mmp3_yes_revisoes "
+                     f"ORDER BY registado_em, test_id", fetch='all') or []
+    melhor = {}
     for l in rows:
-        r = dict(zip(_COLS_YES, l))
-        if r['test_id'] in vistos:
-            continue
-        vistos.add(r['test_id'])
-        out.append(r)
-    return out
+        r = dict(zip(_COLS_YES, l), revisao=0)
+        melhor.setdefault(r['test_id'], r)            # primeiro registado (revisao 0)
+    for l in rev_rows:
+        r = dict(zip(_COLS_YES_REV, l))
+        atual = melhor.get(r['test_id'])
+        if atual is None or r['revisao'] > atual['revisao']:
+            melhor[r['test_id']] = r                # revisao manual mais recente prevalece
+    out = [{k: v for k, v in r.items() if k != 'revisao'} | {'revisao': r['revisao']} for r in melhor.values()]
+    return sorted(out, key=lambda r: (r['registado_em'], r['test_id']))
 
 
 def referencias_p0_historico(tipo=None, duracao=None):

@@ -1,5 +1,6 @@
 """Sincronizacao Intervals.icu -> Postgres."""
 
+import json
 import time
 from datetime import datetime, timedelta
 
@@ -17,6 +18,64 @@ def _ts(v):
         return datetime.fromisoformat(v.replace('Z', '+00:00')).replace(tzinfo=None)
     except ValueError:
         return None
+
+
+RECONCILIACAO_MAX_DIAS = 365
+
+
+def _assinatura_relevante(a):
+    """O que a deteccao usa: tags, intervalos e o indicador de potencia ignorada."""
+    return json.dumps([a.get('tags'), a.get('interval_summary'), a.get('icu_ignore_power')],
+                      sort_keys=True, ensure_ascii=False, default=str)
+
+
+def reconciliar_antigas(dias_inicio=21, dias_fim=120):
+    """Reconciliacao DIRECIONADA de atividades antigas, fora da janela incremental.
+
+    Custo fixo: UM pedido a API para a janela [hoje - dias_fim, hoje - dias_inicio], seja qual for o numero de
+    atividades. Compara so o que a deteccao usa (tags, interval_summary, icu_ignore_power) com o JSON ja guardado
+    e grava apenas as atividades novas ou alteradas (idempotente: a segunda execucao sem mudancas grava nada).
+    Nao toca nas curvas de potencia: isso e feito por /api/sync (curvas de 5 anos).
+    `newest` e enviado, mas a janela e reaplicada localmente (ver abaixo): a correcao nao depende
+    de a API interpretar `newest` de forma especifica."""
+    if not db.ENABLED:
+        return {'ok': False, 'erro': 'DATABASE_URL nao configurada'}
+    dias_inicio = max(0, int(dias_inicio))
+    dias_fim = min(RECONCILIACAO_MAX_DIAS, int(dias_fim))
+    if dias_fim <= dias_inicio:
+        return {'ok': False, 'erro': 'janela invalida: dias_fim tem de ser maior que dias_inicio'}
+    t0 = time.time()
+    hoje = datetime.now().date()
+    oldest = hoje - timedelta(days=dias_fim)
+    newest = hoje - timedelta(days=dias_inicio)
+    data, err = icu_get(f"/athlete/{ATHLETE_ID}/activities",
+                        {"oldest": oldest.isoformat(), "newest": newest.isoformat()}, timeout=120)
+    if err:
+        return {'ok': False, 'erro': err, 'pedidos': 1}
+    acts_recebidas = data if isinstance(data, list) else data.get("data", [])
+    # A janela aplica-se TAMBEM localmente: se a API ignorar `newest` ou o tratar de forma inclusiva/exclusiva,
+    # nada fora de [oldest, newest] e escrito. Escrita por id: nunca duplica.
+    dentro = [a for a in acts_recebidas
+              if oldest.isoformat() <= (a.get('start_date_local') or '')[:10] <= newest.isoformat()]
+    fora_da_janela = len(acts_recebidas) - len(dentro)
+    acts = list({a['id']: a for a in dentro if a.get('id')}.values())   # um id, uma classificacao
+    guardadas = {r['id']: r for r in (db.load_activities(desde=oldest.isoformat()) or []) if r.get('id')}
+    alteradas, novas = [], []
+    for a in acts:
+        if not a.get('id') or to_row(a) is None:
+            continue
+        ant = guardadas.get(a['id'])
+        if ant is None:
+            novas.append(a)
+        elif _assinatura_relevante(ant) != _assinatura_relevante(a):
+            alteradas.append(a)
+    rows = [to_row(a) for a in alteradas + novas]
+    ins, upd = db.upsert_activities(rows) if rows else (0, 0)
+    return {'ok': True, 'modo': 'reconciliacao', 'pedidos': 1,
+            'janela': [oldest.isoformat(), newest.isoformat()], 'recebidas': len(acts_recebidas),
+            'fora_da_janela': fora_da_janela,
+            'alteradas': [a['id'] for a in alteradas], 'novas': [a['id'] for a in novas],
+            'inseridas': ins, 'actualizadas': upd, 'segundos': round(time.time() - t0, 2)}
 
 
 def to_row(a):

@@ -86,10 +86,14 @@ M_SEM_REFERENCIA = 'sem_referencia_anterior'
 M_AMOSTRA = 'amostra_minima_nao_atingida'
 M_ABAIXO = 'abaixo_do_limiar_de_todas_as_referencias'
 M_REJEITADO = 'rejeitado_manualmente'
-M_SEM_TAG = 'sem_tag_3min'                  # sem tag e sem intervalo de 3 min elegivel
+M_SEM_TAG = 'sem_tag_3min'                  # (legado, nao usado na classificacao desde a regra 5)
+M_SEM_SINAL = 'mmp3_valido_sem_sinal_estrutural'   # candidato sem tag/intervalo: A_VERIFICAR (confirmacao manual)
+M_VALOR_MUDOU = 'valor_mudou_desde_a_confirmacao'  # a confirmacao refere-se a outro MMP3: nova decisao necessaria
+ORIGEM_CONFIRMACAO = 'confirmacao_manual'
 
 ORIGEM_P0 = 'mmp3_ultimo_yes'
-VERSAO_REGRA_P0 = 4        # 4: 3 (YES = tag 3 min | intervalo 3 min) + estado A_VERIFICAR explicito e contexto
+VERSAO_REGRA_P0 = 5        # 5: identificacao por MMP3 >= limiar (sem exigir tag), A_VERIFICAR sem sinal, confirmacao manual
+                           #    -> YES, comparacao explicita com o P0. 4: 3 (YES = tag 3 min | intervalo 3 min) + estado A_VERIFICAR explicito e contexto
                            #    sazonal por efeito. O conjunto de YES e IGUAL ao da 3 (testado): so muda o rotulo
                            #    dos candidatos que nao sao YES. Migracao = novas linhas no registo (nunca reescrever).
 
@@ -217,28 +221,26 @@ def avaliar_esforcos(curvas, modalidade, ate, ignorar_ids=(), elegibilidade_fn=N
                 % (iv['intervalo']['duracao_s'], iv['intervalo']['watts'], limiar)))
         sinal = base['origem_classificacao'] is not None
         classe = iv['classe']
+        # IDENTIFICACAO: MMP3 valido >= LIMIAR da referencia all-time causal (com ou sem tag/intervalo).
+        # CONFIRMACAO AUTOMATICA DE YES: so com sinal estrutural (tag de 3 min ou intervalo isolado 175-185 s).
+        # Sem sinal estrutural um candidato fica A_VERIFICAR (confirmacao manual), nunca YES automatico.
         if eleg == 'inelegivel':
             out.append({**base, 'estado': E_NAO_ELEGIVEL, 'motivo': M_IGNORE_POWER})
         elif eleg != 'elegivel':
             out.append({**base, 'estado': E_INSUFICIENTE, 'motivo': M_ELEG_DESCONHECIDA})
-        elif not sinal:
-            # sem tag e sem intervalo isolado de 3 min: nunca YES. Repeticoes/pico noutro trecho/intervalo longo
-            # acima do limiar do all-time sao A VERIFICAR (revisao manual); o resto e NO.
-            if ref and classe in mi.A_VERIFICAR and base['qualifica']:
-                out.append({**base, 'estado': E_A_VERIFICAR, 'motivo': classe, 'a_verificar': True,
-                            'motivo_decisao': 'sinal estrutural insuficiente (%s): revisao manual, nunca YES' % classe})
-            else:
-                out.append({**base, 'estado': E_NAO_ELEGIVEL, 'motivo': M_SEM_TAG,
-                            'motivo_decisao': 'sem tag 3min e sem intervalo isolado de 3 min elegivel (%s)' % classe})
         elif c is None:
             out.append({**base, 'estado': E_INSUFICIENTE, 'motivo': M_AMOSTRA})
         elif not ref:
             out.append({**base, 'estado': E_INSUFICIENTE, 'motivo': M_SEM_REFERENCIA})
-        elif base['qualifica']:
+        elif base['qualifica'] and sinal:
             out.append({**base, 'estado': E_ELEGIVEL})
-        elif ref_sz is None or b['watts'] >= limiar * ref_sz['referencia_watts']:
-            # sinal de teste e o melhor da temporada, mas abaixo do all-time: avaliado com contexto sazonal, sem exigir
-            # recorde all-time, e fica A VERIFICAR (nunca YES automatico). Treino sem sinal nunca chega aqui.
+        elif base['qualifica']:
+            out.append({**base, 'estado': E_A_VERIFICAR, 'motivo': M_SEM_SINAL, 'a_verificar': True,
+                        'motivo_decisao': ('MMP3 >= %.2f da referencia anterior sem tag de 3 min nem intervalo '
+                                           'isolado (%s): candidato, confirmacao manual, nunca YES automatico'
+                                           % (limiar, classe))})
+        elif sinal and (ref_sz is None or b['watts'] >= limiar * ref_sz['referencia_watts']):
+            # sinal de teste e o melhor da temporada, mas abaixo do all-time: contexto sazonal, A VERIFICAR
             motivo = M_PRIMEIRO_DA_TEMPORADA if ref_sz is None else M_RECORDE_SAZONAL
             out.append({**base, 'estado': E_A_VERIFICAR, 'motivo': motivo, 'a_verificar': True,
                         'motivo_decisao': 'sinal de teste sem recorde all-time (%s): revisao manual' % motivo})
@@ -331,6 +333,40 @@ def p0_global(esforcos_por_modalidade, historico_yes=None, rejeitados=None):
     return {**diag, 'estado': 'valida', 'registo': {k: r.get(k) for k in (
         'test_id', 'activity_id', 'modalidade', 'data', 'inicio', 'watts', 'pr', 'pct_do_melhor',
         'origem_classificacao', 'motivo_decisao', 'classe_intervalo', 'origem_registo', 'season')}}
+
+
+def comparar_p0(watts, p0_watts):
+    """Comparacao EXPLICITA do MMP3 de um candidato com um P0 de referencia. So apresenta: nao altera nenhum P0.
+    Sem P0 (ou sem watts) devolve 'sem_p0' / None: a falta de referencia nunca e tratada como valor baixo."""
+    if not (isinstance(watts, (int, float)) and isinstance(p0_watts, (int, float))):
+        return {'estado': 'sem_p0', 'diferenca_w': None, 'diferenca_pct': None}
+    d = round(float(watts) - float(p0_watts), 1)
+    pct = round(100.0 * d / float(p0_watts), 1) if p0_watts else None
+    est = 'superado' if d > 0 else ('igualado' if d == 0 else 'abaixo')
+    return {'estado': est, 'diferenca_w': d, 'diferenca_pct': pct}
+
+
+def comparacoes_candidatos(esforcos_por_modalidade, historico_yes=None, rejeitados=None):
+    """Para cada candidato (A_VERIFICAR ou ELEGIVEL), compara o MMP3 com o P0 ANTERIOR: o ultimo YES
+    estritamente anterior ao candidato (causal: nunca um YES posterior), na mesma modalidade ou em qualquer uma
+    (o P0 e global). YES rejeitados nao contam. Os YES do historico sao os gravados (mesma regra do p0_global)."""
+    rejeitados = set(rejeitados or ())
+    todos = [e for lst in esforcos_por_modalidade.values() for e in lst]
+    yes = [e for e in todos if e['estado'] == E_ELEGIVEL and e.get('test_id') not in rejeitados]
+    ids = {e['test_id'] for e in yes}
+    yes += [dict(h, origem_registo='historico') for h in (historico_yes or [])
+            if h.get('test_id') not in ids and h.get('test_id') not in rejeitados]
+    out = []
+    for e in sorted((x for x in todos if x['estado'] in (E_ELEGIVEL, E_A_VERIFICAR)), key=_chave_tempo):
+        anteriores = [y for y in yes if y.get('test_id') != e['test_id'] and _chave_tempo(y) < _chave_tempo(e)]
+        p0 = max(anteriores, key=_chave_tempo) if anteriores else None
+        out.append({'test_id': e['test_id'], 'modalidade': e['modalidade'], 'data': e['data'],
+                    'activity_id': e['activity_id'], 'watts': e['watts'], 'estado': e['estado'],
+                    'p0_anterior': None if p0 is None else {'test_id': p0.get('test_id'), 'data': p0.get('data'),
+                                                            'watts': p0.get('watts'), 'origem_registo':
+                                                            p0.get('origem_registo', 'vivo')},
+                    'comparacao': comparar_p0(e['watts'], p0.get('watts') if p0 else None)})
+    return out
 
 
 def texto_estado(estado, watts=None, pr_watts=None):

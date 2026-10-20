@@ -183,7 +183,7 @@ class RegressaoProducao(Base):
 
     def test_sem_tabelas_novas(self):
         nomes = {r[0] for r in self.db._exec("SELECT name FROM sqlite_master WHERE type='table'", fetch='all')}
-        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_ir_ajustes', 'modelo_ir_p0_referencias', 'modelo_mmp3_yes_historico', 'modelo_observacoes_auto', 'modelo_testes_revisoes'})
+        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_ir_ajustes', 'modelo_ir_p0_referencias', 'modelo_mmp3_yes_historico', 'modelo_mmp3_yes_revisoes', 'modelo_observacoes_auto', 'modelo_testes_revisoes'})
 
 
 if __name__ == '__main__':

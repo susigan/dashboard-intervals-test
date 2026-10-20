@@ -42,6 +42,8 @@ VERSAO_CONTRATO = 1
 
 MODALIDADES = ('Bike', 'Row', 'Ski', 'Run')
 DURACOES = tuple(sorted(protocolo.TESTES))          # 60, 300, 1200
+DURACAO_MMP3 = 180                                   # MMP3 canonico (IR): so para decisoes do registo MMP3
+DURACOES_REGISTO = DURACOES + (DURACAO_MMP3,)
 
 ESTADO_CONFIRMADO = 'confirmado'
 ESTADO_REJEITADO = 'rejeitado'
@@ -244,8 +246,8 @@ def validar_pedido(corpo):
     if mod not in MODALIDADES:
         raise ErroContrato(400, f'modalidade invalida (use {", ".join(MODALIDADES)})', 'modalidade')
     dur = corpo.get('duracao_s')
-    if isinstance(dur, bool) or not isinstance(dur, int) or dur not in DURACOES:
-        raise ErroContrato(400, f'duracao_s invalida (use {", ".join(map(str, DURACOES))})', 'duracao_s')
+    if isinstance(dur, bool) or not isinstance(dur, int) or dur not in DURACOES_REGISTO:
+        raise ErroContrato(400, f'duracao_s invalida (use {", ".join(map(str, DURACOES_REGISTO))})', 'duracao_s')
     aid = _texto(corpo.get('activity_id'), 'activity_id', True, 80)
     dec = corpo.get('decisao')
     if dec not in DECISOES:

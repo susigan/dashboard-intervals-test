@@ -2918,7 +2918,7 @@ function irP0DiagHtml(g){
  const linhas=function(t){return [['Intervalos (grupos com potência) analisados',t.n_intervalos_analisados],['Atividades com intervalos',t.n_atividades_com_intervalos],
   ['Candidatos por duração (175–185 s)',t.n_candidatos_duracao_3min],['…que cumprem o limiar de potência ('+lim+' %)',t.n_candidatos_potencia_3min],
   ['Candidatos mais longos (186–360 s) com potência próxima — só para verificar',t.n_candidatos_longos_potencia],
-  ['A verificar (repetições, pico noutro trecho ou intervalo longo)',t.n_a_verificar],
+  ['A verificar (sem tag/intervalo, repetições, pico noutro trecho ou intervalo longo)',t.n_a_verificar],
   ['Testes por tag manual (YES)',t.n_confirmados_tag_manual],['Elegíveis automaticamente por intervalo (YES)',t.n_elegiveis_automaticos],
   ['Atividades com potência válida de 180 s',t.n_180],['Com tag 3min reconhecida',t.n_tag_3min],['Excluídas por ausência de sinal de teste (sem tag)',t.n_sem_tag],
   ['Excluídas por potência ignorada',t.n_potencia_ignorada],['Elegibilidade desconhecida',t.n_elegibilidade_desconhecida],

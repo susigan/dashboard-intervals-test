@@ -466,7 +466,7 @@ class ConfirmarNaoAtualizaOModelo(Base):
         # outra tabela 'modelo*' tem de falhar aqui (ver GuardasDeIsolamentoIR em test_modelo_ir_servico)
         # modelo_mmp3_yes_historico: historico de YES por teste e versao da regra (append-only, so INSERT ... ON
         # CONFLICT DO NOTHING); e a unica tabela nova do IR desta fase (ver docs/modelo_ir_p0_mmp3.md)
-        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_ir_ajustes', 'modelo_ir_p0_referencias', 'modelo_mmp3_yes_historico', 'modelo_observacoes_auto', 'modelo_testes_revisoes'})
+        self.assertEqual({n for n in nomes if n.startswith('modelo')}, {'modelo_ir_ajustes', 'modelo_ir_p0_referencias', 'modelo_mmp3_yes_historico', 'modelo_mmp3_yes_revisoes', 'modelo_observacoes_auto', 'modelo_testes_revisoes'})
 
     def test_registo_e_append_only_no_codigo(self):
         src = open(os.path.join(ROOT, 'db.py'), encoding='utf-8').read()

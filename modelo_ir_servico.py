@@ -124,9 +124,15 @@ def _atividades_por_id(atividades):
 
 def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
     """{modalidade: (observacoes_para_o_IR, esforcos_avaliados)} a partir das curvas (`power_curves`) e das
-    atividades, so com dados ate `ate` (sem futuro). Reutiliza a deteccao existente e a elegibilidade do projeto.
-    Uma rejeicao manual no registo de testes (mesmo test_id) retira o esforco de `YES` (passa a nao elegivel,
-    motivo `rejeitado_manualmente`): o mesmo conjunto alimenta o P0 global e o ajuste, sem segunda fonte."""
+    atividades, so com dados ate `ate` (sem futuro). Usa o MMP3 canonico de `avaliar_esforcos`.
+
+    Revisoes manuais (estado ATUAL por teste):
+      * REJEITADO: retira a elegibilidade de YES e de A_VERIFICAR (motivo `rejeitado_manualmente`). A potencia
+        continua na referencia fisica (nao e excluida das referencias de deteccao).
+      * CONFIRMADO: um candidato A_VERIFICAR confirmado entra como YES (origem `confirmacao_manual`), desde que o
+        MMP3 atual seja o MESMO valor que foi visto na confirmacao. Se o valor mudou (correcao na origem), o candidato
+        volta a ficar A_VERIFICAR (motivo `valor_mudou_desde_a_confirmacao`) e precisa de nova decisao.
+    O mesmo conjunto alimenta o P0 global e as observacoes do IR."""
     ignorar, horas = _ignorar_e_horas(atividades)
     tags = _tags_por_atividade(atividades)
     por_id = _atividades_por_id(atividades)
@@ -136,15 +142,47 @@ def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
         if aid not in cache:
             cache[aid] = E.elegibilidade_aprendizagem(aid, atividades)['estado']
         return cache[aid]
-    rejeitados = {t for t, r in E.estado_atual_por_teste(revisoes or []).items()
-                  if r.get('estado') == mt.ESTADO_REJEITADO}
+    atuais = E.estado_atual_por_teste(revisoes or [])
+    rejeitados = {t for t, r in atuais.items() if r.get('estado') == mt.ESTADO_REJEITADO}
+    confirmados = {t: r for t, r in atuais.items() if r.get('estado') == mt.ESTADO_CONFIRMADO}
     out = {}
     for mod in mt.MODALIDADES:
-        esf = [({**e, 'estado': mmp3.E_NAO_ELEGIVEL, 'motivo': mmp3.M_REJEITADO}
-                if e['estado'] == mmp3.E_ELEGIVEL and e['test_id'] in rejeitados else e)
-               for e in mmp3.avaliar_esforcos(curvas, mod, ate, ignorar, eleg, marcos, horas, tags=tags,
-                                               atividades_por_id=por_id)]
+        esf = []
+        for e in mmp3.avaliar_esforcos(curvas, mod, ate, ignorar, eleg, marcos, horas, tags=tags,
+                                       atividades_por_id=por_id):
+            t = e['test_id']
+            if t in rejeitados and e['estado'] in (mmp3.E_ELEGIVEL, mmp3.E_A_VERIFICAR):
+                e = {**e, 'estado': mmp3.E_NAO_ELEGIVEL, 'motivo': mmp3.M_REJEITADO, 'a_verificar': False}
+            elif e['estado'] == mmp3.E_A_VERIFICAR and t in confirmados:
+                r = confirmados[t]
+                if mt.mesmo_valor(r.get('watts'), e['watts']):
+                    e = {**e, 'estado': mmp3.E_ELEGIVEL, 'a_verificar': False, 'motivo': 'confirmado_manualmente',
+                         'origem_classificacao': mmp3.ORIGEM_CONFIRMACAO, 'revisao_confirmada': r.get('revisao'),
+                         'motivo_decisao': 'confirmado manualmente (revisao %s)' % r.get('revisao')}
+                else:
+                    e = {**e, 'motivo': mmp3.M_VALOR_MUDOU,
+                         'motivo_decisao': 'a confirmacao (revisao %s) era de %s W: valor atual %s W, nova decisao '
+                                           'necessaria' % (r.get('revisao'), r.get('watts'), e['watts'])}
+            esf.append(e)
         out[mod] = (mmp3.observacoes_ir(esf), esf)
+    return out
+
+
+def candidatos_mmp3(curvas, atividades, ate, marcos=None, revisoes=None, modalidade=None):
+    """Candidatos MMP3 de 180 s para o registo de decisoes (mesma forma de `modelo_testes.candidatos`).
+    Identificacao = mesma de entradas_mmp3: os A_VERIFICAR e os YES ja identificados. Sem nenhuma logica nova."""
+    out = []
+    for mod, (_obs, esf) in entradas_mmp3(curvas, atividades, ate, marcos, revisoes).items():
+        if modalidade and mod != modalidade:
+            continue
+        for e in esf:
+            if e['estado'] not in (mmp3.E_ELEGIVEL, mmp3.E_A_VERIFICAR):
+                continue
+            out.append({'test_id': e['test_id'], 'modalidade': mod, 'duracao_s': DURACAO_IR,
+                        'activity_id': e['activity_id'], 'data': e['data'], 'watts': e['watts'],
+                        'pct_do_melhor': e.get('pct_do_melhor'), 'melhor_recente': e.get('melhor_anterior_watts'),
+                        'referencia_tipo': 'all_time', 'elegibilidade': 'elegivel',
+                        'motivo_elegibilidade': None})
     return out
 
 
@@ -279,21 +317,99 @@ def compatibilidade_p0_alvo(obs, p0):
             'alvo_max_sobre_p0': round(w[-1] / p0, 4)}
 
 
+def _linha_yes(e, mod, revisao=None):
+    """Linha de YES (mesma forma em ambas as tabelas). revisao None = automatica (tabela antiga)."""
+    l = {'test_id': e['test_id'], 'regra_versao': mmp3.VERSAO_REGRA_P0,
+         'activity_id': str(e['activity_id']), 'modalidade': mod, 'data': e['data'],
+         'inicio': e.get('inicio'), 'watts': e['watts'], 'season': e.get('season'),
+         'origem_classificacao': e.get('origem_classificacao'),
+         'classe_intervalo': e.get('classe_intervalo'), 'motivo_decisao': e.get('motivo_decisao'),
+         'referencia_watts': e.get('melhor_anterior_watts')}
+    if revisao is not None:
+        l['revisao'] = revisao
+    return l
+
+
 def _gravar_yes_vivos(entradas, agora):
     """Acrescenta ao historico de YES os efeitos ELEGIVEIS de hoje (append-only; repetidos sao ignorados).
+    Automaticos -> tabela antiga (revisao 0). Confirmacoes manuais -> modelo_mmp3_yes_revisoes (sua revisao).
     Um efeito so entra aqui se for YES pela regra vigente; nada e alterado nem apagado."""
-    linhas = []
+    automaticas, manuais = [], []
     for mod, (_obs, esf) in entradas.items():
         for e in esf:
             if e['estado'] != mmp3.E_ELEGIVEL:
                 continue
-            linhas.append({'test_id': e['test_id'], 'regra_versao': mmp3.VERSAO_REGRA_P0,
-                           'activity_id': str(e['activity_id']), 'modalidade': mod, 'data': e['data'],
-                           'inicio': e.get('inicio'), 'watts': e['watts'], 'season': e.get('season'),
-                           'origem_classificacao': e.get('origem_classificacao'),
-                           'classe_intervalo': e.get('classe_intervalo'), 'motivo_decisao': e.get('motivo_decisao'),
-                           'referencia_watts': e.get('melhor_anterior_watts')})
-    return db.gravar_yes_historico(linhas, agora.isoformat(timespec='seconds'))
+            if e.get('origem_classificacao') == mmp3.ORIGEM_CONFIRMACAO and e.get('revisao_confirmada'):
+                manuais.append(_linha_yes(e, mod, revisao=e['revisao_confirmada']))
+            else:
+                automaticas.append(_linha_yes(e, mod))
+    agora_iso = agora.isoformat(timespec='seconds')
+    n = db.gravar_yes_historico(automaticas, agora_iso)
+    if manuais:
+        db.gravar_yes_revisao([dict(l, registado_em=agora_iso) for l in manuais], agora_iso)
+    return n
+
+
+def linhas_yes_confirmacao(rev, curvas, atividades, ate, marcos=None, revisoes=None):
+    """Linha YES desta confirmacao, CALCULADA antes de qualquer escrita (so leitura e calculo).
+
+    `rev` e a revisao nova (ainda nao gravada). Recalcula as entradas com ela e devolve a linha do proprio teste
+    se ficar ELEGIVEL por confirmacao manual; lista vazia se o valor ja nao corresponder."""
+    if rev.get('estado') != mt.ESTADO_CONFIRMADO:
+        return []
+    ent = entradas_mmp3(curvas, atividades, ate, marcos, list(revisoes or []) + [rev])
+    for e in ent.get(rev['modalidade'], ([], []))[1]:
+        if e['test_id'] == rev['test_id'] and e['estado'] == mmp3.E_ELEGIVEL \
+                and e.get('origem_classificacao') == mmp3.ORIGEM_CONFIRMACAO:
+            return [_linha_yes(e, rev['modalidade'], revisao=rev['revisao'])]
+    return []
+
+
+def divergencias_yes(curvas, atividades, ate, marcos=None, revisoes=None):
+    """Confirmacoes manuais cujo MMP3 atual ja nao e o valor confirmado. So leitura: nao recalibra, nao grava.
+
+    Cada item traz o valor confirmado (revisao vigente), o MMP3 atual, a diferenca, o motivo e o historico de
+    revisoes do teste. O YES anterior mantem-se no P0 ate haver nova decisao explicita (confirmar com o valor
+    atual, ou rejeitar)."""
+    revs = list(revisoes or [])
+    atuais = E.estado_atual_por_teste(revs)
+    ent = entradas_mmp3(curvas, atividades, ate, marcos, revs)
+    por_teste = {e['test_id']: e for mod in ent for e in ent[mod][1]}
+    out = []
+    for tid, r in atuais.items():
+        if r.get('estado') != mt.ESTADO_CONFIRMADO:
+            continue
+        e = por_teste.get(tid)
+        if e is None or e.get('motivo') != mmp3.M_VALOR_MUDOU:
+            continue
+        w0, w1 = r.get('watts'), e['watts']
+        historico = [{'revisao': h.get('revisao'), 'estado': h.get('estado'), 'watts': h.get('watts'),
+                      'motivo': h.get('motivo'), 'registado_em': str(h.get('registado_em'))}
+                     for h in db.revisoes_testes_modelo(test_id=tid)]
+        out.append({'test_id': tid, 'modalidade': r.get('modalidade'), 'activity_id': r.get('activity_id'),
+                    'revisao_confirmada': r.get('revisao'), 'watts_confirmado': w0, 'watts_atual': w1,
+                    'diferenca_w': round(w1 - w0, 2), 'diferenca_pct': round(100.0 * (w1 - w0) / w0, 2) if w0 else None,
+                    'motivo': e.get('motivo'), 'motivo_decisao': e.get('motivo_decisao'),
+                    'estado_revisao': 'pendente_de_nova_decisao', 'historico_revisoes': historico})
+    return out
+
+
+def garantir_yes_confirmacao(tid, curvas, atividades, ate, marcos=None, revisoes=None):
+    """Reparacao idempotente: se a ultima revisao CONFIRMADA ja e YES mas a sua linha falta, grava-a.
+    Nunca escreve revisao nem altera outras linhas. Devolve o numero de linhas enviadas (0 se nada a fazer)."""
+    ult = db.ultima_revisao_teste(tid)
+    if not ult or ult.get('estado') != mt.ESTADO_CONFIRMADO:
+        return 0
+    linhas = linhas_yes_confirmacao(ult, curvas, atividades, ate, marcos, [r for r in (revisoes or [])
+                                                                          if r.get('test_id') != tid or
+                                                                          r.get('revisao') != ult.get('revisao')])
+    # so conta o que falta de facto: uma linha ja presente nao e reparacao
+    faltam = [l for l in linhas if not db._exec(
+        'SELECT 1 FROM modelo_mmp3_yes_revisoes WHERE test_id = ? AND revisao = ? AND regra_versao = ?',
+        (l['test_id'], l['revisao'], l['regra_versao']), fetch='one')]
+    if faltam:
+        db.gravar_yes_revisao(faltam, mt.agora_utc().isoformat(timespec='seconds'))
+    return len(faltam)
 
 
 def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=None, duracao=None,
@@ -1212,6 +1328,9 @@ def analise_exploratoria(duracoes=None, historico_obs=None, revisoes=None, ativi
         return {**base, 'status': 'ERRO', 'mensagem': 'atividades indisponiveis: sem carga, nada foi calculado'}
     hoje = referencia or mt.agora_utc().date().isoformat()
     sel = selecionar(historico_obs, revisoes, atividades, curvas)
+    # mesma identificacao de candidatos do calibrado: so o maximo causal ALL-TIME >= limiar (sem exigir tag/intervalo)
+    sel = {k: {**v, 'usadas': [o for o in v.get('usadas') or [] if o.get('referencia_tipo') == 'all_time']}
+           for k, v in sel.items()}
     cargas, info = carga_por_modalidade(atividades)
     itens = mex.analisar(sel, cargas, hoje, ir._cfg(config), duracoes)
     return {**base, 'status': 'OK', 'referencia': hoje, 'itens': itens, 'carga': info}

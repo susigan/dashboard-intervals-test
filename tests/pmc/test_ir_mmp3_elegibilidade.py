@@ -53,7 +53,8 @@ class Caso318(unittest.TestCase):
     def test_1_esforco_submaximo_que_atualiza_a_curva_da_season_nao_e_automaticamente_yes(self):
         cv, tg = self.cenario(tag=False)
         e = aval(cv, tg, 'Row')['Row-c3']
-        self.assertEqual((e['estado'], e['motivo']), (mm.E_NAO_ELEGIVEL, mm.M_SEM_TAG))
+        # regra 5: 318 / 401 = 79 % do all-time < 0,92 -> NO por abaixo do limiar (nao por falta de tag)
+        self.assertEqual((e['estado'], e['motivo']), (mm.E_NAO_ELEGIVEL, mm.M_ABAIXO))
         # Mesmo COM tag: 318 / 401 = 79,3 % < 0,92 -> NO (a season de treino nao qualifica ninguem)
         cv, tg = self.cenario(tag=True)
         e = aval(cv, tg, 'Row')['Row-c3']
@@ -79,7 +80,7 @@ class Caso318(unittest.TestCase):
         self.assertEqual((e['estado'], e['pr'], e['melhor_anterior_watts']), (mm.E_ELEGIVEL, True, 300.0))
         # sem tag, o mesmo recorde nao e teste
         cv, tg = linha('Bike', [300.0] * 5 + [330.0], tags={0, 1, 2, 3, 4})
-        self.assertEqual(aval(cv, tg)['Bike-a5']['estado'], mm.E_NAO_ELEGIVEL)
+        self.assertEqual(aval(cv, tg)['Bike-a5']['estado'], mm.E_A_VERIFICAR)   # recorde sem sinal: candidato, nunca YES
 
     def test_4_esforco_abaixo_do_recorde_pode_ser_elegivel_se_cumpre_a_proximidade(self):
         cv, tg = linha('Bike', [300.0] * 5 + [285.0])                    # 95 % do melhor anterior, sem PR
@@ -117,7 +118,7 @@ class Caso318(unittest.TestCase):
             g = mm.p0_global({'Bike': list(aval(cv, tg, eleg=eleg).values())})
             self.assertIsNone(g['registo'])
         # nunca YES sem informacao de tags
-        self.assertEqual(mm.avaliar_esforcos(cv, 'Bike', '2026-12-31', (), ELEG)[-1]['estado'], mm.E_NAO_ELEGIVEL)
+        self.assertEqual(mm.avaliar_esforcos(cv, 'Bike', '2026-12-31', (), ELEG)[-1]['estado'], mm.E_A_VERIFICAR)   # sem tag: candidato, nao YES
 
     def test_7_um_no_posterior_nao_substitui_o_ultimo_yes(self):
         cv, tg = linha('Bike', [300.0] * 5 + [290.0, 100.0, 120.0])
@@ -286,7 +287,7 @@ class HistoricoGlobalESeason(unittest.TestCase):
         ref_depois = mm.referencias(cv, 'Bike', '2026-10-19')['mmp3_pr_atual']['watts']
         self.assertGreaterEqual(ref_depois, ref_antes)                  # o valor de referencia mostrado evolui
         r = aval(cv, tg)
-        self.assertTrue(all(r[a]['estado'] == mm.E_NAO_ELEGIVEL and r[a]['motivo'] == mm.M_SEM_TAG
+        self.assertTrue(all(r[a]['estado'] == mm.E_NAO_ELEGIVEL and r[a]['motivo'] == mm.M_ABAIXO
                             for a in ('Bike-s1', 'Bike-s2', 'Bike-s3')))
         self.assertEqual(_p0(cv, tg)['registo']['watts'], 285.0)
         # mesmo com tag, 270 / 300 = 90 % < 0,92: a season submaxima tambem nao cria YES nem muda o P0

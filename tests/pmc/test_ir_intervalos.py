@@ -116,7 +116,9 @@ class NoEsforco(unittest.TestCase):
     def test_5_min_nao_e_equivalente_a_um_teste_de_180_s(self):
         e = com_ultimo(self.VALS, '["1x 5m 288w"]')
         # 5 min nao e um teste de 3 min nem de 180 s: fica a verificar (revisao manual), nunca YES
-        self.assertEqual((e['estado'], e['motivo'], e['a_verificar']), (mm.E_A_VERIFICAR, mi.C_LONGO, True))
+        # regra 5: o MMP3 da atividade (>= 0,92) identifica o candidato mesmo sem tag; o intervalo longo e so contexto
+        self.assertEqual((e['estado'], e['motivo'], e['a_verificar']), (mm.E_A_VERIFICAR, mm.M_SEM_SINAL, True))
+        self.assertEqual(e['classe_intervalo'], mi.C_LONGO)
         self.assertEqual(e['classe_intervalo'], mi.C_LONGO)
         self.assertIsNone(e['origem_classificacao'])
 
@@ -127,17 +129,18 @@ class NoEsforco(unittest.TestCase):
     def test_sem_dados_de_intervalos_ou_potencia_invalida(self):
         for r in (None, '', '["3x 3m1s 156bpm"]', '["1x 3m 5:10"]'):
             e = com_ultimo(self.VALS, r)
-            self.assertEqual((e['estado'], e['origem_classificacao'], e['a_verificar']), (mm.E_NAO_ELEGIVEL, None, False), r)
+            # MMP3 valido (96,7 %) sem sinal estrutural: candidato A_VERIFICAR, nunca YES; a falta de intervalos nao e MMP3 baixo
+            self.assertEqual((e['estado'], e['origem_classificacao'], e['a_verificar']), (mm.E_A_VERIFICAR, None, True), r)
 
     def test_treino_forte_nao_e_teste_so_por_elevar_a_curva_ou_bater_recorde(self):
         e = com_ultimo([300.0] * 5 + [400.0], '["1x 20m 280w"]')        # recorde, mas sem sinal de teste
-        self.assertEqual((e['estado'], e['pr']), (mm.E_NAO_ELEGIVEL, True))
+        self.assertEqual((e['estado'], e['pr']), (mm.E_A_VERIFICAR, True))   # recorde nunca e YES automatico
 
     def test_o_esforco_continua_a_exigir_a_regra_de_proximidade_e_referencia(self):
         self.assertEqual(com_ultimo([300.0] * 5 + [250.0], '["1x 3m 250w"]')['estado'], mm.E_NAO_ELEGIVEL)   # 83 %
         cv = serie('Bike', [300.0] * 4)                                 # amostra < 5
         a = ativs(cv, {cv[-1]['activity_id']: '["1x 3m 300w"]'})
-        self.assertEqual(avaliar(cv, a)[cv[-1]['activity_id']]['estado'], mm.E_NAO_ELEGIVEL)   # sem sinal sem referencia
+        self.assertEqual(avaliar(cv, a)[cv[-1]['activity_id']]['estado'], mm.E_INSUFICIENTE)   # amostra < 5: dados insuficientes, nao NO
         cv = serie('Bike', self.VALS)
         a = ativs(cv, {cv[-1]['activity_id']: '["1x 3m 288w"]'})
         a[-1]['icu_ignore_power'] = True
@@ -178,7 +181,7 @@ class NoEsforco(unittest.TestCase):
         row = avaliar(cv, at, 'Row')
         self.assertTrue(all(k.startswith('Bike-') for k in bike) and all(k.startswith('Row-') for k in row))
         self.assertEqual(row['Row-a5']['estado'], mm.E_ELEGIVEL)
-        self.assertEqual(bike['Bike-a5']['estado'], mm.E_NAO_ELEGIVEL)   # o intervalo do Row nao valida o Bike
+        self.assertEqual(bike['Bike-a5']['estado'], mm.E_A_VERIFICAR)   # candidato do Bike sem sinal; o intervalo do Row nao valida o Bike (nunca YES)
 
 
 class P0Global(unittest.TestCase):
@@ -216,7 +219,8 @@ class DiagnosticoEIndicacoes(unittest.TestCase):
         self.assertEqual((t['n_candidatos_duracao_3min'], t['n_candidatos_potencia_3min']), (2, 2))
         self.assertEqual(t['n_candidatos_longos_potencia'], 1)
         self.assertEqual((t['n_confirmados_tag_manual'], t['n_elegiveis_automaticos']), (1, 1))
-        self.assertEqual(t['n_a_verificar'], 2)                         # repeticoes + longo
+        # a1..a3 (300 W, iguais a referencia, sem tag) + repeticoes (a6) + 5 min (a7): candidatos, nunca YES
+        self.assertEqual(t['n_a_verificar'], 5)
         self.assertEqual(d['por_modalidade']['Bike']['n_yes'], 2)
         self.assertEqual(d['por_modalidade']['Row']['n_180'], 0)
 
@@ -270,7 +274,8 @@ class Interface(unittest.TestCase):
         h = self.js('irP0GlobalHtml', {'p0_global': g})
         self.assertIn('intervalo_detectado', h)
         self.assertIn('Elegíveis automaticamente por intervalo (YES): <b>1</b>', h)
-        self.assertIn('A verificar (repetições, pico noutro trecho ou intervalo longo): <b>1</b>', h)
+        # regra 5: os 300 W iguais a referencia (sem tag) sao candidatos A_VERIFICAR, nunca YES: 5 a verificar
+        self.assertIn('A verificar (sem tag/intervalo, repetições, pico noutro trecho ou intervalo longo): <b>5</b>', h)
         self.assertIn('Bike-a5', h)
 
     def test_sem_p0_explica_e_nao_inventa(self):

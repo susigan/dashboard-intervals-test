@@ -5900,6 +5900,32 @@ def api_modelo_ir_global():
     return jsonify({'status': 'OK', **res})
 
 
+@app.route('/api/modelo/ir/exploratorio')
+def api_modelo_ir_exploratorio():
+    """Modo IR EXPLORATORIO historico (nao validado): por modalidade e duracao (60/300/1200 s), P0 livre por
+    unidade, sobre o historico do detetor. SO LEITURA: nao persiste, nao substitui ajustes e nao usa o P0 do IR
+    de 180 s. ?duracao=60|300|1200 (opcional; sem ele devolve as tres). Erros devolvem status ERRO com o motivo."""
+    import modelo_ir_servico as mis
+    import modelo_ir_exploratorio as mex
+    duracoes = None
+    if request.args.get('duracao') not in (None, ''):
+        try:
+            d = int(request.args.get('duracao'))
+        except (TypeError, ValueError):
+            return jsonify({'status': 'ERRO', 'mensagem': 'duracao invalida'}), 400
+        if d not in mex.DURACOES_HISTORICAS:
+            return jsonify({'status': 'ERRO', 'mensagem': 'duracao fora das historicas '
+                            + ', '.join(str(x) for x in mex.DURACOES_HISTORICAS)}), 400
+        duracoes = (d,)
+    try:
+        res = mis.analise_exploratoria(duracoes)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'status': 'ERRO', 'mensagem': f'{type(e).__name__}: {e}', 'persistido': False}), 500
+    return jsonify(res)
+
+
 @app.route('/api/modelo/ir/validacao')
 def api_modelo_ir_validacao():
     """LEGADO: walk-forward do IR contra M0/M1/M2 sobre as observacoes de 60/300/1200 s (so leitura; recalibra

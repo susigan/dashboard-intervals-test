@@ -92,3 +92,44 @@ data, modalidade, potência) e estado do Solver (`estado_solver`): `nao_executad
 **Limitações fisiológicas não validadas**: o limiar 0,92 não foi calibrado para 3 min; a média de um intervalo de ~3 min
 pode ser inferior ao máximo móvel real; a janela ±5 s foi derivada de um único atleta/histórico; intervalos sem início/fim
 não permitem confirmar que o esforço de 180 s coincide com o intervalo.
+
+## Regra v4 — três referências separadas, histórico de YES e modo exploratório
+
+Mesma regra de YES que a v3 (no snapshot local, os YES são idênticos nas duas versões; ver limitações). O que muda é a
+separação das referências e a persistência do histórico.
+
+**1. Deteção sazonal (candidatos).** Por temporada (`season`, a partir dos marcos reais de SEASON_START, com fallback
+documentado para o ano civil) e modalidade. Um esforço que supera o recorde da temporada e não tem recorde all-time
+qualificado fica **`a_verificar`** (estado explícito; motivo `recorde_de_temporada_sem_recorde_all_time` ou
+`primeiro_candidato_da_temporada`), nunca YES automático. O contexto de deteção (`ref_temporada_watts`, `pct_da_temporada`)
+é informativo.
+
+**2. Histórico de YES.** Tabela `modelo_mmp3_yes_historico` (append-only; chave `(test_id, regra_versao)`; inserção
+`ON CONFLICT DO NOTHING`; nunca se atualiza nem se apaga). Gravada em `recalibrar` (caminho de produção) com os efeitos
+elegíveis de hoje. Um YES gravado:
+- continua no P0 mesmo que a temporada mude;
+- continua no P0 mesmo que deixe de ser elegível nos esforços vivos (ex.: tag alterada depois);
+- só sai por **rejeição manual** atual (`rejeitados_manualmente`, mesma regra das observações do IR).
+Sem base de dados o histórico é vazio (`[]`) e o resultado é o de antes.
+
+**3. P0.** `p0_global` = MMP3 do YES mais recente entre histórico e esforços vivos. Não é a referência de deteção nem o
+recorde sazonal da Power Curve (não se usa o MMP3 sazonal como P0). `a_verificar` e NO nunca substituem o último YES.
+Sem nenhum YES: `ausente` (sem fallback para CP, FTP ou outra duração). Só com esforços insuficientes:
+`dados_insuficientes`. Os dois estados são distintos na interface e no diagnóstico.
+
+**Migração.** Linhas novas apenas; nada é reescrito. Um YES passa a ser gravado quando a regra o aceita; nenhuma linha
+antiga é recalculada. A regra v3 não tem linhas na tabela nova; a v4 começa a gravar a partir da próxima recalibração.
+
+**Modo exploratório (não validado).** Endpoint `/api/modelo/ir/exploratorio` (`?duracao=60|300|1200`) e bloco próprio na
+página PMC ("IR EXPLORATÓRIO — histórico, não validado"). Recupera a leitura histórica do IR (commit 83cc6cc) com P0 **livre**
+estimado por unidade, durações históricas 60/300/1200 s e o mesmo Solver. Regras: nada é persistido (`persistido: false`);
+não lê nem substitui ajustes guardados; não usa o P0 do IR de 180 s nem o histórico de YES; não partilha parâmetros,
+observações nem estados com o IR calibrado; sem dados suficientes não desenha curva (motivo registado). Uma curva
+desenhada só mostra o ajuste dentro da amostra: não é validação fisiológica.
+
+**Esquema.** Uma tabela nova (`modelo_mmp3_yes_historico`). Não há alteração de tabelas existentes.
+
+**Limitações.** O snapshot local tem poucos YES e não cobre temporadas reais (datas de SEASON_START indisponíveis sem API);
+a equivalência v3/v4 foi verificada só nesse snapshot. O bloco de candidatos por temporada e modalidade na página PMC
+ainda não foi implementado (só o bloco exploratório e o diagnóstico existente). Os limiares (0,92; 175–185 s; amostra ≥ 5)
+continuam não validados.

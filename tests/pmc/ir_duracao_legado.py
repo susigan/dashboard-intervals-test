@@ -26,7 +26,7 @@ def sem_p0(estado='ausente'):
     _ESTADO.update(valor=None, estado=estado)
 
 
-def _falso_global(entradas):
+def _falso_global(entradas, historico_yes=None, rejeitados=None):
     if _ESTADO['estado'] != 'valida':
         return {'origem': mmp3.ORIGEM_P0, 'duracao_s': mmp3.DURACAO_S, 'versao_regra': mmp3.VERSAO_REGRA_P0, 'n_yes': 0,
                 'n_esforcos': 0, 'n_dados_insuficientes': 0, 'estado': _ESTADO['estado'], 'registo': None}

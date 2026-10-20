@@ -19,6 +19,7 @@ import config
 import db
 import modelo_estimador as E
 import modelo_ir as ir
+import modelo_ir_exploratorio as mex
 import modelo_ir_global as G
 import modelo_ir_p0 as p0m
 import modelo_mmp3 as mmp3
@@ -147,9 +148,15 @@ def entradas_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
     return out
 
 
-def p0_global_das_entradas(entradas):
-    """P0 global (modelo_mmp3.p0_global) a partir de `entradas_mmp3`."""
-    return mmp3.p0_global({m: v[1] for m, v in entradas.items()})
+def rejeitados_manualmente(revisoes):
+    """test_ids cuja revisao manual atual e REJEITADO (mesma regra que `entradas_mmp3`)."""
+    return {t for t, r in E.estado_atual_por_teste(revisoes or []).items() if r.get('estado') == mt.ESTADO_REJEITADO}
+
+
+def p0_global_das_entradas(entradas, historico_yes=None, rejeitados=None):
+    """P0 global (modelo_mmp3.p0_global) a partir de `entradas_mmp3`, com o historico de YES gravados e as
+    rejeicoes manuais. Sem historico nem rejeicoes, o resultado e o mesmo de antes."""
+    return mmp3.p0_global({m: v[1] for m, v in entradas.items()}, historico_yes=historico_yes, rejeitados=rejeitados)
 
 
 def _cfg_efetiva(config_ir=None):
@@ -272,6 +279,23 @@ def compatibilidade_p0_alvo(obs, p0):
             'alvo_max_sobre_p0': round(w[-1] / p0, 4)}
 
 
+def _gravar_yes_vivos(entradas, agora):
+    """Acrescenta ao historico de YES os efeitos ELEGIVEIS de hoje (append-only; repetidos sao ignorados).
+    Um efeito so entra aqui se for YES pela regra vigente; nada e alterado nem apagado."""
+    linhas = []
+    for mod, (_obs, esf) in entradas.items():
+        for e in esf:
+            if e['estado'] != mmp3.E_ELEGIVEL:
+                continue
+            linhas.append({'test_id': e['test_id'], 'regra_versao': mmp3.VERSAO_REGRA_P0,
+                           'activity_id': str(e['activity_id']), 'modalidade': mod, 'data': e['data'],
+                           'inicio': e.get('inicio'), 'watts': e['watts'], 'season': e.get('season'),
+                           'origem_classificacao': e.get('origem_classificacao'),
+                           'classe_intervalo': e.get('classe_intervalo'), 'motivo_decisao': e.get('motivo_decisao'),
+                           'referencia_watts': e.get('melhor_anterior_watts')})
+    return db.gravar_yes_historico(linhas, agora.isoformat(timespec='seconds'))
+
+
 def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=None, duracao=None,
                dados=None, marcos=None):
     """Ajusta cada unidade cujas entradas mudaram. Idempotente: sem mudancas nao grava nada.
@@ -314,7 +338,12 @@ def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=Non
         entradas = entradas_mmp3(curvas, atividades, referencia, marcos, revisoes)
     except E.HistoricoAmbiguo as e:
         return {'ok': False, 'erro': 'historico_de_testes_ambiguo', 'detalhe': str(e)}
-    global_ = p0_global_das_entradas(entradas)         # UM P0 para as quatro modalidades
+    # YES historicos gravados (producao) + rejeicoes atuais: um YES gravado nao sai do P0 por mudar a temporada
+    historico = db.yes_historico() if dados is None else None
+    rejeitados = rejeitados_manualmente(revisoes)
+    global_ = p0_global_das_entradas(entradas, historico, rejeitados)   # UM P0 para as quatro modalidades
+    if dados is None:
+        _gravar_yes_vivos(entradas, agora)
     cargas, info_carga = carga_por_modalidade(atividades)
     cfg = _cfg_efetiva(config_ir)
     cfg_assin = ir.assinatura(cfg)
@@ -679,7 +708,7 @@ def impacto_cp_model(mod, curvas, ate, marcos=None, modo='coerente'):
     return out
 
 
-def contexto_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
+def contexto_mmp3(curvas, atividades, ate, marcos=None, revisoes=None, historico_yes=None):
     """({modalidade: contexto MMP3 + impacto informativo no CP Model}, p0_global), so leitura, so com dados ate `ate`.
     Os esforcos avaliados sao os mesmos que alimentam o ajuste e o P0 global (uma unica fonte)."""
     ignorar, _horas = _ignorar_e_horas(atividades)
@@ -689,7 +718,7 @@ def contexto_mmp3(curvas, atividades, ate, marcos=None, revisoes=None):
         c = mmp3.contexto(curvas, mod, ate, ignorar, None, marcos, esforcos=ent[mod][1])   # tags/intervalos ja nas entradas
         c['cp_model'] = impacto_cp_model(mod, curvas, ate, marcos)
         out[mod] = c
-    return out, p0_global_das_entradas(ent)
+    return out, p0_global_das_entradas(ent, historico_yes, rejeitados_manualmente(revisoes))
 
 
 # estados de apresentacao do ajuste do IR (um por modalidade)
@@ -853,7 +882,8 @@ def curvas_conjuntas(duracao=None, ate=None, atividades=None, curvas=None, marco
     hoje = (ate or mt.agora_utc().date().isoformat())
     if curvas is None:
         curvas = db.load_power_curves() or []
-    ctx3, global_ = contexto_mmp3(curvas, atividades, hoje, marcos, revisoes)
+    ctx3, global_ = contexto_mmp3(curvas, atividades, hoje, marcos, revisoes,
+                                  historico_yes=db.yes_historico())
     series = {m: j['curvas'] for m, j in js.items() if j.get('curvas')}
     datas = []
     if series:
@@ -1154,3 +1184,35 @@ def apos_deteccao(resultado_deteccao, origem='sync'):
         import traceback
         traceback.print_exc()
         return {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+
+
+# ── modo exploratorio (historico, nao validado) ────────────────────────────────────────────────
+
+def analise_exploratoria(duracoes=None, historico_obs=None, revisoes=None, atividades=None, curvas=None,
+                         referencia=None, config=None):
+    """Curvas exploratorias historicas por modalidade e duracao (60/300/1200 s), com P0 livre por unidade.
+
+    SO LEITURA e NAO PERSISTIDO: le o historico do detetor e as atividades, nunca grava em modelo_ir_ajustes
+    nem em modelo_ir_p0_referencias, nao le nem substitui os ajustes calibrados e nao usa o P0 do IR de 180 s.
+    Sem argumentos de dados le da base. Devolve status ERRO com a mensagem (nunca uma curva artificial) se faltar
+    a base ou as atividades."""
+    duracoes = tuple(duracoes) if duracoes else mex.DURACOES_HISTORICAS
+    base = {'experimental': True, 'modo': mex.MODO, 'rotulo': mex.ROTULO, 'persistido': False,
+            'tipo_analise': 'ir_exploratorio_historico', 'aviso': mex.AVISO,
+            'duracoes': list(duracoes), 'limitacoes': list(ir.LIMITES),
+            'cores': {m: config.CORES_MOD[m] for m in config.CICLICOS}}
+    if historico_obs is None:
+        if not db.ENABLED:
+            return {**base, 'status': 'ERRO', 'mensagem': 'sem base de dados'}
+        historico_obs = db.observacoes_auto_historico() or []
+        revisoes = db.revisoes_testes_modelo()
+        atividades = db.load_activities()
+        curvas = db.load_power_curves() or []
+    if atividades is None:
+        return {**base, 'status': 'ERRO', 'mensagem': 'atividades indisponiveis: sem carga, nada foi calculado'}
+    hoje = referencia or mt.agora_utc().date().isoformat()
+    sel = selecionar(historico_obs, revisoes, atividades, curvas)
+    cargas, info = carga_por_modalidade(atividades)
+    itens = mex.analisar(sel, cargas, hoje, ir._cfg(config), duracoes)
+    return {**base, 'status': 'OK', 'referencia': hoje, 'itens': itens, 'carga': info}
+

@@ -331,7 +331,7 @@ def init_schema():
         PRIMARY KEY (modalidade, duracao_s, versao_ajuste)
     )""")
 
-    # Referencias de P0 do modelo IR (derivadas do CP Model confirmado): historico AUDITAVEL. So INSERT
+    # Referencias de P0 do modelo IR (MMP3 do YES, NAO o CP Model; o nome e historico): historico AUDITAVEL. So INSERT
     # (versao_referencia crescente por modalidade x duracao). `conhecida_desde` e o instante em que o IR
     # registou a referencia e nunca se reescreve (nao ha preenchimento retroativo): e o que a validacao
     # walk-forward usa. Ver modelo_ir_p0.py e modelo_ir_servico.py.
@@ -353,6 +353,25 @@ def init_schema():
         versao_modulo    INTEGER NOT NULL,
         origem           TEXT NOT NULL,
         PRIMARY KEY (modalidade, duracao_s, versao_referencia)
+    )""")
+    # Historico de YES por teste e versao da regra (append-only): um YES gravado continua a valer para o P0
+    # mesmo que a temporada mude ou que o teste deixe de ser elegivel nos esforcos vivos. So a rejeicao manual
+    # o retira (tratada em modelo_mmp3.p0_global). Nunca se atualiza nem se apaga uma linha.
+    _exec(f"""CREATE TABLE IF NOT EXISTS modelo_mmp3_yes_historico (
+        test_id              TEXT NOT NULL,
+        regra_versao         INTEGER NOT NULL,
+        activity_id          TEXT NOT NULL,
+        modalidade           TEXT NOT NULL,
+        data                 TEXT NOT NULL,
+        inicio               TEXT,
+        watts                DOUBLE PRECISION NOT NULL,
+        season               TEXT,
+        origem_classificacao TEXT,
+        classe_intervalo     TEXT,
+        motivo_decisao      TEXT,
+        referencia_watts    DOUBLE PRECISION,
+        registado_em         {ts} NOT NULL,
+        PRIMARY KEY (test_id, regra_versao)
     )""")
     return True
 
@@ -1595,6 +1614,39 @@ def inserir_referencia_p0(ref):
                                        f"{ref['versao_referencia']}")
         raise
     return True
+
+
+_COLS_YES = ['test_id', 'regra_versao', 'activity_id', 'modalidade', 'data', 'inicio', 'watts', 'season',
+             'origem_classificacao', 'classe_intervalo', 'motivo_decisao', 'referencia_watts', 'registado_em']
+
+
+def gravar_yes_historico(linhas, agora_iso):
+    """Grava YES (append-only): `INSERT ... ON CONFLICT DO NOTHING`. Nunca atualiza nem apaga. Devolve o nº de
+    linhas enviadas (as que ja existiam para o mesmo test_id e versao sao ignoradas pela base)."""
+    if not ENABLED or not linhas:
+        return 0
+    sql = (f"INSERT INTO modelo_mmp3_yes_historico ({', '.join(_COLS_YES)}) "
+           f"VALUES ({', '.join('?' * len(_COLS_YES))}) ON CONFLICT (test_id, regra_versao) DO NOTHING")
+    for l in linhas:
+        valores = [l.get(c) for c in _COLS_YES[:-1]] + [agora_iso]
+        _exec(sql, tuple(valores))
+    return len(linhas)
+
+
+def yes_historico():
+    """Todos os YES gravados, um por teste (o primeiro registado; uma versao nova da regra nao duplica o teste)."""
+    if not ENABLED:
+        return []
+    rows = _exec(f"SELECT {', '.join(_COLS_YES)} FROM modelo_mmp3_yes_historico "
+                 f"ORDER BY registado_em, test_id", fetch='all') or []
+    vistos, out = set(), []
+    for l in rows:
+        r = dict(zip(_COLS_YES, l))
+        if r['test_id'] in vistos:
+            continue
+        vistos.add(r['test_id'])
+        out.append(r)
+    return out
 
 
 def referencias_p0_historico(tipo=None, duracao=None):

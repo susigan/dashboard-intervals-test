@@ -115,13 +115,14 @@ class NoEsforco(unittest.TestCase):
 
     def test_5_min_nao_e_equivalente_a_um_teste_de_180_s(self):
         e = com_ultimo(self.VALS, '["1x 5m 288w"]')
-        self.assertEqual((e['estado'], e['motivo'], e['a_verificar']), (mm.E_NAO_ELEGIVEL, mm.M_SEM_TAG, True))
+        # 5 min nao e um teste de 3 min nem de 180 s: fica a verificar (revisao manual), nunca YES
+        self.assertEqual((e['estado'], e['motivo'], e['a_verificar']), (mm.E_A_VERIFICAR, mi.C_LONGO, True))
         self.assertEqual(e['classe_intervalo'], mi.C_LONGO)
         self.assertIsNone(e['origem_classificacao'])
 
     def test_repeticoes_ficam_a_verificar(self):
         e = com_ultimo(self.VALS, '["4x 3m 289w"]')
-        self.assertEqual((e['estado'], e['a_verificar'], e['classe_intervalo']), (mm.E_NAO_ELEGIVEL, True, mi.C_REPETICOES))
+        self.assertEqual((e['estado'], e['a_verificar'], e['classe_intervalo']), (mm.E_A_VERIFICAR, True, mi.C_REPETICOES))
 
     def test_sem_dados_de_intervalos_ou_potencia_invalida(self):
         for r in (None, '', '["3x 3m1s 156bpm"]', '["1x 3m 5:10"]'):

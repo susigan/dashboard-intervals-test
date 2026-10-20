@@ -135,8 +135,8 @@ class DiagnosticoSemYes(unittest.TestCase):
         g = mm.p0_global(self.esforcos(True))
         sem = {k: v for k, v in g.items() if k != 'diagnostico'}
         self.assertEqual(set(sem), {'origem', 'duracao_s', 'versao_regra', 'n_yes', 'n_esforcos', 'n_dados_insuficientes',
-                                    'estado', 'registo'})                # so `diagnostico` foi acrescentado
-        self.assertEqual(g['versao_regra'], 3)                           # regra 3: tag manual OU intervalo detetado
+                                    'estado', 'registo', 'n_yes_historicos'})   # so `diagnostico` (+ contagem de YES historicos) foi acrescentado
+        self.assertEqual(g['versao_regra'], 4)                           # regra 4: tag/intervalo + estado a_verificar + referencias separadas
 
 
 @unittest.skipIf(shutil.which('node') is None, 'node indisponivel')

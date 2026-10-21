@@ -1305,7 +1305,7 @@ def apos_deteccao(resultado_deteccao, origem='sync'):
 # ── modo exploratorio (historico, nao validado) ────────────────────────────────────────────────
 
 def analise_exploratoria(duracoes=None, historico_obs=None, revisoes=None, atividades=None, curvas=None,
-                         referencia=None, config=None):
+                         referencia=None, config_ir=None):
     """Curvas exploratorias historicas por modalidade e duracao (60/300/1200 s), com P0 livre por unidade.
 
     SO LEITURA e NAO PERSISTIDO: le o historico do detetor e as atividades, nunca grava em modelo_ir_ajustes
@@ -1332,6 +1332,6 @@ def analise_exploratoria(duracoes=None, historico_obs=None, revisoes=None, ativi
     sel = {k: {**v, 'usadas': [o for o in v.get('usadas') or [] if o.get('referencia_tipo') == 'all_time']}
            for k, v in sel.items()}
     cargas, info = carga_por_modalidade(atividades)
-    itens = mex.analisar(sel, cargas, hoje, ir._cfg(config), duracoes)
+    itens = mex.analisar(sel, cargas, hoje, ir._cfg(config_ir), duracoes)
     return {**base, 'status': 'OK', 'referencia': hoje, 'itens': itens, 'carga': info}
 

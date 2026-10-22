@@ -405,12 +405,70 @@ def _mesmo(a, b):
     return mt.mesmo_valor(a, b)
 
 
+# ── assinatura semantica (decide se uma nova versao e necessaria) ──────────
+
+# Campos de cada referencia que entram na comparacao. FORA de proposito:
+#   n_pontos       cresce com pontos anteriores sem mudar a referencia (ruido de versoes);
+#   janela_dias    constante informativa da janela 'recente';
+#   e_maximo       derivado de pct (>= 100);
+#   referencia_data  data da mesma atividade que ja e' 'referencia_activity_id';
+#   detetado_em, criterio  proveniencia do calculo, nao a decisao;
+#   elegibilidade, icu_ignore_power  recalculadas na seleccao a partir das atividades
+#                  atuais (modelo_estimador.selecionar_observacoes_auto), nao do registo.
+_CAMPOS_REF_SEMANTICOS = ('referencia_watts', 'referencia_activity_id', 'pct', 'qualifica')
+
+
+def _igual(a, b):
+    """Igualdade semantica: None so iguala None; numeros com a tolerancia do projeto."""
+    if a is None or b is None:
+        return a is None and b is None
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
+        return _mesmo(a, b)
+    return a == b
+
+
+def _referencias_semanticas(refs):
+    return {t: {k: (r or {}).get(k) for k in _CAMPOS_REF_SEMANTICOS}
+            for t, r in (refs or {}).items()}
+
+
+def _iguais_referencias(a, b):
+    if set(a) != set(b):
+        return False
+    return all(_igual(a[t][k], b[t][k]) for t in a for k in _CAMPOS_REF_SEMANTICOS)
+
+
+def mudou_semantica(ant, c):
+    """True se a versao gravada `ant` ja nao descreve o candidato `c`.
+
+    Compara a DECISAO (referencia_tipo, referencia_watts, pct_da_referencia, season) e a PROVA
+    (referencias, so os campos semanticos, com o id da atividade de origem de cada uma).
+    Nao compara `watts`/`data` (tratados em planear) nem o contrato (ver contrato_desatualizado).
+    """
+    return not (_igual(ant.get('referencia_tipo'), c.get('referencia_tipo'))
+                and _igual(ant.get('referencia_watts'), c.get('referencia_watts'))
+                and _igual(ant.get('pct_da_referencia'), c.get('pct_da_referencia'))
+                and _igual(ant.get('season'), c.get('season'))
+                and _iguais_referencias(_referencias_semanticas(ant.get('referencias')),
+                                        _referencias_semanticas(c.get('referencias'))))
+
+
+def contrato_desatualizado(ant):
+    """Versao gravada com contrato ANTERIOR ao atual: regravar.
+    Contrato armazenado mais recente que o atual nunca se regrava para tras (sem ciclo):
+    a versao fica como esta e o comportamento e' o de uma versao 'ja conhecida'."""
+    v = ant.get('versao_contrato')
+    return v is None or v < VERSAO_CRITERIO
+
+
 # ── planeamento do registo ─────────────────────────────────────────────────
 
 def planear(candidatos, historico, agora, curvas_validas, elegibilidade_fn=None,
             tags_fn=None, hora_local_fn=None, criterio=None, origem='sync'):
     """Linhas novas a gravar (lista; vazia se nada mudou). Idempotente: o mesmo candidato
-    com o mesmo valor e data nao gera nada.
+    com o mesmo valor, data, decisao/prova de referencia e contrato nao gera nada.
+    Uma mudanca semantica (ver mudou_semantica) ou um contrato anterior ao atual gera uma
+    nova versao, que substitui a vigente (substitui_versao); o historico nunca e' apagado.
 
     candidatos: saida de detetar(). historico: todas as linhas ja gravadas. agora: datetime
     UTC (e o `detetado_em`). curvas_validas: limpar_curvas(...) (para saber porque uma
@@ -431,7 +489,7 @@ def planear(candidatos, historico, agora, curvas_validas, elegibilidade_fn=None,
         ant = ult.get(tid)
         if (ant is not None and ant['evento'] == EVENTO_DETETADA
                 and _mesmo(ant['watts'], c['watts']) and _dia(ant['data']) == c['data']
-                and (ant.get('referencia_tipo') is None) == (c.get('referencia_tipo') is None)):
+                and not mudou_semantica(ant, c) and not contrato_desatualizado(ant)):
             continue
         eleg = (elegibilidade_fn(c['activity_id']) if elegibilidade_fn
                 else {'estado': 'desconhecida', 'motivo': 'sem_elegibilidade',

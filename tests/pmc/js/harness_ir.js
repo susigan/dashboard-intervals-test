@@ -103,6 +103,35 @@ async function cenario(nome, fn) {
     return {leg: els.lgIrConj.innerHTML, avisos: els.irAvisos.innerHTML, escala: els.irEscala.innerHTML, tabela: els.irTabela.innerHTML,
             series: api.irSeries(api.J).map(s => s.mod + ':' + s.comp), tracos: canvases.chIrConj.tracos.length};
   });
+  await run('diagnostico_normal', async ({api, els, respostas, esperar}) => {
+    respostas[U] = REAL.misto; api.abrirIR({open: true}); await esperar();
+    return {diag: els.irDiag.innerHTML};
+  });
+  await run('diagnostico_resposta_antiga', async ({api, els, respostas, esperar}) => {
+    const antiga = JSON.parse(JSON.stringify(REAL.misto));           // resposta sem os campos novos
+    Object.keys(antiga.modalidades).forEach(m => {
+      ['tentativa_mais_recente', 'requisitos', 'convergencia', 'sem_calibracao_valida',
+       'avisos_identificabilidade', 'ajuste_valido_anterior'].forEach(k => { delete antiga.modalidades[m][k]; });
+    });
+    respostas[U] = antiga; api.abrirIR({open: true}); await esperar();
+    return {diag: els.irDiag.innerHTML, tabela: els.irTabela.innerHTML};
+  });
+  await run('diagnostico_misto', async ({api, els, respostas, esperar}) => {
+    respostas[U] = REAL.misto; api.abrirIR({open: true}); await esperar();
+    return {diag: els.irDiag.innerHTML};
+  });
+  await run('diagnostico_antigo_insuficiente', async ({api, els, respostas, esperar}) => {
+    // formato anterior a Etapa 9: sem campos novos; Bike em dados insuficientes com ajuste v2 (sem calibracao valida)
+    const antiga = JSON.parse(JSON.stringify(REAL.misto));
+    Object.keys(antiga.modalidades).forEach(m => {
+      ['tentativa_mais_recente', 'requisitos', 'convergencia', 'sem_calibracao_valida',
+       'avisos_identificabilidade', 'ajuste_valido_anterior', 'estado_ajuste'].forEach(k => { delete antiga.modalidades[m][k]; });
+    });
+    antiga.modalidades.Bike = {estado: 'dados_insuficientes', ajuste: {versao_ajuste: 2}, p0: null,
+                               parametros: null, curvas: null, leitura: 'dados insuficientes'};
+    respostas[U] = antiga; api.abrirIR({open: true}); await esperar();
+    return {diag: els.irDiag.innerHTML};
+  });
   await run('desatualizado_e_falha', async ({api, els, respostas, esperar}) => {
     respostas[U] = REAL.desatualizado_e_falha; api.abrirIR({open: true}); await esperar();
     return {avisos: els.irAvisos.innerHTML, tabela: els.irTabela.innerHTML};

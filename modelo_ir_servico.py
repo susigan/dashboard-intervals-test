@@ -632,6 +632,43 @@ def _arr(x, nd=3):
     return [round(float(v), nd) for v in x]
 
 
+EST_SEM_CALIBRACAO = 'sem_calibracao_valida'     # nenhum ajuste IDENTIFICAVEL existe para (tipo, duracao)
+
+
+def _tentativa(aj):
+    """Resumo da tentativa mais recente quando NAO e a calibracao valida (nao identificavel, sem dados, sem
+    convergencia). So estado, motivo, convergencia, observacoes/datas/cobertura e requisitos: nunca parametros."""
+    m = aj.get('metricas') or {}
+    obs = m.get('obs') or None
+    cfg = ir._cfg(((aj.get('configuracao') or {}).get('ir')) or {})
+    return {'versao_ajuste': aj['versao_ajuste'], 'estado': aj['estado'], 'ajustado_em': aj['ajustado_em'],
+            'motivo': aj['motivo'], 'motivo_insuficiente': m.get('motivo_insuficiente'),
+            'excecao': m.get('excecao'), 'convergencia': m.get('convergencia'),
+            'n_obs': aj['n_obs'], 'data_ini': aj['data_ini'], 'data_fim': aj['data_fim'],
+            # requisitos so se as observacoes foram gravadas; sem elas nao se inventam datas/cobertura
+            'requisitos': ir.requisitos(obs, cfg) if obs else None,
+            'avisos_identificabilidade': (aj.get('identificabilidade') or {}).get('avisos') or []}
+
+
+def _resumo_calibracao(r):
+    """Identificacao de uma calibracao VALIDA anterior (sem parametros): versao, estado, data e P0 de referencia."""
+    return {'versao_ajuste': r['versao_ajuste'], 'estado': r['estado'], 'ajustado_em': r['ajustado_em'],
+            'p0': r['p0'],
+            'versao_referencia_p0': ((r.get('entradas') or {}).get('p0_ref') or {}).get('versao_referencia')}
+
+
+def _sem_calibracao(aj, tentativa):
+    """Nenhuma calibracao identificavel nem nao identificavel desenhavel: diz-se explicitamente, sem parametros.
+    A leitura e a do ajuste mostrado (aj: dados insuficientes, sem convergencia...), para nao esconder o motivo."""
+    return {'estado': EST_SEM_CALIBRACAO,
+            'motivo': 'nenhuma calibracao identificavel existe para esta modalidade e duracao',
+            'leitura': _leitura(aj) + ' · nenhuma calibracao valida existe ainda',
+            'parametros': None, 'curvas': None, 'ajuste_valido_anterior': None,
+            'tentativa_mais_recente': tentativa, 'ajuste_apresentado_e_antigo': False,
+            'excecao_solver': (tentativa or {}).get('excecao'), 'p0_desatualizado': False,
+            'aviso_parametros': 'sem calibracao valida: nenhum parametro e apresentado'}
+
+
 def curva_influencia(tipo, duracao, atividade_id=None, ate=None, atividades=None):
     """Decomposicao do ultimo ajuste guardado de (tipo, duracao). SO LEITURA: nao recalibra, nao
     grava. Usa o modelo e os parametros ja ajustados (modelo_ir.curvas_influencia/
@@ -649,37 +686,37 @@ def curva_influencia(tipo, duracao, atividade_id=None, ate=None, atividades=None
         return {**base, 'estado': 'sem_ajuste',
                 'leitura': 'ainda nao ha ajuste IR para esta modalidade e duracao (corre-se com a '
                            'deteccao/sync ou em /api/modelo/ir/recalibrar); nada foi calculado agora'}
-    anterior = None
-    validos = (ir.EST_IDENTIFICAVEL, ir.EST_NAO_IDENTIFICAVEL)
+    # CALIBRACAO VALIDA = o ultimo ajuste IDENTIFICAVEL do historico (e so esse). Uma tentativa nao identificavel
+    # ou sem dados NUNCA e' a referencia: fica registada e visivel como `tentativa_mais_recente`, e a calibracao
+    # identificavel anterior continua a ser a apresentada, marcada como antiga. Sem nenhuma, diz-se explicitamente.
+    # ordem explicita por versao_ajuste (a PK (modalidade, duracao_s, versao_ajuste) impede empates): o resultado
+    # nao depende da ordem em que a lista chega
+    historico = sorted(db.ajustes_ir_historico(tipo, duracao) or [], key=lambda r: r['versao_ajuste'])
+    validos_hist = [r for r in historico if r['estado'] == ir.EST_IDENTIFICAVEL]
+    ref = validos_hist[-1] if validos_hist else None
     tentativa = None
-    if aj['estado'] not in validos:
-        # a tentativa mais recente falhou/nao convergiu/ficou sem dados: o ultimo ajuste VALIDO fica preservado e e
-        # apresentado como DESATUALIZADO (estimado com um P0 mais antigo), nunca como se fosse o ajuste novo
-        ultimo_valido = next((r for r in reversed(db.ajustes_ir_historico(tipo, duracao)) if r['estado'] in validos), None)
-        if ultimo_valido is not None:
-            tentativa = {'versao_ajuste': aj['versao_ajuste'], 'estado': aj['estado'], 'ajustado_em': aj['ajustado_em'],
-                         'motivo': aj['motivo'], 'excecao': (aj.get('metricas') or {}).get('excecao')}
-            aj = ultimo_valido
-    for r in reversed(db.ajustes_ir_historico(tipo, duracao)):
-        if r['estado'] in validos and r['versao_ajuste'] != aj['versao_ajuste']:
-            anterior = {'versao_ajuste': r['versao_ajuste'], 'estado': r['estado'],
-                        'ajustado_em': r['ajustado_em'], 'p0': r['p0'],
-                        'versao_referencia_p0': ((r.get('entradas') or {}).get('p0_ref') or {}).get(
-                            'versao_referencia')}
-            break
-    if tentativa is not None:                    # o ajuste valido preservado e o apresentado: identifica-se a si proprio
-        anterior = {'versao_ajuste': aj['versao_ajuste'], 'estado': aj['estado'], 'ajustado_em': aj['ajustado_em'],
-                    'p0': aj['p0'],
-                    'versao_referencia_p0': ((aj.get('entradas') or {}).get('p0_ref') or {}).get('versao_referencia')}
+    sem_valida = False            # True: nenhuma calibracao identificavel; o ajuste mostrado NAO e' calibracao valida
+    if ref is None:
+        # sem nenhuma identificavel: mostra-se a ultima NAO identificavel (marcada), nunca como valida
+        nao_id = [r for r in historico if r['estado'] == ir.EST_NAO_IDENTIFICAVEL]
+        if not nao_id:
+            return {**base, **_sem_calibracao(aj, _tentativa(aj))}
+        ref, sem_valida = nao_id[-1], True
+    if ref['versao_ajuste'] != aj['versao_ajuste']:
+        tentativa = _tentativa(aj)
+    anterior = None
+    if tentativa is not None:                    # a calibracao valida preservada identifica-se a si propria
+        anterior = _resumo_calibracao(ref)
+    elif len(validos_hist) > 1 and not sem_valida:   # calibracao atual = ultima identificavel: anterior = a seguinte
+        anterior = _resumo_calibracao(validos_hist[-2])
+    aj = ref
     ref_atual = db.ultima_referencia_p0(tipo, duracao)
     ref_aj = (aj.get('entradas') or {}).get('p0_ref')
     # o ajuste mostrado foi estimado com uma referencia de P0 mais antiga que a ultima registada (ex.: o Solver
     # falhou ou o CP ficou invalido depois): os parametros NAO foram recalibrados com o P0 novo
     p0_desatualizado = bool(ref_atual is not None and (ref_aj or {}).get('assinatura') != ref_atual['assinatura'])
-    # a tentativa mais recente (com o P0 novo) falhou/nao convergiu: os parametros validos que existem sao de um
-    # ajuste anterior, estimado com outro P0; nada esta recalibrado com a referencia mais recente
-    if anterior is not None and aj['estado'] not in (ir.EST_IDENTIFICAVEL, ir.EST_NAO_IDENTIFICAVEL):
-        p0_desatualizado = True
+    # a tentativa mais recente (com o P0 novo) nao serve de calibracao: os parametros validos sao de um ajuste
+    # anterior, estimado com outro P0; nada esta recalibrado com a referencia mais recente
     if tentativa is not None:
         p0_desatualizado = True
     datas_obs = sorted({str(o['data'])[:10] for o in (aj.get('entradas') or {}).get('observacoes') or []})
@@ -695,6 +732,11 @@ def curva_influencia(tipo, duracao, atividade_id=None, ate=None, atividades=None
             'convergiu': aj['convergiu'], 'p0_origem': aj['p0_origem'],
             'avisos_identificabilidade': (aj.get('identificabilidade') or {}).get('avisos') or [],
             'ajuste_valido_anterior': anterior, 'versao_modelo': aj['versao_modelo'],
+            'convergencia': (aj.get('metricas') or {}).get('convergencia'),
+            'requisitos': ir.requisitos((aj.get('metricas') or {}).get('obs'), ir._cfg(((aj.get('configuracao') or {})
+                                        .get('ir')) or {})) if (aj.get('metricas') or {}).get('obs') else None,
+            # True quando o ajuste mostrado NAO e' uma calibracao valida (so existe tentativa nao identificavel)
+            'sem_calibracao_valida': sem_valida,
             # referencia de P0 (MMP3 do ultimo YES) que este ajuste usou; None num ajuste antigo de P0 livre
             'p0_referencia': ref_aj, 'p0_desatualizado': p0_desatualizado,
             'compatibilidade_p0_alvo': (aj.get('metricas') or {}).get('compatibilidade_p0_alvo'),
@@ -844,6 +886,7 @@ EI_NAO_IDENT = 'nao_identificavel'
 EI_SEM_CP = 'sem_referencia_mmp3'      # nao existe nenhum registo MMP3 YES: sem P0, sem curva
 EI_ERRO_SOLVER = 'erro_solver'
 EI_SEM_AJUSTE = 'sem_ajuste'
+EI_SEM_CALIBRACAO = EST_SEM_CALIBRACAO      # nenhum ajuste identificavel: so a tentativa (se existir) e mostrada
 
 
 def estado_ir(j, p0_atual):
@@ -854,8 +897,13 @@ def estado_ir(j, p0_atual):
         return EI_SEM_CP                       # nao existe registo MMP3 YES: nenhum ajuste e "atual"
     if j.get('p0_incompativel'):
         return EI_DESATUALIZADO                # ajuste de outra regra de P0: nao foi recalibrado com a atual
-    if j.get('excecao_solver') or j.get('tentativa_mais_recente'):
+    t = j.get('tentativa_mais_recente') or {}
+    # ERRO so para falha real do solver (excecao, ou nao convergiu). Uma tentativa sem dados ou nao identificavel
+    # NAO e erro do solver: a calibracao valida anterior continua a ser a apresentada, como desatualizada.
+    if j.get('excecao_solver') or t.get('estado') == ir.EST_SEM_CONVERGENCIA:
         return EI_ERRO_SOLVER
+    if j.get('estado') == EST_SEM_CALIBRACAO:    # nenhuma calibracao valida: a tentativa mostra-se a parte
+        return EI_SEM_CALIBRACAO
     if j.get('p0_desatualizado'):               # P0 mais antigo que a ultima referencia (a carga nova so e aviso)
         return EI_DESATUALIZADO
     if j.get('estado') in (ir.EST_INSUFICIENTE, ir.EST_SEM_CONVERGENCIA):
@@ -901,6 +949,13 @@ def _estado_conjunto(j):
         return 'dados_insuficientes'
     if e == ir.EST_SEM_CONVERGENCIA:
         return 'sem_convergencia'
+    if e == EST_SEM_CALIBRACAO:                   # a tentativa (se existir) diz o estado; nunca "valido"
+        t = (j.get('tentativa_mais_recente') or {}).get('estado')
+        if t == ir.EST_INSUFICIENTE:
+            return 'dados_insuficientes'
+        if t == ir.EST_SEM_CONVERGENCIA:
+            return 'sem_convergencia'
+        return EST_SEM_CALIBRACAO
     if not j.get('curvas'):
         return 'sem_atividades'
     return 'identificavel' if e == ir.EST_IDENTIFICAVEL else 'nao_identificavel'
@@ -920,7 +975,8 @@ def estado_solver(j, p0_atual, n_yes, cfg=None):
     if e == 'sem_ajuste':
         return {**base, 'estado': 'nao_executado', 'motivo': 'sem_observacoes' if not n_yes else 'sem_ajuste_gravado'}
     if e == ir.EST_INSUFICIENTE:
-        return {**base, 'estado': 'dados_insuficientes', 'motivo': (j.get('motivo_insuficiente') or j.get('motivo'))}
+        return {**base, 'estado': 'dados_insuficientes', 'motivo': (j.get('motivo_insuficiente') or j.get('motivo')),
+                'requisitos': j.get('requisitos')}
     if e == ir.EST_SEM_CONVERGENCIA or j.get('excecao_solver'):
         return {**base, 'estado': 'falha', 'motivo': 'excecao_ou_sem_convergencia'}
     if e == ir.EST_IDENTIFICAVEL:
@@ -1024,6 +1080,8 @@ def curvas_conjuntas(duracao=None, ate=None, atividades=None, curvas=None, marco
                 'parametros_identificados': (j.get('estado') == ir.EST_IDENTIFICAVEL) if P else None,
                 'avisos_identificabilidade': j.get('avisos_identificabilidade') or [],
                 'no_limite': _no_limite(j.get('avisos_identificabilidade')),
+                'sem_calibracao_valida': bool(j.get('sem_calibracao_valida')),
+                'convergencia': j.get('convergencia'), 'requisitos': j.get('requisitos'),
                 'ajuste': {k: j.get(k) for k in ('versao_ajuste', 'ajustado_em', 'n_obs', 'data_ini', 'data_fim',
                                                  'funcao_objetivo', 'rmse', 'r2', 'convergiu', 'p0_origem')},
                 'ajuste_valido_anterior': j.get('ajuste_valido_anterior'),
@@ -1329,9 +1387,70 @@ def analise_exploratoria(duracoes=None, historico_obs=None, revisoes=None, ativi
     hoje = referencia or mt.agora_utc().date().isoformat()
     sel = selecionar(historico_obs, revisoes, atividades, curvas)
     # mesma identificacao de candidatos do calibrado: so o maximo causal ALL-TIME >= limiar (sem exigir tag/intervalo)
-    sel = {k: {**v, 'usadas': [o for o in v.get('usadas') or [] if o.get('referencia_tipo') == 'all_time']}
-           for k, v in sel.items()}
+    sel = separar_nao_all_time(sel, moa.atuais(historico_obs))
     cargas, info = carga_por_modalidade(atividades)
     itens = mex.analisar(sel, cargas, hoje, ir._cfg(config_ir), duracoes)
-    return {**base, 'status': 'OK', 'referencia': hoje, 'itens': itens, 'carga': info}
+    return {**base, 'status': 'OK', 'referencia': hoje, 'itens': itens, 'carga': info,
+            'exclusoes': resumo_exclusoes(sel)}
+
+
+def separar_nao_all_time(sel, atuais):
+    """Filtro all_time do Exploratorio, com a exclusao TORNADA VISIVEL.
+
+    `usadas` fica EXATAMENTE o mesmo conjunto do filtro anterior (so referencia_tipo == 'all_time'). As restantes
+    observacoes usadas passam para `excluidas` com motivo 'referencia_nao_all_time:<tipo>', com a referencia
+    escolhida e as alternativas (`referencias`: all_time/season/recente, cada uma com watts, atividade, pct).
+    `atuais` = observacoes atuais do historico (moa.atuais), para a proveniencia. Nunca conta duas vezes: uma
+    observacao so esta em `usadas` ou em `excluidas`, e o motivo ja existente das outras exclusoes fica intacto."""
+    por_tid = {o.get('test_id'): o for o in atuais or []}
+    out = {}
+    for k, v in sel.items():
+        usadas, movidas = [], []
+        for o in v.get('usadas') or []:
+            (usadas if o.get('referencia_tipo') == 'all_time' else movidas).append(o)
+        excl = list(v.get('excluidas') or [])
+        for o in movidas:
+            fonte = por_tid.get(o.get('test_id')) or {}
+            refs = fonte.get('referencias') or {}
+            escolhida = refs.get(o.get('referencia_tipo')) or {}
+            excl.append({**o, 'motivo': 'referencia_nao_all_time:%s' % o.get('referencia_tipo'),
+                         'referencias': refs,
+                         'referencia_watts': escolhida.get('referencia_watts'),
+                         'referencia_activity_id': escolhida.get('referencia_activity_id'),
+                         'referencia_data': escolhida.get('referencia_data')})
+        excl.sort(key=lambda e: (e['motivo'], e['test_id']))
+        out[k] = {**v, 'usadas': usadas, 'excluidas': excl}
+    return out
+
+
+PREFIXO_FILTRO_ALL_TIME = 'referencia_nao_all_time:'
+ORIGEM_FILTRO_ALL_TIME = 'filtro_all_time'     # excluida pelo filtro desta fase (referencia nao all_time)
+ORIGEM_SELECAO = 'selecao_anterior'            # ja excluida pela selecao (elegibilidade, sem referencia, ...)
+
+
+def resumo_exclusoes(sel):
+    """Exclusoes do Exploratorio: contagens por motivo e por modalidade/duracao, e a LISTA completa (uma entrada
+    por observacao excluida, com a referencia e a proveniencia). As contagens saem da MESMA lista: nunca contam
+    duas vezes, e a lista so mostra o que o filtro excluiu (nada e recalculado)."""
+    por_motivo, por_unidade, lista, por_origem = {}, {}, [], {}
+    for (mod, dur), v in sorted((sel or {}).items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
+        unid = f'{mod}:{dur}'
+        for e in v.get('excluidas') or []:
+            m = e.get('motivo')
+            por_motivo[m] = por_motivo.get(m, 0) + 1
+            u = por_unidade.setdefault(unid, {})
+            u[m] = u.get(m, 0) + 1
+            tipo = e.get('referencia_tipo')
+            pct = ((e.get('referencias') or {}).get(tipo) or {}).get('pct') if tipo else None
+            origem = ORIGEM_FILTRO_ALL_TIME if str(m).startswith(PREFIXO_FILTRO_ALL_TIME) else ORIGEM_SELECAO
+            por_origem[origem] = por_origem.get(origem, 0) + 1
+            lista.append({'modalidade': mod, 'duracao_s': dur, 'test_id': e.get('test_id'), 'data': e.get('data'),
+                          'watts': e.get('watts'), 'motivo': m, 'origem': origem,
+                          'referencia_tipo': tipo, 'pct_da_referencia': pct,
+                          'referencia_watts': e.get('referencia_watts'),
+                          'referencia_activity_id': e.get('referencia_activity_id'),
+                          'referencia_data': e.get('referencia_data')})
+    return {'por_motivo': dict(sorted(por_motivo.items())),
+            'por_unidade': {k: dict(sorted(v.items())) for k, v in sorted(por_unidade.items())},
+            'total': len(lista), 'por_origem': dict(sorted(por_origem.items())), 'lista': lista}
 

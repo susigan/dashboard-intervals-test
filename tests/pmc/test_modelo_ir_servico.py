@@ -702,8 +702,11 @@ class CurvasDeInfluencia(_Base):
         real = db.ultimo_ajuste_ir('Bike', 1200)
         falso = {**real, 'estado': ir.EST_NAO_IDENTIFICAVEL,
                  'identificabilidade': {'avisos': ['parametro_no_limite:t1']}}
-        with mock.patch.object(db, 'ultimo_ajuste_ir', return_value=falso):
+        # so existe este ajuste (sem calibracao identificavel): e' desenhado, marcado como NAO valido
+        with mock.patch.object(db, 'ultimo_ajuste_ir', return_value=falso), \
+                mock.patch.object(db, 'ajustes_ir_historico', return_value=[falso]):
             j = self.c.get(self.URL).get_json()
+        self.assertTrue(j['sem_calibracao_valida'])
         self.assertFalse(j['parametros_identificados'])
         self.assertIn('NAO identificaveis', j['aviso_parametros'])
         self.assertIn('nao fisiologia confirmada', j['aviso_parametros'])

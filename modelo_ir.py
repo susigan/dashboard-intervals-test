@@ -229,11 +229,28 @@ def _cobertura(idx, datas):
     return dias, (len(ds) if ds else int(len(set(np.asarray(idx).tolist()))))
 
 
+def requisitos(obs_info, cfg):
+    """Os TRES gates de identificacao (min_obs, min_datas_distintas, min_dias_cobertura) avaliados
+    independentemente, para mostrar o que falta -- nao so o primeiro que falha. Nao altera nenhum gate.
+    `gates_cumpridos` = os tres gates satisfeitos (nesse caso o motivo de dados vem de outra verificacao)."""
+    o = obs_info or {}
+    n = int(o.get('n') or 0)
+    d = int(o.get('n_datas_distintas') or 0)
+    c = int(o.get('dias_cobertura') or 0)
+    minimo = {'observacoes': cfg['min_obs'], 'datas_distintas': cfg['min_datas_distintas'],
+              'dias_cobertura': cfg['min_dias_cobertura']}
+    atuais = {'observacoes': n, 'datas_distintas': d, 'dias_cobertura': c}
+    em_falta = {k: max(0, minimo[k] - atuais[k]) for k in minimo}
+    return {'minimo': minimo, 'atuais': atuais, 'em_falta': em_falta,
+            'gates_cumpridos': not any(em_falta.values())}
+
+
 def _insuficiente(motivo, n, obs_info, cfg, lo=None, hi=None):
     return {'estado': EST_INSUFICIENTE, 'motivo': motivo, 'parametros': None, 'metricas': None,
             'convergencia': None, 'identificabilidade': {'avisos': [motivo]},
             'obs': obs_info, 'limites': _limites_dict(cfg, lo, hi),
-            'criterios': {k: cfg[k] for k in ('min_obs', 'min_dias_cobertura', 'min_datas_distintas')}}
+            'criterios': {k: cfg[k] for k in ('min_obs', 'min_dias_cobertura', 'min_datas_distintas')},
+            'requisitos': requisitos(obs_info, cfg)}
 
 
 def _limites_dict(cfg, lo=None, hi=None):

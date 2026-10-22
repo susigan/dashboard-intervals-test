@@ -55,6 +55,17 @@ def _parametros(r):
     return {k: _num(p.get(k)) for k in ('p0', 'k1', 'k2', 't1', 't2')}
 
 
+def _convergencia(r):
+    """Bloco de convergencia TAL COMO o solver o devolve no nivel superior (modelo_ir.ajustar_observacoes:
+    'convergencia' = {convergiu, status, mensagem, nfev, origem_melhor_partida}). None se o solver nao correu
+    (dados insuficientes) -- nunca se inventa convergencia."""
+    c = r.get('convergencia')
+    if not isinstance(c, dict):
+        return None
+    return {'convergiu': c.get('convergiu'), 'status': c.get('status'), 'mensagem': c.get('mensagem'),
+            'nfev': c.get('nfev'), 'origem_melhor_partida': c.get('origem_melhor_partida')}
+
+
 def _curva(carga_dia, r, params, referencia, cfg):
     """Serie diaria em W desde a origem do ajuste ate `referencia`: positiva (K1 E), negativa (K2 G) e liquida."""
     d0 = r.get('serie_ini')
@@ -81,7 +92,9 @@ def ajustar_unidade(modalidade, duracao_s, usadas, carga_dia, referencia, cfg):
             'p0_origem': 'livre_estimado'}
     if not obs:
         return {**base, 'estado': 'sem_observacoes', 'motivo': 'nenhuma observacao usada pelo detetor historico',
-                'parametros': None, 'metricas': None, 'identificabilidade': None, 'avisos': [], 'curva': None}
+                'parametros': None, 'metricas': None, 'identificabilidade': None, 'avisos': [], 'curva': None,
+                'convergencia': None,
+                'requisitos': ir.requisitos({'n': 0}, ir._cfg(cfg))}
     r = ir.ajustar_observacoes(obs, carga_dia, referencia, cfg, p0_fixo=None)
     estado = r.get('estado')
     metricas = r.get('metricas') or {}
@@ -89,15 +102,19 @@ def ajustar_unidade(modalidade, duracao_s, usadas, carga_dia, referencia, cfg):
     avisos = list(ident.get('avisos') or [])
     params = _parametros(r)
     curva = _curva(carga_dia, r, params, referencia, cfg) if estado in ESTADOS_COM_CURVA else None
+    conv = _convergencia(r)
     return {**base, 'estado': estado,
             'motivo': r.get('motivo') or metricas.get('motivo_insuficiente') or (None if curva is not None else estado),
             'parametros': params,
+            # 'convergencia' no nivel superior = o bloco do solver; metricas.convergencia (bool) mantem a forma antiga
+            'convergencia': conv,
             'metricas': {k: _num(metricas.get(k)) for k in ('r2', 'rmse', 'sse', 'mae')} | {
-                'convergencia': (metricas.get('convergencia') or {}).get('convergiu')},
+                'convergencia': conv.get('convergiu') if conv else None},
             'identificabilidade': {'parametros_no_limite': ident.get('parametros_no_limite') or [],
                                    'erros_padrao': ident.get('erros_padrao'),
                                    'condicionamento': _num(ident.get('condicionamento'))},
             'avisos': avisos, 'curva': curva,
+            'requisitos': r.get('requisitos'),
             'p0_inicial': (r.get('p0_inicial') or {}).get('origem'), 'serie_ini': r.get('serie_ini')}
 
 

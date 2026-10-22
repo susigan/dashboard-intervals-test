@@ -353,5 +353,146 @@ class UiCurvasIR(unittest.TestCase):
         self.assertIn('&lt;img src=x onerror=alert(1)&gt;', r['tabela'])
 
 
+    def test_diagnostico_separa_calibracao_valida_da_tentativa(self):
+        self.need_node()
+        d = self.res['diagnostico_normal']['diag']
+        for rotulo in ('Calibração válida', 'Tentativa mais recente', 'Convergência', 'Em falta', 'Avisos do solver'):
+            self.assertIn(rotulo, d, rotulo)
+        self.assertIn('nenhuma', d)                  # sem calibracao valida: nao se mostra como valida
+        self.assertIn('dados insuficientes', d)      # a tentativa insuficiente diz-se, nao vira "erro"
+        self.assertIn('v1', d)                       # a calibracao valida identifica-se pela versao
+
+    def test_diagnostico_resposta_antiga_sem_campos_nao_parte(self):
+        self.need_node()
+        r = self.res['diagnostico_resposta_antiga']
+        self.assertIn('Bike', r['diag'])
+        for mau in ('undefined', 'NaN', 'null'):
+            self.assertNotIn(mau, r['diag'], mau)
+        self.assertIn('<table', r['tabela'])
+
+
+def _celulas(html, rotulo):
+    """Celulas (texto sem marcas) da linha que contem `rotulo`, ou None."""
+    import re as _re
+    for linha in _re.findall(r'<tr[^>]*>(.*?)</tr>', html, _re.S):
+        if rotulo in linha:
+            return [_re.sub(r'<[^>]+>', '', c).strip() for c in _re.findall(r'<td[^>]*>(.*?)</td>', linha, _re.S)]
+    return None
+
+
+class ContratoDaApiReal(unittest.TestCase):
+    """A UI le campos que a API real (ir_payload) devolve; formato antigo nao gera valores falsos."""
+
+    CAMPOS = ('estado', 'ajuste', 'p0', 'tentativa_mais_recente', 'requisitos', 'convergencia',
+              'sem_calibracao_valida', 'avisos_identificabilidade')
+
+    @classmethod
+    def setUpClass(cls):
+        # mesma montagem (payload real + harness) que UiCurvasIR; sem duplicar o codigo
+        UiCurvasIR.setUpClass.__func__(cls)
+
+    def setUp(self):
+        if shutil.which('node') is None:
+            self.skipTest('node nao disponivel')
+
+    def test_api_real_tem_os_campos_que_o_painel_le(self):
+        for cen in ('normal', 'misto'):
+            j = self.real[cen]
+            self.assertIn('modalidades_ordem', j, cen)
+            for m in j['modalidades_ordem']:
+                for k in self.CAMPOS:
+                    self.assertIn(k, j['modalidades'][m], f'{cen}/{m}: falta {k}')
+
+    def test_api_real_diagnostico_sem_valores_quebrados(self):
+        for cen in ('diagnostico_normal', 'diagnostico_misto'):
+            d = self.res[cen]['diag']
+            for mau in ('undefined', 'NaN', '[object Object]', 'null'):
+                self.assertNotIn(mau, d, f'{cen}: {mau}')
+
+    def test_formato_antigo_insuficiente_nao_mostra_v2_como_calibracao_valida(self):
+        d = self.res['diagnostico_antigo_insuficiente']['diag']
+        cel = _celulas(d, 'Bike')
+        self.assertIsNotNone(cel, 'linha Bike ausente')
+        self.assertEqual(cel[2], '—')                # Calibracao valida: nunca "v2" para dados insuficientes
+        for mau in ('undefined', 'NaN', '[object Object]', 'null'):
+            self.assertNotIn(mau, d, mau)
+
+
+class UiExploratorioExclusoes(unittest.TestCase):
+    """Funcoes puras do painel exploratorio (diagnostico por unidade e lista de exclusoes), via node."""
+
+    def setUp(self):
+        if shutil.which('node') is None:
+            self.skipTest('node nao disponivel')
+        try:
+            with mock.patch.dict(os.environ, {'INTERVALS_ICU_API_KEY': 'valor-ficticio-de-teste'}):
+                import tabs.tab_pmc as tp
+        except BaseException as e:
+            self.skipTest(f'tab_pmc nao importa: {type(e).__name__}: {e}')
+        completo = {
+            'exclusoes': {'total': 2,
+                          'por_motivo': {'referencia_nao_all_time:season': 1, 'sem_referencia_anterior': 1},
+                          'por_unidade': {'Ski:300': {'referencia_nao_all_time:season': 1,
+                                                      'sem_referencia_anterior': 1}},
+                          'lista': [
+                              {'modalidade': 'Ski', 'duracao_s': 300, 'data': '2026-02-20', 'watts': 262.0,
+                               'motivo': 'referencia_nao_all_time:season', 'referencia_tipo': 'season',
+                               'pct_da_referencia': 91.6, 'referencia_watts': 286.0,
+                               'referencia_activity_id': 'i126571067', 'referencia_data': '2026-02-20'},
+                              {'modalidade': 'Ski', 'duracao_s': 300, 'data': '2026-01-01', 'watts': 200.0,
+                               'motivo': 'sem_referencia_anterior', 'referencia_tipo': None,
+                               'pct_da_referencia': None, 'referencia_watts': None,
+                               'referencia_activity_id': None, 'referencia_data': None}],
+                          'por_origem': {'filtro_all_time': 1, 'selecao_anterior': 1}}}
+        casos = {
+            'completo': {'item': {'convergencia': {'convergiu': True, 'status': 'ok'},
+                                  'requisitos': {'atuais': {'observacoes': 20, 'datas_distintas': 14,
+                                                            'dias_cobertura': 200},
+                                                 'minimo': {'observacoes': 15, 'datas_distintas': 12,
+                                                            'dias_cobertura': 180},
+                                                 'em_falta': {'observacoes': 0, 'datas_distintas': 0,
+                                                              'dias_cobertura': 0}}},
+                         'j': completo},
+            'antigo': {'item': {}, 'j': {}},
+            'zero': {'item': {}, 'j': {'exclusoes': {'total': 0, 'por_motivo': {}, 'por_unidade': {},
+                                                     'lista': []}}},
+        }
+        with tempfile.TemporaryDirectory() as d:
+            a, b = os.path.join(d, 'pmc_js.js'), os.path.join(d, 'casos.json')
+            with open(a, 'w', encoding='utf-8') as f:
+                f.write(tp.JS)
+            with open(b, 'w', encoding='utf-8') as f:
+                json.dump(casos, f)
+            r = subprocess.run(['node', os.path.join(HERE, 'js', 'harness_ir_exploratorio.js'), a, b],
+                               capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            raise AssertionError(f'harness exploratorio falhou: {r.stdout[-300:]} {r.stderr[-300:]}')
+        self.out = json.loads(r.stdout)
+
+    def test_diagnostico_por_unidade_mostra_convergencia_e_faltas(self):
+        d = self.out['completo']['diag']
+        self.assertIn('sim (ok)', d)
+        self.assertIn('200', d)
+        self.assertIn('180', d)
+        self.assertIn('nenhuma', d)                  # gates cumpridos: nada em falta
+
+    def test_lista_de_exclusoes_com_contagens_referencia_e_proveniencia(self):
+        e = self.out['completo']['exclusoes']
+        self.assertIn('Exclusões do Exploratório: 2 observações', e)
+        self.assertIn('1 pelo filtro all-time desta fase; 1 já excluídas pela seleção anterior', e)
+        self.assertNotIn('Exclusões do filtro all-time', e)     # cabeçalho antigo, falso
+        self.assertIn('Lista completa de exclusões (2)', e)
+        self.assertIn('referencia_nao_all_time:season', e)
+        self.assertIn('91.6', e)                     # percentagem da referencia que qualificou
+        self.assertIn('i126571067', e)               # proveniencia: atividade da referencia
+        self.assertIn('<details', e)                 # expandivel, nao no ecra principal
+
+    def test_resposta_antiga_e_zero_exclusoes_nao_quebram(self):
+        antigo = self.out['antigo']
+        self.assertEqual(antigo['exclusoes'], '')    # sem campo: nada a mostrar
+        self.assertNotIn('undefined', antigo['diag'])
+        self.assertIn('&mdash;', antigo['diag'])
+        self.assertIn('Nenhuma observação excluída', self.out['zero']['exclusoes'])
+
 if __name__ == '__main__':
     unittest.main()

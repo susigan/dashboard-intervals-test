@@ -387,8 +387,12 @@ class P0GlobalNoServico(_Base4):
         self.assertEqual(j['Row']['p0']['atual']['valor_p0'], novo)                  # nunca apresentado como recalibrado
         self.assertTrue(j['Row']['p0']['desatualizado'])
         self.assertIn('solver rebentou', j['Row']['excecao_solver'])
-        self.assertIn(j['Bike']['estado_ir'], (mis.EI_VALIDO, mis.EI_NAO_IDENT))
-        self.assertFalse(j['Bike']['p0']['desatualizado'])
+        # Bike: v1 identificavel (P0 antigo). O P0 novo deu uma tentativa NAO identificavel que NAO a substitui:
+        # a referencia continua a ser v1, marcada como desatualizada, e a tentativa mostra-se a parte
+        self.assertEqual(j['Bike']['estado_ir'], mis.EI_DESATUALIZADO)
+        self.assertEqual(j['Bike']['tentativa_mais_recente']['estado'], ir.EST_NAO_IDENTIFICAVEL)
+        self.assertTrue(j['Bike']['p0']['desatualizado'])
+        self.assertEqual(j['Bike']['parametros']['p0'], v1['Bike']['p0'])     # nao corrompido pelo P0 novo
 
     def test_ajuste_com_p0_antigo_e_marcado_desatualizado_mesmo_sem_nova_recalibracao(self):
         self.rec()

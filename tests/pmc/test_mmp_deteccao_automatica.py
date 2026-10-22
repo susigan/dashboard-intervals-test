@@ -103,8 +103,9 @@ class Pura(unittest.TestCase):
         self.assertFalse(c['referencias']['all_time']['qualifica'])
 
     def test_03b_abaixo_do_limiar_nao_e_detetado(self):
-        self.assertNotIn('Bike:1200:b1', {k: 1 for k in self.det if False})   # b1 e o 1.o da season
-        # um esforco a 90% da season e do all-time, sem recente: nao entra
+        # b1 e o 1.o da season (sem ponto anterior na season): 250/340 = 73% do all-time, sem recente
+        self.assertNotIn('Bike:1200:b1', self.det)
+        # um esforco a 79% da season e do all-time, sem recente: nao entra
         extra = copy.deepcopy(BIKE) + [cv('b5', 'Bike', '2026-06-10', 250)]       # 250/315 = 79%
         self.assertNotIn('Bike:1200:b5', detetar(extra))
 

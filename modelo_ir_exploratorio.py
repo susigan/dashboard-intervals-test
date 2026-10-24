@@ -166,7 +166,7 @@ def ajustar_unidade(modalidade, duracao_s, usadas, carga_dia, referencia, cfg, a
             'parametros': params,
             # 'convergencia' no nivel superior = o bloco do solver; metricas.convergencia (bool) mantem a forma antiga
             'convergencia': conv,
-            'metricas': {k: _num(metricas.get(k)) for k in ('r2', 'rmse', 'sse', 'mae')} | {
+            'metricas': {k: _num(metricas.get(k)) for k in ('r2', 'r2_ajustado', 'rmse', 'sse', 'mae')} | {
                 'convergencia': conv.get('convergiu') if conv else None},
             'identificabilidade': {'parametros_no_limite': ident.get('parametros_no_limite') or [],
                                    'erros_padrao': ident.get('erros_padrao'),
@@ -213,10 +213,15 @@ def identificavel(it):
 
 
 def _chave_qualidade(it):
-    """Ordem entre curvas JA identificaveis: qualidade do ajuste primeiro (R2 dentro da amostra), depois
-    cobertura temporal, depois datas distintas, e so por fim a duracao (determinismo). N nao e criterio."""
-    r2 = (it.get('metricas') or {}).get('r2')
-    return (-(r2 if r2 is not None else -1e9), -_dias_item(it), -(it.get('n_datas_distintas') or 0), it['duracao_s'])
+    """Ordem entre curvas JA identificaveis: qualidade do ajuste primeiro, depois cobertura temporal, datas
+    distintas e, por fim, a duracao (determinismo). N nao e criterio.
+
+    Qualidade = R2 AJUSTADO (`r2_ajustado` de modelo_ir: 1 - (SSE/gl)/(SST/(n-1)), gl = n - parametros),
+    ja existente. O R2 simples nao penaliza parametros: com 5 parametros e poucas observacoes favorece o
+    sobreajuste. O R2 e dentro da amostra e cada duracao tem o seu proprio alvo: a ordem entre duracoes
+    e uma heuristica de escolha, nao um teste estatistico."""
+    r2a = (it.get('metricas') or {}).get('r2_ajustado')
+    return (-(r2a if r2a is not None else -1e9), -_dias_item(it), -(it.get('n_datas_distintas') or 0), it['duracao_s'])
 
 
 def escolher_curva(itens_modalidade):

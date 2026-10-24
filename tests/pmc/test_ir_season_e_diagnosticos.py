@@ -30,9 +30,14 @@ CONTROLE_SNAPSHOT = os.path.join(HERE, 'fixtures', 'ir_all_time_base_24ddf4a.jso
 
 
 def _velho(i):
-    return {k: i.get(k) for k in ('modalidade', 'duracao_s', 'estado', 'motivo', 'parametros', 'metricas',
-                                  'identificabilidade', 'avisos', 'convergencia', 'n_obs', 'n_datas_distintas',
-                                  'data_ini', 'data_fim', 'p0_inicial', 'serie_ini', 'curva', 'persistido', 'modo')}
+    out = {k: i.get(k) for k in ('modalidade', 'duracao_s', 'estado', 'motivo', 'parametros', 'metricas',
+                                 'identificabilidade', 'avisos', 'convergencia', 'n_obs', 'n_datas_distintas',
+                                 'data_ini', 'data_fim', 'p0_inicial', 'serie_ini', 'curva', 'persistido', 'modo')}
+    # r2_ajustado foi acrescentado DEPOIS do snapshot, como metrica diagnostica (ranking da selecao). Nao e
+    # parametro, curva nem estado: fica fora da comparacao; o resto das metricas continua comparado.
+    if isinstance(out.get('metricas'), dict):
+        out['metricas'] = {k: v for k, v in out['metricas'].items() if k != 'r2_ajustado'}
+    return out
 
 
 def _arred(o):

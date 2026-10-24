@@ -173,6 +173,12 @@ class RevisaoFinal(unittest.TestCase):
         self.assertEqual((p['activity_id'], p['watts']), ('pico', 2000))
         self.assertTrue(p['outlier_iqr'])
         self.assertIn('mantido', p['outlier_iqr_motivo'])
+        # caso observado em producao: IQR true com suspeitos vazio e n_suspeitos=0 e um resultado VALIDO
+        self.assertEqual(j['suspeitos'], [])
+        self.assertEqual(j['resumo']['n_suspeitos'], 0)
+        self.assertIn('suspeitos', j['definicoes_avisos'])
+        self.assertIn('outlier_iqr', j['definicoes_avisos'])
+        self.assertIn('nao implica incoerencia', j['definicoes_avisos']['outlier_iqr'])
 
     def test_other_fica_listado_e_fora_do_grafico(self):
         cs = fixture() + [cp_curva('oth', 'Other', '2026-10-03', {60: 250})]

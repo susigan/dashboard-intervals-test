@@ -25,6 +25,17 @@ def _hoje():
     return datetime.now(ZoneInfo(FUSO)).date()
 
 
+# Duas categorias distintas, com nomes distintos na API (suspeitos / outlier_iqr):
+DEFINICOES_AVISOS = {
+    'suspeitos': ('incoerencia de monotonia dentro da mesma atividade: uma duracao mais longa tem mais W '
+                  'do que uma mais curta da mesma atividade. Calculado sobre todo o historico ate a data de '
+                  'referencia (resumo.n_suspeitos). Por defeito mantido; excluir_suspeitos=1 retira-o.'),
+    'outlier_iqr': ('valor fora de 3 x IQR da distribuicao historica (ate a data de referencia) da mesma '
+                    'modalidade e duracao. Informativo: pode ser um esforco real e extremo (ex.: sprint). '
+                    'Nunca e removido nem altera o envelope; nao implica incoerencia.'),
+}
+
+
 def _outras_modalidades(curvas, ate):
     """Atividades com modalidade fora de Bike/Row/Ski/Run (ex.: Other), ate `ate`. Nao entram no grafico."""
     ate_d = date.fromisoformat(ate)
@@ -128,6 +139,7 @@ def api_data():
                         estados=estados, excluir_suspeitos=excluir)
         _sinalizar_iqr(out, curvas, estados, ate)
         out['outras_modalidades'] = _outras_modalidades(curvas, ate)
+        out['definicoes_avisos'] = DEFINICOES_AVISOS
         out['data_referencia'] = {'ate': ate, 'origem': 'parametro' if ate_pedida else 'padrao',
                                   'fuso': FUSO if not ate_pedida else None}
         if com_evolucao:
@@ -184,9 +196,9 @@ BODY = r"""
 <div id="falta"></div>
 <h3>Atividades excluidas (com motivo)</h3>
 <div id="excl"></div>
-<h3>Valores suspeitos (sinalizados, nao removidos)</h3>
+<h3>Incoerencias de monotonia (duracao mais longa acima de mais curta, na mesma atividade)</h3>
 <div id="susp"></div>
-<h3>Avisos IQR (sinalizados, mantidos; nao sao removidos)</h3>
+<h3>Avisos IQR (distribuicao historica; informativos, mantidos; nao sao incoerencias)</h3>
 <div id="iqr"></div>
 </div>
 """

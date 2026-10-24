@@ -300,7 +300,7 @@ def _motivo_observacao_auto_invalida(o):
     return None
 
 
-def selecionar_observacoes_auto(obs_atuais, revisoes_atuais, atividades, curvas_por_atividade):
+def selecionar_observacoes_auto(obs_atuais, revisoes_atuais, atividades, curvas_por_atividade, duracoes=None):
     """Como selecionar_observacoes, mas a partir das observacoes detetadas automaticamente.
 
     obs_atuais: versoes ATUAIS (modelo_observacoes_auto.atuais); versoes substituidas ou
@@ -318,8 +318,10 @@ def selecionar_observacoes_auto(obs_atuais, revisoes_atuais, atividades, curvas_
     observacoes tem tambem confirmacao manual; 'n_detetadas' = quantas observacoes).
     """
     revisoes_atuais = revisoes_atuais or {}
+    # por omissao: as duracoes do protocolo (comportamento anterior). O exploratorio passa as suas.
+    duracoes = mt.DURACOES if duracoes is None else tuple(duracoes)
     out = {(m, d): {'n_confirmados': 0, 'n_detetadas': 0, 'usadas': [], 'excluidas': []}
-           for m in mt.MODALIDADES for d in mt.DURACOES}
+           for m in mt.MODALIDADES for d in duracoes}
     for o in sorted(obs_atuais or [], key=lambda x: str(x.get('test_id'))):
         k = (o.get('modalidade'), o.get('duracao_s'))
         if k not in out:

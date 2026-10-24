@@ -16,7 +16,7 @@ os.environ.setdefault('INTERVALS_ICU_API_KEY', 'valor-ficticio-de-teste')
 
 import db  # noqa: E402
 import app as aplicacao  # noqa: E402  (as rotas vivem em app.py)
-from tests.pmc.test_curva_progressiva import fixture  # noqa: E402
+from tests.pmc.test_curva_progressiva import curva, fixture  # noqa: E402
 
 
 def atividades_de(curvas):
@@ -214,6 +214,69 @@ class RevisaoFinal(unittest.TestCase):
                 self.assertNotIn(proibido, texto, f'{mod.__name__} contem {proibido!r}')
 
 
+class EscopoExclusaoEAvisos(unittest.TestCase):
+    """Escopo da exclusao, flag de monotonia por ponto e envelope inalterado sem exclusao."""
+
+    def setUp(self):
+        self.client = aplicacao.app.test_client()
+        self.curvas = [curva('ski', 'Ski', '2026-09-07', {120: 256, 180: 251, 240: 188, 300: 199, 420: 209}),
+                       curva('bike', 'Bike', '2026-10-01', {60: 300, 300: 350})]
+        self.patches = [
+            mock.patch.object(db, 'ENABLED', True),
+            mock.patch.object(db, 'load_power_curves', side_effect=lambda tipo=None, desde=None: [
+                c for c in self.curvas if tipo is None or c['type'] == tipo]),
+            mock.patch.object(db, 'load_activities', return_value=atividades_de(self.curvas)),
+            mock.patch.object(db, '_nomes_actividades', return_value={}),
+        ]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def get_(self, qs):
+        return json.loads(self.client.get('/api/curva-progressiva' + qs).data)
+
+    def test_exclusao_declara_escopo_e_duracoes(self):
+        j = self.get_('?ate=2026-10-24&janela=historico&excluir_suspeitos=1')
+        ex = {e['activity_id']: e for e in j['exclusoes']}
+        self.assertEqual(ex['ski']['escopo'], 'pontos')
+        self.assertEqual(ex['ski']['duracoes_excluidas'], [300, 420])
+        self.assertEqual(ex['ski']['motivo'], 'valor_suspeito')
+        self.assertEqual(j['resumo']['n_pontos_excluidos'], 3)     # ski 300, ski 420, bike 300
+        for campo in ('activity_id', 'modalidade', 'data', 'motivo'):
+            self.assertIn(campo, ex['ski'])
+
+    def test_ponto_suspeito_marcado_e_envelope_inalterado_sem_exclusao(self):
+        j = self.get_('?ate=2026-10-24&janela=historico&modalidades=Ski')
+        pts = {p['duracao_s']: p for p in j['modalidades']['Ski']['pontos']}
+        self.assertTrue(pts[300]['suspeito_monotonia'])
+        self.assertTrue(pts[420]['suspeito_monotonia'])
+        self.assertFalse(pts[240]['suspeito_monotonia'])
+        self.assertEqual(pts[300]['watts'], 199)                     # valor medido intacto
+        self.assertEqual(pts[420]['watts'], 209)
+        self.assertEqual(j['exclusoes'], [])
+        self.assertEqual(j['resumo']['n_pontos_excluidos'], 0)
+
+    def test_exclusao_so_remove_os_sinalizados(self):
+        j = self.get_('?ate=2026-10-24&janela=historico&modalidades=Ski&excluir_suspeitos=1')
+        self.assertEqual(sorted(p['duracao_s'] for p in j['modalidades']['Ski']['pontos']), [120, 180, 240])
+
+    def test_modalidades_vazias_sao_rejeitadas_pela_api(self):
+        # a pagina nao envia 'none' (corrigido no JS); a API continua a validar modalidades
+        r = self.client.get('/api/curva-progressiva?modalidades=none')
+        self.assertEqual(r.status_code, 400)
+
+
+class LayoutControlos(unittest.TestCase):
+    """Regressao: base.py define input{min-width:220px}; as caixas de seleção nao podem herdar."""
+
+    def test_checkboxes_do_ctl_nao_herdam_largura_minima(self):
+        html = aplicacao.app.test_client().get('/curva-progressiva').data.decode('utf-8')
+        self.assertIn('.ctl input[type=checkbox]{margin:0;width:auto;min-width:0}', html)
+
+
 class InterfaceFinal(unittest.TestCase):
     def setUp(self):
         self.curvas = fixture()
@@ -261,10 +324,10 @@ class InterfaceFinal(unittest.TestCase):
         self.assertEqual(j['modalidades']['Bike']['pontos'], [])
         self.assertEqual(j['outras_modalidades'], [])
 
-    def test_pagina_tem_avisos_iqr_outras_modalidades_e_estados(self):
+    def test_pagina_simples_sem_tabelas_de_diagnostico(self):
         html = self.client.get('/curva-progressiva').data.decode('utf-8')
-        for ident in ('id="iqr"', 'id="outras"', 'id="estados"', 'AVISO IQR', 'outlier_iqr',
-                      'data_referencia', 'outras_modalidades'):
+        for ident in ('id="cv"', 'id="ev"', 'id="avisos"', 'id="legenda"', 'id="janela"', 'id="susp"',
+                      'Curva progressiva', 'Evolucao do melhor esforco', '/api/curva-progressiva'):
             self.assertIn(ident, html)
 
 

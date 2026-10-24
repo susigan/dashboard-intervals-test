@@ -26,13 +26,46 @@ class IrPrincipalPMC(unittest.TestCase):
         # a area principal nao tem seletor de duracao: as curvas sao automaticas por modalidade
         self.assertNotIn('irxDurMain', self.src[ini:fim])
 
-    def test_desenho_parametrizado_com_predefinicoes_antigas(self):
-        # irxDesenhar (secao tecnica, seletor proprio) delega em irxPintar (lista explicita de itens)
-        self.assertIn('function irxDesenhar(cvId,selId,legId){', self.src)
+    def test_grafico_unico_na_area_principal(self):
+        # um so desenho de curvas: irxPintar, chamado pela area principal. Sem funcao duplicada de comparacao.
+        self.assertNotIn('function irxDesenhar(', self.src)
         self.assertIn('function irxPintar(cvId,its,legId,vazio){', self.src)
-        self.assertIn("irxPintar(cvId||'chIrx',its,legId||'irxLeg'", self.src)
-        self.assertIn("var o=ctx(cvId,300)", self.src)
-        self.assertIn("document.getElementById(legId)", self.src)
+        self.assertIn("irxPintar('chIrxMain',its,'irxLegMain'", self.src)
+        self.assertEqual(self.src.count('id="chIrxMain"'), 1)
+        self.assertNotIn('id="chIrx"', self.src)      # sem segundo canvas na secao tecnica
+        self.assertNotIn('irxDur', self.src)           # sem seletor de duracao concorrente
+
+    def test_secao_tecnica_unica_recolhida(self):
+        i = self.src.index('id="irTecnico"')
+        j = self.src.index('</details>', self.src.index('id="irSombra"')) + len('</details>')
+        bloco = self.src[i:j]
+        self.assertEqual(self.src.count('id="irTecnico"'), 1)
+        for ident in ('id="irExp"', 'id="irExploratorio"', 'id="irSombra"'):
+            self.assertIn(ident, bloco)                # os tres diagnosticos vivem dentro da secao tecnica
+        self.assertNotIn('ontoggle="abrirIR(this)"', self.src[:i])   # nenhum fica fora, a concorrer com o principal
+        self.assertLess(self.src.index('id="irPrincipal"'), i)
+
+    def test_mensagem_curta_por_estado(self):
+        # executa a funcao real do ficheiro com estados de exemplo (sem alterar o codigo)
+        import re, subprocess, json as _json
+        m = re.search(r'function irxMensagemCurta\(s\)\{.*?\n\}', self.src, re.S)
+        self.assertIsNotNone(m)
+        casos = {
+            'dados_insuficientes': {'estado': 'dados_insuficientes', 'motivo': 'menos de 15 observacoes'},
+            'sem_observacoes': {'estado': 'sem_observacoes', 'motivo': 'nenhuma observacao elegivel'},
+            'limites': {'estado': 'sem_ajuste_identificavel', 'motivo': 'ajuste nao identificavel: parametro_no_limite:t1:superior, mal_condicionado'},
+            'mal': {'estado': 'sem_ajuste_identificavel', 'motivo': 'ajuste nao identificavel: mal_condicionado'},
+        }
+        js = 'var out={};var casos=' + _json.dumps(casos) + ';for(var k in casos){out[k]=irxMensagemCurta(casos[k]);}console.log(JSON.stringify(out));'
+        js = m.group(0) + '\n' + js
+        r = subprocess.run(['node', '-e', js], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = _json.loads(r.stdout)
+        self.assertEqual(out['dados_insuficientes'], 'sem curva: observações insuficientes (mínimo de 15 por duração)')
+        self.assertEqual(out['sem_observacoes'], 'sem esforços elegíveis nesta modalidade')
+        self.assertIn('parâmetros nos limites', out['limites'])
+        self.assertIn('mal condicionado', out['mal'])
+        self.assertTrue(all(len(v) < 90 for v in out.values()))
 
     def test_carregamento_automatico_na_abertura(self):
         self.assertIn('carregarIRExploratorio();\n"""', self.src)

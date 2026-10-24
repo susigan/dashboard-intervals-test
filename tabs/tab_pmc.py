@@ -673,9 +673,11 @@ BODY = r"""
 <details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Deteccao automatica de observacoes MMP (season, all-time, recente)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
 <details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
 <details class="expl" id="validacaoExp" style="margin:10px 0" ontoggle="abrirValidacao(this)"><summary>LEGADO &mdash; Validacao preditiva exploratoria do estimador de 60/300/1200 s (nao valida o IR de MMP3)</summary><div class="expl-corpo" id="validacaoExpCorpo">A carregar...</div></details>
+<details class="expl" id="irTecnico" style="margin:10px 0"><summary>Diagnosticos tecnicos do IR (secao recolhida; nao e o grafico principal)</summary><div class="expl-corpo">
 <details class="expl" id="irExp" style="margin:10px 0" ontoggle="abrirIR(this)"><summary>Modelo IR: curvas de influencia por modalidade (experimental, ajuste historico)</summary><div class="expl-corpo" id="irExpCorpo">A carregar...</div></details>
 <details class="expl" id="irExploratorio" style="margin:10px 0" ontoggle="abrirIRExploratorio(this)"><summary>IR EXPLORATORIO &mdash; diagnostico tecnico, nao validado (P0 livre; comparacao por duracao de 60 a 1800 s)</summary><div class="expl-corpo" id="irExploratorioCorpo">A carregar...</div></details>
 <details class="expl" id="irSombra" style="margin:10px 0" ontoggle="abrirIRSombra(this)"><summary>IR SOMBRA &mdash; previsao experimental vs observado (validacao temporal; experimental; nao promove)</summary><div class="expl-corpo" id="irSombraCorpo">Abra para escolher a seleccao e carregar.</div></details>
+</div></details>
 <details class="expl" id="distCargaExp" style="margin:10px 0" ontoggle="abrirDistCarga(this)"><summary>Distribuicao da carga por modalidade (Bike, Row, Run, Ski): Training Load ou TRIMP, observada, sem musculacao</summary><div class="expl-corpo" id="distCargaExpCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
@@ -3234,13 +3236,6 @@ function irxPintar(cvId,its,legId,vazio){
   if(leg)leg.innerHTML=its.map(function(it){return '<span style="margin-right:12px"><i style="display:inline-block;width:10px;height:10px;background:'+irxEsc(COR[it.modalidade]||'#8b949e')+';margin-right:4px"></i>'+irxEsc(it.modalidade)+' · '+irxEsc(it.duracao_s)+' s</span>';}).join('')+
     ' <span style="color:#d29922">Exploratório — não validado (linha líquida = P0 livre + K1·E − K2·G)</span>';
 }
-// Comparacao por duracao (secao tecnica, seletor proprio): nao controla a curva principal.
-function irxDesenhar(cvId,selId,legId){
-  var j=IRX_J; if(!j||j.status!=='OK')return;
-  var el=document.getElementById(selId||'irxDur'); var dur=el?Number(el.value):300;
-  var its=(j.itens||[]).filter(function(it){return it.duracao_s===dur&&it.curva;});
-  irxPintar(cvId||'chIrx',its,legId||'irxLeg','Sem curva nesta duração: nenhuma unidade com ajuste identificável (ver motivos acima)');
-}
 // Season (experimental): bloco SEPARADO do all-time. Parametros so aparecem quando a classe e candidata.
 var IRX_CLASSE={candidata_calibracao:'candidata a calibração (experimental)',apenas_validacao:'apenas validação',
   insuficiente:'insuficiente',nao_identificavel:'não identificável — valores não válidos',nao_calculado:'não calculado'};
@@ -3287,14 +3282,24 @@ function irxGlobalHtml(g){
   return cab+'indisponível: '+irxEsc(g.motivo||g.estado||'sem motivo')+
     (av.length?' — '+irxEsc(av.join(', ')):'')+(g.leitura?' — '+irxEsc(g.leitura):'');
 }
+// Mensagem curta e especifica para uma modalidade sem curva. So traduz estado/motivo ja calculados no servidor.
+function irxMensagemCurta(s){
+  var st=s.estado||'', mo=s.motivo||'';
+  if(st==='dados_insuficientes')return 'sem curva: observações insuficientes (mínimo de 15 por duração)';
+  if(st==='sem_observacoes')return 'sem esforços elegíveis nesta modalidade';
+  if(st==='sem_convergencia')return 'sem curva: o ajuste não convergiu';
+  if(mo.indexOf('parametro_no_limite')>=0||mo.indexOf('ic_perfil_toca_limite')>=0)return 'sem curva: ajuste não identificável (parâmetros nos limites)';
+  if(mo.indexOf('mal_condicionado')>=0)return 'sem curva: ajuste não identificável (mal condicionado)';
+  if(mo.indexOf('solucoes_equivalentes_divergentes')>=0)return 'sem curva: ajuste não identificável (soluções divergentes)';
+  return 'sem curva identificável nesta amostra';
+}
 function irxRenderMain(){
   var j=IRX_J, aviso=document.getElementById('irPrincipalAviso'), est=document.getElementById('irPrincipalEstados');
   var glob=document.getElementById('irPrincipalGlobal'), lg=document.getElementById('irxLegMain');
   if(!j||j.status!=='OK'){
     if(aviso)aviso.textContent='Modo exploratório indisponível'+(j&&j.mensagem?': '+j.mensagem:' (sem resposta).');
     if(est)est.innerHTML=''; if(glob)glob.innerHTML=''; if(lg)lg.innerHTML=''; return;}
-  if(aviso)aviso.textContent='Exploratório, não validado: P0 livre por unidade, ajuste dentro da amostra, sem exigir YES. '+
-    'Cada modalidade mostra a melhor duração identificável (durações podem diferir). Não é calibração operacional nem previsão validada.';
+  if(aviso)aviso.textContent='Exploratório, não validado. Só se mostram curvas identificáveis; sem curva, a modalidade indica o motivo.';
   var sa=j.selecao_automatica||{}, mods=Object.keys(sa);
   var its=mods.map(function(m){return sa[m]&&sa[m].selecionada;}).filter(Boolean);
   if(est)est.innerHTML=mods.map(function(m){
@@ -3302,8 +3307,7 @@ function irxRenderMain(){
     if(it)return '<div><b style="color:'+irxEsc(cor)+'">'+irxEsc(m)+'</b> &middot; '+irxEsc(it.duracao_s)+' s &middot; '+
       irxEsc(it.n_obs)+' observações ('+irxEsc(it.n_datas_distintas)+' datas) &middot; '+irxEsc(it.data_ini)+' a '+irxEsc(it.data_fim)+
       ' &middot; <span style="color:#3fb950">identificável</span></div>';
-    return '<div><b style="color:'+irxEsc(cor)+'">'+irxEsc(m)+'</b> &middot; <span style="color:#d29922">sem curva identificável</span>'+
-      ' &mdash; '+irxEsc(s.motivo||s.estado||'sem motivo')+' <span style="color:#8b949e">(ver Testes sugeridos)</span></div>';
+    return '<div><b style="color:'+irxEsc(cor)+'">'+irxEsc(m)+'</b> &middot; <span style="color:#d29922">'+irxEsc(irxMensagemCurta(s))+'</span></div>';
   }).join('');
   if(glob)glob.innerHTML=irxGlobalHtml(j.global);
   irxPintar('chIrxMain',its,'irxLegMain','Nenhuma modalidade com curva identificável nesta amostra (ver estados abaixo)');
@@ -3314,15 +3318,11 @@ function irxRender(erro){
   var j=IRX_J;
   if(erro||!j){el.innerHTML=irxRotulo()+'<p style="color:#f85149;font-size:12.5px">Não foi possível obter o modo exploratório: '+irxEsc(erro||'sem resposta')+'</p>';return;}
   if(j.status!=='OK'){el.innerHTML=irxRotulo()+'<p style="color:#f85149;font-size:12.5px">Erro no modo exploratório: '+irxEsc(j.mensagem||'desconhecido')+'</p>';return;}
-  var ops=(j.duracoes||[]).map(function(d){return '<option value="'+irxEsc(d)+'"'+(d===300?' selected':'')+'>'+irxEsc(d)+' s</option>';}).join('');
-  el.innerHTML=irxRotulo()+'<div id="irxAv"></div><div id="irxTab"></div><div id="irxExcl"></div><div id="irxSea"></div>'+
-    '<div style="margin:8px 0;font-size:12px">Duração da curva: <select id="irxDur" onchange="irxDesenhar()">'+ops+'</select></div>'+
-    '<div class="chartbox"><canvas id="chIrx" height="300"></canvas></div><div id="irxLeg" style="font-size:12px;margin-top:4px"></div>';
+  el.innerHTML=irxRotulo()+'<div id="irxAv"></div><div id="irxTab"></div><div id="irxExcl"></div><div id="irxSea"></div>';
   document.getElementById('irxAv').innerHTML=irxAvisos(j);
   document.getElementById('irxTab').innerHTML=irxTabela(j);
   var irxEx=document.getElementById('irxExcl'); if(irxEx)irxEx.innerHTML=irxExclHtml(j);
   var irxSe=document.getElementById('irxSea'); if(irxSe)irxSe.innerHTML=irxSeasonHtml(j);
-  irxDesenhar();
 }
 async function carregarIRExploratorio(){
   IRX_MONTADO=true; var seq=++IRX_SEQ, j=null, erro=null;

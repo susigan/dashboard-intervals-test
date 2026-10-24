@@ -68,6 +68,26 @@ def _grupos(atividades):
     return g
 
 
+def candidatos_exploratorios(curvas, atividades, marcos, duracoes):
+    """Candidatos detetados para as `duracoes` pedidas (ex.: 180, 240, 600 s), com o MESMO detetor e as
+    MESMAS regras de referencia causal e limiar (moa.detetar). SO LEITURA: nada e registado, nao altera
+    `modelo_observacoes_auto` nem o historico. Usado so pelo modo exploratorio do IR."""
+    import modelo_estimador as me
+    mapa = protocolo.mapa_ignore_power(atividades)
+    grupos = _grupos(atividades)
+    eleg = {aid: me.elegibilidade_aprendizagem(aid, g) for aid, g in grupos.items()}
+    ignorar = _ignorados_da_referencia(mapa, eleg, me.ELEG_ELEGIVEL)
+    hora = {}
+    for aid, g in grupos.items():
+        for a in g:
+            v = a.get('start_date_local')
+            if isinstance(v, str) and len(v) >= 16:
+                hora[aid] = v
+                break
+    testes = {int(d): {} for d in duracoes}
+    return moa.detetar(curvas, ignorar, lambda d: config.season_de(d, marcos), horas=hora, testes=testes)
+
+
 def criterio(fonte_season):
     return {'versao_criterio': moa.VERSAO_CRITERIO,
             'limiar_proximidade': moa.LIMIAR_PROXIMIDADE,

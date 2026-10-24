@@ -1224,13 +1224,14 @@ def _leitura_global(r):
             'rejeitada; continua a ser ajuste dentro da amostra, nao previsao validada')
 
 
-def analise_global(duracao, historico_obs=None, revisoes=None, atividades=None, curvas=None, config=None):
+def analise_global(duracao, historico_obs=None, revisoes=None, atividades=None, curvas=None, config=None,
+                   selecao=None):
     """Ajuste global (modelo_ir_global) para UMA duracao, juntando as modalidades com observacoes
     elegiveis (as mesmas do modelo por modalidade) e as cargas de TODAS as modalidades. So leitura:
     nao grava, nao altera os ajustes por modalidade. Sem argumentos de dados le da base."""
     base = {'experimental': True, 'tipo_analise': 'modelo_ir_global_referencia', 'aviso': AVISO_GLOBAL,
             'limitacoes': list(G.LIMITES), 'grupo': {'duracao_s': duracao}}
-    if historico_obs is None:
+    if historico_obs is None and selecao is None:
         historico_obs = db.observacoes_auto_historico()
         revisoes = db.revisoes_testes_modelo()
         atividades = db.load_activities()
@@ -1238,7 +1239,8 @@ def analise_global(duracao, historico_obs=None, revisoes=None, atividades=None, 
     if atividades is None:
         return {**base, 'estado': G.EST_INSUFICIENTE, 'motivo': 'atividades_indisponiveis',
                 'parametros': None, 'leitura': 'sem atividades na base: nao ha carga'}
-    sel = selecionar(historico_obs, revisoes, atividades, curvas)
+    # `selecao` (mesma forma de selecionar()) evita reler a base: usada pelo modo exploratorio
+    sel = selecao if selecao is not None else selecionar(historico_obs, revisoes, atividades, curvas)
     cargas, info = carga_por_modalidade(atividades)
     unidades, sem = [], []
     for m in mt.MODALIDADES:
@@ -1256,7 +1258,7 @@ def analise_global(duracao, historico_obs=None, revisoes=None, atividades=None, 
                 'parametros': None, 'leitura': 'nao ha observacoes elegiveis para esta duracao'}
     r = G.ajustar_global(unidades, cargas, config)
     por_mod = {}
-    for m in mt.MODALIDADES:
+    for m in (mt.MODALIDADES if selecao is None else []):
         a = db.ultimo_ajuste_ir(m, duracao)
         if a is not None:
             por_mod[m] = {'versao_ajuste': a['versao_ajuste'], 'estado': a['estado'],
@@ -1697,34 +1699,43 @@ def enriquecer_usadas(sel, atuais):
 
 
 def analise_exploratoria(duracoes=None, historico_obs=None, revisoes=None, atividades=None, curvas=None,
-                         referencia=None, config_ir=None, marcos=None):
-    """Curvas exploratorias historicas por modalidade e duracao (60/300/1200 s), com P0 livre por unidade.
+                         referencia=None, config_ir=None, marcos=None, candidatos=None):
+    """Curvas exploratorias por modalidade e duracao (P0 livre por unidade). SO LEITURA, NAO PERSISTIDO.
 
-    SO LEITURA e NAO PERSISTIDO: le o historico do detetor e as atividades, nunca grava em modelo_ir_ajustes
-    nem em modelo_ir_p0_referencias, nao le nem substitui os ajustes calibrados e nao usa o P0 do IR de 180 s.
-    Sem argumentos de dados le da base. Devolve status ERRO com a mensagem (nunca uma curva artificial) se faltar
-    a base ou as atividades."""
-    duracoes = tuple(duracoes) if duracoes else mex.DURACOES_HISTORICAS
+    Candidatos: por omissao detetados de `power_curves` para TODAS as duracoes de
+    `mex.DURACOES_EXPLORATORIAS` (mesmo detetor e limiar causal 0,92; nada e gravado). Nao le nem substitui os
+    ajustes calibrados e nao usa o P0 do IR de 180 s. Devolve tambem `selecao_automatica` (uma curva
+    identificavel por modalidade, com duracao propria) e `global` (so com duracao comum valida, senao o motivo).
+    Sem base e sem dados injetados: status ERRO, nunca curva artificial."""
+    duracoes = tuple(duracoes) if duracoes else mex.DURACOES_EXPLORATORIAS
     base = {'experimental': True, 'modo': mex.MODO, 'rotulo': mex.ROTULO, 'persistido': False,
             'tipo_analise': 'ir_exploratorio_historico', 'aviso': mex.AVISO,
             'duracoes': list(duracoes), 'limitacoes': list(ir.LIMITES),
             'cores': {m: config.CORES_MOD[m] for m in config.CICLICOS}}
-    if historico_obs is None:
+    if candidatos is None and historico_obs is None:
         if not db.ENABLED:
             return {**base, 'status': 'ERRO', 'mensagem': 'sem base de dados'}
-        historico_obs = db.observacoes_auto_historico() or []
         revisoes = db.revisoes_testes_modelo()
         atividades = db.load_activities()
         curvas = db.load_power_curves() or []
     if atividades is None:
         return {**base, 'status': 'ERRO', 'mensagem': 'atividades indisponiveis: sem carga, nada foi calculado'}
     hoje = referencia or mt.agora_utc().date().isoformat()
-    if marcos is None and historico_obs is None:
+    if marcos is None and candidatos is None and historico_obs is None:
         # so na base de dados real: as fronteiras de season vem do calendario (sem rede nos testes)
         import observacoes_auto as oa
         marcos, _fonte = oa.obter_marcos()
-    atuais = moa.atuais(historico_obs)
-    sel_pre = selecionar(historico_obs, revisoes, atividades, curvas)
+    if candidatos is None and historico_obs is None:
+        import observacoes_auto as oa
+        candidatos = oa.candidatos_exploratorios(curvas, atividades, marcos, duracoes)
+    if candidatos is not None:
+        atuais = list(candidatos)
+        sel_pre = E.selecionar_observacoes_auto(atuais, E.estado_atual_por_teste(revisoes or []),
+                                                atividades, E.curvas_por_atividade(curvas or []),
+                                                duracoes=duracoes)
+    else:
+        atuais = moa.atuais(historico_obs)
+        sel_pre = selecionar(historico_obs, revisoes, atividades, curvas)
     # mesma identificacao de candidatos do calibrado: so o maximo causal ALL-TIME >= limiar (sem exigir tag/intervalo)
     sel = separar_nao_all_time(enriquecer_usadas(sel_pre, atuais), atuais)
     cargas, info = carga_por_modalidade(atividades)
@@ -1734,8 +1745,17 @@ def analise_exploratoria(duracoes=None, historico_obs=None, revisoes=None, ativi
     # analise SEASON: caminho separado, lê o conjunto ja selecionado (sel_pre); nao altera `itens`
     season = mseason.analisar(sel_pre, atuais, cargas, hoje, marcos, ir._cfg(config_ir), duracoes,
                               anos_historico=anos)
+    # selecao automatica: melhor curva IDENTIFICAVEL por modalidade (duracoes podem diferir)
+    selecao = mex.escolher_todas(itens)
+    dur_g, motivo_g = mex.escolher_duracao_global(itens)
+    if dur_g is None:
+        glob = {'estado': 'indisponivel', 'motivo': motivo_g, 'duracao_s': None}
+    else:
+        glob = {**analise_global(dur_g, selecao=sel, atividades=atividades),
+                'duracao_s': dur_g}
     return {**base, 'status': 'OK', 'referencia': hoje, 'itens': itens, 'carga': info,
-            'exclusoes': resumo_exclusoes(sel), 'season': season}
+            'exclusoes': resumo_exclusoes(sel), 'season': season,
+            'selecao_automatica': selecao, 'global': glob}
 
 
 def separar_nao_all_time(sel, atuais):

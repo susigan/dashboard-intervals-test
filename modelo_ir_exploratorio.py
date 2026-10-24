@@ -189,3 +189,86 @@ def analisar(selecao, cargas, referencia, cfg, duracoes=DURACOES_HISTORICAS, ano
             itens.append(ajustar_unidade(mod, dur, usadas, (cargas or {}).get(mod, {}), referencia, cfg,
                                          anos_historico=anos_historico))
     return itens
+
+
+# ── seleção automática por modalidade (durações diferentes, critérios explícitos) ──────────────
+# Durações de power_curves (1..5400 s) que o exploratorio usa: de 60 a 1800 s. O IR OPERACIONAL de 180 s
+# (modelo_ir.py, criterios e P0 do CP Model) NAO muda: estas durações so existem neste modo.
+DURACOES_EXPLORATORIAS = (60, 90, 120, 180, 240, 300, 420, 600, 720, 900, 1200, 1800)
+ESTADO_SEM_CURVA = 'sem_ajuste_identificavel'
+
+
+def _dias_item(it):
+    try:
+        return (date.fromisoformat(it['data_fim']) - date.fromisoformat(it['data_ini'])).days
+    except (TypeError, ValueError, KeyError):
+        return 0
+
+
+def identificavel(it):
+    """Criterio UNICO de curva valida: o modelo declarou identificavel (ajuste convergido, sem avisos de
+    identificabilidade, sem parametro no limite) E ha curva desenhavel. N nunca basta."""
+    return (it.get('estado') == ir.EST_IDENTIFICAVEL and it.get('curva') is not None
+            and bool((it.get('convergencia') or {}).get('convergiu')) and not (it.get('avisos') or []))
+
+
+def _chave_qualidade(it):
+    """Ordem entre curvas JA identificaveis: qualidade do ajuste primeiro (R2 dentro da amostra), depois
+    cobertura temporal, depois datas distintas, e so por fim a duracao (determinismo). N nao e criterio."""
+    r2 = (it.get('metricas') or {}).get('r2')
+    return (-(r2 if r2 is not None else -1e9), -_dias_item(it), -(it.get('n_datas_distintas') or 0), it['duracao_s'])
+
+
+def escolher_curva(itens_modalidade):
+    """Melhor curva IDENTIFICAVEL de UMA modalidade, entre todas as duracoes tentadas.
+
+    Sem nenhuma identificavel: NAO escolhe curva (selecionada=None) e devolve o estado e a causa mais
+    informativa das tentativas, para mostrar em vez de desenhar uma curva enganadora."""
+    tent = [it for it in itens_modalidade or []]
+    ident = [it for it in tent if identificavel(it)]
+    resumo = [{'duracao_s': it['duracao_s'], 'estado': it.get('estado'), 'n_obs': it.get('n_obs'),
+               'n_datas_distintas': it.get('n_datas_distintas'), 'motivo': it.get('motivo'),
+               'avisos': list(it.get('avisos') or [])} for it in sorted(tent, key=lambda x: x['duracao_s'])]
+    if ident:
+        best = min(ident, key=_chave_qualidade)
+        return {'selecionada': best, 'estado': 'identificavel', 'motivo': None,
+                'n_tentadas': len(tent), 'n_identificaveis': len(ident), 'tentativas': resumo}
+    # ajustado mas NAO valido pelo criterio unico (estado nao identificavel, ou identificavel com avisos/sem convergencia)
+    nao_ident = [it for it in tent if it.get('estado') in (ir.EST_NAO_IDENTIFICAVEL, ir.EST_IDENTIFICAVEL)
+                 and not identificavel(it)]
+    if nao_ident:
+        avisos = sorted({a for it in nao_ident for a in (it.get('avisos') or [])})
+        causa = 'ajuste nao identificavel em todas as duracoes com dados suficientes: ' + \
+                (', '.join(avisos) if avisos else 'sem aviso registado')
+        estado = ESTADO_SEM_CURVA
+    elif any(it.get('estado') == ir.EST_SEM_CONVERGENCIA for it in tent):
+        estado, causa = 'sem_convergencia', 'o otimizador nao convergiu nas duracoes tentadas'
+    elif tent and all(it.get('estado') == ir.EST_INSUFICIENTE for it in tent):
+        estado = 'dados_insuficientes'
+        causa = 'menos de 15 observacoes, 12 datas ou 180 dias de cobertura em nenhuma duracao'
+    else:
+        estado, causa = 'sem_observacoes', 'nenhuma observacao elegivel nas duracoes disponiveis'
+    return {'selecionada': None, 'estado': estado, 'motivo': causa, 'n_tentadas': len(tent), 'n_identificaveis': 0, 'tentativas': resumo}
+
+
+def escolher_todas(itens):
+    """{modalidade: escolher_curva(...)} para as modalidades do protocolo (ciclicas), a partir de todos os itens."""
+    import modelo_testes as mt
+    return {m: escolher_curva([it for it in itens or [] if it.get('modalidade') == m]) for m in mt.MODALIDADES}
+
+
+def escolher_duracao_global(itens, minimo=2):
+    """Duracao COMUM para o global: a que tem mais modalidades com ajuste identificavel nessa duracao
+    (>= `minimo`). Empate: mais observacoes. Sem duracao com minimo -> (None, motivo). Nunca mistura duracoes."""
+    cont = {}
+    for it in itens or []:
+        if identificavel(it):
+            c = cont.setdefault(it['duracao_s'], {'mods': set(), 'n': 0})
+            c['mods'].add(it['modalidade'])
+            c['n'] += it.get('n_obs') or 0
+    if not cont:
+        return None, 'nenhuma modalidade com ajuste identificavel: nao ha duracao comum'
+    d, c = max(cont.items(), key=lambda kv: (len(kv[1]['mods']), kv[1]['n'], -kv[0]))
+    if len(c['mods']) < minimo:
+        return None, f'nenhuma duracao com pelo menos {minimo} modalidades identificaveis (maximo: {len(c["mods"])})'
+    return d, None

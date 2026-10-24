@@ -665,16 +665,16 @@ BODY = r"""
 <div id="irPrincipal" style="margin:14px 0;border:1px solid #30363d;border-radius:8px;padding:12px 14px">
 <h3 style="font-size:15px;margin:0 0 4px">Curvas de influencia por modalidade (exploratorias, nao validadas)</h3>
 <div id="irPrincipalAviso" style="font-size:12.5px;color:#d29922;margin-bottom:6px">A carregar...</div>
-<div style="margin:6px 0;font-size:12px">Duracao: <select id="irxDurMain" onchange="irxRenderMain()"></select></div>
 <div class="chartbox"><canvas id="chIrxMain" height="300"></canvas></div>
 <div id="irxLegMain" style="font-size:12px;margin-top:4px"></div>
 <div id="irPrincipalEstados" style="font-size:12.5px;margin-top:8px"></div>
+<div id="irPrincipalGlobal" style="font-size:12.5px;margin-top:8px;color:#c9d1d9"></div>
 </div>
 <details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Deteccao automatica de observacoes MMP (season, all-time, recente)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
 <details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
 <details class="expl" id="validacaoExp" style="margin:10px 0" ontoggle="abrirValidacao(this)"><summary>LEGADO &mdash; Validacao preditiva exploratoria do estimador de 60/300/1200 s (nao valida o IR de MMP3)</summary><div class="expl-corpo" id="validacaoExpCorpo">A carregar...</div></details>
 <details class="expl" id="irExp" style="margin:10px 0" ontoggle="abrirIR(this)"><summary>Modelo IR: curvas de influencia por modalidade (experimental, ajuste historico)</summary><div class="expl-corpo" id="irExpCorpo">A carregar...</div></details>
-<details class="expl" id="irExploratorio" style="margin:10px 0" ontoggle="abrirIRExploratorio(this)"><summary>IR EXPLORATORIO &mdash; historico, nao validado (P0 livre por unidade; 60/300/1200 s)</summary><div class="expl-corpo" id="irExploratorioCorpo">A carregar...</div></details>
+<details class="expl" id="irExploratorio" style="margin:10px 0" ontoggle="abrirIRExploratorio(this)"><summary>IR EXPLORATORIO &mdash; diagnostico tecnico, nao validado (P0 livre; comparacao por duracao de 60 a 1800 s)</summary><div class="expl-corpo" id="irExploratorioCorpo">A carregar...</div></details>
 <details class="expl" id="irSombra" style="margin:10px 0" ontoggle="abrirIRSombra(this)"><summary>IR SOMBRA &mdash; previsao experimental vs observado (validacao temporal; experimental; nao promove)</summary><div class="expl-corpo" id="irSombraCorpo">Abra para escolher a seleccao e carregar.</div></details>
 <details class="expl" id="distCargaExp" style="margin:10px 0" ontoggle="abrirDistCarga(this)"><summary>Distribuicao da carga por modalidade (Bike, Row, Run, Ski): Training Load ou TRIMP, observada, sem musculacao</summary><div class="expl-corpo" id="distCargaExpCorpo">A carregar...</div></details>
 
@@ -3207,13 +3207,11 @@ function irxAvisos(j){
   });
   return L.length?'<ul style="font-size:12px;margin:4px 0 4px 18px">'+L.map(function(x){return '<li>'+x+'</li>';}).join('')+'</ul>':'';
 }
-function irxDesenhar(cvId,selId,legId){
+function irxPintar(cvId,its,legId,vazio){
   var j=IRX_J; if(!j||j.status!=='OK')return;
-  var el=document.getElementById(selId||'irxDur'); var dur=el?Number(el.value):300;
-  var o=ctx(cvId||'chIrx',300); if(!o)return; var g=o.g,W=o.W,H=o.H;
-  var its=(j.itens||[]).filter(function(it){return it.duracao_s===dur&&it.curva;});
-  var leg=document.getElementById(legId||'irxLeg');
-  if(!its.length){noData(g,W,H,'Sem curva nesta duração: nenhuma unidade com ajuste (ver motivos acima)');
+  var o=ctx(cvId,300); if(!o)return; var g=o.g,W=o.W,H=o.H;
+  var leg=document.getElementById(legId);
+  if(!its.length){noData(g,W,H,vazio||'Sem curva nesta duração');
     if(leg)leg.innerHTML='<span style="color:#d29922">Exploratório — não validado</span>';return;}
   var set={}; its.forEach(function(it){it.curva.datas.forEach(function(d){set[d]=1;});});
   var datas=Object.keys(set).sort(), pos={}; datas.forEach(function(d,i){pos[d]=i;});
@@ -3233,8 +3231,15 @@ function irxDesenhar(cvId,selId,legId){
   });
   g.fillStyle='#8b949e';g.textAlign='left';g.fillText(datas[0].slice(0,7),PL,H-8);
   g.textAlign='right';g.fillText(datas[datas.length-1].slice(0,7),PL+w,H-8);
-  if(leg)leg.innerHTML=its.map(function(it){return '<span style="margin-right:12px"><i style="display:inline-block;width:10px;height:10px;background:'+irxEsc(COR[it.modalidade]||'#8b949e')+';margin-right:4px"></i>'+irxEsc(it.modalidade)+'</span>';}).join('')+
+  if(leg)leg.innerHTML=its.map(function(it){return '<span style="margin-right:12px"><i style="display:inline-block;width:10px;height:10px;background:'+irxEsc(COR[it.modalidade]||'#8b949e')+';margin-right:4px"></i>'+irxEsc(it.modalidade)+' · '+irxEsc(it.duracao_s)+' s</span>';}).join('')+
     ' <span style="color:#d29922">Exploratório — não validado (linha líquida = P0 livre + K1·E − K2·G)</span>';
+}
+// Comparacao por duracao (secao tecnica, seletor proprio): nao controla a curva principal.
+function irxDesenhar(cvId,selId,legId){
+  var j=IRX_J; if(!j||j.status!=='OK')return;
+  var el=document.getElementById(selId||'irxDur'); var dur=el?Number(el.value):300;
+  var its=(j.itens||[]).filter(function(it){return it.duracao_s===dur&&it.curva;});
+  irxPintar(cvId||'chIrx',its,legId||'irxLeg','Sem curva nesta duração: nenhuma unidade com ajuste identificável (ver motivos acima)');
 }
 // Season (experimental): bloco SEPARADO do all-time. Parametros so aparecem quando a classe e candidata.
 var IRX_CLASSE={candidata_calibracao:'candidata a calibração (experimental)',apenas_validacao:'apenas validação',
@@ -3272,27 +3277,36 @@ function irxSeasonHtml(j){
   if(ids)h+='<details style="margin-top:6px"><summary style="font-size:12px;cursor:pointer">Esforços usados por season</summary>'+ids+'</details>';
   return h+'</div>';
 }
+function irxGlobalHtml(g){
+  var cab='<b>Modelo global (referência, não validado)</b>: ';
+  if(!g)return cab+'não calculado.';
+  if(g.estado==='global_ajustado_identificavel')
+    return cab+'duração comum '+irxEsc(g.duracao_s)+' s, '+irxEsc((g.unidades||[]).length)+' unidades, homogeneidade não rejeitada. '+
+      'Curva global não desenhada: as unidades estão em fração do nível P0 de cada modalidade (não há unidade comum em watts).';
+  var av=(g.identificabilidade&&g.identificabilidade.avisos)||[];
+  return cab+'indisponível: '+irxEsc(g.motivo||g.estado||'sem motivo')+
+    (av.length?' — '+irxEsc(av.join(', ')):'')+(g.leitura?' — '+irxEsc(g.leitura):'');
+}
 function irxRenderMain(){
   var j=IRX_J, aviso=document.getElementById('irPrincipalAviso'), est=document.getElementById('irPrincipalEstados');
-  var sel=document.getElementById('irxDurMain');
+  var glob=document.getElementById('irPrincipalGlobal'), lg=document.getElementById('irxLegMain');
   if(!j||j.status!=='OK'){
-    if(aviso)aviso.textContent='Modo exploratorio indisponivel'+(j&&j.mensagem?': '+j.mensagem:' (sem resposta).');
-    if(est)est.innerHTML=''; if(sel)sel.innerHTML=''; var lg=document.getElementById('irxLegMain'); if(lg)lg.innerHTML=''; return;}
-  if(aviso)aviso.textContent='Exploratorio, nao validado: P0 livre por unidade, ajuste dentro da amostra, sem exigir YES. '+
-    'Nao e calibracao operacional nem previsao validada.';
-  if(sel&&!sel.options.length)
-    sel.innerHTML=(j.duracoes||[]).map(function(d){return '<option value="'+irxEsc(d)+'"'+(d===300?' selected':'')+'>'+irxEsc(d)+' s</option>';}).join('');
-  var dur=sel?Number(sel.value):300;
-  var its=(j.itens||[]).filter(function(it){return it.duracao_s===dur;});
-  if(est)est.innerHTML=its.length?its.map(function(it){
-    var cor=(j.cores||{})[it.modalidade]||'#8b949e';
-    return '<div><b style="color:'+irxEsc(cor)+'">'+irxEsc(it.modalidade)+'</b> &middot; '+irxEsc(it.duracao_s)+' s &middot; '+
-      irxEsc(it.n_obs)+' observacoes ('+irxEsc(it.n_datas_distintas)+' datas)'+
-      (it.data_ini?' &middot; '+irxEsc(it.data_ini)+' a '+irxEsc(it.data_fim):'')+
-      ' &middot; <span style="color:'+(it.curva?'#3fb950':'#8b949e')+'">'+irxEsc(it.estado)+'</span>'+
-      (it.motivo?' &mdash; '+irxEsc(it.motivo):'')+'</div>';}).join('')
-    :'<div>Sem unidades nesta duracao.</div>';
-  irxDesenhar('chIrxMain','irxDurMain','irxLegMain');
+    if(aviso)aviso.textContent='Modo exploratório indisponível'+(j&&j.mensagem?': '+j.mensagem:' (sem resposta).');
+    if(est)est.innerHTML=''; if(glob)glob.innerHTML=''; if(lg)lg.innerHTML=''; return;}
+  if(aviso)aviso.textContent='Exploratório, não validado: P0 livre por unidade, ajuste dentro da amostra, sem exigir YES. '+
+    'Cada modalidade mostra a melhor duração identificável (durações podem diferir). Não é calibração operacional nem previsão validada.';
+  var sa=j.selecao_automatica||{}, mods=Object.keys(sa);
+  var its=mods.map(function(m){return sa[m]&&sa[m].selecionada;}).filter(Boolean);
+  if(est)est.innerHTML=mods.map(function(m){
+    var s=sa[m]||{}, it=s.selecionada, cor=(j.cores||{})[m]||'#8b949e';
+    if(it)return '<div><b style="color:'+irxEsc(cor)+'">'+irxEsc(m)+'</b> &middot; '+irxEsc(it.duracao_s)+' s &middot; '+
+      irxEsc(it.n_obs)+' observações ('+irxEsc(it.n_datas_distintas)+' datas) &middot; '+irxEsc(it.data_ini)+' a '+irxEsc(it.data_fim)+
+      ' &middot; <span style="color:#3fb950">identificável</span></div>';
+    return '<div><b style="color:'+irxEsc(cor)+'">'+irxEsc(m)+'</b> &middot; <span style="color:#d29922">sem curva identificável</span>'+
+      ' &mdash; '+irxEsc(s.motivo||s.estado||'sem motivo')+' <span style="color:#8b949e">(ver Testes sugeridos)</span></div>';
+  }).join('');
+  if(glob)glob.innerHTML=irxGlobalHtml(j.global);
+  irxPintar('chIrxMain',its,'irxLegMain','Nenhuma modalidade com curva identificável nesta amostra (ver estados abaixo)');
 }
 function irxRender(erro){
   irxRenderMain();

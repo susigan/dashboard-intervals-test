@@ -1678,6 +1678,19 @@ def page_recordes():
     return tab_recordes.render()
 
 
+@app.route('/api/curva-progressiva')
+def api_curva_progressiva():
+    """Curva progressiva (Etapa 28): envelope MMP por modalidade e duracao. So leitura."""
+    from tabs import tab_curva_progressiva as tcp
+    return tcp.api_data()
+
+
+@app.route('/curva-progressiva')
+def page_curva_progressiva():
+    from tabs import tab_curva_progressiva as tcp
+    return tcp.render()
+
+
 @app.route('/api/recordes/seasons')
 def api_recordes_seasons():
     """Melhor curva por periodo. ?por=season (default) ou ?por=ano"""

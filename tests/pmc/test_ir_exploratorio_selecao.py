@@ -23,7 +23,8 @@ def item(mod, dur, estado=ir.EST_IDENTIFICAVEL, r2=0.9, n=20, datas=15, dias=200
     return {'modalidade': mod, 'duracao_s': dur, 'estado': estado, 'n_obs': n, 'n_datas_distintas': datas,
             'data_ini': '2026-01-01', 'data_fim': '2026-01-01' if dias == 0 else
             ('2026-07-20' if dias == 200 else '2026-03-01'),
-            'metricas': {'r2': r2}, 'convergencia': {'convergiu': convergiu}, 'avisos': list(avisos),
+            'metricas': {'r2': r2, 'r2_ajustado': 1 - (1 - r2) * (n - 1) / (n - 5)},
+            'convergencia': {'convergiu': convergiu}, 'avisos': list(avisos),
             'curva': {'datas': []} if curva else None, 'motivo': motivo}
 
 
@@ -53,6 +54,56 @@ class SelecaoPorModalidade(unittest.TestCase):
         a = item('Bike', 180, r2=0.90, dias=200)
         b = item('Bike', 240, r2=0.90, dias=0)
         self.assertEqual(mex.escolher_curva([b, a])['selecionada']['duracao_s'], 180)
+
+
+class QualidadeR2Ajustado(unittest.TestCase):
+    def test_r2_ajustado_penaliza_parametros_e_muda_a_escolha(self):
+        # A: n=15, R2=0,90 (R2 ajustado 0,86). B: n=120, R2=0,87 (R2 ajustado 0,8655).
+        # O R2 simples escolheria A; o ajustado, que penaliza os 5 parametros, escolhe B.
+        a = item('Bike', 60, n=15, r2=0.90)
+        b = item('Bike', 300, n=120, r2=0.87)
+        self.assertGreater(a['metricas']['r2'], b['metricas']['r2'])
+        self.assertLess(a['metricas']['r2_ajustado'], b['metricas']['r2_ajustado'])
+        self.assertEqual(mex.escolher_curva([a, b])['selecionada']['duracao_s'], 300)
+
+    def test_metrica_ajustada_do_modulo_operacional_e_copiada_para_o_exploratorio(self):
+        # ajustar_unidade deve propagar r2_ajustado (metrica existente de modelo_ir), sem recalcular
+        src = open(mex.__file__, encoding='utf-8').read()
+        self.assertIn("'r2_ajustado'", src)
+        self.assertNotIn('1.0 - (sse', src)     # nao ha formula nova no exploratorio
+
+
+class GlobalRecebeSoElegiveis(unittest.TestCase):
+    """Traca o que analise_global entrega a G.ajustar_global: so observacoes ELEGIVEIS (as usadas da
+    selecao) na duracao comum, e cargas de TODAS as modalidades (propria + outras)."""
+
+    def test_unidades_so_da_duracao_comum_e_elegiveis(self):
+        obs = lambda d, tid: {'test_id': tid, 'revisao': 1, 'data': d, 'watts': 300.0}
+        sel = {
+            ('Bike', 300): {'usadas': [obs(f'2026-0{1 + i // 5}-{1 + i % 5:02d}', f'Bike:300:{i}') for i in range(20)],
+                            'excluidas': []},
+            ('Row', 300): {'usadas': [obs(f'2026-0{1 + i // 5}-{1 + i % 5:02d}', f'Row:300:{i}') for i in range(20)],
+                           'excluidas': []},
+            ('Ski', 300): {'usadas': [], 'excluidas': [{'motivo': 'inelegivel:x', 'test_id': 'Ski:300:1'}]},
+            ('Run', 180): {'usadas': [obs('2026-03-01', 'Run:180:1')], 'excluidas': []},   # outra duracao
+        }
+        cargas = {'Bike': {'2026-01-01': 10.0}, 'Row': {'2026-01-01': 5.0}, 'Ski': {}, 'Run': {'2026-01-02': 3.0}}
+        capturado = {}
+
+        def falso_global(unidades, carga_mod, config=None):
+            capturado['unidades'] = unidades
+            capturado['cargas'] = sorted(carga_mod)
+            return {'estado': 'global_dados_insuficientes', 'motivo': 'teste', 'parametros': None}
+
+        import modelo_ir_global as G
+        with mock.patch.object(G, 'ajustar_global', side_effect=falso_global), \
+                mock.patch.object(mis, 'carga_por_modalidade', lambda atividades: (cargas, {})):
+            r = mis.analise_global(300, selecao=sel, atividades=[])
+        ids = sorted(u['id'] for u in capturado['unidades'])
+        self.assertEqual(ids, ['Bike:300', 'Row:300'])            # Ski (inelegivel) e Run (outra duracao) fora
+        self.assertTrue(all(len(u['datas']) == 20 for u in capturado['unidades']))
+        self.assertEqual(sorted(capturado['cargas']), ['Bike', 'Row', 'Run', 'Ski'])   # cargas de todas as modalidades
+        self.assertEqual(sorted(r['grupo']['modalidades_sem_observacoes']), ['Run', 'Ski'])
 
 
 class IdentificabilidadeEstados(unittest.TestCase):

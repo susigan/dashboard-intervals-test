@@ -888,6 +888,31 @@ def impacto_cp_model(mod, curvas, ate, marcos=None, modo='coerente'):
     return out
 
 
+def candidatos_a_verificar(esforcos, atividades):
+    """Candidatos `a_verificar` (180 s) para REVISAO MANUAL: so leitura, para o painel.
+
+    Mostra potencia, referencia anterior (all-time causal), tags da atividade e classificacao do intervalo, para a
+    decisao humana. Nao altera o estado, a elegibilidade, as observacoes do IR nem o P0: um a_verificar continua
+    a NAO ser YES ate haver confirmacao manual (regra de 2026-10-19 inalterada)."""
+    por_id = _atividades_por_id(atividades)
+    out = []
+    for e in esforcos or []:
+        if e.get('estado') != mmp3.E_A_VERIFICAR:
+            continue
+        a = por_id.get(e['activity_id']) or {}
+        iv = e.get('intervalo') or None
+        out.append({'test_id': e['test_id'], 'activity_id': e['activity_id'], 'data': e['data'],
+                    'watts': e['watts'], 'melhor_anterior_watts': e.get('melhor_anterior_watts'),
+                    'melhor_anterior_data': e.get('melhor_anterior_data'), 'pct_do_melhor': e.get('pct_do_melhor'),
+                    'ref_temporada_watts': e.get('ref_temporada_watts'),
+                    'tag_3min': bool(e.get('tag_3min')), 'tags': moa.tags_da_atividade(a),
+                    'classe_intervalo': e.get('classe_intervalo'),
+                    'intervalo': None if not iv else {'duracao_s': iv.get('duracao_s'), 'watts': iv.get('watts'),
+                                                      'n': iv.get('n')},
+                    'motivo': e.get('motivo'), 'motivo_decisao': e.get('motivo_decisao')})
+    return out
+
+
 def contexto_mmp3(curvas, atividades, ate, marcos=None, revisoes=None, historico_yes=None):
     """({modalidade: contexto MMP3 + impacto informativo no CP Model}, p0_global), so leitura, so com dados ate `ate`.
     Os esforcos avaliados sao os mesmos que alimentam o ajuste e o P0 global (uma unica fonte)."""
@@ -896,6 +921,7 @@ def contexto_mmp3(curvas, atividades, ate, marcos=None, revisoes=None, historico
     out = {}
     for mod in mt.MODALIDADES:
         c = mmp3.contexto(curvas, mod, ate, ignorar, None, marcos, esforcos=ent[mod][1])   # tags/intervalos ja nas entradas
+        c['a_verificar'] = candidatos_a_verificar(ent[mod][1], atividades)                 # so leitura (revisao manual)
         c['cp_model'] = impacto_cp_model(mod, curvas, ate, marcos)
         out[mod] = c
     return out, p0_global_das_entradas(ent, historico_yes, rejeitados_manualmente(revisoes))

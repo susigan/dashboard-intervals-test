@@ -2972,7 +2972,39 @@ function irMmp3Html(j){
   '<th style="text-align:left">MMP3 inicial da temporada</th><th style="text-align:left">PR atual</th><th style="text-align:left">Último esforço de 3 min</th>'+
   '<th style="text-align:left">Recalibrada com o P0 atual?</th><th style="text-align:left">Solver</th></tr></thead><tbody>'+r+'</tbody></table></div>'+
   '<p style="font-size:11.5px;color:#8b949e;margin:3px 0">Elegibilidade do esforço (Yes/No) é separada do recorde (PR): um teste pode ser elegível abaixo do melhor. '+
-  'O MMP3 só alimenta os modelos de CP de 3 parâmetros; M1/M2/M3 não mudam por causa dele e o CP Model não define o P0 do IR.</p></details>';
+  'O MMP3 só alimenta os modelos de CP de 3 parâmetros; M1/M2/M3 não mudam por causa dele e o CP Model não define o P0 do IR.</p></details>'+irAVerificarTodosHtml(j);
+}
+// candidatos a_verificar (180 s): SO LEITURA para revisao manual. Nao sao YES, nao entram no P0 nem nas observacoes.
+const IR_CLASSE_INTERVALO={intervalo_3min_automatico:'intervalo de 3 min com potência suficiente (sinal)',
+ a_verificar_repeticoes:'repetições de 3 min (vários grupos)',a_verificar_pico_fora:'pico de 3 min noutro trecho',
+ a_verificar_intervalo_longo:'intervalo longo (186–360 s), não são 3 min',intervalo_3min_abaixo_limiar:'intervalo de 3 min abaixo do limiar',
+ sem_intervalo_3min:'sem intervalo de 3 min na atividade',sem_dados_de_intervalos:'sem dados de intervalos na atividade'};
+function irAVerificarHtml(mod,lst){
+ const linhas=lst.map(function(c){
+  const ref=c.melhor_anterior_watts==null?'&mdash;':irNum(c.melhor_anterior_watts,1)+' W <span style="color:#8b949e">('+irEsc(c.melhor_anterior_data||'')+')</span>';
+  const iv=c.intervalo?irNum(c.intervalo.duracao_s,0)+' s a '+irNum(c.intervalo.watts,1)+' W'+(c.intervalo.n?' (n='+irEsc(c.intervalo.n)+')':''):'&mdash;';
+  return '<tr><td>'+irEsc(c.data)+'</td><td style="font-size:11.5px">'+irEsc(c.activity_id)+'</td>'+
+   '<td style="text-align:right">'+irNum(c.watts,1)+' W</td><td>'+ref+'</td>'+
+   '<td style="text-align:right">'+irNum(c.pct_do_melhor,1)+' %</td>'+
+   '<td style="font-size:11.5px">'+(c.tags&&c.tags.length?c.tags.map(function(t){return irEsc(t);}).join(', '):'&mdash;')+'</td>'+
+   '<td style="font-size:11.5px">'+irEsc(IR_CLASSE_INTERVALO[c.classe_intervalo]||c.classe_intervalo||'—')+'</td>'+
+   '<td style="font-size:11.5px">'+iv+'</td></tr>';}).join('');
+ return '<details style="margin:4px 0"><summary style="font-size:12px;cursor:pointer"><b>'+irEsc(mod)+'</b>: '+irEsc(lst.length)+
+  ' candidato(s) a verificar — decisão manual, não são YES</summary>'+
+  '<div style="overflow-x:auto"><table style="font-size:12px;border-collapse:collapse;min-width:700px"><thead><tr>'+
+  '<th style="text-align:left">Data</th><th style="text-align:left">Atividade</th><th style="text-align:right">Potência 180 s</th>'+
+  '<th style="text-align:left">Referência anterior</th><th style="text-align:right">% do melhor</th><th style="text-align:left">Tags</th>'+
+  '<th style="text-align:left">Classificação do intervalo</th><th style="text-align:left">Intervalo detetado</th></tr></thead><tbody>'+linhas+'</tbody></table></div></details>';
+}
+function irAVerificarTodosHtml(j){
+ const ordem=(j&&j.modalidades_ordem)||[];
+ const blocos=ordem.map(function(m){const x=((j.modalidades||{})[m]||{}).mmp3||{}; const lst=x.a_verificar||[];
+  return lst.length?irAVerificarHtml(m,lst):'';}).join('');
+ if(!blocos)return '';
+ const lim0=ordem.map(function(m){return ((((j.modalidades||{})[m]||{}).mmp3)||{}).limiar;}).find(function(v){return v!=null;});
+ return '<div style="margin-top:6px"><b style="font-size:12.5px">Candidatos a verificar (180 s)</b>'+
+  '<p style="font-size:11.5px;color:#8b949e;margin:2px 0">Sinal de teste em falta: qualificam pela potência'+(lim0==null?'':' (≥ '+irNum(100*lim0,0)+' % do melhor anterior)')+
+  ' mas sem tag de 3 min nem intervalo isolado. Só mostram os dados; a decisão de YES continua manual.</p>'+blocos+'</div>';
 }
 function irOverallHtml(j){
  const o=j&&j.overall; if(!o)return '';

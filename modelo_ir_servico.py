@@ -1032,15 +1032,20 @@ OVERALL_INDISPONIVEL = {
     'referencia': '/api/modelo/ir/global?duracao=<s>'}
 
 
-def _estado_p0(mod, duracao, global_, aj_ref, desatualizado=False):
+def _estado_p0(mod, duracao, global_, aj_ref, desatualizado=False, tem_ajuste=None):
     """Estado do P0 de uma modalidade para a UI: o que o ultimo ajuste usou e o P0 global de hoje (MMP3 do ultimo
-    YES). So leitura. `desatualizado`: o ajuste mostrado usou outra referencia que a atual."""
+    YES). So leitura. `desatualizado`: o ajuste mostrado usou outra referencia que a atual.
+    `tem_ajuste`: False quando a modalidade nunca foi ajustada (sem ajuste nao ha P0 usado nem desatualizacao).
+    None = desconhecido (comportamento anterior, para chamadores que nao o passam)."""
     ult = db.ultima_referencia_p0(mod, duracao)
+    sem_ajuste = tem_ajuste is False
     out = {'usado_no_ajuste': aj_ref,
-           'origem_ajuste': (p0m.ORIGEM if (aj_ref or {}).get('formulacao') == p0m.FORMULA_ID else
+           'origem_ajuste': ('sem_ajuste' if sem_ajuste else
+                             p0m.ORIGEM if (aj_ref or {}).get('formulacao') == p0m.FORMULA_ID else
                              ('outra_regra_de_p0' if aj_ref else 'p0_livre_anterior')),
            'ultima_referencia': _ref_resumo(ult), 'atual': None}
-    des = bool(desatualizado or (ult is not None and (aj_ref or {}).get('assinatura') != ult['assinatura']))
+    des = False if sem_ajuste else bool(
+        desatualizado or (ult is not None and (aj_ref or {}).get('assinatura') != ult['assinatura']))
     r = p0m.resolver_p0(mod, duracao, global_)
     if r['valida']:
         out['atual'] = {'valida': True, 'valor_p0': r['valor_p0'], 'origem': r['origem'], 'registo': r['registo'],
@@ -1117,7 +1122,8 @@ def curvas_conjuntas(duracao=None, ate=None, atividades=None, curvas=None, marco
                 'lag_dias': j.get('lag_dias'), 'tem_curva': False, 'normalizacao': None,
                 'motivo_normalizacao': None, 'inicio_serie': None, 'fora_do_ajuste_desde': None,
                 'plausibilidade': None, 'w': None, 'pct': None,
-                'p0': _estado_p0(m, duracao, global_, j.get('p0_referencia'), bool(j.get('p0_desatualizado'))),
+                'p0': _estado_p0(m, duracao, global_, j.get('p0_referencia'), bool(j.get('p0_desatualizado')),
+                                 tem_ajuste=(j.get('estado') != 'sem_ajuste')),
                 'mmp3': ctx3[m], 'tentativa_mais_recente': j.get('tentativa_mais_recente'),
                 'ajuste_apresentado_e_antigo': bool(j.get('ajuste_apresentado_e_antigo'))}
         item['estado_ir'] = estado_ir({**j, 'p0_desatualizado': item['p0']['desatualizado']}, item['p0']['atual'])

@@ -3307,8 +3307,10 @@ function somCabecalho(v){
  if(v.mensagem)s+='<p style="font-size:12px;color:#f85149;margin:3px 0">'+somEsc(v.mensagem)+'</p>';
  if(v.bloqueado)s+='<p style="font-size:12px;color:#d29922;margin:3px 0">Bloqueado: '+somEsc(v.motivo_bloqueio||'histórico insuficiente')+'. Nada foi avaliado.</p>';
  s+='<p style="font-size:12px;margin:3px 0">Histórico temporal: <b>'+somEsc(h.rotulo||'—')+'</b> · Histórico de curvas: <b>'+somEsc(c.rotulo||'—')+'</b></p>';
- s+='<p style="font-size:12px;margin:3px 0">Alvos previstos: <b>'+(cn.previstos||0)+'</b> · avaliáveis: <b>'+(cn.avaliaveis||0)+'</b> · rejeitados: <b>'+(cn.rejeitados||0)+'</b>'+
-    (cn.previsto_nao_avaliavel?' · previstos sem avaliação possível (pendentes): <b>'+cn.previsto_nao_avaliavel+'</b>':'')+'</p>';
+ // null = nada foi avaliado (histórico indisponível ou bloqueado): mostra-se "—", nunca 0
+ const cv=function(x){return x==null?'—':somEsc(x);};
+ s+='<p style="font-size:12px;margin:3px 0">Alvos previstos: <b>'+cv(cn.previstos)+'</b> · avaliáveis: <b>'+cv(cn.avaliaveis)+'</b> · rejeitados: <b>'+cv(cn.rejeitados)+'</b>'+
+    (cn.previsto_nao_avaliavel?' · previstos sem avaliação possível (pendentes): <b>'+somEsc(cn.previsto_nao_avaliavel)+'</b>':'')+'</p>';
  return s;
 }
 function somOperacional(mod){

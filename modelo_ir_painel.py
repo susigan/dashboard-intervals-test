@@ -162,7 +162,8 @@ def _vista_indisponivel(modalidade, duracao, modo, mensagem, origem='pedido_falh
             'bloqueado': False, 'motivo_bloqueio': None,
             'historico_temporal': {'estado': ESTADO_INDISPONIVEL, 'rotulo': 'indisponivel'},
             'historico_curvas': {'estado': ESTADO_INDISPONIVEL, 'rotulo': 'indisponivel'},
-            'contagens': {'previstos': 0, 'avaliaveis': 0, 'rejeitados': 0, 'previsto_nao_avaliavel': 0},
+            # null = nao avaliado (nada foi lido): nunca zero, que seria uma medicao
+            'contagens': {'previstos': None, 'avaliaveis': None, 'rejeitados': None, 'previsto_nao_avaliavel': None},
             'rejeicoes_por_categoria': {}, 'rejeicoes_por_motivo': {}, 'lacunas': [],
             'serie': {'sombra': [], 'referencia_observada': []}, 'periodo': None,
             'metricas': None, 'suficiencia': None, 'veredicto': None, 'evidencia_para_revisao': evid,
@@ -226,8 +227,11 @@ def montar(resposta, modalidade, duracao, modo):
         'motivo_bloqueio': rm.get('motivo_bloqueio'),
         'historico_temporal': {'estado': hist_t, 'rotulo': ROTULO_ESTADO.get(hist_t, hist_t)},
         'historico_curvas': {'estado': hist_c, 'rotulo': ROTULO_ESTADO.get(hist_c, hist_c)},
-        'contagens': {'previstos': n_prev, 'avaliaveis': n_aval, 'rejeitados': n_rej,
-                      'previsto_nao_avaliavel': max(n_prev - n_aval, 0)},
+        # Sem validacao executada (histerico indisponivel ou bloqueado) as contagens sao desconhecidas: null, nunca 0.
+        'contagens': ({'previstos': None, 'avaliaveis': None, 'rejeitados': None, 'previsto_nao_avaliavel': None}
+                      if (estado == ESTADO_INDISPONIVEL or bloqueado) else
+                      {'previstos': n_prev, 'avaliaveis': n_aval, 'rejeitados': n_rej,
+                       'previsto_nao_avaliavel': max(n_prev - n_aval, 0)}),
         'rejeicoes_por_categoria': _dict(item.get('rejeicoes_por_categoria')),
         'rejeicoes_por_motivo': por_motivo,
         'lacunas': lacunas,

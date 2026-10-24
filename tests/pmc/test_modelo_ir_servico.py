@@ -986,9 +986,13 @@ class GuardasDeIsolamentoIR(_Base):
                   'api_recovery.py', 'modelo_testes.py', 'helpers.py', 'modelo_estimador.py', 'modelo_validacao.py'):
             src = self._fonte(f)
             self.assertNotRegex(src, r'modelo_ir', f)
-        # sync.py so conhece o gancho (importado dentro da funcao e com falha isolada)
+        # sync.py so conhece os ganchos aprovados, importados dentro da funcao e com falha isolada:
+        #  - modelo_ir_servico.apos_deteccao (recalibracao/sombra/produtor prospetivo, Etapas 6-17);
+        #  - modelo_ir_curvas.registar_seguro (historico verificavel de curvas, Etapa 13; so acrescenta versoes).
         sy = self._fonte('sync.py')
-        self.assertEqual(sorted(set(re.findall(r'modelo_ir\w*', sy))), ['modelo_ir', 'modelo_ir_servico'])
+        self.assertEqual(sorted(set(re.findall(r'modelo_ir\w*', sy))),
+                         ['modelo_ir', 'modelo_ir_curvas', 'modelo_ir_servico'])
+        self.assertRegex(sy, r'try:\s*\n\s*import modelo_ir_curvas[\s\S]*?except Exception')
         self.assertNotIn('modelo_ir_global', sy)
         self.assertNotRegex(self._fonte('modelo_ir.py'), r'^\s*(import|from)\s+(db|app|sync|requests)\b', )
         self.assertNotRegex(self._fonte('modelo_ir_global.py'), r'^\s*(import|from)\s+(db|app|sync|requests)\b')

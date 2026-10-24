@@ -353,6 +353,17 @@ class UiCurvasIR(unittest.TestCase):
         self.assertIn('&lt;img src=x onerror=alert(1)&gt;', r['tabela'])
 
 
+    def test_candidatos_a_verificar_renderizados_com_escape_e_sem_chamar_yes(self):
+        self.need_node()
+        h = self.res['a_verificar_render']['mmp3']
+        self.assertNotIn('<img', h)
+        self.assertNotIn('<b>Moxy</b>', h)
+        self.assertIn('&lt;img', h)
+        self.assertIn('decisão manual, não são YES', h)
+        self.assertIn('sem dados de intervalos na atividade', h)
+        self.assertIn('330.0 W', h)
+        self.assertIn('300.0 W', h)
+
     def test_diagnostico_separa_calibracao_valida_da_tentativa(self):
         self.need_node()
         d = self.res['diagnostico_normal']['diag']

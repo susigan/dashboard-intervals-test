@@ -155,5 +155,15 @@ async function cenario(nome, fn) {
     respostas[U] = REAL.misto; api.abrirIR({open: true}); await esperar();
     return {avisos: els.irAvisos.innerHTML, tabela: els.irTabela.innerHTML, leg: els.lgIrConj.innerHTML};
   });
+  await run('a_verificar_render', async ({api, els, respostas, esperar}) => {
+    const j = JSON.parse(JSON.stringify(REAL.normal));                  // resposta REAL + candidatos injetados
+    const mod = j.modalidades_ordem[0];
+    j.modalidades[mod].mmp3 = Object.assign({}, j.modalidades[mod].mmp3 || {}, {a_verificar: [{
+      test_id: 't1', activity_id: '<img src=x onerror=alert(1)>', data: '2025-05-10', watts: 330,
+      melhor_anterior_watts: 300, melhor_anterior_data: '2025-01-10', pct_do_melhor: 110,
+      tags: ['<b>Moxy</b>'], tag_3min: false, classe_intervalo: 'sem_dados_de_intervalos', intervalo: null}]});
+    respostas[U] = j; api.abrirIR({open: true}); await esperar();
+    return {mmp3: els.irMmp3.innerHTML};
+  });
   process.stdout.write(JSON.stringify(out) + '\n', () => process.exit(0));
 })();

@@ -169,7 +169,7 @@ BODY = r"""
 .curva-pagina h1{margin-bottom:4px}
 .ctl{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;font-size:14px;margin:12px 0}
 .ctl label{display:inline-flex;align-items:center;gap:5px;margin:0}
-.ctl input[type=checkbox]{margin:0;width:auto}
+.ctl input[type=checkbox]{margin:0;width:auto;min-width:0}
 .ctl select,.ctl input[type=date]{font-size:14px}
 .bloco{margin:18px 0}
 .bloco h2{font-size:15px;margin:0 0 6px}

@@ -269,6 +269,14 @@ class EscopoExclusaoEAvisos(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
 
 
+class LayoutControlos(unittest.TestCase):
+    """Regressao: base.py define input{min-width:220px}; as caixas de seleção nao podem herdar."""
+
+    def test_checkboxes_do_ctl_nao_herdam_largura_minima(self):
+        html = aplicacao.app.test_client().get('/curva-progressiva').data.decode('utf-8')
+        self.assertIn('.ctl input[type=checkbox]{margin:0;width:auto;min-width:0}', html)
+
+
 class InterfaceFinal(unittest.TestCase):
     def setUp(self):
         self.curvas = fixture()

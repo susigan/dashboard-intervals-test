@@ -49,22 +49,24 @@ def _outras_modalidades(curvas, ate):
 
 
 def _sinalizar_iqr(out, curvas, estados, ate):
-    """Marca, por ponto, se o valor esta fora do IQR (k=3) da sua modalidade+duracao no historico ate `ate`.
-    Informativo: nunca remove nem altera o ponto. Reutiliza a regra de pmc._evol_outliers."""
+    """Por ponto: outlier_iqr (informativo, 3 x IQR do historico da modalidade+duracao) e
+    suspeito_monotonia (a regra de monotonia, a mesma de `suspeitos`). Nunca remove nem altera valores."""
     import pmc
     pts, _ = mcp.pontos(curvas, ate, estados, False)
     obs = {}
+    susp = set()
     for p in pts:
         if p['estado'] == 'usado':
             obs.setdefault((p['modalidade'], p['duracao_s']), []).append((p['data'], p['watts'], p['activity_id']))
+        if p['suspeito']:
+            susp.add((p['modalidade'], p['duracao_s'], p['activity_id']))
     for m, bloco in out['modalidades'].items():
         for pt in bloco['pontos']:
-            serie = obs.get((m, pt['duracao_s']), [])
-            flags = pmc._evol_outliers(serie)
-            ids = {f['id'] for f in flags}
-            pt['outlier_iqr'] = pt['activity_id'] in ids
-            pt['outlier_iqr_motivo'] = ('fora do IQR x3 do historico desta modalidade e duracao; '
-                                        'sinalizado, mantido') if pt['outlier_iqr'] else None
+            flags = pmc._evol_outliers(obs.get((m, pt['duracao_s']), []))
+            pt['outlier_iqr'] = pt['activity_id'] in {f['id'] for f in flags}
+            pt['outlier_iqr_motivo'] = ('fora do IQR x3 do historico desta modalidade e duracao; sinalizado, mantido'
+                                        if pt['outlier_iqr'] else None)
+            pt['suspeito_monotonia'] = (m, pt['duracao_s'], pt['activity_id']) in susp
 
 
 def _lista(v):
@@ -162,58 +164,75 @@ def render():
 
 
 BODY = r"""
-<style>.ctl{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;font-size:13px;margin:10px 0}.ctl label{display:inline-flex;align-items:center;gap:5px;font-size:13px;justify-content:flex-start}.ctl input[type=checkbox]{margin:0;width:auto}.legenda{font-size:13px;margin:6px 0}h2{font-size:16px;margin:18px 0 6px}canvas{display:block;height:380px}#ev{height:280px}</style>
+<style>
+.curva-pagina{max-width:1100px}
+.curva-pagina h1{margin-bottom:4px}
+.ctl{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;font-size:14px;margin:12px 0}
+.ctl label{display:inline-flex;align-items:center;gap:5px;margin:0}
+.ctl input[type=checkbox]{margin:0;width:auto}
+.ctl select,.ctl input[type=date]{font-size:14px}
+.bloco{margin:18px 0}
+.bloco h2{font-size:15px;margin:0 0 6px}
+.legenda{font-size:13px;margin:6px 0;display:flex;flex-wrap:wrap;gap:6px 16px}
+.estado{font-size:12px;color:#666}
+.aviso{font-size:12.5px;color:#555;margin:8px 0;line-height:1.5}
+.vazio{font-size:14px;color:#777;padding:24px 0}
+canvas{display:block;width:100%;height:360px}
+#ev{height:260px}
+</style>
 <div class="curva-pagina">
 <h1>Curva progressiva</h1>
-<p class="sub" id="sub">Envelope de melhores esforcos (MMP), por modalidade e duracao. Valores medidos; nada e interpolado.</p>
+<p class="sub" id="sub">Melhores esforcos medidos (MMP) por modalidade e duracao.</p>
+
 <div class="ctl">
- <span>Modalidades:</span>
  <label><input type="checkbox" class="mod" value="Bike" checked> Bike</label>
  <label><input type="checkbox" class="mod" value="Row" checked> Row</label>
  <label><input type="checkbox" class="mod" value="Ski" checked> Ski</label>
  <label><input type="checkbox" class="mod" value="Run" checked> Run</label>
- <span>Janela:</span>
- <select id="janela"><option value="42" selected>42 dias</option><option value="90">90 dias</option>
-  <option value="180">180 dias</option><option value="historico">Historico completo</option></select>
- <span>Ate:</span><input type="date" id="ate">
- <span>Duracoes (s):</span><input type="text" id="dur" placeholder="todas" size="18">
- <label><input type="checkbox" id="susp"> excluir valores suspeitos</label>
+ <span>Janela</span>
+ <select id="janela">
+  <option value="42" selected>42 dias</option>
+  <option value="90">90 dias</option>
+  <option value="180">180 dias</option>
+  <option value="historico">Historico completo</option>
+ </select>
+ <span>Ate</span><input type="date" id="ate" title="Vazio = data de hoje (America/Sao_Paulo)">
+ <label title="Retira da curva apenas os pontos marcados por incoerencia de monotonia">
+  <input type="checkbox" id="susp"> excluir pontos com incoerencia</label>
  <button id="ok">Atualizar</button>
 </div>
+
 <div id="msg" class="loading"></div>
-<h2>Grafico conjunto (duracoes diferentes por modalidade)</h2>
-<canvas id="cv" height="380"></canvas>
-<div id="legenda" class="legenda"></div>
-<div id="estados" class="legenda"></div>
-<h2>Evolucao do envelope</h2>
-<div class="ctl"><span>Duracao:</span><select id="durev"></select></div>
-<canvas id="ev" height="280"></canvas>
-<h2>Pontos da curva</h2>
-<div style="overflow:auto"><table id="tbl"><thead><tr><th>Modalidade</th><th>Duracao</th><th>W</th><th>Data</th><th>Atividade</th><th>Origem</th><th>Serie</th></tr></thead><tbody></tbody></table></div>
-<h2>Fora do grafico conjunto</h2>
-<div id="outras"></div>
-<h2>Em falta e exclusoes</h2>
-<div id="falta"></div>
-<h3>Atividades excluidas (com motivo)</h3>
-<div id="excl"></div>
-<h3>Incoerencias de monotonia (duracao mais longa acima de mais curta, na mesma atividade)</h3>
-<div id="susp"></div>
-<h3>Avisos IQR (distribuicao historica; informativos, mantidos; nao sao incoerencias)</h3>
-<div id="iqr"></div>
+
+<div class="bloco">
+ <h2>Curva MMP por modalidade</h2>
+ <div class="legenda" id="legenda"></div>
+ <canvas id="cv" height="360"></canvas>
+</div>
+
+<div class="bloco">
+ <h2>Evolucao do melhor esforco</h2>
+ <div class="ctl" style="margin:4px 0"><span>Duracao</span><select id="durev"></select></div>
+ <canvas id="ev" height="260"></canvas>
+</div>
+
+<div class="bloco aviso" id="avisos"></div>
 </div>
 """
 
 JS = r"""
 const COR={Bike:'#1f77b4',Row:'#2ca02c',Ski:'#9467bd',Run:'#d62728'};
+const NOMES={Bike:'Bike',Row:'Row',Ski:'Ski',Run:'Run'};
 let D=null, pontosCV=[];
+
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 function parametros(){
   const mods=[...document.querySelectorAll('.mod:checked')].map(c=>c.value);
   const p=new URLSearchParams();
-  if(mods.length) p.set('modalidades',mods.join(','));
+  p.set('modalidades',mods.join(','));
   p.set('janela',document.getElementById('janela').value);
   const ate=document.getElementById('ate').value; if(ate) p.set('ate',ate);
-  const dur=document.getElementById('dur').value.trim(); if(dur) p.set('duracoes',dur);
   if(document.getElementById('susp').checked) p.set('excluir_suspeitos','1');
   p.set('evolucao','1');
   return p;
@@ -221,22 +240,21 @@ function parametros(){
 
 async function carregar(){
   const msg=document.getElementById('msg');
+  if(!document.querySelectorAll('.mod:checked').length){ msg.textContent='Escolha pelo menos uma modalidade.'; return; }
   msg.textContent='A calcular...';
   try{
     const r=await fetch('/api/curva-progressiva?'+parametros().toString());
     D=await r.json();
-  }catch(e){ msg.textContent='Nao consegui carregar: '+e.message; return; }
-  if(!D.ok){ msg.textContent=D.erro||'Erro'; return; }
+  }catch(e){ msg.textContent='Nao foi possivel carregar os dados: '+e.message; return; }
+  if(!D.ok){ msg.textContent=D.erro||'Erro ao calcular.'; return; }
   msg.textContent='';
-  const p=D.serie==='envelope_historico_completo'?'historico completo':'janela de '+D.janela_dias+' dias (ate '+D.ate+' inclusive)';
-  const ref=D.data_referencia||{};
-  const origem=ref.origem==='padrao'?('data de referencia por defeito, fuso '+ref.fuso):'data escolhida';
-  document.getElementById('sub').textContent='Ate '+D.ate+' ('+origem+') — envelope MMP, '+p+'. '+D.nota;
+  const janela=D.serie==='envelope_historico_completo'?'historico completo':'ultimos '+D.janela_dias+' dias';
+  const ref=(D.data_referencia&&D.data_referencia.origem==='padrao')?'hoje':'data escolhida';
+  document.getElementById('sub').textContent='Janela: '+janela+' · ate '+D.ate+' ('+ref+') · valores medidos, sem interpolacao.';
   preencherDuracoesEvolucao();
   desenharConjunto();
   desenharEvolucao();
-  tabela();
-  faltaExclusoes();
+  avisos();
 }
 
 function preencherDuracoesEvolucao(){
@@ -245,9 +263,15 @@ function preencherDuracoesEvolucao(){
   const ev=D.evolucao||{modalidades:{}};
   for(const m in ev.modalidades) for(const d in ev.modalidades[m]) durs.add(Number(d));
   const lst=[...durs].sort((a,b)=>a-b);
-  sel.innerHTML=lst.map(d=>'<option value="'+d+'">'+d+' s</option>').join('');
+  sel.innerHTML=lst.map(d=>'<option value="'+d+'">'+rotuloDuracao(d)+'</option>').join('');
   if(antes && lst.includes(Number(antes))) sel.value=antes;
   else if(lst.includes(300)) sel.value='300';
+}
+
+function rotuloDuracao(s){
+  if(s<60) return s+' s';
+  if(s<3600) return (s/60)+' min';
+  return (s/3600)+' h';
 }
 
 function escalaX(d,min,max,w,pad){ return pad+(Math.log10(d)-min)/(max-min||1)*(w-2*pad); }
@@ -256,95 +280,94 @@ function desenharConjunto(){
   const cv=document.getElementById('cv'); const W=cv.clientWidth||800; cv.width=W; const H=cv.height;
   const g=cv.getContext('2d'); g.clearRect(0,0,W,H);
   pontosCV=[];
+  const leg=[];
   const todos=[];
   for(const m in D.modalidades) for(const p of D.modalidades[m].pontos){ todos.push({m,...p}); }
-  if(!todos.length){ g.fillStyle='#888'; g.fillText('Sem valores medidos para estas modalidades nesta janela.',20,30); document.getElementById('legenda').textContent=''; document.getElementById('estados').textContent=''; return; }
+  for(const m in D.modalidades){
+    const b=D.modalidades[m];
+    const n=b.pontos.length;
+    leg.push('<span><b style="color:'+COR[m]+'">● '+NOMES[m]+'</b> '+
+      (n?'<span class="estado">'+n+' duracoes</span>':'<span class="estado">sem dados nesta janela</span>')+'</span>');
+  }
+  document.getElementById('legenda').innerHTML=leg.join('');
+  if(!todos.length){
+    g.fillStyle='#777'; g.font='14px sans-serif';
+    g.fillText('Sem valores medidos para as modalidades e a janela escolhidas.',24,40);
+    return;
+  }
   const ds=todos.map(p=>p.duracao_s), ws=todos.map(p=>p.watts);
   const lmin=Math.log10(Math.min(...ds)), lmax=Math.log10(Math.max(...ds));
   const wmax=Math.max(...ws)*1.08, pad=48;
-  g.strokeStyle='#ccc'; g.fillStyle='#555'; g.font='11px sans-serif';
+  g.strokeStyle='#e3e3e3'; g.fillStyle='#555'; g.font='12px sans-serif';
   for(let k=0;k<=4;k++){ const y=H-pad-(k/4)*(H-2*pad); g.beginPath(); g.moveTo(pad,y); g.lineTo(W-pad,y); g.stroke(); g.fillText(Math.round(wmax*k/4)+' W',4,y+4); }
-  for(const d of [...new Set(ds)].sort((a,b)=>a-b)){ const x=escalaX(d,lmin,lmax,W,pad); g.fillText(d+' s',x-12,H-pad+16); }
-  const leg=[];
-  const estados=[];
+  for(const d of [...new Set(ds)].sort((a,b)=>a-b)){ const x=escalaX(d,lmin,lmax,W,pad); g.fillText(rotuloDuracao(d),x-12,H-pad+16); }
   for(const m in D.modalidades){
     const pts=D.modalidades[m].pontos.slice().sort((a,b)=>a.duracao_s-b.duracao_s);
-    const b=D.modalidades[m];
-    estados.push('<div><b style="color:'+COR[m]+'">'+m+'</b>: '+(b.estado==='sem_dados'?'sem dados nesta janela':
-      (pts.length?pts.length+' duracao(oes) com valor':'sem valor nas duracoes pedidas'))+
-      (b.em_falta.length?' · em falta na janela: '+b.em_falta.join(', ')+' s':'')+'</div>');
     if(!pts.length) continue;
-    g.strokeStyle=COR[m]; g.fillStyle=COR[m]; g.setLineDash([4,4]); g.beginPath();
+    g.strokeStyle=COR[m]; g.fillStyle=COR[m]; g.setLineDash([4,4]); g.lineWidth=1.5; g.beginPath();
     pts.forEach((p,i)=>{ const x=escalaX(p.duracao_s,lmin,lmax,W,pad), y=H-pad-(p.watts/wmax)*(H-2*pad); i?g.lineTo(x,y):g.moveTo(x,y); });
     g.stroke(); g.setLineDash([]);
-    for(const p of pts){ const x=escalaX(p.duracao_s,lmin,lmax,W,pad), y=H-pad-(p.watts/wmax)*(H-2*pad);
+    for(const p of pts){
+      const x=escalaX(p.duracao_s,lmin,lmax,W,pad), y=H-pad-(p.watts/wmax)*(H-2*pad);
       g.beginPath(); g.arc(x,y,4,0,Math.PI*2); g.fill(); pontosCV.push({x,y,m,p});
-      if(p.outlier_iqr){ g.strokeStyle='#b00020'; g.lineWidth=2; g.beginPath(); g.arc(x,y,8,0,Math.PI*2); g.stroke(); g.lineWidth=1; g.strokeStyle=COR[m]; } }
-    leg.push('<span style="color:'+COR[m]+'">● '+m+'</span>');
+      if(p.suspeito_monotonia){ g.strokeStyle='#e07b00'; g.lineWidth=2; g.beginPath(); g.arc(x,y,8,0,Math.PI*2); g.stroke(); g.lineWidth=1.5; g.strokeStyle=COR[m]; }
+      if(p.outlier_iqr){ g.strokeStyle='#b00020'; g.lineWidth=2; g.beginPath(); g.arc(x,y,11,0,Math.PI*2); g.stroke(); g.lineWidth=1.5; g.strokeStyle=COR[m]; }
+    }
   }
-  document.getElementById('legenda').innerHTML=leg.join(' &nbsp; ')+' <small>(linhas tracejadas: guia visual entre valores medidos; nao sao interpolacao; anel vermelho: aviso IQR, valor mantido)</small>';
-  document.getElementById('estados').innerHTML=estados.join('');
   cv.onmousemove=function(ev){
     const r=cv.getBoundingClientRect(), mx=ev.clientX-r.left, my=ev.clientY-r.top;
     let best=null, bd=144;
     for(const q of pontosCV){ const dd=(q.x-mx)**2+(q.y-my)**2; if(dd<bd){bd=dd;best=q;} }
-    cv.title = best ? best.m+' '+best.p.duracao_s+' s: '+best.p.watts+' W, '+best.p.data+', atividade '+best.p.activity_id+', '+best.p.origem+' ('+best.p.serie+')'+(best.p.outlier_iqr?' — AVISO IQR: '+best.p.outlier_iqr_motivo:'') : '';
+    cv.title = best ? textoPonto(best.m,best.p) : '';
   };
+}
+
+function textoPonto(m,p){
+  let t=NOMES[m]+' · '+rotuloDuracao(p.duracao_s)+': '+p.watts+' W · '+p.data+' · atividade '+p.activity_id;
+  if(p.suspeito_monotonia) t+=' — incoerencia de monotonia (valor mantido na curva, salvo exclusao escolhida)';
+  if(p.outlier_iqr) t+=' — valor fora da distribuicao historica (aviso informativo, mantido)';
+  return t;
 }
 
 function desenharEvolucao(){
   const cv=document.getElementById('ev'); const W=cv.clientWidth||800; cv.width=W; const H=cv.height;
   const g=cv.getContext('2d'); g.clearRect(0,0,W,H);
   const ev=D.evolucao; const dur=document.getElementById('durev').value;
-  if(!ev||!ev.as_of||!ev.as_of.length||!dur){ g.fillText('Sem serie de evolucao.',20,30); return; }
+  if(!ev||!ev.as_of||!ev.as_of.length||!dur){ g.fillStyle='#777'; g.font='14px sans-serif'; g.fillText('Sem serie de evolucao.',24,40); return; }
   const n=ev.as_of.length, pad=48;
   let wmax=0; for(const m in ev.modalidades){ const s=ev.modalidades[m][dur]||[]; for(const v of s) if(v!=null&&v>wmax) wmax=v; }
-  if(!wmax){ g.fillText('Sem valores para '+dur+' s nesta janela.',20,30); return; }
+  if(!wmax){ g.fillStyle='#777'; g.font='14px sans-serif'; g.fillText('Sem valores para '+rotuloDuracao(Number(dur))+' nesta janela.',24,40); return; }
   wmax*=1.08;
-  g.strokeStyle='#ccc'; g.fillStyle='#555'; g.font='11px sans-serif';
+  g.strokeStyle='#e3e3e3'; g.fillStyle='#555'; g.font='12px sans-serif';
   for(let k=0;k<=4;k++){ const y=H-pad-(k/4)*(H-2*pad); g.beginPath(); g.moveTo(pad,y); g.lineTo(W-pad,y); g.stroke(); g.fillText(Math.round(wmax*k/4)+' W',4,y+4); }
   g.fillText(ev.as_of[0],pad,H-12); g.fillText(ev.as_of[n-1],W-pad-70,H-12);
   for(const m in ev.modalidades){
     const s=ev.modalidades[m][dur]; if(!s) continue;
-    g.strokeStyle=COR[m]; g.beginPath(); let aberto=false;
+    g.strokeStyle=COR[m]; g.lineWidth=2; g.beginPath(); let aberto=false;
     s.forEach((v,i)=>{
       if(v==null){ aberto=false; return; }   // sem valor: quebra a linha, nunca interpola
       const x=pad+(i/(n-1||1))*(W-2*pad), y=H-pad-(v/wmax)*(H-2*pad);
       aberto?g.lineTo(x,y):g.moveTo(x,y); aberto=true; });
     g.stroke();
   }
+  g.lineWidth=1;
 }
 
-function tabela(){
-  const linhas=[];
-  for(const m in D.modalidades) for(const p of D.modalidades[m].pontos)
-    linhas.push('<tr><td>'+esc(m)+'</td><td>'+esc(p.duracao_s)+' s</td><td>'+esc(p.watts)+(p.outlier_iqr?' <span style="color:#b00020" title="'+esc(p.outlier_iqr_motivo)+'">⚠ IQR</span>':'')+'</td><td>'+esc(p.data)+'</td><td>'+esc(p.activity_id)+'</td><td>'+esc(p.origem)+'</td><td>'+esc(p.serie)+'</td></tr>');
-  document.querySelector('#tbl tbody').innerHTML=linhas.join('')||'<tr><td colspan="7">Sem pontos nesta janela</td></tr>';
-}
-
-function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-
-function faltaExclusoes(){
-  const f=[];
-  for(const m in D.modalidades){ const b=D.modalidades[m];
-    f.push('<div><b>'+m+'</b> '+(b.pontos.length?'':'<i>sem valores nesta janela</i> ')+'(duracoes no historico: '+b.duracoes_disponiveis.join(', ')+')'+
-      ' · sem valor na janela: '+(b.em_falta.join(', ')||'nenhuma')+
-      ' · usados: '+b.n_valores_usados+' · excluidos: '+b.n_valores_excluidos+'</div>'); }
-  document.getElementById('falta').innerHTML=f.join('');
-  const ex=(D.exclusoes||[]).map(x=>'<div>'+esc(x.modalidade)+' '+esc(x.data)+' · atividade '+esc(x.activity_id)+' · '+esc(x.motivo)+'</div>');
-  document.getElementById('excl').innerHTML=ex.join('')||'<div>Nenhuma.</div>';
-  const su=(D.suspeitos||[]).map(x=>'<div>'+esc(x.modalidade)+' '+esc(x.duracao_s)+' s · '+esc(x.watts)+' W · '+esc(x.data)+' · atividade '+esc(x.activity_id)+' · '+esc(x.motivo_suspeita)+'</div>');
-  document.getElementById('susp').innerHTML=su.join('')||'<div>Nenhum.</div>';
-  const iq=[];
-  for(const m in D.modalidades) for(const p of D.modalidades[m].pontos) if(p.outlier_iqr)
-    iq.push('<div>'+esc(m)+' '+esc(p.duracao_s)+' s · '+esc(p.watts)+' W · '+esc(p.data)+' · atividade '+esc(p.activity_id)+' · '+esc(p.outlier_iqr_motivo)+'</div>');
-  document.getElementById('iqr').innerHTML=iq.join('')||'<div>Nenhum aviso IQR nesta janela.</div>';
-  const ou=(D.outras_modalidades||[]).map(x=>'<div>'+esc(x.modalidade)+' '+esc(x.data)+' · atividade '+esc(x.activity_id)+' · '+esc(x.motivo)+'</div>');
-  document.getElementById('outras').innerHTML=ou.length?'<div>Modalidades fora de Bike/Row/Ski/Run (nao entram no grafico):</div>'+ou.join(''):'<div>Nenhuma.</div>';
+function avisos(){
+  const el=document.getElementById('avisos');
+  let nSusp=0, nIqr=0;
+  for(const m in D.modalidades) for(const p of D.modalidades[m].pontos){ if(p.suspeito_monotonia) nSusp++; if(p.outlier_iqr) nIqr++; }
+  const partes=[];
+  if(nSusp) partes.push('<span style="color:#e07b00">●</span> '+nSusp+' valor(es) com incoerencia de monotonia (um esforco mais longo acima de um mais curto da mesma atividade)');
+  if(nIqr) partes.push('<span style="color:#b00020">○</span> '+nIqr+' valor(es) fora da distribuicao historica (informativo)');
+  const exc=(D.resumo&&D.resumo.n_pontos_excluidos)||0;
+  if(document.getElementById('susp').checked && exc) partes.push(exc+' ponto(s) excluidos por incoerencia de monotonia, por escolha sua');
+  const outras=(D.outras_modalidades||[]).length;
+  if(outras) partes.push('Atividades de outra modalidade ('+outras+') nao entram no grafico.');
+  el.innerHTML=partes.length?partes.map(x=>'<div>'+x+'</div>').join(''):'Sem avisos nesta janela. Os valores sao medidos, sem interpolacao.';
 }
 
 document.getElementById('ok').addEventListener('click',carregar);
 document.getElementById('durev').addEventListener('change',()=>desenharEvolucao());
-/* data de referencia: vem da API (fuso do servidor); o campo fica vazio por defeito */
 carregar();
 """

@@ -74,7 +74,7 @@ def pontos(curvas, ate, estados=None, excluir_suspeitos=False):
     estados = estados or {}
     out = []
     resumo = {'n_curvas': 0, 'n_fora_da_data': 0, 'n_outra_modalidade': 0, 'n_valores_em_falta': 0,
-              'n_atividades_excluidas': 0, 'n_suspeitos': 0}
+              'n_atividades_excluidas': 0, 'n_suspeitos': 0, 'n_pontos_excluidos': 0}
     for c in curvas or []:
         mod = c.get('type')
         aid = c.get('activity_id')
@@ -102,18 +102,21 @@ def pontos(curvas, ate, estados=None, excluir_suspeitos=False):
                 motivo_atividade = f"{MOTIVO_DESCONHECIDA}:{est[1] or 'sem_detalhe'}"
         if motivo_atividade:
             resumo['n_atividades_excluidas'] += 1
-        # monotonia: maior valor de duracoes mais curtas (ordem crescente)
-        teto = None
+        # monotonia (intra-atividade): P(t) suspeito se existir s < t com P(t) > P(s) + TOL_W.
+        # Equivale a comparar com o MINIMO das duracoes ja vistas (mais curtas), em ordem crescente.
+        minimo_curto = None
         for s in sorted(mapa):
             w = mapa[s]
-            suspeito = teto is not None and w > teto + TOL_W
-            motivo_susp = (f'mais_longa_{s}s_acima_de_mais_curta_{round(teto, 1)}W' if suspeito else None)
+            suspeito = minimo_curto is not None and w > minimo_curto + TOL_W
+            motivo_susp = (f'mais_longa_{s}s_acima_de_mais_curta_{round(minimo_curto, 1)}W' if suspeito else None)
             if suspeito:
                 resumo['n_suspeitos'] += 1
-            teto = w if teto is None else max(teto, w)
+            minimo_curto = w if minimo_curto is None else min(minimo_curto, w)
             motivo = motivo_atividade
             if motivo is None and suspeito and excluir_suspeitos:
                 motivo = MOTIVO_SUSPEITO
+            if motivo is not None:
+                resumo['n_pontos_excluidos'] += 1
             out.append({'modalidade': mod, 'duracao_s': s, 'watts': w, 'data': d.isoformat(),
                         'activity_id': aid, 'estado': 'excluido' if motivo else 'usado', 'motivo': motivo,
                         'suspeito': bool(suspeito), 'motivo_suspeita': motivo_susp})
@@ -188,12 +191,20 @@ def curva(curvas, ate, modalidades=None, duracoes=None, janela_dias=JANELA_PADRA
 
 
 def _exclusoes(pts):
-    """Uma linha por atividade excluida (nao por duracao), com a razao."""
+    """Uma linha por atividade com pelo menos um ponto excluido. Campos existentes inalterados.
+    escopo='atividade' (inelegivel/desconhecida: todos os pontos da atividade) ou
+    escopo='pontos' (monotonia: apenas os duracoes listadas em duracoes_excluidas; o resto continua)."""
     vistos = {}
     for p in pts:
-        if p['estado'] == 'excluido' and p['activity_id'] not in vistos:
-            vistos[p['activity_id']] = {'activity_id': p['activity_id'], 'modalidade': p['modalidade'],
-                                        'data': p['data'], 'motivo': p['motivo']}
+        if p['estado'] != 'excluido':
+            continue
+        r = vistos.setdefault(p['activity_id'], {'activity_id': p['activity_id'], 'modalidade': p['modalidade'],
+                                                 'data': p['data'], 'motivo': p['motivo'],
+                                                 'escopo': None, 'duracoes_excluidas': []})
+        r['duracoes_excluidas'].append(p['duracao_s'])
+    for r in vistos.values():
+        r['escopo'] = 'pontos' if r['motivo'] == MOTIVO_SUSPEITO else 'atividade'
+        r['duracoes_excluidas'] = sorted(r['duracoes_excluidas'])
     return sorted(vistos.values(), key=lambda x: (x['modalidade'], x['data']))
 
 

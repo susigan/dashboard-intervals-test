@@ -209,6 +209,69 @@ class Apresentacao(unittest.TestCase):
         self.assertEqual(cp.evolucao([], ATE, '2026-08-01')['modalidades']['Bike'], {})
 
 
+class MonotoniaAprovada(unittest.TestCase):
+    """Regra aprovada: P(t) suspeito se existir s < t com P(t) > P(s) + TOL_W, na MESMA atividade."""
+
+    def sinalizados(self, r):
+        return sorted(x['duracao_s'] for x in r['suspeitos'])
+
+    def test_ski_300_e_420_sinalizados_com_240_188(self):
+        d = [curva('ski', 'Ski', '2026-09-07', {120: 256, 180: 251, 240: 188, 300: 199, 420: 209})]
+        r = cp.curva(d, ATE, janela_dias=None)
+        self.assertEqual(self.sinalizados(r), [300, 420])
+        self.assertEqual(r['resumo']['n_suspeitos'], 2)
+
+    def test_ski_900_sinalizado_contra_720(self):
+        d = [curva('ski2', 'Ski', '2026-09-07', {600: 190, 720: 176, 900: 180})]
+        r = cp.curva(d, ATE, janela_dias=None)
+        self.assertEqual(self.sinalizados(r), [900])
+
+    def test_run_2400_sinalizado_contra_1800(self):
+        d = [curva('run', 'Run', '2026-07-30', {1200: 315, 1800: 304, 2400: 308})]
+        r = cp.curva(d, ATE, janela_dias=None)
+        self.assertEqual(self.sinalizados(r), [2400])
+        self.assertIn('mais_longa_2400s', r['suspeitos'][0]['motivo_suspeita'])
+
+    def test_diferenca_ate_a_tolerancia_nao_sinaliza(self):
+        # 300.5 > 300 + 0.5 e falso: exatamente TOL_W nao sinaliza
+        d = [curva('tol', 'Bike', '2026-10-01', {60: 300, 300: 300.5})]
+        self.assertEqual(cp.curva(d, ATE)['suspeitos'], [])
+        d2 = [curva('tol2', 'Bike', '2026-10-01', {60: 300, 300: 301.0})]
+        self.assertEqual(self.sinalizados(cp.curva(d2, ATE)), [300])
+
+    def test_sem_comparacao_cruzada_entre_atividades(self):
+        # a1 tem 60 s = 300 W; a2 tem 300 s = 350 W. Sao atividades diferentes: nada e incoerente.
+        d = [curva('a1', 'Bike', '2026-10-01', {60: 300}), curva('a2', 'Bike', '2026-10-02', {300: 350})]
+        r = cp.curva(d, ATE)
+        self.assertEqual(r['suspeitos'], [])
+        self.assertEqual(r['resumo']['n_suspeitos'], 0)
+
+    def test_envelope_inalterado_sem_excluir(self):
+        d = [curva('ski', 'Ski', '2026-09-07', {120: 256, 180: 251, 240: 188, 300: 199, 420: 209})]
+        r = cp.curva(d, ATE, janela_dias=None)
+        pt = {p['duracao_s']: p['watts'] for p in r['modalidades']['Ski']['pontos']}
+        self.assertEqual(pt, {120: 256, 180: 251, 240: 188, 300: 199, 420: 209})   # valores medidos intactos
+        self.assertEqual(pt[420], 209)                    # continua no envelope
+        self.assertEqual(r['exclusoes'], [])
+
+    def test_excluir_remove_apenas_os_sinalizados(self):
+        d = [curva('ski', 'Ski', '2026-09-07', {120: 256, 180: 251, 240: 188, 300: 199, 420: 209})]
+        r = cp.curva(d, ATE, janela_dias=None, excluir_suspeitos=True)
+        self.assertEqual(sorted(p['duracao_s'] for p in r['modalidades']['Ski']['pontos']), [120, 180, 240])
+        pts, _ = cp.pontos(d, ATE, excluir_suspeitos=True)
+        excluidos = sorted(p['duracao_s'] for p in pts if p['estado'] == 'excluido')
+        self.assertEqual(excluidos, [300, 420])                           # so os sinalizados pela regra
+        self.assertTrue(all(p['motivo'] == cp.MOTIVO_SUSPEITO for p in pts if p['estado'] == 'excluido'))
+
+    def test_campos_suspeitos_e_resumo_coerentes(self):
+        d = [curva('ski', 'Ski', '2026-09-07', {240: 188, 300: 199, 420: 209}),
+             curva('run', 'Run', '2026-07-30', {1200: 315, 1800: 304, 2400: 308})]
+        r = cp.curva(d, ATE, janela_dias=None)
+        self.assertEqual(r['resumo']['n_suspeitos'], len(r['suspeitos']))
+        for x in r['suspeitos']:
+            self.assertTrue(x['motivo_suspeita'].startswith('mais_longa_'))
+
+
 class IsolamentoDoIR(unittest.TestCase):
     def test_modulo_nao_importa_nada_do_ir_nem_da_base(self):
         import ast

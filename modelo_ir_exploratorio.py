@@ -82,7 +82,64 @@ def _curva(carga_dia, r, params, referencia, cfg):
             'liquida': [round(float(v), 4) for v in comp['liquida']]}
 
 
-def ajustar_unidade(modalidade, duracao_s, usadas, carga_dia, referencia, cfg):
+def _dias(a, b):
+    try:
+        return (date.fromisoformat(a) - date.fromisoformat(b)).days
+    except (TypeError, ValueError):
+        return None
+
+
+def _cobertura_historico(base, serie_ini, carga_dia, referencia, anos_historico):
+    """Cobertura da SERIE DE CARGA, separada da cobertura das observacoes (gate de 180 dias, em `base`).
+
+    * janela_solver: do inicio da serie (serie_ini = min(1.a observacao, 1.a carga)) ate a ultima observacao
+      (a janela que o solver ajusta: cargas_diarias(d0, d1));
+    * janela_curva: do mesmo inicio ate a data de referencia (so para desenhar a curva);
+    * dias_historico_antes_primeiro_esforco: quantos dias de carga registada antecedem o 1.o esforco;
+    * carga_cobre_primeiro_esforco: a carga registada comeca no ou antes do 1.o esforco;
+    * truncamento_sincronizacao: a 1.a carga cai na fronteira da janela de sincronizacao (ANOS_HISTORICO),
+      o que sugere historico cortado (dias anteriores ficam como repouso). 'nao_avaliado' sem anos_historico;
+    * lacunas: NAO determinavel com estes dados (dia sem atividade = repouso indistinguivel de falta de dado).
+    """
+    datas = sorted(carga_dia or {})
+    ini_c = datas[0] if datas else None
+    fim_c = datas[-1] if datas else None
+    obs_ini, obs_fim = base.get('data_ini'), base.get('data_fim')
+    if anos_historico is None:
+        trunc = 'nao_avaliado'
+    elif ini_c is None or not referencia:
+        trunc = 'nao_avaliado'
+    else:
+        fronteira = (date.fromisoformat(referencia) - timedelta(days=round(365.25 * float(anos_historico)))).isoformat()
+        trunc = bool(abs(_dias(ini_c, fronteira) or 0) <= 7)
+    return {'carga_data_ini': ini_c, 'carga_data_fim': fim_c,
+            'dias_com_carga_registada': len(datas),
+            'esforco_data_ini': obs_ini, 'esforco_data_fim': obs_fim,
+            'serie_ini': serie_ini,
+            'dias_historico_antes_primeiro_esforco': _dias(obs_ini, serie_ini) if obs_ini and serie_ini else None,
+            'carga_cobre_primeiro_esforco': bool(ini_c and obs_ini and ini_c <= obs_ini),
+            'janela_solver': {'ini': serie_ini, 'fim': obs_fim},
+            'janela_curva': {'ini': serie_ini, 'fim': referencia},
+            'truncamento_sincronizacao': trunc,
+            'lacunas': 'nao_determinavel: dia sem atividade e indistinguivel de repouso'}
+
+
+def _observacoes_detalhe(usadas):
+    """Proveniencia de cada observacao que ENTRA no solver: o id do esforco, o tipo e o valor da referencia."""
+    out = []
+    for o in usadas or []:
+        if _num(o.get('watts')) is None or len(str(o.get('data') or '')[:10]) != 10:
+            continue        # mesmo filtro de _observacoes: so o que entra no solver
+        out.append({'test_id': o.get('test_id'), 'atividade_esforco_id': o.get('atividade_esforco_id', o.get('activity_id')),
+                    'data': str(o.get('data') or '')[:10], 'watts': _num(o.get('watts')),
+                    'referencia_tipo': o.get('referencia_tipo'),
+                    'referencia_activity_id': o.get('referencia_activity_id'),
+                    'referencia_data': o.get('referencia_data'), 'referencia_watts': _num(o.get('referencia_watts')),
+                    'incluida_no_solver': True})
+    return out
+
+
+def ajustar_unidade(modalidade, duracao_s, usadas, carga_dia, referencia, cfg, anos_historico=None):
     """Um ajuste exploratorio (P0 livre). Nunca grava; devolve um dicionario descritivo da unidade."""
     obs = _observacoes(usadas)
     base = {'modalidade': modalidade, 'duracao_s': duracao_s, 'modo': MODO, 'rotulo': ROTULO,
@@ -93,7 +150,8 @@ def ajustar_unidade(modalidade, duracao_s, usadas, carga_dia, referencia, cfg):
     if not obs:
         return {**base, 'estado': 'sem_observacoes', 'motivo': 'nenhuma observacao usada pelo detetor historico',
                 'parametros': None, 'metricas': None, 'identificabilidade': None, 'avisos': [], 'curva': None,
-                'convergencia': None,
+                'convergencia': None, 'observacoes': [],
+                'cobertura_historico': _cobertura_historico(base, None, carga_dia, referencia, anos_historico),
                 'requisitos': ir.requisitos({'n': 0}, ir._cfg(cfg))}
     r = ir.ajustar_observacoes(obs, carga_dia, referencia, cfg, p0_fixo=None)
     estado = r.get('estado')
@@ -115,15 +173,19 @@ def ajustar_unidade(modalidade, duracao_s, usadas, carga_dia, referencia, cfg):
                                    'condicionamento': _num(ident.get('condicionamento'))},
             'avisos': avisos, 'curva': curva,
             'requisitos': r.get('requisitos'),
-            'p0_inicial': (r.get('p0_inicial') or {}).get('origem'), 'serie_ini': r.get('serie_ini')}
+            'p0_inicial': (r.get('p0_inicial') or {}).get('origem'), 'serie_ini': r.get('serie_ini'),
+            'observacoes': _observacoes_detalhe(usadas),
+            'cobertura_historico': _cobertura_historico(base, r.get('serie_ini'), carga_dia, referencia,
+                                                        anos_historico)}
 
 
-def analisar(selecao, cargas, referencia, cfg, duracoes=DURACOES_HISTORICAS):
+def analisar(selecao, cargas, referencia, cfg, duracoes=DURACOES_HISTORICAS, anos_historico=None):
     """{(modalidade, duracao): unidade} para as duracoes historicas. `selecao` = selecionar() do servico
     ({(mod, dur): {'usadas': [...]}}); `cargas` = {modalidade: {data: carga}}; `referencia` = data ISO de hoje."""
     itens = []
     for dur in duracoes:
         for mod in MODALIDADES:
             usadas = ((selecao or {}).get((mod, dur)) or {}).get('usadas') or []
-            itens.append(ajustar_unidade(mod, dur, usadas, (cargas or {}).get(mod, {}), referencia, cfg))
+            itens.append(ajustar_unidade(mod, dur, usadas, (cargas or {}).get(mod, {}), referencia, cfg,
+                                         anos_historico=anos_historico))
     return itens

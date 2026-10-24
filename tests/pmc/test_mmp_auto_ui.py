@@ -182,7 +182,10 @@ class UiDeteccaoAutomatica(unittest.TestCase):
         l = self.res['html']['linhas']['season']                               # b2: 280 W, season anterior 250 W
         self.assertIn('<b>season</b> (S26): 250 W', l)
         self.assertIn('112.0% desta referencia (1 pts na referencia)', l)
-        self.assertIn('all-time 82.4%, 6 pts', l)                              # 280/340 sobre os 6 pontos anteriores
+        # 280/340 sobre os 5 pontos anteriores ELEGIVEIS. a5 (ignore_parts: elegibilidade desconhecida) ja nao serve de
+        # referencia: regra do seletor, provada em test_ir_referencia_ignore_parts. Antes contava como 6.o ponto;
+        # o valor da referencia (340 W) nao muda, so a contagem.
+        self.assertIn('all-time 82.4%, 5 pts', l)
         self.assertIn('2026-10-17', l)                                         # detetado_em
         l = self.res['html']['linhas']['all_time']                             # b4
         self.assertIn('<b>all-time</b>: 340 W', l)

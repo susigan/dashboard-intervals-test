@@ -243,6 +243,15 @@ def sync_power_curves(modalidades=None, anos=None):
                 })
 
         n = db.upsert_power_curves(rows_mod)
+        # Historico verificavel (Etapa 13): so acrescenta versao quando o conteudo de uma curva mudou.
+        # Sem a migracao aplicada, ou em qualquer erro, nao faz nada e a sincronizacao segue.
+        if rows_mod:
+            try:
+                import modelo_ir_curvas
+                from datetime import timezone as _tz
+                modelo_ir_curvas.registar_seguro(rows_mod, datetime.now(_tz.utc).replace(tzinfo=None))
+            except Exception:  # noqa: BLE001
+                pass
         total += n
         detalhe[mod] = {'ok': not erros_mod or n > 0, 'sessoes': n,
                         'tipos_pedidos': candidatos, 'tipos_ok': usados}

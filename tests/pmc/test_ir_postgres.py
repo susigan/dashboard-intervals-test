@@ -45,7 +45,11 @@ if not _URL:
 elif not _SEGURO:
     PULAR = 'IR_PG_TEST_URL recusada: a base tem de se chamar *_tmp e o host ser um socket local absoluto'
 elif db.DRIVER != 'postgres':
-    PULAR = 'o driver nao ficou em PostgreSQL (%s): nao se valida PostgreSQL' % db.DRIVER
+    # db.py le DATABASE_URL UMA vez, na importacao, e mantem um so processo de ligacao. Se outro modulo ja importou
+    # db (execucao conjunta), o driver fica em SQLite e estes testes NAO correm. Correr isoladamente:
+    # tests/pmc/executar_ir_postgres.sh
+    PULAR = ('driver %s: db ja importado noutro modulo; PostgreSQL nao validado nesta execucao. '
+             'Correr com tests/pmc/executar_ir_postgres.sh' % db.DRIVER)
 
 TABELAS = ('modelo_mmp3_yes_revisoes', 'modelo_mmp3_yes_historico', 'modelo_testes_revisoes')
 

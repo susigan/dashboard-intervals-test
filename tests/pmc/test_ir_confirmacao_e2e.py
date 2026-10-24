@@ -95,6 +95,15 @@ class IdentificacaoEConfirmacao(Fluxo):
         self.assertEqual(rev['watts'], 330.0)
         self.assertEqual(rev['estado'], 'confirmado')
 
+    def test_5_confirmacao_manual_regista_a_sombra_sem_promover(self):
+        """Etapa 7: a confirmacao manual (app.py) passa pelo modo sombra depois de recalibrar; nunca promove."""
+        import modelo_ir_servico as mis_
+        with mock.patch.object(mis_, 'registar_sombra', wraps=mis_.registar_sombra) as rs:
+            r = self.decidir('e5', 330.0)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        rs.assert_called_once()
+        self.assertEqual(rs.call_args.args[1], 'confirmacao_manual')
+
     def test_4_yes_no_historico_e_observacao_elegivel(self):
         self.decidir('e5', 330.0)
         self.assertIn(self.tid('e5'), self.yes_ids())

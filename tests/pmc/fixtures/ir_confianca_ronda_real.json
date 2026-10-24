@@ -1,0 +1,4626 @@
+{
+ "origem": "ronda3_resultados.json + ronda4_resultados.json, transcritos pelo modelo_ir_adaptador",
+ "nota": "Sem credenciais, sem dados de atividades. validacao_causal_verificada=True: rondas usam treino data<corte (regra_a.py / ronda3.py avalia()).",
+ "itens": [
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|ano_anterior|A_completo|r3",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 63.01691055323022,
+     "rmse_ir": 73.46940289731397,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "t1": 29.7314,
+      "k2": 0.459,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 62.09517723895715,
+     "rmse_ir": 69.49675957940293,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "t1": 29.7314,
+      "k2": 0.3902,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 29.500567919487665,
+     "rmse_ir": 32.83530527237851,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "t1": 29.654,
+      "k2": 0.0658,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 28.31067718064034,
+     "rmse_ir": 32.55957773177791,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "t1": 29.654,
+      "k2": 0.0452,
+      "t2": 15.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Bike-300",
+    "chave": "ano_anterior|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|ano_anterior|B_T2fixo|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 51.463799356998024,
+     "rmse_ir": 62.768331625786466,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "t1": 20.0,
+      "k2": 1.1832
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 58.565951370068966,
+     "rmse_ir": 66.78325592612454,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "t1": 20.0,
+      "k2": 1.1078
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 29.52068393175685,
+     "rmse_ir": 32.700966367093486,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "t1": 20.0,
+      "k2": 0.5275
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 29.672138258138254,
+     "rmse_ir": 32.41990643425573,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "t1": 29.6021,
+      "k2": 0.3533
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Bike-300",
+    "chave": "ano_anterior|B_T2fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|ano_anterior|C_T2K2fixos|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte",
+     "k2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 45.12979811931694,
+     "rmse_ir": 54.12306865919955,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 53.41670100204818,
+     "rmse_ir": 61.09723826248714,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 18.0,
+     "rmse_ir": 23.817010727629107,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 24.0,
+     "rmse_ir": 29.271146202361123,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "t1": 20.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Bike-300",
+    "chave": "ano_anterior|C_T2K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|livre|A_completo|r3",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 20.056428911469776,
+     "rmse_ir": 30.563998348941112,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 15.321905013364205,
+     "corr_max": 0.8383171622670561,
+     "parametros": {
+      "p0": 191.8893,
+      "k1": 0.1245,
+      "t1": 20.0,
+      "k2": 0.0603,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 22.940896820581006,
+     "rmse_ir": 34.45319190936688,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 17.75189233191761,
+     "corr_max": 0.902126704932406,
+     "parametros": {
+      "p0": 192.1842,
+      "k1": 0.1325,
+      "t1": 20.0,
+      "k2": 0.1723,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 22.132706942915814,
+     "rmse_ir": 33.91508763235473,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 16.967701949186544,
+     "corr_max": 0.8859152036548134,
+     "parametros": {
+      "p0": 181.222,
+      "k1": 0.1959,
+      "t1": 20.0,
+      "k2": 0.3003,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 25.54555478616884,
+     "rmse_ir": 37.42907534609376,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 28.032865788331485,
+     "corr_max": 0.9422080102266,
+     "parametros": {
+      "p0": 184.8806,
+      "k1": 0.1816,
+      "t1": 20.0,
+      "k2": 0.2621,
+      "t2": 1.9956
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Bike-300",
+    "chave": "livre|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|livre|B_T2fixo|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 20.212700007215847,
+     "rmse_ir": 30.664723831745526,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 14.512231382058552,
+     "corr_max": 0.8348421920508418,
+     "parametros": {
+      "p0": 192.2123,
+      "k1": 0.1199,
+      "t1": 20.0,
+      "k2": 0.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 23.115239474705145,
+     "rmse_ir": 34.609695806183026,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 29.72060968321218,
+     "corr_max": 0.9471605500314866,
+     "parametros": {
+      "p0": 192.4817,
+      "k1": 0.1255,
+      "t1": 20.0,
+      "k2": 0.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 22.685272333495597,
+     "rmse_ir": 33.39056963691296,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 16.62577171556664,
+     "corr_max": 0.8900728702860718,
+     "parametros": {
+      "p0": 180.794,
+      "k1": 0.2056,
+      "t1": 20.0,
+      "k2": 0.2281
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 25.544539960010297,
+     "rmse_ir": 37.42255237115652,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 18.091500344065192,
+     "corr_max": 0.918017363872545,
+     "parametros": {
+      "p0": 184.8795,
+      "k1": 0.1816,
+      "t1": 20.0,
+      "k2": 0.2618
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Bike-300",
+    "chave": "livre|B_T2fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|livre|C_T2K2fixos|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte",
+     "k2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 24.712636385211205,
+     "rmse_ir": 31.829639922425702,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 10.159667909590205,
+     "corr_max": 0.795911486793365,
+     "parametros": {
+      "p0": 185.6581,
+      "k1": 0.2503,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 23.115239474705145,
+     "rmse_ir": 34.609695806183026,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 11.339697884180183,
+     "corr_max": 0.8430545300262166,
+     "parametros": {
+      "p0": 192.4817,
+      "k1": 0.1255,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 28.02848916113834,
+     "rmse_ir": 34.405020433893334,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 11.729311716780872,
+     "corr_max": 0.8384619406799105,
+     "parametros": {
+      "p0": 179.7661,
+      "k1": 0.26,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 25.633266188856936,
+     "rmse_ir": 38.154655482244515,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 12.71210230804606,
+     "corr_max": 0.8876023607929229,
+     "parametros": {
+      "p0": 185.6908,
+      "k1": 0.1605,
+      "t1": 20.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Bike-300",
+    "chave": "livre|C_T2K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|mediana5|A_completo|r3",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 25.32458585609379,
+     "rmse_ir": 34.07574259625237,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 319.58538830008075,
+     "corr_max": 0.9994517854114308,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0238,
+      "t1": 20.0,
+      "k2": 0.0,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 27.245420199965956,
+     "rmse_ir": 36.512026775574405,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 359.0871294664468,
+     "corr_max": 0.9994516659858171,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0415,
+      "t1": 20.0,
+      "k2": 0.0,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 21.349952303228683,
+     "rmse_ir": 26.477075542263073,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 14.910744315854338,
+     "corr_max": 0.9753996354664745,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.067,
+      "t1": 20.0,
+      "k2": 0.3224,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 28.10158630235437,
+     "rmse_ir": 32.6136075795149,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 16.406146709078094,
+     "corr_max": 0.9782011891635445,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0717,
+      "t1": 20.0,
+      "k2": 0.3172,
+      "t2": 1.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Bike-300",
+    "chave": "mediana5|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|mediana5|B_T2fixo|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 25.32458585609379,
+     "rmse_ir": 34.07574259625237,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 22.856091745554174,
+     "corr_max": 0.9616164276193904,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0238,
+      "t1": 20.0,
+      "k2": 0.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 27.245420199965956,
+     "rmse_ir": 36.512026775574405,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 14.493803806154386,
+     "corr_max": 0.9731691983985629,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0415,
+      "t1": 20.0,
+      "k2": 0.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 20.450150656030058,
+     "rmse_ir": 25.941282063305326,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 14.252260085881996,
+     "corr_max": 0.972710143710444,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0713,
+      "t1": 20.0,
+      "k2": 0.1851
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 26.532487954488495,
+     "rmse_ir": 31.90971653636151,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 15.610830319811773,
+     "corr_max": 0.9759806518099193,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0756,
+      "t1": 20.0,
+      "k2": 0.1755
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Bike-300",
+    "chave": "mediana5|B_T2fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|mediana5|C_T2K2fixos|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte",
+     "k2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 25.32458585609379,
+     "rmse_ir": 34.07574259625237,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 8.32638681093853,
+     "corr_max": 0.9715621146515847,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0238,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 27.245420199965956,
+     "rmse_ir": 36.512026775574405,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 9.324997400241093,
+     "corr_max": 0.9772612484704681,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0415,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 28.278819090422058,
+     "rmse_ir": 33.15122598943264,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 9.681803272700943,
+     "corr_max": 0.9788889941813718,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.1235,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 25.418674429037925,
+     "rmse_ir": 31.983223038910857,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 10.490714229705688,
+     "corr_max": 0.9819909191991412,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0638,
+      "t1": 20.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Bike-300",
+    "chave": "mediana5|C_T2K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|ano_anterior|A_completo|r3",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 21.158016807582083,
+     "rmse_ir": 28.67184746294385,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t1": 22.4036,
+      "k2": 0.1449,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 18.077162039651785,
+     "rmse_ir": 23.119399656794062,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 1263.0240474468303,
+     "corr_max": 0.9998112772239486,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.4009,
+      "t1": 20.0,
+      "k2": 0.7904,
+      "t2": 12.1809
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 17.63227818274268,
+     "rmse_ir": 23.743850308923847,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t1": 29.7314,
+      "k2": 0.5225,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 23.403581597514908,
+     "rmse_ir": 29.274175813744467,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t1": 117.3139,
+      "k2": 0.5255,
+      "t2": 15.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300",
+    "chave": "ano_anterior|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|ano_anterior|B_T2fixo|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 16.135309928224437,
+     "rmse_ir": 23.398492926350695,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t1": 20.0,
+      "k2": 0.9745
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 16.127892197711102,
+     "rmse_ir": 22.019951199302024,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t1": 20.0,
+      "k2": 0.9599
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 19.618304154768232,
+     "rmse_ir": 25.082341311384944,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t1": 20.0,
+      "k2": 0.7722
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 25.346860604876547,
+     "rmse_ir": 30.080241430065588,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t1": 20.0,
+      "k2": 0.7833
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300",
+    "chave": "ano_anterior|B_T2fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|ano_anterior|C_T2K2fixos|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte",
+     "k2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 16.100168574705517,
+     "rmse_ir": 23.38853752498586,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 18.22222222222222,
+     "rmse_ir": 25.348679562366865,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 20.989251883455378,
+     "rmse_ir": 26.191209016740128,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 12.710481158360746,
+     "corr_max": 0.9876965727247413,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.1075,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 26.60456630185116,
+     "rmse_ir": 31.149886177962955,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 13.978941439231438,
+     "corr_max": 0.9898172607529828,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.1014,
+      "t1": 20.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300",
+    "chave": "ano_anterior|C_T2K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|livre|A_completo|r3",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 39.877929788323655,
+     "rmse_ir": 45.420302016910284,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 905.4441993005715,
+     "corr_max": 0.9991412175782284,
+     "parametros": {
+      "p0": 107.4713,
+      "k1": 0.46,
+      "t1": 27.2168,
+      "k2": 0.3839,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 18.618005111239885,
+     "rmse_ir": 22.702498572832855,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 34.912570269676976,
+     "corr_max": 0.7966077765860015,
+     "parametros": {
+      "p0": 119.0798,
+      "k1": 0.1125,
+      "t1": 120.0,
+      "k2": 0.6951,
+      "t2": 7.6397
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 20.510393809174584,
+     "rmse_ir": 24.5144760419955,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 34.95872295449864,
+     "corr_max": 0.7714933867152897,
+     "parametros": {
+      "p0": 124.7873,
+      "k1": 0.1081,
+      "t1": 120.0,
+      "k2": 0.685,
+      "t2": 7.4157
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 15.402802905915827,
+     "rmse_ir": 20.889080352531924,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 48.58977663673367,
+     "corr_max": 0.8352246105307917,
+     "parametros": {
+      "p0": 145.9792,
+      "k1": 0.0895,
+      "t1": 120.0,
+      "k2": 0.4683,
+      "t2": 12.4343
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300",
+    "chave": "livre|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|livre|B_T2fixo|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 40.4338919869651,
+     "rmse_ir": 46.789040084346,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 29.389719294067447,
+     "corr_max": 0.8533530170609904,
+     "parametros": {
+      "p0": 109.2623,
+      "k1": 0.1728,
+      "t1": 37.5577,
+      "k2": 0.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 18.04284117394229,
+     "rmse_ir": 21.912253127809766,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 32.30853322127031,
+     "corr_max": 0.8432746358598396,
+     "parametros": {
+      "p0": 121.818,
+      "k1": 0.1153,
+      "t1": 120.0,
+      "k2": 0.5795
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 19.93072061408947,
+     "rmse_ir": 23.495159691587816,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 32.50308569471121,
+     "corr_max": 0.852728585262343,
+     "parametros": {
+      "p0": 126.5039,
+      "k1": 0.1133,
+      "t1": 120.0,
+      "k2": 0.5699
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 15.763601865511546,
+     "rmse_ir": 21.26395698703903,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 31.92628609441959,
+     "corr_max": 0.8482248116230778,
+     "parametros": {
+      "p0": 146.1508,
+      "k1": 0.0826,
+      "t1": 120.0,
+      "k2": 0.5185
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300",
+    "chave": "livre|B_T2fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|livre|C_T2K2fixos|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte",
+     "k2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 36.40259047339278,
+     "rmse_ir": 41.61129660913261,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": true,
+     "no_limite": false,
+     "cond": 24.807090864119953,
+     "corr_max": 0.8796801502169622,
+     "parametros": {
+      "p0": 101.9231,
+      "k1": 0.2098,
+      "t1": 42.8512
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 31.400844257291862,
+     "rmse_ir": 38.604620365540164,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 17.6182616952609,
+     "corr_max": 0.8454022134786937,
+     "parametros": {
+      "p0": 120.1389,
+      "k1": 1.0058,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 20.55388627491205,
+     "rmse_ir": 28.196229551172756,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 15.84574508029317,
+     "corr_max": 0.665214067766141,
+     "parametros": {
+      "p0": 109.0233,
+      "k1": 0.1134,
+      "t1": 120.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 16.843012194851735,
+     "rmse_ir": 23.48115040229306,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 15.957262318520277,
+     "corr_max": 0.6359790376709724,
+     "parametros": {
+      "p0": 125.4103,
+      "k1": 0.0921,
+      "t1": 120.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300",
+    "chave": "livre|C_T2K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|mediana5|A_completo|r3",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 31.727097212716227,
+     "rmse_ir": 38.789915176922335,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 791.4324736129171,
+     "corr_max": 0.9995320887256791,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0791,
+      "t1": 20.0,
+      "k2": 0.0,
+      "t2": 14.9867
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 23.85601416121737,
+     "rmse_ir": 28.425608294560906,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 2710.896379427961,
+     "corr_max": 0.9999628927553333,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 1.3669,
+      "t1": 20.0,
+      "k2": 1.803,
+      "t2": 13.6563
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 18.14348165953691,
+     "rmse_ir": 22.463810491115836,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 29.370672775882642,
+     "corr_max": 0.9274446636579914,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0683,
+      "t1": 120.0,
+      "k2": 0.5536,
+      "t2": 7.605
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 15.590753999023583,
+     "rmse_ir": 21.489996115241123,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 43.129277413939235,
+     "corr_max": 0.9404231320765664,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.078,
+      "t1": 120.0,
+      "k2": 0.4424,
+      "t2": 12.4645
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300",
+    "chave": "mediana5|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|mediana5|B_T2fixo|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 31.727097212716227,
+     "rmse_ir": 38.789915176922335,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 33.608746683756024,
+     "corr_max": 0.9449787684015144,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0791,
+      "t1": 20.0,
+      "k2": 0.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 23.64120153133267,
+     "rmse_ir": 28.118115410390228,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": 65.21522770198112,
+     "corr_max": 0.9745224119446622,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.5191,
+      "t1": 24.3608,
+      "k2": 1.0014
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 17.601118291555185,
+     "rmse_ir": 21.861783612325357,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 25.88800415511418,
+     "corr_max": 0.9483029200275124,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0741,
+      "t1": 120.0,
+      "k2": 0.4728
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 15.91809226344088,
+     "rmse_ir": 23.630993687929617,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 21.848691931427513,
+     "corr_max": 0.9589040048777657,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0537,
+      "t1": 120.0,
+      "k2": 0.666
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300",
+    "chave": "mediana5|B_T2fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|mediana5|C_T2K2fixos|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte",
+     "k2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 31.727097212716227,
+     "rmse_ir": 38.789915176922335,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 16.928605860741854,
+     "corr_max": 0.9930453577411676,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0791,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 28.118196915877604,
+     "rmse_ir": 35.24304006896175,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 12.753969223566456,
+     "corr_max": 0.9877798215382144,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.824,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 18.71011284229602,
+     "rmse_ir": 25.207578602103304,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 12.842456561094549,
+     "corr_max": 0.9879466294003236,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0643,
+      "t1": 120.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 18.572027550176692,
+     "rmse_ir": 23.35351933348725,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 13.053794897166444,
+     "corr_max": 0.9883314948487278,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0618,
+      "t1": 120.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300",
+    "chave": "mediana5|C_T2K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300[AlpineSki]|ano_anterior|A_completo|r3",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 20,
+     "mae_ir": 22.242263445707817,
+     "rmse_ir": 30.153730447511517,
+     "mae_media": 29.625,
+     "rmse_media": 37.82860194350301,
+     "mae_ultimo": 54.35,
+     "rmse_ultimo": 58.647676850835275,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t1": 22.4036,
+      "k2": 0.1449,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 15,
+     "mae_ir": 19.741926485916405,
+     "rmse_ir": 24.873376850158383,
+     "mae_media": 23.62857142857143,
+     "rmse_media": 30.08962425036818,
+     "mae_ultimo": 65.26666666666667,
+     "rmse_ultimo": 69.537999204272,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 1263.0240474468303,
+     "corr_max": 0.9998112772239486,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.4009,
+      "t1": 20.0,
+      "k2": 0.7904,
+      "t2": 12.1809
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 11,
+     "mae_ir": 16.876726460185335,
+     "rmse_ir": 22.524001574369542,
+     "mae_media": 23.85090909090909,
+     "rmse_media": 30.96999368890651,
+     "mae_ultimo": 29.636363636363637,
+     "rmse_ultimo": 35.07913132541133,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t1": 29.654,
+      "k2": 0.5196,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 6,
+     "mae_ir": 24.057367297093972,
+     "rmse_ir": 29.198939411178646,
+     "mae_media": 29.600000000000005,
+     "rmse_media": 39.80046063385029,
+     "mae_ultimo": 46.0,
+     "rmse_ultimo": 54.05244366970532,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t1": 29.654,
+      "k2": 0.5233,
+      "t2": 15.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300[AlpineSki]",
+    "chave": "ano_anterior|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300[AlpineSki]|ano_anterior|B_T2fixo|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 20,
+     "mae_ir": 17.50167894900517,
+     "rmse_ir": 24.857504039442368,
+     "mae_media": 29.625,
+     "rmse_media": 37.82860194350301,
+     "mae_ultimo": 54.35,
+     "rmse_ultimo": 58.647676850835275,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t1": 20.0,
+      "k2": 0.9745
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 15,
+     "mae_ir": 17.95430528480869,
+     "rmse_ir": 23.798899691703735,
+     "mae_media": 23.62857142857143,
+     "rmse_media": 30.08962425036818,
+     "mae_ultimo": 65.26666666666667,
+     "rmse_ultimo": 69.537999204272,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t1": 20.0,
+      "k2": 0.9599
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 11,
+     "mae_ir": 18.458507404704168,
+     "rmse_ir": 23.035683994649336,
+     "mae_media": 23.85090909090909,
+     "rmse_media": 30.96999368890651,
+     "mae_ultimo": 29.636363636363637,
+     "rmse_ultimo": 35.07913132541133,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t1": 29.6005,
+      "k2": 0.7682
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 6,
+     "mae_ir": 25.406146138242267,
+     "rmse_ir": 28.562195643965296,
+     "mae_media": 29.600000000000005,
+     "rmse_media": 39.80046063385029,
+     "mae_ultimo": 46.0,
+     "rmse_ultimo": 54.05244366970532,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t1": 20.0,
+      "k2": 0.7802
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300[AlpineSki]",
+    "chave": "ano_anterior|B_T2fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300[AlpineSki]|ano_anterior|C_T2K2fixos|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte",
+     "k2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 20,
+     "mae_ir": 17.453313441770316,
+     "rmse_ir": 24.842551536716215,
+     "mae_media": 29.625,
+     "rmse_media": 37.82860194350301,
+     "mae_ultimo": 54.35,
+     "rmse_ultimo": 58.647676850835275,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 15,
+     "mae_ir": 20.866666666666667,
+     "rmse_ir": 27.63210692895736,
+     "mae_media": 23.62857142857143,
+     "rmse_media": 30.08962425036818,
+     "mae_ultimo": 65.26666666666667,
+     "rmse_ultimo": 69.537999204272,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 11,
+     "mae_ir": 19.77047635436662,
+     "rmse_ir": 23.91616492698107,
+     "mae_media": 23.85090909090909,
+     "rmse_media": 30.96999368890651,
+     "mae_ultimo": 29.636363636363637,
+     "rmse_ultimo": 35.07913132541133,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 12.831480837464618,
+     "corr_max": 0.9879261248222716,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.1105,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 6,
+     "mae_ir": 26.608862497949744,
+     "rmse_ir": 29.260629960607893,
+     "mae_media": 29.600000000000005,
+     "rmse_media": 39.80046063385029,
+     "mae_ultimo": 46.0,
+     "rmse_ultimo": 54.05244366970532,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 14.081318771325089,
+     "corr_max": 0.9899640481262879,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.1036,
+      "t1": 20.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300[AlpineSki]",
+    "chave": "ano_anterior|C_T2K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300[AlpineSki]|livre|A_completo|r3",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 20,
+     "mae_ir": 37.874585005300965,
+     "rmse_ir": 43.99577430807141,
+     "mae_media": 29.625,
+     "rmse_media": 37.82860194350301,
+     "mae_ultimo": 54.35,
+     "rmse_ultimo": 58.647676850835275,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 905.4441993005715,
+     "corr_max": 0.9991412175782284,
+     "parametros": {
+      "p0": 107.4713,
+      "k1": 0.46,
+      "t1": 27.2168,
+      "k2": 0.3839,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 15,
+     "mae_ir": 20.03764354295331,
+     "rmse_ir": 24.276160788588,
+     "mae_media": 23.62857142857143,
+     "rmse_media": 30.08962425036818,
+     "mae_ultimo": 65.26666666666667,
+     "rmse_ultimo": 69.537999204272,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 34.912570269676976,
+     "corr_max": 0.7966077765860015,
+     "parametros": {
+      "p0": 119.0798,
+      "k1": 0.1125,
+      "t1": 120.0,
+      "k2": 0.6951,
+      "t2": 7.6397
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 11,
+     "mae_ir": 22.421518317834067,
+     "rmse_ir": 26.343431462461837,
+     "mae_media": 23.85090909090909,
+     "rmse_media": 30.96999368890651,
+     "mae_ultimo": 29.636363636363637,
+     "rmse_ultimo": 35.07913132541133,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 35.01431141727505,
+     "corr_max": 0.7778242275509408,
+     "parametros": {
+      "p0": 121.7093,
+      "k1": 0.1081,
+      "t1": 120.0,
+      "k2": 0.6576,
+      "t2": 7.2718
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 6,
+     "mae_ir": 16.761615275902873,
+     "rmse_ir": 23.69867897534635,
+     "mae_media": 29.600000000000005,
+     "rmse_media": 39.80046063385029,
+     "mae_ultimo": 46.0,
+     "rmse_ultimo": 54.05244366970532,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 46.35215111463861,
+     "corr_max": 0.8245748286667265,
+     "parametros": {
+      "p0": 143.3912,
+      "k1": 0.0872,
+      "t1": 120.0,
+      "k2": 0.4592,
+      "t2": 11.6442
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300[AlpineSki]",
+    "chave": "livre|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300[AlpineSki]|livre|B_T2fixo|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 20,
+     "mae_ir": 38.321859007111264,
+     "rmse_ir": 45.39481086453561,
+     "mae_media": 29.625,
+     "rmse_media": 37.82860194350301,
+     "mae_ultimo": 54.35,
+     "rmse_ultimo": 58.647676850835275,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 29.389719294067447,
+     "corr_max": 0.8533530170609904,
+     "parametros": {
+      "p0": 109.2623,
+      "k1": 0.1728,
+      "t1": 37.5577,
+      "k2": 0.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 15,
+     "mae_ir": 19.303724973391233,
+     "rmse_ir": 23.384591935519953,
+     "mae_media": 23.62857142857143,
+     "rmse_media": 30.08962425036818,
+     "mae_ultimo": 65.26666666666667,
+     "rmse_ultimo": 69.537999204272,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 32.30853322127031,
+     "corr_max": 0.8432746358598396,
+     "parametros": {
+      "p0": 121.818,
+      "k1": 0.1153,
+      "t1": 120.0,
+      "k2": 0.5795
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 11,
+     "mae_ir": 21.674277186550544,
+     "rmse_ir": 25.215025963371524,
+     "mae_media": 23.85090909090909,
+     "rmse_media": 30.96999368890651,
+     "mae_ultimo": 29.636363636363637,
+     "rmse_ultimo": 35.07913132541133,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 32.66768695901043,
+     "corr_max": 0.8275956419883845,
+     "parametros": {
+      "p0": 123.5862,
+      "k1": 0.1132,
+      "t1": 120.0,
+      "k2": 0.5398
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 6,
+     "mae_ir": 23.101997205294197,
+     "rmse_ir": 31.844654940059442,
+     "mae_media": 29.600000000000005,
+     "rmse_media": 39.80046063385029,
+     "mae_ultimo": 46.0,
+     "rmse_ultimo": 54.05244366970532,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 23.462090296817404,
+     "corr_max": 0.7343465802274001,
+     "parametros": {
+      "p0": 152.4827,
+      "k1": 0.0367,
+      "t1": 120.0,
+      "k2": 0.9111
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300[AlpineSki]",
+    "chave": "livre|B_T2fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300[AlpineSki]|livre|C_T2K2fixos|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte",
+     "k2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 20,
+     "mae_ir": 34.38220869974588,
+     "rmse_ir": 40.08033707068427,
+     "mae_media": 29.625,
+     "rmse_media": 37.82860194350301,
+     "mae_ultimo": 54.35,
+     "rmse_ultimo": 58.647676850835275,
+     "identificavel": true,
+     "no_limite": false,
+     "cond": 24.807090864119953,
+     "corr_max": 0.8796801502169622,
+     "parametros": {
+      "p0": 101.9231,
+      "k1": 0.2098,
+      "t1": 42.8512
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 15,
+     "mae_ir": 33.41073704427451,
+     "rmse_ir": 41.16414888901451,
+     "mae_media": 23.62857142857143,
+     "rmse_media": 30.08962425036818,
+     "mae_ultimo": 65.26666666666667,
+     "rmse_ultimo": 69.537999204272,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 17.6182616952609,
+     "corr_max": 0.8454022134786937,
+     "parametros": {
+      "p0": 120.1389,
+      "k1": 1.0058,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 11,
+     "mae_ir": 23.71294474476966,
+     "rmse_ir": 30.84758385773812,
+     "mae_media": 23.85090909090909,
+     "rmse_media": 30.96999368890651,
+     "mae_ultimo": 29.636363636363637,
+     "rmse_ultimo": 35.07913132541133,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 17.03869466508921,
+     "corr_max": 0.7031104751575042,
+     "parametros": {
+      "p0": 103.3962,
+      "k1": 0.119,
+      "t1": 120.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 6,
+     "mae_ir": 20.195683163857538,
+     "rmse_ir": 26.869820854370207,
+     "mae_media": 29.600000000000005,
+     "rmse_media": 39.80046063385029,
+     "mae_ultimo": 46.0,
+     "rmse_ultimo": 54.05244366970532,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 17.027141287731357,
+     "corr_max": 0.6726572985445312,
+     "parametros": {
+      "p0": 120.8227,
+      "k1": 0.0965,
+      "t1": 120.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300[AlpineSki]",
+    "chave": "livre|C_T2K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300[AlpineSki]|mediana5|A_completo|r3",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 20,
+     "mae_ir": 31.094682000107333,
+     "rmse_ir": 39.17774715395984,
+     "mae_media": 29.625,
+     "rmse_media": 37.82860194350301,
+     "mae_ultimo": 54.35,
+     "rmse_ultimo": 58.647676850835275,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 791.4324736129171,
+     "corr_max": 0.9995320887256791,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0791,
+      "t1": 20.0,
+      "k2": 0.0,
+      "t2": 14.9867
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 15,
+     "mae_ir": 24.820846854974416,
+     "rmse_ir": 29.764868644010203,
+     "mae_media": 23.62857142857143,
+     "rmse_media": 30.08962425036818,
+     "mae_ultimo": 65.26666666666667,
+     "rmse_ultimo": 69.537999204272,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 2710.896379427961,
+     "corr_max": 0.9999628927553333,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 1.3669,
+      "t1": 20.0,
+      "k2": 1.803,
+      "t2": 13.6563
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 11,
+     "mae_ir": 19.549399827070605,
+     "rmse_ir": 24.134043269377678,
+     "mae_media": 23.85090909090909,
+     "rmse_media": 30.96999368890651,
+     "mae_ultimo": 29.636363636363637,
+     "rmse_ultimo": 35.07913132541133,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 29.167197000695378,
+     "corr_max": 0.9214541083226432,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0656,
+      "t1": 120.0,
+      "k2": 0.5266,
+      "t2": 7.5115
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 6,
+     "mae_ir": 17.06925599404245,
+     "rmse_ir": 24.634989678220002,
+     "mae_media": 29.600000000000005,
+     "rmse_media": 39.80046063385029,
+     "mae_ultimo": 46.0,
+     "rmse_ultimo": 54.05244366970532,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 41.08468212172355,
+     "corr_max": 0.9300343013664297,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0728,
+      "t1": 120.0,
+      "k2": 0.4276,
+      "t2": 11.7382
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300[AlpineSki]",
+    "chave": "mediana5|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300[AlpineSki]|mediana5|B_T2fixo|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 20,
+     "mae_ir": 31.094682000107333,
+     "rmse_ir": 39.17774715395984,
+     "mae_media": 29.625,
+     "rmse_media": 37.82860194350301,
+     "mae_ultimo": 54.35,
+     "rmse_ultimo": 58.647676850835275,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 33.608746683756024,
+     "corr_max": 0.9449787684015144,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0791,
+      "t1": 20.0,
+      "k2": 0.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 15,
+     "mae_ir": 24.591326871196088,
+     "rmse_ir": 29.457606970717325,
+     "mae_media": 23.62857142857143,
+     "rmse_media": 30.08962425036818,
+     "mae_ultimo": 65.26666666666667,
+     "rmse_ultimo": 69.537999204272,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": 65.21522770198112,
+     "corr_max": 0.9745224119446622,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.5191,
+      "t1": 24.3608,
+      "k2": 1.0014
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 11,
+     "mae_ir": 20.772096118234487,
+     "rmse_ir": 26.88977182520323,
+     "mae_media": 23.85090909090909,
+     "rmse_media": 30.96999368890651,
+     "mae_ultimo": 29.636363636363637,
+     "rmse_ultimo": 35.07913132541133,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 19.338728292806564,
+     "corr_max": 0.9801439686270272,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0386,
+      "t1": 120.0,
+      "k2": 0.8455
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 6,
+     "mae_ir": 18.250324603264104,
+     "rmse_ir": 27.279765629416787,
+     "mae_media": 29.600000000000005,
+     "rmse_media": 39.80046063385029,
+     "mae_ultimo": 46.0,
+     "rmse_ultimo": 54.05244366970532,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 22.075923262849248,
+     "corr_max": 0.9555901152383383,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0511,
+      "t1": 120.0,
+      "k2": 0.616
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300[AlpineSki]",
+    "chave": "mediana5|B_T2fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300[AlpineSki]|mediana5|C_T2K2fixos|r3",
+    "familia": "regularizado",
+    "fixos": {
+     "t2": "escolhido_por_corte",
+     "k2": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 20,
+     "mae_ir": 31.094682000107333,
+     "rmse_ir": 39.17774715395984,
+     "mae_media": 29.625,
+     "rmse_media": 37.82860194350301,
+     "mae_ultimo": 54.35,
+     "rmse_ultimo": 58.647676850835275,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 16.928605860741854,
+     "corr_max": 0.9930453577411676,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0791,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 15,
+     "mae_ir": 32.183087899704496,
+     "rmse_ir": 38.41139116086033,
+     "mae_media": 23.62857142857143,
+     "rmse_media": 30.08962425036818,
+     "mae_ultimo": 65.26666666666667,
+     "rmse_ultimo": 69.537999204272,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 12.753969223566456,
+     "corr_max": 0.9877798215382144,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.824,
+      "t1": 20.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 11,
+     "mae_ir": 20.610757104124655,
+     "rmse_ir": 27.12755709119711,
+     "mae_media": 23.85090909090909,
+     "rmse_media": 30.96999368890651,
+     "mae_ultimo": 29.636363636363637,
+     "rmse_ultimo": 35.07913132541133,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 13.5894051189725,
+     "corr_max": 0.9892283126265967,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0642,
+      "t1": 120.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 6,
+     "mae_ir": 22.004718910280385,
+     "rmse_ir": 26.529990040208112,
+     "mae_media": 29.600000000000005,
+     "rmse_media": 39.80046063385029,
+     "mae_ultimo": 46.0,
+     "rmse_ultimo": 54.05244366970532,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 13.843211226221195,
+     "corr_max": 0.9896176436173754,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0617,
+      "t1": 120.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 3,
+    "celula": "Ski-300[AlpineSki]",
+    "chave": "mediana5|C_T2K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda3_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|ano_anterior|A_completo|r4",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 63.01691055323022,
+     "rmse_ir": 73.46940289731397,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "t1": 29.7314,
+      "k2": 0.459,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 62.09517723895715,
+     "rmse_ir": 69.49675957940293,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "t1": 29.7314,
+      "k2": 0.3902,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 29.500567919487665,
+     "rmse_ir": 32.83530527237851,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "t1": 29.654,
+      "k2": 0.0658,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 28.31067718064034,
+     "rmse_ir": 32.55957773177791,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "t1": 29.654,
+      "k2": 0.0452,
+      "t2": 15.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Bike-300",
+    "chave": "ano_anterior|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|ano_anterior|D_T1fixo|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 63.01691055323022,
+     "rmse_ir": 73.46940289731397,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 40.84466994607701,
+     "corr_max": 0.9463437609680689,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "k2": 0.459,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 62.09517723895715,
+     "rmse_ir": 69.49675957940293,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 46.62598204028912,
+     "corr_max": 0.9520522873200696,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "k2": 0.3902,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 29.500567919487665,
+     "rmse_ir": 32.83530527237851,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 51.061291242576054,
+     "corr_max": 0.9563354808654919,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "k2": 0.0658,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 28.31067718064034,
+     "rmse_ir": 32.55957773177791,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 54.683687978100934,
+     "corr_max": 0.9549450335367987,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "k2": 0.0452,
+      "t2": 15.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Bike-300",
+    "chave": "ano_anterior|D_T1fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|ano_anterior|E_T1K2fixos|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte",
+     "k2": 0.0
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 47.888888888888886,
+     "rmse_ir": 54.038052436325934,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 48.45,
+     "rmse_ir": 55.975441043371866,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 270.0,
+      "k1": 0.0,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 18.0,
+     "rmse_ir": 23.817010727629107,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 24.0,
+     "rmse_ir": 29.271146202361123,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 231.0,
+      "k1": 0.0,
+      "t2": 5.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Bike-300",
+    "chave": "ano_anterior|E_T1K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|livre|A_completo|r4",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 20.056428911469776,
+     "rmse_ir": 30.563998348941112,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 15.321905013364205,
+     "corr_max": 0.8383171622670561,
+     "parametros": {
+      "p0": 191.8893,
+      "k1": 0.1245,
+      "t1": 20.0,
+      "k2": 0.0603,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 22.940896820581006,
+     "rmse_ir": 34.45319190936688,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 17.75189233191761,
+     "corr_max": 0.902126704932406,
+     "parametros": {
+      "p0": 192.1842,
+      "k1": 0.1325,
+      "t1": 20.0,
+      "k2": 0.1723,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 22.132706942915814,
+     "rmse_ir": 33.91508763235473,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 16.967701949186544,
+     "corr_max": 0.8859152036548134,
+     "parametros": {
+      "p0": 181.222,
+      "k1": 0.1959,
+      "t1": 20.0,
+      "k2": 0.3003,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 25.54555478616884,
+     "rmse_ir": 37.42907534609376,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 28.032865788331485,
+     "corr_max": 0.9422080102266,
+     "parametros": {
+      "p0": 184.8806,
+      "k1": 0.1816,
+      "t1": 20.0,
+      "k2": 0.2621,
+      "t2": 1.9956
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Bike-300",
+    "chave": "livre|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|livre|D_T1fixo|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 28.762962962962956,
+     "rmse_ir": 36.81480137118764,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 209.36,
+      "k1": 0.0,
+      "k2": 0.0,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 23.869708783169358,
+     "rmse_ir": 34.95417184292978,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 6.712516530889095,
+     "corr_max": 0.8811983730492832,
+     "parametros": {
+      "p0": 195.623,
+      "k1": 0.0707,
+      "k2": 0.0605,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 21.305164773749617,
+     "rmse_ir": 31.146998455750794,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 7.0266634435717075,
+     "corr_max": 0.8943850554834945,
+     "parametros": {
+      "p0": 183.1326,
+      "k1": 0.1193,
+      "k2": 0.1625,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 25.789291317373472,
+     "rmse_ir": 36.442568150905004,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 6.554457665847369,
+     "corr_max": 0.8748405843478682,
+     "parametros": {
+      "p0": 186.4665,
+      "k1": 0.1065,
+      "k2": 0.22,
+      "t2": 1.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Bike-300",
+    "chave": "livre|D_T1fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|livre|E_T1K2fixos|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte",
+     "k2": 0.0
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 22.497993277237068,
+     "rmse_ir": 32.003449419065596,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 198.8737,
+      "k1": 0.0489,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 24.06898769715213,
+     "rmse_ir": 35.00790569942691,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 195.617,
+      "k1": 0.0696,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 21.97625615430599,
+     "rmse_ir": 31.764868583440364,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 182.8353,
+      "k1": 0.1179,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 26.5173107109052,
+     "rmse_ir": 36.673239721546175,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 186.4037,
+      "k1": 0.1032,
+      "t2": 5.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Bike-300",
+    "chave": "livre|E_T1K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|mediana5|A_completo|r4",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 25.32458585609379,
+     "rmse_ir": 34.07574259625237,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 319.58538830008075,
+     "corr_max": 0.9994517854114308,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0238,
+      "t1": 20.0,
+      "k2": 0.0,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 27.245420199965956,
+     "rmse_ir": 36.512026775574405,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 359.0871294664468,
+     "corr_max": 0.9994516659858171,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0415,
+      "t1": 20.0,
+      "k2": 0.0,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 21.349952303228683,
+     "rmse_ir": 26.477075542263073,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 14.910744315854338,
+     "corr_max": 0.9753996354664745,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.067,
+      "t1": 20.0,
+      "k2": 0.3224,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 28.10158630235437,
+     "rmse_ir": 32.6136075795149,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 16.406146709078094,
+     "corr_max": 0.9782011891635445,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0717,
+      "t1": 20.0,
+      "k2": 0.3172,
+      "t2": 1.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Bike-300",
+    "chave": "mediana5|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|mediana5|D_T1fixo|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 26.52407703933263,
+     "rmse_ir": 34.96132723366933,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 12.522379459367546,
+     "corr_max": 0.9867110195519051,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0115,
+      "k2": 0.0,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 29.650559641644733,
+     "rmse_ir": 38.19559401210401,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 1.6663441059109938,
+     "corr_max": 0.3828996773359239,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0059,
+      "k2": 0.0,
+      "t2": 1.0064
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 21.89852802654766,
+     "rmse_ir": 26.636320733515603,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 2.5928799380091165,
+     "corr_max": 0.5797797871639134,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0403,
+      "k2": 0.2361,
+      "t2": 1.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 27.692916519177793,
+     "rmse_ir": 32.34338586853372,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 2.8547532458704064,
+     "corr_max": 0.5703441366508503,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.044,
+      "k2": 0.2295,
+      "t2": 1.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Bike-300",
+    "chave": "mediana5|D_T1fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Bike-300|mediana5|E_T1K2fixos|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte",
+     "k2": 0.0
+    }
+   },
+   "n_observacoes": 25,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 27,
+     "mae_ir": 26.52407703933263,
+     "rmse_ir": 34.96132723366933,
+     "mae_media": 28.762962962962956,
+     "rmse_media": 36.81480137118764,
+     "mae_ultimo": 28.333333333333332,
+     "rmse_ultimo": 37.702048279164416,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0115,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 20,
+     "mae_ir": 29.650559641644733,
+     "rmse_ir": 38.19559401210401,
+     "mae_media": 31.8,
+     "rmse_media": 39.90300740545755,
+     "mae_ultimo": 26.85,
+     "rmse_ultimo": 36.966877065827454,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0059,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 8,
+     "mae_ir": 20.165224225455177,
+     "rmse_ir": 26.197050895999677,
+     "mae_media": 28.94886363636364,
+     "rmse_media": 31.690514979555346,
+     "mae_ultimo": 92.25,
+     "rmse_ultimo": 95.10126182128185,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0368,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 5,
+     "mae_ir": 25.699307653033564,
+     "rmse_ir": 31.924863870359804,
+     "mae_media": 31.042553191489368,
+     "rmse_media": 34.51144763854077,
+     "mae_ultimo": 21.6,
+     "rmse_ultimo": 30.489342400255207,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 208.0,
+      "k1": 0.0404,
+      "t2": 5.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Bike-300",
+    "chave": "mediana5|E_T1K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|ano_anterior|A_completo|r4",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 21.158016807582083,
+     "rmse_ir": 28.67184746294385,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t1": 22.4036,
+      "k2": 0.1449,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 18.077162039651785,
+     "rmse_ir": 23.119399656794062,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 1263.0240474468303,
+     "corr_max": 0.9998112772239486,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.4009,
+      "t1": 20.0,
+      "k2": 0.7904,
+      "t2": 12.1809
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 17.63227818274268,
+     "rmse_ir": 23.743850308923847,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t1": 29.7314,
+      "k2": 0.5225,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 23.403581597514908,
+     "rmse_ir": 29.274175813744467,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t1": 117.3139,
+      "k2": 0.5255,
+      "t2": 15.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Ski-300",
+    "chave": "ano_anterior|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|ano_anterior|D_T1fixo|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 21.158016807582083,
+     "rmse_ir": 28.67184746294385,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 24.377627748771406,
+     "corr_max": 0.6478385789018284,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "k2": 0.1449,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 17.822943274939732,
+     "rmse_ir": 22.945704722050312,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": true,
+     "no_limite": false,
+     "cond": 29.438632972424173,
+     "corr_max": 0.8777355637186687,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.1093,
+      "k2": 0.4825,
+      "t2": 10.1357
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 17.63227818274268,
+     "rmse_ir": 23.743850308923847,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 65.33612884364952,
+     "corr_max": 0.9433101935423687,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "k2": 0.5225,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 23.403581597514908,
+     "rmse_ir": 29.274175813744467,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 75.99270230642144,
+     "corr_max": 0.9510520913610423,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "k2": 0.5255,
+      "t2": 15.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Ski-300",
+    "chave": "ano_anterior|D_T1fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|ano_anterior|E_T1K2fixos|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte",
+     "k2": 0.0
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 17.82608695652174,
+     "rmse_ir": 25.828868244323225,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 18.22222222222222,
+     "rmse_ir": 25.348679562366865,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 192.0,
+      "k1": 0.0,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 67.84615384615384,
+     "rmse_ir": 72.18139542952773,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 52.625,
+     "rmse_ir": 55.97655759333544,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 252.0,
+      "k1": 0.0,
+      "t2": 5.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Ski-300",
+    "chave": "ano_anterior|E_T1K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|livre|A_completo|r4",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 39.877929788323655,
+     "rmse_ir": 45.420302016910284,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 905.4441993005715,
+     "corr_max": 0.9991412175782284,
+     "parametros": {
+      "p0": 107.4713,
+      "k1": 0.46,
+      "t1": 27.2168,
+      "k2": 0.3839,
+      "t2": 15.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 18.618005111239885,
+     "rmse_ir": 22.702498572832855,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 34.912570269676976,
+     "corr_max": 0.7966077765860015,
+     "parametros": {
+      "p0": 119.0798,
+      "k1": 0.1125,
+      "t1": 120.0,
+      "k2": 0.6951,
+      "t2": 7.6397
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 20.510393809174584,
+     "rmse_ir": 24.5144760419955,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 34.95872295449864,
+     "corr_max": 0.7714933867152897,
+     "parametros": {
+      "p0": 124.7873,
+      "k1": 0.1081,
+      "t1": 120.0,
+      "k2": 0.685,
+      "t2": 7.4157
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 15.402802905915827,
+     "rmse_ir": 20.889080352531924,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 48.58977663673367,
+     "corr_max": 0.8352246105307917,
+     "parametros": {
+      "p0": 145.9792,
+      "k1": 0.0895,
+      "t1": 120.0,
+      "k2": 0.4683,
+      "t2": 12.4343
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Ski-300",
+    "chave": "livre|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|livre|D_T1fixo|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 34.109940997473636,
+     "rmse_ir": 40.16992904568894,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 108.28,
+      "k1": 0.0733,
+      "k2": 0.0,
+      "t2": 14.9305
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 24.92154379344781,
+     "rmse_ir": 29.10564842592595,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": true,
+     "no_limite": false,
+     "cond": 39.94331164585086,
+     "corr_max": 0.7806367831465253,
+     "parametros": {
+      "p0": 145.4934,
+      "k1": 0.4435,
+      "k2": 0.8992,
+      "t2": 10.5817
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 20.56301272212427,
+     "rmse_ir": 24.91763701784018,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": true,
+     "no_limite": false,
+     "cond": 21.34354525435997,
+     "corr_max": 0.8522955649637621,
+     "parametros": {
+      "p0": 133.8157,
+      "k1": 0.1149,
+      "k2": 0.6904,
+      "t2": 7.2995
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 15.358847017454337,
+     "rmse_ir": 21.92991222963608,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": true,
+     "no_limite": false,
+     "cond": 25.569280934966113,
+     "corr_max": 0.7863246170462082,
+     "parametros": {
+      "p0": 157.3851,
+      "k1": 0.0844,
+      "k2": 0.4538,
+      "t2": 11.683
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Ski-300",
+    "chave": "livre|D_T1fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|livre|E_T1K2fixos|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte",
+     "k2": 0.0
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 38.19082935128103,
+     "rmse_ir": 44.191754996813096,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 105.7525,
+      "k1": 0.1198,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 24.36172106957443,
+     "rmse_ir": 28.974250524897958,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 155.6761,
+      "k1": 0.0261,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 23.261488812571578,
+     "rmse_ir": 29.119458699126778,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 167.6637,
+      "k1": 0.0166,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 26.471749999999993,
+     "rmse_ir": 35.299566442096705,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 176.871,
+      "k1": 0.0,
+      "t2": 5.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Ski-300",
+    "chave": "livre|E_T1K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|mediana5|A_completo|r4",
+    "familia": "completo",
+    "fixos": {}
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 31.727097212716227,
+     "rmse_ir": 38.789915176922335,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 791.4324736129171,
+     "corr_max": 0.9995320887256791,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0791,
+      "t1": 20.0,
+      "k2": 0.0,
+      "t2": 14.9867
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 23.85601416121737,
+     "rmse_ir": 28.425608294560906,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 2710.896379427961,
+     "corr_max": 0.9999628927553333,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 1.3669,
+      "t1": 20.0,
+      "k2": 1.803,
+      "t2": 13.6563
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 18.14348165953691,
+     "rmse_ir": 22.463810491115836,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 29.370672775882642,
+     "corr_max": 0.9274446636579914,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0683,
+      "t1": 120.0,
+      "k2": 0.5536,
+      "t2": 7.605
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 15.590753999023583,
+     "rmse_ir": 21.489996115241123,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": 43.129277413939235,
+     "corr_max": 0.9404231320765664,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.078,
+      "t1": 120.0,
+      "k2": 0.4424,
+      "t2": 12.4645
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Ski-300",
+    "chave": "mediana5|A_completo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|mediana5|D_T1fixo|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte"
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 29.348946889080317,
+     "rmse_ir": 36.26617688205453,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": true,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0179,
+      "k2": 0.0,
+      "t2": 1.0002
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 22.995428281023425,
+     "rmse_ir": 27.51561763410293,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": true,
+     "no_limite": false,
+     "cond": 31.180899860812207,
+     "corr_max": 0.8847359339026309,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.3811,
+      "k2": 0.8227,
+      "t2": 10.4954
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 18.589819376162446,
+     "rmse_ir": 23.171336090201077,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": true,
+     "no_limite": false,
+     "cond": 13.232577086385858,
+     "corr_max": 0.6937218900772057,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.081,
+      "k2": 0.5843,
+      "t2": 7.3563
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 15.2412579735334,
+     "rmse_ir": 21.596843740619207,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": true,
+     "no_limite": false,
+     "cond": 17.540393581140208,
+     "corr_max": 0.7016327374262958,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0911,
+      "k2": 0.4637,
+      "t2": 11.9018
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Ski-300",
+    "chave": "mediana5|D_T1fixo",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  },
+  {
+   "esquema": "cortes_treino_teste",
+   "configuracao": {
+    "id": "Ski-300|mediana5|E_T1K2fixos|r4",
+    "familia": "regularizado",
+    "fixos": {
+     "t1": "escolhido_por_corte",
+     "k2": 0.0
+    }
+   },
+   "n_observacoes": 16,
+   "falha_ajuste": false,
+   "suspeita_fuga": false,
+   "validacao_causal_verificada": true,
+   "cortes": [
+    {
+     "corte": "2024-07-01",
+     "n_teste": 23,
+     "mae_ir": 31.105194632534847,
+     "rmse_ir": 37.958903916413036,
+     "mae_media": 29.755434782608695,
+     "rmse_media": 36.99102968523468,
+     "mae_ultimo": 53.391304347826086,
+     "rmse_ultimo": 57.277357238038775,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0545,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-01-01",
+     "n_teste": 18,
+     "mae_ir": 24.475959418722812,
+     "rmse_ir": 29.0401912468783,
+     "mae_media": 23.269841269841272,
+     "rmse_media": 28.869882985786433,
+     "mae_ultimo": 63.55555555555556,
+     "rmse_ultimo": 67.34900807650317,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0282,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2025-07-01",
+     "n_teste": 13,
+     "mae_ir": 24.077332254671894,
+     "rmse_ir": 29.52816660729703,
+     "mae_media": 22.60355029585799,
+     "rmse_media": 29.053714791662465,
+     "mae_ultimo": 25.384615384615383,
+     "rmse_ultimo": 31.908523095778754,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.0341,
+      "t2": 5.0
+     }
+    },
+    {
+     "corte": "2026-01-01",
+     "n_teste": 8,
+     "mae_ir": 26.52182942199728,
+     "rmse_ir": 34.61792841900715,
+     "mae_media": 26.471774193548384,
+     "rmse_media": 35.29958929169475,
+     "mae_ultimo": 43.875,
+     "rmse_ultimo": 50.45666457466248,
+     "identificavel": false,
+     "no_limite": false,
+     "cond": Infinity,
+     "corr_max": null,
+     "parametros": {
+      "p0": 154.0,
+      "k1": 0.028,
+      "t2": 5.0
+     }
+    }
+   ],
+   "metadados": {
+    "ronda": 4,
+    "celula": "Ski-300",
+    "chave": "mediana5|E_T1K2fixos",
+    "cortes_faltando": [],
+    "fonte": "ronda4_resultados.json"
+   }
+  }
+ ]
+}

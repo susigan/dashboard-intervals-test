@@ -19,9 +19,12 @@ import config
 import db
 import modelo_estimador as E
 import modelo_ir as ir
+import modelo_ir_carga_diag as mcd
 import modelo_ir_exploratorio as mex
+import modelo_ir_season as mseason
 import modelo_ir_global as G
 import modelo_ir_p0 as p0m
+import modelo_ir_temporal as tmp
 import modelo_mmp3 as mmp3
 import modelo_mmp3_intervalos as mi
 import modelo_observacoes_auto as moa
@@ -75,7 +78,8 @@ def carga_por_modalidade(atividades):
         if len(d) != 10:
             continue
         v = a.get('icu_training_load')
-        if not isinstance(v, (int, float)) or isinstance(v, bool) or not (v == v) or v < 0:
+        # nao finito (NaN ou +inf) nao entra: um inf na serie contamina o solver com inf/NaN
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v < 0:
             sem_carga[mod] += 1
             continue
         out[mod][d] = out[mod].get(d, 0.0) + float(v)
@@ -330,6 +334,22 @@ def _linha_yes(e, mod, revisao=None):
     return l
 
 
+def efetivos_yes_de_hoje(entradas):
+    """{test_id: estado} dos YES elegiveis de hoje, no formato de modelo_ir_temporal.registar_transicoes_yes.
+    Mesma classificacao que _gravar_yes_vivos: confirmacao manual (revisao) ou automatico."""
+    out = {}
+    for mod, (_obs, esf) in entradas.items():
+        for e in esf:
+            if e['estado'] != mmp3.E_ELEGIVEL:
+                continue
+            manual = e.get('origem_classificacao') == mmp3.ORIGEM_CONFIRMACAO and e.get('revisao_confirmada')
+            out[e['test_id']] = {'modalidade': mod, 'activity_id': e['activity_id'], 'watts': e['watts'],
+                                 'regra_versao': mmp3.VERSAO_REGRA_P0,
+                                 'origem': 'confirmacao' if manual else 'automatico',
+                                 'revisao': e['revisao_confirmada'] if manual else None}
+    return out
+
+
 def _gravar_yes_vivos(entradas, agora):
     """Acrescenta ao historico de YES os efeitos ELEGIVEIS de hoje (append-only; repetidos sao ignorados).
     Automaticos -> tabela antiga (revisao 0). Confirmacoes manuais -> modelo_mmp3_yes_revisoes (sua revisao).
@@ -450,6 +470,7 @@ def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=Non
     if marcos is None and dados is None:
         import observacoes_auto as oa            # calendario de seasons (cache); falhar cai no ano civil
         marcos, _fonte = oa.obter_marcos()
+        tmp.registar_marcos_seguro(marcos, _fonte, agora)     # instante real em que o calendario foi obtido
     try:
         entradas = entradas_mmp3(curvas, atividades, referencia, marcos, revisoes)
     except E.HistoricoAmbiguo as e:
@@ -460,6 +481,7 @@ def recalibrar(origem='sync', agora=None, forcar=False, config_ir=None, tipo=Non
     global_ = p0_global_das_entradas(entradas, historico, rejeitados)   # UM P0 para as quatro modalidades
     if dados is None:
         _gravar_yes_vivos(entradas, agora)
+        tmp.registar_yes_seguro(efetivos_yes_de_hoje(entradas), agora)   # transicoes; nunca levanta
     cargas, info_carga = carga_por_modalidade(atividades)
     cfg = _cfg_efetiva(config_ir)
     cfg_assin = ir.assinatura(cfg)
@@ -1228,8 +1250,37 @@ def p0_conhecido_antes(referencias, data):
     return float(max(cand, key=lambda r: r['versao_referencia'])['valor_p0'])
 
 
+def p0_reconstruido_antes(curvas, atividades, marcos, revisoes, auto, data_alvo, cache=None):
+    """P0 que a regra REAL (modelo_mmp3.p0_global + modelo_ir_p0.resolver_p0) teria dado no dia `data_alvo`,
+    usando SO informacao conhecida antes desse dia:
+      * esforcos ate ao dia anterior (entradas_mmp3 com ate = dia-1; sem dados futuros);
+      * so YES cuja observacao era conhecida antes do alvo (auto.conhecidas_antes, pela deteccao);
+      * so revisoes manuais feitas antes do alvo (rejeicoes);
+      * sem historico_yes gravado: o registo de hoje pode conter YES posteriores ao alvo.
+    Devolve {'valor_p0', 'motivo', 'valida', 'test_id_yes', 'data_yes'}; `motivo` e o da regra
+    (M_SEM_YES = sem YES conhecido antes do alvo; M_P0 = valor de YES invalido). Com `cache` (dict) reutiliza
+    o calculo por data-alvo."""
+    corte = str(data_alvo)[:10]
+    if cache is not None and corte in cache:
+        return cache[corte]
+    ate = (date.fromisoformat(corte) - timedelta(days=1)).isoformat()
+    rev = [r for r in revisoes or [] if (V._dia(r.get('revisado_em')) or '9999') < corte]
+    conhecidos = {o['test_id'] for o in auto.conhecidas_antes(corte)}
+    ent = entradas_mmp3(curvas, atividades, ate, marcos, rev)
+    ent_f = {m: (obs, [e for e in esf if e.get('test_id') in conhecidos]) for m, (obs, esf) in ent.items()}
+    g = p0_global_das_entradas(ent_f, historico_yes=None, rejeitados=rejeitados_manualmente(rev))
+    r = p0m.resolver_p0('global', mmp3.DURACAO_S, g)
+    reg = r.get('registo') or {}
+    out = {'valor_p0': r['valor_p0'] if r['valida'] else None, 'motivo': r.get('motivo'), 'valida': r['valida'],
+           'test_id_yes': reg.get('test_id'), 'data_yes': reg.get('data')}
+    if cache is not None:
+        cache[corte] = out
+    return out
+
+
 def validar_preditivo(historico_obs, revisoes, atividades, curvas, modos=V.MODOS, tipo=None,
-                      duracao=None, auto=None, config_ir=None, referencias_p0=None):
+                      duracao=None, auto=None, config_ir=None, referencias_p0=None, marcos=None, temporal=None,
+                      historico_curvas=None):
     """Walk-forward do IR contra M0/M1/M2 nos MESMOS alvos, para cada unidade e modo.
 
     Para cada alvo: treino = so observacoes de data estritamente anterior (no modo
@@ -1239,17 +1290,75 @@ def validar_preditivo(historico_obs, revisoes, atividades, curvas, modos=V.MODOS
     LEGADO (60/300/1200 s): nao valida o IR baseado em MMP3 (180 s) nem o alimenta.
     P0: fixo e igual a referencia de P0 mais recente JA CONHECIDA do IR antes da data do alvo
     (`conhecida_desde` estritamente anterior), nos dois modos; sem ela o alvo nao e previsto
-    ('sem_referencia_p0_conhecida'). referencias_p0: historico de referencias (testes); omisso = base.
+    ('sem_referencia_p0_conhecida').
+    P0 POR DEFEITO: reconstruido para cada data-alvo com p0_reconstruido_antes (so informacao conhecida antes
+    do alvo). NAO se le modelo_ir_p0_referencias: essas referencias tem conhecida_desde = instante de
+    gravacao e so serviriam para alvos posteriores a primeira recalibracao. referencias_p0 (lista explicita):
+    usa a regra antiga de referencias persistidas (testes e auditoria).
+    marcos: marcos da temporada usados pela deteccao (mesmos de recalibrar); None = sem marcos.
+    temporal (Etapa 11): leitor de modelo_ir_temporal.RegistoTemporal. Quando dado, SO se avalia
+    'conhecido_na_epoca' (o 'retrospectivo' nao tem marcos nem YES conhecidos e e omitido, com nota no resultado).
+    Por alvo: marcos = os conhecidos antes da data (marcos_conhecidos_em); P0 reconstruido com esses marcos;
+    o YES escolhido tem de estar no registo de transicoes conhecido antes da data (yes_conhecidos_em).
+    Sem registo, ou com registo de calendario indisponivel, o alvo e REJEITADO com motivo explicito.
+    Nunca se recorre ao fallback mensal, ao calendario atual ou ao YES mais recente.
     """
+    nota_modos = None
+    if temporal is not None:
+        omitidos = [m for m in modos if m != 'conhecido_na_epoca']
+        modos = tuple(m for m in modos if m == 'conhecido_na_epoca')
+        nota_modos = {'omitidos': omitidos, 'motivo': 'retrospectivo_sem_marcos_nem_yes_conhecidos'} if omitidos else None
     auto = auto or moa.FonteAuto(historico_obs, revisoes)
     atuais = E.estado_atual_por_teste(revisoes or [])
     cpa = E.curvas_por_atividade(curvas or [])
     atual = E.selecionar_observacoes_auto(auto.atuais(), atuais, atividades, cpa)
+    linhas_atuais = {r['test_id']: r for r in auto.atuais()}
     cargas, _ = carga_por_modalidade(atividades)
     cfg = ir._cfg(config_ir)
     cache = {}
-    if referencias_p0 is None:
-        referencias_p0 = db.referencias_p0_historico(tipo, duracao)
+    cache_p0 = {}
+    motivos_p0 = {}
+    persistidas = referencias_p0 is not None
+    if not persistidas and marcos is None and temporal is None:
+        import observacoes_auto as oa  # mesma fonte de marcos que recalibrar() (sem historico temporal)
+        marcos, _fonte = oa.obter_marcos()
+
+    def p0_reconstruido(a):
+        r = p0_reconstruido_antes(curvas, atividades, marcos, revisoes, auto, a['data'], cache_p0)
+        if r['valor_p0'] is None:
+            motivos_p0[str(a['data'])[:10]] = r['motivo']
+        return r['valor_p0']
+
+    def p0_temporal(a):
+        """P0 com historico temporal: so marcos e YES conhecidos antes da data do alvo. Falta de registo = rejeicao."""
+        corte = str(a['data'])[:10]
+        mk = temporal.marcos_conhecidos_em(corte)
+        if mk is None:
+            motivos_p0[corte] = M_MARCOS_SEM_REGISTO
+            return None
+        if mk['marcos'] is None:                       # calendario indisponivel naquele momento: nao se presume
+            motivos_p0[corte] = M_MARCOS_INDISPONIVEIS
+            return None
+        # Curvas: so as VERSOES conhecidas antes do alvo (historico verificavel). Sem historico que cubra o dia
+        # do alvo nao ha prova do valor das curvas naquele momento: rejeita-se. Nunca se usa updated_at.
+        curvas_t = historico_curvas.curvas_para_alvo(corte) if historico_curvas is not None else None
+        if curvas_t is None:
+            motivos_p0[corte] = M_CURVAS_HISTORICAS
+            return None
+        marcos_t = [tuple(x) for x in mk['marcos']]
+        r = p0_reconstruido_antes(curvas_t, atividades, marcos_t, revisoes, auto, corte, {})
+        if not r['valida']:
+            motivos_p0[corte] = r['motivo']
+            return None
+        conhecido = temporal.yes_conhecidos_em(corte).get(r['test_id_yes'])
+        if conhecido is None:
+            motivos_p0[corte] = M_YES_SEM_REGISTO
+            return None
+        if abs(float(conhecido['watts']) - float(r['valor_p0'])) > 1e-6:
+            # curvas provadamente anteriores ao alvo e YES registado de valor diferente: discordancia REAL
+            motivos_p0[corte] = M_DISCORDANCIA
+            return None
+        return r['valor_p0']
 
     def na_epoca(corte):
         if corte not in cache:
@@ -1264,38 +1373,179 @@ def validar_preditivo(historico_obs, revisoes, atividades, curvas, modos=V.MODOS
             if (tipo and m != tipo) or (duracao is not None and d != duracao):
                 continue
             alvos = atual[(m, d)]['usadas']
+            sem_versao = []
+            if modo == 'conhecido_na_epoca':
+                # y do alvo = versao conhecida ATE ao dia do esforco (nao a atual). Revisoes posteriores nao
+                # alteram alvos passados. Sem versao conhecida nesse dia -> versao_alvo_indisponivel.
+                alvos, sem_versao = alvos_com_y_conhecido(alvos, auto)
             if modo == 'retrospectivo':
                 treino_de = lambda a, alvos=alvos: [o for o in alvos if o['data'] < a['data']]  # noqa: E731
             else:
                 treino_de = lambda a, m=m, d=d: na_epoca(a['data'])[(m, d)]['usadas']  # noqa: E731
-            refs = [r for r in referencias_p0 if r['modalidade'] == m and r['duracao_s'] == d]
-            p0_de = lambda a, refs=refs: p0_conhecido_antes(refs, a['data'])  # noqa: E731
-            itens.append(_avaliar_unidade(modo, m, d, alvos, treino_de, cargas[m], cfg, p0_de))
+            if persistidas:
+                refs = [r for r in referencias_p0 if r['modalidade'] == m and r['duracao_s'] == d]
+                p0_de = lambda a, refs=refs: p0_conhecido_antes(refs, a['data'])  # noqa: E731
+            elif temporal is not None:
+                p0_de = p0_temporal
+            else:
+                p0_de = p0_reconstruido
+            itens.append(_avaliar_unidade(modo, m, d, alvos, treino_de, cargas[m], cfg, p0_de, motivos_p0,
+                                          sem_versao=sem_versao))
     cfg_rec = {'ir': cfg, 'versao_modelo': ir.VERSAO_IR, 'versao_validacao': V.VERSAO_VALIDACAO,
                'criterios_suficiencia': {'min_alvos': V.MIN_ALVOS_AVALIAVEL,
                                          'min_datas_distintas': V.MIN_DATAS_AVALIAVEL,
                                          'min_dias_cobertura': V.MIN_DIAS_AVALIAVEL}}
     return {'experimental': True, 'tipo_analise': 'validacao_preditiva_ir_walk_forward',
             'promocao': False, 'configuracao': cfg_rec, 'itens': itens,
+            'historico_temporal': ('registo_prospetivo' if temporal is not None else 'reconstrucao_por_deteccao'),
+            'modos_omitidos': nota_modos,
             'aviso': ('Previsao um passo a frente com treino estritamente anterior. So esforcos '
                       'detetados (perto do melhor anterior): mede o proximo esforco detetado, nao a '
                       'capacidade. O erro de ajuste historico (modelo_ir_ajustes) nao entra aqui. '
                       'Comparacao feita so nos alvos em que o IR chegou a prever.')}
 
 
-def _avaliar_unidade(modo, mod, dur, alvos, treino_de, carga_dia, cfg, p0_de=None):
+M_MARCOS_SEM_REGISTO = 'marcos_sem_registo_antes_do_alvo'
+M_MARCOS_INDISPONIVEIS = 'marcos_indisponiveis_antes_do_alvo'
+M_YES_SEM_REGISTO = 'yes_sem_registo_antes_do_alvo'
+M_CURVAS_HISTORICAS = 'curvas_historicas_indisponiveis'   # valor de curva usado pode ser posterior ao alvo
+M_DISCORDANCIA = 'discordancia_p0_yes'                    # curvas provadas, YES registado de valor diferente
+M_VERSAO_ALVO = 'versao_alvo_indisponivel'                # o alvo nao tem data verificavel de conhecimento
+MOTIVOS_P0_ALVO = {p0m.M_SEM_YES: 'sem_yes_conhecido_antes_do_alvo', p0m.M_P0: 'referencia_p0_invalida',
+                   M_MARCOS_SEM_REGISTO: M_MARCOS_SEM_REGISTO, M_MARCOS_INDISPONIVEIS: M_MARCOS_INDISPONIVEIS,
+                   M_YES_SEM_REGISTO: M_YES_SEM_REGISTO, M_CURVAS_HISTORICAS: M_CURVAS_HISTORICAS,
+                   M_DISCORDANCIA: M_DISCORDANCIA}
+
+# Categorias de rejeicao. REGRA DE CONTAGEM: cada alvo nao previsto conta UMA vez, na categoria do PRIMEIRO
+# estagio que falha (ordem da cadeia: versao do alvo -> marcos -> curvas -> YES/discordancia -> amostra).
+CATEGORIA_POR_MOTIVO = {
+    M_VERSAO_ALVO: 'versao_alvo', M_MARCOS_SEM_REGISTO: 'marcos', M_MARCOS_INDISPONIVEIS: 'marcos',
+    M_CURVAS_HISTORICAS: 'curvas', M_YES_SEM_REGISTO: 'yes', M_DISCORDANCIA: 'discordancia',
+    'sem_yes_conhecido_antes_do_alvo': 'yes', 'sem_referencia_p0_conhecida': 'yes',
+    'referencia_p0_invalida': 'yes', 'sem_historico': 'amostra', 'estimador_sem_previsao': 'amostra',
+}
+CATEGORIAS_HISTORICAS = ('versao_alvo', 'marcos', 'curvas', 'yes', 'discordancia')
+CATEGORIAS = CATEGORIAS_HISTORICAS + ('amostra', 'outros')
+
+
+# Motivos de suficiencia da amostra do IR (modelo_ir._insuficiente) tem parametros no nome: 'menos_de_15_observacoes',
+# 'cobertura_inferior_a_180_dias', ... Sao todos 'amostra'.
+PREFIXOS_AMOSTRA = ('menos_de_', 'cobertura_inferior_a_', 'sem_carga_no_periodo', 'alvo_sem_variacao',
+                    'sem_solucao_numerica')
+
+
+def categoria_motivo(motivo):
+    if motivo in CATEGORIA_POR_MOTIVO:
+        return CATEGORIA_POR_MOTIVO[motivo]
+    if isinstance(motivo, str) and motivo.startswith(PREFIXOS_AMOSTRA):
+        return 'amostra'
+    return 'outros'
+
+
+def contar_categorias(rejeitados):
+    """{categoria: n} sobre a lista de rejeitados (um item por alvo). Soma = len(rejeitados)."""
+    out = {c: 0 for c in CATEGORIAS}
+    for r in rejeitados:
+        out[categoria_motivo(r['motivo'])] += 1
+    return {c: n for c, n in out.items() if n}
+
+
+def separar_alvos_sem_versao(alvos, revisoes, linhas_atuais):
+    """(alvos_com_versao, sem_versao). linhas_atuais: {test_id: linha atual do historico de deteccao} (traz
+    detetado_em). Um alvo sem data verificavel de conhecimento (conhecida_desde) nao tem versao historica provada:
+    e rejeitado com motivo explicito, nunca usado com o valor atual como se fosse antigo."""
+    com, sem = [], []
+    for o in alvos:
+        linha = linhas_atuais.get(o.get('test_id'))
+        revs = [r for r in (revisoes or []) if r.get('test_id') == o.get('test_id')]
+        conhecida = moa.conhecida_desde(linha, revs) if linha is not None else None
+        (com if conhecida is not None else sem).append(o)
+    return com, sem
+
+
+def alvos_com_y_conhecido(alvos, auto):
+    """(alvos_validos, sem_versao) para 'conhecido_na_epoca'.
+
+    O y de cada alvo e o valor da ULTIMA versao da observacao com prova (detetado_em ou revisao do mesmo valor)
+    ate ao dia do seu esforco, inclusive. Separa o instante do esforco do instante do conhecimento:
+    uma versao conhecida depois do esforco nunca altera o alvo passado. Sem versao conhecida nesse dia,
+    ou se a ultima versao conhecida ate la for retirada, o alvo vai para sem_versao (versao_alvo_indisponivel)."""
+    por = moa.por_teste(auto.historico)
+    validos, sem = [], []
+    for o in alvos:
+        tid = o.get('test_id')
+        dia = str(o['data'])[:10]
+        escolhida = None
+        for r in por.get(tid, []):
+            desde = moa.conhecida_desde(r, auto.revisoes.get(tid))
+            if desde is not None and desde <= dia:
+                escolhida = r                        # versoes crescentes: fica a mais recente conhecida ate ao dia
+        if escolhida is None or escolhida.get('evento') != moa.EVENTO_DETETADA:
+            sem.append(o)
+        else:
+            validos.append(dict(o, watts=escolhida['watts']))
+    return validos, sem
+
+
+def natureza_avaliacao(item, temporal_usado):
+    """Rotulo honesto de um item de validar_preditivo, para os consumidores:
+      retrospectiva_valores_atuais       -> modo retrospectivo (usa y e estado ATUAIS; nao e validacao historica)
+      bloqueada_sem_historico            -> nenhum alvo previsto e ha rejeicoes historicas (falta de historico provado)
+      temporal_com_historico             -> conhecido_na_epoca com registo temporal (rejeicoes explicitas)
+      reconstruida_sem_prova_temporal    -> conhecido_na_epoca sem registo temporal (reconstrucao por deteccao)"""
+    if item.get('modo') == 'retrospectivo':
+        return 'retrospectiva_valores_atuais'
+    if not temporal_usado:  # sem registo temporal nada e provado: a reconstrucao nao se torna 'bloqueada' por isso
+        return 'reconstruida_sem_prova_temporal'
+    rej = item.get('rejeicoes_por_categoria') or {}
+    historicas = sum(rej.get(c, 0) for c in CATEGORIAS_HISTORICAS)
+    if item.get('n_alvos_com_previsao_ir', 0) == 0 and historicas > 0:
+        return 'bloqueada_sem_historico'
+    return 'temporal_com_historico'
+
+
+def _motivo_rejeicao(p, motivos_p0):
+    """Motivo explicito de um alvo nao previsto. A falta de P0 separa 'sem YES conhecido' de 'referencia invalida'."""
+    if p.get('motivo') == 'sem_referencia_p0_conhecida' and motivos_p0:
+        return MOTIVOS_P0_ALVO.get(motivos_p0.get(str(p['data'])[:10]), 'sem_referencia_p0_conhecida')
+    return p.get('motivo') or 'sem_previsao'
+
+
+def _metricas_por_bloco(linhas):
+    """Metricas por trimestre (bloco temporal) de cada modelo. Sem limiares: so contagem e erro."""
+    blocos = {}
+    for r in linhas:
+        y = str(r['data'])[:4]
+        q = (int(str(r['data'])[5:7]) - 1) // 3 + 1
+        blocos.setdefault(f'{y}T{q}', []).append(r)
+    out = {}
+    for b, rs in sorted(blocos.items()):
+        out[b] = {'n_alvos': len(rs), 'metricas': {
+            nome: V.metricas([r[campo] - r['y'] for r in rs])
+            for nome, campo in (('IR', 'ir'), ('M0', 'M0'), ('M1', 'M1'), ('M2', 'M2'))}}
+    return out
+
+
+def _avaliar_unidade(modo, mod, dur, alvos, treino_de, carga_dia, cfg, p0_de=None, motivos_p0=None, sem_versao=()):
     prev_ir = ir.avaliar_preditivo(alvos, treino_de, carga_dia, cfg, p0_de=p0_de)
     por_id = {a['test_id']: a for a in alvos}
     linhas, excl = [], {}
+    rejeitados = []
+    for a in sem_versao:  # alvos sem versao historica provada: rejeicao explicita antes de qualquer previsao
+        excl[M_VERSAO_ALVO] = excl.get(M_VERSAO_ALVO, 0) + 1
+        rejeitados.append({'test_id': a['test_id'], 'data': a['data'], 'motivo': M_VERSAO_ALVO})
     for p in prev_ir:
         a = por_id[p['test_id']]
         if p['ir'] is None:
-            excl[p['motivo']] = excl.get(p['motivo'], 0) + 1
+            motivo = _motivo_rejeicao(p, motivos_p0)
+            excl[motivo] = excl.get(motivo, 0) + 1
+            rejeitados.append({'test_id': p['test_id'], 'data': p['data'], 'motivo': motivo})
             continue
         treino = [o for o in treino_de(a) if o['data'] < a['data']]
         base, motivo = V.previsoes_metodos(treino, a['data'])
         if base is None:
             excl[motivo] = excl.get(motivo, 0) + 1
+            rejeitados.append({'test_id': p['test_id'], 'data': p['data'], 'motivo': motivo})
             continue
         linhas.append({**p, **{k: base[k] for k in ('M0', 'M1', 'M2')},
                        'm1_ordem_ambigua': base['m1_ordem_ambigua']})
@@ -1307,8 +1557,13 @@ def _avaliar_unidade(modo, mod, dur, alvos, treino_de, carga_dia, cfg, p0_de=Non
            for b in ('M0', 'M1')}
     item = {
         'modalidade': mod, 'duracao_s': dur, 'modo': modo,
-        'n_alvos': len(alvos), 'n_alvos_com_previsao_ir': len(linhas),
+        'n_alvos': len(alvos) + len(sem_versao), 'n_alvos_com_previsao_ir': len(linhas),
+        'n_alvos_previstos': sum(1 for p in prev_ir if p['ir'] is not None),   # IR produziu previsao
+        'n_alvos_avaliaveis': len(linhas), 'n_alvos_rejeitados': len(rejeitados),   # com baselines calculados
         'alvos_sem_previsao_ir': dict(sorted(excl.items())),
+        'rejeicoes_por_categoria': contar_categorias(rejeitados),
+        'alvos_rejeitados': sorted(rejeitados, key=lambda x: (x['data'], str(x['test_id']))),
+        'metricas_por_bloco': _metricas_por_bloco(linhas),
         'estado_suficiencia': est, 'suficiencia': cob,
         'metricas': {k: V.metricas(v) for k, v in er.items()},
         'diferenca_ir_menos_baseline': dif,
@@ -1353,17 +1608,64 @@ def apos_deteccao(resultado_deteccao, origem='sync'):
     if not isinstance(resultado_deteccao, dict) or not resultado_deteccao.get('ok'):
         return {'ok': False, 'ignorado': 'deteccao_sem_sucesso'}
     try:
-        return recalibrar(origem=origem)
+        r = recalibrar(origem=origem)
     except Exception as e:
         import traceback
         traceback.print_exc()
         return {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
+    _sombra_apos_recalibrar(r, origem)  # DEPOIS de recalibrar: entradas ja consistentes. So regista; nunca promove.
+    _previsoes_prospetivas_apos_sync(r, origem)  # Etapa 17: isolado; sem migracao nao escreve; nunca levanta.
+    return r
+
+
+def _previsoes_prospetivas_apos_sync(r, origem):
+    """Produtor prospetivo D+1 da sombra (Etapa 17). Nunca altera o resultado operacional de r."""
+    try:
+        import modelo_ir_produtor_previsoes as mpp
+        r['previsoes_prospetivas'] = mpp.integrar_apos_sync(r, origem)
+    except Exception as e:  # noqa: BLE001
+        r['previsoes_prospetivas'] = {'ok': False, 'erro': f'{type(e).__name__}: {e}', 'escrito_operacional': False}
+
+
+def registar_sombra(r, origem):
+    """Ponto publico para caminhos que chamam recalibrar() diretamente (confirmacao manual, recalibracao manual).
+    Mesmo gancho que apos_deteccao: so regista a sombra em r['sombra']; nunca levanta; nunca promove."""
+    _sombra_apos_recalibrar(r, origem)
+    return r
+
+
+def _sombra_apos_recalibrar(r, origem):
+    """Modo sombra (experimental, etapa 6): decisao A/B/C proposta, guardada em modelo_ir_confianca_tentativas.
+    Nunca escreve versao operacional e nunca levanta excecao."""
+    try:
+        import modelo_ir_sombra_integracao as msi
+        r['sombra'] = msi.apos_recalibrar(r, origem)
+    except Exception as e:
+        r['sombra'] = {'ok': False, 'erro': f'{type(e).__name__}: {e}', 'escrito_operacional': False}
 
 
 # ── modo exploratorio (historico, nao validado) ────────────────────────────────────────────────
 
+def enriquecer_usadas(sel, atuais):
+    """Acrescenta a PROVENIENCIA a cada observacao usada, sem mudar quem entra: id da atividade do esforco,
+    e id/data/valor da referencia escolhida (do mesmo tipo de referencia_tipo). Nao altera `usadas` em conjunto."""
+    por_tid = {o.get('test_id'): o for o in atuais or []}
+    out = {}
+    for k, v in (sel or {}).items():
+        usadas = []
+        for o in v.get('usadas') or []:
+            refs = (por_tid.get(o.get('test_id')) or {}).get('referencias') or {}
+            esc = refs.get(o.get('referencia_tipo')) or {}
+            usadas.append({**o, 'atividade_esforco_id': o.get('activity_id'),
+                           'referencia_watts': esc.get('referencia_watts'),
+                           'referencia_activity_id': esc.get('referencia_activity_id'),
+                           'referencia_data': esc.get('referencia_data')})
+        out[k] = {**v, 'usadas': usadas}
+    return out
+
+
 def analise_exploratoria(duracoes=None, historico_obs=None, revisoes=None, atividades=None, curvas=None,
-                         referencia=None, config_ir=None):
+                         referencia=None, config_ir=None, marcos=None):
     """Curvas exploratorias historicas por modalidade e duracao (60/300/1200 s), com P0 livre por unidade.
 
     SO LEITURA e NAO PERSISTIDO: le o historico do detetor e as atividades, nunca grava em modelo_ir_ajustes
@@ -1385,13 +1687,23 @@ def analise_exploratoria(duracoes=None, historico_obs=None, revisoes=None, ativi
     if atividades is None:
         return {**base, 'status': 'ERRO', 'mensagem': 'atividades indisponiveis: sem carga, nada foi calculado'}
     hoje = referencia or mt.agora_utc().date().isoformat()
-    sel = selecionar(historico_obs, revisoes, atividades, curvas)
+    if marcos is None and historico_obs is None:
+        # so na base de dados real: as fronteiras de season vem do calendario (sem rede nos testes)
+        import observacoes_auto as oa
+        marcos, _fonte = oa.obter_marcos()
+    atuais = moa.atuais(historico_obs)
+    sel_pre = selecionar(historico_obs, revisoes, atividades, curvas)
     # mesma identificacao de candidatos do calibrado: so o maximo causal ALL-TIME >= limiar (sem exigir tag/intervalo)
-    sel = separar_nao_all_time(sel, moa.atuais(historico_obs))
+    sel = separar_nao_all_time(enriquecer_usadas(sel_pre, atuais), atuais)
     cargas, info = carga_por_modalidade(atividades)
-    itens = mex.analisar(sel, cargas, hoje, ir._cfg(config_ir), duracoes)
+    info = {**info, 'categorias': mcd.diagnostico_carga(atividades)['por_modalidade']}
+    anos = config.ANOS_HISTORICO
+    itens = mex.analisar(sel, cargas, hoje, ir._cfg(config_ir), duracoes, anos_historico=anos)
+    # analise SEASON: caminho separado, lê o conjunto ja selecionado (sel_pre); nao altera `itens`
+    season = mseason.analisar(sel_pre, atuais, cargas, hoje, marcos, ir._cfg(config_ir), duracoes,
+                              anos_historico=anos)
     return {**base, 'status': 'OK', 'referencia': hoje, 'itens': itens, 'carga': info,
-            'exclusoes': resumo_exclusoes(sel)}
+            'exclusoes': resumo_exclusoes(sel), 'season': season}
 
 
 def separar_nao_all_time(sel, atuais):
@@ -1449,7 +1761,8 @@ def resumo_exclusoes(sel):
                           'referencia_tipo': tipo, 'pct_da_referencia': pct,
                           'referencia_watts': e.get('referencia_watts'),
                           'referencia_activity_id': e.get('referencia_activity_id'),
-                          'referencia_data': e.get('referencia_data')})
+                          'referencia_data': e.get('referencia_data'),
+                          'atividade_esforco_id': e.get('activity_id'), 'incluida_no_solver': False})
     return {'por_motivo': dict(sorted(por_motivo.items())),
             'por_unidade': {k: dict(sorted(v.items())) for k, v in sorted(por_unidade.items())},
             'total': len(lista), 'por_origem': dict(sorted(por_origem.items())), 'lista': lista}

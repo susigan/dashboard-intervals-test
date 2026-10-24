@@ -245,6 +245,8 @@ class EscopoExclusaoEAvisos(unittest.TestCase):
         self.assertEqual(ex['ski']['duracoes_excluidas'], [300, 420])
         self.assertEqual(ex['ski']['motivo'], 'valor_suspeito')
         self.assertEqual(j['resumo']['n_pontos_excluidos'], 3)     # ski 300, ski 420, bike 300
+        self.assertEqual(j['resumo']['n_excluidos_monotonia'], 3)
+        self.assertEqual(j['resumo']['n_excluidos_atividade'], 0)
         for campo in ('activity_id', 'modalidade', 'data', 'motivo'):
             self.assertIn(campo, ex['ski'])
 
@@ -262,6 +264,12 @@ class EscopoExclusaoEAvisos(unittest.TestCase):
     def test_exclusao_so_remove_os_sinalizados(self):
         j = self.get_('?ate=2026-10-24&janela=historico&modalidades=Ski&excluir_suspeitos=1')
         self.assertEqual(sorted(p['duracao_s'] for p in j['modalidades']['Ski']['pontos']), [120, 180, 240])
+
+    def test_pagina_distingue_causas_de_exclusao_e_rotula_eixo(self):
+        html = aplicacao.app.test_client().get('/curva-progressiva').data.decode('utf-8')
+        self.assertIn('n_excluidos_monotonia', html)
+        self.assertIn('n_excluidos_atividade', html)
+        self.assertIn('measureText', html)
 
     def test_modalidades_vazias_sao_rejeitadas_pela_api(self):
         # a pagina nao envia 'none' (corrigido no JS); a API continua a validar modalidades

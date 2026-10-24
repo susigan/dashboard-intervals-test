@@ -300,7 +300,9 @@ function desenharConjunto(){
   const wmax=Math.max(...ws)*1.08, pad=48;
   g.strokeStyle='#e3e3e3'; g.fillStyle='#555'; g.font='12px sans-serif';
   for(let k=0;k<=4;k++){ const y=H-pad-(k/4)*(H-2*pad); g.beginPath(); g.moveTo(pad,y); g.lineTo(W-pad,y); g.stroke(); g.fillText(Math.round(wmax*k/4)+' W',4,y+4); }
-  for(const d of [...new Set(ds)].sort((a,b)=>a-b)){ const x=escalaX(d,lmin,lmax,W,pad); g.fillText(rotuloDuracao(d),x-12,H-pad+16); }
+  const dsU=[...new Set(ds)].sort((a,b)=>a-b), fim=[-Infinity,-Infinity];
+  dsU.forEach(d=>{ const x=escalaX(d,lmin,lmax,W,pad), r=rotuloDuracao(d), lw=g.measureText(r).width, ini=x-lw/2;
+    const k=fim.findIndex(f=>ini>f+8); if(k>=0){ g.fillText(r,ini,H-pad+16+k*14); fim[k]=ini+lw; } });
   for(const m in D.modalidades){
     const pts=D.modalidades[m].pontos.slice().sort((a,b)=>a.duracao_s-b.duracao_s);
     if(!pts.length) continue;
@@ -360,8 +362,9 @@ function avisos(){
   const partes=[];
   if(nSusp) partes.push('<span style="color:#e07b00">●</span> '+nSusp+' valor(es) com incoerencia de monotonia (um esforco mais longo acima de um mais curto da mesma atividade)');
   if(nIqr) partes.push('<span style="color:#b00020">○</span> '+nIqr+' valor(es) fora da distribuicao historica (informativo)');
-  const exc=(D.resumo&&D.resumo.n_pontos_excluidos)||0;
-  if(document.getElementById('susp').checked && exc) partes.push(exc+' ponto(s) excluidos por incoerencia de monotonia, por escolha sua');
+  const exM=(D.resumo&&D.resumo.n_excluidos_monotonia)||0, exA=(D.resumo&&D.resumo.n_excluidos_atividade)||0;
+  if(document.getElementById('susp').checked && exM) partes.push(exM+' ponto(s) excluidos por incoerencia de monotonia, por escolha sua');
+  if(exA) partes.push(exA+' ponto(s) de atividades inelegiveis excluidos (independente da escolha de monotonia).');
   const outras=(D.outras_modalidades||[]).length;
   if(outras) partes.push('Atividades de outra modalidade ('+outras+') nao entram no grafico.');
   el.innerHTML=partes.length?partes.map(x=>'<div>'+x+'</div>').join(''):'Sem avisos nesta janela. Os valores sao medidos, sem interpolacao.';

@@ -1448,6 +1448,7 @@ def api_protocolo_testes_decisao():
             # a confirmacao/rejeicao entra no IR de imediato (idempotente; nunca levanta)
             try:
                 recalibracao = mis.recalibrar(origem='confirmacao_manual')
+                mis.registar_sombra(recalibracao, 'confirmacao_manual')   # modo sombra: so regista, nunca promove
             except Exception as e:
                 recalibracao = {'ok': False, 'erro': f'{type(e).__name__}: {e}'}
         return jsonify({'status': 'OK', 'alterado': True,
@@ -5889,6 +5890,7 @@ def api_modelo_ir_recalibrar():
     try:
         res = mis.recalibrar(origem='manual', forcar=bool(corpo.get('forcar')),
                              tipo=corpo.get('tipo') or None, duracao=corpo.get('duracao_s'))
+        mis.registar_sombra(res, 'manual')   # modo sombra: so regista, nunca promove
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -6033,19 +6035,130 @@ def api_modelo_ir_validacao():
         return _erro_registo(400, 'modo invalido (use retrospectivo, conhecido_na_epoca ou ambos)', 'modo')
     if not db.ENABLED:
         return _erro_registo(503, 'sem base de dados')
+    import modelo_ir_temporal as mtemp
+    import modelo_ir_curvas as mcurv
+    import modelo_ir_contrato as mct
+    modos_sel = mv.MODOS if modo == 'ambos' else (modo,)
+    leitor, estado_t = mtemp.leitor_producao()
+    hist_curvas, estado_c = mcurv.leitor_producao()
+    contagem_t = contagem_c = None
     try:
-        res = mis.validar_preditivo(db.observacoes_auto_historico(), db.revisoes_testes_modelo(),
-                                    db.load_activities(), db.load_power_curves() or [],
-                                    modos=mv.MODOS if modo == 'ambos' else (modo,),
-                                    tipo=filtros['tipo'], duracao=filtros['duracao'])
+        contagem_t = leitor.contar() if leitor is not None else None
+        contagem_c = hist_curvas.contar() if hist_curvas is not None else None
+    except Exception:  # noqa: BLE001 - leitura falhou: o historico nao e provado, nunca se avalia
+        leitor, estado_t, hist_curvas, estado_c = None, 'erro', None, 'erro'
+    # Contrato (Etapa 14): a avaliacao temporal so corre com os DOIS historicos disponiveis e com registos.
+    motivo = mct.motivo_bloqueio(estado_t, contagem_t, estado_c, contagem_c)
+    itens_por_modo, motivos_bloqueio, base = {}, {}, None
+    try:
+        hist, rev = db.observacoes_auto_historico(), db.revisoes_testes_modelo()
+        atv, cur = db.load_activities(), db.load_power_curves() or []
+        # retrospectivo: y e estado ATUAIS (NAO e validacao temporal). conhecido_na_epoca: so com os historicos.
+        if 'retrospectivo' in modos_sel:
+            r = mis.validar_preditivo(hist, rev, atv, cur, modos=('retrospectivo',),
+                                      tipo=filtros['tipo'], duracao=filtros['duracao'])
+            itens_por_modo['retrospectivo'] = r['itens']
+            base = r
+        if 'conhecido_na_epoca' in modos_sel:
+            if motivo:
+                motivos_bloqueio['conhecido_na_epoca'] = motivo
+                itens_por_modo['conhecido_na_epoca'] = []
+            else:
+                r = mis.validar_preditivo(hist, rev, atv, cur, modos=('conhecido_na_epoca',),
+                                          tipo=filtros['tipo'], duracao=filtros['duracao'], temporal=leitor,
+                                          historico_curvas=hist_curvas)
+                itens_por_modo['conhecido_na_epoca'] = r['itens']
+                base = base or r
     except me.HistoricoAmbiguo as e:
         return _erro_registo(409, 'historico de testes ambiguo: ' + str(e))
     except Exception as e:
         import traceback
         traceback.print_exc()
         return _erro_registo(500, f'{type(e).__name__}: {e}')
-    return jsonify({'status': 'OK', **res, 'legado': True,
+    partes = []
+    for m in modos_sel:
+        for it in itens_por_modo.get(m, []):
+            it['natureza'] = mis.natureza_avaliacao(it, temporal_usado=(m == 'conhecido_na_epoca' and not motivo))
+            partes.append(it)
+    contrato = mct.montar(modos_sel, itens_por_modo, motivos_bloqueio, estado_t, contagem_t, estado_c, contagem_c)
+    corpo = {k: v for k, v in (base or {}).items() if k not in ('itens', 'modos_omitidos', 'historico_temporal')}
+    temporal_ativo = 'conhecido_na_epoca' in modos_sel and motivo is None
+    if temporal_ativo:
+        legado_ht = 'registo_prospetivo'
+    elif 'conhecido_na_epoca' in modos_sel:
+        legado_ht = 'bloqueado_sem_historico'
+    else:
+        legado_ht = 'reconstrucao_por_deteccao'
+    if 'conhecido_na_epoca' not in modos_sel:
+        nat_epoca = 'nao_solicitado'
+    elif temporal_ativo:
+        nat_epoca = 'temporal_com_historico'
+    else:
+        nat_epoca = 'bloqueada_por_historico_insuficiente (' + motivo + ')'
+    return jsonify({'status': 'OK', **corpo, 'itens': partes,
+                    'historico_temporal': legado_ht,
+                    'historico_temporal_estado': contrato['historico_temporal_estado'],
+                    'historico_temporal_estado_legado': estado_t,
+                    'historico_curvas_estado': contrato['historico_curvas_estado'],
+                    'natureza_avaliacao': contrato['natureza_avaliacao'],
+                    'resultado_por_modo': contrato['resultado_por_modo'],
+                    'definicoes_estado': contrato['definicoes_estado'],
+                    'limitacoes': contrato['limitacoes'],
+                    'natureza_por_modo': {
+                        'retrospectivo': 'retrospectiva_valores_atuais (nao e validacao historica)',
+                        'conhecido_na_epoca': nat_epoca},
+                    'legado': True,
                     'aviso_legado': 'LEGADO (60/300/1200 s): nao valida o IR baseado em MMP3 (180 s) nem o alimenta'})
+
+
+@app.route('/api/modelo/ir/sombra')
+def api_modelo_ir_sombra():
+    """Etapa 15: vista do painel IR sombra para UMA selecao (tipo, duracao, modo). SO LEITURA.
+
+    Reutiliza a leitura de /api/modelo/ir/validacao (esse contrato NAO muda) e devolve a vista ja montada por
+    modelo_ir_painel. Nao escreve, nao recalibra, nao promove. Sem cache: cada pedido le o estado atual.
+    Nao substitui /api/modelo/validacao (legado) nem /api/modelo/ir/conjunto (operacional).
+    """
+    import modelo_ir_painel as mip
+    try:
+        duracao = int(request.args.get('duracao', ''))
+    except ValueError:
+        duracao = None
+    tipo, modo = request.args.get('tipo'), request.args.get('modo')
+    if tipo not in mip.MODALIDADES:
+        return _erro_registo(400, f'tipo invalido (use {", ".join(mip.MODALIDADES)})', 'tipo')
+    if duracao not in mip.DURACOES_VISIVEIS:
+        return _erro_registo(400, 'duracao invalida (use 60, 300 ou 1200)', 'duracao')
+    if modo not in mip.MODOS:
+        return _erro_registo(400, 'modo invalido (use retrospectivo ou conhecido_na_epoca)', 'modo')
+    resp = api_modelo_ir_validacao()
+    corpo, codigo = (resp if isinstance(resp, tuple) else (resp, 200))
+    if codigo != 200:   # erro real do endpoint (400/409/500/503): propaga o codigo, nunca finge 'OK'
+        return corpo, codigo
+    payload = corpo.get_json(silent=True) or {}
+    return jsonify({'status': 'OK', 'vista': mip.montar(payload, tipo, duracao, modo),
+                    'fonte': '/api/modelo/ir/validacao'})
+
+
+@app.route('/api/modelo/ir/sombra/prospetiva')
+def api_modelo_ir_sombra_prospetiva():
+    """Etapa 17: estado do REGISTO PROSPETIVO da sombra (so leitura). Nunca escreve e nunca reconstroi previsoes
+    passadas: mostra apenas o que foi registado no instante real do calculo. Sem migracao: estado migracao_pendente.
+    Nao substitui /api/modelo/ir/sombra (validacao retrospetiva/temporal existente)."""
+    import modelo_ir_produtor_previsoes as mpp
+    import modelo_testes as mt
+    if not db.ENABLED:
+        return _erro_registo(503, 'sem base de dados')
+    try:
+        import modelo_ir_previsoes as mpv
+        loja = mpv.loja_da_base()
+        historico = db.observacoes_auto_historico()
+        agora = mt.agora_utc()
+        registo = mpp.estado_registo(loja, historico, agora)
+        recentes = mpp.listar(loja) if registo['estado'] != 'migracao_pendente' else []
+    except Exception as e:  # noqa: BLE001
+        return _erro_registo(500, f'{type(e).__name__}: {e}')
+    return jsonify({'status': 'OK', 'registo': registo, 'recentes': recentes, 'retroativa': False})
 
 
 @app.route('/api/carga/distribuicao')

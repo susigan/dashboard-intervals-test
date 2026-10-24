@@ -1,0 +1,182 @@
+{
+ "T1_escolhido_por_corte_desenvolvimento": {
+  "2024-07-01": {
+   "t1": 100.0
+  },
+  "2025-01-01": {
+   "t1": 30.0
+  },
+  "2025-07-01": {
+   "t1": 100.0
+  },
+  "2026-01-01": {
+   "t1": 100.0
+  }
+ },
+ "baselines": {
+  "M0": "media das observacoes do treino",
+  "M1": "ultima observacao do treino (ordenada por data)",
+  "esquema": "cortes_treino_teste"
+ },
+ "codigo": {
+  "commit_base": "24ddf4a",
+  "modelo_ir_confianca_py_sha256": "6eb16ed1c4c49474320b5dd8b91481594c088cd8b3353b85803b990dfd71e1d3",
+  "modelo_ir_py_sha256": "9b5c80459b074857e8fbcafdbea085ba387337d5f0e5b5c9fd4caf155bd06eb5",
+  "nota": "versao 2.0 do classificador; resultados de desenvolvimento calculados na versao de ronda 4"
+ },
+ "configuracao": {
+  "familia": "regularizado",
+  "fixos": {
+   "t1": "escolhido_por_corte_em_{30,60,100}_por_validacao_interna_70_30_no_treino"
+  },
+  "id": "mediana5|D_T1fixo",
+  "parametros_livres": [
+   "p0",
+   "k1",
+   "k2",
+   "t2"
+  ],
+  "regra_p0": "mediana das 5 primeiras observacoes elegiveis do treino (p0_candidatos mediana5)",
+  "regra_selecao_t1": "erro absoluto medio na metade final do treino (70/30 cronologico); empate indefinido na regra"
+ },
+ "cortes_desenvolvimento": [
+  "2024-07-01",
+  "2025-01-01",
+  "2025-07-01",
+  "2026-01-01"
+ ],
+ "criterio_prospetivo": "novos cortes com data > data_ultima_observacao_desenvolvimento; >=5 obs de teste por corte; >=3 cortes; mesma politica; decisao so de sombra (sem promocao).",
+ "dados_desenvolvimento": {
+  "export": "export completo de 2026-10-21 (1941 linhas), excluidos i199697167 e i193622214",
+  "sha256": "2250b2ee2d59eb5010fd8d6e9eddf65698534924bc1adbac17070846f90c61c5",
+  "snapshot": "snap_inputs_v3.json"
+ },
+ "data_congelamento": "2026-10-23",
+ "data_ultima_observacao_desenvolvimento": "2026-10-21",
+ "duracao_s": 300,
+ "estado": "candidata_experimental_congelada",
+ "hash_conteudo": "9a6f91af72ad6337928879eb95d3dc25e7f8aa30c054a3789a84aedced04d6e1",
+ "hipoteses_a_refutar": [
+  "MAE_IR < min(MAE_M0, MAE_M1) em >=3 cortes novos",
+  "CV do MAE entre cortes <= 0.5"
+ ],
+ "id": "ski300-mediana5-D_T1fixo",
+ "metricas_desenvolvimento": [
+  {
+   "T1_escolhido_no_treino": 100.0,
+   "cond": Infinity,
+   "corr_max": null,
+   "corte": "2024-07-01",
+   "identificavel": false,
+   "mae_ir": 29.348946889080317,
+   "mae_media": 29.755434782608695,
+   "mae_ult": 53.391304347826086,
+   "n_teste": 23,
+   "n_treino": 16,
+   "no_limite": [
+    "k2",
+    "t2"
+   ],
+   "parametros_estimados": {
+    "k1": 0.0179,
+    "k2": 0.0,
+    "p0": 154.0,
+    "t1": 100.0,
+    "t2": 1.0002
+   },
+   "rmse_ir": 36.26617688205453,
+   "rmse_media": 36.99102968523468,
+   "rmse_ult": 57.277357238038775
+  },
+  {
+   "T1_escolhido_no_treino": 30.0,
+   "cond": 31.180899860812207,
+   "corr_max": 0.8847359339026309,
+   "corte": "2025-01-01",
+   "identificavel": true,
+   "mae_ir": 22.995428281023425,
+   "mae_media": 23.269841269841272,
+   "mae_ult": 63.55555555555556,
+   "n_teste": 18,
+   "n_treino": 21,
+   "no_limite": [],
+   "parametros_estimados": {
+    "k1": 0.3811,
+    "k2": 0.8227,
+    "p0": 154.0,
+    "t1": 30.0,
+    "t2": 10.4954
+   },
+   "rmse_ir": 27.51561763410293,
+   "rmse_media": 28.869882985786433,
+   "rmse_ult": 67.34900807650317
+  },
+  {
+   "T1_escolhido_no_treino": 100.0,
+   "cond": 13.232577086385858,
+   "corr_max": 0.6937218900772057,
+   "corte": "2025-07-01",
+   "identificavel": true,
+   "mae_ir": 18.589819376162446,
+   "mae_media": 22.60355029585799,
+   "mae_ult": 25.384615384615383,
+   "n_teste": 13,
+   "n_treino": 26,
+   "no_limite": [],
+   "parametros_estimados": {
+    "k1": 0.081,
+    "k2": 0.5843,
+    "p0": 154.0,
+    "t1": 100.0,
+    "t2": 7.3563
+   },
+   "rmse_ir": 23.171336090201077,
+   "rmse_media": 29.053714791662465,
+   "rmse_ult": 31.908523095778754
+  },
+  {
+   "T1_escolhido_no_treino": 100.0,
+   "cond": 17.540393581140208,
+   "corr_max": 0.7016327374262958,
+   "corte": "2026-01-01",
+   "identificavel": true,
+   "mae_ir": 15.2412579735334,
+   "mae_media": 26.471774193548384,
+   "mae_ult": 43.875,
+   "n_teste": 8,
+   "n_treino": 31,
+   "no_limite": [],
+   "parametros_estimados": {
+    "k1": 0.0911,
+    "k2": 0.4637,
+    "p0": 154.0,
+    "t1": 100.0,
+    "t2": 11.9018
+   },
+   "rmse_ir": 21.596843740619207,
+   "rmse_media": 35.29958929169475,
+   "rmse_ult": 50.45666457466248
+  }
+ ],
+ "modalidade": "Ski",
+ "nota_cortes": "Cortes SOBREPOSTOS e JA USADOS na escolha do P0 e da grelha: NAO sao validacao prospetiva.",
+ "origem_resultados": "ronda4_resultados.json (sha256 81df9ac524a775c45a5e38fd0d526718799f426db0eb6165acaa385125a68c8f)",
+ "politica": {
+  "hash": "5a8354969dc9",
+  "limiares": {
+   "cv_max": 0.5,
+   "cv_parametros_max": 0.5,
+   "frac_identificavel_A": 0.75,
+   "frac_identificavel_media": 0.5,
+   "margem_limite_rel": 0.001,
+   "min_cortes_avaliaveis": 3,
+   "min_obs_teste_por_corte": 5,
+   "min_observacoes": 15,
+   "min_vitorias": 3,
+   "n_parametros": 5
+  },
+  "versao": "2.0-eixos-separados"
+ },
+ "promocao_operacional": false,
+ "versao_registo": 1
+}

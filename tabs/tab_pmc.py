@@ -667,6 +667,7 @@ BODY = r"""
 <details class="expl" id="validacaoExp" style="margin:10px 0" ontoggle="abrirValidacao(this)"><summary>LEGADO &mdash; Validacao preditiva exploratoria do estimador de 60/300/1200 s (nao valida o IR de MMP3)</summary><div class="expl-corpo" id="validacaoExpCorpo">A carregar...</div></details>
 <details class="expl" id="irExp" style="margin:10px 0" ontoggle="abrirIR(this)"><summary>Modelo IR: curvas de influencia por modalidade (experimental, ajuste historico)</summary><div class="expl-corpo" id="irExpCorpo">A carregar...</div></details>
 <details class="expl" id="irExploratorio" style="margin:10px 0" ontoggle="abrirIRExploratorio(this)"><summary>IR EXPLORATORIO &mdash; historico, nao validado (P0 livre por unidade; 60/300/1200 s)</summary><div class="expl-corpo" id="irExploratorioCorpo">A carregar...</div></details>
+<details class="expl" id="irSombra" style="margin:10px 0" ontoggle="abrirIRSombra(this)"><summary>IR SOMBRA &mdash; previsao experimental vs observado (validacao temporal; experimental; nao promove)</summary><div class="expl-corpo" id="irSombraCorpo">Abra para escolher a seleccao e carregar.</div></details>
 <details class="expl" id="distCargaExp" style="margin:10px 0" ontoggle="abrirDistCarga(this)"><summary>Distribuicao da carga por modalidade (Bike, Row, Run, Ski): Training Load ou TRIMP, observada, sem musculacao</summary><div class="expl-corpo" id="distCargaExpCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
@@ -3142,10 +3143,11 @@ function irxExclHtml(j){
   h+='</tbody></table></div>';
   h+='<details style="margin-top:6px"><summary style="font-size:12px;cursor:pointer">Lista completa de exclusões ('+irxEsc(total)+')</summary>'+
     '<div style="overflow-x:auto"><table style="font-size:11.5px;border-collapse:collapse"><thead><tr><th style="text-align:left">Modalidade</th>'+
-    '<th>Duração</th><th style="text-align:left">Data</th><th>W</th><th style="text-align:left">Motivo</th><th style="text-align:left">Referência</th>'+
+    '<th>Duração</th><th style="text-align:left">Data</th><th style="text-align:left">Atividade do esforço</th><th>W</th><th style="text-align:left">Motivo</th><th style="text-align:left">Referência</th>'+
     '<th>% da ref.</th><th style="text-align:left">Proveniência da referência (atividade · data · W)</th></tr></thead><tbody>';
   lista.forEach(function(x){
     h+='<tr><td>'+irxEsc(x.modalidade)+'</td><td style="text-align:right">'+irxEsc(x.duracao_s)+' s</td><td>'+irxEsc(x.data||'—')+'</td>'+
+      '<td>'+irxEsc(x.atividade_esforco_id||'—')+'</td>'+
       '<td style="text-align:right">'+irxNum(x.watts,1)+'</td><td>'+irxEsc(x.motivo)+'</td><td>'+irxEsc(x.referencia_tipo||'—')+'</td>'+
       '<td style="text-align:right">'+irxNum(x.pct_da_referencia,1)+'</td><td>'+irxEsc(x.referencia_activity_id||'—')+' · '+
       irxEsc(x.referencia_data||'—')+' · '+irxNum(x.referencia_watts,1)+' W</td></tr>';});
@@ -3190,18 +3192,55 @@ function irxDesenhar(){
   if(leg)leg.innerHTML=its.map(function(it){return '<span style="margin-right:12px"><i style="display:inline-block;width:10px;height:10px;background:'+irxEsc(COR[it.modalidade]||'#8b949e')+';margin-right:4px"></i>'+irxEsc(it.modalidade)+'</span>';}).join('')+
     ' <span style="color:#d29922">Exploratório — não validado (linha líquida = P0 livre + K1·E − K2·G)</span>';
 }
+// Season (experimental): bloco SEPARADO do all-time. Parametros so aparecem quando a classe e candidata.
+var IRX_CLASSE={candidata_calibracao:'candidata a calibração (experimental)',apenas_validacao:'apenas validação',
+  insuficiente:'insuficiente',nao_identificavel:'não identificável — valores não válidos',nao_calculado:'não calculado'};
+function irxSeasonHtml(j){
+  var s=j&&j.season; if(!s)return '';
+  var h='<div style="margin-top:12px;border-top:1px solid #30363d;padding-top:8px"><b>Season — experimental, separada do all-time (não combinada)</b>'+
+    '<div style="font-size:11.5px;color:#8b949e">'+irxEsc(s.aviso||'')+'</div>';
+  if(s.status!=='OK'){
+    return h+'<p style="font-size:12px;color:#d29922">Fronteiras de season indisponíveis ('+irxEsc(s.status)+'): '+
+      'sem marcos SEASON_START não se usam anos civis e nenhum ajuste de season foi feito.</p></div>';
+  }
+  var fr=(s.fronteiras||[]).map(function(f){return irxEsc(f.season)+': '+irxEsc(f.inicio)+' a '+irxEsc(f.fim)+(f.aberta?' (aberta)':'');}).join(' · ');
+  h+='<div style="font-size:12px;margin:4px 0">Fronteiras reais ('+irxEsc(s.fonte_fronteiras)+'): '+(fr||'&mdash;')+'</div>';
+  h+='<table style="font-size:12px;width:100%"><thead><tr><th>Mod.</th><th>Dur.</th><th>Season</th><th>Datas</th>'+
+    '<th>n obs</th><th>Classificação</th><th>Parâmetros</th><th>Referência</th><th>Exclusões</th></tr></thead><tbody>';
+  (s.itens||[]).forEach(function(it){
+    var pr=it.parametros, v=it.valido_para_calibracao===true;
+    var par=(v&&pr)?['p0','k1','k2','t1','t2'].map(function(k){return k+'='+irxNum(pr[k],3);}).join(' '):'&mdash;';
+    var tipos=(it.tipos_referencia||[]).join(',')+(it.n_tambem_all_time?' ('+irxEsc(it.n_tambem_all_time)+' também all-time)':'');
+    h+='<tr><td>'+irxEsc(it.modalidade)+'</td><td style="text-align:right">'+irxEsc(it.duracao_s)+' s</td>'+
+      '<td>'+irxEsc(it.season||'&mdash;')+'</td>'+
+      '<td style="font-size:11.5px">'+irxEsc(it.data_ini||'&mdash;')+' a '+irxEsc(it.data_fim||'&mdash;')+'</td>'+
+      '<td style="text-align:right">'+irxEsc(it.n_obs==null?'&mdash;':it.n_obs)+'</td>'+
+      '<td>'+irxEsc(IRX_CLASSE[it.classificacao]||it.classificacao||'&mdash;')+
+        (it.motivo_classificacao?'<div style="font-size:11px;color:#8b949e">'+irxEsc(it.motivo_classificacao)+'</div>':'')+'</td>'+
+      '<td style="font-size:11.5px">'+par+'</td>'+
+      '<td style="font-size:11.5px">'+(tipos||'&mdash;')+'</td>'+
+      '<td style="text-align:right">'+irxEsc((it.exclusoes||[]).length)+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  var ids=(s.itens||[]).filter(function(it){return it.season;}).map(function(it){
+    return '<div style="font-size:11px;margin-top:3px">'+irxEsc(it.modalidade)+' '+irxEsc(it.duracao_s)+' s · '+irxEsc(it.season)+': '+
+      irxEsc((it.ids_esforcos||[]).join(', ')||'nenhum')+'</div>';}).join('');
+  if(ids)h+='<details style="margin-top:6px"><summary style="font-size:12px;cursor:pointer">Esforços usados por season</summary>'+ids+'</details>';
+  return h+'</div>';
+}
 function irxRender(erro){
   var el=document.getElementById('irExploratorioCorpo'); if(!el)return;
   var j=IRX_J;
   if(erro||!j){el.innerHTML=irxRotulo()+'<p style="color:#f85149;font-size:12.5px">Não foi possível obter o modo exploratório: '+irxEsc(erro||'sem resposta')+'</p>';return;}
   if(j.status!=='OK'){el.innerHTML=irxRotulo()+'<p style="color:#f85149;font-size:12.5px">Erro no modo exploratório: '+irxEsc(j.mensagem||'desconhecido')+'</p>';return;}
   var ops=(j.duracoes||[]).map(function(d){return '<option value="'+irxEsc(d)+'"'+(d===300?' selected':'')+'>'+irxEsc(d)+' s</option>';}).join('');
-  el.innerHTML=irxRotulo()+'<div id="irxAv"></div><div id="irxTab"></div><div id="irxExcl"></div>'+
+  el.innerHTML=irxRotulo()+'<div id="irxAv"></div><div id="irxTab"></div><div id="irxExcl"></div><div id="irxSea"></div>'+
     '<div style="margin:8px 0;font-size:12px">Duração da curva: <select id="irxDur" onchange="irxDesenhar()">'+ops+'</select></div>'+
     '<div class="chartbox"><canvas id="chIrx" height="300"></canvas></div><div id="irxLeg" style="font-size:12px;margin-top:4px"></div>';
   document.getElementById('irxAv').innerHTML=irxAvisos(j);
   document.getElementById('irxTab').innerHTML=irxTabela(j);
   var irxEx=document.getElementById('irxExcl'); if(irxEx)irxEx.innerHTML=irxExclHtml(j);
+  var irxSe=document.getElementById('irxSea'); if(irxSe)irxSe.innerHTML=irxSeasonHtml(j);
   irxDesenhar();
 }
 async function carregarIRExploratorio(){
@@ -3213,6 +3252,177 @@ async function carregarIRExploratorio(){
 }
 function abrirIRExploratorio(d){ if(d&&d.open&&!IRX_MONTADO)carregarIRExploratorio(); }
 // <</ir-exploratorio>>
+// <<ir-sombra>>
+// ─── IR SOMBRA: previsao experimental vs valor observado (Etapa 15) ────────────────────────────
+// SO LE /api/modelo/ir/sombra, UMA seleccao por pedido, e so quando o utilizador clica em "Carregar".
+// Nada e gravado, nada e recalibrado e nenhum candidato e promovido. O estado e calculado no servidor
+// (modelo_ir_painel); aqui so se desenha. A curva operacional (% do P0, IR_J ja carregado) nunca entra
+// na mesma serie que a sombra (W): mostra-se apenas o resumo do ajuste ativo.
+const SOM_MOD=['Bike','Row','Ski','Run'], SOM_DUR=[60,300,1200];
+const SOM_MODO=[['conhecido_na_epoca','Temporal (so com informacao conhecida na epoca)'],['retrospectivo','Retrospectivo (valores atuais, nao e validacao)']];
+const SOM_COR={disponivel:'#3fb950',incompleto:'#d29922',vazio:'#8b949e',indisponivel:'#f85149'};
+const SOM_ROT={disponivel:'disponivel',incompleto:'incompleto',vazio:'vazio',indisponivel:'indisponivel'};   // estados canonicos da API
+let SOM_MONTADO=false, SOM_SEQ=0;
+function somEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function somNum(x,d){return (x==null||!isFinite(x))?'&mdash;':Number(x).toFixed(d==null?1:d);}
+function somBadge(e,rot){const c=SOM_COR[e]||'#8b949e';return '<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11.5px;border:1px solid '+c+';color:'+c+'">'+somEsc(rot||SOM_ROT[e]||e)+'</span>';}
+function somSel(id,opts,val,onch){return '<select id="'+id+'" style="font-size:12px" onchange="somMudou()">'+opts.map(function(o){return '<option value="'+somEsc(o[0])+'"'+(String(o[0])===String(val)?' selected':'')+'>'+somEsc(o[1])+'</option>';}).join('')+'</select>';}
+function somShell(){
+ document.getElementById('irSombraCorpo').innerHTML=
+  '<p style="font-size:12.5px;margin:4px 0 8px">Previsão <b>experimental</b> do candidato IR sombra, comparada com o valor observado que a avalia. '+
+  'Não altera o IR operacional nem as recalibrações e não promove nenhum candidato.</p>'+
+  '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0">'+
+  somSel('somMod',SOM_MOD.map(function(m){return [m,m];}),'Bike')+
+  somSel('somDur',SOM_DUR.map(function(d){return [d,d+' s'];}),1200)+
+  somSel('somModo',SOM_MODO,'conhecido_na_epoca')+
+  '<button type="button" id="somCarregar" onclick="somCarregar()" style="font-size:12px">Carregar seleção</button></div>'+
+  '<div id="somAviso" style="font-size:12px;color:#8b949e;margin:2px 0">Escolha a seleção e carregue. Cada carregamento lê o estado atual.</div>'+
+  '<div id="somSaida"></div>'+
+  '<div style="margin:10px 0 4px"><b style="font-size:12.5px">Registo prospetivo (D+1, 180 s)</b> · <button type="button" onclick="prospCarregar()" style="font-size:12px">Ver registo prospetivo</button></div>'+
+  '<div id="somProsp" style="font-size:12px"></div>';
+ SOM_MONTADO=true;
+}
+function somMudou(){
+ SOM_SEQ++;                                  // uma resposta antiga nao volta a desenhar-se
+ const s=document.getElementById('somSaida'), a=document.getElementById('somAviso');
+ if(s)s.innerHTML='';
+ if(a)a.textContent='Seleção alterada: carregue para ver a previsão desta seleção.';
+}
+function abrirIRSombra(d){ if(d&&d.open&&!SOM_MONTADO)somShell(); }
+async function somCarregar(){
+ const seq=++SOM_SEQ;
+ const mod=document.getElementById('somMod').value, dur=document.getElementById('somDur').value, modo=document.getElementById('somModo').value;
+ const saida=document.getElementById('somSaida');
+ if(saida)saida.innerHTML='<p style="font-size:12px">A carregar...</p>';
+ let j=null;
+ try{ j=await fetch('/api/modelo/ir/sombra?tipo='+encodeURIComponent(mod)+'&duracao='+encodeURIComponent(dur)+'&modo='+encodeURIComponent(modo)).then(function(r){return r.json();}); }
+ catch(e){ j=null; }
+ if(seq!==SOM_SEQ)return;                    // resposta de uma seleccao anterior: descartada
+ somRender(j,mod);
+}
+function somCabecalho(v){
+ const h=v.historico_temporal||{}, c=v.historico_curvas||{}, cn=v.contagens||{};
+ let s='<div style="margin:6px 0">'+somBadge(v.estado,null)+' <b style="font-size:12.5px">'+somEsc(v.rotulo_modo||'')+'</b> · '+somEsc(v.modalidade||'')+' · '+somEsc(v.duracao_s)+' s</div>';
+ s+='<p style="font-size:12px;margin:3px 0"><b>Natureza</b>: '+somEsc(v.natureza_rotulo||'—')+(v.nao_validacao_historica?' <span style="color:#d29922">(não é validação histórica)</span>':'')+'</p>';
+ if(v.mensagem)s+='<p style="font-size:12px;color:#f85149;margin:3px 0">'+somEsc(v.mensagem)+'</p>';
+ if(v.bloqueado)s+='<p style="font-size:12px;color:#d29922;margin:3px 0">Bloqueado: '+somEsc(v.motivo_bloqueio||'histórico insuficiente')+'. Nada foi avaliado.</p>';
+ s+='<p style="font-size:12px;margin:3px 0">Histórico temporal: <b>'+somEsc(h.rotulo||'—')+'</b> · Histórico de curvas: <b>'+somEsc(c.rotulo||'—')+'</b></p>';
+ s+='<p style="font-size:12px;margin:3px 0">Alvos previstos: <b>'+(cn.previstos||0)+'</b> · avaliáveis: <b>'+(cn.avaliaveis||0)+'</b> · rejeitados: <b>'+(cn.rejeitados||0)+'</b>'+
+    (cn.previsto_nao_avaliavel?' · previstos sem avaliação possível (pendentes): <b>'+cn.previsto_nao_avaliavel+'</b>':'')+'</p>';
+ return s;
+}
+function somOperacional(mod){
+ const it=(typeof IR_J!=='undefined'&&IR_J&&IR_J.modalidades&&IR_J.modalidades[mod])||null;
+ if(!it)return '<p style="font-size:12px;color:#8b949e;margin:3px 0">Operacional (180 s): abra o painel do IR operacional para ver o ajuste ativo desta modalidade.</p>';
+ const aj=it.ajuste||{}, P=it.parametros||{};
+ return '<p style="font-size:12px;margin:3px 0"><b>Operacional</b> (180 s, ajuste v'+somEsc(aj.versao_ajuste==null?'—':aj.versao_ajuste)+' de '+somEsc(String(aj.ajustado_em||'—').slice(0,10))+', P0 '+somNum(P.p0,1)+' W). '+
+   'Curva em % do P0 no painel do IR operacional; não é uma previsão por alvo e não entra nesta comparação em W.</p>';
+}
+function somEvidencia(v){
+ // Sempre visivel, com ou sem metricas: a ausencia de evidencia tambem e informacao.
+ return '<p style="font-size:12px;margin:3px 0">Suficiência da amostra: <b>'+somEsc((v.suficiencia||{}).rotulo||'sem informacao')+'</b>. '+
+   somEsc((v.evidencia_para_revisao||{}).texto||'Sem evidencia suficiente para uma futura revisao do candidato.')+'</p>';
+}
+function somMetricas(v){
+ if(!v.metricas)return '<p style="font-size:12px;color:#8b949e;margin:4px 0">Sem métricas: nenhum alvo avaliável nesta seleção.</p>';
+ const pm=v.metricas.por_modelo||{}, ordem=['IR','M0','M1','M2'].filter(function(k){return pm[k];});
+ const rot={IR:'<b>IR sombra (experimental)</b>',M0:'M0 média expansiva',M1:'M1 último valor',M2:'M2 nível'};
+ let t=(v.nao_validacao_historica?'<p style="font-size:12px;color:#d29922;margin:4px 0">Métricas retrospectivas: valores atuais, não validação temporal.</p>':'')+
+  '<table style="font-size:12px;border-collapse:collapse;margin:4px 0"><thead><tr><th style="text-align:left">Modelo</th><th>n</th><th>MAE (W)</th><th>RMSE (W)</th><th>Viés (W)</th></tr></thead><tbody>';
+ ordem.forEach(function(k){const m=pm[k]||{}; t+='<tr><td>'+rot[k]+'</td><td style="text-align:right">'+somEsc(m.n)+'</td><td style="text-align:right">'+somNum(m.mae,1)+'</td><td style="text-align:right">'+somNum(m.rmse,1)+'</td><td style="text-align:right">'+somNum(m.erro_medio,1)+'</td></tr>';});
+ t+='</tbody></table>';
+ const d=v.metricas.delta_mae_ir_menos_referencia||{};
+ const per=v.periodo?v.periodo[0]+' a '+v.periodo[1]:'—';
+ t+='<p style="font-size:12px;margin:3px 0">Diferença de MAE (IR menos referência): vs M0 '+somNum(d.M0,1)+' W, vs M1 '+somNum(d.M1,1)+' W. Negativo = IR com menor erro. '+
+   'Amostra: <b>'+somEsc(v.metricas.n_alvos)+'</b> alvos · período avaliado: <b>'+somEsc(per)+'</b>.</p>';
+ return t;
+}
+function somGrafico(v){
+ const ns=((v.serie||{}).sombra||[]).length, nr=((v.serie||{}).referencia_observada||[]).length;
+ let msg='';
+ if(v.estado==='indisponivel')msg='Sem dados: '+(v.mensagem||'indisponível')+'.';
+ else if(v.bloqueado)msg='Bloqueado: nenhuma previsão foi calculada (motivo: '+(v.motivo_bloqueio||'histórico insuficiente')+').';
+ else if((v.contagens||{}).previsto_nao_avaliavel)msg=(v.contagens||{}).previsto_nao_avaliavel+' previsão(ões) calculada(s) sem avaliação possível: experimental e pendente, não desenhada.';
+ else if(!ns&&!nr)msg='Sem previsões calculadas para esta seleção: nenhuma linha experimental é desenhada.';
+ return '<canvas id="somCanvas" width="640" height="240" style="max-width:100%;display:block;margin:6px 0"></canvas>'+
+   (msg?'<p style="font-size:12px;color:#d29922;margin:3px 0">'+somEsc(msg)+'</p>':'')+
+   '<p style="font-size:11.5px;color:#8b949e;margin:2px 0"><span style="color:#58a6ff">●</span> previsão experimental da sombra (W, '+ns+' pontos) · '+
+   '<span style="color:#f0883e">●</span> valor observado usado na avaliação (W, '+nr+' pontos). Não há série operacional em W nesta vista.</p>';
+}
+function somDesenhar(v){
+ const cv=document.getElementById('somCanvas'); if(!cv||!cv.getContext)return;
+ const g=cv.getContext('2d'); if(!g)return;
+ const W=cv.width, H=cv.height, PL=56, PR=12, PT=12, PB=28;
+ const S=((v.serie||{}).sombra)||[], R=((v.serie||{}).referencia_observada)||[];
+ g.clearRect(0,0,W,H);
+ if(!S.length&&!R.length)return;                // sem previsoes calculadas: nenhuma linha experimental
+ const dia=function(s){return Date.parse(s)/86400000;};
+ const pts=S.concat(R).map(function(p){return {x:dia(p.data),y:Number(p.valor)};}).filter(function(p){return isFinite(p.x)&&isFinite(p.y);});
+ if(!pts.length)return;
+ const x0=Math.min.apply(null,pts.map(function(p){return p.x;})), x1=Math.max.apply(null,pts.map(function(p){return p.x;}));
+ const y0=Math.min.apply(null,pts.map(function(p){return p.y;})), y1=Math.max.apply(null,pts.map(function(p){return p.y;}))+1e-9;
+ const X=function(x){return PL+(x1===x0?0.5:(x-x0)/(x1-x0))*(W-PL-PR);};
+ const Y=function(y){return PT+(1-(y-y0)/((y1-y0)||1))*(H-PT-PB);};
+ g.strokeStyle='#30363d'; g.lineWidth=1;
+ g.beginPath(); g.moveTo(PL,PT); g.lineTo(PL,H-PB); g.lineTo(W-PR,H-PB); g.stroke();
+ g.fillStyle='#8b949e';
+ g.fillText(String(Math.round(y1))+' W',4,PT+8); g.fillText(String(Math.round(y0))+' W',4,H-PB);
+ if(v.periodo){ g.fillText(v.periodo[0],PL,H-8); g.fillText(v.periodo[1],W-PR-70,H-8); }
+ const pintar=function(lista,cor,raio){
+  g.fillStyle=cor;
+  lista.forEach(function(p){const x=dia(p.data), y=Number(p.valor); if(!isFinite(x)||!isFinite(y))return;
+   g.beginPath(); g.arc(X(x),Y(y),raio,0,6.283); g.fill();});
+ };
+ pintar(R,'#f0883e',2.5);                       // referencia observada (y), so onde existe
+ pintar(S,'#58a6ff',3.5);                       // previsao experimental da sombra, so onde foi calculada
+}
+function prospCarregar(){
+ const el=document.getElementById('somProsp'); if(!el)return;
+ el.innerHTML='<p style="font-size:12px">A carregar registo prospetivo...</p>';
+ fetch('/api/modelo/ir/sombra/prospetiva').then(function(r){return r.json();}).then(function(j){prospRender(j);})
+  .catch(function(){el.innerHTML='<p style="font-size:12px;color:#f85149">Registo prospetivo indisponível.</p>';});
+}
+function prospRender(j){
+ const el=document.getElementById('somProsp'); if(!el)return;
+ if(!j||j.status!=='OK'){el.innerHTML='<p style="font-size:12px;color:#f85149">'+somEsc((j&&j.mensagem)||'Registo prospetivo indisponível.')+'</p>';return;}
+ const g=j.registo||{}, sf=g.suficiencia_metricas||{};
+ const ROT={migracao_pendente:'migração pendente: nada foi registado',sem_previsoes:'ainda não existem previsões',
+  so_bloqueadas:'existem previsões bloqueadas, sem valor',pendentes:'existem previsões pendentes de resultado',
+  com_resultados:'existem previsões com resultado associado'};
+ let t='<p style="font-size:12px;margin:3px 0">Estado: <b>'+somEsc(ROT[g.estado]||g.estado||'desconhecido')+'</b>. Registado no instante real do cálculo; não é retroativo.</p>';
+ if(g.estado==='migracao_pendente'){el.innerHTML=t;return;}     // sem a migracao nao ha contagens: nao se mostra 0
+ t+='<p style="font-size:12px;margin:3px 0">Previsões: <b>'+somEsc(g.previsoes||0)+'</b> · calculadas: '+somEsc(g.calculadas||0)+
+  ' · bloqueadas: '+somEsc(g.bloqueadas||0)+' · pendentes: '+somEsc(g.pendentes_de_resultado||0)+
+  ' (vencidas sem resultado: '+somEsc(g.vencidas_sem_resultado||0)+') · com resultado: '+somEsc(g.com_resultado||0)+
+  ' · revisões de resultado: '+somEsc(g.revisoes_de_resultado||0)+'</p>';
+ if(g.motivos_bloqueio&&Object.keys(g.motivos_bloqueio).length){
+  t+='<p style="font-size:11.5px;color:#8b949e;margin:2px 0">Motivos de bloqueio: '+Object.keys(g.motivos_bloqueio).map(function(k){return somEsc(k)+' ('+g.motivos_bloqueio[k]+')';}).join(', ')+'</p>';}
+ const m=g.metricas;
+ t+= m ? '<p style="font-size:12px;margin:3px 0">Erro prospetivo: MAE '+somNum(m.mae,1)+' W, erro médio '+somNum(m.erro_medio,1)+' W (n='+somEsc(m.n)+', '+somEsc(m.periodo[0])+' a '+somEsc(m.periodo[1])+').</p>'
+   : '<p style="font-size:12px;color:#8b949e;margin:3px 0">Métricas: dados insuficientes (n='+somEsc(sf.n||0)+'; são necessários 20 alvos, 15 datas e 90 dias).</p>';
+ el.innerHTML=t;
+}
+function somLimitacoes(v){
+ const L=(v.limitacoes||[]).concat(v.avisos||[]);
+ return L.map(function(t){return '<p style="font-size:11.5px;color:#8b949e;margin:2px 0">'+somEsc(t)+'</p>';}).join('');
+}
+function somLacunas(v){
+ const L=v.lacunas||[], pm=v.rejeicoes_por_motivo||{}, pc=v.rejeicoes_por_categoria||{};
+ if(!L.length)return '';
+ const cats=Object.keys(pc).map(function(k){return somEsc(k)+' '+pc[k];}).join(' · ');
+ const linhas='<li>Categorias: '+(cats||'&mdash;')+'</li>'+Object.keys(pm).map(function(k){return '<li>'+somEsc(k)+': <b>'+pm[k]+'</b></li>';}).join('');
+ const det=L.slice(0,20).map(function(p){return somEsc(p.data)+' ('+somEsc(p.motivo||'—')+')';}).join(', ');
+ return '<details style="margin:4px 0"><summary style="font-size:12px;cursor:pointer">Lacunas: '+L.length+' alvo(s) sem previsão avaliável</summary>'+
+   '<ul style="font-size:12px;margin:3px 0 3px 18px">'+linhas+'</ul><p style="font-size:11.5px;color:#8b949e;margin:2px 0">'+det+(L.length>20?' …':'')+'</p></details>';
+}
+function somRender(j,mod){
+ const saida=document.getElementById('somSaida'); if(!saida)return;
+ const v=(j&&j.vista)||{estado:'indisponivel',origem:'pedido_falhou',mensagem:(j&&j.mensagem)||'Pedido de validação indisponível.',modalidade:mod,duracao_s:null,modo:null};
+ const a=document.getElementById('somAviso'); if(a)a.textContent='';
+ saida.innerHTML=somCabecalho(v)+somOperacional(v.modalidade||mod)+somEvidencia(v)+somMetricas(v)+somGrafico(v)+somLacunas(v)+somLimitacoes(v);
+ somDesenhar(v);
+}
+// <</ir-sombra>>
 
 
 

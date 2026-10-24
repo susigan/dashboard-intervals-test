@@ -9,9 +9,10 @@ const i0 = todo.indexOf('// <<ir-exploratorio>>'), i1 = todo.indexOf('// <</ir-e
 if (i0 < 0 || i1 < i0) { console.log(JSON.stringify({erro: 'marcadores nao encontrados'})); process.exit(2); }
 const sandbox = {Object, Number, String, Array, Math, isFinite, JSON, console: {log() {}, error() {}}};
 vm.createContext(sandbox);
-vm.runInContext(todo.slice(i0, i1) + '\n;globalThis.__f = {irxDiagCel, irxExclHtml};', sandbox);
+vm.runInContext(todo.slice(i0, i1) + '\n;globalThis.__f = {irxDiagCel, irxExclHtml, irxSeasonHtml};', sandbox);
 const out = {};
 for (const [nome, caso] of Object.entries(CASOS)) {
-  out[nome] = {diag: sandbox.__f.irxDiagCel(caso.item || {}), exclusoes: sandbox.__f.irxExclHtml(caso.j || {})};
+  out[nome] = {diag: sandbox.__f.irxDiagCel(caso.item || {}), exclusoes: sandbox.__f.irxExclHtml(caso.j || {}),
+               season: sandbox.__f.irxSeasonHtml(caso.j || {})};
 }
 console.log(JSON.stringify(out));

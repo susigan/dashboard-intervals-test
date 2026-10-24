@@ -47,6 +47,19 @@ def obter_marcos():
     return None, FONTE_SEASON_MES
 
 
+def _ignorados_da_referencia(mapa, eleg, elegivel):
+    """Atividades que NAO podem servir de referencia no detetor.
+
+    Mesma regra do seletor (modelo_estimador.selecionar_observacoes_auto): so uma atividade
+    'elegivel' pode ser referencia. Sai da pool: icu_ignore_power=true (mapa), e tambem toda a
+    atividade com elegibilidade desconhecida (ex.: ignore_parts nao vazio). Antes so o primeiro
+    caso era retirado: o detetor aceitava referencias que o seletor excluia como observacoes.
+    """
+    ign = {aid for aid, v in (mapa or {}).items() if v is True}
+    ign |= {aid for aid, e in (eleg or {}).items() if (e or {}).get('estado') != elegivel}
+    return ign
+
+
 def _grupos(atividades):
     g = {}
     for a in atividades or []:
@@ -81,7 +94,8 @@ def atualizar(marcos=None, fonte_season=None, agora=None, origem='sync',
     import modelo_estimador as me
     if not db.ENABLED:
         return {'ok': False, 'erro': 'sem base de dados'}
-    if marcos is None and fonte_season is None:
+    obtido_aqui = marcos is None and fonte_season is None
+    if obtido_aqui:
         marcos, fonte_season = obter_marcos()
     fonte_season = fonte_season or (FONTE_SEASON_CALENDARIO if marcos else FONTE_SEASON_MES)
     curvas = db.load_power_curves() if curvas is None else curvas
@@ -90,11 +104,14 @@ def atualizar(marcos=None, fonte_season=None, agora=None, origem='sync',
         return {'ok': False, 'erro': 'atividades_indisponiveis',
                 'detalhe': 'sem activities nao se aplica icu_ignore_power: nada foi registado'}
     agora = agora or mt.agora_utc()
+    if obtido_aqui:
+        import modelo_ir_temporal as tmp
+        tmp.registar_marcos_seguro(marcos, fonte_season, agora)   # instante real da obtencao; nunca levanta
 
     mapa = protocolo.mapa_ignore_power(atividades)
-    ignorar = {aid for aid, v in (mapa or {}).items() if v is True}
     grupos = _grupos(atividades)
     eleg = {aid: me.elegibilidade_aprendizagem(aid, g) for aid, g in grupos.items()}
+    ignorar = _ignorados_da_referencia(mapa, eleg, me.ELEG_ELEGIVEL)
     tags = {aid: sorted({t for a in g for t in moa.tags_da_atividade(a)}) for aid, g in grupos.items()}
     hora = {}                       # hora local REAL de activities.start_date_local (nunca a das curvas: so tem o dia)
     for aid, g in grupos.items():

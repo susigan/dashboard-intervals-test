@@ -438,7 +438,7 @@ class UiExploratorioExclusoes(unittest.TestCase):
                               {'modalidade': 'Ski', 'duracao_s': 300, 'data': '2026-02-20', 'watts': 262.0,
                                'motivo': 'referencia_nao_all_time:season', 'referencia_tipo': 'season',
                                'pct_da_referencia': 91.6, 'referencia_watts': 286.0,
-                               'referencia_activity_id': 'i126571067', 'referencia_data': '2026-02-20'},
+                               'referencia_activity_id': 'i2977223', 'referencia_data': '2022-01-03'},
                               {'modalidade': 'Ski', 'duracao_s': 300, 'data': '2026-01-01', 'watts': 200.0,
                                'motivo': 'sem_referencia_anterior', 'referencia_tipo': None,
                                'pct_da_referencia': None, 'referencia_watts': None,
@@ -484,7 +484,9 @@ class UiExploratorioExclusoes(unittest.TestCase):
         self.assertIn('Lista completa de exclusões (2)', e)
         self.assertIn('referencia_nao_all_time:season', e)
         self.assertIn('91.6', e)                     # percentagem da referencia que qualificou
-        self.assertIn('i126571067', e)               # proveniencia: atividade da referencia
+        self.assertIn('i2977223', e)                 # proveniencia: atividade que estabelece os 286 W
+        self.assertIn('2022-01-03', e)               # data dessa atividade de referencia
+        self.assertNotIn('i126571067', e)            # o esforco de 262 W nao e apresentado como origem da referencia
         self.assertIn('<details', e)                 # expandivel, nao no ecra principal
 
     def test_resposta_antiga_e_zero_exclusoes_nao_quebram(self):

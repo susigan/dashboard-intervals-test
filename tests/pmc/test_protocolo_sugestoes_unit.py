@@ -219,7 +219,7 @@ class InterfaceSemDuplicacao(unittest.TestCase):
         # pedido: uma unica chamada independente, no fim do script, depois de load()
         pedidos = re.findall(r'(?<![\w.])carregarSugestoes\s*\(\s*\)\s*;', js)
         self.assertEqual(len(pedidos), 1)
-        self.assertTrue(js.rstrip().endswith('load();\ncarregarSugestoes();'))
+        self.assertTrue(js.rstrip().endswith('load();\ncarregarSugestoes();\ncarregarIRExploratorio();'))
         # apresentacao: load() so redesenha (sem novo pedido); mais a chamada dentro de carregarSugestoes
         ini = js.index('async function load()')
         fim = js.index('\nfunction ', ini)

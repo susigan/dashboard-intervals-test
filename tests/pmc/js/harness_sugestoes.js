@@ -43,7 +43,8 @@ async function cenario(modoPmc, modoProt, passos, protPayload) {
     if (modo === 'lento') return new Promise(r => pend.push(() => r(resp(ok))));
     return Promise.resolve(resp(ok));
   }
-  const ctx = {document: {getElementById: el, createElement: () => ({}), querySelectorAll: () => []},
+  const ctx = {ctx: () => null, noData: () => {},  // base.py: canvas indisponivel no harness (sem desenho)
+               document: {getElementById: el, createElement: () => ({}), querySelectorAll: () => []},
                fetch, window: {addEventListener() {}, devicePixelRatio: 1},
                Math, Object, Array, JSON, String, Number, Date, Promise, isFinite, setTimeout, parseFloat, parseInt,
                Set, Map, Float64Array, Error};

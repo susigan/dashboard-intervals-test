@@ -662,6 +662,14 @@ BODY = r"""
 <h1>PMC — Performance Management Chart</h1>
 <div class="sub" id="sub">A carregar...</div>
 <div id="sugestoesTeste"></div>
+<div id="irPrincipal" style="margin:14px 0;border:1px solid #30363d;border-radius:8px;padding:12px 14px">
+<h3 style="font-size:15px;margin:0 0 4px">Curvas de influencia por modalidade (exploratorias, nao validadas)</h3>
+<div id="irPrincipalAviso" style="font-size:12.5px;color:#d29922;margin-bottom:6px">A carregar...</div>
+<div style="margin:6px 0;font-size:12px">Duracao: <select id="irxDurMain" onchange="irxRenderMain()"></select></div>
+<div class="chartbox"><canvas id="chIrxMain" height="300"></canvas></div>
+<div id="irxLegMain" style="font-size:12px;margin-top:4px"></div>
+<div id="irPrincipalEstados" style="font-size:12.5px;margin-top:8px"></div>
+</div>
 <details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Deteccao automatica de observacoes MMP (season, all-time, recente)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
 <details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
 <details class="expl" id="validacaoExp" style="margin:10px 0" ontoggle="abrirValidacao(this)"><summary>LEGADO &mdash; Validacao preditiva exploratoria do estimador de 60/300/1200 s (nao valida o IR de MMP3)</summary><div class="expl-corpo" id="validacaoExpCorpo">A carregar...</div></details>
@@ -3199,12 +3207,12 @@ function irxAvisos(j){
   });
   return L.length?'<ul style="font-size:12px;margin:4px 0 4px 18px">'+L.map(function(x){return '<li>'+x+'</li>';}).join('')+'</ul>':'';
 }
-function irxDesenhar(){
+function irxDesenhar(cvId,selId,legId){
   var j=IRX_J; if(!j||j.status!=='OK')return;
-  var el=document.getElementById('irxDur'); var dur=el?Number(el.value):300;
-  var o=ctx('chIrx',300); if(!o)return; var g=o.g,W=o.W,H=o.H;
+  var el=document.getElementById(selId||'irxDur'); var dur=el?Number(el.value):300;
+  var o=ctx(cvId||'chIrx',300); if(!o)return; var g=o.g,W=o.W,H=o.H;
   var its=(j.itens||[]).filter(function(it){return it.duracao_s===dur&&it.curva;});
-  var leg=document.getElementById('irxLeg');
+  var leg=document.getElementById(legId||'irxLeg');
   if(!its.length){noData(g,W,H,'Sem curva nesta duração: nenhuma unidade com ajuste (ver motivos acima)');
     if(leg)leg.innerHTML='<span style="color:#d29922">Exploratório — não validado</span>';return;}
   var set={}; its.forEach(function(it){it.curva.datas.forEach(function(d){set[d]=1;});});
@@ -3264,7 +3272,30 @@ function irxSeasonHtml(j){
   if(ids)h+='<details style="margin-top:6px"><summary style="font-size:12px;cursor:pointer">Esforços usados por season</summary>'+ids+'</details>';
   return h+'</div>';
 }
+function irxRenderMain(){
+  var j=IRX_J, aviso=document.getElementById('irPrincipalAviso'), est=document.getElementById('irPrincipalEstados');
+  var sel=document.getElementById('irxDurMain');
+  if(!j||j.status!=='OK'){
+    if(aviso)aviso.textContent='Modo exploratorio indisponivel'+(j&&j.mensagem?': '+j.mensagem:' (sem resposta).');
+    if(est)est.innerHTML=''; if(sel)sel.innerHTML=''; var lg=document.getElementById('irxLegMain'); if(lg)lg.innerHTML=''; return;}
+  if(aviso)aviso.textContent='Exploratorio, nao validado: P0 livre por unidade, ajuste dentro da amostra, sem exigir YES. '+
+    'Nao e calibracao operacional nem previsao validada.';
+  if(sel&&!sel.options.length)
+    sel.innerHTML=(j.duracoes||[]).map(function(d){return '<option value="'+irxEsc(d)+'"'+(d===300?' selected':'')+'>'+irxEsc(d)+' s</option>';}).join('');
+  var dur=sel?Number(sel.value):300;
+  var its=(j.itens||[]).filter(function(it){return it.duracao_s===dur;});
+  if(est)est.innerHTML=its.length?its.map(function(it){
+    var cor=(j.cores||{})[it.modalidade]||'#8b949e';
+    return '<div><b style="color:'+irxEsc(cor)+'">'+irxEsc(it.modalidade)+'</b> &middot; '+irxEsc(it.duracao_s)+' s &middot; '+
+      irxEsc(it.n_obs)+' observacoes ('+irxEsc(it.n_datas_distintas)+' datas)'+
+      (it.data_ini?' &middot; '+irxEsc(it.data_ini)+' a '+irxEsc(it.data_fim):'')+
+      ' &middot; <span style="color:'+(it.curva?'#3fb950':'#8b949e')+'">'+irxEsc(it.estado)+'</span>'+
+      (it.motivo?' &mdash; '+irxEsc(it.motivo):'')+'</div>';}).join('')
+    :'<div>Sem unidades nesta duracao.</div>';
+  irxDesenhar('chIrxMain','irxDurMain','irxLegMain');
+}
 function irxRender(erro){
+  irxRenderMain();
   var el=document.getElementById('irExploratorioCorpo'); if(!el)return;
   var j=IRX_J;
   if(erro||!j){el.innerHTML=irxRotulo()+'<p style="color:#f85149;font-size:12.5px">Não foi possível obter o modo exploratório: '+irxEsc(erro||'sem resposta')+'</p>';return;}
@@ -4199,6 +4230,7 @@ window.addEventListener('resize',redesenhar);
 window.addEventListener('resize',function(){if(D)mostrarEvolucao();});
 load();
 carregarSugestoes();
+carregarIRExploratorio();
 """
 
 

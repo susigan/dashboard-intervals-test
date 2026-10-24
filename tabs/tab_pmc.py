@@ -1384,6 +1384,9 @@ function mostrarAlos(){
   if(d.ant==null)
    return '<tr><td>'+d.dim+'</td><td class="num" colspan="4" '+
     'style="color:#484f58">sem dados</td></tr>';
+  if(d.delta_pct==null) return '<tr><td>'+d.dim+'</td><td class="num">'+d.ant+' '+d.unidade+'</td>'+
+   '<td class="num">'+d.rec+' '+d.unidade+'</td><td class="num" colspan="2" style="color:#8b949e">'+
+   (d.motivo||'sem variacao calculavel')+'</td></tr>';
   const cor=d.score>=0?'#2ECC71':'#E74C3C';
   return '<tr><td>'+d.dim+'</td>'+
    '<td class="num">'+d.ant+' '+d.unidade+
@@ -1855,8 +1858,9 @@ function mostrarFMT5(){
     'border-radius:0 6px 6px 0;font-size:13px;margin:4px 0 12px">'+L.texto+'</div>' : '';
  const sel=document.getElementById('canalFMT');
  if(!sel.options.length)
-  sel.innerHTML=Object.keys(F.canais).map(k=>
-   '<option value="'+k+'">'+F.canais[k].nome+'</option>').join('');
+  sel.innerHTML=Object.keys(F.canais||{}).length?Object.keys(F.canais).map(k=>
+   '<option value="'+k+'">'+F.canais[k].nome+'</option>').join(''):
+   '<option value="">sem canais com dados</option>';
  document.getElementById('notaAtencao').textContent=F.nota_atencao||'';
  tabelaCalibracao(); blocoPoder();
  drawMatriz();drawEigen();drawAtencao();

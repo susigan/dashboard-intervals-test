@@ -209,6 +209,23 @@ class Apresentacao(unittest.TestCase):
         self.assertEqual(cp.evolucao([], ATE, '2026-08-01')['modalidades']['Bike'], {})
 
 
+class ContagemExclusoes(unittest.TestCase):
+    def test_separa_causa_atividade_e_monotonia(self):
+        c1 = curva('a1', 'Ski', '2026-09-07', {120: 256, 300: 300})
+        c2 = curva('a2', 'Bike', '2026-09-08', {60: 400, 300: 350})
+        est = {'a2': ('inelegivel', 'icu_ignore_power')}
+        _pts, r = cp.pontos([c1, c2], ATE, estados=est, excluir_suspeitos=True)
+        self.assertEqual(r['n_excluidos_atividade'], 2)
+        self.assertEqual(r['n_excluidos_monotonia'], 1)
+        self.assertEqual(r['n_pontos_excluidos'], 3)
+
+    def test_sem_excluir_monotonia_nao_conta_como_excluido(self):
+        c1 = curva('a1', 'Ski', '2026-09-07', {120: 256, 300: 300})
+        _pts, r = cp.pontos([c1], ATE, excluir_suspeitos=False)
+        self.assertEqual(r['n_excluidos_monotonia'], 0)
+        self.assertEqual(r['n_suspeitos'], 1)
+
+
 class MonotoniaAprovada(unittest.TestCase):
     """Regra aprovada: P(t) suspeito se existir s < t com P(t) > P(s) + TOL_W, na MESMA atividade."""
 

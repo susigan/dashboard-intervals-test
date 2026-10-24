@@ -74,7 +74,8 @@ def pontos(curvas, ate, estados=None, excluir_suspeitos=False):
     estados = estados or {}
     out = []
     resumo = {'n_curvas': 0, 'n_fora_da_data': 0, 'n_outra_modalidade': 0, 'n_valores_em_falta': 0,
-              'n_atividades_excluidas': 0, 'n_suspeitos': 0, 'n_pontos_excluidos': 0}
+              'n_atividades_excluidas': 0, 'n_suspeitos': 0, 'n_pontos_excluidos': 0,
+              'n_excluidos_monotonia': 0, 'n_excluidos_atividade': 0}
     for c in curvas or []:
         mod = c.get('type')
         aid = c.get('activity_id')
@@ -117,6 +118,7 @@ def pontos(curvas, ate, estados=None, excluir_suspeitos=False):
                 motivo = MOTIVO_SUSPEITO
             if motivo is not None:
                 resumo['n_pontos_excluidos'] += 1
+                resumo['n_excluidos_atividade' if motivo_atividade else 'n_excluidos_monotonia'] += 1
             out.append({'modalidade': mod, 'duracao_s': s, 'watts': w, 'data': d.isoformat(),
                         'activity_id': aid, 'estado': 'excluido' if motivo else 'usado', 'motivo': motivo,
                         'suspeito': bool(suspeito), 'motivo_suspeita': motivo_susp})

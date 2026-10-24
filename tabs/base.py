@@ -107,6 +107,7 @@ TABS = [
     ('recovery',   '/recovery',    'Recovery'),
     ('cp',         '/cp-model',    'CP Model'),
     ('recordes',   '/recordes',    'Recordes'),
+    ('curva',      '/curva-progressiva', 'Curva progressiva'),
     ('atividades', '/atividades',  'Atividades'),
     ('training',   '/training',    'Training'),
 ]

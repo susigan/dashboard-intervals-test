@@ -29,8 +29,9 @@ class IrPrincipalPMC(unittest.TestCase):
     def test_grafico_unico_na_area_principal(self):
         # um so desenho de curvas: irxPintar, chamado pela area principal. Sem funcao duplicada de comparacao.
         self.assertNotIn('function irxDesenhar(', self.src)
-        self.assertIn('function irxPintar(cvId,its,legId,vazio){', self.src)
-        self.assertIn("irxPintar('chIrxMain',its,'irxLegMain'", self.src)
+        self.assertIn('function irpDesenhar(j){', self.src)
+        self.assertIn("ctx('chIrxMain',300)", self.src)
+        self.assertNotIn('function irxPintar(', self.src)
         self.assertEqual(self.src.count('id="chIrxMain"'), 1)
         self.assertNotIn('id="chIrx"', self.src)      # sem segundo canvas na secao tecnica
         self.assertNotIn('irxDur', self.src)           # sem seletor de duracao concorrente
@@ -45,34 +46,12 @@ class IrPrincipalPMC(unittest.TestCase):
         self.assertNotIn('ontoggle="abrirIR(this)"', self.src[:i])   # nenhum fica fora, a concorrer com o principal
         self.assertLess(self.src.index('id="irPrincipal"'), i)
 
-    def test_mensagem_curta_por_estado(self):
-        # executa a funcao real do ficheiro com estados de exemplo (sem alterar o codigo)
-        import re, subprocess, json as _json
-        m = re.search(r'function irxMensagemCurta\(s\)\{.*?\n\}', self.src, re.S)
-        self.assertIsNotNone(m)
-        casos = {
-            'dados_insuficientes': {'estado': 'dados_insuficientes', 'motivo': 'menos de 15 observacoes'},
-            'sem_observacoes': {'estado': 'sem_observacoes', 'motivo': 'nenhuma observacao elegivel'},
-            'limites': {'estado': 'sem_ajuste_identificavel', 'motivo': 'ajuste nao identificavel: parametro_no_limite:t1:superior, mal_condicionado'},
-            'mal': {'estado': 'sem_ajuste_identificavel', 'motivo': 'ajuste nao identificavel: mal_condicionado'},
-        }
-        js = 'var out={};var casos=' + _json.dumps(casos) + ';for(var k in casos){out[k]=irxMensagemCurta(casos[k]);}console.log(JSON.stringify(out));'
-        js = m.group(0) + '\n' + js
-        r = subprocess.run(['node', '-e', js], capture_output=True, text=True, timeout=30)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        out = _json.loads(r.stdout)
-        self.assertEqual(out['dados_insuficientes'], 'sem curva: observações insuficientes (mínimo de 15 por duração)')
-        self.assertEqual(out['sem_observacoes'], 'sem esforços elegíveis nesta modalidade')
-        self.assertIn('parâmetros nos limites', out['limites'])
-        self.assertIn('mal condicionado', out['mal'])
-        self.assertTrue(all(len(v) < 90 for v in out.values()))
-
     def test_carregamento_automatico_na_abertura(self):
-        self.assertIn('carregarIRExploratorio();\n"""', self.src)
+        self.assertIn('carregarIRExploratorio();\ncarregarIRPrincipal();\n"""', self.src)
 
     def test_estado_de_erro_nao_fabrica_curva(self):
-        self.assertIn("Modo exploratório indisponível", self.src)
-        self.assertIn("Nenhuma modalidade com curva identificável", self.src)
+        self.assertIn("Vista indisponível", self.src)
+        self.assertIn("Curva não calculável com os dados disponíveis", self.src)
 
 
 if __name__ == '__main__':
@@ -80,15 +59,15 @@ if __name__ == '__main__':
 
 
 class ErroNaoDesenha(unittest.TestCase):
-    """Regressao: no caminho de erro a secao principal nao chama o desenho do canvas."""
+    """Regressao: no caminho de erro a vista principal nao chama o desenho do canvas."""
 
     def test_caminho_de_erro_nao_chama_desenho(self):
         with open(TAB, encoding='utf-8') as f:
             src = f.read()
-        ini = src.index('function irxRenderMain(){')
-        fim = src.index('function irxRender(erro){')
-        ramo_erro = src[ini:src.index('if(aviso)aviso.textContent=\'Exploratório, não validado', ini)]
-        self.assertNotIn('irxDesenhar(', ramo_erro)
-        self.assertNotIn('irxPintar(', ramo_erro)
-        self.assertIn("lg.innerHTML=''", ramo_erro)
-        self.assertLess(ini, fim)
+        ini = src.index('function irpRender(erro){')
+        fim = src.index('if(sel)sel.innerHTML', ini)
+        ramo_erro = src[ini:fim]
+        self.assertIn("if(!j||j.status!=='OK'){", ramo_erro)
+        self.assertNotIn('irpDesenhar(', ramo_erro)
+        self.assertIn('return;', ramo_erro)
+        self.assertLess(src.index('function irpRender(erro){'), src.index('function irpDesenhar(j){'))

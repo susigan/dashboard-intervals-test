@@ -663,8 +663,9 @@ BODY = r"""
 <div class="sub" id="sub">A carregar...</div>
 <div id="sugestoesTeste"></div>
 <div id="irPrincipal" style="margin:14px 0;border:1px solid #30363d;border-radius:8px;padding:12px 14px">
-<h3 style="font-size:15px;margin:0 0 4px">Curvas de influencia por modalidade (exploratorias, nao validadas)</h3>
+<h3 style="font-size:15px;margin:0 0 4px">Influência da carga no desempenho: Overall e modalidades (exploratória, não validada)</h3>
 <div id="irPrincipalAviso" style="font-size:12.5px;color:#d29922;margin-bottom:6px">A carregar...</div>
+<div id="irpSel" style="margin:4px 0 6px"></div>
 <div class="chartbox"><canvas id="chIrxMain" height="300"></canvas></div>
 <div id="irxLegMain" style="font-size:12px;margin-top:4px"></div>
 <div id="irPrincipalEstados" style="font-size:12.5px;margin-top:8px"></div>
@@ -3209,33 +3210,6 @@ function irxAvisos(j){
   });
   return L.length?'<ul style="font-size:12px;margin:4px 0 4px 18px">'+L.map(function(x){return '<li>'+x+'</li>';}).join('')+'</ul>':'';
 }
-function irxPintar(cvId,its,legId,vazio){
-  var j=IRX_J; if(!j||j.status!=='OK')return;
-  var o=ctx(cvId,300); if(!o)return; var g=o.g,W=o.W,H=o.H;
-  var leg=document.getElementById(legId);
-  if(!its.length){noData(g,W,H,vazio||'Sem curva nesta duração');
-    if(leg)leg.innerHTML='<span style="color:#d29922">Exploratório — não validado</span>';return;}
-  var set={}; its.forEach(function(it){it.curva.datas.forEach(function(d){set[d]=1;});});
-  var datas=Object.keys(set).sort(), pos={}; datas.forEach(function(d,i){pos[d]=i;});
-  var mn=Infinity,mx=-Infinity;
-  its.forEach(function(it){it.curva.liquida.forEach(function(v){if(v<mn)mn=v;if(v>mx)mx=v;});});
-  if(!isFinite(mn)){noData(g,W,H,'Sem valores');return;}
-  if(mx===mn)mx=mn+1;
-  var PL=54,PR=14,PT=12,PB=26,w=W-PL-PR,h=H-PT-PB;
-  var X=function(i){return PL+w*(datas.length>1?i/(datas.length-1):0.5);}, Y=function(v){return PT+h-(v-mn)/(mx-mn)*h;};
-  var COR=(j.cores||{});
-  g.strokeStyle='#21262d';g.fillStyle='#8b949e';g.font='10px sans-serif';g.textAlign='right';
-  for(var k=0;k<=4;k++){var v=mn+(mx-mn)*k/4,y=Y(v);g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.fillText(Math.round(v)+' W',PL-6,y+3);}
-  its.forEach(function(it){
-    g.strokeStyle=COR[it.modalidade]||'#8b949e';g.lineWidth=1.6;g.beginPath();var ini=false;
-    it.curva.datas.forEach(function(d,i){var x=X(pos[d]),y=Y(it.curva.liquida[i]);if(!ini){g.moveTo(x,y);ini=true;}else g.lineTo(x,y);});
-    g.stroke();
-  });
-  g.fillStyle='#8b949e';g.textAlign='left';g.fillText(datas[0].slice(0,7),PL,H-8);
-  g.textAlign='right';g.fillText(datas[datas.length-1].slice(0,7),PL+w,H-8);
-  if(leg)leg.innerHTML=its.map(function(it){return '<span style="margin-right:12px"><i style="display:inline-block;width:10px;height:10px;background:'+irxEsc(COR[it.modalidade]||'#8b949e')+';margin-right:4px"></i>'+irxEsc(it.modalidade)+' · '+irxEsc(it.duracao_s)+' s</span>';}).join('')+
-    ' <span style="color:#d29922">Exploratório — não validado (linha líquida = P0 livre + K1·E − K2·G)</span>';
-}
 // Season (experimental): bloco SEPARADO do all-time. Parametros so aparecem quando a classe e candidata.
 var IRX_CLASSE={candidata_calibracao:'candidata a calibração (experimental)',apenas_validacao:'apenas validação',
   insuficiente:'insuficiente',nao_identificavel:'não identificável — valores não válidos',nao_calculado:'não calculado'};
@@ -3272,48 +3246,7 @@ function irxSeasonHtml(j){
   if(ids)h+='<details style="margin-top:6px"><summary style="font-size:12px;cursor:pointer">Esforços usados por season</summary>'+ids+'</details>';
   return h+'</div>';
 }
-function irxGlobalHtml(g){
-  var cab='<b>Modelo global (referência, não validado)</b>: ';
-  if(!g)return cab+'não calculado.';
-  if(g.estado==='global_ajustado_identificavel')
-    return cab+'duração comum '+irxEsc(g.duracao_s)+' s, '+irxEsc((g.unidades||[]).length)+' unidades, homogeneidade não rejeitada. '+
-      'Curva global não desenhada: as unidades estão em fração do nível P0 de cada modalidade (não há unidade comum em watts).';
-  var av=(g.identificabilidade&&g.identificabilidade.avisos)||[];
-  return cab+'indisponível: '+irxEsc(g.motivo||g.estado||'sem motivo')+
-    (av.length?' — '+irxEsc(av.join(', ')):'')+(g.leitura?' — '+irxEsc(g.leitura):'');
-}
-// Mensagem curta e especifica para uma modalidade sem curva. So traduz estado/motivo ja calculados no servidor.
-function irxMensagemCurta(s){
-  var st=s.estado||'', mo=s.motivo||'';
-  if(st==='dados_insuficientes')return 'sem curva: observações insuficientes (mínimo de 15 por duração)';
-  if(st==='sem_observacoes')return 'sem esforços elegíveis nesta modalidade';
-  if(st==='sem_convergencia')return 'sem curva: o ajuste não convergiu';
-  if(mo.indexOf('parametro_no_limite')>=0||mo.indexOf('ic_perfil_toca_limite')>=0)return 'sem curva: ajuste não identificável (parâmetros nos limites)';
-  if(mo.indexOf('mal_condicionado')>=0)return 'sem curva: ajuste não identificável (mal condicionado)';
-  if(mo.indexOf('solucoes_equivalentes_divergentes')>=0)return 'sem curva: ajuste não identificável (soluções divergentes)';
-  return 'sem curva identificável nesta amostra';
-}
-function irxRenderMain(){
-  var j=IRX_J, aviso=document.getElementById('irPrincipalAviso'), est=document.getElementById('irPrincipalEstados');
-  var glob=document.getElementById('irPrincipalGlobal'), lg=document.getElementById('irxLegMain');
-  if(!j||j.status!=='OK'){
-    if(aviso)aviso.textContent='Modo exploratório indisponível'+(j&&j.mensagem?': '+j.mensagem:' (sem resposta).');
-    if(est)est.innerHTML=''; if(glob)glob.innerHTML=''; if(lg)lg.innerHTML=''; return;}
-  if(aviso)aviso.textContent='Exploratório, não validado. Só se mostram curvas identificáveis; sem curva, a modalidade indica o motivo.';
-  var sa=j.selecao_automatica||{}, mods=Object.keys(sa);
-  var its=mods.map(function(m){return sa[m]&&sa[m].selecionada;}).filter(Boolean);
-  if(est)est.innerHTML=mods.map(function(m){
-    var s=sa[m]||{}, it=s.selecionada, cor=(j.cores||{})[m]||'#8b949e';
-    if(it)return '<div><b style="color:'+irxEsc(cor)+'">'+irxEsc(m)+'</b> &middot; '+irxEsc(it.duracao_s)+' s &middot; '+
-      irxEsc(it.n_obs)+' observações ('+irxEsc(it.n_datas_distintas)+' datas) &middot; '+irxEsc(it.data_ini)+' a '+irxEsc(it.data_fim)+
-      ' &middot; <span style="color:#3fb950">identificável</span></div>';
-    return '<div><b style="color:'+irxEsc(cor)+'">'+irxEsc(m)+'</b> &middot; <span style="color:#d29922">'+irxEsc(irxMensagemCurta(s))+'</span></div>';
-  }).join('');
-  if(glob)glob.innerHTML=irxGlobalHtml(j.global);
-  irxPintar('chIrxMain',its,'irxLegMain','Nenhuma modalidade com curva identificável nesta amostra (ver estados abaixo)');
-}
 function irxRender(erro){
-  irxRenderMain();
   var el=document.getElementById('irExploratorioCorpo'); if(!el)return;
   var j=IRX_J;
   if(erro||!j){el.innerHTML=irxRotulo()+'<p style="color:#f85149;font-size:12.5px">Não foi possível obter o modo exploratório: '+irxEsc(erro||'sem resposta')+'</p>';return;}
@@ -3333,6 +3266,116 @@ async function carregarIRExploratorio(){
 }
 function abrirIRExploratorio(d){ if(d&&d.open&&!IRX_MONTADO)carregarIRExploratorio(); }
 // <</ir-exploratorio>>
+// <<ir-principal>>
+// ─── IR PRINCIPAL (frontend final): Overall e modalidades a 300 s, exploratorio e NAO validado ─────────
+// SO LE /api/modelo/ir/principal (sem escrita). Overall e modalidades na MESMA unidade: z (normalizacao
+// pelos esforcos de treino a 300 s). A linha Overall e o elemento principal; as modalidades sao finas.
+var IRP_J=null, IRP_SEQ=0, IRP_SEL='Overall';
+var IRP_COR={fit:'#3fb950',fad:'#d29922',liq:'#58a6ff'};
+var IRP_MODS=['Bike','Row','Ski','Run'];
+function irpEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+async function carregarIRPrincipal(){
+  var seq=++IRP_SEQ, j=null, erro=null;
+  try{ j=await fetch('/api/modelo/ir/principal').then(function(r){return r.json();}); }
+  catch(e){ erro='falha de rede'; }
+  if(seq!==IRP_SEQ)return;                       // resposta antiga
+  IRP_J=j; irpRender(erro);
+}
+function irpSelecionar(m){ IRP_SEL=m; irpRender(null); }
+function irpRender(erro){
+  var j=IRP_J, aviso=document.getElementById('irPrincipalAviso'), est=document.getElementById('irPrincipalEstados'),
+      glob=document.getElementById('irPrincipalGlobal'), leg=document.getElementById('irxLegMain'),
+      sel=document.getElementById('irpSel');
+  if(!j||j.status!=='OK'){
+    if(aviso)aviso.textContent='Vista indisponível'+(erro?' ('+erro+')':(j&&j.mensagem?': '+j.mensagem:''))+'.';
+    if(est)est.innerHTML=''; if(glob)glob.innerHTML=''; if(leg)leg.innerHTML=''; return;
+  }
+  if(sel)sel.innerHTML=['Overall'].concat(IRP_MODS).map(function(m){
+    var on=IRP_SEL===m;
+    return '<button type="button" aria-pressed="'+on+'" onclick="irpSelecionar(\''+m+'\')" style="font:inherit;font-size:12.5px;'+
+      'padding:4px 12px;margin:0 6px 6px 0;border-radius:999px;cursor:pointer;color:#c9d1d9;'+
+      'border:1px solid '+(on?'#58a6ff':'#30363d')+';background:'+(on?'#1f2a37':'transparent')+'">'+irpEsc(m)+'</button>';
+  }).join('');
+  if(aviso)aviso.textContent='Exploratório, não validado. Overall e modalidades na mesma unidade (z).';
+  irpDesenhar(j);
+  var r=j.rotulos||{};
+  if(IRP_SEL==='Overall'){
+    if(est)est.innerHTML='<div><b>Overall</b> · '+irpEsc(r.overall)+'</div>'+IRP_MOD_LIST(j);
+    if(glob)glob.innerHTML='';
+  }else{
+    var it=(j.modalidades||{})[IRP_SEL]||{};
+    if(it.estado==='curva_nao_calculavel'){
+      if(est)est.innerHTML='<div><b>'+irpEsc(IRP_SEL)+'</b> · <span style="color:#d29922">'+irpEsc(r.nao_calculavel)+'</span></div>'+
+        '<div style="color:#8b949e;margin-top:4px">'+irpEsc(it.motivo||'')+'</div>';
+    }else{
+      var faltas=(it.criterios&&it.criterios.faltas)||[];
+      if(est)est.innerHTML='<div><b>'+irpEsc(IRP_SEL)+'</b> · '+irpEsc(r.modalidade)+'</div>'+
+        (faltas.length?'<div style="color:#8b949e;margin-top:4px">Faltam para avançar na validação: '+irpEsc(faltas.join('; '))+'.</div>':'');
+    }
+    if(glob)glob.innerHTML='';
+  }
+}
+function IRP_MOD_LIST(j){
+  return '<div style="color:#8b949e;margin-top:4px">'+IRP_MODS.map(function(m){
+    var it=(j.modalidades||{})[m]||{};
+    var txt=it.estado==='curva_nao_calculavel'?'não calculável':'exploratória, não validada';
+    return irpEsc(m)+': '+txt;}).join(' · ')+'</div>';
+}
+function irpDesenhar(j){
+  var o=ctx('chIrxMain',300); if(!o)return; var g=o.g,W=o.W,H=o.H;
+  var leg=document.getElementById('irxLegMain'), datas=j.datas||[], n=datas.length, series=[];
+  if(IRP_SEL==='Overall'){
+    var ov=j.overall;
+    if(ov){
+      series.push({n:'Fitness Overall',v:ov.fitness,c:IRP_COR.fit,w:1.6,a:1});
+      series.push({n:'Fadiga Overall',v:ov.fadiga,c:IRP_COR.fad,w:1.6,a:1});
+      series.push({n:'Influência líquida Overall',v:ov.liquida,c:IRP_COR.liq,w:3.2,a:1});
+    }
+    IRP_MODS.forEach(function(m){
+      var it=(j.modalidades||{})[m]||{};
+      if(it.liquida)series.push({n:m+' (líquida)',v:it.liquida,c:(j.cores||{})[m]||'#8b949e',w:1.1,a:0.55});
+    });
+  }else{
+    var it=(j.modalidades||{})[IRP_SEL]||{};
+    if(it.liquida){
+      series.push({n:IRP_SEL+' fitness',v:it.fitness,c:IRP_COR.fit,w:1.6,a:1});
+      series.push({n:IRP_SEL+' fadiga',v:it.fadiga,c:IRP_COR.fad,w:1.6,a:1});
+      series.push({n:IRP_SEL+' influência líquida',v:it.liquida,c:IRP_COR.liq,w:3.2,a:1});
+    }
+  }
+  if(!series.length||!n){
+    noData(g,W,H,IRP_SEL==='Overall'?'Sem série Overall':'Curva não calculável com os dados disponíveis');
+    if(leg)leg.innerHTML=''; return;
+  }
+  var mn=0,mx=0;
+  series.forEach(function(s){s.v.forEach(function(x){if(x<mn)mn=x;if(x>mx)mx=x;});});
+  if(mx===mn)mx=mn+1;
+  var pad=(mx-mn)*0.1; mn-=pad; mx+=pad;
+  var PL=58,PR=14,PT=14,PB=26,w=W-PL-PR,h=H-PT-PB;
+  var X=function(i){return PL+w*(n>1?i/(n-1):0.5);}, Y=function(v){return PT+h-(v-mn)/(mx-mn)*h;};
+  g.font='11px sans-serif'; g.textAlign='right'; g.fillStyle='#8b949e'; g.strokeStyle='#21262d'; g.lineWidth=1;
+  for(var k=0;k<=4;k++){var v=mn+(mx-mn)*k/4,y=Y(v);g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.fillText(v.toFixed(2)+' z',PL-6,y+4);}
+  g.strokeStyle='#6e7681'; g.beginPath(); g.moveTo(PL,Y(0)); g.lineTo(PL+w,Y(0)); g.stroke();
+  var ic=-1; for(var q=0;q<n;q++){ if(datas[q]>=(j.corte||'')){ic=q;break;} }
+  if(ic>0){
+    g.setLineDash([4,4]); g.strokeStyle='#8b949e'; g.beginPath(); g.moveTo(X(ic),PT); g.lineTo(X(ic),PT+h); g.stroke(); g.setLineDash([]);
+    g.fillStyle='#8b949e'; g.textAlign='left'; g.fillText('teste →',X(ic)+4,PT+12);
+  }
+  series.forEach(function(s){
+    g.globalAlpha=s.a; g.strokeStyle=s.c; g.lineWidth=s.w; g.beginPath();
+    s.v.forEach(function(x,i){var xx=X(i),yy=Y(x); if(i===0)g.moveTo(xx,yy); else g.lineTo(xx,yy);});
+    g.stroke();
+  });
+  g.globalAlpha=1; g.lineWidth=1;
+  g.fillStyle='#8b949e'; g.textAlign='left'; g.fillText(datas[0].slice(0,7),PL,H-8);
+  g.textAlign='right'; g.fillText(datas[n-1].slice(0,7),PL+w,H-8);
+  if(leg)leg.innerHTML=series.map(function(s){
+    return '<span style="margin-right:12px;white-space:nowrap"><i style="display:inline-block;width:14px;height:'+(s.w>2?3:2)+
+      'px;background:'+irpEsc(s.c)+';margin-right:5px;vertical-align:middle;opacity:'+s.a+'"></i>'+irpEsc(s.n)+'</span>';
+  }).join('')+'<div style="color:#8b949e;margin-top:4px;font-size:11.5px">Unidade: z (desvios-padrão dos esforços de treino a 300 s). '+
+    'Eixo ajustado aos valores, com zero visível. Suavização: média móvel centrada de '+(j.janela_suavizacao_dias||7)+' dias, só visual.</div>';
+}
+// <</ir-principal>>
 // <<ir-sombra>>
 // ─── IR SOMBRA: previsao experimental vs valor observado (Etapa 15) ────────────────────────────
 // SO LE /api/modelo/ir/sombra, UMA seleccao por pedido, e so quando o utilizador clica em "Carregar".
@@ -4245,6 +4288,7 @@ window.addEventListener('resize',function(){if(D)mostrarEvolucao();});
 load();
 carregarSugestoes();
 carregarIRExploratorio();
+carregarIRPrincipal();
 """
 
 

@@ -6002,6 +6002,27 @@ def api_modelo_ir_global():
     return jsonify({'status': 'OK', **res})
 
 
+@app.route('/api/modelo/ir/principal')
+def api_modelo_ir_principal():
+    """Vista principal do IR: Overall e modalidades a 300 s numa unidade comum (z). EXPLORATORIA, NAO VALIDADA.
+    SO LEITURA: nao persiste, nao recalibra e nao altera ajustes. Carga = icu_training_load; curvas de potencia."""
+    import modelo_ir_servico as mis
+    import modelo_ir_principal as mip
+    import config as _cfg
+    if not db.ENABLED:
+        return jsonify({'status': 'ERRO', 'mensagem': 'sem base de dados', 'persistido': False}), 503
+    try:
+        atividades = db.load_activities() or []
+        curvas = db.load_power_curves() or []
+        cargas, _info = mis.carga_por_modalidade(atividades)
+        res = mip.calcular(cargas, curvas, cores=_cfg.CORES_MOD)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'status': 'ERRO', 'mensagem': f'{type(e).__name__}: {e}', 'persistido': False}), 500
+    return jsonify(res)
+
+
 @app.route('/api/modelo/ir/exploratorio')
 def api_modelo_ir_exploratorio():
     """Modo IR EXPLORATORIO historico (nao validado): por modalidade e duracao (60/300/1200 s), P0 livre por

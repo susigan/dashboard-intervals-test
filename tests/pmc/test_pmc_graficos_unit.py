@@ -1,5 +1,5 @@
-"""Graficos do PMC: eFTP em resumo textual (sem recalculo), suavizacao homeostatica
-com retrospectiva por defeito e causal opcional, e texto neutro sobre a curva estimada.
+"""Graficos do PMC: suavizacao homeostatica com retrospectiva por defeito e causal
+opcional, e texto neutro sobre a curva estimada. (Resumo eFTP removido com a secção de evolução.)
 Verificacoes de fonte/renderizacao; nao alteram calculos nem payload."""
 import os
 import re
@@ -27,34 +27,21 @@ def _funcao(js, nome):
     return js[a:(m.start() if m else len(js))]
 
 
-class EftpResumo(unittest.TestCase):
+class AusenciaDoGraficoRemovido(unittest.TestCase):
+    """Guarda negativa: o grafico da secao «Evolucao da performance» nao deve voltar.
+    Verifica apenas os identificadores exclusivos desse grafico, com fronteira de palavra
+    (para nao casar com nomes parecidos). Nao depende de elementos partilhados."""
+    PADROES_EXCLUSIVOS = (r'\bev_eftp\b', r'\bdrawEvolChart\b', r'\bevBlocoGrafico\b')
+
     @classmethod
     def setUpClass(cls):
         cls.html = _html()
         cls.js = _js(cls.html)
 
-    def test_grafico_eftp_removido(self):
-        self.assertNotIn('id="ev_eftp"', self.html)
-        self.assertNotIn('drawEvolChart', self.js)
-        self.assertNotIn('evBlocoGrafico', self.js)
-
-    def test_resumo_so_le_campos_do_backend(self):
-        corpo = _funcao(self.js, 'evResumoEftp')
-        self.assertIn('janelas', corpo)
-        # nao recalcula medianas, diferencas ou variacoes no frontend
-        for proibido in ('median(', 'statistics.', '.reduce(', '.sort(', 'Math.abs(', 'variacao_pct ='):
-            self.assertNotIn(proibido, corpo, proibido)
-
-    def test_status_nao_ok_mostra_dados_insuficientes(self):
-        corpo = _funcao(self.js, 'evResumoEftp')
-        self.assertIn("w.status!=='ok'", corpo)
-        self.assertIn('Dados insuficientes para comparar', corpo)
-
-    def test_tabela_de_pontos_recolhida_e_lazy(self):
-        self.assertIn('<details class="sub" id="evEftpTab">', self.html)
-        self.assertIn('<div id="evEftpTabBody"></div>', self.html)
-        self.assertIn('etab.ontoggle=renderEt', self.js)
-        self.assertIn("etab.open?evTabelaEftp(F.eftp_atividade):''", self.js)
+    def test_identificadores_exclusivos_do_grafico_removido_nao_existem(self):
+        for padrao in self.PADROES_EXCLUSIVOS:
+            self.assertIsNone(re.search(padrao, self.html), 'HTML contem ' + padrao)
+            self.assertIsNone(re.search(padrao, self.js), 'JS contem ' + padrao)
 
 
 class SuavizacaoHomeostatica(unittest.TestCase):
@@ -101,6 +88,53 @@ class TextoNeutroHomeostatico(unittest.TestCase):
         self.assertIn('não é intervalo de confiança nem previsão', corpo)
         self.assertIn('desenhados separadamente, sem ligação entre eles', corpo)
         self.assertNotIn('intervalo de confiança', corpo.replace('não é intervalo de confiança', ''))
+
+
+class RenderizacaoPMCSemRotuloIndevido(unittest.TestCase):
+    """eFTP da atividade nunca apresentado como FTP medido, no HTML e no JS efetivamente renderizados.
+    Limitacao: verificacao por texto exato; um rotulo reformulado (outro espacamento ou texto) nao seria detetado."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = _html()
+        cls.js = _js(cls.html)
+
+    def test_sem_rotulo_ftp_medido_no_html_nem_no_js(self):
+        self.assertNotIn('FTP medido', self.html)
+        self.assertNotIn('FTP medido', self.js)
+
+    def test_sem_campo_ftp_medido_no_js(self):
+        self.assertNotIn("'ftp_medido'", self.js)
+
+
+class BlocoHomeostaticoOculto(unittest.TestCase):
+    """Decisao existente (ja no origin/main): o bloco do modelo homeostatico fica oculto na visao principal.
+    O teste protege o bloco, os controlos e o canvas que drawHomeo usa, sem depender da ordem dos atributos."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = _html()
+
+    def test_bloco_homeostatico_oculto_com_modelo_controlos_e_canvas(self):
+        m = re.search(r'<div id="homeoLegado"[^>]*\bhidden\b[^>]*>', self.html)
+        self.assertIsNotNone(m, 'bloco homeoLegado deixou de estar oculto')
+        fim = self.html.index('<h2>Indice alostatico</h2>')
+        bloco = self.html[m.start():fim]
+        for trecho in ('Modelo homeostatico', 'id="chHomeo"', 'id="homeoMod"', 'id="homeoVista"', 'id="homeoSuav"'):
+            self.assertIn(trecho, bloco, trecho)
+        self.assertNotIn('Modelo homeostatico', self.html[:m.start()])
+
+
+class CarregamentoChamaMostrarAlos(unittest.TestCase):
+    """load() continua a chamar mostrarAlos como instrucao (nao em comentario) apos a remocao da secao."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = _js(_html())
+
+    def test_load_chama_mostrar_alos(self):
+        corpo = _funcao(self.js, 'load')
+        self.assertRegex(corpo, r'(?m)^\s*mostrarAlos\(\);')
 
 
 if __name__ == '__main__':

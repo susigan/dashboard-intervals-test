@@ -223,5 +223,21 @@ class CacheDaCalibracao(CacheTestBase):
         self.assertFalse(r2.get('de_cache', False))
 
 
+class VersaoDaChaveDoFmt(unittest.TestCase):
+    """A versao da cache entra na chave do FMT (mesma expressao usada por api_data em chave_fmt):
+    mudar CACHE_VERSAO_PMC muda o digest. Sem isto, uma resposta de formato antigo seria
+    reutilizada depois de uma mudanca de payload."""
+
+    def test_mudar_a_versao_muda_a_chave_do_fmt(self):
+        antes = T._digest(T._entradas_fmt([], [], [], '2020-01-01'))
+        original = T.CACHE_VERSAO_PMC
+        try:
+            T.CACHE_VERSAO_PMC = original + 1
+            depois = T._digest(T._entradas_fmt([], [], [], '2020-01-01'))
+        finally:
+            T.CACHE_VERSAO_PMC = original
+        self.assertNotEqual(antes, depois)
+
+
 if __name__ == '__main__':
     unittest.main()

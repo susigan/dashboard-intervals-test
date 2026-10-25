@@ -70,17 +70,18 @@ class UiCurvasIR(unittest.TestCase):
         return re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), b)   # \uXXXX == caractere literal
 
     # ---- estrutura estatica ------------------------------------------------
-    def test_painel_integrado_na_pagina_pmc_fechado_por_omissao(self):
-        m = re.search(r'<details[^>]*id="irExp"[^>]*>', self.body)
-        self.assertIsNotNone(m)
-        self.assertNotIn(' open', m.group(0))
-        self.assertIn('ontoggle="abrirIR(this)"', m.group(0))
-        self.assertIn('class="expl"', m.group(0))
-        self.assertIn('id="irExpCorpo"', self.body)
+    def test_diagnostico_operacional_removido_da_pagina_principal(self):
+        # Decisao: o bloco 'Diagnosticos tecnicos do IR' saiu da PMC principal (irExp, irExploratorio).
+        self.assertNotIn('id="irExp"', self.body)
+        self.assertNotIn('id="irExploratorio"', self.body)
+        self.assertNotIn('id="irTecnico"', self.body)
 
-    def test_os_outros_paineis_experimentais_continuam_na_pagina(self):
-        for i in ('registoTestes', 'estimadorExp', 'validacaoExp', 'distCargaExp'):
+    def test_paineis_que_permanecem_na_pagina(self):
+        # registoTestes passa para a manutencao recolhida (com acoes de escrita); a distribuicao da carga fica.
+        for i in ('registoTestes', 'distCargaExp', 'manProtocolo', 'irSombra'):
             self.assertIn(f'id="{i}"', self.body, i)
+        for removido in ('estimadorExp', 'validacaoExp'):
+            self.assertNotIn(f'id="{removido}"', self.body, removido)
 
     def test_nada_e_pedido_ao_carregar_a_pagina_e_so_ha_leitura(self):
         topo = [l for l in self.js.split('\n') if re.match(r'^(await )?(carregarIR|abrirIR|irShell)\(', l)]
@@ -103,7 +104,7 @@ class UiCurvasIR(unittest.TestCase):
             self.assertIn(h, b)
         self.assertIn('class="chartbox"', b)
         self.assertIn('class="legend"', b)
-        self.assertNotIn('<canvas', self.body.split('id="irExp"')[1].split('</details>')[0])
+        self.assertNotIn('id="irExp"', self.body)
 
     def test_nenhuma_fase_de_treino_previsao_competicao_ou_taper(self):
         b = self.bloco()

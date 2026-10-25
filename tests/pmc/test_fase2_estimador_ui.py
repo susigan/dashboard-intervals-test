@@ -43,11 +43,9 @@ class UiEstimador(unittest.TestCase):
         if self.res is None:
             self.skipTest('node nao disponivel')
 
-    def test_painel_fechado_por_omissao_e_lazy(self):
-        m = re.search(r'<details[^>]*id="estimadorExp"[^>]*>', self.body)
-        self.assertIsNotNone(m)
-        self.assertNotIn(' open', m.group(0))
-        self.assertIn('ontoggle="abrirEstimador(this)"', m.group(0))
+    def test_painel_removido_da_pagina_principal(self):
+        # Decisao: o painel do estimador saiu da PMC. O modulo e o endpoint continuam (so leitura).
+        self.assertNotIn('id="estimadorExp"', self.body)
         topo = [l for l in self.js.split('\n') if re.match(r'^(await )?(carregarEstimador|abrirEstimador)\(', l)]
         self.assertEqual(topo, [])
 

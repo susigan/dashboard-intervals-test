@@ -1,3 +1,4 @@
+import re
 """Regressao: curvas IR exploratorias na area principal da PMC (fora do <details> fechado)."""
 import os
 import unittest
@@ -36,18 +37,24 @@ class IrPrincipalPMC(unittest.TestCase):
         self.assertNotIn('id="chIrx"', self.src)      # sem segundo canvas na secao tecnica
         self.assertNotIn('irxDur', self.src)           # sem seletor de duracao concorrente
 
-    def test_secao_tecnica_unica_recolhida(self):
-        i = self.src.index('id="irTecnico"')
-        j = self.src.index('</details>', self.src.index('id="irSombra"')) + len('</details>')
-        bloco = self.src[i:j]
-        self.assertEqual(self.src.count('id="irTecnico"'), 1)
-        for ident in ('id="irExp"', 'id="irExploratorio"', 'id="irSombra"'):
-            self.assertIn(ident, bloco)                # os tres diagnosticos vivem dentro da secao tecnica
-        self.assertNotIn('ontoggle="abrirIR(this)"', self.src[:i])   # nenhum fica fora, a concorrer com o principal
-        self.assertLess(self.src.index('id="irPrincipal"'), i)
+    def test_painel_tecnico_removido_e_dropdown_unico(self):
+        self.assertNotIn('id="irTecnico"', self.src)
+        self.assertNotIn('id="irExp"', self.src)
+        self.assertNotIn('id="irExploratorio"', self.src)
+        # um so dropdown de evolucao detalhada, recolhido, reutilizando o IR sombra
+        self.assertEqual(self.src.count('id="irSombra"'), 1)
+        self.assertIn('Evolução detalhada do IR — observações e testes', self.src)
+        self.assertIn('ontoggle="abrirIRSombra(this)"', self.src)
+        self.assertNotIn(' open', re.search(r'<details[^>]*id="irSombra"[^>]*>', self.src).group(0))
+        # manutencao do protocolo: recolhida e com o painel MMP dentro
+        man = re.search(r'<details[^>]*id="manProtocolo"[^>]*>', self.src).group(0)
+        self.assertNotIn(' open', man)
+        self.assertLess(self.src.index('id="manProtocolo"'), self.src.index('id="registoTestes"'))
+        self.assertLess(self.src.index('id="irPrincipal"'), self.src.index('id="manProtocolo"'))
 
     def test_carregamento_automatico_na_abertura(self):
-        self.assertIn('carregarIRExploratorio();\ncarregarIRPrincipal();\n"""', self.src)
+        self.assertIn('carregarIRPrincipal();\n"""', self.src)
+        self.assertNotIn('\ncarregarIRExploratorio();\n', self.src)    # sem pedido de nivel superior ao abrir
 
     def test_estado_de_erro_nao_fabrica_curva(self):
         self.assertIn("Vista indisponível", self.src)

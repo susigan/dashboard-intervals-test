@@ -59,7 +59,8 @@ class PainelDistribuicao(unittest.TestCase):
         self.assertIn('ontoggle="abrirDistCarga(this)"', m.group(0))
         self.assertIn('class="expl"', m.group(0))
         self.assertIn('id="distCargaExpCorpo"', self.body)
-        self.assertIn('id="irExp"', self.body)                               # o painel IR continua la
+        self.assertIn('id="irSombra"', self.body)                          # o dropdown de evolucao do IR continua la
+        self.assertNotIn('id="irExp"', self.body)                          # o diagnostico operacional saiu da PMC
         self.assertNotIn('<canvas', self.body.split('id="distCargaExp"')[1].split('</details>')[0])
 
     def test_nada_e_pedido_ao_carregar_e_so_ha_um_get_de_leitura(self):

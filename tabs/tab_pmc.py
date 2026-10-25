@@ -666,19 +666,16 @@ BODY = r"""
 <h3 style="font-size:15px;margin:0 0 4px">Influência da carga no desempenho: Overall e modalidades (exploratória, não validada)</h3>
 <div id="irPrincipalAviso" style="font-size:12.5px;color:#d29922;margin-bottom:6px">A carregar...</div>
 <div id="irpSel" style="margin:4px 0 6px"></div>
+<div id="irpPer" style="margin:0 0 8px"></div>
 <div class="chartbox"><canvas id="chIrxMain" height="300"></canvas></div>
 <div id="irxLegMain" style="font-size:12px;margin-top:4px"></div>
 <div id="irPrincipalEstados" style="font-size:12.5px;margin-top:8px"></div>
 <div id="irPrincipalGlobal" style="font-size:12.5px;margin-top:8px;color:#c9d1d9"></div>
 </div>
+<details class="expl" id="manProtocolo" style="margin:10px 0"><summary>Manutenção do protocolo (deteção MMP e decisões de teste)</summary><div class="expl-corpo">
 <details class="expl" id="registoTestes" style="margin:10px 0" ontoggle="abrirRegisto(this)"><summary>Deteccao automatica de observacoes MMP (season, all-time, recente)</summary><div class="expl-corpo" id="registoTestesCorpo">A carregar...</div></details>
-<details class="expl" id="estimadorExp" style="margin:10px 0" ontoggle="abrirEstimador(this)"><summary>Estimador experimental de potencia por modalidade (diagnostico)</summary><div class="expl-corpo" id="estimadorExpCorpo">A carregar...</div></details>
-<details class="expl" id="validacaoExp" style="margin:10px 0" ontoggle="abrirValidacao(this)"><summary>LEGADO &mdash; Validacao preditiva exploratoria do estimador de 60/300/1200 s (nao valida o IR de MMP3)</summary><div class="expl-corpo" id="validacaoExpCorpo">A carregar...</div></details>
-<details class="expl" id="irTecnico" style="margin:10px 0"><summary>Diagnosticos tecnicos do IR (secao recolhida; nao e o grafico principal)</summary><div class="expl-corpo">
-<details class="expl" id="irExp" style="margin:10px 0" ontoggle="abrirIR(this)"><summary>Modelo IR: curvas de influencia por modalidade (experimental, ajuste historico)</summary><div class="expl-corpo" id="irExpCorpo">A carregar...</div></details>
-<details class="expl" id="irExploratorio" style="margin:10px 0" ontoggle="abrirIRExploratorio(this)"><summary>IR EXPLORATORIO &mdash; diagnostico tecnico, nao validado (P0 livre; comparacao por duracao de 60 a 1800 s)</summary><div class="expl-corpo" id="irExploratorioCorpo">A carregar...</div></details>
-<details class="expl" id="irSombra" style="margin:10px 0" ontoggle="abrirIRSombra(this)"><summary>IR SOMBRA &mdash; previsao experimental vs observado (validacao temporal; experimental; nao promove)</summary><div class="expl-corpo" id="irSombraCorpo">Abra para escolher a seleccao e carregar.</div></details>
 </div></details>
+<details class="expl" id="irSombra" style="margin:10px 0" ontoggle="abrirIRSombra(this)"><summary>Evolução detalhada do IR — observações e testes</summary><div class="expl-corpo" id="irSombraCorpo">Abra para escolher a seleccao e carregar.</div></details>
 <details class="expl" id="distCargaExp" style="margin:10px 0" ontoggle="abrirDistCarga(this)"><summary>Distribuicao da carga por modalidade (Bike, Row, Run, Ski): Training Load ou TRIMP, observada, sem musculacao</summary><div class="expl-corpo" id="distCargaExpCorpo">A carregar...</div></details>
 
 <div class="cards" id="kpis"></div>
@@ -3296,6 +3293,8 @@ function irpRender(erro){
       'padding:4px 12px;margin:0 6px 6px 0;border-radius:999px;cursor:pointer;color:#c9d1d9;'+
       'border:1px solid '+(on?'#58a6ff':'#30363d')+';background:'+(on?'#1f2a37':'transparent')+'">'+irpEsc(m)+'</button>';
   }).join('');
+  var perEl=document.getElementById('irpPer');
+  if(perEl)perEl.innerHTML='<label style="font-size:12.5px;color:#8b949e">Período <select onchange="irpPeriodoSel(this.value)" style="font:inherit;font-size:12.5px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:2px 6px;margin-left:4px">'+IRP_PERIODOS.map(function(o){return '<option value="'+o[0]+'"'+(IRP_PER===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')+'</select></label>';
   if(aviso)aviso.textContent='Exploratório, não validado. Overall e modalidades na mesma unidade (z).';
   irpDesenhar(j);
   var r=j.rotulos||{};
@@ -3321,9 +3320,34 @@ function IRP_MOD_LIST(j){
     var txt=it.estado==='curva_nao_calculavel'?'não calculável':'exploratória, não validada';
     return irpEsc(m)+': '+txt;}).join(' · ')+'</div>';
 }
+var IRP_PER='90', IRP_OCULTAS={}, IRP_NOMES=[];
+var IRP_PERIODOS=[['90','90 dias'],['180','180 dias'],['3m','3 meses'],['6m','6 meses'],['1a','1 ano'],['tudo','Tudo']];
+// Inicio do periodo a partir da ULTIMA data disponivel (nunca do relogio). 90/180: dias corridos (janela movel);
+// 3m/6m/1a: calendario retroativo. 'tudo': sem corte. Nao recalcula nada: so escolhe o trecho a mostrar.
+function irpInicio(ultima,p){
+  var d=new Date(ultima+'T00:00:00Z');
+  if(p==='90'||p==='180'){ d.setUTCDate(d.getUTCDate()-(Number(p)-1)); }
+  else if(p==='3m'){ d.setUTCMonth(d.getUTCMonth()-3); }
+  else if(p==='6m'){ d.setUTCMonth(d.getUTCMonth()-6); }
+  else if(p==='1a'){ d.setUTCFullYear(d.getUTCFullYear()-1); }
+  else return null;
+  return d.toISOString().slice(0,10);
+}
+function irpIndiceInicio(datas,p){
+  if(!datas.length)return 0;
+  var ini=irpInicio(datas[datas.length-1],p); if(!ini)return 0;
+  var a=0; while(a<datas.length&&datas[a]<ini)a++;
+  return a;
+}
+function irpPeriodoSel(v){ IRP_PER=v; irpRender(null); }
+function irpToggle(k){
+  var nome=IRP_NOMES[k]; if(nome==null)return;
+  IRP_OCULTAS[nome]=!IRP_OCULTAS[nome];
+  if(IRP_J)irpDesenhar(IRP_J);     // so redesenha: nao pede dados nem recalcula
+}
 function irpDesenhar(j){
   var o=ctx('chIrxMain',300); if(!o)return; var g=o.g,W=o.W,H=o.H;
-  var leg=document.getElementById('irxLegMain'), datas=j.datas||[], n=datas.length, series=[];
+  var leg=document.getElementById('irxLegMain'), datasAll=j.datas||[], series=[];
   if(IRP_SEL==='Overall'){
     var ov=j.overall;
     if(ov){
@@ -3343,37 +3367,52 @@ function irpDesenhar(j){
       series.push({n:IRP_SEL+' influência líquida',v:it.liquida,c:IRP_COR.liq,w:3.2,a:1});
     }
   }
-  if(!series.length||!n){
+  IRP_NOMES=series.map(function(s){return s.n;});
+  if(!series.length||!datasAll.length){
     noData(g,W,H,IRP_SEL==='Overall'?'Sem série Overall':'Curva não calculável com os dados disponíveis');
     if(leg)leg.innerHTML=''; return;
   }
+  // Periodo de visualizacao: mesmo intervalo para todas as series (fatia, sem recalcular).
+  var a0=irpIndiceInicio(datasAll,IRP_PER);
+  var datas=datasAll.slice(a0), n=datas.length;
+  series.forEach(function(s){ s.v=s.v.slice(a0); });
+  var vis=series.filter(function(s){return !IRP_OCULTAS[s.n];});
   var mn=0,mx=0;
-  series.forEach(function(s){s.v.forEach(function(x){if(x<mn)mn=x;if(x>mx)mx=x;});});
-  if(mx===mn)mx=mn+1;
-  var pad=(mx-mn)*0.1; mn-=pad; mx+=pad;
-  var PL=58,PR=14,PT=14,PB=26,w=W-PL-PR,h=H-PT-PB;
-  var X=function(i){return PL+w*(n>1?i/(n-1):0.5);}, Y=function(v){return PT+h-(v-mn)/(mx-mn)*h;};
-  g.font='11px sans-serif'; g.textAlign='right'; g.fillStyle='#8b949e'; g.strokeStyle='#21262d'; g.lineWidth=1;
-  for(var k=0;k<=4;k++){var v=mn+(mx-mn)*k/4,y=Y(v);g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.fillText(v.toFixed(2)+' z',PL-6,y+4);}
-  g.strokeStyle='#6e7681'; g.beginPath(); g.moveTo(PL,Y(0)); g.lineTo(PL+w,Y(0)); g.stroke();
-  var ic=-1; for(var q=0;q<n;q++){ if(datas[q]>=(j.corte||'')){ic=q;break;} }
-  if(ic>0){
-    g.setLineDash([4,4]); g.strokeStyle='#8b949e'; g.beginPath(); g.moveTo(X(ic),PT); g.lineTo(X(ic),PT+h); g.stroke(); g.setLineDash([]);
-    g.fillStyle='#8b949e'; g.textAlign='left'; g.fillText('teste →',X(ic)+4,PT+12);
+  vis.forEach(function(s){s.v.forEach(function(x){if(x<mn)mn=x;if(x>mx)mx=x;});});
+  if(!vis.length){
+    g.clearRect(0,0,W,H);
+    noData(g,W,H,'Todas as curvas estão ocultas: clique na legenda para as mostrar');
+  }else{
+    if(mx===mn)mx=mn+1;
+    var pad=(mx-mn)*0.1; mn-=pad; mx+=pad;
+    var PL=58,PR=14,PT=14,PB=26,w=W-PL-PR,h=H-PT-PB;
+    var X=function(i){return PL+w*(n>1?i/(n-1):0.5);}, Y=function(v){return PT+h-(v-mn)/(mx-mn)*h;};
+    g.clearRect(0,0,W,H);
+    g.font='11px sans-serif'; g.textAlign='right'; g.fillStyle='#8b949e'; g.strokeStyle='#21262d'; g.lineWidth=1;
+    for(var k=0;k<=4;k++){var v=mn+(mx-mn)*k/4,y=Y(v);g.beginPath();g.moveTo(PL,y);g.lineTo(PL+w,y);g.stroke();g.fillText(v.toFixed(2)+' z',PL-6,y+4);}
+    g.strokeStyle='#6e7681'; g.beginPath(); g.moveTo(PL,Y(0)); g.lineTo(PL+w,Y(0)); g.stroke();
+    var ic=-1; for(var q=0;q<n;q++){ if(datas[q]>=(j.corte||'')){ic=q;break;} }
+    if(ic>0){
+      g.setLineDash([4,4]); g.strokeStyle='#8b949e'; g.beginPath(); g.moveTo(X(ic),PT); g.lineTo(X(ic),PT+h); g.stroke(); g.setLineDash([]);
+      g.fillStyle='#8b949e'; g.textAlign='left'; g.fillText('teste →',X(ic)+4,PT+12);
+    }
+    vis.forEach(function(s){
+      g.globalAlpha=s.a; g.strokeStyle=s.c; g.lineWidth=s.w; g.beginPath();
+      s.v.forEach(function(x,i){var xx=X(i),yy=Y(x); if(i===0)g.moveTo(xx,yy); else g.lineTo(xx,yy);});
+      g.stroke();
+    });
+    g.globalAlpha=1; g.lineWidth=1;
+    g.fillStyle='#8b949e'; g.textAlign='left'; g.fillText(datas[0].slice(0,7),PL,H-8);
+    g.textAlign='right'; g.fillText(datas[n-1].slice(0,7),PL+w,H-8);
   }
-  series.forEach(function(s){
-    g.globalAlpha=s.a; g.strokeStyle=s.c; g.lineWidth=s.w; g.beginPath();
-    s.v.forEach(function(x,i){var xx=X(i),yy=Y(x); if(i===0)g.moveTo(xx,yy); else g.lineTo(xx,yy);});
-    g.stroke();
-  });
-  g.globalAlpha=1; g.lineWidth=1;
-  g.fillStyle='#8b949e'; g.textAlign='left'; g.fillText(datas[0].slice(0,7),PL,H-8);
-  g.textAlign='right'; g.fillText(datas[n-1].slice(0,7),PL+w,H-8);
-  if(leg)leg.innerHTML=series.map(function(s){
-    return '<span style="margin-right:12px;white-space:nowrap"><i style="display:inline-block;width:14px;height:'+(s.w>2?3:2)+
-      'px;background:'+irpEsc(s.c)+';margin-right:5px;vertical-align:middle;opacity:'+s.a+'"></i>'+irpEsc(s.n)+'</span>';
+  if(leg)leg.innerHTML=series.map(function(s,k){
+    var off=!!IRP_OCULTAS[s.n];
+    return '<button type="button" aria-pressed="'+(!off)+'" title="Clique para '+(off?'mostrar':'ocultar')+'" onclick="irpToggle('+k+')" '+
+      'style="font:inherit;font-size:12px;background:none;border:0;padding:2px 6px 2px 0;margin-right:8px;cursor:pointer;color:'+(off?'#6e7681':'#c9d1d9')+';white-space:nowrap;opacity:'+(off?0.45:1)+'">'+
+      '<i style="display:inline-block;width:14px;height:'+(s.w>2?3:2)+'px;background:'+irpEsc(s.c)+';margin-right:5px;vertical-align:middle;opacity:'+s.a+'"></i>'+
+      (off?'<s>'+irpEsc(s.n)+'</s>':irpEsc(s.n))+'</button>';
   }).join('')+'<div style="color:#8b949e;margin-top:4px;font-size:11.5px">Unidade: z (desvios-padrão dos esforços de treino a 300 s). '+
-    'Eixo ajustado aos valores, com zero visível. Suavização: média móvel centrada de '+(j.janela_suavizacao_dias||7)+' dias, só visual.</div>';
+    'Eixo ajustado às curvas visíveis. Suavização: média móvel centrada de '+(j.janela_suavizacao_dias||7)+' dias, só visual. Ocultar ou filtrar não altera o modelo.</div>';
 }
 // <</ir-principal>>
 // <<ir-sombra>>
@@ -4287,7 +4326,6 @@ window.addEventListener('resize',redesenhar);
 window.addEventListener('resize',function(){if(D)mostrarEvolucao();});
 load();
 carregarSugestoes();
-carregarIRExploratorio();
 carregarIRPrincipal();
 """
 

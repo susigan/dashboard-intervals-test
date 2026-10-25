@@ -336,9 +336,9 @@ class UiValidacao(_Base):
         self.assertEqual(r.returncode, 0, r.stdout[-300:] + r.stderr[-300:])
         return real, json.loads(r.stdout)
 
-    def test_painel_fechado_e_so_leitura(self):
-        self.assertIn('id="validacaoExp"', self.body)
-        self.assertIn('ontoggle="abrirValidacao(this)"', self.body)
+    def test_painel_legado_removido_mas_codigo_so_leitura(self):
+        # Decisao: a validacao LEGADO saiu da PMC. O codigo e o endpoint mantem-se, so de leitura.
+        self.assertNotIn('id="validacaoExp"', self.body)
         bloco = self.js[self.js.index('// <<validacao-exploratoria>>'):self.js.index('// <</validacao-exploratoria>>')]
         self.assertEqual(bloco.count("fetch("), 1)
         self.assertIn("/api/modelo/validacao'", bloco)

@@ -765,6 +765,10 @@ BODY = r"""
        style="margin-left:12px;color:#8b949e;font-size:11px;">diagnóstico</a>
     <span id="aqScanEstado" style="color:#8b949e;font-size:12px;margin-left:10px;"></span>
   </div>
+  <div class="controls" style="margin-bottom:12px;">
+    <button id="aqBtnCsv" type="button" onclick="aqExportar()">Exportar aquecimentos (CSV)</button>
+    <label class="sel" style="cursor:pointer;white-space:nowrap;"><input type="checkbox" id="aqExpSo" style="vertical-align:middle;margin-right:4px;"><span style="vertical-align:middle;">só modalidade atual</span></label>
+  </div>
   <div id="aqDiag" style="color:#8b949e;font-size:11px;margin-bottom:12px;"></div>
   <div class="controls">
     <label class="sel">Métrica
@@ -821,10 +825,6 @@ BODY = r"""
     <summary style="cursor:pointer;font-size:15px;font-weight:600;padding:6px 0;">Efeito de treino no mesmo dia</summary>
     <div id="aqContexto" style="overflow-x:auto;margin-top:8px;"></div>
   </details>
-  <div class="controls" style="margin-top:14px;">
-    <button id="aqBtnCsv" type="button" onclick="aqExportar()">Exportar aquecimentos (CSV)</button>
-    <label class="sel" style="cursor:pointer;white-space:nowrap;"><input type="checkbox" id="aqExpSo" style="vertical-align:middle;margin-right:4px;"><span style="vertical-align:middle;">só modalidade atual</span></label>
-  </div>
 </div>
 <style>
 .tabs { display:flex; gap:20px; }

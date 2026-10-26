@@ -48,16 +48,14 @@ def criar_base(caminho, linhas=()):
 
 
 def ler(conteudo):
-    """(linhas_csv, aviso_ou_None). Valida BOM e separador antes de parsear."""
+    """(linhas_csv, None). Valida BOM e separador; o corpo comeca sempre pelo
+    cabecalho (o aviso de base inexistente vai no header X-Aviso, nao no corpo)."""
     texto = conteudo.decode('utf-8')
-    assert texto.startswith('﻿'), 'falta BOM UTF-8'
+    assert texto.startswith('\ufeff'), 'falta BOM UTF-8'
     texto = texto[1:]
-    aviso = None
-    if texto.startswith('# AVISO: '):
-        aviso, texto = texto.split('\r\n', 1)
-        aviso = aviso[len('# AVISO: '):]
+    assert not texto.startswith('#'), 'corpo CSV nao pode ter linha de comentario'
     linhas = list(csv.reader(io.StringIO(texto, newline=''), delimiter=';'))
-    return linhas, aviso
+    return linhas, None
 
 
 def sha(caminho):
@@ -131,7 +129,7 @@ class ExportAquecimentoCsv(unittest.TestCase):
                                         smo2=(None, None, None), tempo=0)])
         linhas, _ = ler(self.exportar()[0])
         d = dict(zip(COLS, linhas[1]))
-        self.assertEqual(d['hr_avg'], '0.0')          # zero continua zero
+        self.assertEqual(d['hr_avg'], '0,0')          # zero continua zero (pt-BR)
         self.assertEqual(d['hr_min'], '')             # NULL fica vazio
         self.assertEqual(d['smo2_avg'], '')
         self.assertEqual(d['tempo_seg'], '0')
@@ -150,6 +148,28 @@ class ExportAquecimentoCsv(unittest.TestCase):
         self.assertEqual(mapa, {'P': 'hr', 'Q': 'hr|smo2', 'R': 'resp', 'S': ''})
 
     # 7. BOM, UTF-8, separador ';' e CRLF
+    def test_05b_decimais_com_virgula_e_texto_intacto(self):
+        criar_base(self.caminho, [bloco(aid='a.1', alvo=140, real=141.25,
+                                        hr=(150.5, 0.0, None))])
+        linhas, _ = ler(self.exportar()[0])
+        d = dict(zip(COLS, linhas[1]))
+        self.assertEqual(d['watts_real'], '141,25')
+        self.assertEqual(d['hr_avg'], '150,5')
+        self.assertEqual(d['hr_min'], '0,0')
+        self.assertEqual(d['watts_alvo'], '140')
+        self.assertEqual(d['activity_id'], 'a.1')
+        self.assertEqual(d['data'], '2026-01-10')
+
+    def test_05c_notacao_cientifica_sem_perder_digitos(self):
+        criar_base(self.caminho, [bloco(real=1e-07)])
+        linhas, _ = ler(self.exportar()[0])
+        self.assertEqual(dict(zip(COLS, linhas[1]))['watts_real'], '0,0000001')
+
+    def test_05d_celula_partilhada_continua_com_ponto(self):
+        self.assertEqual(export.celula(141.25), '141.25')
+        self.assertEqual(export.celula(0.0), '0.0')
+        self.assertEqual(export.celula_pt(141.25), '141,25')
+
     def test_07_bom_separador_crlf(self):
         criar_base(self.caminho, [bloco()])
         conteudo = self.exportar()[0]
@@ -198,11 +218,9 @@ class ExportAquecimentoCsv(unittest.TestCase):
         self.assertFalse(os.path.exists(self.caminho), 'a base foi criada')
         self.assertFalse(dl.called, 'houve descarga do Drive')
         self.assertFalse(sinc.called, 'houve sincronizacao')
-        linhas, aviso = ler(conteudo)
-        self.assertIsNotNone(aviso)
-        self.assertIn('inexistente', aviso)
+        linhas, _ = ler(conteudo)
         self.assertEqual(linhas, [COLS])
-        self.assertIsNotNone(info['aviso'])
+        self.assertIn('inexistente', info['aviso'])
         self.assertEqual(info['n'], 0)
 
     def test_10b_base_sem_tabela_gera_aviso(self):
@@ -212,6 +230,7 @@ class ExportAquecimentoCsv(unittest.TestCase):
         conteudo, info = self.exportar()
         self.assertIsNotNone(info['aviso'])
         self.assertIn('ilegivel', info['aviso'])
+        self.assertEqual(ler(conteudo)[0], [COLS])
 
     # 11. ausencia de escritas
     def test_11_sem_escritas_na_base(self):
@@ -313,7 +332,14 @@ class RotaExportAquecimento(unittest.TestCase):
         r = self.client.get('/api/aquecimento/export.csv')
         self.assertEqual(r.status_code, 200)
         self.assertIn('inexistente', r.headers['X-Aviso'])
+        self.assertEqual(r.headers['X-Registos'], '0')
+        self.assertEqual(ler(r.data)[0], [COLS])
         self.assertFalse(os.path.exists(self.caminho))
+
+    def test_rota_content_type_um_charset(self):
+        criar_base(self.caminho, [bloco()])
+        ct = self.client.get('/api/aquecimento/export.csv').headers['Content-Type']
+        self.assertEqual(ct, 'text/csv; charset=utf-8')
 
     def test_rota_modalidade_invalida_400(self):
         r = self.client.get('/api/aquecimento/export.csv?modalidade=Bi%3Bke')

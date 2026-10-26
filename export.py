@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 
@@ -402,6 +403,19 @@ def celula(v):
     return _protege_formula(str(v))
 
 
+def celula_pt(v):
+    """Como celula(), mas floats com virgula decimal, para Excel em pt-BR com
+    separador ';'. Inteiros, textos e nulos seguem celula(). Usada so pela
+    exportacao de Aquecimento; celula() continua igual para as outras exportacoes.
+    Notacao cientifica do repr e' convertida para decimal, sem perder digitos."""
+    if isinstance(v, float):
+        s_ = repr(v)
+        if 'e' in s_ or 'E' in s_:
+            s_ = format(Decimal(s_), 'f')
+        return s_.replace('.', ',')
+    return celula(v)
+
+
 def _colunas(registros):
     vistas = set()
     for r in registros:
@@ -707,8 +721,9 @@ def metricas_disponiveis_aquecimento(r):
 def aquecimento_blocos_csv(caminho, modalidade=None):
     """(conteudo_bytes, info). Uma linha por bloco persistido.
 
-    Sem base local: devolve so o cabecalho, com um aviso explicito (linha de
-    comentario no inicio do CSV e info['aviso']). Nao cria nem descarrega nada.
+    Sem base local: devolve so o cabecalho e info['aviso'] com a mensagem (a
+    rota envia-a em X-Aviso). O corpo CSV comeca sempre pelo cabecalho.
+    Decimais com virgula (Excel pt-BR, separador ';'). Nao cria nem descarrega nada.
     """
     if modalidade is not None and not _MODALIDADE.fullmatch(modalidade):
         raise ValueError('modalidade invalida')
@@ -735,14 +750,12 @@ def aquecimento_blocos_csv(caminho, modalidade=None):
                      f'({type(e).__name__}): {e}')
 
     buf = io.StringIO()
-    if aviso:
-        buf.write('# AVISO: ' + aviso + '\r\n')
     w = csv.writer(buf, delimiter=';', lineterminator='\r\n')
     w.writerow(COLUNAS_AQUECIMENTO)
     for r in linhas:
         d = dict(r)
         d['metricas_disponiveis'] = metricas_disponiveis_aquecimento(d)
-        w.writerow([celula(d.get(c)) for c in COLUNAS_AQUECIMENTO])
+        w.writerow([celula_pt(d.get(c)) for c in COLUNAS_AQUECIMENTO])
     conteudo = ('\ufeff' + buf.getvalue()).encode('utf-8')
     return conteudo, {'n': len(linhas), 'aviso': aviso,
                       'modalidade': modalidade or None}

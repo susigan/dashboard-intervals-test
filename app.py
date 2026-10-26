@@ -2135,7 +2135,9 @@ def api_aquecimento_export_csv():
            'X-Registos': str(info['n'])}
     if info['aviso']:
         cab['X-Aviso'] = info['aviso'].encode('ascii', 'replace').decode('ascii')[:200]
-    return Response(conteudo, mimetype='text/csv; charset=utf-8', headers=cab)
+    # Flask acrescenta charset=utf-8 a mimetypes text/*; passar so 'text/csv'
+    # evita o charset duplicado.
+    return Response(conteudo, mimetype='text/csv', headers=cab)
 
 
 @app.route('/api/aquecimento/sessao/<activity_id>')

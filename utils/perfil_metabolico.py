@@ -382,7 +382,7 @@ MODOS_CONJUNTO = ('recuo', 'season', 'coerente')
 
 
 def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
-                 limiar_max=None, modo='coerente', duracoes=None):
+                 limiar_max=None, modo='recuo', duracoes=None):
     """Melhor MMP de cada duracao necessaria, e o pico de 1 s.
 
     linhas: [{'date':..., 'secs':..., 'watts':..., 'season':...}] filtradas
@@ -499,7 +499,7 @@ def melhores_mmp(linhas, modalidade, pmax_max=None, season_activa=None,
             'n_duracoes': sum(1 for d in duracoes if por_season[d].get(sea)),
         }
 
-    modo = modo if modo in MODOS_CONJUNTO else 'coerente'
+    modo = modo if modo in MODOS_CONJUNTO else 'recuo'
     season_do_conjunto = None
     if modo == 'coerente':
         # a activa se tiver tudo; senao a mais recente com o conjunto

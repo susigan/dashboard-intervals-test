@@ -821,6 +821,10 @@ BODY = r"""
     <summary style="cursor:pointer;font-size:15px;font-weight:600;padding:6px 0;">Efeito de treino no mesmo dia</summary>
     <div id="aqContexto" style="overflow-x:auto;margin-top:8px;"></div>
   </details>
+  <div class="controls" style="margin-top:14px;">
+    <button id="aqBtnCsv" type="button" onclick="aqExportar()">Exportar aquecimentos (CSV)</button>
+    <label class="sel" style="cursor:pointer;white-space:nowrap;"><input type="checkbox" id="aqExpSo" style="vertical-align:middle;margin-right:4px;"><span style="vertical-align:middle;">só modalidade atual</span></label>
+  </div>
 </div>
 <style>
 .tabs { display:flex; gap:20px; }
@@ -1680,6 +1684,13 @@ function aqContexto(met, agr){
   h += '</table><p style="color:#8b949e;font-size:11px;margin-top:6px;">' + (d.nota||'') + '</p>';
   box.innerHTML = h;
  }).catch(function(){ box.innerHTML = ''; });
+}
+
+function aqExportar(){
+ let url = '/api/aquecimento/export.csv';
+ if(document.getElementById('aqExpSo').checked && AQ_MOD)
+  url += '?modalidade=' + encodeURIComponent(AQ_MOD);
+ window.location.href = url;
 }
 
 function aqListar(){

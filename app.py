@@ -2109,6 +2109,37 @@ def api_aquecimento_blocos():
         return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
 
 
+@app.route('/api/aquecimento/export.csv')
+def api_aquecimento_export_csv():
+    """CSV dos blocos de aquecimento persistidos (uma linha por bloco).
+
+    ?modalidade=Bike  -- opcional; sem parametro exporta todas as modalidades.
+    Le a copia local em modo somente leitura: nao deteta, nao sincroniza com
+    o Drive e nao cria a base. Sem base local, responde com aviso explicito.
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    import export
+    mod = request.args.get('modalidade') or None
+    try:
+        conteudo, info = export.aquecimento_blocos_csv(aq_db._LOCAL_DB, mod)
+    except ValueError as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 400
+    except Exception as e:
+        return jsonify({'status': 'erro',
+                        'mensagem': f'{type(e).__name__}: {e}'}), 500
+    hoje = datetime.now().strftime('%Y%m%d')
+    sufixo = f'_{mod}' if mod else ''
+    cab = {'Content-Disposition':
+           f'attachment; filename="aquecimento_blocos{sufixo}_{hoje}.csv"',
+           'X-Registos': str(info['n'])}
+    if info['aviso']:
+        cab['X-Aviso'] = info['aviso'].encode('ascii', 'replace').decode('ascii')[:200]
+    # Flask acrescenta charset=utf-8 a mimetypes text/*; passar so 'text/csv'
+    # evita o charset duplicado.
+    return Response(conteudo, mimetype='text/csv', headers=cab)
+
+
 @app.route('/api/aquecimento/sessao/<activity_id>')
 def api_aquecimento_sessao(activity_id):
     if not AQUECIMENTO_ENABLED:

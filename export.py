@@ -8,8 +8,12 @@ que corre aqui.
 import csv
 import io
 import json
+import os
 import re
+import sqlite3
 from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
 
 
 def _csv(linhas, colunas):
@@ -399,6 +403,19 @@ def celula(v):
     return _protege_formula(str(v))
 
 
+def celula_pt(v):
+    """Como celula(), mas floats com virgula decimal, para Excel em pt-BR com
+    separador ';'. Inteiros, textos e nulos seguem celula(). Usada so pela
+    exportacao de Aquecimento; celula() continua igual para as outras exportacoes.
+    Notacao cientifica do repr e' convertida para decimal, sem perder digitos."""
+    if isinstance(v, float):
+        s_ = repr(v)
+        if 'e' in s_ or 'E' in s_:
+            s_ = format(Decimal(s_), 'f')
+        return s_.replace('.', ',')
+    return celula(v)
+
+
 def _colunas(registros):
     vistas = set()
     for r in registros:
@@ -663,3 +680,82 @@ def pacote_zip(acts, ids, buscar_streams, filtros=None, fonte_atividades=None,
               'ids_ausentes': ausentes, 'streams_amostras': len(linhas),
               'sem_streams': n_sem, 'erros': n_erro}
     return buf.getvalue(), resumo
+
+
+# ── Blocos de aquecimento (Metabolismo -> Aquecimento) ───────────────────
+#
+# Exporta apenas o que esta persistido em aquecimento_blocos. Nao chama a
+# deteccao, nao le streams, nao sincroniza com o Drive e nao cria a base:
+# a ligacao e' SQLite em modo somente leitura.
+
+COLUNAS_AQUECIMENTO = [
+    'activity_id', 'data', 'modalidade', 'bloco_num', 'interval_num',
+    'watts_alvo', 'watts_real', 'tempo_seg',
+    'hr_avg', 'hr_min', 'hr_max',
+    'smo2_avg', 'smo2_min', 'smo2_max',
+    'resp_avg', 'resp_min', 'resp_max',
+    'dfa1_avg', 'dfa1_min', 'dfa1_max',
+    'metricas_disponiveis', 'data_registo',
+]
+_METRICAS_AQUECIMENTO = ('hr', 'smo2', 'resp', 'dfa1')
+_COLUNAS_SQL_AQUECIMENTO = [c for c in COLUNAS_AQUECIMENTO
+                            if c != 'metricas_disponiveis']
+_MODALIDADE = re.compile(r'[A-Za-z]{1,20}')
+
+
+def abrir_leitura_aquecimento(caminho):
+    """Ligacao SQLite somente leitura. Falha se o ficheiro nao existir."""
+    uri = Path(caminho).resolve().as_uri() + '?mode=ro'
+    con = sqlite3.connect(uri, uri=True)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def metricas_disponiveis_aquecimento(r):
+    """Metricas com pelo menos um valor (avg, min ou max) guardado no bloco."""
+    return '|'.join(
+        m for m in _METRICAS_AQUECIMENTO
+        if any(r.get(f'{m}_{a}') is not None for a in ('avg', 'min', 'max')))
+
+
+def aquecimento_blocos_csv(caminho, modalidade=None):
+    """(conteudo_bytes, info). Uma linha por bloco persistido.
+
+    Sem base local: devolve so o cabecalho e info['aviso'] com a mensagem (a
+    rota envia-a em X-Aviso). O corpo CSV comeca sempre pelo cabecalho.
+    Decimais com virgula (Excel pt-BR, separador ';'). Nao cria nem descarrega nada.
+    """
+    if modalidade is not None and not _MODALIDADE.fullmatch(modalidade):
+        raise ValueError('modalidade invalida')
+
+    aviso, linhas = None, []
+    if not os.path.exists(caminho):
+        aviso = 'Base local de aquecimento inexistente: nenhum dado exportado.'
+    else:
+        try:
+            con = abrir_leitura_aquecimento(caminho)
+            try:
+                sql = ("SELECT " + ', '.join(_COLUNAS_SQL_AQUECIMENTO)
+                       + " FROM aquecimento_blocos")
+                params = []
+                if modalidade:
+                    sql += " WHERE modalidade = ?"
+                    params.append(modalidade)
+                sql += " ORDER BY data, modalidade, activity_id, bloco_num"
+                linhas = con.execute(sql, params).fetchall()
+            finally:
+                con.close()
+        except sqlite3.Error as e:
+            aviso = (f'Base local de aquecimento ilegivel '
+                     f'({type(e).__name__}): {e}')
+
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=';', lineterminator='\r\n')
+    w.writerow(COLUNAS_AQUECIMENTO)
+    for r in linhas:
+        d = dict(r)
+        d['metricas_disponiveis'] = metricas_disponiveis_aquecimento(d)
+        w.writerow([celula_pt(d.get(c)) for c in COLUNAS_AQUECIMENTO])
+    conteudo = ('\ufeff' + buf.getvalue()).encode('utf-8')
+    return conteudo, {'n': len(linhas), 'aviso': aviso,
+                      'modalidade': modalidade or None}

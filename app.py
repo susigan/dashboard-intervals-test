@@ -4124,7 +4124,7 @@ def _perfil_metabolico_dados(modalidade, args, com_ancoras=True):
         extraido = pmet.melhores_mmp(
             registos, modalidade, season_activa=season_pedida,
             limiar_max=args.get('limiar_max', type=float),
-            modo=args.get('modo') or 'coerente')
+            modo=args.get('modo') or 'recuo')
 
         # o utilizador pode substituir qualquer MMP: ?mmp_180=345&mmp_300=312
         # e ate mudar as duracoes: ?duracoes=180,300,900
@@ -4137,7 +4137,7 @@ def _perfil_metabolico_dados(modalidade, args, com_ancoras=True):
                     extraido = pmet.melhores_mmp(
                         registos, modalidade, season_activa=season_pedida,
                         limiar_max=args.get('limiar_max', type=float),
-                        modo=args.get('modo') or 'coerente')
+                        modo=args.get('modo') or 'recuo')
             except Exception:
                 pass
         overrides = {}

@@ -809,6 +809,28 @@ BODY = r"""
          white-space:nowrap;"></div>
   </div>
 
+  <h2 id="aqBlocosTitulo">Blocos da sessão — ordem dos intervalos</h2>
+  <div class="controls" style="margin-bottom:8px;">
+    <label class="sel">Sessão <select id="aqBlocosSessao"></select></label>
+    <span id="aqBlocosEstado" style="color:#8b949e;font-size:12px;"></span>
+  </div>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chBlocos" height="300"></canvas>
+    <div id="aqBlocosTip" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
+         border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
+         white-space:nowrap;"></div>
+  </div>
+  <p style="color:#8b949e;font-size:11px;margin:6px 0 0;">
+    Largura de cada bloco proporcional à duração guardada. Não é um eixo temporal absoluto:
+    os intervalos de recuperação não estão guardados, por isso não há instantes de início e fim.
+    Mostra a média de cada bloco, com origem por confirmar: pode vir da média das amostras do
+    bloco ou de colunas de trabalho do pipeline antigo, e a base não guarda qual foi usada.
+    Trate os valores como indicativos. Mínimos e máximos não são apresentados, porque a origem
+    desses valores também não é guardada (podem vir de colunas de baseline ou extremo).
+    Métrica sem dados aparece como «—», nunca como zero. Um zero registado aparece como
+    «0? (duvidoso)» e fica fora das escalas e das estatísticas, em qualquer métrica.
+  </p>
+
   <h2 id="aqTitulo">Evolução temporal</h2>
   <div class="legend" id="aqLegenda"></div>
   <div class="chartbox"><canvas id="chAquecimento" height="320"></canvas></div>
@@ -1347,7 +1369,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   this.classList.add('active');
   document.getElementById(tabName).classList.add('active');
-  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); }
+  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqBlocosCarregar(); }
   if(tabName === 'perfilmet'){ if(!PM) pmCarregar(); else pmDraw(); }
  });
 });
@@ -1686,6 +1708,178 @@ function aqContexto(met, agr){
  }).catch(function(){ box.innerHTML = ''; });
 }
 
+// ── Blocos da sessao, por ordem de intervalo (sem eixo temporal absoluto) ──
+const AQB_METRICAS = [
+ {k:'hr',   nome:'HR',     un:' bpm', cor:'#f85149', casas:0},
+ {k:'dfa1', nome:'DFA-α1', un:'',     cor:'#a371f7', casas:2},
+ {k:'smo2', nome:'SmO₂',   un:' %',   cor:'#58a6ff', casas:0},
+ {k:'resp', nome:'Resp',   un:' rpm', cor:'#d29922', casas:0}
+];
+let AQB_SESSAO = null, AQB_GEOM = [], AQB_LIGADO = false;
+
+function aqBlocosCarregar(){
+ if(!AQ_MOD) return;
+ fetch('/api/aquecimento/dados?modalidade=' + encodeURIComponent(AQ_MOD))
+  .then(r=>r.json()).then(function(d){
+   const sel = document.getElementById('aqBlocosSessao');
+   const est = document.getElementById('aqBlocosEstado');
+   if(!sel) return;
+   const sess = (d.status === 'ok' && d.sessoes) ? d.sessoes : [];
+   sel.innerHTML = '';
+   if(!sess.length){
+    est.textContent = 'sem sessões guardadas para ' + AQ_MOD;
+    AQB_SESSAO = null; aqBlocosDraw(null); return;
+   }
+   sess.forEach(function(s){
+    const o = document.createElement('option');
+    o.value = s.activity_id;
+    o.textContent = String(s.data||'').slice(0,10) + ' · ' + s.activity_id
+                    + ' (' + s.n_blocos + ' blocos)';
+    sel.appendChild(o);
+   });
+   sel.onchange = function(){ aqBlocosSessaoCarregar(sel.value); };
+   aqBlocosSessaoCarregar(sess[0].activity_id);
+  }).catch(function(){ aqBlocosDraw(null); });
+}
+
+function aqBlocosSessaoCarregar(aid){
+ fetch('/api/aquecimento/sessao/' + encodeURIComponent(aid))
+  .then(r=>r.json()).then(function(d){
+   AQB_SESSAO = (d.status === 'ok') ? d.sessao : null;
+   aqBlocosDraw(AQB_SESSAO);
+  }).catch(function(){ AQB_SESSAO = null; aqBlocosDraw(null); });
+}
+
+function aqBlocosOrdenados(s){
+ return (s && s.blocos ? s.blocos.slice() : []).sort(function(a,b){
+  return (a.interval_num||0) - (b.interval_num||0) || (a.bloco_num||0) - (b.bloco_num||0);
+ });
+}
+
+// valor a mostrar, ou null. Ausencia (null) nunca vira zero.
+// Zero exato nao entra nas escalas nem nas estatisticas: e' fisiologicamente
+// implausivel como media de bloco (0 bpm, 0 %, 0 rpm, DFA-α1 = 0). Nao se
+// declara inexistente -- fica assinalado como duvidoso (aqBlocosDuvidoso).
+function aqBlocosValor(b, k){
+ const v = b[k + '_avg'];
+ if(v === null || v === undefined || !isFinite(v)) return null;
+ if(Number(v) === 0) return null;
+ return Number(v);
+}
+// zero registado mas suspeito: visivel, fora das escalas e das estatisticas
+function aqBlocosDuvidoso(b, k){
+ const v = b[k + '_avg'];
+ return v !== null && v !== undefined && isFinite(v) && Number(v) === 0;
+}
+
+function aqBlocosDraw(s){
+ const o = ctx('chBlocos', 300);
+ if(!o) return;
+ const g = o.g, W = o.W, H = o.H;
+ g.clearRect(0, 0, W, H);
+ AQB_GEOM = [];
+ const bl = aqBlocosOrdenados(s);
+ if(!bl.length){ noData(g, W, H, 'Sem blocos para esta sessão'); return; }
+
+ const PL = 92, PR = 16, PT = 40, GAP = 6;
+ const n = bl.length;
+ const avail = Math.max(60, W - PL - PR - GAP * (n - 1));
+ const temTempo = bl.every(function(b){ return b.tempo_seg !== null && b.tempo_seg > 0; });
+ const tot = temTempo ? bl.reduce(function(a,b){ return a + b.tempo_seg; }, 0) : n;
+ let x = PL;
+ bl.forEach(function(b){
+  const w = temTempo ? avail * b.tempo_seg / tot : avail / n;
+  AQB_GEOM.push({x: x, w: w, b: b});
+  x += w + GAP;
+ });
+
+ // faixa superior: um rectangulo por bloco com alvo e real
+ AQB_GEOM.forEach(function(gm){
+  const b = gm.b;
+  g.fillStyle = '#161b22';
+  g.strokeStyle = '#30363d';
+  g.fillRect(gm.x, 6, gm.w, 28);
+  g.strokeRect(gm.x, 6, gm.w, 28);
+  g.fillStyle = '#c9d1d9';
+  g.font = '11px sans-serif';
+  g.textAlign = 'center';
+  g.fillText(b.watts_alvo + ' W', gm.x + gm.w/2, 18);
+  if(gm.w > 60 && b.watts_real !== null){
+   g.fillStyle = '#8b949e';
+   g.fillText('real ' + Math.round(b.watts_real) + ' W', gm.x + gm.w/2, 30);
+  }
+ });
+
+ // filas de metricas: cada uma com a sua propria escala (min-max da sessao)
+ const y0 = PT + 16, rows = AQB_METRICAS.length;
+ const RH = (H - y0 - 10) / rows;
+ AQB_METRICAS.forEach(function(m, i){
+  const top = y0 + i * RH, mid = top + RH/2;
+  const vals = bl.map(function(b){ return aqBlocosValor(b, m.k); }).filter(function(v){ return v !== null; });
+  g.fillStyle = '#8b949e'; g.font = '11px sans-serif'; g.textAlign = 'right';
+  g.fillText(m.nome, PL - 8, mid - 2);
+  if(!vals.length){
+   g.fillStyle = '#6e7681'; g.textAlign = 'left';
+   g.fillText('sem dados nesta sessão', PL + 6, mid + 4);
+   return;
+  }
+  const lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  const pad = (hi - lo) * 0.15 || 1;
+  const ymin = lo - pad, ymax = hi + pad;
+  const Y = function(v){ return top + RH - 8 - (v - ymin) / (ymax - ymin) * (RH - 16); };
+  g.strokeStyle = '#21262d';
+  g.beginPath(); g.moveTo(PL, top + RH - 8); g.lineTo(W - PR, top + RH - 8); g.stroke();
+  g.fillStyle = '#6e7681'; g.font = '10px sans-serif'; g.textAlign = 'right';
+  g.fillText(hi.toFixed(m.casas), PL - 8, top + 12);
+  g.fillText(lo.toFixed(m.casas), PL - 8, top + RH - 10);
+  AQB_GEOM.forEach(function(gm){
+   const v = aqBlocosValor(gm.b, m.k);
+   const cx = gm.x + gm.w/2;
+   if(v === null){
+    g.fillStyle = '#6e7681'; g.textAlign = 'center';
+    g.fillText(aqBlocosDuvidoso(gm.b, m.k) ? '0? (duvidoso)' : '—', cx, mid + 4);
+    return;
+   }
+   g.fillStyle = m.cor;
+   g.beginPath(); g.arc(cx, Y(v), 4, 0, Math.PI*2); g.fill();
+   g.fillStyle = '#c9d1d9'; g.textAlign = 'center';
+   g.fillText(v.toFixed(m.casas), cx, Y(v) - 8);
+  });
+ });
+ aqBlocosLigarTip(o);
+}
+
+function aqBlocosLigarTip(o){
+ if(AQB_LIGADO) return;
+ AQB_LIGADO = true;
+ const canvas = document.getElementById('chBlocos');
+ const tip = document.getElementById('aqBlocosTip');
+ canvas.addEventListener('mousemove', function(e){
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const hit = AQB_GEOM.find(function(gm){ return x >= gm.x && x <= gm.x + gm.w; });
+  if(!hit){ tip.style.display = 'none'; return; }
+  const b = hit.b;
+  let html = '<b>Bloco ' + (b.interval_num ?? b.bloco_num) + '</b>'
+   + '<br>alvo ' + b.watts_alvo + ' W'
+   + (b.watts_real !== null ? ' · real ' + (Math.round(b.watts_real*10)/10) + ' W' : '')
+   + (b.tempo_seg ? ' · ' + b.tempo_seg + ' s' : ' · duração n/d');
+  AQB_METRICAS.forEach(function(m){
+   const v = aqBlocosValor(b, m.k);
+   let txt = 'sem dados';
+   if(v !== null) txt = v.toFixed(m.casas) + m.un;
+   else if(aqBlocosDuvidoso(b, m.k)) txt = '0 registado, duvidoso (fora das estatísticas)';
+   html += '<br>' + m.nome + ': ' + txt;
+  });
+  html += '<br><span style="color:#6e7681">nº de observações não guardado</span>';
+  tip.innerHTML = html;
+  tip.style.display = 'block';
+  tip.style.left = Math.min(x + 12, canvas.clientWidth - 220) + 'px';
+  tip.style.top = '8px';
+ });
+ canvas.addEventListener('mouseleave', function(){ tip.style.display = 'none'; });
+}
+
 function aqExportar(){
  let url = '/api/aquecimento/export.csv';
  if(document.getElementById('aqExpSo').checked && AQ_MOD)
@@ -1770,7 +1964,7 @@ function aqCarregar(){
   AQ_DADOS = d;
   document.getElementById('aqTitulo').textContent =
     AQ_LABELS[met] + ' \u2014 ' + AQ_MOD + ' por escal\u00e3o de watts';
-  aqDraw(); aqRange(); aqTabela(); aqTendencia(met, agr); aqContexto(met, agr);
+  aqDraw(); aqRange(); aqTabela(); aqTendencia(met, agr); aqContexto(met, agr); aqBlocosCarregar();
  }).catch(function(e){
   console.error('[aqCarregar]', e);
   AQ_DADOS = {status:'erro'}; aqDraw();

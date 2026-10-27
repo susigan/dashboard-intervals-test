@@ -792,6 +792,62 @@ BODY = r"""
     <label class="sel" style="cursor:pointer;white-space:nowrap;">
       <input type="checkbox" id="aqTrend" checked style="vertical-align:middle;margin-right:4px;"><span style="vertical-align:middle;">Tendência</span></label>
   </div>
+  <h2 id="aqCmpTitulo">Análise comparativa — todos os aquecimentos do período</h2>
+  <div class="controls" style="margin-bottom:8px;">
+    <span style="color:#8b949e;font-size:12px;">Período:</span>
+    <button type="button" class="aqCmpP" data-dias="30">30 dias</button>
+    <button type="button" class="aqCmpP" data-dias="60">60 dias</button>
+    <button type="button" class="aqCmpP" data-dias="90">90 dias</button>
+    <button type="button" class="aqCmpP" data-dias="custom">Personalizado</button>
+    <span id="aqCmpCustom" style="display:none;margin-left:8px;">
+      <input type="date" id="aqCmpIni"> a <input type="date" id="aqCmpFim">
+      <button type="button" id="aqCmpAplicar">Aplicar</button></span>
+  </div>
+  <div class="controls" style="margin-bottom:8px;">
+    <label class="sel">Métrica
+      <select id="aqCmpMet">
+        <option value="hr">HR (bpm)</option>
+        <option value="smo2">SmO&#8322; (%)</option>
+        <option value="resp">Respiração (rpm)</option>
+        <option value="dfa1">DFA-&#945;1</option>
+      </select></label>
+    <label class="sel">Agregação por período
+      <select id="aqCmpAgr">
+        <option value="mes" selected>Mês</option>
+        <option value="semana">Semana</option>
+      </select></label>
+    <label class="sel">n mínimo por ponto
+      <select id="aqCmpMin">
+        <option value="2">2</option>
+        <option value="3" selected>3</option>
+        <option value="6">6</option>
+      </select></label>
+  </div>
+  <div id="aqCmpMeta" style="font-size:12px;color:#8b949e;margin-bottom:10px;line-height:1.6;"></div>
+  <h3 id="aqCmpT1" style="font-size:14px;margin:12px 0 4px;">Vista 1 — sessões individuais</h3>
+  <div id="aqCmpLegenda" style="font-size:12px;margin-bottom:6px;"></div>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chCmp1" height="320"></canvas>
+    <div id="aqCmpTip1" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
+         border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
+         white-space:nowrap;"></div>
+  </div>
+  <h3 id="aqCmpT2" style="font-size:14px;margin:16px 0 4px;">Vista 2 — tendência agregada por período</h3>
+  <div id="aqCmpPeriodos" style="font-size:12px;margin-bottom:6px;"></div>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chCmp2" height="320"></canvas>
+    <div id="aqCmpTip2" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
+         border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
+         white-space:nowrap;"></div>
+  </div>
+  <div id="aqCmpDelta" style="font-size:12px;color:#c9d1d9;margin-top:8px;"></div>
+  <p style="color:#8b949e;font-size:11px;margin:8px 0 16px;">
+    Vista 2: cada ponto é a média das sessões do escalão naquele período, não uma medição
+    individual. A barra é o desvio-padrão amostral entre sessões (n−1). Pontos com n abaixo do
+    mínimo aparecem vazados, sem barra e fora da linha. Os escalões são posições categóricas,
+    não uma escala contínua de tempo.
+  </p>
+
   <h2 id="aqTituloRange">Dispersão por escalão de watts</h2>
   <div class="controls" style="margin-bottom:6px;">
     <span style="color:#8b949e;font-size:12px;">Sobrepor:</span>
@@ -1369,7 +1425,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   this.classList.add('active');
   document.getElementById(tabName).classList.add('active');
-  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqBlocosCarregar(); }
+  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqBlocosCarregar(); aqCmpCarregar(); }
   if(tabName === 'perfilmet'){ if(!PM) pmCarregar(); else pmDraw(); }
  });
 });
@@ -1717,6 +1773,344 @@ const AQB_METRICAS = [
 ];
 let AQB_SESSAO = null, AQB_GEOM = [], AQB_LIGADO = false;
 
+/* AQCMP_BEGIN */
+const AQC_CORES = ['#58A6FF','#F0883E','#3FB950','#D2A8FF','#79C0FF','#FFA657','#7EE787',
+                   '#FF7B72','#E3B341','#A5D6FF','#56D364','#F778BA','#B1BAC4','#FFDFB6'];
+const AQC_NOME = {hr:'HR', smo2:'SmO₂', resp:'Respiração', dfa1:'DFA-α1'};
+let AQC_DADOS = null, AQC_OCULTAS = {}, AQC_LIGADO = false, AQC_PER = 30;
+let AQC_PTS1 = [], AQC_PTS2 = [];
+
+function aqcFmt(v, casas){
+ if(v===null || v===undefined || !isFinite(v)) return '—';
+ return Number(v).toFixed(casas||0).replace('.', ',');
+}
+function aqcData(iso){
+ const p = String(iso||'').slice(0,10).split('-');
+ return p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : String(iso||'');
+}
+function aqcEsc(s){
+ return String(s==null?'':s).replace(/[&<>"]/g, function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; });
+}
+function aqcMsg(t){
+ const m = document.getElementById('aqCmpMeta');
+ if(m) m.textContent = t;
+}
+function aqcMarcaPeriodo(v){
+ document.querySelectorAll('.aqCmpP').forEach(function(b){
+  const ativo = String(b.dataset.dias) === String(v);
+  b.style.fontWeight = ativo ? '700' : '400';
+  b.style.borderColor = ativo ? '#58a6ff' : '';
+ });
+}
+
+function aqCmpCarregar(){
+ aqCmpLigar();
+ if(!AQ_MOD) return;
+ const met = document.getElementById('aqCmpMet').value;
+ const agr = document.getElementById('aqCmpAgr').value;
+ const mn  = document.getElementById('aqCmpMin').value;
+ let q = 'modalidade=' + encodeURIComponent(AQ_MOD) + '&metrica=' + met
+       + '&agregacao=' + agr + '&min_n=' + mn;
+ if(AQC_PER === 'custom'){
+  const i = document.getElementById('aqCmpIni').value;
+  const f = document.getElementById('aqCmpFim').value;
+  if(!i || !f){ aqcMsg('Escolha as duas datas e carregue em Aplicar.'); return; }
+  q += '&inicio=' + i + '&fim=' + f;
+ } else {
+  q += '&dias=' + AQC_PER;
+ }
+ aqcMsg('A carregar…');
+ fetch('/api/aquecimento/comparativo?' + q).then(function(r){ return r.json(); })
+  .then(function(d){ AQC_DADOS = d; aqCmpRender(); })
+  .catch(function(e){
+   console.error('[aqCmpCarregar]', e);
+   AQC_DADOS = {status:'erro', mensagem:'falha de ligação'}; aqCmpRender();
+  });
+}
+
+function aqCmpLigar(){
+ if(AQC_LIGADO) return;
+ AQC_LIGADO = true;
+ document.querySelectorAll('.aqCmpP').forEach(function(b){
+  b.addEventListener('click', function(){
+   const v = b.dataset.dias;
+   document.getElementById('aqCmpCustom').style.display = (v==='custom') ? 'inline' : 'none';
+   aqcMarcaPeriodo(v);
+   if(v === 'custom'){ AQC_PER = 'custom'; return; }
+   AQC_PER = parseInt(v, 10); AQC_OCULTAS = {}; aqCmpCarregar();
+  });
+ });
+ ['aqCmpMet','aqCmpAgr','aqCmpMin'].forEach(function(id){
+  document.getElementById(id).addEventListener('change', function(){ AQC_OCULTAS = {}; aqCmpCarregar(); });
+ });
+ document.getElementById('aqCmpAplicar').addEventListener('click', function(){
+  AQC_OCULTAS = {}; aqCmpCarregar();
+ });
+ aqcMarcaPeriodo(AQC_PER);
+ aqcLigarTip('chCmp1', 'aqCmpTip1', function(){ return AQC_PTS1; }, aqcHtml1);
+ aqcLigarTip('chCmp2', 'aqCmpTip2', function(){ return AQC_PTS2; }, aqcHtml2);
+}
+
+function aqCmpRender(){
+ const D = AQC_DADOS;
+ const meta = document.getElementById('aqCmpMeta');
+ if(!D || D.status !== 'ok'){
+  aqcMsg((D && D.mensagem) ? 'Erro: ' + D.mensagem : 'Sem dados.');
+  aqCmpDesenhaVazio('chCmp1', 'Sem dados'); aqCmpDesenhaVazio('chCmp2', 'Sem dados');
+  document.getElementById('aqCmpLegenda').innerHTML = '';
+  document.getElementById('aqCmpPeriodos').innerHTML = '';
+  document.getElementById('aqCmpDelta').textContent = '';
+  return;
+ }
+ const un = D.unidade ? ' (' + D.unidade + ')' : '';
+ const s = D.sessoes;
+ const per = aqcData(D.periodo.inicio) + ' a ' + aqcData(D.periodo.fim)
+           + (D.periodo.dias ? ' (' + D.periodo.dias + ' dias)' : ' (personalizado)');
+ const motivos = {};
+ s.excluidas_lista.forEach(function(x){ motivos[x.motivo] = (motivos[x.motivo]||0) + 1; });
+ const txtMot = Object.keys(motivos).map(function(k){ return k + ': ' + motivos[k]; }).join('; ');
+ const linhas = [
+  '<b style="color:#c9d1d9;">Período:</b> ' + per + ' · <b style="color:#c9d1d9;">Modalidade:</b> ' + aqcEsc(D.modalidade),
+  '<b style="color:#c9d1d9;">Métrica:</b> ' + aqcEsc(D.nome) + un
+    + ' · <b style="color:#c9d1d9;">Sessões incluídas:</b> ' + s.incluidas + ' de ' + (s.incluidas + s.excluidas)
+    + (s.excluidas ? ' · excluídas: ' + s.excluidas + ' (' + aqcEsc(txtMot) + ')' : ''),
+  '<b style="color:#c9d1d9;">Escalões de watts:</b> ' + (D.escaloes.length ? D.escaloes.join(' · ') + ' W' : '—')
+    + ' · sessões com escalões em falta: ' + s.incompletas
+    + ' · zeros duvidosos excluídos: ' + s.zeros_excluidos,
+  '<b style="color:#c9d1d9;">Agregação (Vista 2):</b> ' + (D.agregacao==='mes' ? 'mês' : 'semana')
+    + ' · média das sessões, n mínimo ' + D.min_n + ', dispersão = desvio-padrão amostral entre sessões',
+ ];
+ meta.innerHTML = linhas.join('<br>') + '<br>' + D.avisos.map(function(a){
+  return '• ' + aqcEsc(a); }).join('<br>');
+
+ aqCmpLegendaSessoes();
+ aqCmpDraw1();
+ aqCmpDraw2();
+}
+
+function aqCmpDesenhaVazio(id, msg){
+ const o = ctx(id, 320); if(!o) return;
+ o.g.clearRect(0,0,o.W,o.H); noData(o.g, o.W, o.H, msg);
+}
+
+function aqCmpLegendaSessoes(){
+ const box = document.getElementById('aqCmpLegenda');
+ box.innerHTML = '';
+ const D = AQC_DADOS;
+ if(!D.vista1.length){
+  box.textContent = 'Nenhuma sessão incluída neste período.';
+  return;
+ }
+ const acoes = document.createElement('span');
+ acoes.style.marginRight = '10px';
+ [['todas', true], ['nenhuma', false]].forEach(function(par){
+  const b = document.createElement('button');
+  b.type = 'button'; b.textContent = par[0];
+  b.style.marginRight = '6px';
+  b.addEventListener('click', function(){
+   AQC_OCULTAS = {};
+   if(!par[1]) D.vista1.forEach(function(x){ AQC_OCULTAS[x.activity_id] = true; });
+   aqCmpLegendaSessoes(); aqCmpDraw1();
+  });
+  acoes.appendChild(b);
+ });
+ box.appendChild(acoes);
+ D.vista1.forEach(function(sess, idx){
+  const lab = document.createElement('label');
+  lab.style.cssText = 'cursor:pointer;margin-right:12px;white-space:nowrap;';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.checked = !AQC_OCULTAS[sess.activity_id];
+  cb.style.marginRight = '3px';
+  cb.addEventListener('change', function(){
+   if(cb.checked) delete AQC_OCULTAS[sess.activity_id];
+   else AQC_OCULTAS[sess.activity_id] = true;
+   aqCmpDraw1();
+  });
+  const sw = document.createElement('span');
+  sw.style.cssText = 'display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle;background:' + AQC_CORES[idx % AQC_CORES.length];
+  lab.appendChild(cb); lab.appendChild(sw);
+  lab.appendChild(document.createTextNode(aqcData(sess.data) + ' · ' + sess.activity_id
+    + (sess.em_falta.length ? ' (escalões em falta)' : '')));
+  box.appendChild(lab);
+ });
+}
+
+function aqCmpDraw1(){
+ const o = ctx('chCmp1', 320); if(!o) return;
+ const g = o.g, W = o.W, H = o.H;
+ g.clearRect(0,0,W,H);
+ AQC_PTS1 = [];
+ const D = AQC_DADOS;
+ document.getElementById('aqCmpT1').textContent =
+   'Vista 1 — sessões individuais · ' + (AQC_NOME[D && D.metrica] || '') + ' · ' + (D && D.modalidade || '');
+ if(!D || D.status !== 'ok' || !D.vista1.length){ noData(g, W, H, 'Sem sessões incluídas neste período'); return; }
+ const esc = D.escaloes;
+ const m = {l:58, r:20, t:14, b:40};
+ const pw = W - m.l - m.r, ph = H - m.t - m.b;
+ const xPos = function(w){ return esc.length<=1 ? m.l + pw/2 : m.l + pw * esc.indexOf(w) / (esc.length-1); };
+ const vis = D.vista1.filter(function(x){ return !AQC_OCULTAS[x.activity_id]; });
+ const vals = [];
+ vis.forEach(function(x){ x.pontos.forEach(function(p){ vals.push(p.valor); }); });
+ if(!vals.length){ noData(g, W, H, 'Todas as sessões estão ocultas'); return; }
+ let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+ const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
+ const yPos = function(v){ return m.t + ph * (1 - (v - lo) / (hi - lo)); };
+
+ g.font = '11px sans-serif'; g.textAlign = 'right'; g.fillStyle = '#8b949e'; g.strokeStyle = '#21262d';
+ for(let i = 0; i <= 4; i++){
+  const v = lo + (hi - lo) * i / 4, y = yPos(v);
+  g.beginPath(); g.moveTo(m.l, y); g.lineTo(W - m.r, y); g.stroke();
+  g.fillText(aqcFmt(v, D.casas), m.l - 6, y + 4);
+ }
+ g.textAlign = 'center';
+ esc.forEach(function(w){ g.fillText(w + ' W', xPos(w), H - m.b + 16); });
+
+ D.vista1.forEach(function(sess, idx){
+  if(AQC_OCULTAS[sess.activity_id]) return;
+  const cor = AQC_CORES[idx % AQC_CORES.length];
+  g.strokeStyle = cor; g.fillStyle = cor; g.lineWidth = 1.6; g.globalAlpha = 0.85;
+  let prev = -2;
+  g.beginPath();
+  sess.pontos.forEach(function(p){
+   const ix = esc.indexOf(p.watts_alvo);
+   const x = xPos(p.watts_alvo), y = yPos(p.valor);
+   if(ix !== prev + 1) g.moveTo(x, y); else g.lineTo(x, y);
+   prev = ix;
+  });
+  g.stroke();
+  sess.pontos.forEach(function(p){
+   const x = xPos(p.watts_alvo), y = yPos(p.valor);
+   g.beginPath(); g.arc(x, y, 3, 0, Math.PI*2); g.fill();
+   AQC_PTS1.push({x:x, y:y, data:sess.data, sid:sess.activity_id, watts:p.watts_alvo, valor:p.valor});
+  });
+  g.globalAlpha = 1;
+ });
+}
+
+function aqCmpDraw2(){
+ const o = ctx('chCmp2', 320); if(!o) return;
+ const g = o.g, W = o.W, H = o.H;
+ g.clearRect(0,0,W,H);
+ AQC_PTS2 = [];
+ const D = AQC_DADOS;
+ document.getElementById('aqCmpT2').textContent =
+   'Vista 2 — tendência agregada por ' + (D && D.agregacao==='semana' ? 'semana' : 'mês')
+   + ' · ' + (AQC_NOME[D && D.metrica] || '') + ' · ' + (D && D.modalidade || '');
+ const P = D && D.status === 'ok' ? D.vista2.periodos : [];
+ const cont = document.getElementById('aqCmpPeriodos');
+ const dl = document.getElementById('aqCmpDelta');
+ cont.innerHTML = ''; dl.textContent = '';
+ if(!P.length){ noData(g, W, H, 'Sem dados agregados neste período'); return; }
+
+ const esc = D.escaloes;
+ const m = {l:58, r:20, t:14, b:40};
+ const pw = W - m.l - m.r, ph = H - m.t - m.b;
+ const xPos = function(w){ return esc.length<=1 ? m.l + pw/2 : m.l + pw * esc.indexOf(w) / (esc.length-1); };
+ let lo = Infinity, hi = -Infinity;
+ P.forEach(function(p){ p.escaloes.forEach(function(e){
+  const dp = (e.suficiente && e.sd!==null) ? e.sd : 0;
+  lo = Math.min(lo, e.media - dp); hi = Math.max(hi, e.media + dp);
+ }); });
+ const pad = (hi - lo) * 0.1 || 1; lo -= pad; hi += pad;
+ const yPos = function(v){ return m.t + ph * (1 - (v - lo) / (hi - lo)); };
+
+ g.font = '11px sans-serif'; g.textAlign = 'right'; g.fillStyle = '#8b949e'; g.strokeStyle = '#21262d';
+ for(let i = 0; i <= 4; i++){
+  const v = lo + (hi - lo) * i / 4, y = yPos(v);
+  g.beginPath(); g.moveTo(m.l, y); g.lineTo(W - m.r, y); g.stroke();
+  g.fillText(aqcFmt(v, D.casas), m.l - 6, y + 4);
+ }
+ g.textAlign = 'center';
+ esc.forEach(function(w){ g.fillText(w + ' W', xPos(w), H - m.b + 16); });
+
+ P.forEach(function(per, idx){
+  const cor = AQC_CORES[idx % AQC_CORES.length];
+  g.strokeStyle = cor; g.fillStyle = cor; g.lineWidth = 1.8;
+  const sw = document.createElement('span');
+  sw.style.cssText = 'display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 12px;vertical-align:middle;background:' + cor;
+  cont.appendChild(sw);
+  cont.appendChild(document.createTextNode(per.periodo));
+
+  // linha: so entre pontos suficientes e escaloes consecutivos
+  let prev = -2; g.beginPath();
+  per.escaloes.forEach(function(e){
+   if(!e.suficiente){ prev = -2; return; }
+   const ix = esc.indexOf(e.watts_alvo);
+   const x = xPos(e.watts_alvo), y = yPos(e.media);
+   if(ix !== prev + 1) g.moveTo(x, y); else g.lineTo(x, y);
+   prev = ix;
+  });
+  g.globalAlpha = 0.9; g.stroke(); g.globalAlpha = 1;
+
+  per.escaloes.forEach(function(e){
+   const x = xPos(e.watts_alvo), y = yPos(e.media);
+   if(e.suficiente && e.sd !== null){
+    const y1 = yPos(e.media - e.sd), y2 = yPos(e.media + e.sd);
+    g.globalAlpha = 0.5;
+    g.beginPath(); g.moveTo(x, y1); g.lineTo(x, y2);
+    g.moveTo(x-4, y1); g.lineTo(x+4, y1); g.moveTo(x-4, y2); g.lineTo(x+4, y2); g.stroke();
+    g.globalAlpha = 1;
+   }
+   g.beginPath();
+   if(e.suficiente){ g.arc(x, y, 4, 0, Math.PI*2); g.fill(); }
+   else { g.arc(x, y, 4, 0, Math.PI*2); g.fillStyle = '#0d1117'; g.fill(); g.fillStyle = cor; g.stroke(); }
+   g.font = '10px sans-serif'; g.fillStyle = cor;
+   const ladoDir = x + 44 < W - m.r;   // etiqueta a esquerda no ultimo escalao
+   g.textAlign = ladoDir ? 'left' : 'right';
+   g.fillText('n=' + e.n, ladoDir ? x + 6 : x - 6, y - 6);
+   AQC_PTS2.push({x:x, y:y, periodo:per.periodo, watts:e.watts_alvo, n:e.n, media:e.media,
+                  sd:e.sd, suficiente:e.suficiente});
+  });
+ });
+
+ if(D.vista2.deltas.length){
+  D.vista2.deltas.forEach(function(d){
+   const linha = document.createElement('div');
+   linha.textContent = d.watts_alvo + ' W: ' + (d.delta>=0 ? '+' : '') + aqcFmt(d.delta, D.casas)
+     + (D.unidade ? ' ' + D.unidade : '') + '  (' + d.de + ' → ' + d.para
+     + ', n ' + d.n_de + ' → ' + d.n_para + ')';
+   dl.appendChild(linha);
+  });
+ }
+}
+
+function aqcHtml1(p){
+ const un = (AQC_DADOS && AQC_DADOS.unidade) ? ' ' + AQC_DADOS.unidade : '';
+ return '<b>' + aqcData(p.data) + '</b> · ' + aqcEsc(p.sid) + '<br>'
+  + p.watts + ' W · <b>' + aqcFmt(p.valor, AQC_DADOS.casas) + un + '</b>';
+}
+function aqcHtml2(p){
+ const un = (AQC_DADOS && AQC_DADOS.unidade) ? ' ' + AQC_DADOS.unidade : '';
+ let h = '<b>' + aqcEsc(p.periodo) + '</b> · ' + p.watts + ' W<br>média ' + aqcFmt(p.media, AQC_DADOS.casas) + un
+       + ' · n=' + p.n;
+ if(p.sd !== null) h += ' · DP ' + aqcFmt(p.sd, AQC_DADOS.casas);
+ if(!p.suficiente) h += '<br><span style="color:#8b949e;">n abaixo do mínimo</span>';
+ return h;
+}
+function aqcLigarTip(cvId, tipId, obter, html){
+ const cv = document.getElementById(cvId), tip = document.getElementById(tipId);
+ if(!cv || !tip || cv._aqcLigado) return;
+ cv._aqcLigado = true;
+ cv.addEventListener('mousemove', function(ev){
+  const r = cv.getBoundingClientRect();
+  const mx = (ev.clientX - r.left) * (cv.width / r.width);
+  const my = (ev.clientY - r.top) * (cv.height / r.height);
+  let best = null, dmin = 12;
+  obter().forEach(function(p){
+   const d = Math.hypot(p.x - mx, p.y - my);
+   if(d < dmin){ dmin = d; best = p; }
+  });
+  if(!best){ tip.style.display = 'none'; return; }
+  tip.innerHTML = html(best);
+  tip.style.display = 'block';
+  tip.style.left = Math.min(ev.clientX - r.left + 12, r.width - 200) + 'px';
+  tip.style.top = (ev.clientY - r.top - 10) + 'px';
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display = 'none'; });
+}
+/* AQCMP_END */
+
 function aqBlocosCarregar(){
  if(!AQ_MOD) return;
  fetch('/api/aquecimento/dados?modalidade=' + encodeURIComponent(AQ_MOD))
@@ -1964,7 +2358,7 @@ function aqCarregar(){
   AQ_DADOS = d;
   document.getElementById('aqTitulo').textContent =
     AQ_LABELS[met] + ' \u2014 ' + AQ_MOD + ' por escal\u00e3o de watts';
-  aqDraw(); aqRange(); aqTabela(); aqTendencia(met, agr); aqContexto(met, agr); aqBlocosCarregar();
+  aqDraw(); aqRange(); aqTabela(); aqTendencia(met, agr); aqContexto(met, agr); aqBlocosCarregar(); aqCmpCarregar();
  }).catch(function(e){
   console.error('[aqCarregar]', e);
   AQ_DADOS = {status:'erro'}; aqDraw();

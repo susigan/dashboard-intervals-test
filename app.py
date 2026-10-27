@@ -2309,6 +2309,47 @@ def api_aquecimento_auditoria():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/comparativo')
+def api_aquecimento_comparativo():
+    """Analise multi-sessao: todos os aquecimentos de um periodo, por escalao.
+
+    ?modalidade=Bike&metrica=hr&dias=30          (30, 60 ou 90, ate hoje)
+    ?modalidade=Bike&metrica=hr&inicio=2026-09-01&fim=2026-10-01  (personalizado)
+    [&agregacao=mes|semana][&min_n=3]
+    Nao altera a base: so le aquecimento_blocos.
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        from datetime import date as _date
+        import aquecimento_comparativo as cmp
+        mod = request.args.get('modalidade')
+        if not mod:
+            return jsonify({'status': 'erro', 'mensagem': 'falta ?modalidade='}), 400
+        metrica = request.args.get('metrica', 'hr')
+        agreg = request.args.get('agregacao', 'mes')
+        min_n = request.args.get('min_n', default=3, type=int)
+        dias = request.args.get('dias', type=int)
+        ini = request.args.get('inicio')
+        fim = request.args.get('fim')
+        try:
+            ini_d = _date.fromisoformat(ini) if ini else None
+            fim_d = _date.fromisoformat(fim) if fim else None
+        except ValueError:
+            return jsonify({'status': 'erro', 'mensagem': 'datas em formato AAAA-MM-DD'}), 400
+        blocos = aq_db.listar_blocos(mod)
+        res = cmp.comparativo(blocos, mod, metrica, hoje=_date.today(),
+                              dias=dias, inicio=ini_d, fim=fim_d,
+                              agregacao=agreg, min_n=min_n)
+        return jsonify(res)
+    except ValueError as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 400
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/aquecimento/tendencia')
 def api_aquecimento_tendencia():
     """Tendencia por janelas temporais (60d, 90d, 1a, 2a, 3a).

@@ -792,6 +792,91 @@ BODY = r"""
     <label class="sel" style="cursor:pointer;white-space:nowrap;">
       <input type="checkbox" id="aqTrend" checked style="vertical-align:middle;margin-right:4px;"><span style="vertical-align:middle;">Tendência</span></label>
   </div>
+  <h2 id="aqCmpTitulo">Análise comparativa — todos os aquecimentos do período</h2>
+  <div class="controls" style="margin-bottom:8px;">
+    <span style="color:#8b949e;font-size:12px;">Período:</span>
+    <button type="button" class="aqCmpP" data-dias="30">30 dias</button>
+    <button type="button" class="aqCmpP" data-dias="60">60 dias</button>
+    <button type="button" class="aqCmpP" data-dias="90">90 dias</button>
+    <button type="button" class="aqCmpP" data-dias="custom">Personalizado</button>
+    <span id="aqCmpCustom" style="display:none;margin-left:8px;">
+      <input type="date" id="aqCmpIni"> a <input type="date" id="aqCmpFim">
+      <button type="button" id="aqCmpAplicar">Aplicar</button></span>
+  </div>
+  <div class="controls" style="margin-bottom:8px;">
+    <label class="sel">Métrica
+      <select id="aqCmpMet">
+        <option value="hr">HR (bpm)</option>
+        <option value="smo2">SmO&#8322; (%)</option>
+        <option value="resp">Respiração (rpm)</option>
+        <option value="dfa1">DFA-&#945;1</option>
+      </select></label>
+    <label class="sel">Agregação por período
+      <select id="aqCmpAgr">
+        <option value="mes" selected>Mês</option>
+        <option value="semana">Semana</option>
+      </select></label>
+    <label class="sel">n mínimo por ponto
+      <select id="aqCmpMin">
+        <option value="2">2</option>
+        <option value="3" selected>3</option>
+        <option value="6">6</option>
+      </select></label>
+  </div>
+  <div id="aqCmpMeta" style="font-size:12px;color:#8b949e;margin-bottom:10px;line-height:1.6;"></div>
+  <h3 id="aqCmpT1" style="font-size:14px;margin:12px 0 4px;">Vista 1 — sessões individuais</h3>
+  <div id="aqCmpLegenda" style="font-size:12px;margin-bottom:6px;"></div>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chCmp1" height="320"></canvas>
+    <div id="aqCmpTip1" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
+         border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
+         white-space:nowrap;"></div>
+  </div>
+  <h3 id="aqCmpT2" style="font-size:14px;margin:16px 0 4px;">Vista 2 — tendência agregada por período</h3>
+  <div id="aqCmpPeriodos" style="font-size:12px;margin-bottom:6px;"></div>
+  <div class="chartbox" style="position:relative;">
+    <canvas id="chCmp2" height="320"></canvas>
+    <div id="aqCmpTip2" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
+         border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
+         white-space:nowrap;"></div>
+  </div>
+  <div id="aqCmpDelta" style="font-size:12px;color:#c9d1d9;margin-top:8px;"></div>
+  <p style="color:#8b949e;font-size:11px;margin:8px 0 16px;">
+    Vista 2: cada ponto é a média das sessões do escalão naquele período, não uma medição
+    individual. A barra é o desvio-padrão amostral entre sessões (n−1). Pontos com n abaixo do
+    mínimo aparecem vazados, sem barra e fora da linha. Os escalões são posições categóricas,
+    não uma escala contínua de tempo.
+  </p>
+
+  <div id="aqHrr" style="margin:18px 0 8px;padding-top:10px;border-top:1px solid #30363d;">
+  <h2 id="aqHrrTitulo">HRR por degrau — streams de uma sessão (leitura, sem persistência)</h2>
+  <div class="controls" style="margin-bottom:8px;flex-wrap:wrap;">
+    <span style="color:#8b949e;font-size:12px;">Sessão: a escolhida no painel de blocos acima</span>
+    <button type="button" id="aqHrrBtn" onclick="aqHrrCarregar()">Calcular HRR desta sessão</button>
+    <label class="sel">Gráfico B — variável
+      <select id="aqHrrVar" onchange="aqHrrRender()">
+        <option value="hr">FC</option><option value="smo2">SmO₂</option><option value="resp">Respiração</option>
+        <option value="dfa1">DFA-α1</option><option value="thb">THb</option></select></label>
+  </div>
+  <div id="aqHrrMeta" style="font-size:12px;color:#8b949e;margin-bottom:10px;line-height:1.6;">
+    Escolha uma sessão no painel de blocos e clique em “Calcular HRR desta sessão”. Os streams
+    brutos são pedidos à API com a mesma integração da aplicação; os valores são calculados em
+    memória, sem gravar nada na base de dados.</div>
+  <h3 style="font-size:14px;margin:12px 0 4px;">Gráfico A — potência e FC ao longo do tempo</h3>
+  <div style="position:relative;"><canvas id="chHrr1" style="width:100%;height:260px;display:block;"></canvas></div>
+  <h3 style="font-size:14px;margin:14px 0 4px;">Gráfico B — resposta durante a recuperação (alinhada ao fim do esforço)</h3>
+  <div style="position:relative;"><canvas id="chHrr2" style="width:100%;height:260px;display:block;"></canvas></div>
+  <h3 style="font-size:14px;margin:14px 0 4px;">Gráfico C — HRR60 e HRR120 por degrau</h3>
+  <div style="position:relative;"><canvas id="chHrr3" style="width:100%;height:240px;display:block;"></canvas></div>
+  <div id="aqHrrTabela" style="margin-top:12px;font-size:12px;overflow-x:auto;"></div>
+  <p style="color:#8b949e;font-size:11px;margin:10px 0 16px;">
+    HRR = FC no fim efetivo do esforço (média dos últimos 30 s, ≥ 20 s válidos) − FC na recuperação
+    (janelas 55–65 s e 115–125 s após o fim efetivo). O fim efetivo é medido na potência bruta dentro do
+    intervalo já detetado (queda sustentada ≥ 5 s); se não for confirmado, o motivo é mostrado. Valores negativos são válidos. Ausência é mostrada
+    como “n/d” com o motivo, nunca como zero. Os gráficos usam uma série reduzida só para desenho;
+    os valores vêm do cálculo sobre a série original. Comparação entre sessões ainda não incluída.
+  </p>
+  </div>
   <h2 id="aqTituloRange">Dispersão por escalão de watts</h2>
   <div class="controls" style="margin-bottom:6px;">
     <span style="color:#8b949e;font-size:12px;">Sobrepor:</span>
@@ -1369,7 +1454,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   this.classList.add('active');
   document.getElementById(tabName).classList.add('active');
-  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqBlocosCarregar(); }
+  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqBlocosCarregar(); aqCmpCarregar(); }
   if(tabName === 'perfilmet'){ if(!PM) pmCarregar(); else pmDraw(); }
  });
 });
@@ -1717,6 +1802,594 @@ const AQB_METRICAS = [
 ];
 let AQB_SESSAO = null, AQB_GEOM = [], AQB_LIGADO = false;
 
+/* AQCMP_BEGIN */
+const AQC_CORES = ['#58A6FF','#F0883E','#3FB950','#D2A8FF','#79C0FF','#FFA657','#7EE787',
+                   '#FF7B72','#E3B341','#A5D6FF','#56D364','#F778BA','#B1BAC4','#FFDFB6'];
+const AQC_NOME = {hr:'HR', smo2:'SmO₂', resp:'Respiração', dfa1:'DFA-α1'};
+let AQC_DADOS = null, AQC_OCULTAS = {}, AQC_LIGADO = false, AQC_PER = 30;
+let AQC_PTS1 = [], AQC_PTS2 = [];
+
+function aqcFmt(v, casas){
+ if(v===null || v===undefined || !isFinite(v)) return '—';
+ return Number(v).toFixed(casas||0).replace('.', ',');
+}
+function aqcData(iso){
+ const p = String(iso||'').slice(0,10).split('-');
+ return p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : String(iso||'');
+}
+function aqcEsc(s){
+ return String(s==null?'':s).replace(/[&<>"]/g, function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; });
+}
+function aqcMsg(t){
+ const m = document.getElementById('aqCmpMeta');
+ if(m) m.textContent = t;
+}
+function aqcMarcaPeriodo(v){
+ document.querySelectorAll('.aqCmpP').forEach(function(b){
+  const ativo = String(b.dataset.dias) === String(v);
+  b.style.fontWeight = ativo ? '700' : '400';
+  b.style.borderColor = ativo ? '#58a6ff' : '';
+ });
+}
+
+function aqCmpCarregar(){
+ aqCmpLigar();
+ if(!AQ_MOD) return;
+ const met = document.getElementById('aqCmpMet').value;
+ const agr = document.getElementById('aqCmpAgr').value;
+ const mn  = document.getElementById('aqCmpMin').value;
+ let q = 'modalidade=' + encodeURIComponent(AQ_MOD) + '&metrica=' + met
+       + '&agregacao=' + agr + '&min_n=' + mn;
+ if(AQC_PER === 'custom'){
+  const i = document.getElementById('aqCmpIni').value;
+  const f = document.getElementById('aqCmpFim').value;
+  if(!i || !f){ aqcMsg('Escolha as duas datas e carregue em Aplicar.'); return; }
+  q += '&inicio=' + i + '&fim=' + f;
+ } else {
+  q += '&dias=' + AQC_PER;
+ }
+ aqcMsg('A carregar…');
+ fetch('/api/aquecimento/comparativo?' + q).then(function(r){ return r.json(); })
+  .then(function(d){ AQC_DADOS = d; aqCmpRender(); })
+  .catch(function(e){
+   console.error('[aqCmpCarregar]', e);
+   AQC_DADOS = {status:'erro', mensagem:'falha de ligação'}; aqCmpRender();
+  });
+}
+
+function aqCmpLigar(){
+ if(AQC_LIGADO) return;
+ AQC_LIGADO = true;
+ document.querySelectorAll('.aqCmpP').forEach(function(b){
+  b.addEventListener('click', function(){
+   const v = b.dataset.dias;
+   document.getElementById('aqCmpCustom').style.display = (v==='custom') ? 'inline' : 'none';
+   aqcMarcaPeriodo(v);
+   if(v === 'custom'){ AQC_PER = 'custom'; return; }
+   AQC_PER = parseInt(v, 10); AQC_OCULTAS = {}; aqCmpCarregar();
+  });
+ });
+ ['aqCmpMet','aqCmpAgr','aqCmpMin'].forEach(function(id){
+  document.getElementById(id).addEventListener('change', function(){ AQC_OCULTAS = {}; aqCmpCarregar(); });
+ });
+ document.getElementById('aqCmpAplicar').addEventListener('click', function(){
+  AQC_OCULTAS = {}; aqCmpCarregar();
+ });
+ aqcMarcaPeriodo(AQC_PER);
+ aqcLigarTip('chCmp1', 'aqCmpTip1', function(){ return AQC_PTS1; }, aqcHtml1);
+ aqcLigarTip('chCmp2', 'aqCmpTip2', function(){ return AQC_PTS2; }, aqcHtml2);
+}
+
+function aqCmpRender(){
+ const D = AQC_DADOS;
+ const meta = document.getElementById('aqCmpMeta');
+ if(!D || D.status !== 'ok'){
+  aqcMsg((D && D.mensagem) ? 'Erro: ' + D.mensagem : 'Sem dados.');
+  aqCmpDesenhaVazio('chCmp1', 'Sem dados'); aqCmpDesenhaVazio('chCmp2', 'Sem dados');
+  document.getElementById('aqCmpLegenda').innerHTML = '';
+  document.getElementById('aqCmpPeriodos').innerHTML = '';
+  document.getElementById('aqCmpDelta').textContent = '';
+  return;
+ }
+ const un = D.unidade ? ' (' + D.unidade + ')' : '';
+ const s = D.sessoes;
+ const per = aqcData(D.periodo.inicio) + ' a ' + aqcData(D.periodo.fim)
+           + (D.periodo.dias ? ' (' + D.periodo.dias + ' dias)' : ' (personalizado)');
+ const motivos = {};
+ s.excluidas_lista.forEach(function(x){ motivos[x.motivo] = (motivos[x.motivo]||0) + 1; });
+ const txtMot = Object.keys(motivos).map(function(k){ return k + ': ' + motivos[k]; }).join('; ');
+ const linhas = [
+  '<b style="color:#c9d1d9;">Período:</b> ' + per + ' · <b style="color:#c9d1d9;">Modalidade:</b> ' + aqcEsc(D.modalidade),
+  '<b style="color:#c9d1d9;">Métrica:</b> ' + aqcEsc(D.nome) + un
+    + ' · <b style="color:#c9d1d9;">Sessões incluídas:</b> ' + s.incluidas + ' de ' + (s.incluidas + s.excluidas)
+    + (s.excluidas ? ' · excluídas: ' + s.excluidas + ' (' + aqcEsc(txtMot) + ')' : ''),
+  '<b style="color:#c9d1d9;">Escalões de watts:</b> ' + (D.escaloes.length ? D.escaloes.join(' · ') + ' W' : '—')
+    + ' · sessões com escalões em falta: ' + s.incompletas
+    + ' · zeros duvidosos excluídos: ' + s.zeros_excluidos,
+  '<b style="color:#c9d1d9;">Agregação (Vista 2):</b> ' + (D.agregacao==='mes' ? 'mês' : 'semana')
+    + ' · média das sessões, n mínimo ' + D.min_n + ', dispersão = desvio-padrão amostral entre sessões',
+ ];
+ meta.innerHTML = linhas.join('<br>') + '<br>' + D.avisos.map(function(a){
+  return '• ' + aqcEsc(a); }).join('<br>');
+
+ aqCmpLegendaSessoes();
+ aqCmpDraw1();
+ aqCmpDraw2();
+}
+
+function aqCmpDesenhaVazio(id, msg){
+ const o = ctx(id, 320); if(!o) return;
+ o.g.clearRect(0,0,o.W,o.H); noData(o.g, o.W, o.H, msg);
+}
+
+function aqCmpLegendaSessoes(){
+ const box = document.getElementById('aqCmpLegenda');
+ box.innerHTML = '';
+ const D = AQC_DADOS;
+ if(!D.vista1.length){
+  box.textContent = 'Nenhuma sessão incluída neste período.';
+  return;
+ }
+ const acoes = document.createElement('span');
+ acoes.style.marginRight = '10px';
+ [['todas', true], ['nenhuma', false]].forEach(function(par){
+  const b = document.createElement('button');
+  b.type = 'button'; b.textContent = par[0];
+  b.style.marginRight = '6px';
+  b.addEventListener('click', function(){
+   AQC_OCULTAS = {};
+   if(!par[1]) D.vista1.forEach(function(x){ AQC_OCULTAS[x.activity_id] = true; });
+   aqCmpLegendaSessoes(); aqCmpDraw1();
+  });
+  acoes.appendChild(b);
+ });
+ box.appendChild(acoes);
+ D.vista1.forEach(function(sess, idx){
+  const lab = document.createElement('label');
+  lab.style.cssText = 'cursor:pointer;margin-right:12px;white-space:nowrap;';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.checked = !AQC_OCULTAS[sess.activity_id];
+  cb.style.marginRight = '3px';
+  cb.addEventListener('change', function(){
+   if(cb.checked) delete AQC_OCULTAS[sess.activity_id];
+   else AQC_OCULTAS[sess.activity_id] = true;
+   aqCmpDraw1();
+  });
+  const sw = document.createElement('span');
+  sw.style.cssText = 'display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle;background:' + AQC_CORES[idx % AQC_CORES.length];
+  lab.appendChild(cb); lab.appendChild(sw);
+  lab.appendChild(document.createTextNode(aqcData(sess.data) + ' · ' + sess.activity_id
+    + (sess.em_falta.length ? ' (escalões em falta)' : '')));
+  box.appendChild(lab);
+ });
+}
+
+function aqCmpDraw1(){
+ const o = ctx('chCmp1', 320); if(!o) return;
+ const g = o.g, W = o.W, H = o.H;
+ g.clearRect(0,0,W,H);
+ AQC_PTS1 = [];
+ const D = AQC_DADOS;
+ document.getElementById('aqCmpT1').textContent =
+   'Vista 1 — sessões individuais · ' + (AQC_NOME[D && D.metrica] || '') + ' · ' + (D && D.modalidade || '');
+ if(!D || D.status !== 'ok' || !D.vista1.length){ noData(g, W, H, 'Sem sessões incluídas neste período'); return; }
+ const esc = D.escaloes;
+ const m = {l:58, r:20, t:14, b:40};
+ const pw = W - m.l - m.r, ph = H - m.t - m.b;
+ const xPos = function(w){ return esc.length<=1 ? m.l + pw/2 : m.l + pw * esc.indexOf(w) / (esc.length-1); };
+ const vis = D.vista1.filter(function(x){ return !AQC_OCULTAS[x.activity_id]; });
+ const vals = [];
+ vis.forEach(function(x){ x.pontos.forEach(function(p){ vals.push(p.valor); }); });
+ if(!vals.length){ noData(g, W, H, 'Todas as sessões estão ocultas'); return; }
+ let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+ const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
+ const yPos = function(v){ return m.t + ph * (1 - (v - lo) / (hi - lo)); };
+
+ g.font = '11px sans-serif'; g.textAlign = 'right'; g.fillStyle = '#8b949e'; g.strokeStyle = '#21262d';
+ for(let i = 0; i <= 4; i++){
+  const v = lo + (hi - lo) * i / 4, y = yPos(v);
+  g.beginPath(); g.moveTo(m.l, y); g.lineTo(W - m.r, y); g.stroke();
+  g.fillText(aqcFmt(v, D.casas), m.l - 6, y + 4);
+ }
+ g.textAlign = 'center';
+ esc.forEach(function(w){ g.fillText(w + ' W', xPos(w), H - m.b + 16); });
+
+ D.vista1.forEach(function(sess, idx){
+  if(AQC_OCULTAS[sess.activity_id]) return;
+  const cor = AQC_CORES[idx % AQC_CORES.length];
+  g.strokeStyle = cor; g.fillStyle = cor; g.lineWidth = 1.6; g.globalAlpha = 0.85;
+  let prev = -2;
+  g.beginPath();
+  sess.pontos.forEach(function(p){
+   const ix = esc.indexOf(p.watts_alvo);
+   const x = xPos(p.watts_alvo), y = yPos(p.valor);
+   if(ix !== prev + 1) g.moveTo(x, y); else g.lineTo(x, y);
+   prev = ix;
+  });
+  g.stroke();
+  sess.pontos.forEach(function(p){
+   const x = xPos(p.watts_alvo), y = yPos(p.valor);
+   g.beginPath(); g.arc(x, y, 3, 0, Math.PI*2); g.fill();
+   AQC_PTS1.push({x:x, y:y, data:sess.data, sid:sess.activity_id, watts:p.watts_alvo, valor:p.valor});
+  });
+  g.globalAlpha = 1;
+ });
+}
+
+function aqCmpDraw2(){
+ const o = ctx('chCmp2', 320); if(!o) return;
+ const g = o.g, W = o.W, H = o.H;
+ g.clearRect(0,0,W,H);
+ AQC_PTS2 = [];
+ const D = AQC_DADOS;
+ document.getElementById('aqCmpT2').textContent =
+   'Vista 2 — tendência agregada por ' + (D && D.agregacao==='semana' ? 'semana' : 'mês')
+   + ' · ' + (AQC_NOME[D && D.metrica] || '') + ' · ' + (D && D.modalidade || '');
+ const P = D && D.status === 'ok' ? D.vista2.periodos : [];
+ const cont = document.getElementById('aqCmpPeriodos');
+ const dl = document.getElementById('aqCmpDelta');
+ cont.innerHTML = ''; dl.textContent = '';
+ if(!P.length){ noData(g, W, H, 'Sem dados agregados neste período'); return; }
+
+ const esc = D.escaloes;
+ const m = {l:58, r:20, t:14, b:40};
+ const pw = W - m.l - m.r, ph = H - m.t - m.b;
+ const xPos = function(w){ return esc.length<=1 ? m.l + pw/2 : m.l + pw * esc.indexOf(w) / (esc.length-1); };
+ let lo = Infinity, hi = -Infinity;
+ P.forEach(function(p){ p.escaloes.forEach(function(e){
+  const dp = (e.suficiente && e.sd!==null) ? e.sd : 0;
+  lo = Math.min(lo, e.media - dp); hi = Math.max(hi, e.media + dp);
+ }); });
+ const pad = (hi - lo) * 0.1 || 1; lo -= pad; hi += pad;
+ const yPos = function(v){ return m.t + ph * (1 - (v - lo) / (hi - lo)); };
+
+ g.font = '11px sans-serif'; g.textAlign = 'right'; g.fillStyle = '#8b949e'; g.strokeStyle = '#21262d';
+ for(let i = 0; i <= 4; i++){
+  const v = lo + (hi - lo) * i / 4, y = yPos(v);
+  g.beginPath(); g.moveTo(m.l, y); g.lineTo(W - m.r, y); g.stroke();
+  g.fillText(aqcFmt(v, D.casas), m.l - 6, y + 4);
+ }
+ g.textAlign = 'center';
+ esc.forEach(function(w){ g.fillText(w + ' W', xPos(w), H - m.b + 16); });
+
+ P.forEach(function(per, idx){
+  const cor = AQC_CORES[idx % AQC_CORES.length];
+  g.strokeStyle = cor; g.fillStyle = cor; g.lineWidth = 1.8;
+  const sw = document.createElement('span');
+  sw.style.cssText = 'display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 12px;vertical-align:middle;background:' + cor;
+  cont.appendChild(sw);
+  cont.appendChild(document.createTextNode(per.periodo));
+
+  // linha: so entre pontos suficientes e escaloes consecutivos
+  let prev = -2; g.beginPath();
+  per.escaloes.forEach(function(e){
+   if(!e.suficiente){ prev = -2; return; }
+   const ix = esc.indexOf(e.watts_alvo);
+   const x = xPos(e.watts_alvo), y = yPos(e.media);
+   if(ix !== prev + 1) g.moveTo(x, y); else g.lineTo(x, y);
+   prev = ix;
+  });
+  g.globalAlpha = 0.9; g.stroke(); g.globalAlpha = 1;
+
+  per.escaloes.forEach(function(e){
+   const x = xPos(e.watts_alvo), y = yPos(e.media);
+   if(e.suficiente && e.sd !== null){
+    const y1 = yPos(e.media - e.sd), y2 = yPos(e.media + e.sd);
+    g.globalAlpha = 0.5;
+    g.beginPath(); g.moveTo(x, y1); g.lineTo(x, y2);
+    g.moveTo(x-4, y1); g.lineTo(x+4, y1); g.moveTo(x-4, y2); g.lineTo(x+4, y2); g.stroke();
+    g.globalAlpha = 1;
+   }
+   g.beginPath();
+   if(e.suficiente){ g.arc(x, y, 4, 0, Math.PI*2); g.fill(); }
+   else { g.arc(x, y, 4, 0, Math.PI*2); g.fillStyle = '#0d1117'; g.fill(); g.fillStyle = cor; g.stroke(); }
+   g.font = '10px sans-serif'; g.fillStyle = cor;
+   const ladoDir = x + 44 < W - m.r;   // etiqueta a esquerda no ultimo escalao
+   g.textAlign = ladoDir ? 'left' : 'right';
+   g.fillText('n=' + e.n, ladoDir ? x + 6 : x - 6, y - 6);
+   AQC_PTS2.push({x:x, y:y, periodo:per.periodo, watts:e.watts_alvo, n:e.n, media:e.media,
+                  sd:e.sd, suficiente:e.suficiente});
+  });
+ });
+
+ if(D.vista2.deltas.length){
+  D.vista2.deltas.forEach(function(d){
+   const linha = document.createElement('div');
+   linha.textContent = d.watts_alvo + ' W: ' + (d.delta>=0 ? '+' : '') + aqcFmt(d.delta, D.casas)
+     + (D.unidade ? ' ' + D.unidade : '') + '  (' + d.de + ' → ' + d.para
+     + ', n ' + d.n_de + ' → ' + d.n_para + ')';
+   dl.appendChild(linha);
+  });
+ }
+}
+
+function aqcHtml1(p){
+ const un = (AQC_DADOS && AQC_DADOS.unidade) ? ' ' + AQC_DADOS.unidade : '';
+ return '<b>' + aqcData(p.data) + '</b> · ' + aqcEsc(p.sid) + '<br>'
+  + p.watts + ' W · <b>' + aqcFmt(p.valor, AQC_DADOS.casas) + un + '</b>';
+}
+function aqcHtml2(p){
+ const un = (AQC_DADOS && AQC_DADOS.unidade) ? ' ' + AQC_DADOS.unidade : '';
+ let h = '<b>' + aqcEsc(p.periodo) + '</b> · ' + p.watts + ' W<br>média ' + aqcFmt(p.media, AQC_DADOS.casas) + un
+       + ' · n=' + p.n;
+ if(p.sd !== null) h += ' · DP ' + aqcFmt(p.sd, AQC_DADOS.casas);
+ if(!p.suficiente) h += '<br><span style="color:#8b949e;">n abaixo do mínimo</span>';
+ return h;
+}
+function aqcLigarTip(cvId, tipId, obter, html){
+ const cv = document.getElementById(cvId), tip = document.getElementById(tipId);
+ if(!cv || !tip || cv._aqcLigado) return;
+ cv._aqcLigado = true;
+ cv.addEventListener('mousemove', function(ev){
+  const r = cv.getBoundingClientRect();
+  const mx = (ev.clientX - r.left) * (cv.width / r.width);
+  const my = (ev.clientY - r.top) * (cv.height / r.height);
+  let best = null, dmin = 12;
+  obter().forEach(function(p){
+   const d = Math.hypot(p.x - mx, p.y - my);
+   if(d < dmin){ dmin = d; best = p; }
+  });
+  if(!best){ tip.style.display = 'none'; return; }
+  tip.innerHTML = html(best);
+  tip.style.display = 'block';
+  tip.style.left = Math.min(ev.clientX - r.left + 12, r.width - 200) + 'px';
+  tip.style.top = (ev.clientY - r.top - 10) + 'px';
+ });
+ cv.addEventListener('mouseleave', function(){ tip.style.display = 'none'; });
+}
+/* AQCMP_END */
+/* AQHRR_BEGIN */
+let AQH_D = null;
+const AQH_MOT = {
+ rec_curta: 'recuperação curta', sem_fim_de_recuperacao: 'sem degrau seguinte',
+ lacuna_sem_dados: 'lacuna nos dados', dados_insuficientes: 'FC insuficiente na janela',
+ sem_amostras_validas: 'sem amostras válidas', sem_stream_ate_janela: 'stream acaba antes da janela',
+ work_curto: 'esforço curto', sem_fim: 'sem fim de recuperação',
+ fim_efetivo_sem_queda_confirmada: 'fim do esforço não confirmado pela potência',
+ fim_efetivo_sem_amostras_de_potencia: 'sem potência para confirmar o fim do esforço',
+ fim_efetivo_queda_no_inicio_do_esforco: 'queda logo no início do esforço'
+};
+function aqhMot(m){
+ if(!m) return '';
+ const fimEsforco = String(m).indexOf('hr_end_') === 0;
+ const k = fimEsforco ? String(m).slice(7) : String(m);
+ return (fimEsforco ? 'FC fim do esforço: ' : '') + (AQH_MOT[k] || k);
+}
+function aqhMsg(t){
+ const m = document.getElementById('aqHrrMeta');
+ if(m) m.textContent = t;
+}
+function aqhLimpa(){
+ ['chHrr1','chHrr2','chHrr3'].forEach(function(id){
+  const c = document.getElementById(id);
+  if(c){ const g = c.getContext('2d'); g.clearRect(0,0,c.width,c.height); }
+ });
+ const tb = document.getElementById('aqHrrTabela');
+ if(tb) tb.innerHTML = '';
+}
+function aqHrrCarregar(){
+ const sel = document.getElementById('aqBlocosSessao');
+ const aid = sel ? String(sel.value || '').trim() : '';
+ const mod = AQ_MOD;
+ if(!mod){ aqhMsg('Modalidade do painel ainda não carregada.'); return; }
+ if(!/^i\d+$/.test(aid)){ aqhMsg('Escolha uma sessão de ' + mod + ' no painel de blocos acima.'); return; }
+ aqhMsg('A calcular a partir dos streams da API…');
+ const url = '/api/aquecimento/hrr?activity_id=' + encodeURIComponent(aid) +
+             '&modalidade=' + encodeURIComponent(mod) + '&serie=1';
+ fetch(url).then(function(r){ return r.json().then(function(j){ return {ok: r.ok, j: j}; }); })
+  .then(function(x){
+   if(!x.ok || !x.j || x.j.status !== 'ok'){
+    AQH_D = null; aqhLimpa();
+    const st = x.j && x.j.status ? x.j.status : 'erro';
+    aqhMsg('Não foi possível calcular (' + st + ')' + (x.j && x.j.mensagem ? ': ' + x.j.mensagem : ''));
+    return;
+   }
+   AQH_D = x.j; aqHrrRender();
+  })
+  .catch(function(e){ AQH_D = null; aqhLimpa(); aqhMsg('Erro ao pedir os dados: ' + e); });
+}
+function aqHrrLinha(g, xs, ys, cor, xp, yp){
+ g.strokeStyle = cor; g.lineWidth = 1.6; g.beginPath();
+ let aberto = false;
+ for(let k=0; k<xs.length; k++){
+  if(ys[k] === null || ys[k] === undefined || !isFinite(ys[k])){ aberto = false; continue; }
+  const px = xp(xs[k]), py = yp(ys[k]);
+  if(!aberto){ g.moveTo(px, py); aberto = true; } else { g.lineTo(px, py); }
+ }
+ g.stroke();
+}
+function aqHrrEixo(g, W, H, m, xp, yp, x0, x1, y0, y1, xTit, yTit, xTicks){
+ g.strokeStyle = '#30363d'; g.fillStyle = '#8b949e'; g.font = '11px sans-serif';
+ g.lineWidth = 1;
+ for(let i=0;i<=4;i++){
+  const v = y0 + (y1-y0)*i/4, py = yp(v);
+  g.beginPath(); g.moveTo(m.l, py); g.lineTo(W-m.r, py); g.stroke();
+  g.textAlign = 'right'; g.fillText(aqcFmt(v, (y1-y0) < 5 ? 2 : 0), m.l-6, py+4);
+ }
+ // marcas no eixo X, so' quando o eixo X e' numerico (xp varia com x)
+ if(xp(x1) !== xp(x0)){
+  g.textAlign = 'center';
+  const ticks = xTicks || [0,1,2,3,4,5].map(function(i){ return x0 + (x1-x0)*i/5; });
+  ticks.forEach(function(xv){ g.fillText(aqcFmt(xv, 0), xp(xv), H-m.b+14); });
+ }
+ g.textAlign = 'center';
+ g.fillText(xTit, m.l + (W-m.l-m.r)/2, H-6);
+ g.save(); g.translate(12, m.t + (H-m.t-m.b)/2); g.rotate(-Math.PI/2);
+ g.fillText(yTit, 0, 0); g.restore();
+}
+function aqHrrDesenha1(){
+ const o = ctx('chHrr1', 260); if(!o) return;
+ const g = o.g, W = o.W, H = o.H; g.clearRect(0,0,W,H);
+ const S = AQH_D && AQH_D.serie_grafico;
+ if(!S){ noData(g, W, H, 'Sem série para desenhar'); return; }
+ const t = S.t, m = {l:52, r:52, t:12, b:36};
+ const tMax = t[t.length-1] || 1;
+ const xp = function(s){ return m.l + (W-m.l-m.r) * s / tMax; };
+ const wMax = Math.max.apply(null, (S.watts||[0]).filter(function(v){return v!==null;}).concat([1]));
+ const hv = (S.hr||[]).filter(function(v){return v!==null;});
+ const hMin = hv.length ? Math.min.apply(null, hv) - 5 : 0, hMax = hv.length ? Math.max.apply(null, hv) + 5 : 1;
+ const yw = function(v){ return m.t + (H-m.t-m.b) * (1 - v / (wMax*1.1)); };
+ const yh = function(v){ return m.t + (H-m.t-m.b) * (1 - (v-hMin)/(hMax-hMin)); };
+ // faixas WORK (azul) e RECOVERY (cinza)
+ AQH_D.degraus.forEach(function(d){
+  if(d.work.t_fim_s === null) return;
+  g.fillStyle = 'rgba(88,166,255,0.14)';
+  g.fillRect(xp(d.work.t_inicio_s), m.t, Math.max(1, xp(d.work.t_fim_s)-xp(d.work.t_inicio_s)), H-m.t-m.b);
+  if(d.rec.t_fim_s !== null){
+   g.fillStyle = 'rgba(139,148,158,0.10)';
+   g.fillRect(xp(d.rec.t_inicio_s), m.t, xp(d.rec.t_fim_s)-xp(d.rec.t_inicio_s), H-m.t-m.b);
+  }
+ });
+ aqHrrEixo(g, W, H, m, xp, yw, 0, tMax, 0, wMax*1.1, 'tempo (s)', 'W');
+ g.fillStyle = '#8b949e'; g.textAlign = 'left'; g.fillText(aqcFmt(hMax,0)+' bpm', W-m.r+4, m.t+10);
+ g.fillText(aqcFmt(hMin,0)+' bpm', W-m.r+4, H-m.b);
+ // marcadores: fim do esforço (vermelho), +60 s e +120 s (roxo tracejado)
+ AQH_D.degraus.forEach(function(d){
+  if(d.work.t_fim_s === null) return;
+  g.setLineDash([]); g.strokeStyle = '#F78166'; g.lineWidth = 1.2;
+  g.beginPath(); g.moveTo(xp(d.work.t_fim_s), m.t); g.lineTo(xp(d.work.t_fim_s), H-m.b); g.stroke();
+  g.setLineDash([4,3]); g.strokeStyle = '#D2A8FF';
+  [60,120].forEach(function(s){
+   const x = xp(d.work.t_fim_s + s);
+   if(x < W-m.r){ g.beginPath(); g.moveTo(x, m.t); g.lineTo(x, H-m.b); g.stroke(); }
+  });
+  g.setLineDash([]);
+ });
+ aqHrrLinha(g, t, S.watts, '#58A6FF', xp, yw);
+ aqHrrLinha(g, t, S.hr, '#F0883E', xp, yh);
+}
+function aqHrrDesenha2(){
+ const o = ctx('chHrr2', 260); if(!o) return;
+ const g = o.g, W = o.W, H = o.H; g.clearRect(0,0,W,H);
+ const v = document.getElementById('aqHrrVar').value;
+ const S = AQH_D && AQH_D.serie_grafico;
+ if(!S || !S[v]){ noData(g, W, H, 'Stream indisponível nesta sessão: ' + (v==='hr'?'FC':v)); return; }
+ const m = {l:52, r:16, t:12, b:36};
+ const xMin = -30, xMax = 150;
+ const xp = function(s){ return m.l + (W-m.l-m.r) * (s - xMin) / (xMax - xMin); };
+ const pts = [];
+ AQH_D.degraus.forEach(function(d, i){
+  const tf = d.work.t_fim_s, tn = d.rec.t_fim_s;
+  if(tf === null){ pts.push({xs: [], ys: [], cor: AQC_CORES[i % AQC_CORES.length], n: i+1}); return; }
+  const lim = tn !== null ? Math.min(xMax, tn - 15 - tf) : xMax;   // nunca atravessa o inicio do degrau seguinte
+  const xs = [], ys = [];
+  S.t.forEach(function(ti, k){
+   const s = ti - tf;
+   if(s < xMin || s > lim) return;
+   xs.push(s); ys.push(S[v][k]);
+  });
+  pts.push({xs: xs, ys: ys, cor: AQC_CORES[i % AQC_CORES.length], n: i+1});
+ });
+ const all = [];
+ pts.forEach(function(p){ p.ys.forEach(function(y){ if(y!==null) all.push(y); }); });
+ if(!all.length){ noData(g, W, H, 'Sem valores válidos nas recuperações'); return; }
+ const yMin = Math.min.apply(null, all), yMax = Math.max.apply(null, all);
+ const pad = (yMax - yMin) * 0.08 || 1;
+ const yp = function(y){ return m.t + (H-m.t-m.b) * (1 - (y - (yMin-pad)) / ((yMax+pad) - (yMin-pad))); };
+ aqHrrEixo(g, W, H, m, xp, yp, xMin, xMax, yMin-pad, yMax+pad, 's após o fim do esforço', AQH_NOME_VAR(v), [-30,0,30,60,90,120,150]);
+ // 0 s e janelas 60/120
+ [0,60,120].forEach(function(s){
+  g.setLineDash(s===0 ? [] : [4,3]); g.strokeStyle = s===0 ? '#F78166' : '#D2A8FF';
+  g.beginPath(); g.moveTo(xp(s), m.t); g.lineTo(xp(s), H-m.b); g.stroke();
+ });
+ g.setLineDash([]);
+ pts.forEach(function(p){ aqHrrLinha(g, p.xs, p.ys, p.cor, xp, yp); });
+ // legenda
+ g.font = '11px sans-serif'; g.textAlign = 'left';
+ pts.forEach(function(p, i){
+  g.fillStyle = p.cor; g.fillRect(m.l + 6 + i*58, m.t + 2, 10, 10);
+  g.fillStyle = '#c9d1d9'; g.fillText('D' + p.n, m.l + 20 + i*58, m.t + 11);
+ });
+}
+function AQH_NOME_VAR(v){
+ return {hr:'FC (bpm)', smo2:'SmO₂ (%)', resp:'Respiração', dfa1:'DFA-α1', thb:'THb'}[v] || v;
+}
+function aqHrrDesenha3(){
+ const o = ctx('chHrr3', 240); if(!o) return;
+ const g = o.g, W = o.W, H = o.H; g.clearRect(0,0,W,H);
+ const D = AQH_D && AQH_D.degraus;
+ if(!D || !D.length){ noData(g, W, H, 'Sem degraus detetados'); return; }
+ const vals = [];
+ D.forEach(function(d){ [d.hrr60, d.hrr120].forEach(function(v){ if(v!==null) vals.push(v); }); });
+ const m = {l:52, r:16, t:14, b:40};
+ const yMin = Math.min.apply(null, vals.concat([0])), yMax = Math.max.apply(null, vals.concat([0]));
+ const span = (yMax - yMin) || 1;
+ const yp = function(v){ return m.t + (H-m.t-m.b) * (1 - (v - yMin) / span); };
+ aqHrrEixo(g, W, H, m, function(){return 0;}, yp, 0, 1, yMin, yMax, 'degrau', 'bpm');
+ const grupo = (W-m.l-m.r) / D.length;
+ g.font = '11px sans-serif';
+ D.forEach(function(d, i){
+  const cx = m.l + grupo*i + grupo/2, bw = Math.min(26, grupo*0.3);
+  [[d.hrr60, '#58A6FF', cx - bw - 2, 'HRR60'], [d.hrr120, '#F0883E', cx + 2, 'HRR120']].forEach(function(a){
+   const v = a[0];
+   if(v === null){ g.fillStyle = '#8b949e'; g.textAlign='center'; g.fillText('n/d', a[2]+bw/2, yp(0)-4); return; }
+   const y0 = yp(0), y1 = yp(v);
+   g.fillStyle = a[1];
+   g.fillRect(a[2], Math.min(y0,y1), bw, Math.max(1, Math.abs(y1-y0)));
+   g.fillStyle = '#c9d1d9'; g.textAlign='center';
+   g.fillText(aqcFmt(v,1), a[2]+bw/2, v>=0 ? y1-4 : y1+12);
+  });
+  g.fillStyle = '#c9d1d9'; g.textAlign = 'center';
+  g.fillText('D' + d.n, cx, H-m.b+14);
+ });
+ g.strokeStyle = '#8b949e'; g.beginPath(); g.moveTo(m.l, yp(0)); g.lineTo(W-m.r, yp(0)); g.stroke();
+}
+function aqHrrRender(){
+ const D = AQH_D;
+ if(!D) return;
+ const st = D.serie_grafico ? '' : ' · série para gráfico indisponível';
+ aqhMsg('Sessão ' + D.activity_id + ' · ' + D.modalidade + ' · ' + D.degraus.length + ' degrau(s) · ' +
+   D.n_amostras + ' amostras · Δt mediano ' + aqcFmt(D.dt_mediano_s, 2) + ' s · ' +
+   D.n_lacunas + ' lacuna(s) > ' + D.gaps.length + ' listada(s)' + st + '. Fonte: ' + D.fonte + '.');
+ aqHrrDesenha1(); aqHrrDesenha2(); aqHrrDesenha3(); aqHrrTabela();
+}
+function aqHrrTabela(){
+ const el = document.getElementById('aqHrrTabela');
+ const D = AQH_D && AQH_D.degraus;
+ if(!el || !D){ return; }
+ const cel = function(v, c){ return v===null||v===undefined ? '<span style="color:#8b949e">n/d</span>' : aqcEsc(aqcFmt(v, c)); };
+ let h = '<table style="border-collapse:collapse;width:100%;">';
+ h += '<tr style="color:#8b949e;text-align:left;">' +
+  ['Degrau','Alvo W','Real W','Esforço s','Recup. s','FC fim','FC 60s','FC 120s','HRR60','HRR120','Motivos'].map(function(c){return '<th style="padding:4px 6px;border-bottom:1px solid #30363d;">'+c+'</th>';}).join('') + '</tr>';
+ D.forEach(function(d){
+  const mot = [d.hrr60_motivo ? 'HRR60: '+aqhMot(d.hrr60_motivo) : '', d.hrr120_motivo ? 'HRR120: '+aqhMot(d.hrr120_motivo) : ''].filter(Boolean).join(' · ');
+  h += '<tr>' +
+   '<td style="padding:4px 6px;">D' + d.n + '</td>' +
+   '<td style="padding:4px 6px;">' + cel(d.alvo_w,0) + '</td>' +
+   '<td style="padding:4px 6px;">' + cel(d.watts_work_medio,0) + '</td>' +
+   '<td style="padding:4px 6px;">' + cel(d.work.dur_s,0) + '</td>' +
+   '<td style="padding:4px 6px;">' + cel(d.rec.dur_s,0) + '</td>' +
+   '<td style="padding:4px 6px;">' + cel(d.hr_end.valor,1) + '</td>' +
+   '<td style="padding:4px 6px;">' + cel(d.hr_60.valor,1) + '</td>' +
+   '<td style="padding:4px 6px;">' + cel(d.hr_120.valor,1) + '</td>' +
+   '<td style="padding:4px 6px;font-weight:600;">' + cel(d.hrr60,1) + '</td>' +
+   '<td style="padding:4px 6px;font-weight:600;">' + cel(d.hrr120,1) + '</td>' +
+   '<td style="padding:4px 6px;color:#8b949e;">' + aqcEsc(mot) + '</td></tr>';
+ });
+ h += '</table>';
+ const fis = [];
+ D.forEach(function(d){
+  Object.keys(d.fisio || {}).forEach(function(k){
+   const f = d.fisio[k];
+   fis.push('<tr><td style="padding:4px 6px;">D' + d.n + '</td><td style="padding:4px 6px;">' + aqcEsc(f.nome) + '</td>' +
+    '<td style="padding:4px 6px;">' + cel(f.ref_end,2) + '</td><td style="padding:4px 6px;">' + cel(f.rec_60,2) + '</td>' +
+    '<td style="padding:4px 6px;">' + cel(f.rec_120,2) + '</td><td style="padding:4px 6px;">' + cel(f.dif_60,2) + '</td>' +
+    '<td style="padding:4px 6px;">' + cel(f.dif_120,2) + '</td></tr>');
+  });
+ });
+ if(fis.length){
+  h += '<h3 style="font-size:13px;margin:14px 0 4px;">Outras variáveis fisiológicas (referência = média dos últimos 30 s do esforço; diferença = referência − recuperação)</h3>';
+  h += '<table style="border-collapse:collapse;width:100%;"><tr style="color:#8b949e;text-align:left;">' +
+   ['Degrau','Variável','Referência fim','Rec. 60s','Rec. 120s','Dif. 60s','Dif. 120s'].map(function(c){return '<th style="padding:4px 6px;border-bottom:1px solid #30363d;">'+c+'</th>';}).join('') +
+   '</tr>' + fis.join('') + '</table>';
+ } else {
+  h += '<p style="color:#8b949e;margin-top:8px;">Nenhuma variável fisiológica extra (SmO₂, respiração, DFA-α1, THb) presente nos streams desta sessão.</p>';
+ }
+ el.innerHTML = h;
+}
+/* AQHRR_END */
+
 function aqBlocosCarregar(){
  if(!AQ_MOD) return;
  fetch('/api/aquecimento/dados?modalidade=' + encodeURIComponent(AQ_MOD))
@@ -1964,7 +2637,7 @@ function aqCarregar(){
   AQ_DADOS = d;
   document.getElementById('aqTitulo').textContent =
     AQ_LABELS[met] + ' \u2014 ' + AQ_MOD + ' por escal\u00e3o de watts';
-  aqDraw(); aqRange(); aqTabela(); aqTendencia(met, agr); aqContexto(met, agr); aqBlocosCarregar();
+  aqDraw(); aqRange(); aqTabela(); aqTendencia(met, agr); aqContexto(met, agr); aqBlocosCarregar(); aqCmpCarregar();
  }).catch(function(e){
   console.error('[aqCarregar]', e);
   AQ_DADOS = {status:'erro'}; aqDraw();

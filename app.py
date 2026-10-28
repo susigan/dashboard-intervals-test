@@ -2309,6 +2309,94 @@ def api_aquecimento_auditoria():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/comparativo')
+def api_aquecimento_comparativo():
+    """Analise multi-sessao: todos os aquecimentos de um periodo, por escalao.
+
+    ?modalidade=Bike&metrica=hr&dias=30          (30, 60 ou 90, ate hoje)
+    ?modalidade=Bike&metrica=hr&inicio=2026-09-01&fim=2026-10-01  (personalizado)
+    [&agregacao=mes|semana][&min_n=3]
+    Nao altera a base: so le aquecimento_blocos.
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        from datetime import date as _date
+        import aquecimento_comparativo as cmp
+        mod = request.args.get('modalidade')
+        if not mod:
+            return jsonify({'status': 'erro', 'mensagem': 'falta ?modalidade='}), 400
+        metrica = request.args.get('metrica', 'hr')
+        agreg = request.args.get('agregacao', 'mes')
+        min_n = request.args.get('min_n', default=3, type=int)
+        dias = request.args.get('dias', type=int)
+        ini = request.args.get('inicio')
+        fim = request.args.get('fim')
+        try:
+            ini_d = _date.fromisoformat(ini) if ini else None
+            fim_d = _date.fromisoformat(fim) if fim else None
+        except ValueError:
+            return jsonify({'status': 'erro', 'mensagem': 'datas em formato AAAA-MM-DD'}), 400
+        blocos = aq_db.listar_blocos(mod)
+        res = cmp.comparativo(blocos, mod, metrica, hoje=_date.today(),
+                              dias=dias, inicio=ini_d, fim=fim_d,
+                              agregacao=agreg, min_n=min_n)
+        return jsonify(res)
+    except ValueError as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 400
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/aquecimento/hrr')
+def api_aquecimento_hrr():
+    """HRR60 e HRR120 por degrau de Aquecimento. SO LEITURA, sem persistencia.
+
+    ?activity_id=i000000001&modalidade=Bike
+
+    Usa os streams BRUTOS da API (com 'time'), nao a copia reduzida que
+    sync guarda na base local (essa perde o tempo e faz medias por blocos).
+    """
+    aid = request.args.get('activity_id')
+    mod = request.args.get('modalidade')
+    if not aid or not mod:
+        return jsonify({'status': 'erro', 'mensagem': 'faltam ?activity_id= e ?modalidade='}), 400
+    try:
+        import api_client as _api
+        import aquecimento_analyzer as _aa
+        import aquecimento_hrr as _hrr
+        raw, err = _api.icu_get(f'/activity/{aid}/streams')
+        if err:
+            return jsonify({'status': 'erro_api', 'mensagem': err}), 502
+        lista = raw
+        if isinstance(raw, dict):
+            lista = raw.get('streams') or raw.get('content') or []
+        streams = {}
+        for st in (lista or []):
+            if isinstance(st, dict) and (st.get('type') or st.get('name')):
+                streams[st.get('type') or st.get('name')] = st.get('data') or []
+        r = _hrr.hrr_por_degrau(streams, mod, _aa.PROTOCOLOS,
+                                duracao_s=_duracao_atividade(aid))
+        r['activity_id'] = aid
+        r['fonte'] = 'api_streams_brutos'
+        r['somente_leitura'] = True
+        # serie reduzida SO' para desenhar os graficos; os valores acima sao calculados
+        # sobre a serie original. ?serie=1 e' opcional.
+        if request.args.get('serie') == '1':
+            r['serie_grafico'] = _hrr.serie_grafico(streams)
+        return jsonify(r)
+    except Exception:
+        # Detalhe completo (traceback) so' no log do servidor, nunca na resposta.
+        import uuid
+        ref = uuid.uuid4().hex[:12]
+        app.logger.exception('aquecimento/hrr falhou (ref=%s, aid=%s, modalidade=%s)', ref, aid, mod)
+        return jsonify({'status': 'erro_interno',
+                        'mensagem': 'Erro interno ao calcular HRR. Consulte os registos do servidor.',
+                        'referencia': ref}), 500
+
+
 @app.route('/api/aquecimento/tendencia')
 def api_aquecimento_tendencia():
     """Tendencia por janelas temporais (60d, 90d, 1a, 2a, 3a).

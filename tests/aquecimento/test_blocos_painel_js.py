@@ -91,7 +91,7 @@ class LogicaPainelJS(unittest.TestCase):
 
     def test_painel_ligado_a_navegacao(self):
         s = _fonte()
-        self.assertIn("aqBlocosCarregar(); }", s, "carregar ao abrir a sub-aba")
+        self.assertIn("aqBlocosCarregar(); aqCmpCarregar(); }", s, "carregar ao abrir a sub-aba")
         self.assertIn("aqContexto(met, agr); aqBlocosCarregar();", s,
                       "recarregar ao mudar metrica/agregacao")
         for id_ in ("aqBlocosSessao", "chBlocos", "aqBlocosTip", "aqBlocosEstado"):

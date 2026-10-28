@@ -2350,6 +2350,49 @@ def api_aquecimento_comparativo():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/hrr')
+def api_aquecimento_hrr():
+    """HRR60 e HRR120 por degrau de Aquecimento. SO LEITURA, sem persistencia.
+
+    ?activity_id=i000000001&modalidade=Bike
+
+    Usa os streams BRUTOS da API (com 'time'), nao a copia reduzida que
+    sync guarda na base local (essa perde o tempo e faz medias por blocos).
+    """
+    aid = request.args.get('activity_id')
+    mod = request.args.get('modalidade')
+    if not aid or not mod:
+        return jsonify({'status': 'erro', 'mensagem': 'faltam ?activity_id= e ?modalidade='}), 400
+    try:
+        import api_client as _api
+        import aquecimento_analyzer as _aa
+        import aquecimento_hrr as _hrr
+        raw, err = _api.icu_get(f'/activity/{aid}/streams')
+        if err:
+            return jsonify({'status': 'erro_api', 'mensagem': err}), 502
+        lista = raw
+        if isinstance(raw, dict):
+            lista = raw.get('streams') or raw.get('content') or []
+        streams = {}
+        for st in (lista or []):
+            if isinstance(st, dict) and (st.get('type') or st.get('name')):
+                streams[st.get('type') or st.get('name')] = st.get('data') or []
+        r = _hrr.hrr_por_degrau(streams, mod, _aa.PROTOCOLOS,
+                                duracao_s=_duracao_atividade(aid))
+        r['activity_id'] = aid
+        r['fonte'] = 'api_streams_brutos'
+        r['somente_leitura'] = True
+        # serie reduzida SO' para desenhar os graficos; os valores acima sao calculados
+        # sobre a serie original. ?serie=1 e' opcional.
+        if request.args.get('serie') == '1':
+            r['serie_grafico'] = _hrr.serie_grafico(streams)
+        return jsonify(r)
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/aquecimento/tendencia')
 def api_aquecimento_tendencia():
     """Tendencia por janelas temporais (60d, 90d, 1a, 2a, 3a).

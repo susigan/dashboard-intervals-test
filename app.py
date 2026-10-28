@@ -2387,10 +2387,14 @@ def api_aquecimento_hrr():
         if request.args.get('serie') == '1':
             r['serie_grafico'] = _hrr.serie_grafico(streams)
         return jsonify(r)
-    except Exception as e:
-        import traceback
-        return jsonify({'status': 'erro', 'mensagem': str(e),
-                        'trace': traceback.format_exc()}), 500
+    except Exception:
+        # Detalhe completo (traceback) so' no log do servidor, nunca na resposta.
+        import uuid
+        ref = uuid.uuid4().hex[:12]
+        app.logger.exception('aquecimento/hrr falhou (ref=%s, aid=%s, modalidade=%s)', ref, aid, mod)
+        return jsonify({'status': 'erro_interno',
+                        'mensagem': 'Erro interno ao calcular HRR. Consulte os registos do servidor.',
+                        'referencia': ref}), 500
 
 
 @app.route('/api/aquecimento/tendencia')

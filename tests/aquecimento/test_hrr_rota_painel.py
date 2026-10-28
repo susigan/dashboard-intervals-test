@@ -52,6 +52,35 @@ class RotaHRR(unittest.TestCase):
         self.assertEqual(r.status_code, 502)
         self.assertEqual(r.get_json()['status'], 'erro_api')
 
+    def test_erro_interno_nao_expoe_traceback_ao_cliente(self):
+        t, w, h, _ = sessao(PROTO_BIKE, rec_s=(150,) * 5, decl=(0.5,) * 5)
+        segredo = 'SEGREDO_INTERNO_NAO_PUBLICO_42'
+        with mock.patch('api_client.icu_get', return_value=(_streams_api(t, w, h), None)), \
+             mock.patch.object(self.app_mod, '_duracao_atividade', return_value=None), \
+             mock.patch('aquecimento_hrr.hrr_por_degrau',
+                        side_effect=RuntimeError(segredo)), \
+             self.assertLogs(self.app_mod.app.logger, level='ERROR') as log:
+            r = self.client.get('/api/aquecimento/hrr?activity_id=i1&modalidade=Bike')
+        self.assertEqual(r.status_code, 500)
+        corpo = r.get_data(as_text=True)
+        j = r.get_json()
+        self.assertEqual(j['status'], 'erro_interno')
+        self.assertIn('referencia', j)
+        self.assertNotIn('trace', j)
+        self.assertNotIn('Traceback', corpo)
+        self.assertNotIn('File "', corpo)
+        self.assertNotIn('.py', corpo)
+        self.assertNotIn(segredo, corpo)
+        # o detalhe completo fica no log do servidor, com a mesma referencia
+        registo = '\n'.join(log.output)
+        self.assertIn(j['referencia'], registo)
+        self.assertIn(segredo, registo)
+
+    def test_pedido_sem_parametros_nao_expoe_detalhes(self):
+        r = self.client.get('/api/aquecimento/hrr?activity_id=i1')
+        self.assertEqual(r.status_code, 400)
+        self.assertNotIn('Traceback', r.get_data(as_text=True))
+
     def test_resposta_ok_sem_serie_por_omissao(self):
         t, w, h, _ = sessao(PROTO_BIKE, rec_s=(150,) * 5, decl=(0.5,) * 5)
         r = self._get('activity_id=i1&modalidade=Bike', (_streams_api(t, w, h), None))
@@ -93,13 +122,23 @@ class PainelHRR(unittest.TestCase):
         cls.js = s[i:j]
 
     def test_ids_do_html_existem(self):
-        for ident in ['id="aqHrr"', 'id="aqHrrAid"', 'id="aqHrrMod"', 'id="aqHrrVar"',
+        for ident in ['id="aqHrr"', 'id="aqHrrVar"',
                       'id="chHrr1"', 'id="chHrr2"', 'id="chHrr3"', 'id="aqHrrTabela"',
                       'id="aqHrrMeta"']:
             self.assertIn(ident, self.html, ident)
 
     def test_botao_chama_carregar(self):
         self.assertIn('onclick="aqHrrCarregar()"', self.html)
+
+    def test_nao_ha_seletor_de_id_nem_modalidade_proprios(self):
+        # integracao: a sessao e a modalidade vem do painel de blocos existente
+        self.assertNotIn('id="aqHrrAid"', self.html)
+        self.assertNotIn('id="aqHrrMod"', self.html)
+
+    def test_sessao_e_modalidade_vem_do_painel_existente(self):
+        self.assertIn("document.getElementById('aqBlocosSessao')", self.js)
+        self.assertIn("const mod = AQ_MOD;", self.js)
+        self.assertIn("function aqBlocosCarregar", self.html)
 
     def test_pede_serie_e_rota_correta(self):
         self.assertIn("'/api/aquecimento/hrr?activity_id='", self.js)

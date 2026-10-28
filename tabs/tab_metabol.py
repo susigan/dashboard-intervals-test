@@ -851,19 +851,17 @@ BODY = r"""
   <div id="aqHrr" style="margin:18px 0 8px;padding-top:10px;border-top:1px solid #30363d;">
   <h2 id="aqHrrTitulo">HRR por degrau — streams de uma sessão (leitura, sem persistência)</h2>
   <div class="controls" style="margin-bottom:8px;flex-wrap:wrap;">
-    <label class="sel">ID da atividade
-      <input type="text" id="aqHrrAid" placeholder="i000000001" style="width:150px;"></label>
-    <label class="sel">Modalidade
-      <select id="aqHrrMod"><option value="Bike">Bike</option><option value="Row">Row</option><option value="Ski">Ski</option></select></label>
-    <button type="button" id="aqHrrBtn" onclick="aqHrrCarregar()">Calcular</button>
+    <span style="color:#8b949e;font-size:12px;">Sessão: a escolhida no painel de blocos acima</span>
+    <button type="button" id="aqHrrBtn" onclick="aqHrrCarregar()">Calcular HRR desta sessão</button>
     <label class="sel">Gráfico B — variável
       <select id="aqHrrVar" onchange="aqHrrRender()">
         <option value="hr">FC</option><option value="smo2">SmO₂</option><option value="resp">Respiração</option>
         <option value="dfa1">DFA-α1</option><option value="thb">THb</option></select></label>
   </div>
   <div id="aqHrrMeta" style="font-size:12px;color:#8b949e;margin-bottom:10px;line-height:1.6;">
-    Introduza o ID de uma atividade. Os valores são calculados a partir dos streams brutos da API,
-    em memória, sem gravar nada na base de dados.</div>
+    Escolha uma sessão no painel de blocos e clique em “Calcular HRR desta sessão”. Os streams
+    brutos são pedidos à API com a mesma integração da aplicação; os valores são calculados em
+    memória, sem gravar nada na base de dados.</div>
   <h3 style="font-size:14px;margin:12px 0 4px;">Gráfico A — potência e FC ao longo do tempo</h3>
   <div style="position:relative;"><canvas id="chHrr1" style="width:100%;height:260px;display:block;"></canvas></div>
   <h3 style="font-size:14px;margin:14px 0 4px;">Gráfico B — resposta durante a recuperação (alinhada ao fim do esforço)</h3>
@@ -2171,9 +2169,11 @@ function aqhLimpa(){
  if(tb) tb.innerHTML = '';
 }
 function aqHrrCarregar(){
- const aid = (document.getElementById('aqHrrAid').value || '').trim();
- const mod = document.getElementById('aqHrrMod').value;
- if(!/^i\d+$/.test(aid)){ aqhMsg('ID inválido. Exemplo: i000000001'); return; }
+ const sel = document.getElementById('aqBlocosSessao');
+ const aid = sel ? String(sel.value || '').trim() : '';
+ const mod = AQ_MOD;
+ if(!mod){ aqhMsg('Modalidade do painel ainda não carregada.'); return; }
+ if(!/^i\d+$/.test(aid)){ aqhMsg('Escolha uma sessão de ' + mod + ' no painel de blocos acima.'); return; }
  aqhMsg('A calcular a partir dos streams da API…');
  const url = '/api/aquecimento/hrr?activity_id=' + encodeURIComponent(aid) +
              '&modalidade=' + encodeURIComponent(mod) + '&serie=1';

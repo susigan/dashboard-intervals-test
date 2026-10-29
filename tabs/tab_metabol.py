@@ -849,33 +849,20 @@ BODY = r"""
     não uma escala contínua de tempo.
   </p>
 
-  <div id="aqHrr" style="margin:18px 0 8px;padding-top:10px;border-top:1px solid #30363d;">
-  <h2 id="aqHrrTitulo">HRR por degrau — streams de uma sessão (leitura, sem persistência)</h2>
+  <div id="aqTend" style="margin:18px 0 8px;padding-top:10px;border-top:1px solid #30363d;">
+  <h2 id="aqTendTitulo">Tendência de FC de recuperação (FC rec. 1 min) por período</h2>
   <div class="controls" style="margin-bottom:8px;flex-wrap:wrap;">
-    <span style="color:#8b949e;font-size:12px;">Sessão: a escolhida no painel de blocos acima</span>
-    <button type="button" id="aqHrrBtn" onclick="aqHrrCarregar()">Calcular HRR desta sessão</button>
-    <label class="sel">Gráfico B — variável
-      <select id="aqHrrVar" onchange="aqHrrRender()">
-        <option value="hr">FC</option><option value="smo2">SmO₂</option><option value="resp">Respiração</option>
-        <option value="dfa1">DFA-α1</option><option value="thb">THb</option></select></label>
+    <span style="color:#8b949e;font-size:12px;">Períodos a comparar (todas as sessões do período, por escalão de watts):</span>
+    <label class="sel" style="cursor:pointer;"><input type="checkbox" class="aqTendP" value="30"> 30 dias</label>
+    <label class="sel" style="cursor:pointer;"><input type="checkbox" class="aqTendP" value="60"> 60 dias</label>
+    <label class="sel" style="cursor:pointer;"><input type="checkbox" class="aqTendP" value="90" checked> 90 dias</label>
   </div>
-  <div id="aqHrrMeta" style="font-size:12px;color:#8b949e;margin-bottom:10px;line-height:1.6;">
-    Escolha uma sessão no painel de blocos e clique em “Calcular HRR desta sessão”. Os streams
-    brutos são pedidos à API com a mesma integração da aplicação; os valores são calculados em
-    memória, sem gravar nada na base de dados.</div>
-  <h3 style="font-size:14px;margin:12px 0 4px;">Gráfico A — potência e FC ao longo do tempo</h3>
-  <div style="position:relative;"><canvas id="chHrr1" style="width:100%;height:260px;display:block;"></canvas></div>
-  <h3 style="font-size:14px;margin:14px 0 4px;">Gráfico B — resposta durante a recuperação (alinhada ao fim do esforço)</h3>
-  <div style="position:relative;"><canvas id="chHrr2" style="width:100%;height:260px;display:block;"></canvas></div>
-  <h3 style="font-size:14px;margin:14px 0 4px;">Gráfico C — HRR60 e HRR120 por degrau</h3>
-  <div style="position:relative;"><canvas id="chHrr3" style="width:100%;height:240px;display:block;"></canvas></div>
-  <div id="aqHrrTabela" style="margin-top:12px;font-size:12px;overflow-x:auto;"></div>
+  <div id="aqTendMeta" style="font-size:12px;color:#8b949e;margin-bottom:8px;line-height:1.6;"></div>
+  <div id="aqTendCont"></div>
   <p style="color:#8b949e;font-size:11px;margin:10px 0 16px;">
-    HRR = FC no fim efetivo do esforço (média dos últimos 30 s, ≥ 20 s válidos) − FC na recuperação
-    (janelas 55–65 s e 115–125 s após o fim efetivo). O fim efetivo é medido na potência bruta dentro do
-    intervalo já detetado (queda sustentada ≥ 5 s); se não for confirmado, o motivo é mostrado. Valores negativos são válidos. Ausência é mostrada
-    como “n/d” com o motivo, nunca como zero. Os gráficos usam uma série reduzida só para desenho;
-    os valores vêm do cálculo sobre a série original. Comparação entre sessões ainda não incluída.
+    FC rec. 1 min = média da FC nos primeiros 60 s após o fim do esforço (até ao degrau seguinte menos 15 s).
+    Cada célula é a média das sessões desse mês; n = número de sessões. Valores com n &lt; 3 aparecem a cinzento.
+    HRR60 e HRR120 não entram nesta vista: com descanso de ~70 s não há janela válida.
   </p>
   </div>
   <h2 id="aqTituloRange">Dispersão por escalão de watts</h2>
@@ -1455,7 +1442,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   this.classList.add('active');
   document.getElementById(tabName).classList.add('active');
-  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqBlocosCarregar(); aqCmpCarregar(); }
+  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqBlocosCarregar(); aqCmpCarregar(); aqTendLigar(); aqTendCarregar(); }
   if(tabName === 'perfilmet'){ if(!PM) pmCarregar(); else pmDraw(); }
  });
 });
@@ -2140,282 +2127,70 @@ function aqcLigarTip(cvId, tipId, obter, html){
  cv.addEventListener('mouseleave', function(){ tip.style.display = 'none'; });
 }
 /* AQCMP_END */
-/* AQHRR_BEGIN */
-let AQH_D = null;
-const AQH_MOT = {
- rec_curta: 'recuperação curta', sem_fim_de_recuperacao: 'sem degrau seguinte',
- lacuna_sem_dados: 'lacuna nos dados', dados_insuficientes: 'FC insuficiente na janela',
- sem_amostras_validas: 'sem amostras válidas', sem_stream_ate_janela: 'stream acaba antes da janela',
- work_curto: 'esforço curto', sem_fim: 'sem fim de recuperação',
- fim_efetivo_sem_queda_confirmada: 'fim do esforço não confirmado pela potência',
- fim_efetivo_sem_amostras_de_potencia: 'sem potência para confirmar o fim do esforço',
- fim_efetivo_queda_no_inicio_do_esforco: 'queda logo no início do esforço'
-};
-function aqhMot(m){
- if(!m) return '';
- const fimEsforco = String(m).indexOf('hr_end_') === 0;
- const k = fimEsforco ? String(m).slice(7) : String(m);
- return (fimEsforco ? 'FC fim do esforço: ' : '') + (AQH_MOT[k] || k);
-}
-function aqhMsg(t){
- const m = document.getElementById('aqHrrMeta');
- if(m) m.textContent = t;
-}
-function aqhLimpa(){
- ['chHrr1','chHrr2','chHrr3'].forEach(function(id){
-  const c = document.getElementById(id);
-  if(c){ const g = c.getContext('2d'); g.clearRect(0,0,c.width,c.height); }
+/* AQTEND_BEGIN */
+function aqTendCarregar(){
+ const cont = document.getElementById('aqTendCont');
+ const meta = document.getElementById('aqTendMeta');
+ if(!cont || !meta) return;
+ if(!AQ_MOD){ meta.textContent = 'Modalidade ainda não carregada.'; return; }
+ const dias = Array.prototype.map.call(document.querySelectorAll('.aqTendP:checked'),
+   function(cb){ return parseInt(cb.value, 10); });
+ if(!dias.length){ cont.innerHTML = ''; meta.textContent = 'Escolha pelo menos um período.'; return; }
+ meta.textContent = 'A carregar…';
+ Promise.all(dias.map(function(d){
+   return fetch('/api/aquecimento/comparativo?modalidade=' + encodeURIComponent(AQ_MOD)
+                + '&metrica=fc_rec1min&dias=' + d + '&agregacao=mes&min_n=1')
+     .then(function(r){ return r.json(); })
+     .then(function(j){ return {dias: d, j: j}; });
+ })).then(aqTendRender).catch(function(e){
+   console.error('[aqTendCarregar]', e);
+   meta.textContent = 'Falha ao carregar a tendência.';
  });
- const tb = document.getElementById('aqHrrTabela');
- if(tb) tb.innerHTML = '';
 }
-function aqHrrCarregar(){
- const sel = document.getElementById('aqBlocosSessao');
- const aid = sel ? String(sel.value || '').trim() : '';
- const opt = sel && sel.selectedOptions && sel.selectedOptions[0];
- // modalidade da sessao selecionada; AQ_MOD so' como ultimo recurso
- const mod = (opt && opt.dataset && opt.dataset.modalidade) || AQ_MOD;
- if(!mod){ aqhMsg('Modalidade da sessão ainda não carregada.'); return; }
- if(!/^i\d+$/.test(aid)){ aqhMsg('Escolha uma sessão no painel de blocos acima.'); return; }
- aqhMsg('A calcular a partir dos streams da API…');
- const url = '/api/aquecimento/hrr?activity_id=' + encodeURIComponent(aid) +
-             '&modalidade=' + encodeURIComponent(mod) + '&serie=1';
- fetch(url).then(function(r){ return r.json().then(function(j){ return {ok: r.ok, j: j}; }); })
-  .then(function(x){
-   if(!x.ok || !x.j || x.j.status !== 'ok'){
-    AQH_D = null; aqhLimpa();
-    const st = x.j && x.j.status ? x.j.status : 'erro';
-    let txt = 'Não foi possível calcular (' + st + ')' + (x.j && x.j.mensagem ? ': ' + x.j.mensagem : '');
-    if(st === 'sem_hr'){
-     const nomes = (x.j && Array.isArray(x.j.tipos_recebidos)) ? x.j.tipos_recebidos : [];
-     txt = 'A Intervals.icu não devolveu nenhum stream de FC para esta sessão (sem_hr), por isso não há HRR possível. Tipos recebidos: ' + (nomes.length ? nomes.join(', ') : 'nenhum') + '.';
-    }
-    aqhMsg(txt);
-    return;
+function aqTendRender(res){
+ const cont = document.getElementById('aqTendCont');
+ const meta = document.getElementById('aqTendMeta');
+ let h = '';
+ res.forEach(function(x){
+   const j = x.j || {};
+   h += '<h3 style="font-size:14px;margin:14px 0 4px;">Últimos ' + aqcEsc(x.dias) + ' dias · ' + aqcEsc(AQ_MOD) + '</h3>';
+   if(j.status !== 'ok'){
+     h += '<p style="color:#8b949e;font-size:12px;">' + aqcEsc(j.mensagem || 'sem dados') + '</p>';
+     return;
    }
-   AQH_D = x.j; aqHrrRender();
-  })
-  .catch(function(e){ AQH_D = null; aqhLimpa(); aqhMsg('Erro ao pedir os dados: ' + e); });
-}
-function aqHrrLinha(g, xs, ys, cor, xp, yp){
- g.strokeStyle = cor; g.lineWidth = 1.6; g.beginPath();
- let aberto = false;
- for(let k=0; k<xs.length; k++){
-  if(ys[k] === null || ys[k] === undefined || !isFinite(ys[k])){ aberto = false; continue; }
-  const px = xp(xs[k]), py = yp(ys[k]);
-  if(!aberto){ g.moveTo(px, py); aberto = true; } else { g.lineTo(px, py); }
- }
- g.stroke();
-}
-function aqHrrEixo(g, W, H, m, xp, yp, x0, x1, y0, y1, xTit, yTit, xTicks){
- g.strokeStyle = '#30363d'; g.fillStyle = '#8b949e'; g.font = '11px sans-serif';
- g.lineWidth = 1;
- for(let i=0;i<=4;i++){
-  const v = y0 + (y1-y0)*i/4, py = yp(v);
-  g.beginPath(); g.moveTo(m.l, py); g.lineTo(W-m.r, py); g.stroke();
-  g.textAlign = 'right'; g.fillText(aqcFmt(v, (y1-y0) < 5 ? 2 : 0), m.l-6, py+4);
- }
- // marcas no eixo X, so' quando o eixo X e' numerico (xp varia com x)
- if(xp(x1) !== xp(x0)){
-  g.textAlign = 'center';
-  const ticks = xTicks || [0,1,2,3,4,5].map(function(i){ return x0 + (x1-x0)*i/5; });
-  ticks.forEach(function(xv){ g.fillText(aqcFmt(xv, 0), xp(xv), H-m.b+14); });
- }
- g.textAlign = 'center';
- g.fillText(xTit, m.l + (W-m.l-m.r)/2, H-6);
- g.save(); g.translate(12, m.t + (H-m.t-m.b)/2); g.rotate(-Math.PI/2);
- g.fillText(yTit, 0, 0); g.restore();
-}
-function aqHrrDesenha1(){
- const o = ctx('chHrr1', 260); if(!o) return;
- const g = o.g, W = o.W, H = o.H; g.clearRect(0,0,W,H);
- const S = AQH_D && AQH_D.serie_grafico;
- if(!S){ noData(g, W, H, 'Sem série para desenhar'); return; }
- const t = S.t, m = {l:52, r:52, t:12, b:36};
- const tMax = t[t.length-1] || 1;
- const xp = function(s){ return m.l + (W-m.l-m.r) * s / tMax; };
- const wMax = Math.max.apply(null, (S.watts||[0]).filter(function(v){return v!==null;}).concat([1]));
- const hv = (S.hr||[]).filter(function(v){return v!==null;});
- const hMin = hv.length ? Math.min.apply(null, hv) - 5 : 0, hMax = hv.length ? Math.max.apply(null, hv) + 5 : 1;
- const yw = function(v){ return m.t + (H-m.t-m.b) * (1 - v / (wMax*1.1)); };
- const yh = function(v){ return m.t + (H-m.t-m.b) * (1 - (v-hMin)/(hMax-hMin)); };
- // faixas WORK (azul) e RECOVERY (cinza)
- AQH_D.degraus.forEach(function(d){
-  if(d.work.t_fim_s === null) return;
-  g.fillStyle = 'rgba(88,166,255,0.14)';
-  g.fillRect(xp(d.work.t_inicio_s), m.t, Math.max(1, xp(d.work.t_fim_s)-xp(d.work.t_inicio_s)), H-m.t-m.b);
-  if(d.rec.t_fim_s !== null){
-   g.fillStyle = 'rgba(139,148,158,0.10)';
-   g.fillRect(xp(d.rec.t_inicio_s), m.t, xp(d.rec.t_fim_s)-xp(d.rec.t_inicio_s), H-m.t-m.b);
-  }
+   const s = j.sessoes || {};
+   h += '<p style="color:#8b949e;font-size:12px;margin:0 0 6px;">Sessões com FC de recuperação: '
+      + aqcEsc(s.incluidas || 0) + ' · sem valor: ' + aqcEsc(s.excluidas || 0) + '</p>';
+   const per = (j.vista2 && j.vista2.periodos) || [];
+   const escs = j.escaloes || [];
+   if(!per.length){
+     h += '<p style="color:#8b949e;font-size:12px;">Sem FC de recuperação neste período.</p>';
+     return;
+   }
+   h += '<div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:12px;">'
+      + '<thead><tr><th style="text-align:left;padding:4px 8px;">Escalão</th>';
+   per.forEach(function(p){ h += '<th style="padding:4px 8px;">' + aqcEsc(p.periodo) + '</th>'; });
+   h += '</tr></thead><tbody>';
+   escs.forEach(function(w){
+     h += '<tr><td style="padding:4px 8px;">' + aqcEsc(w) + ' W</td>';
+     per.forEach(function(p){
+       const e = (p.escaloes || []).find(function(q){ return q.watts_alvo === w; });
+       if(!e){ h += '<td style="padding:4px 8px;color:#8b949e;">—</td>'; return; }
+       const cor = e.suficiente ? '' : 'color:#8b949e;';
+       h += '<td style="padding:4px 8px;' + cor + '">' + aqcFmt(e.media, 0)
+          + ' <span style="font-size:10px;">(n=' + aqcEsc(e.n) + ')</span></td>';
+     });
+     h += '</tr>';
+   });
+   h += '</tbody></table></div>';
  });
- aqHrrEixo(g, W, H, m, xp, yw, 0, tMax, 0, wMax*1.1, 'tempo (s)', 'W');
- g.fillStyle = '#8b949e'; g.textAlign = 'left'; g.fillText(aqcFmt(hMax,0)+' bpm', W-m.r+4, m.t+10);
- g.fillText(aqcFmt(hMin,0)+' bpm', W-m.r+4, H-m.b);
- // marcadores: fim do esforço (vermelho), +60 s e +120 s (roxo tracejado)
- AQH_D.degraus.forEach(function(d){
-  if(d.work.t_fim_s === null) return;
-  g.setLineDash([]); g.strokeStyle = '#F78166'; g.lineWidth = 1.2;
-  g.beginPath(); g.moveTo(xp(d.work.t_fim_s), m.t); g.lineTo(xp(d.work.t_fim_s), H-m.b); g.stroke();
-  g.setLineDash([4,3]); g.strokeStyle = '#D2A8FF';
-  [60,120].forEach(function(s){
-   const x = xp(d.work.t_fim_s + s);
-   if(x < W-m.r){ g.beginPath(); g.moveTo(x, m.t); g.lineTo(x, H-m.b); g.stroke(); }
-  });
-  g.setLineDash([]);
- });
- aqHrrLinha(g, t, S.watts, '#58A6FF', xp, yw);
- aqHrrLinha(g, t, S.hr, '#F0883E', xp, yh);
+ cont.innerHTML = h;
+ meta.textContent = 'FC rec. 1 min (bpm) · ' + (AQ_MOD || '') + ' · um valor por mês dentro de cada período.';
 }
-function aqHrrDesenha2(){
- const o = ctx('chHrr2', 260); if(!o) return;
- const g = o.g, W = o.W, H = o.H; g.clearRect(0,0,W,H);
- const v = document.getElementById('aqHrrVar').value;
- const S = AQH_D && AQH_D.serie_grafico;
- if(!S || !S[v]){ noData(g, W, H, 'Stream indisponível nesta sessão: ' + (v==='hr'?'FC':v)); return; }
- const m = {l:52, r:16, t:12, b:36};
- const xMin = -30, xMax = 150;
- const xp = function(s){ return m.l + (W-m.l-m.r) * (s - xMin) / (xMax - xMin); };
- const pts = [];
- AQH_D.degraus.forEach(function(d, i){
-  const tf = d.work.t_fim_s, tn = d.rec.t_fim_s;
-  if(tf === null){ pts.push({xs: [], ys: [], cor: AQC_CORES[i % AQC_CORES.length], n: i+1}); return; }
-  const lim = tn !== null ? Math.min(xMax, tn - 15 - tf) : xMax;   // nunca atravessa o inicio do degrau seguinte
-  const xs = [], ys = [];
-  S.t.forEach(function(ti, k){
-   const s = ti - tf;
-   if(s < xMin || s > lim) return;
-   xs.push(s); ys.push(S[v][k]);
-  });
-  pts.push({xs: xs, ys: ys, cor: AQC_CORES[i % AQC_CORES.length], n: i+1});
- });
- const all = [];
- pts.forEach(function(p){ p.ys.forEach(function(y){ if(y!==null) all.push(y); }); });
- if(!all.length){ noData(g, W, H, 'Sem valores válidos nas recuperações'); return; }
- const yMin = Math.min.apply(null, all), yMax = Math.max.apply(null, all);
- const pad = (yMax - yMin) * 0.08 || 1;
- const yp = function(y){ return m.t + (H-m.t-m.b) * (1 - (y - (yMin-pad)) / ((yMax+pad) - (yMin-pad))); };
- aqHrrEixo(g, W, H, m, xp, yp, xMin, xMax, yMin-pad, yMax+pad, 's após o fim do esforço', AQH_NOME_VAR(v), [-30,0,30,60,90,120,150]);
- // 0 s e janelas 60/120
- [0,60,120].forEach(function(s){
-  g.setLineDash(s===0 ? [] : [4,3]); g.strokeStyle = s===0 ? '#F78166' : '#D2A8FF';
-  g.beginPath(); g.moveTo(xp(s), m.t); g.lineTo(xp(s), H-m.b); g.stroke();
- });
- g.setLineDash([]);
- pts.forEach(function(p){ aqHrrLinha(g, p.xs, p.ys, p.cor, xp, yp); });
- // legenda
- g.font = '11px sans-serif'; g.textAlign = 'left';
- pts.forEach(function(p, i){
-  g.fillStyle = p.cor; g.fillRect(m.l + 6 + i*58, m.t + 2, 10, 10);
-  g.fillStyle = '#c9d1d9'; g.fillText('D' + p.n, m.l + 20 + i*58, m.t + 11);
- });
+function aqTendLigar(){
+ document.querySelectorAll('.aqTendP').forEach(function(cb){ cb.onchange = aqTendCarregar; });
 }
-function AQH_NOME_VAR(v){
- return {hr:'FC (bpm)', smo2:'SmO₂ (%)', resp:'Respiração', dfa1:'DFA-α1', thb:'THb'}[v] || v;
-}
-function aqHrrDesenha3(){
- const o = ctx('chHrr3', 240); if(!o) return;
- const g = o.g, W = o.W, H = o.H; g.clearRect(0,0,W,H);
- const D = AQH_D && AQH_D.degraus;
- if(!D || !D.length){ noData(g, W, H, 'Sem degraus detetados'); return; }
- const vals = [];
- D.forEach(function(d){ [d.hrr60, d.hrr120].forEach(function(v){ if(v!==null) vals.push(v); }); });
- const m = {l:52, r:16, t:14, b:40};
- const yMin = Math.min.apply(null, vals.concat([0])), yMax = Math.max.apply(null, vals.concat([0]));
- const span = (yMax - yMin) || 1;
- const yp = function(v){ return m.t + (H-m.t-m.b) * (1 - (v - yMin) / span); };
- aqHrrEixo(g, W, H, m, function(){return 0;}, yp, 0, 1, yMin, yMax, 'degrau', 'bpm');
- const grupo = (W-m.l-m.r) / D.length;
- g.font = '11px sans-serif';
- D.forEach(function(d, i){
-  const cx = m.l + grupo*i + grupo/2, bw = Math.min(26, grupo*0.3);
-  [[d.hrr60, '#58A6FF', cx - bw - 2, 'HRR60'], [d.hrr120, '#F0883E', cx + 2, 'HRR120']].forEach(function(a){
-   const v = a[0];
-   if(v === null){ g.fillStyle = '#8b949e'; g.textAlign='center'; g.fillText('n/d', a[2]+bw/2, yp(0)-4); return; }
-   const y0 = yp(0), y1 = yp(v);
-   g.fillStyle = a[1];
-   g.fillRect(a[2], Math.min(y0,y1), bw, Math.max(1, Math.abs(y1-y0)));
-   g.fillStyle = '#c9d1d9'; g.textAlign='center';
-   g.fillText(aqcFmt(v,1), a[2]+bw/2, v>=0 ? y1-4 : y1+12);
-  });
-  g.fillStyle = '#c9d1d9'; g.textAlign = 'center';
-  g.fillText('D' + d.n, cx, H-m.b+14);
- });
- g.strokeStyle = '#8b949e'; g.beginPath(); g.moveTo(m.l, yp(0)); g.lineTo(W-m.r, yp(0)); g.stroke();
-}
-function aqHrrRender(){
- const D = AQH_D;
- if(!D) return;
- const st = D.serie_grafico ? '' : ' · série para gráfico indisponível';
- aqhMsg('Sessão ' + D.activity_id + ' · ' + D.modalidade + ' · ' + D.degraus.length + ' degrau(s) · ' +
-   D.n_amostras + ' amostras · Δt mediano ' + aqcFmt(D.dt_mediano_s, 2) + ' s · ' +
-   D.n_lacunas + ' lacuna(s) > ' + D.gaps.length + ' listada(s)' + st + '. Fonte: ' + D.fonte + '.');
- aqHrrDesenha1(); aqHrrDesenha2(); aqHrrDesenha3(); aqHrrTabela();
-}
-function aqhFcRecTitulo(f){
- if(!f) return '';
- const partes = [];
- if(f.n_validas!==undefined && f.n_validas!==null) partes.push('amostras válidas: ' + f.n_validas);
- if(f.cobertura!==null && f.cobertura!==undefined) partes.push('cobertura: ' + Math.round(f.cobertura*100) + '%');
- if(Array.isArray(f.janela) && f.janela.length===2) partes.push('janela: ' + f.janela[0] + '–' + f.janela[1] + ' s');
- partes.push('descritiva; não é HRR60');
- return partes.join(' · ');
-}
-function aqHrrTabela(){
- const el = document.getElementById('aqHrrTabela');
- const D = AQH_D && AQH_D.degraus;
- if(!el || !D){ return; }
- const cel = function(v, c){ return v===null||v===undefined ? '<span style="color:#8b949e">n/d</span>' : aqcEsc(aqcFmt(v, c)); };
- const TH = '<th style="padding:4px 6px;border-bottom:1px solid #30363d;">';
- // FC media do inicio da recuperacao: coluna propria, em azul e italico, para
- // nao ser lida como HRR60/HRR120 (que sao diferencas e ficam em negrito).
- const TH_REC = '<th title="FC média do início da recuperação (descritiva; não é HRR60)" style="padding:4px 6px;border-bottom:1px solid #30363d;color:#79C0FF;font-style:italic;">FC rec. 1 min</th>';
- let h = '<p style="color:#8b949e;font-size:11px;margin:6px 0 4px;">FC rec. 1 min (azul, itálico) = FC média do início da recuperação, descritiva e separada do HRR60/HRR120. Passe o cursor sobre o valor para ver amostras e cobertura.</p>';
- h += '<table style="border-collapse:collapse;width:100%;">';
- h += '<tr style="color:#8b949e;text-align:left;">' +
-  ['Degrau','Alvo W','Real W','Esforço s','Recup. s'].map(function(c){return TH+c+'</th>';}).join('') +
-  TH_REC +
-  ['FC fim','FC 60s','FC 120s','HRR60','HRR120','Motivos'].map(function(c){return TH+c+'</th>';}).join('') + '</tr>';
- D.forEach(function(d){
-  const fr = d.fc_media_rec_1min || {};
-  const motFr = fr.motivo ? 'FC rec. 1 min: '+aqhMot(fr.motivo) : '';
-  const mot = [d.hrr60_motivo ? 'HRR60: '+aqhMot(d.hrr60_motivo) : '', d.hrr120_motivo ? 'HRR120: '+aqhMot(d.hrr120_motivo) : '', motFr].filter(Boolean).join(' · ');
-  h += '<tr>' +
-   '<td style="padding:4px 6px;">D' + d.n + '</td>' +
-   '<td style="padding:4px 6px;">' + cel(d.alvo_w,0) + '</td>' +
-   '<td style="padding:4px 6px;">' + cel(d.watts_work_medio,0) + '</td>' +
-   '<td style="padding:4px 6px;">' + cel(d.work.dur_s,0) + '</td>' +
-   '<td style="padding:4px 6px;">' + cel(d.rec.dur_s,0) + '</td>' +
-   '<td style="padding:4px 6px;color:#79C0FF;font-style:italic;" title="' + aqcEsc(aqhFcRecTitulo(fr)) + '">' + cel(fr.valor,1) + '</td>' +
-   '<td style="padding:4px 6px;">' + cel(d.hr_end.valor,1) + '</td>' +
-   '<td style="padding:4px 6px;">' + cel(d.hr_60.valor,1) + '</td>' +
-   '<td style="padding:4px 6px;">' + cel(d.hr_120.valor,1) + '</td>' +
-   '<td style="padding:4px 6px;font-weight:600;">' + cel(d.hrr60,1) + '</td>' +
-   '<td style="padding:4px 6px;font-weight:600;">' + cel(d.hrr120,1) + '</td>' +
-   '<td style="padding:4px 6px;color:#8b949e;">' + aqcEsc(mot) + '</td></tr>';
- });
- h += '</table>';
- const fis = [];
- D.forEach(function(d){
-  Object.keys(d.fisio || {}).forEach(function(k){
-   const f = d.fisio[k];
-   fis.push('<tr><td style="padding:4px 6px;">D' + d.n + '</td><td style="padding:4px 6px;">' + aqcEsc(f.nome) + '</td>' +
-    '<td style="padding:4px 6px;">' + cel(f.ref_end,2) + '</td><td style="padding:4px 6px;">' + cel(f.rec_60,2) + '</td>' +
-    '<td style="padding:4px 6px;">' + cel(f.rec_120,2) + '</td><td style="padding:4px 6px;">' + cel(f.dif_60,2) + '</td>' +
-    '<td style="padding:4px 6px;">' + cel(f.dif_120,2) + '</td></tr>');
-  });
- });
- if(fis.length){
-  h += '<h3 style="font-size:13px;margin:14px 0 4px;">Outras variáveis fisiológicas (referência = média dos últimos 30 s do esforço; diferença = referência − recuperação)</h3>';
-  h += '<table style="border-collapse:collapse;width:100%;"><tr style="color:#8b949e;text-align:left;">' +
-   ['Degrau','Variável','Referência fim','Rec. 60s','Rec. 120s','Dif. 60s','Dif. 120s'].map(function(c){return '<th style="padding:4px 6px;border-bottom:1px solid #30363d;">'+c+'</th>';}).join('') +
-   '</tr>' + fis.join('') + '</table>';
- } else {
-  h += '<p style="color:#8b949e;margin-top:8px;">Nenhuma variável fisiológica extra (SmO₂, respiração, DFA-α1, THb) presente nos streams desta sessão.</p>';
- }
- el.innerHTML = h;
-}
-/* AQHRR_END */
+/* AQTEND_END */
 
 function aqBlocosCarregar(){
  if(!AQ_MOD) return;

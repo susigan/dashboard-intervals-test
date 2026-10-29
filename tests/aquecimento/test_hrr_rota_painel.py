@@ -184,79 +184,55 @@ def _ler(rel):
         return f.read()
 
 
-class PainelHRR(unittest.TestCase):
+class PainelTendencia(unittest.TestCase):
+    """Tendencia de FC rec. 1 min por periodo: sem sessao escolhida, agrupada."""
 
     @classmethod
     def setUpClass(cls):
         s = _ler('tabs/tab_metabol.py')
         cls.html = s
-        i, j = s.index('/* AQHRR_BEGIN */'), s.index('/* AQHRR_END */')
+        i, j = s.index('/* AQTEND_BEGIN */'), s.index('/* AQTEND_END */')
         cls.js = s[i:j]
 
     def test_ids_do_html_existem(self):
-        for ident in ['id="aqHrr"', 'id="aqHrrVar"',
-                      'id="chHrr1"', 'id="chHrr2"', 'id="chHrr3"', 'id="aqHrrTabela"',
-                      'id="aqHrrMeta"']:
+        for ident in ['id="aqTend"', 'id="aqTendCont"', 'id="aqTendMeta"']:
             self.assertIn(ident, self.html, ident)
 
-    def test_botao_chama_carregar(self):
-        self.assertIn('onclick="aqHrrCarregar()"', self.html)
+    def test_nao_ha_seccao_por_sessao(self):
+        for proibido in ['aqHrr', 'chHrr1', 'Calcular HRR desta sessão', 'AQHRR_BEGIN']:
+            self.assertNotIn(proibido, self.html, proibido)
 
-    def test_nao_ha_seletor_de_id_nem_modalidade_proprios(self):
-        # integracao: a sessao e a modalidade vem do painel de blocos existente
-        self.assertNotIn('id="aqHrrAid"', self.html)
-        self.assertNotIn('id="aqHrrMod"', self.html)
+    def test_nao_depende_de_sessao_escolhida(self):
+        self.assertNotIn('aqBlocosSessao', self.js)
+        self.assertNotIn('/api/aquecimento/hrr', self.js)
 
-    def test_sessao_e_modalidade_vem_do_painel_existente(self):
-        self.assertIn("document.getElementById('aqBlocosSessao')", self.js)
-        # modalidade vem da sessao selecionada (data-modalidade); AQ_MOD so' como fallback
-        self.assertIn("opt.dataset.modalidade", self.js)
-        self.assertIn("|| AQ_MOD;", self.js)
-        self.assertIn("function aqBlocosCarregar", self.html)
+    def test_pede_o_comparativo_com_fc_rec_1min_agrupado(self):
+        self.assertIn("'/api/aquecimento/comparativo?modalidade='", self.js)
+        self.assertIn("'&metrica=fc_rec1min&dias='", self.js)
+        self.assertIn("'&agregacao=mes&min_n=1'", self.js)
 
-    def test_pede_serie_e_rota_correta(self):
-        self.assertIn("'/api/aquecimento/hrr?activity_id='", self.js)
-        self.assertIn("'&serie=1'", self.js)
+    def test_periodos_selecionaveis_sem_sessao(self):
+        self.assertGreaterEqual(self.html.count('class="aqTendP"'), 3)
+        for dias in ['value="30"', 'value="60"', 'value="90"']:
+            self.assertIn(dias, self.html)
 
-    def test_valida_id_antes_de_pedir(self):
-        self.assertIn(r"/^i\d+$/", self.js)
+    def test_modalidade_vem_da_tab(self):
+        self.assertIn('AQ_MOD', self.js)
 
-    def test_funcoes_principais(self):
-        for f in ['function aqHrrCarregar', 'function aqHrrRender', 'function aqHrrDesenha1',
-                  'function aqHrrDesenha2', 'function aqHrrDesenha3', 'function aqHrrTabela']:
-            self.assertIn(f, self.js, f)
+    def test_escapa_texto_do_servidor(self):
+        self.assertIn('aqcEsc(p.periodo)', self.js)
+        self.assertIn('aqcEsc(j.mensagem', self.js)
 
-    def test_tabela_escapa_texto_do_servidor(self):
-        self.assertIn('aqcEsc(mot)', self.js)
-        self.assertIn('aqcEsc(f.nome)', self.js)
-
-    def test_sem_persistencia_no_painel(self):
-        for proibido in ['localStorage', 'sessionStorage', 'method: \'POST\'', 'method:"POST"']:
+    def test_sem_persistencia(self):
+        for proibido in ['localStorage', 'sessionStorage', "method: 'POST'", 'method:"POST"']:
             self.assertNotIn(proibido, self.js, proibido)
 
-    def test_grafico_b_nao_cruza_inicio_do_degrau_seguinte(self):
-        self.assertIn('tn - 15 - tf', self.js)
-
-    def test_fc_media_rec_separada_de_hrr60_e_hrr120(self):
-        self.assertIn('fc_media_rec_1min', self.js)
-        self.assertIn('FC rec. 1 min', self.js)
-        self.assertIn('descritiva; não é HRR60', self.js)
-        self.assertIn('color:#79C0FF;font-style:italic', self.js)
-
-    def test_sem_hr_mostra_tipos_recebidos_sem_valores(self):
-        self.assertIn("(sem_hr)", self.js)
-        self.assertIn('x.j.tipos_recebidos', self.js)
-        self.assertIn("nomes.join(', ')", self.js)
-
-    def test_mensagens_do_painel_usam_texto_seguro(self):
-        # aqhMsg usa textContent; o cabecalho do HRR nao recebe HTML do servidor
-        self.assertIn('m.textContent = t', self.html)
-        self.assertNotIn('innerHTML = t', self.js)
+    def test_hook_no_separador_aquecimento(self):
+        self.assertIn('aqTendLigar(); aqTendCarregar(); }', self.html)
 
     def test_painel_comparativo_intacto(self):
         self.assertIn('/* AQCMP_BEGIN */', self.html)
         self.assertIn('/* AQCMP_END */', self.html)
-        self.assertIn('aqBlocosCarregar(); aqCmpCarregar(); }', self.html)
 
 
 if __name__ == '__main__':

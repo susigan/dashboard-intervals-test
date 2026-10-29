@@ -9,11 +9,19 @@ proximo). A potencia so' serve de verificacao complementar: nao exige zero.
 Tempo: todas as janelas sao medidas com o array 'time' dos streams, nunca
 com o indice. Sem 'time' o calculo nao e' feito.
 
+Limites: HR_end usa [t_end-30, t_end): a amostra em t_end NAO entra, porque e'
+a primeira da recuperacao. As demais janelas mantem a regra inclusiva ja'
+validada analiticamente (excluir o fim retiraria meia amostra e enviesaria
+HR_60 em cerca de 0,25 bpm no sinal linear de teste).
+
 Indicadores (segundos apos o fim do WORK, t_end):
-  HR_end  media ponderada no tempo em [t_end-30, t_end]; >= 20 s validos.
+  HR_end  media ponderada no tempo em [t_end-30, t_end); >= 20 s validos.
   HR_60   media em [t_end+55, t_end+65]
   HR_120  media em [t_end+115, t_end+125]
   HRR60  = HR_end - HR_60     HRR120 = HR_end - HR_120
+  FC_rec_1min  media da FC no inicio da recuperacao, em
+          [t_end, min(t_end+60, t_next-15)]. Descritiva: NAO e' HRR60.
+          Requer janela >= 30 s. Devolve tambem cobertura e n de amostras.
 Cada janela exige cobertura >= 60% do tempo e tem de caber inteira dentro da
 recuperacao associada. Zeros de FC sao invalidos. Ausencia nunca vira zero.
 Valores negativos de HRR sao preservados.
@@ -34,6 +42,9 @@ FATOR_FASE = 0.7          # complemento: potencia media na REC < 0.7 x alvo
 # 15 s): medido em sinal sintetico, ~13 s. A janela tem de terminar antes de
 # t_next - MARGEM, para nunca incluir o inicio do esforço seguinte.
 MARGEM_INICIO_SEGUINTE_S = 15.0
+# FC media do inicio da recuperacao (descritiva, nao e' HRR60)
+JANELA_REC_1MIN_S = 60.0  # ate' 60 s apos o fim do esforco...
+MIN_JANELA_REC_1MIN_S = 30.0  # ...mas nao calcula com menos de 30 s de janela
 
 
 # Variaveis fisiologicas extra, so' calculadas se o stream existir. Nomes de THb
@@ -80,8 +91,12 @@ def _lacunas(t):
     return out
 
 
-def _janela_fc(t, hr, pesos, lacunas, a, b):
-    """Media ponderada no tempo de FC valida em [a, b], com diagnostico."""
+def _janela_fc(t, hr, pesos, lacunas, a, b, fim_exclusivo=False):
+    """Media ponderada no tempo de FC valida em [a, b], com diagnostico.
+
+    fim_exclusivo=True usa [a, b): a amostra em 'b' nao entra. Usado so' em
+    HR_end, cuja borda 'b' = t_end e' a primeira amostra da recuperacao.
+    """
     if b > t[-1]:
         return {"valor": None, "motivo": "sem_stream_ate_janela",
                 "cobertura": None, "n_validas": 0, "n_zeros": 0}
@@ -89,7 +104,7 @@ def _janela_fc(t, hr, pesos, lacunas, a, b):
     soma_v = soma_w = 0.0
     n_val = n_zero = 0
     for k, ti in enumerate(t):
-        if ti < a or ti > b:
+        if ti < a or ti > b or (fim_exclusivo and ti == b):
             continue
         v = hr[k]
         if not _finito(v):
@@ -117,12 +132,15 @@ def _janela_fc(t, hr, pesos, lacunas, a, b):
 
 
 def _janela_end(t, hr, pesos, lacunas, t_end, t_inicio_work):
-    """HR_end: ultimos 30 s do WORK, com >= 20 s validos."""
+    """HR_end: ultimos 30 s do WORK, com >= 20 s validos.
+
+    Fim EXCLUSIVO em t_end: a amostra de t_end ja e' recuperacao.
+    """
     a, b = t_end - JANELA_END[0], t_end
     if a < t_inicio_work:
         return {"valor": None, "motivo": "work_curto", "cobertura": None,
                 "n_validas": 0, "n_zeros": 0}
-    r = _janela_fc(t, hr, pesos, lacunas, a, b)
+    r = _janela_fc(t, hr, pesos, lacunas, a, b, fim_exclusivo=True)
     if r["valor"] is not None:
         # tempo valido real = cobertura x 30 s
         valido_s = (r["cobertura"] or 0.0) * (b - a)
@@ -142,6 +160,27 @@ def _janela_rec(t, hr, pesos, lacunas, t_end, janela, t_next):
                 "n_validas": 0, "n_zeros": 0, "janela": [round(a, 1), round(b, 1)]}
     r = _janela_fc(t, hr, pesos, lacunas, a, b)
     return {**r, "janela": [round(a, 1), round(b, 1)]}
+
+
+def _fc_media_rec_1min(t, hr, pesos, lacunas, t_end, t_next):
+    """FC media no inicio da recuperacao: [t_end, min(t_end+60, t_next-15)].
+
+    Descritiva, separada de HRR60/HRR120. Nunca usa amostras do degrau seguinte
+    (o limite superior fica antes de t_next - MARGEM). Sem interpolacao.
+    """
+    a = t_end
+    if t_next is None:
+        return {"valor": None, "motivo": "sem_fim_de_recuperacao", "cobertura": None,
+                "n_validas": 0, "n_zeros": 0, "janela": None, "duracao_janela_s": None}
+    b = min(t_end + JANELA_REC_1MIN_S, t_next - MARGEM_INICIO_SEGUINTE_S)
+    dur = b - a
+    janela = [round(a, 1), round(b, 1)]
+    if dur < MIN_JANELA_REC_1MIN_S:
+        return {"valor": None, "motivo": "rec_curta", "cobertura": None,
+                "n_validas": 0, "n_zeros": 0, "janela": janela,
+                "duracao_janela_s": round(dur, 1)}
+    r = _janela_fc(t, hr, pesos, lacunas, a, b)
+    return {**r, "janela": janela, "duracao_janela_s": round(dur, 1)}
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +280,54 @@ def _media_potencia(t, watts, a, b):
     return round(statistics.fmean(vals), 1) if vals else None
 
 
+TIPOS_MAX = 60
+
+
+def _util(d):
+    """Serie numerica utilizavel: lista nao vazia com pelo menos um numero."""
+    return isinstance(d, list) and any(_finito(v) for v in d)
+
+
+def montar_streams_brutos(lista):
+    """Converte a lista de /streams em dict {tipo: serie} SEM reduzir os dados.
+
+    Mesma regra de utils/api_client.parse_streams, sem downsample:
+      - entradas 'allNull', sem dados numericos ou com valueTypeIsArray sao
+        ignoradas e NUNCA sobrescrevem uma entrada util do mesmo tipo;
+      - duplicados utiles: o primeiro fica com o nome do tipo e os seguintes
+        ficam como tipo_2, tipo_3 (como em parse_streams).
+    Devolve (streams, nomes_recebidos). nomes_recebidos inclui tambem as
+    entradas ignoradas, so' com nomes (diagnostico).
+    """
+    streams, nomes = {}, set()
+    for st in (lista or []):
+        if not isinstance(st, dict):
+            continue
+        tipo = st.get('type') or st.get('name')
+        if not tipo:
+            continue
+        nomes.add(str(tipo)[:40])
+        if st.get('allNull') or st.get('valueTypeIsArray'):
+            continue
+        d = st.get('data')
+        if not _util(d):
+            continue
+        chave, n = str(tipo), 2
+        while chave in streams:
+            chave = f"{tipo}_{n}"
+            n += 1
+        streams[chave] = d
+    return streams, sorted(nomes)[:TIPOS_MAX]
+
+
+def _tipos_recebidos(streams):
+    """So' os NOMES dos streams recebidos (sem valores), para diagnostico."""
+    if not isinstance(streams, dict):
+        return []
+    nomes = sorted(str(k)[:40] for k in streams.keys())
+    return nomes[:TIPOS_MAX]
+
+
 def hrr_por_degrau(streams, modalidade, protocolos, duracao_s=None):
     """Calcula HR_end, HR_60, HR_120, HRR60 e HRR120 por degrau de Aquecimento.
 
@@ -259,7 +346,8 @@ def hrr_por_degrau(streams, modalidade, protocolos, duracao_s=None):
     if not watts:
         return {**base, "status": "sem_watts"}
     if not hr:
-        return {**base, "status": "sem_hr"}
+        # Lista de FC ausente ou vazia. Diagnostico: apenas os nomes recebidos.
+        return {**base, "status": "sem_hr", "tipos_recebidos": _tipos_recebidos(streams)}
     if not isinstance(t_raw, list) or not t_raw:
         return {**base, "status": "sem_timestamps"}
     if not (len(t_raw) == len(watts) == len(hr)):
@@ -302,10 +390,14 @@ def hrr_por_degrau(streams, modalidade, protocolos, duracao_s=None):
             h60 = h120 = (dict(falha) if t_next is not None else
                           {"valor": None, "motivo": "sem_fim_de_recuperacao", "cobertura": None,
                            "n_validas": 0, "n_zeros": 0})
+            fc_rec = dict(falha) if t_next is not None else {
+                "valor": None, "motivo": "sem_fim_de_recuperacao", "cobertura": None,
+                "n_validas": 0, "n_zeros": 0, "janela": None, "duracao_janela_s": None}
         else:
             hr_end = _janela_end(t, hr, pesos, lacunas, t_end, t_ini_work)
             h60 = _janela_rec(t, hr, pesos, lacunas, t_end, JANELA_60, t_next)
             h120 = _janela_rec(t, hr, pesos, lacunas, t_end, JANELA_120, t_next)
+            fc_rec = _fc_media_rec_1min(t, hr, pesos, lacunas, t_end, t_next)
 
         def _hrr(ref, h):
             if h["valor"] is None and h["motivo"] == "sem_fim_de_recuperacao":
@@ -357,6 +449,8 @@ def hrr_por_degrau(streams, modalidade, protocolos, duracao_s=None):
             "hr_120": h120,
             "hrr60": hrr60, "hrr60_motivo": m60,
             "hrr120": hrr120, "hrr120_motivo": m120,
+            # descritiva: FC media do inicio da recuperacao (NAO e' HRR60)
+            "fc_media_rec_1min": fc_rec,
             "fisio": fisio,
         })
     return {**out_base, "margem_inicio_seguinte_s": MARGEM_INICIO_SEGUINTE_S,

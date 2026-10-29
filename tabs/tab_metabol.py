@@ -2182,7 +2182,12 @@ function aqHrrCarregar(){
    if(!x.ok || !x.j || x.j.status !== 'ok'){
     AQH_D = null; aqhLimpa();
     const st = x.j && x.j.status ? x.j.status : 'erro';
-    aqhMsg('Não foi possível calcular (' + st + ')' + (x.j && x.j.mensagem ? ': ' + x.j.mensagem : ''));
+    let txt = 'Não foi possível calcular (' + st + ')' + (x.j && x.j.mensagem ? ': ' + x.j.mensagem : '');
+    if(st === 'sem_hr'){
+     const nomes = (x.j && Array.isArray(x.j.tipos_recebidos)) ? x.j.tipos_recebidos : [];
+     txt = 'Sem FC nos streams desta sessão (sem_hr). Tipos recebidos: ' + (nomes.length ? nomes.join(', ') : 'nenhum') + '.';
+    }
+    aqhMsg(txt);
     return;
    }
    AQH_D = x.j; aqHrrRender();
@@ -2344,22 +2349,41 @@ function aqHrrRender(){
    D.n_lacunas + ' lacuna(s) > ' + D.gaps.length + ' listada(s)' + st + '. Fonte: ' + D.fonte + '.');
  aqHrrDesenha1(); aqHrrDesenha2(); aqHrrDesenha3(); aqHrrTabela();
 }
+function aqhFcRecTitulo(f){
+ if(!f) return '';
+ const partes = [];
+ if(f.n_validas!==undefined && f.n_validas!==null) partes.push('amostras válidas: ' + f.n_validas);
+ if(f.cobertura!==null && f.cobertura!==undefined) partes.push('cobertura: ' + Math.round(f.cobertura*100) + '%');
+ if(Array.isArray(f.janela) && f.janela.length===2) partes.push('janela: ' + f.janela[0] + '–' + f.janela[1] + ' s');
+ partes.push('descritiva; não é HRR60');
+ return partes.join(' · ');
+}
 function aqHrrTabela(){
  const el = document.getElementById('aqHrrTabela');
  const D = AQH_D && AQH_D.degraus;
  if(!el || !D){ return; }
  const cel = function(v, c){ return v===null||v===undefined ? '<span style="color:#8b949e">n/d</span>' : aqcEsc(aqcFmt(v, c)); };
- let h = '<table style="border-collapse:collapse;width:100%;">';
+ const TH = '<th style="padding:4px 6px;border-bottom:1px solid #30363d;">';
+ // FC media do inicio da recuperacao: coluna propria, em azul e italico, para
+ // nao ser lida como HRR60/HRR120 (que sao diferencas e ficam em negrito).
+ const TH_REC = '<th title="FC média do início da recuperação (descritiva; não é HRR60)" style="padding:4px 6px;border-bottom:1px solid #30363d;color:#79C0FF;font-style:italic;">FC rec. 1 min</th>';
+ let h = '<p style="color:#8b949e;font-size:11px;margin:6px 0 4px;">FC rec. 1 min (azul, itálico) = FC média do início da recuperação, descritiva e separada do HRR60/HRR120. Passe o cursor sobre o valor para ver amostras e cobertura.</p>';
+ h += '<table style="border-collapse:collapse;width:100%;">';
  h += '<tr style="color:#8b949e;text-align:left;">' +
-  ['Degrau','Alvo W','Real W','Esforço s','Recup. s','FC fim','FC 60s','FC 120s','HRR60','HRR120','Motivos'].map(function(c){return '<th style="padding:4px 6px;border-bottom:1px solid #30363d;">'+c+'</th>';}).join('') + '</tr>';
+  ['Degrau','Alvo W','Real W','Esforço s','Recup. s'].map(function(c){return TH+c+'</th>';}).join('') +
+  TH_REC +
+  ['FC fim','FC 60s','FC 120s','HRR60','HRR120','Motivos'].map(function(c){return TH+c+'</th>';}).join('') + '</tr>';
  D.forEach(function(d){
-  const mot = [d.hrr60_motivo ? 'HRR60: '+aqhMot(d.hrr60_motivo) : '', d.hrr120_motivo ? 'HRR120: '+aqhMot(d.hrr120_motivo) : ''].filter(Boolean).join(' · ');
+  const fr = d.fc_media_rec_1min || {};
+  const motFr = fr.motivo ? 'FC rec. 1 min: '+aqhMot(fr.motivo) : '';
+  const mot = [d.hrr60_motivo ? 'HRR60: '+aqhMot(d.hrr60_motivo) : '', d.hrr120_motivo ? 'HRR120: '+aqhMot(d.hrr120_motivo) : '', motFr].filter(Boolean).join(' · ');
   h += '<tr>' +
    '<td style="padding:4px 6px;">D' + d.n + '</td>' +
    '<td style="padding:4px 6px;">' + cel(d.alvo_w,0) + '</td>' +
    '<td style="padding:4px 6px;">' + cel(d.watts_work_medio,0) + '</td>' +
    '<td style="padding:4px 6px;">' + cel(d.work.dur_s,0) + '</td>' +
    '<td style="padding:4px 6px;">' + cel(d.rec.dur_s,0) + '</td>' +
+   '<td style="padding:4px 6px;color:#79C0FF;font-style:italic;" title="' + aqcEsc(aqhFcRecTitulo(fr)) + '">' + cel(fr.valor,1) + '</td>' +
    '<td style="padding:4px 6px;">' + cel(d.hr_end.valor,1) + '</td>' +
    '<td style="padding:4px 6px;">' + cel(d.hr_60.valor,1) + '</td>' +
    '<td style="padding:4px 6px;">' + cel(d.hr_120.valor,1) + '</td>' +

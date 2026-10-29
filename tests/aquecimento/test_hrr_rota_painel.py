@@ -107,6 +107,78 @@ class RotaHRR(unittest.TestCase):
         self.assertEqual(a, b)
 
 
+class RotaHRRCorrecoes(unittest.TestCase):
+    """Pedido com includeDefaults, diagnostico sem valores e metrica nova na resposta."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault('INTERVALS_ICU_API_KEY', 'dummy-teste')
+        try:
+            import app as app_mod
+        except Exception as e:                      # pragma: no cover
+            raise unittest.SkipTest(f'app nao importa em teste: {type(e).__name__}: {e}')
+        cls.app_mod = app_mod
+        cls.client = app_mod.app.test_client()
+
+    def _get(self, qs, icu_retorno):
+        mock_icu = mock.Mock(return_value=icu_retorno)
+        with mock.patch('api_client.icu_get', mock_icu), \
+             mock.patch.object(self.app_mod, '_duracao_atividade', return_value=None):
+            r = self.client.get('/api/aquecimento/hrr?' + qs)
+        return r, mock_icu
+
+    def test_pede_streams_com_include_defaults(self):
+        t, w, h, _ = sessao(PROTO_BIKE, rec_s=(150,) * 5, decl=(0.5,) * 5)
+        r, icu = self._get('activity_id=i1&modalidade=Bike', (_streams_api(t, w, h), None))
+        self.assertEqual(r.status_code, 200)
+        icu.assert_called_once()
+        args, kwargs = icu.call_args
+        self.assertEqual(args[0], '/activity/i1/streams')
+        params = args[1] if len(args) > 1 else kwargs.get('params')
+        self.assertEqual(params, {'includeDefaults': 'true'})
+
+    def test_sem_fc_resposta_so_com_nomes(self):
+        t, w, _, _ = sessao(PROTO_BIKE, rec_s=(150,) * 5, decl=(0.5,) * 5)
+        segredo = 9876.5
+        dados = _streams_api(t, w, [0] * len(t), extra={'smo2': [segredo] * len(t)})
+        dados = [x for x in dados if x['type'] != 'heartrate']  # FC realmente ausente
+        r, _ = self._get('activity_id=i1&modalidade=Bike', (dados, None))
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j['status'], 'sem_hr')
+        self.assertEqual(j['tipos_recebidos'], ['smo2', 'time', 'watts'])
+        corpo = r.get_data(as_text=True)
+        self.assertNotIn(str(segredo), corpo)           # nenhum valor da serie
+        self.assertEqual(j['degraus'], [])              # sem calculo por degrau
+
+    def test_fc_vazia_e_sem_hr_com_nome(self):
+        t, w, _, _ = sessao(PROTO_BIKE, rec_s=(150,) * 5, decl=(0.5,) * 5)
+        dados = _streams_api(t, w, [])                  # heartrate existe mas vazio
+        dados = [x if x['type'] != 'heartrate' else {'type': 'heartrate', 'data': []} for x in dados]
+        r, _ = self._get('activity_id=i1&modalidade=Bike', (dados, None))
+        j = r.get_json()
+        self.assertEqual(j['status'], 'sem_hr')
+        self.assertIn('heartrate', j['tipos_recebidos'])
+
+    def test_rota_com_fc_depois_de_duplicado_allnull_calcula(self):
+        t, w, h, _ = sessao(PROTO_BIKE, rec_s=(150,) * 5, decl=(0.5,) * 5)
+        dados = _streams_api(t, w, h) + [{'type': 'heartrate', 'data': None, 'allNull': True}]
+        r, _ = self._get('activity_id=i1&modalidade=Bike', (dados, None))
+        j = r.get_json()
+        self.assertEqual(j['status'], 'ok')
+        self.assertNotIn('tipos_recebidos', j)
+
+    def test_resposta_ok_traz_fc_media_rec_separada(self):
+        t, w, h, _ = sessao(PROTO_BIKE, rec_s=(150,) * 5, decl=(0.5,) * 5)
+        r, _ = self._get('activity_id=i1&modalidade=Bike', (_streams_api(t, w, h), None))
+        j = r.get_json()
+        self.assertEqual(j['status'], 'ok')
+        d = j['degraus'][0]
+        self.assertIn('fc_media_rec_1min', d)
+        self.assertNotIn('hrr', d['fc_media_rec_1min'])
+        self.assertNotIn('tipos_recebidos', j)          # so' em sem_hr
+
+
 def _ler(rel):
     with open(os.path.join(RAIZ, rel), encoding='utf-8') as f:
         return f.read()
@@ -162,6 +234,22 @@ class PainelHRR(unittest.TestCase):
 
     def test_grafico_b_nao_cruza_inicio_do_degrau_seguinte(self):
         self.assertIn('tn - 15 - tf', self.js)
+
+    def test_fc_media_rec_separada_de_hrr60_e_hrr120(self):
+        self.assertIn('fc_media_rec_1min', self.js)
+        self.assertIn('FC rec. 1 min', self.js)
+        self.assertIn('descritiva; não é HRR60', self.js)
+        self.assertIn('color:#79C0FF;font-style:italic', self.js)
+
+    def test_sem_hr_mostra_tipos_recebidos_sem_valores(self):
+        self.assertIn("(sem_hr)", self.js)
+        self.assertIn('x.j.tipos_recebidos', self.js)
+        self.assertIn("nomes.join(', ')", self.js)
+
+    def test_mensagens_do_painel_usam_texto_seguro(self):
+        # aqhMsg usa textContent; o cabecalho do HRR nao recebe HTML do servidor
+        self.assertIn('m.textContent = t', self.html)
+        self.assertNotIn('innerHTML = t', self.js)
 
     def test_painel_comparativo_intacto(self):
         self.assertIn('/* AQCMP_BEGIN */', self.html)

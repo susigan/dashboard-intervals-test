@@ -2367,18 +2367,21 @@ def api_aquecimento_hrr():
         import api_client as _api
         import aquecimento_analyzer as _aa
         import aquecimento_hrr as _hrr
-        raw, err = _api.icu_get(f'/activity/{aid}/streams')
+        # Mesmo pedido que sync.py e tab_detalhe.py (includeDefaults=true).
+        raw, err = _api.icu_get(f'/activity/{aid}/streams', {'includeDefaults': 'true'})
         if err:
             return jsonify({'status': 'erro_api', 'mensagem': err}), 502
         lista = raw
         if isinstance(raw, dict):
             lista = raw.get('streams') or raw.get('content') or []
-        streams = {}
-        for st in (lista or []):
-            if isinstance(st, dict) and (st.get('type') or st.get('name')):
-                streams[st.get('type') or st.get('name')] = st.get('data') or []
+        # Mesma regra que api_client.parse_streams (ignora entradas allNull/vazias
+        # que sobrescreviam a FC util), mas SEM reduzir: o HRR precisa da serie.
+        streams, nomes_recebidos = _hrr.montar_streams_brutos(lista)
         r = _hrr.hrr_por_degrau(streams, mod, _aa.PROTOCOLOS,
                                 duracao_s=_duracao_atividade(aid))
+        if r.get('status') == 'sem_hr':
+            # nomes de TODOS os tipos recebidos, incluindo entradas ignoradas
+            r['tipos_recebidos'] = nomes_recebidos
         r['activity_id'] = aid
         r['fonte'] = 'api_streams_brutos'
         r['somente_leitura'] = True

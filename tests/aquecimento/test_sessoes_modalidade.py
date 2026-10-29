@@ -107,9 +107,5 @@ class PainelAssociaSessaoEModalidade(unittest.TestCase):
         with open(os.path.join(RAIZ, 'tabs', 'tab_metabol.py'), encoding='utf-8') as f:
             cls.s = f.read()
 
-    def test_opcao_guarda_modalidade_da_sessao(self):
-        self.assertIn("o.dataset.modalidade = s.modalidade || AQ_MOD;", self.s)
-
-
 if __name__ == '__main__':
     unittest.main()

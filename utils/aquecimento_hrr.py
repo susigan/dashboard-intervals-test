@@ -320,6 +320,23 @@ def montar_streams_brutos(lista):
     return streams, sorted(nomes)[:TIPOS_MAX]
 
 
+def buscar_streams_brutos(icu_get, aid):
+    """UM pedido /activity/{aid}/streams com includeDefaults=true, mesma montagem.
+
+    icu_get: a funcao do api_client (injetada, para testes). Devolve
+    (streams, nomes_recebidos, erro). Usado pelo HRR e pelo painel de blocos,
+    para que os dois caminhos vejam exatamente a mesma resposta.
+    """
+    raw, err = icu_get(f'/activity/{aid}/streams', {'includeDefaults': 'true'})
+    if err:
+        return None, [], err
+    lista = raw
+    if isinstance(raw, dict):
+        lista = raw.get('streams') or raw.get('content') or []
+    streams, nomes = montar_streams_brutos(lista)
+    return streams, nomes, None
+
+
 def _tipos_recebidos(streams):
     """So' os NOMES dos streams recebidos (sem valores), para diagnostico."""
     if not isinstance(streams, dict):

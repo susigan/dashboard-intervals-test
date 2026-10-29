@@ -16,7 +16,13 @@ METRICAS = {
     'smo2': {'coluna': 'smo2_avg', 'nome': 'SmO₂',       'unidade': '%',   'casas': 0},
     'resp': {'coluna': 'resp_avg', 'nome': 'Respiração', 'unidade': 'rpm', 'casas': 0},
     'dfa1': {'coluna': 'dfa1_avg', 'nome': 'DFA-α1',     'unidade': '',    'casas': 2},
+    # HRR por degrau (vem de aquecimento_hrr, nao de aquecimento_blocos).
+    # Descida da FC em 60 s e 120 s apos o fim do esforco, e FC media do 1.o minuto.
+    'hrr60':      {'coluna': 'hrr60_avg',      'nome': 'HRR60',         'unidade': 'bpm', 'casas': 0},
+    'hrr120':     {'coluna': 'hrr120_avg',     'nome': 'HRR120',        'unidade': 'bpm', 'casas': 0},
+    'fc_rec1min': {'coluna': 'fc_rec1min_avg', 'nome': 'FC rec. 1 min', 'unidade': 'bpm', 'casas': 0},
 }
+METRICAS_HRR = ('hrr60', 'hrr120', 'fc_rec1min')
 DIAS_RAPIDOS = (30, 60, 90)
 AGREGACOES = ('mes', 'semana')
 MOTIVO_SEM_DADOS = 'sem valor válido nesta métrica'

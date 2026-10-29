@@ -2337,7 +2337,11 @@ def api_aquecimento_comparativo():
             fim_d = _date.fromisoformat(fim) if fim else None
         except ValueError:
             return jsonify({'status': 'erro', 'mensagem': 'datas em formato AAAA-MM-DD'}), 400
-        blocos = aq_db.listar_blocos(mod)
+        if metrica in cmp.METRICAS_HRR:
+            import aquecimento_hrr as _hrr_cmp
+            blocos = aq_db.listar_hrr(mod, _hrr_cmp.VERSAO_HRR)
+        else:
+            blocos = aq_db.listar_blocos(mod)
         res = cmp.comparativo(blocos, mod, metrica, hoje=_date.today(),
                               dias=dias, inicio=ini_d, fim=fim_d,
                               agregacao=agreg, min_n=min_n)
@@ -2392,6 +2396,83 @@ def api_aquecimento_hrr():
         app.logger.exception('aquecimento/hrr falhou (ref=%s, aid=%s, modalidade=%s)', ref, aid, mod)
         return jsonify({'status': 'erro_interno',
                         'mensagem': 'Erro interno ao calcular HRR. Consulte os registos do servidor.',
+                        'referencia': ref}), 500
+
+
+@app.route('/api/aquecimento/hrr/reprocessar')
+def api_aquecimento_hrr_reprocessar():
+    """Calcula e GUARDA o HRR de todas as sessoes aceites de uma modalidade.
+
+    ?modalidade=Bike[&max_api=25]
+    Cada chamada faz no maximo max_api pedidos de streams a API. Idempotente:
+    as sessoes ja calculadas com a versao atual saltam. Sessoes sem FC ficam
+    com status 'sem_hr' (nao se estima nada), e as que falham na API ficam
+    pendentes para a proxima chamada.
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    mod = request.args.get('modalidade')
+    if not mod:
+        return jsonify({'status': 'erro', 'mensagem': 'falta ?modalidade='}), 400
+    max_api = request.args.get('max_api', default=25, type=int)
+    try:
+        import api_client as _api
+        import aquecimento_analyzer as _aa
+        import aquecimento_hrr as _hrr
+
+        sessoes = aq_db.aceites_para_hrr(mod)
+        ja, feitas, erros_api, estados, erros_ids = 0, 0, 0, {}, []
+        chamadas = 0
+        for aid, data in sessoes:
+            aid = str(aid)
+            if aq_db.hrr_processada(aid, _hrr.VERSAO_HRR):
+                ja += 1
+                continue
+            if chamadas >= max_api:
+                break
+            chamadas += 1
+            try:
+                streams, nomes, err = _hrr.buscar_streams_brutos(_api.icu_get, aid)
+                if err:
+                    erros_api += 1
+                    erros_ids.append(aid)
+                    continue
+                r = _hrr.hrr_por_degrau(streams, mod, _aa.PROTOCOLOS,
+                                        duracao_s=_duracao_atividade(aid))
+                if r.get('status') == 'sem_hr':
+                    r['tipos_recebidos'] = nomes
+                sessao, degraus = _hrr.registo_para_bd(
+                    aid, mod, str(data)[:10] if data else None, r)
+                aq_db.salvar_hrr(sessao, degraus, _hrr.VERSAO_HRR)
+                estados[r.get('status', 'erro')] = estados.get(r.get('status', 'erro'), 0) + 1
+                feitas += 1
+                if feitas % 10 == 0:
+                    aq_db.sincronizar()
+            except Exception as _e:
+                erros_api += 1
+                erros_ids.append(aid)
+                app.logger.exception('aquecimento/hrr/reprocessar falhou (aid=%s): %s', aid, _e)
+
+        if feitas:
+            aq_db.sincronizar()
+        pendentes = len(sessoes) - ja - feitas
+        return jsonify({
+            'status': 'ok', 'modalidade': mod,
+            'total_aceites': len(sessoes),
+            'ja_processadas': ja,
+            'processadas_nesta_chamada': feitas,
+            'pendentes': pendentes,
+            'erros_api': erros_api, 'erros_ids': erros_ids[:20],
+            'estados': estados,
+            'versao_hrr': _hrr.VERSAO_HRR,
+            'nota': ('Volta a chamar esta rota ate pendentes = 0.' if pendentes > 0
+                     else 'Concluido.')})
+    except Exception:
+        import uuid
+        ref = uuid.uuid4().hex[:12]
+        app.logger.exception('aquecimento/hrr/reprocessar falhou (ref=%s, modalidade=%s)', ref, mod)
+        return jsonify({'status': 'erro_interno',
+                        'mensagem': 'Erro interno ao reprocessar HRR. Consulte os registos do servidor.',
                         'referencia': ref}), 500
 
 

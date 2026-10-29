@@ -504,3 +504,56 @@ def serie_grafico(streams, max_pontos=MAX_PONTOS_GRAFICO):
                      else round(sv[k], 2) for k in idx]
     return out
 
+
+
+# ── persistencia por sessao (uma linha por degrau) ───────────────────────
+
+# Sobe sempre que a logica de HRR muda: as sessoes guardadas com outra versao
+# sao recalculadas no proximo reprocessamento.
+VERSAO_HRR = 1
+
+
+def _val(d):
+    """Valor de um bloco {valor, motivo, ...} ou None."""
+    return d.get("valor") if isinstance(d, dict) else None
+
+
+def _motivo(d):
+    return d.get("motivo") if isinstance(d, dict) else None
+
+
+def registo_para_bd(aid, modalidade, data, r):
+    """Converte o resultado de hrr_por_degrau em (sessao, degraus) para a BD.
+
+    Nunca inventa valores: um degrau sem FC util fica com valor None e o
+    motivo. Sessoes sem FC ou sem degraus ficam so com o status.
+    """
+    status = r.get("status", "erro")
+    detalhe = None
+    if status == "sem_hr":
+        detalhe = ",".join(r.get("tipos_recebidos") or [])[:500] or None
+    sessao = {"activity_id": aid, "modalidade": modalidade, "data": data,
+              "status": status, "detalhe": detalhe,
+              "n_degraus": len(r.get("degraus") or []) if status == "ok" else 0}
+    degraus = []
+    if status == "ok":
+        for d in r.get("degraus") or []:
+            fc = d.get("fc_media_rec_1min") or {}
+            degraus.append({
+                "degrau_num": d.get("n"),
+                "alvo_w": d.get("alvo_w"),
+                "watts_work_medio": d.get("watts_work_medio"),
+                "hr_end": _val(d.get("hr_end")),
+                "hr_end_motivo": _motivo(d.get("hr_end")),
+                "hr_60": _val(d.get("hr_60")),
+                "hr_60_motivo": _motivo(d.get("hr_60")),
+                "hr_120": _val(d.get("hr_120")),
+                "hr_120_motivo": _motivo(d.get("hr_120")),
+                "hrr60": d.get("hrr60"),
+                "hrr60_motivo": d.get("hrr60_motivo"),
+                "hrr120": d.get("hrr120"),
+                "hrr120_motivo": d.get("hrr120_motivo"),
+                "fc_rec1min": _val(fc),
+                "fc_rec1min_motivo": _motivo(fc),
+            })
+    return sessao, degraus

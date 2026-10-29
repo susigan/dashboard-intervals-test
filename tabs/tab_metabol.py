@@ -810,6 +810,9 @@ BODY = r"""
         <option value="smo2">SmO&#8322; (%)</option>
         <option value="resp">Respiração (rpm)</option>
         <option value="dfa1">DFA-&#945;1</option>
+        <option value="hrr60">HRR60 (bpm)</option>
+        <option value="hrr120">HRR120 (bpm)</option>
+        <option value="fc_rec1min">FC rec. 1 min (bpm)</option>
       </select></label>
     <label class="sel">Agregação por período
       <select id="aqCmpAgr">
@@ -1805,7 +1808,7 @@ let AQB_SESSAO = null, AQB_GEOM = [], AQB_LIGADO = false;
 /* AQCMP_BEGIN */
 const AQC_CORES = ['#58A6FF','#F0883E','#3FB950','#D2A8FF','#79C0FF','#FFA657','#7EE787',
                    '#FF7B72','#E3B341','#A5D6FF','#56D364','#F778BA','#B1BAC4','#FFDFB6'];
-const AQC_NOME = {hr:'HR', smo2:'SmO₂', resp:'Respiração', dfa1:'DFA-α1'};
+const AQC_NOME = {hr:'HR', smo2:'SmO₂', resp:'Respiração', dfa1:'DFA-α1', hrr60:'HRR60', hrr120:'HRR120', fc_rec1min:'FC rec. 1 min'};
 let AQC_DADOS = null, AQC_OCULTAS = {}, AQC_LIGADO = false, AQC_PER = 30;
 let AQC_PTS1 = [], AQC_PTS2 = [];
 

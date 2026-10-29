@@ -2400,6 +2400,20 @@ def api_aquecimento_hrr():
                         'referencia': ref}), 500
 
 
+def _diagnostico_sem_degraus(streams, mod, aid, data):
+    """Diagnostico passo a passo do detector quando nao ha escada (HRR)."""
+    import aquecimento_analyzer as _aa
+    import aquecimento_streams as _aqs
+    dg = _aqs.diagnosticar_escada(streams, mod, _aa.PROTOCOLOS,
+                                  duracao_s=_duracao_atividade(aid))
+    return {'activity_id': aid, 'data': str(data)[:10] if data else None,
+            'veredicto': dg.get('veredicto'),
+            'degraus_ok': dg.get('degraus_ok'),
+            'passos': [{k: p.get(k) for k in ('alvo_W', 'estado', 'inicio_s',
+                                             'duracao_s', 'watts_medidos', 'pausa_antes_s')}
+                       for p in dg.get('passos', [])]}
+
+
 @app.route('/api/aquecimento/hrr/reprocessar')
 def api_aquecimento_hrr_reprocessar():
     """Calcula e GUARDA o HRR de todas as sessoes aceites de uma modalidade.
@@ -2420,7 +2434,6 @@ def api_aquecimento_hrr_reprocessar():
         import api_client as _api
         import aquecimento_analyzer as _aa
         import aquecimento_hrr as _hrr
-        import aquecimento_streams as _aqs
 
         sessoes = aq_db.aceites_para_hrr(mod)
         ja, feitas, erros_api, estados, erros_ids = 0, 0, 0, {}, []
@@ -2444,21 +2457,16 @@ def api_aquecimento_hrr_reprocessar():
                                         duracao_s=_duracao_atividade(aid))
                 if r.get('status') == 'sem_hr':
                     r['tipos_recebidos'] = nomes
+                diag = None
+                if r.get('status') == 'sem_degraus':
+                    diag = _diagnostico_sem_degraus(streams, mod, aid,
+                                                    data)
+                    if len(diag_sem_degraus) < 30:
+                        diag_sem_degraus.append(diag)
                 sessao, degraus = _hrr.registo_para_bd(
-                    aid, mod, str(data)[:10] if data else None, r)
+                    aid, mod, str(data)[:10] if data else None, r, diagnostico=diag)
                 aq_db.salvar_hrr(sessao, degraus, _hrr.VERSAO_HRR)
                 estados[r.get('status', 'erro')] = estados.get(r.get('status', 'erro'), 0) + 1
-                if r.get('status') == 'sem_degraus' and len(diag_sem_degraus) < 30:
-                    dg = _aqs.diagnosticar_escada(streams, mod, _aa.PROTOCOLOS,
-                                                  duracao_s=_duracao_atividade(aid))
-                    diag_sem_degraus.append({
-                        'activity_id': aid, 'data': str(data)[:10] if data else None,
-                        'veredicto': dg.get('veredicto'),
-                        'degraus_ok': dg.get('degraus_ok'),
-                        'passos': [{k: p.get(k) for k in ('alvo_W', 'estado', 'inicio_s',
-                                                         'duracao_s', 'watts_medidos',
-                                                         'pausa_antes_s')}
-                                   for p in dg.get('passos', [])]})
                 feitas += 1
                 if feitas % 10 == 0:
                     aq_db.sincronizar()
@@ -2489,6 +2497,31 @@ def api_aquecimento_hrr_reprocessar():
         return jsonify({'status': 'erro_interno',
                         'mensagem': 'Erro interno ao reprocessar HRR. Consulte os registos do servidor.',
                         'referencia': ref}), 500
+
+
+@app.route('/api/aquecimento/hrr/sem_degraus')
+def api_aquecimento_hrr_sem_degraus():
+    """Sessoes aceites em que o detector nao encontrou a escada nos streams
+    completos, com o diagnostico guardado. SO LEITURA.
+
+    ?modalidade=Bike
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    mod = request.args.get('modalidade')
+    if not mod:
+        return jsonify({'status': 'erro', 'mensagem': 'falta ?modalidade='}), 400
+    try:
+        import aquecimento_hrr as _hrr
+        lista = aq_db.listar_sem_degraus(mod, _hrr.VERSAO_HRR)
+        return jsonify({'status': 'ok', 'modalidade': mod,
+                        'versao_hrr': _hrr.VERSAO_HRR,
+                        'total': len(lista), 'sessoes': lista})
+    except Exception:
+        import uuid
+        ref = uuid.uuid4().hex[:12]
+        app.logger.exception('aquecimento/hrr/sem_degraus falhou (ref=%s)', ref)
+        return jsonify({'status': 'erro_interno', 'referencia': ref}), 500
 
 
 @app.route('/api/aquecimento/tendencia')
@@ -2996,7 +3029,11 @@ def api_aquecimento_ingerir():
                                                          duracao_s=_duracao_atividade(aid))
                             if rh.get('status') == 'sem_hr':
                                 rh['tipos_recebidos'] = nomes_h
-                            sess_h, deg_h = _hrr_ing.registo_para_bd(str(aid), mod, data_iso, rh)
+                            diag_h = None
+                            if rh.get('status') == 'sem_degraus':
+                                diag_h = _diagnostico_sem_degraus(s_h, mod, str(aid), data_iso)
+                            sess_h, deg_h = _hrr_ing.registo_para_bd(
+                                str(aid), mod, data_iso, rh, diagnostico=diag_h)
                             aq_db.salvar_hrr(sess_h, deg_h, _hrr_ing.VERSAO_HRR)
                             hrr_feitos += 1
                 except Exception as _e_h:

@@ -26,6 +26,7 @@ Cada janela exige cobertura >= 60% do tempo e tem de caber inteira dentro da
 recuperacao associada. Zeros de FC sao invalidos. Ausencia nunca vira zero.
 Valores negativos de HRR sao preservados.
 """
+import json
 import math
 import statistics
 
@@ -539,7 +540,7 @@ def serie_grafico(streams, max_pontos=MAX_PONTOS_GRAFICO, janela=None):
 
 # Sobe sempre que a logica de HRR muda: as sessoes guardadas com outra versao
 # sao recalculadas no proximo reprocessamento.
-VERSAO_HRR = 2
+VERSAO_HRR = 3
 
 
 def _val(d):
@@ -551,7 +552,7 @@ def _motivo(d):
     return d.get("motivo") if isinstance(d, dict) else None
 
 
-def registo_para_bd(aid, modalidade, data, r):
+def registo_para_bd(aid, modalidade, data, r, diagnostico=None):
     """Converte o resultado de hrr_por_degrau em (sessao, degraus) para a BD.
 
     Nunca inventa valores: um degrau sem FC util fica com valor None e o
@@ -561,6 +562,9 @@ def registo_para_bd(aid, modalidade, data, r):
     detalhe = None
     if status == "sem_hr":
         detalhe = ",".join(r.get("tipos_recebidos") or [])[:500] or None
+    elif status == "sem_degraus" and diagnostico is not None:
+        # diagnostico passo a passo do detector, guardado como JSON
+        detalhe = json.dumps(diagnostico, ensure_ascii=False)[:8000]
     sessao = {"activity_id": aid, "modalidade": modalidade, "data": data,
               "status": status, "detalhe": detalhe,
               "n_degraus": len(r.get("degraus") or []) if status == "ok" else 0}

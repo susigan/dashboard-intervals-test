@@ -381,3 +381,23 @@ def listar_hrr(modalidade, versao):
              "watts_alvo": r["alvo_w"], "watts_real": None,
              "hrr60_avg": r["hrr60"], "hrr120_avg": r["hrr120"],
              "fc_rec1min_avg": r["fc_rec1min"]} for r in linhas]
+
+
+def listar_sem_degraus(modalidade, versao):
+    """Sessoes cujo detector nao encontrou a escada nos streams completos,
+    com o diagnostico guardado (JSON em detalhe)."""
+    import json as _json
+    conn = get_conn()
+    linhas = conn.execute(
+        """SELECT activity_id, data, detalhe, verificada FROM aquecimento_hrr_sessoes
+           WHERE modalidade = ? AND status = 'sem_degraus' AND versao = ?
+           ORDER BY data DESC""", (modalidade, versao)).fetchall()
+    out = []
+    for r in linhas:
+        try:
+            diag = _json.loads(r["detalhe"]) if r["detalhe"] else None
+        except ValueError:
+            diag = None
+        out.append({"activity_id": r["activity_id"], "data": r["data"],
+                    "verificada": r["verificada"], "diagnostico": diag})
+    return out

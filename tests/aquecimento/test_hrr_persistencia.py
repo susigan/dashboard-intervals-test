@@ -64,6 +64,17 @@ class Conversao(unittest.TestCase):
         self.assertEqual((s['status'], s['n_degraus'], d), ('sem_watts', 0, []))
 
 
+    def test_sem_degraus_guarda_o_diagnostico_como_json(self):
+        import json
+        diag = {'activity_id': 'i5', 'veredicto': 'rejeitada', 'degraus_ok': 1,
+                'passos': [{'alvo_W': 80, 'estado': 'ok'}]}
+        s, d = hrr.registo_para_bd('i5', 'Bike', '2025-01-01',
+                                   {'status': 'sem_degraus'}, diagnostico=diag)
+        self.assertEqual(s['status'], 'sem_degraus')
+        self.assertEqual(json.loads(s['detalhe']), diag)
+        self.assertEqual(d, [])
+
+
 class BaseDeDados(unittest.TestCase):
 
     def setUp(self):
@@ -191,6 +202,27 @@ class ReprocessarRota(unittest.TestCase):
         j = self._run({'i1': (self.com_fc, None), 'i2': (self.sem_fc, None), 'i3': (None, 'x')})
         self.assertEqual(j['ja_processadas'], 2)
         self.assertEqual(j['processadas_nesta_chamada'], 0)
+
+    def test_pedido_sem_degraus_devolve_o_diagnostico_guardado(self):
+        t = self.com_fc[0]['data']
+        plano = [{'type': 'time', 'data': t},
+                 {'type': 'watts', 'data': [100] * len(t)},
+                 {'type': 'heartrate', 'data': [120] * len(t)}]
+        self.con.execute("INSERT INTO aquecimento_blocos (activity_id,bloco_num,modalidade,data,watts_alvo) "
+                         "VALUES ('i4',1,'Bike','2026-10-23',80)")
+        self.con.commit()
+        self._run({'i1': (self.com_fc, None), 'i2': (self.sem_fc, None),
+                   'i3': (None, 'x'), 'i4': (plano, None)})
+        r = self.client.get('/api/aquecimento/hrr/sem_degraus?modalidade=Bike')
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json()
+        self.assertEqual(j['status'], 'ok')
+        self.assertEqual(j['versao_hrr'], hrr.VERSAO_HRR)
+        self.assertEqual([x['activity_id'] for x in j['sessoes']], ['i4'])
+        self.assertIsInstance(j['sessoes'][0]['diagnostico']['passos'], list)
+
+    def test_pedido_sem_degraus_exige_modalidade(self):
+        self.assertEqual(self.client.get('/api/aquecimento/hrr/sem_degraus').status_code, 400)
 
     def test_max_api_limita_os_pedidos(self):
         j = self._run({'i1': (self.com_fc, None), 'i2': (self.sem_fc, None), 'i3': (self.sem_fc, None)},

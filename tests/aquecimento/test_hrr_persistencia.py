@@ -198,6 +198,24 @@ class ReprocessarRota(unittest.TestCase):
         self.assertEqual(j['processadas_nesta_chamada'], 1)
         self.assertEqual(j['pendentes'], 2)
 
+    def test_sem_degraus_devolve_diagnostico_com_o_id(self):
+        # sessao aceite (tem blocos) cujo stream nao tem escada: watts constantes
+        self.con.execute("INSERT INTO aquecimento_blocos (activity_id,bloco_num,modalidade,data,watts_alvo) "
+                         "VALUES ('i4',1,'Bike','2026-10-23',80)")
+        self.con.commit()
+        t = self.com_fc[0]['data']
+        plano = [{'type': 'time', 'data': t},
+                 {'type': 'watts', 'data': [100] * len(t)},
+                 {'type': 'heartrate', 'data': [120] * len(t)}]
+        j = self._run({'i1': (self.com_fc, None), 'i2': (self.sem_fc, None),
+                       'i3': (None, 'x'), 'i4': (plano, None)})
+        self.assertEqual(j['estados'].get('sem_degraus'), 1)
+        diag = j['diagnostico_sem_degraus']
+        self.assertEqual(len(diag), 1)
+        self.assertEqual(diag[0]['activity_id'], 'i4')
+        self.assertIn(diag[0]['veredicto'], ('aceite', 'rejeitada'))
+        self.assertIsInstance(diag[0]['passos'], list)
+
     def test_sem_modalidade_400(self):
         self.assertEqual(self.client.get('/api/aquecimento/hrr/reprocessar').status_code, 400)
 

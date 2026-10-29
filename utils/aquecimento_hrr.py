@@ -539,7 +539,7 @@ def serie_grafico(streams, max_pontos=MAX_PONTOS_GRAFICO, janela=None):
 
 # Sobe sempre que a logica de HRR muda: as sessoes guardadas com outra versao
 # sao recalculadas no proximo reprocessamento.
-VERSAO_HRR = 1
+VERSAO_HRR = 2
 
 
 def _val(d):

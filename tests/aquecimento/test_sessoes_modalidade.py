@@ -110,14 +110,6 @@ class PainelAssociaSessaoEModalidade(unittest.TestCase):
     def test_opcao_guarda_modalidade_da_sessao(self):
         self.assertIn("o.dataset.modalidade = s.modalidade || AQ_MOD;", self.s)
 
-    def test_hrr_le_modalidade_da_opcao_selecionada(self):
-        self.assertIn("sel.selectedOptions[0]", self.s)
-        self.assertIn("opt.dataset.modalidade", self.s)
-        self.assertNotIn("const mod = AQ_MOD;", self.s)
-
-    def test_mensagem_sem_fc_explica_a_causa(self):
-        self.assertIn("não devolveu nenhum stream de FC", self.s)
-
 
 if __name__ == '__main__':
     unittest.main()

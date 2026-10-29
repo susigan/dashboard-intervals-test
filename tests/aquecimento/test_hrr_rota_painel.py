@@ -209,7 +209,9 @@ class PainelHRR(unittest.TestCase):
 
     def test_sessao_e_modalidade_vem_do_painel_existente(self):
         self.assertIn("document.getElementById('aqBlocosSessao')", self.js)
-        self.assertIn("const mod = AQ_MOD;", self.js)
+        # modalidade vem da sessao selecionada (data-modalidade); AQ_MOD so' como fallback
+        self.assertIn("opt.dataset.modalidade", self.js)
+        self.assertIn("|| AQ_MOD;", self.js)
         self.assertIn("function aqBlocosCarregar", self.html)
 
     def test_pede_serie_e_rota_correta(self):

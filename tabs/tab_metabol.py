@@ -2171,9 +2171,11 @@ function aqhLimpa(){
 function aqHrrCarregar(){
  const sel = document.getElementById('aqBlocosSessao');
  const aid = sel ? String(sel.value || '').trim() : '';
- const mod = AQ_MOD;
- if(!mod){ aqhMsg('Modalidade do painel ainda não carregada.'); return; }
- if(!/^i\d+$/.test(aid)){ aqhMsg('Escolha uma sessão de ' + mod + ' no painel de blocos acima.'); return; }
+ const opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+ // modalidade da sessao selecionada; AQ_MOD so' como ultimo recurso
+ const mod = (opt && opt.dataset && opt.dataset.modalidade) || AQ_MOD;
+ if(!mod){ aqhMsg('Modalidade da sessão ainda não carregada.'); return; }
+ if(!/^i\d+$/.test(aid)){ aqhMsg('Escolha uma sessão no painel de blocos acima.'); return; }
  aqhMsg('A calcular a partir dos streams da API…');
  const url = '/api/aquecimento/hrr?activity_id=' + encodeURIComponent(aid) +
              '&modalidade=' + encodeURIComponent(mod) + '&serie=1';
@@ -2185,7 +2187,7 @@ function aqHrrCarregar(){
     let txt = 'Não foi possível calcular (' + st + ')' + (x.j && x.j.mensagem ? ': ' + x.j.mensagem : '');
     if(st === 'sem_hr'){
      const nomes = (x.j && Array.isArray(x.j.tipos_recebidos)) ? x.j.tipos_recebidos : [];
-     txt = 'Sem FC nos streams desta sessão (sem_hr). Tipos recebidos: ' + (nomes.length ? nomes.join(', ') : 'nenhum') + '.';
+     txt = 'A Intervals.icu não devolveu nenhum stream de FC para esta sessão (sem_hr), por isso não há HRR possível. Tipos recebidos: ' + (nomes.length ? nomes.join(', ') : 'nenhum') + '.';
     }
     aqhMsg(txt);
     return;
@@ -2430,7 +2432,9 @@ function aqBlocosCarregar(){
    sess.forEach(function(s){
     const o = document.createElement('option');
     o.value = s.activity_id;
-    o.textContent = String(s.data||'').slice(0,10) + ' · ' + s.activity_id
+    // modalidade DA SESSAO (nao a do painel): o HRR usa esta, nunca AQ_MOD fixa
+    o.dataset.modalidade = s.modalidade || AQ_MOD;
+    o.textContent = String(s.data||'').slice(0,10) + ' · ' + (s.modalidade || AQ_MOD) + ' · ' + s.activity_id
                     + ' (' + s.n_blocos + ' blocos)';
     sel.appendChild(o);
    });

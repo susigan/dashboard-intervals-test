@@ -810,8 +810,6 @@ BODY = r"""
         <option value="smo2">SmO&#8322; (%)</option>
         <option value="resp">Respiração (rpm)</option>
         <option value="dfa1">DFA-&#945;1</option>
-        <option value="hrr60">HRR60 (bpm)</option>
-        <option value="hrr120">HRR120 (bpm)</option>
         <option value="fc_rec1min">FC rec. 1 min (bpm)</option>
       </select></label>
     <label class="sel">Agregação por período

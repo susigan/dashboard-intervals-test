@@ -2420,9 +2420,11 @@ def api_aquecimento_hrr_reprocessar():
         import api_client as _api
         import aquecimento_analyzer as _aa
         import aquecimento_hrr as _hrr
+        import aquecimento_streams as _aqs
 
         sessoes = aq_db.aceites_para_hrr(mod)
         ja, feitas, erros_api, estados, erros_ids = 0, 0, 0, {}, []
+        diag_sem_degraus = []  # como o detector falhou, por sessao (sem FC; so' diagnostico)
         chamadas = 0
         for aid, data in sessoes:
             aid = str(aid)
@@ -2446,6 +2448,17 @@ def api_aquecimento_hrr_reprocessar():
                     aid, mod, str(data)[:10] if data else None, r)
                 aq_db.salvar_hrr(sessao, degraus, _hrr.VERSAO_HRR)
                 estados[r.get('status', 'erro')] = estados.get(r.get('status', 'erro'), 0) + 1
+                if r.get('status') == 'sem_degraus' and len(diag_sem_degraus) < 30:
+                    dg = _aqs.diagnosticar_escada(streams, mod, _aa.PROTOCOLOS,
+                                                  duracao_s=_duracao_atividade(aid))
+                    diag_sem_degraus.append({
+                        'activity_id': aid, 'data': str(data)[:10] if data else None,
+                        'veredicto': dg.get('veredicto'),
+                        'degraus_ok': dg.get('degraus_ok'),
+                        'passos': [{k: p.get(k) for k in ('alvo_W', 'estado', 'inicio_s',
+                                                         'duracao_s', 'watts_medidos',
+                                                         'pausa_antes_s')}
+                                   for p in dg.get('passos', [])]})
                 feitas += 1
                 if feitas % 10 == 0:
                     aq_db.sincronizar()
@@ -2465,6 +2478,7 @@ def api_aquecimento_hrr_reprocessar():
             'pendentes': pendentes,
             'erros_api': erros_api, 'erros_ids': erros_ids[:20],
             'estados': estados,
+            'diagnostico_sem_degraus': diag_sem_degraus,
             'versao_hrr': _hrr.VERSAO_HRR,
             'nota': ('Volta a chamar esta rota ate pendentes = 0.' if pendentes > 0
                      else 'Concluido.')})

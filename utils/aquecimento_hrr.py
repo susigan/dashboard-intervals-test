@@ -477,7 +477,29 @@ def hrr_por_degrau(streams, modalidade, protocolos, duracao_s=None):
 MAX_PONTOS_GRAFICO = 1500
 
 
-def serie_grafico(streams, max_pontos=MAX_PONTOS_GRAFICO):
+def janela_aquecimento(r, margem_s=30.0):
+    """(t_inicio, t_fim) em segundos: do 1.o esforco ao fim da ultima recuperacao.
+
+    So' para cortar os graficos ao aquecimento. Nao altera nenhum valor de HRR.
+    Devolve None se nao houver degraus.
+    """
+    degs = (r or {}).get("degraus") or []
+    if not degs:
+        return None
+    ini = degs[0]["work"].get("t_inicio_s")
+    ult = degs[-1]
+    fim = (ult.get("rec") or {}).get("t_fim_s")
+    if fim is None:
+        base = ult["work"].get("t_fim_s") or ult["work"].get("t_inicio_s")
+        if base is None:
+            return None
+        fim = base + 120.0  # ultimo degrau sem degrau seguinte: 2 min de recuperacao
+    if ini is None:
+        return None
+    return max(0.0, ini - margem_s), fim + margem_s
+
+
+def serie_grafico(streams, max_pontos=MAX_PONTOS_GRAFICO, janela=None):
     """Serie reduzida por amostragem (nao por media) SO' para desenhar.
 
     Os valores de HRR/HR_end/HR_60/HR_120 nunca saem daqui: sao calculados
@@ -489,10 +511,17 @@ def serie_grafico(streams, max_pontos=MAX_PONTOS_GRAFICO):
         return None
     t = [float(x) for x in t_raw]
     n = len(t)
-    stride = max(1, -(-n // max_pontos))
-    idx = list(range(0, n, stride))
-    if idx[-1] != n - 1:
-        idx.append(n - 1)
+    if janela:
+        a, b = janela
+        base = [k for k in range(n) if a <= t[k] <= b]
+    else:
+        base = list(range(n))
+    if not base:
+        return None
+    stride = max(1, -(-len(base) // max_pontos))
+    idx = base[::stride]
+    if idx[-1] != base[-1]:
+        idx.append(base[-1])
     out = {"stride": stride, "t": [round(t[k], 1) for k in idx]}
     series = {"watts": aqs._serie(streams, "watts"), "hr": aqs._serie(streams, "hr")}
     for nome in FISIO_KEYS:

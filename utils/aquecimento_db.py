@@ -118,6 +118,36 @@ CREATE TABLE IF NOT EXISTS aquecimento_rejeitadas (
     verificada  TEXT,
     versao      INTEGER DEFAULT 0
 );
+
+-- HRR por sessao: uma linha por sessao (status) e uma por degrau (valores).
+-- Sessoes sem FC ficam com status 'sem_hr' e sem degraus; nao se estima nada.
+CREATE TABLE IF NOT EXISTS aquecimento_hrr_sessoes (
+    activity_id TEXT PRIMARY KEY,
+    modalidade  TEXT,
+    data        TEXT,
+    status      TEXT NOT NULL,
+    detalhe     TEXT,
+    n_degraus   INTEGER,
+    versao      INTEGER,
+    verificada  TEXT
+);
+CREATE TABLE IF NOT EXISTS aquecimento_hrr (
+    activity_id       TEXT    NOT NULL,
+    degrau_num        INTEGER NOT NULL,
+    modalidade        TEXT,
+    data              TEXT,
+    alvo_w            INTEGER,
+    watts_work_medio  REAL,
+    hr_end            REAL, hr_end_motivo    TEXT,
+    hr_60             REAL, hr_60_motivo     TEXT,
+    hr_120            REAL, hr_120_motivo    TEXT,
+    hrr60             REAL, hrr60_motivo     TEXT,
+    hrr120            REAL, hrr120_motivo    TEXT,
+    fc_rec1min        REAL, fc_rec1min_motivo TEXT,
+    PRIMARY KEY (activity_id, degrau_num)
+);
+CREATE INDEX IF NOT EXISTS idx_aq_hrr_mod
+    ON aquecimento_hrr (modalidade, alvo_w, data);
 """
 
 
@@ -281,3 +311,73 @@ def modalidades_disponiveis():
 def listar_todas():
     """Compatibilidade com a versao anterior da API."""
     return listar_sessoes()
+
+
+# ── HRR por sessao ─────────────────────────────────────────────────────────
+
+_COLS_HRR = ["degrau_num", "alvo_w", "watts_work_medio", "hr_end", "hr_end_motivo",
+             "hr_60", "hr_60_motivo", "hr_120", "hr_120_motivo", "hrr60", "hrr60_motivo",
+             "hrr120", "hrr120_motivo", "fc_rec1min", "fc_rec1min_motivo"]
+
+
+def salvar_hrr(sessao, degraus, versao):
+    """Substitui o HRR guardado de uma sessao (reprocessar e' idempotente)."""
+    conn = get_conn()
+    aid = sessao["activity_id"]
+    agora = datetime.now().isoformat(timespec="seconds")
+    conn.execute("DELETE FROM aquecimento_hrr WHERE activity_id = ?", (aid,))
+    conn.execute("DELETE FROM aquecimento_hrr_sessoes WHERE activity_id = ?", (aid,))
+    conn.execute(
+        """INSERT INTO aquecimento_hrr_sessoes
+           (activity_id, modalidade, data, status, detalhe, n_degraus, versao, verificada)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (aid, sessao["modalidade"], sessao["data"], sessao["status"], sessao["detalhe"],
+         sessao["n_degraus"], versao, agora))
+    for d in degraus:
+        conn.execute(
+            f"""INSERT INTO aquecimento_hrr
+                (activity_id, modalidade, data, {', '.join(_COLS_HRR)})
+                VALUES ({','.join('?' * (3 + len(_COLS_HRR)))})""",
+            (aid, sessao["modalidade"], sessao["data"],
+             *[d.get(c) for c in _COLS_HRR]))
+    conn.commit()
+    return len(degraus)
+
+
+def hrr_processada(activity_id, versao):
+    """True se a sessao ja tem HRR calculado com esta versao da logica."""
+    conn = get_conn()
+    r = conn.execute("SELECT versao FROM aquecimento_hrr_sessoes WHERE activity_id = ?",
+                     (activity_id,)).fetchone()
+    return bool(r) and (r[0] or 0) == versao
+
+
+def aceites_para_hrr(modalidade):
+    """Sessoes com blocos aceites (as unicas em que faz sentido calcular HRR)."""
+    conn = get_conn()
+    linhas = conn.execute(
+        """SELECT activity_id, MIN(data) AS data FROM aquecimento_blocos
+           WHERE modalidade = ? GROUP BY activity_id ORDER BY data""",
+        (modalidade,)).fetchall()
+    return [(r["activity_id"], r["data"]) for r in linhas]
+
+
+def listar_hrr(modalidade, versao):
+    """Degraus com HRR util, no formato que aquecimento_comparativo ja le.
+
+    Mesmos nomes que os blocos: <metrica>_avg, watts_alvo, interval_num,
+    bloco_num. Ausencia continua a ser None, nunca zero.
+    """
+    conn = get_conn()
+    linhas = conn.execute(
+        """SELECT h.activity_id, h.data, h.degrau_num, h.alvo_w,
+                  h.hrr60, h.hrr120, h.fc_rec1min
+           FROM aquecimento_hrr h
+           JOIN aquecimento_hrr_sessoes s ON s.activity_id = h.activity_id
+           WHERE h.modalidade = ? AND s.status = 'ok' AND s.versao = ?
+           ORDER BY h.data, h.degrau_num""", (modalidade, versao)).fetchall()
+    return [{"activity_id": r["activity_id"], "data": r["data"],
+             "bloco_num": r["degrau_num"], "interval_num": r["degrau_num"],
+             "watts_alvo": r["alvo_w"], "watts_real": None,
+             "hrr60_avg": r["hrr60"], "hrr120_avg": r["hrr120"],
+             "fc_rec1min_avg": r["fc_rec1min"]} for r in linhas]

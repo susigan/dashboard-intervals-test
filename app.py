@@ -2367,16 +2367,11 @@ def api_aquecimento_hrr():
         import api_client as _api
         import aquecimento_analyzer as _aa
         import aquecimento_hrr as _hrr
-        # Mesmo pedido que sync.py e tab_detalhe.py (includeDefaults=true).
-        raw, err = _api.icu_get(f'/activity/{aid}/streams', {'includeDefaults': 'true'})
+        # Mesmo pedido e mesma montagem que o painel de blocos (includeDefaults=true,
+        # sem reduzir, entradas allNull/vazias nao sobrescrevem a FC util).
+        streams, nomes_recebidos, err = _hrr.buscar_streams_brutos(_api.icu_get, aid)
         if err:
             return jsonify({'status': 'erro_api', 'mensagem': err}), 502
-        lista = raw
-        if isinstance(raw, dict):
-            lista = raw.get('streams') or raw.get('content') or []
-        # Mesma regra que api_client.parse_streams (ignora entradas allNull/vazias
-        # que sobrescreviam a FC util), mas SEM reduzir: o HRR precisa da serie.
-        streams, nomes_recebidos = _hrr.montar_streams_brutos(lista)
         r = _hrr.hrr_por_degrau(streams, mod, _aa.PROTOCOLOS,
                                 duracao_s=_duracao_atividade(aid))
         if r.get('status') == 'sem_hr':
@@ -2871,20 +2866,12 @@ def api_aquecimento_ingerir():
             if not streams and buscar_api and buscados < max_api:
                 try:
                     import api_client as _api
-                    _raw, _err = _api.icu_get(f'/activity/{aid}/streams')
-                    if not _err and _raw:
-                        _lista = _raw
-                        if isinstance(_lista, dict):
-                            _lista = (_lista.get('streams')
-                                      or _lista.get('content') or [])
-                        streams = {}
-                        for _st in (_lista or []):
-                            if isinstance(_st, dict) and (_st.get('type')
-                                                          or _st.get('name')):
-                                streams[_st.get('type') or _st.get('name')] = \
-                                    _st.get('data') or []
-                        if streams:
-                            buscados += 1
+                    import aquecimento_hrr as _hrr_bs
+                    # mesmo pedido e mesma montagem que o HRR (includeDefaults=true)
+                    _api_streams, _, _err = _hrr_bs.buscar_streams_brutos(_api.icu_get, aid)
+                    if not _err and _api_streams:
+                        streams = _api_streams
+                        buscados += 1
                 except Exception as _e:
                     erros_api[str(_e)[:60]] = erros_api.get(str(_e)[:60], 0) + 1
             if not streams:

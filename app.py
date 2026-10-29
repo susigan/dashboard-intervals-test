@@ -2387,7 +2387,8 @@ def api_aquecimento_hrr():
         # serie reduzida SO' para desenhar os graficos; os valores acima sao calculados
         # sobre a serie original. ?serie=1 e' opcional.
         if request.args.get('serie') == '1':
-            r['serie_grafico'] = _hrr.serie_grafico(streams)
+            # so' o aquecimento (do 1.o esforco ao fim da ultima recuperacao)
+            r['serie_grafico'] = _hrr.serie_grafico(streams, janela=_hrr.janela_aquecimento(r))
         return jsonify(r)
     except Exception:
         # Detalhe completo (traceback) so' no log do servidor, nunca na resposta.
@@ -2933,6 +2934,7 @@ def api_aquecimento_ingerir():
                 ORDER BY date DESC LIMIT ?""", tuple(params), fetch='all') or []
 
         det, rej, salt, sem_streams, motivos = 0, 0, 0, 0, {}
+        hrr_api, hrr_feitos, hrr_erros = 0, 0, 0
         buscados, erros_api, sem_streams_ids = 0, {}, []
         for aid, data, tipo in linhas:
             mod = CFG_MODALIDADES.get(tipo, tipo)
@@ -2965,6 +2967,27 @@ def api_aquecimento_ingerir():
             if r.get('detectado'):
                 aq_db.salvar_blocos(str(aid), mod, data_iso, r['blocos'], sync=False)
                 det += 1
+                # HRR automatico: streams completos da API (nao a copia reduzida).
+                # Respeita o mesmo limite de pedidos; o que ficar fora fica pendente
+                # e e' calculado na proxima chamada.
+                try:
+                    import api_client as _api_h
+                    import aquecimento_hrr as _hrr_ing
+                    if buscar_api and hrr_api < max_api and not aq_db.hrr_processada(
+                            str(aid), _hrr_ing.VERSAO_HRR):
+                        hrr_api += 1
+                        s_h, nomes_h, err_h = _hrr_ing.buscar_streams_brutos(_api_h.icu_get, str(aid))
+                        if not err_h:
+                            rh = _hrr_ing.hrr_por_degrau(s_h, mod, aa.PROTOCOLOS,
+                                                         duracao_s=_duracao_atividade(aid))
+                            if rh.get('status') == 'sem_hr':
+                                rh['tipos_recebidos'] = nomes_h
+                            sess_h, deg_h = _hrr_ing.registo_para_bd(str(aid), mod, data_iso, rh)
+                            aq_db.salvar_hrr(sess_h, deg_h, _hrr_ing.VERSAO_HRR)
+                            hrr_feitos += 1
+                except Exception as _e_h:
+                    hrr_erros += 1
+                    app.logger.exception('aquecimento/ingerir HRR falhou (aid=%s): %s', aid, _e_h)
             else:
                 m = r.get('motivo', 'desconhecido')
                 aq_db.marcar_rejeitada(str(aid), mod, data_iso, m,
@@ -2981,6 +3004,7 @@ def api_aquecimento_ingerir():
             'rejeitados': rej, 'ja_analisadas': salt,
             'streams_buscados_a_api': buscados,
             'limite_api_por_chamada': max_api,
+            'hrr_calculados': hrr_feitos, 'hrr_erros': hrr_erros,
             'sem_streams_guardados': sem_streams,
             'sem_streams_ids': sem_streams_ids[:20],
             'erros_api': erros_api, 'motivos': motivos,

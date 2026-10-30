@@ -167,6 +167,9 @@ class ReprocessarRota(unittest.TestCase):
             mock.patch.object(aqdb, 'get_conn', return_value=self.con),
             mock.patch.object(aqdb, 'sincronizar', return_value=True),
             mock.patch.object(self.app_mod, '_duracao_atividade', return_value=None),
+            # estes testes cobrem a rota e o caminho de deteccao; os instantes
+            # dos WORK tem testes proprios (test_hrr_janelas)
+            mock.patch.object(self.app_mod, '_janelas_da_sessao', return_value=(None, None, False)),
         ]
         for p in self.patches:
             p.start()

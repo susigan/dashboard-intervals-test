@@ -270,15 +270,29 @@ def analisar_assistido(streams, modalidade, protocolos, duracao_s=None):
                                   for k in range(0, min(len(suave), 1800), 120)]}
 
 
+def _tempos(streams, n, dt):
+    """Segundos de cada amostra. Usa o 'time' do stream quando existe e tem
+    o mesmo tamanho; senao assume passo constante dt."""
+    t = streams.get("time")
+    if isinstance(t, list) and len(t) == n and all(isinstance(x, (int, float)) for x in t):
+        return [float(x) for x in t]
+    return [k * dt for k in range(n)]
+
+
 def _montar(streams, watts, achados, modalidade, proto, dt=1.0):
     """Blocos + metricas. Cada metrica e' usada se existir; as que faltarem
     ficam a NULL sem invalidar o bloco nem a sessao."""
     series = {m: _serie(streams, m) for m in ("hr", "smo2", "resp", "dfa1")}
+    tempos = _tempos(streams, len(watts), dt)
     blocos, metricas_usadas = [], set()
     for num, (i0, i1, alvo) in enumerate(achados, start=1):
         wa, _wmin, _wmax = _resumo(watts, i0, i1)
+        # instantes do WORK (segundos desde o inicio da atividade): usados
+        # depois para ler a FC no fim de cada degrau e 60 s depois
         b = {"bloco_num": num, "watts_alvo": alvo, "watts_real": wa,
-             "interval_num": num, "tempo_seg": int((i1 - i0) * dt)}
+             "interval_num": num, "tempo_seg": int((i1 - i0) * dt),
+             "t_inicio_s": round(tempos[i0], 1),
+             "t_fim_s": round(tempos[i1 - 1], 1)}
         for m, serie in series.items():
             avg, mn, mx = _resumo(serie, i0, i1)
             b[f"{m}_avg"], b[f"{m}_min"], b[f"{m}_max"] = avg, mn, mx

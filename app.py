@@ -2376,8 +2376,11 @@ def api_aquecimento_hrr():
         streams, nomes_recebidos, err = _hrr.buscar_streams_brutos(_api.icu_get, aid)
         if err:
             return jsonify({'status': 'erro_api', 'mensagem': err}), 502
+        # instantes dos WORK ja aceites (se existirem): nao se volta a detetar
+        janelas_r = aq_db.janelas_da_sessao(aid)
         r = _hrr.hrr_por_degrau(streams, mod, _aa.PROTOCOLOS,
-                                duracao_s=_duracao_atividade(aid))
+                                duracao_s=_duracao_atividade(aid),
+                                janelas=janelas_r)
         if r.get('status') == 'sem_hr':
             # nomes de TODOS os tipos recebidos, incluindo entradas ignoradas
             r['tipos_recebidos'] = nomes_recebidos

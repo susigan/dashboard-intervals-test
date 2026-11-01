@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS aquecimento_blocos (
     watts_real    REAL,
     interval_num  INTEGER,
     tempo_seg     INTEGER,
+    t_inicio_s    REAL,
+    t_fim_s       REAL,
     hr_avg REAL,   hr_min REAL,   hr_max REAL,
     smo2_avg REAL, smo2_min REAL, smo2_max REAL,
     resp_avg REAL, resp_min REAL, resp_max REAL,
@@ -174,6 +176,48 @@ _COLS = ["hr_avg", "hr_min", "hr_max", "smo2_avg", "smo2_min", "smo2_max",
          "resp_avg", "resp_min", "resp_max", "dfa1_avg", "dfa1_min", "dfa1_max"]
 
 
+def _garantir_colunas_tempo(conn):
+    """Bases ja existentes nao tem t_inicio_s/t_fim_s: acrescenta-as uma vez."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(aquecimento_blocos)")}
+    for c in ("t_inicio_s", "t_fim_s"):
+        if c not in cols:
+            conn.execute(f"ALTER TABLE aquecimento_blocos ADD COLUMN {c} REAL")
+    conn.commit()
+
+
+def janelas_da_sessao(activity_id):
+    """[(t_inicio_s, t_fim_s, watts_alvo), ...] por degrau, ou None se algum
+    degrau ainda nao tem instantes guardados (sessao a preencher)."""
+    conn = get_conn()
+    _garantir_colunas_tempo(conn)
+    linhas = conn.execute(
+        """SELECT bloco_num, watts_alvo, t_inicio_s, t_fim_s FROM aquecimento_blocos
+           WHERE activity_id = ? ORDER BY bloco_num""", (activity_id,)).fetchall()
+    if not linhas or any(r["t_inicio_s"] is None or r["t_fim_s"] is None for r in linhas):
+        return None
+    return [(r["t_inicio_s"], r["t_fim_s"], r["watts_alvo"]) for r in linhas]
+
+
+def contar_blocos(activity_id):
+    conn = get_conn()
+    r = conn.execute("SELECT COUNT(*) FROM aquecimento_blocos WHERE activity_id = ?",
+                     (activity_id,)).fetchone()
+    return r[0] if r else 0
+
+
+def definir_tempos_blocos(activity_id, blocos):
+    """Preenche os instantes dos blocos ja guardados (sem apagar nada).
+    blocos: lista de dicts com bloco_num, t_inicio_s, t_fim_s."""
+    conn = get_conn()
+    _garantir_colunas_tempo(conn)
+    for b in blocos:
+        conn.execute(
+            """UPDATE aquecimento_blocos SET t_inicio_s = ?, t_fim_s = ?
+               WHERE activity_id = ? AND bloco_num = ?""",
+            (b["t_inicio_s"], b["t_fim_s"], activity_id, b["bloco_num"]))
+    conn.commit()
+
+
 def salvar_blocos(activity_id, modalidade, data, blocos, sync=True):
     """Grava os blocos de uma sessao. blocos = lista de dicts do analyzer.
 
@@ -185,16 +229,18 @@ def salvar_blocos(activity_id, modalidade, data, blocos, sync=True):
     # se tinha sido rejeitada por uma versao anterior do detector, o registo
     # de rejeicao tem de sair -- senao a sessao aparece aceite E ignorada
     conn.execute("DELETE FROM aquecimento_rejeitadas WHERE activity_id = ?", (activity_id,))
-    n_campos = 8 + len(_COLS) + 1
+    _garantir_colunas_tempo(conn)
+    n_campos = 10 + len(_COLS) + 1
     for b in blocos:
         conn.execute(
             f"""INSERT INTO aquecimento_blocos
                 (activity_id, bloco_num, modalidade, data, watts_alvo, watts_real,
-                 interval_num, tempo_seg, {', '.join(_COLS)}, data_registo)
+                 interval_num, tempo_seg, t_inicio_s, t_fim_s, {', '.join(_COLS)}, data_registo)
                 VALUES ({','.join('?' * n_campos)})""",
             (activity_id, b["bloco_num"], modalidade, data,
              b.get("watts_alvo"), b.get("watts_real"),
              b.get("interval_num"), b.get("tempo_seg"),
+             b.get("t_inicio_s"), b.get("t_fim_s"),
              *[b.get(c) for c in _COLS], agora))
     conn.commit()
     if sync:

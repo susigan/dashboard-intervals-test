@@ -2376,8 +2376,11 @@ def api_aquecimento_hrr():
         streams, nomes_recebidos, err = _hrr.buscar_streams_brutos(_api.icu_get, aid)
         if err:
             return jsonify({'status': 'erro_api', 'mensagem': err}), 502
+        # instantes dos WORK ja aceites (se existirem): nao se volta a detetar
+        janelas_r = aq_db.janelas_da_sessao(aid)
         r = _hrr.hrr_por_degrau(streams, mod, _aa.PROTOCOLOS,
-                                duracao_s=_duracao_atividade(aid))
+                                duracao_s=_duracao_atividade(aid),
+                                janelas=janelas_r)
         if r.get('status') == 'sem_hr':
             # nomes de TODOS os tipos recebidos, incluindo entradas ignoradas
             r['tipos_recebidos'] = nomes_recebidos
@@ -2414,6 +2417,35 @@ def _diagnostico_sem_degraus(streams, mod, aid, data):
                        for p in dg.get('passos', [])]}
 
 
+def _janelas_da_sessao(aid, mod):
+    """Instantes (t_inicio_s, t_fim_s, watts_alvo) dos WORK aceites de uma sessao.
+
+    Se a BD ainda nao os tem (sessao aceite antes desta versao), recalcula-os
+    sobre a COPIA REDUZIDA -- a mesma deteccao que aceitou a sessao, sem mudar
+    regras -- e confirma que o numero de degraus bate com os blocos guardados.
+    Devolve (janelas, erro, preenchidas).
+    """
+    import aquecimento_streams as _aqs
+    import aquecimento_analyzer as _aa
+    import db as _db_j
+    aid = str(aid)
+    j = aq_db.janelas_da_sessao(aid)
+    if j:
+        return j, None, False
+    streams_red, _meta = _db_j.get_streams(aid)
+    if not streams_red:
+        return None, 'sem_copia_reduzida', False
+    r = _aqs.analisar_streams(streams_red, mod, _aa.PROTOCOLOS,
+                              duracao_s=_duracao_atividade(aid))
+    if not r.get('detectado'):
+        return None, 'copia_reduzida_sem_escada', False
+    if len(r['blocos']) != aq_db.contar_blocos(aid):
+        return None, 'degraus_nao_batem_com_blocos_guardados', False
+    aq_db.definir_tempos_blocos(aid, r['blocos'])
+    janelas = [(b['t_inicio_s'], b['t_fim_s'], b['watts_alvo']) for b in r['blocos']]
+    return janelas, None, True
+
+
 @app.route('/api/aquecimento/hrr/reprocessar')
 def api_aquecimento_hrr_reprocessar():
     """Calcula e GUARDA o HRR de todas as sessoes aceites de uma modalidade.
@@ -2439,6 +2471,7 @@ def api_aquecimento_hrr_reprocessar():
         ja, feitas, erros_api, estados, erros_ids = 0, 0, 0, {}, []
         diag_sem_degraus = []  # como o detector falhou, por sessao (sem FC; so' diagnostico)
         chamadas = 0
+        tempos_preenchidos = 0  # sessoes que receberam os instantes dos WORK nesta chamada
         for aid, data in sessoes:
             aid = str(aid)
             if aq_db.hrr_processada(aid, _hrr.VERSAO_HRR):
@@ -2448,13 +2481,27 @@ def api_aquecimento_hrr_reprocessar():
                 break
             chamadas += 1
             try:
+                janelas, erro_j, preenchida = _janelas_da_sessao(aid, mod)
+                if preenchida:
+                    tempos_preenchidos += 1
+                if erro_j:
+                    # sem instantes de WORK nao ha onde ler a FC: regista o motivo
+                    r_j = {'status': 'sem_janelas', 'modalidade': mod,
+                           'degraus': [], 'gaps': [], 'detalhe': erro_j}
+                    sessao_j, deg_j = _hrr.registo_para_bd(
+                        aid, mod, str(data)[:10] if data else None, r_j)
+                    aq_db.salvar_hrr(sessao_j, deg_j, _hrr.VERSAO_HRR)
+                    estados['sem_janelas'] = estados.get('sem_janelas', 0) + 1
+                    feitas += 1
+                    continue
                 streams, nomes, err = _hrr.buscar_streams_brutos(_api.icu_get, aid)
                 if err:
                     erros_api += 1
                     erros_ids.append(aid)
                     continue
                 r = _hrr.hrr_por_degrau(streams, mod, _aa.PROTOCOLOS,
-                                        duracao_s=_duracao_atividade(aid))
+                                        duracao_s=_duracao_atividade(aid),
+                                        janelas=janelas)
                 if r.get('status') == 'sem_hr':
                     r['tipos_recebidos'] = nomes
                 diag = None
@@ -2483,6 +2530,7 @@ def api_aquecimento_hrr_reprocessar():
             'total_aceites': len(sessoes),
             'ja_processadas': ja,
             'processadas_nesta_chamada': feitas,
+            'tempos_preenchidos_nesta_chamada': tempos_preenchidos,
             'pendentes': pendentes,
             'erros_api': erros_api, 'erros_ids': erros_ids[:20],
             'estados': estados,
@@ -3025,8 +3073,11 @@ def api_aquecimento_ingerir():
                         hrr_api += 1
                         s_h, nomes_h, err_h = _hrr_ing.buscar_streams_brutos(_api_h.icu_get, str(aid))
                         if not err_h:
-                            rh = _hrr_ing.hrr_por_degrau(s_h, mod, aa.PROTOCOLOS,
-                                                         duracao_s=_duracao_atividade(aid))
+                            rh = _hrr_ing.hrr_por_degrau(
+                                s_h, mod, aa.PROTOCOLOS,
+                                duracao_s=_duracao_atividade(aid),
+                                janelas=[(b['t_inicio_s'], b['t_fim_s'], b['watts_alvo'])
+                                         for b in r['blocos']])
                             if rh.get('status') == 'sem_hr':
                                 rh['tipos_recebidos'] = nomes_h
                             diag_h = None

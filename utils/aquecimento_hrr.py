@@ -346,10 +346,31 @@ def _tipos_recebidos(streams):
     return nomes[:TIPOS_MAX]
 
 
-def hrr_por_degrau(streams, modalidade, protocolos, duracao_s=None):
+def _achados_das_janelas(t, janelas):
+    """Converte janelas em segundos para indices [i0, i1) do stream.
+
+    Devolve [(i0, i1, alvo), ...] so com janelas que tem pelo menos 2 amostras
+    dentro do stream; as restantes ficam de fora (nao se inventa nada).
+    """
+    import bisect
+    achados = []
+    for t_ini, t_fim, alvo in janelas:
+        if t_ini is None or t_fim is None or not t:
+            continue
+        i0 = bisect.bisect_left(t, float(t_ini))
+        i1 = bisect.bisect_right(t, float(t_fim))
+        if i1 - i0 >= 2:
+            achados.append((i0, i1, alvo))
+    return achados
+
+
+def hrr_por_degrau(streams, modalidade, protocolos, duracao_s=None, janelas=None):
     """Calcula HR_end, HR_60, HR_120, HRR60 e HRR120 por degrau de Aquecimento.
 
     streams: dict com 'time', 'watts' e 'heartrate' (listas do mesmo tamanho).
+    janelas: opcional, [(t_inicio_s, t_fim_s, alvo_w), ...] ja detetados (os
+    WORK aceites). Com janelas NAO se volta a detetar a escada: so se le a FC
+    no fim de cada WORK e 60 s depois, no stream completo.
     Devolve sempre um dict com 'status' explicito; nunca levanta excecao por
     dados em falta.
     """
@@ -377,13 +398,19 @@ def hrr_por_degrau(streams, modalidade, protocolos, duracao_s=None):
     if any(t[k + 1] < t[k] for k in range(len(t) - 1)):
         return {**base, "status": "timestamps_invalidos", "detalhe": "time nao crescente"}
 
-    # 1. Segmentacao do Aquecimento (mesma chamada que analisar_streams)
-    dt = aqs.passo_temporal(streams, duracao_s)
-    achados = aqs._com_escala(dt, lambda: aqs.detectar_escada(
-        watts, proto["watts"], proto["tol"],
-        proto.get("min_blocos", len(proto["watts"]))))
-    if not achados:
-        return {**base, "status": "sem_degraus"}
+    # 1. Segmentacao do Aquecimento. Com janelas (WORK ja aceites) usa-as tal
+    # como estao; sem elas, deteta como analisar_streams (caminho antigo).
+    if janelas:
+        achados = _achados_das_janelas(t, janelas)
+        if not achados:
+            return {**base, "status": "janelas_fora_do_stream"}
+    else:
+        dt = aqs.passo_temporal(streams, duracao_s)
+        achados = aqs._com_escala(dt, lambda: aqs.detectar_escada(
+            watts, proto["watts"], proto["tol"],
+            proto.get("min_blocos", len(proto["watts"]))))
+        if not achados:
+            return {**base, "status": "sem_degraus"}
 
     pesos, dt_med = _pesos(t)
     lacunas = _lacunas(t)
@@ -540,7 +567,7 @@ def serie_grafico(streams, max_pontos=MAX_PONTOS_GRAFICO, janela=None):
 
 # Sobe sempre que a logica de HRR muda: as sessoes guardadas com outra versao
 # sao recalculadas no proximo reprocessamento.
-VERSAO_HRR = 3
+VERSAO_HRR = 4  # 4: HRR lido a partir dos instantes dos WORK aceites
 
 
 def _val(d):

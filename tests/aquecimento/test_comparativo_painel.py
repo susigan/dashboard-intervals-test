@@ -27,7 +27,8 @@ class PainelComparativo(unittest.TestCase):
 
     def test_ids_do_html_existem_uma_vez(self):
         s = _ler('tabs/tab_metabol.py')
-        for id_ in ('aqCmpMeta', 'aqCmpLeg', 'aqCmpCont', 'aqCmpTip'):
+        for id_ in ('aqCmpMeta', 'aqCmpLeg', 'aqCmpCont', 'aqCmpTip',
+                    'aqRngMeta', 'aqRngCont', 'aqRngLeg', 'aqRngComentario'):
             with self.subTest(id=id_):
                 self.assertEqual(s.count(f'id="{id_}"'), 1)
 
@@ -68,7 +69,7 @@ class PainelComparativo(unittest.TestCase):
 
     def test_hooks_de_carregamento(self):
         s = _ler('tabs/tab_metabol.py')
-        self.assertIn("aqPerDefaults(); aqCmpCarregar(); aqTendLigar(); aqTendCarregar(); }", s)
+        self.assertIn("aqPerDefaults(); aqCmpCarregar(); }", s)
 
     def test_marcadores_do_bloco_presentes(self):
         s = _ler('tabs/tab_metabol.py')

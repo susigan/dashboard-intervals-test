@@ -206,29 +206,25 @@ class PainelTendencia(unittest.TestCase):
         self.assertNotIn('aqBlocosSessao', self.js)
         self.assertNotIn('/api/aquecimento/hrr', self.js)
 
-    def test_pede_o_comparativo_com_fc_rec_1min_agrupado(self):
-        self.assertIn("'/api/aquecimento/comparativo?modalidade='", self.js)
-        self.assertIn("'&metrica=fc_rec1min&dias='", self.js)
-        self.assertIn("'&agregacao=mes&min_n=1'", self.js)
-
-    def test_periodos_selecionaveis_sem_sessao(self):
-        self.assertGreaterEqual(self.html.count('class="aqTendP"'), 3)
-        for dias in ['value="30"', 'value="60"', 'value="90"']:
-            self.assertIn(dias, self.html)
+    def test_tabela_unica_por_periodo_com_estatistica(self):
+        self.assertIn("'/api/aquecimento/tendencia_estatistica?modalidade='", self.html)
+        self.assertIn("'&metrica='", self.html)
+        self.assertNotIn('class="aqTendP"', self.html)
+        self.assertNotIn('/api/aquecimento/comparativo', self.js)
 
     def test_modalidade_vem_da_tab(self):
-        self.assertIn('AQ_MOD', self.js)
+        self.assertIn('AQ_MOD', self.html)
 
     def test_escapa_texto_do_servidor(self):
-        self.assertIn('aqcEsc(p.periodo)', self.js)
-        self.assertIn('aqcEsc(j.mensagem', self.js)
+        self.assertIn('aqcEsc(t.avaliacao', self.js)
+        self.assertIn('aqcEsc(d.nome)', self.html)
 
     def test_sem_persistencia(self):
         for proibido in ['localStorage', 'sessionStorage', "method: 'POST'", 'method:"POST"']:
             self.assertNotIn(proibido, self.js, proibido)
 
     def test_hook_no_separador_aquecimento(self):
-        self.assertIn('aqTendLigar(); aqTendCarregar(); }', self.html)
+        self.assertIn('aqPerDefaults(); aqCmpCarregar(); }', self.html)
 
     def test_painel_comparativo_intacto(self):
         self.assertIn('/* AQCMP_BEGIN */', self.html)

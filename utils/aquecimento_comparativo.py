@@ -8,7 +8,9 @@ ORIGEM DAS MEDIAS: por confirmar. Zeros sao duvidosos: ficam fora das
 escalas e das estatisticas, e nunca sao tratados como ausencia nem como zero.
 Ausencia nunca vira zero.
 """
+import calendar
 import math
+import statistics
 from datetime import date, timedelta
 
 METRICAS = {
@@ -310,3 +312,115 @@ def comparativo(blocos, modalidade, metrica, hoje, dias=None, inicio=None,
         'vista2': {'periodos': periodos, 'deltas': deltas(periodos, esc)},
         'avisos': AVISOS,
     }
+
+
+# ---------------------------------------------------------------------------
+# Tendencia ao longo do tempo (uma metrica, um periodo)
+# ---------------------------------------------------------------------------
+
+# Sentido "melhor" de cada metrica, ao mesmo escalao de watts.
+# None = sem sentido fixo; apenas se diz subida / descida / sem mudanca.
+SENTIDO_MELHOR = {
+    'hr': 'baixo',          # FC mais baixa ao mesmo esforco
+    'fc_rec1min': 'baixo',  # FC mais baixa nos primeiros 60 s apos o esforco
+    'smo2': 'alto',
+    'hrr60': 'alto',        # descida maior da FC
+    'hrr120': 'alto',
+    'resp': None,
+    'dfa1': None,
+}
+
+# Janelas de tempo oferecidas no painel: (rotulo, meses ou None para todo o periodo).
+JANELAS_MESES = (('3', 3), ('6', 6), ('12', 12), ('24', 24), ('36', 36), ('todo', None))
+MIN_SESSOES_TENDENCIA = 8
+ALFA_TENDENCIA = 0.05
+
+
+def menos_meses(d, meses):
+    """Data d recuada em 'meses' meses calendario (dia limitado ao mes de destino)."""
+    total = d.year * 12 + (d.month - 1) - meses
+    ano, mes0 = divmod(total, 12)
+    mes = mes0 + 1
+    dia = min(d.day, calendar.monthrange(ano, mes)[1])
+    return date(ano, mes, dia)
+
+
+def tendencia(incl, metrica, min_sessoes=MIN_SESSOES_TENDENCIA):
+    """Tendencia da metrica ao longo do tempo, dentro do periodo.
+
+    Uma observacao por SESSAO (nao por bloco), para nao contar o mesmo dia
+    varias vezes. Cada sessao vale a media dos seus desvios face a mediana do
+    mesmo escalao de watts no periodo: assim uma sessao mais forte ou mais
+    fraca nao parece uma melhora ou piora.
+
+    Teste: tau de Kendall entre o tempo e o valor (equivalente ao Mann-Kendall,
+    sem assumir normalidade). Declive: Theil-Sen (mediana das inclinacoes), em
+    unidades da metrica por ano, com IC 95%.
+    Com uma so pessoa, sessoes proximas no tempo nao sao independentes:
+    o resultado e um indicio, nao uma prova.
+    """
+    from scipy import stats
+
+    por_escalao = {}
+    for s in incl:
+        for p in s['pontos']:
+            por_escalao.setdefault(p['watts_alvo'], []).append(p['valor'])
+    medianas = {w: statistics.median(v) for w, v in por_escalao.items() if len(v) >= 3}
+    if not medianas:
+        return {'status': 'insuficiente'}
+
+    obs = []
+    for s in incl:
+        desvios = [p['valor'] - medianas[p['watts_alvo']]
+                   for p in s['pontos'] if p['watts_alvo'] in medianas]
+        if desvios:
+            obs.append((date.fromisoformat(s['data']), sum(desvios) / len(desvios)))
+    obs.sort(key=lambda o: o[0])
+    if len(obs) < min_sessoes:
+        return {'status': 'insuficiente', 'minimo_sessoes': min_sessoes}
+
+    d0 = obs[0][0]
+    t = [(d - d0).days / 365.25 for d, _ in obs]
+    y = [v for _, v in obs]
+    if max(t) <= 0:
+        return {'status': 'insuficiente', 'minimo_sessoes': min_sessoes}
+
+    tau, p = stats.kendalltau(t, y)
+    if p is None or math.isnan(p):
+        # valores todos iguais: nao ha variacao, logo nao ha tendencia
+        tau, p = 0.0, 1.0
+    declive, _icpt, lo, hi = stats.theilslopes(y, t)
+
+    if p < ALFA_TENDENCIA and declive > 0:
+        direcao = 'subida'
+    elif p < ALFA_TENDENCIA and declive < 0:
+        direcao = 'descida'
+    else:
+        direcao = 'sem_mudanca'
+
+    sentido = SENTIDO_MELHOR.get(metrica)
+    avaliacao = None
+    if sentido is not None and direcao != 'sem_mudanca':
+        sobe_bom = (sentido == 'alto')
+        avaliacao = 'melhorou' if (direcao == 'subida') == sobe_bom else 'piorou'
+    elif sentido is not None:
+        avaliacao = 'sem mudança clara'
+
+    return {'status': 'ok', 'direcao': direcao, 'tau': round(float(tau), 3),
+            'p': round(float(p), 4), 'declive_ano': round(float(declive), 3),
+            'ic95': [round(float(lo), 3), round(float(hi), 3)],
+            'avaliacao': avaliacao, 'desde': d0.isoformat(), 'ate': obs[-1][0].isoformat()}
+
+
+def resumo_janela(blocos, metrica, ini_iso, fim_iso):
+    """Media por escalao de watts (todas as sessoes da janela) + tendencia."""
+    casas = METRICAS[metrica]['casas']
+    incl, _excl, _zeros = sessoes_no_periodo(blocos, metrica, ini_iso, fim_iso)
+    por_escalao = {}
+    for s in incl:
+        for p in s['pontos']:
+            por_escalao.setdefault(p['watts_alvo'], []).append(p['valor'])
+    pontos = [{'watts_alvo': w, 'valor': round(sum(v) / len(v), casas)}
+              for w, v in sorted(por_escalao.items())]
+    return {'ini': ini_iso, 'fim': fim_iso, 'escaloes': sorted(por_escalao),
+            'pontos': pontos, 'tendencia': tendencia(incl, metrica)}

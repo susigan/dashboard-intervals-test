@@ -793,7 +793,6 @@ BODY = r"""
       <input type="checkbox" id="aqTrend" checked style="vertical-align:middle;margin-right:4px;"><span style="vertical-align:middle;">Tendência</span></label>
   </div>
   <div id="aqCmp" style="margin:18px 0 8px;padding-top:10px;border-top:1px solid #30363d;">
-  <h2 id="aqCmpTitulo">Análise comparativa por período · sessões agregadas</h2>
   <div class="controls" style="margin-bottom:8px;">
     <span style="color:#8b949e;font-size:12px;">Período:</span>
     <button type="button" class="aqCmpP" data-meses="3">3 meses</button>
@@ -803,32 +802,44 @@ BODY = r"""
     <button type="button" class="aqCmpP" data-meses="36">3 anos</button>
     <button type="button" class="aqCmpP" data-meses="todo">Todo o período</button>
   </div>
-  <div id="aqCmpLeg" style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px;"></div>
-  <div id="aqCmpMeta" style="font-size:12px;color:#8b949e;margin-bottom:8px;line-height:1.6;"></div>
-  <div class="chartbox" style="position:relative;">
-    <div id="aqCmpCont"></div>
-    <div id="aqCmpTip" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
-         border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
-         white-space:nowrap;"></div>
+  <div style="display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start;">
+    <div style="flex:1 1 420px;min-width:0;">
+      <div id="aqCmpLeg" style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px;"></div>
+      <div id="aqCmpMeta" style="font-size:12px;color:#8b949e;margin-bottom:8px;line-height:1.6;"></div>
+      <div class="chartbox" style="position:relative;">
+        <div id="aqCmpCont"></div>
+        <div id="aqCmpTip" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
+             border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
+             white-space:nowrap;"></div>
+      </div>
+    </div>
+    <div style="flex:1 1 420px;min-width:0;">
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px;align-items:center;">
+        <span style="color:#8b949e;font-size:12px;">Métrica:</span>
+        <button type="button" class="aqRngM" data-m="hr">HR</button>
+        <button type="button" class="aqRngM" data-m="smo2">SmO&#8322;</button>
+        <button type="button" class="aqRngM" data-m="resp">Respiração</button>
+        <button type="button" class="aqRngM" data-m="dfa1">DFA-&#945;1</button>
+        <button type="button" class="aqRngM" data-m="fc_rec1min">FC rec. 1 min</button>
+      </div>
+      <div id="aqRngMeta" style="font-size:12px;color:#8b949e;margin-bottom:8px;line-height:1.6;"></div>
+      <div class="chartbox" style="position:relative;"><div id="aqRngCont"></div></div>
+      <div id="aqRngLeg" style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 6px;"></div>
+      <div id="aqRngComentario" style="font-size:13px;line-height:1.6;margin-top:6px;"></div>
+    </div>
   </div>
-  <p style="color:#8b949e;font-size:11px;margin:8px 0 16px;">
-    Cada ponto é a média de todas as sessões do período naquele escalão de watts. Métricas com a mesma
-    unidade partilham um eixo Y. Clique numa métrica na legenda para mostrar ou ocultar a linha.
+  <p style="color:#8b949e;font-size:11px;margin:12px 0 16px;">
+    Esquerda: todas as métricas agregadas no período escolhido; clique na legenda para mostrar ou ocultar.
+    Métricas com a mesma unidade partilham um eixo Y. Direita: uma métrica de cada vez, com uma linha por
+    janela de tempo; o comentário diz se a tendência no período escolhido é de subida, descida ou sem mudança clara.
   </p>
   </div>
   <div id="aqTend" style="margin:18px 0 8px;padding-top:10px;border-top:1px solid #30363d;">
   <h2 id="aqTendTitulo">Tendência de FC de recuperação (FC rec. 1 min) por período</h2>
-  <div class="controls" style="margin-bottom:8px;flex-wrap:wrap;">
-    <span style="color:#8b949e;font-size:12px;">Períodos a comparar (todas as sessões do período, por escalão de watts):</span>
-    <label class="sel" style="cursor:pointer;"><input type="checkbox" class="aqTendP" value="30"> 30 dias</label>
-    <label class="sel" style="cursor:pointer;"><input type="checkbox" class="aqTendP" value="60"> 60 dias</label>
-    <label class="sel" style="cursor:pointer;"><input type="checkbox" class="aqTendP" value="90" checked> 90 dias</label>
-  </div>
   <div id="aqTendMeta" style="font-size:12px;color:#8b949e;margin-bottom:8px;line-height:1.6;"></div>
   <div id="aqTendCont"></div>
   <p style="color:#8b949e;font-size:11px;margin:10px 0 16px;">
     FC rec. 1 min = média da FC nos primeiros 60 s após o fim do esforço (até ao degrau seguinte menos 15 s).
-    Cada célula é a média das sessões desse mês; n = número de sessões. Valores com n &lt; 3 aparecem a cinzento.
     HRR60 e HRR120 não entram nesta vista: com descanso de ~70 s não há janela válida.
   </p>
   </div>
@@ -1402,7 +1413,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   this.classList.add('active');
   document.getElementById(tabName).classList.add('active');
-  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqPerDefaults(); aqCmpCarregar(); aqTendLigar(); aqTendCarregar(); }
+  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqPerDefaults(); aqCmpCarregar(); }
   if(tabName === 'perfilmet'){ if(!PM) pmCarregar(); else pmDraw(); }
  });
 });
@@ -1797,7 +1808,15 @@ function aqCmpLigar(){
   aqCmpDesenha();
  });
  document.querySelectorAll('.aqCmpP').forEach(function(b){
-  b.addEventListener('click', function(){ AQC_PERIODO = b.dataset.meses; aqCmpCarregar(); });
+  b.addEventListener('click', function(){ aqCmpSetPeriodo(b.dataset.meses); });
+ });
+ document.querySelectorAll('.aqRngM').forEach(function(b){
+  b.addEventListener('click', function(){ aqRngMetrica(b.dataset.m); });
+ });
+ const leg2 = document.getElementById('aqRngLeg');
+ if(leg2) leg2.addEventListener('click', function(ev){
+  const b = ev.target.closest('.aqRngP');
+  if(b) aqCmpSetPeriodo(b.dataset.meses);
  });
  const cont = document.getElementById('aqCmpCont');
  if(cont){
@@ -1806,9 +1825,15 @@ function aqCmpLigar(){
  }
 }
 
-function aqCmpCarregar(){
- aqCmpLigar();
+// Periodo partilhado: muda o grafico da esquerda e o comentario/destaque da direita.
+function aqCmpSetPeriodo(p){
+ AQC_PERIODO = String(p);
  aqCmpMarcaPeriodo();
+ aqCmpCarregarEsquerda();
+ aqRngRender();
+}
+
+function aqCmpCarregarEsquerda(){
  if(!AQ_MOD){ aqcMsg('Modalidade ainda não carregada.'); return; }
  aqcMsg('A carregar…');
  fetch('/api/aquecimento/tendencia_periodos?modalidade=' + encodeURIComponent(AQ_MOD)
@@ -1816,7 +1841,15 @@ function aqCmpCarregar(){
        + '&periodo=todo&rolling=1' + aqcIntervalo(AQC_PERIODO))
   .then(function(r){ return r.json(); })
   .then(function(j){ AQC_DADOS = j; aqCmpRenderLegenda(); aqCmpDesenha(); })
-  .catch(function(e){ console.error('[aqCmpCarregar]', e); AQC_DADOS = null; aqcMsg('Falha ao carregar a comparação.'); });
+  .catch(function(e){ console.error('[aqCmpCarregarEsquerda]', e); AQC_DADOS = null; aqcMsg('Falha ao carregar a comparação.'); });
+}
+
+function aqCmpCarregar(){
+ aqCmpLigar();
+ aqCmpMarcaPeriodo();
+ aqCmpCarregarEsquerda();
+ aqEstatCarregar('fc_rec1min', aqTendRender);
+ aqEstatCarregar(AQC_MET_R, aqRngRender);
 }
 
 function aqCmpRenderLegenda(){
@@ -1969,69 +2002,189 @@ function aqCmpEsconde(){
  if(tip) tip.style.display = 'none';
  if(guia) guia.style.display = 'none';
 }
+// ---------------------------------------------------------------------------
+// Grafico da direita: uma metrica de cada vez, uma linha por janela de tempo,
+// eixo Y no intervalo dos valores, e comentario sobre a tendencia do periodo.
+// ---------------------------------------------------------------------------
+const AQR_CORES = {'3':'#58A6FF', '6':'#3FB950', '12':'#E3B341', '24':'#F0883E', '36':'#D2A8FF', 'todo':'#c9d1d9'};
+const AQR_NOME = {'3':'3 meses', '6':'6 meses', '12':'1 ano', '24':'2 anos', '36':'3 anos', 'todo':'todo o período'};
+let AQC_MET_R = 'hr';
+let AQC_ESTAT = {};
+
+function aqEstatCarregar(m, cb){
+ if(!AQ_MOD){ AQC_ESTAT[m] = null; cb(); return; }
+ fetch('/api/aquecimento/tendencia_estatistica?modalidade=' + encodeURIComponent(AQ_MOD)
+       + '&metrica=' + encodeURIComponent(m))
+  .then(function(r){ return r.json(); })
+  .then(function(j){ AQC_ESTAT[m] = j; cb(); })
+  .catch(function(e){
+   console.error('[aqEstatCarregar]', e);
+   AQC_ESTAT[m] = {status: 'erro', mensagem: 'Falha ao carregar a tendência.'};
+   cb();
+  });
+}
+
+function aqRngMetrica(m){
+ AQC_MET_R = m;
+ if(AQC_ESTAT[m] !== undefined){ aqRngRender(); return; }
+ aqEstatCarregar(m, aqRngRender);
+}
+
+function aqRngRender(){
+ const cont = document.getElementById('aqRngCont');
+ const meta = document.getElementById('aqRngMeta');
+ const leg = document.getElementById('aqRngLeg');
+ const com = document.getElementById('aqRngComentario');
+ if(!cont || !meta || !leg || !com) return;
+ document.querySelectorAll('.aqRngM').forEach(function(b){
+  const ativo = b.dataset.m === AQC_MET_R;
+  b.style.fontWeight = ativo ? '700' : '400';
+  b.style.borderColor = ativo ? '#58a6ff' : '';
+ });
+ const d = AQC_ESTAT[AQC_MET_R];
+ leg.innerHTML = '';
+ com.innerHTML = '';
+ if(d === undefined){ cont.innerHTML = ''; meta.textContent = 'A carregar…'; return; }
+ if(!d || d.status !== 'ok'){
+  cont.innerHTML = '';
+  meta.textContent = (d && d.mensagem) || 'Sem dados desta métrica.';
+  return;
+ }
+ const janelas = d.janelas.filter(function(j){ return j.pontos.length > 0; });
+ if(!janelas.length){
+  cont.innerHTML = '';
+  meta.textContent = 'Sem valores desta métrica para a modalidade.';
+  return;
+ }
+
+ const escs = [];
+ let lo = Infinity, hi = -Infinity;
+ janelas.forEach(function(j){
+  j.pontos.forEach(function(p){
+   if(escs.indexOf(p.watts_alvo) < 0) escs.push(p.watts_alvo);
+   lo = Math.min(lo, p.valor); hi = Math.max(hi, p.valor);
+  });
+ });
+ escs.sort(function(a, b){ return a - b; });
+ if(hi - lo < 1e-9){ lo -= 1; hi += 1; }
+ const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+
+ const W = 760, H = 340, ML = 56, MR = 16, MT = 18, MB = 40;
+ const xOf = function(w){
+  const i = escs.indexOf(w);
+  return escs.length === 1 ? (ML + W - MR) / 2 : ML + i * (W - MR - ML) / (escs.length - 1);
+ };
+ const yOf = function(v){ return MT + (hi - v) * (H - MT - MB) / (hi - lo); };
+ const un = d.unidade ? ' ' + aqcEsc(d.unidade) : '';
+
+ let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" style="max-width:' + W
+         + 'px;background:#0d1117;border:1px solid #30363d;border-radius:6px;">';
+ for(let t = 0; t <= 4; t++){
+  const v = lo + (hi - lo) * t / 4, y = yOf(v).toFixed(1);
+  svg += '<line x1="' + ML + '" x2="' + (W - MR) + '" y1="' + y + '" y2="' + y + '" stroke="#21262d"/>';
+  svg += '<text x="' + (ML - 6) + '" y="' + (yOf(v) + 4).toFixed(1) + '" fill="#8b949e" font-size="11" text-anchor="end">'
+       + aqcFmt(v, d.casas) + '</text>';
+ }
+ if(d.unidade) svg += '<text x="' + (ML - 6) + '" y="' + (MT - 4) + '" fill="#8b949e" font-size="10" text-anchor="end">' + aqcEsc(d.unidade) + '</text>';
+ escs.forEach(function(w){
+  svg += '<text x="' + xOf(w).toFixed(1) + '" y="' + (H - MB + 16) + '" fill="#8b949e" font-size="11" text-anchor="middle">' + w + ' W</text>';
+ });
+ janelas.forEach(function(j){
+  const sel = j.periodo === AQC_PERIODO;
+  const cor = AQR_CORES[j.periodo] || '#8b949e';
+  const op = sel ? 1 : 0.5;
+  const pts = j.pontos.slice().sort(function(a, b){ return a.watts_alvo - b.watts_alvo; });
+  const dd = pts.map(function(p, i){
+   return (i ? 'L' : 'M') + xOf(p.watts_alvo).toFixed(1) + ' ' + yOf(p.valor).toFixed(1);
+  }).join(' ');
+  svg += '<path d="' + dd + '" fill="none" stroke="' + cor + '" stroke-width="' + (sel ? 3.2 : 1.6)
+       + '" opacity="' + op + '"/>';
+  pts.forEach(function(p){
+   svg += '<circle cx="' + xOf(p.watts_alvo).toFixed(1) + '" cy="' + yOf(p.valor).toFixed(1) + '" r="' + (sel ? 4 : 2.5)
+        + '" fill="' + cor + '" opacity="' + op + '"><title>' + aqcEsc(AQR_NOME[j.periodo]) + ' · '
+        + p.watts_alvo + ' W: ' + aqcFmt(p.valor, d.casas) + un + '</title></circle>';
+  });
+ });
+ svg += '</svg>';
+ cont.innerHTML = svg;
+
+ let chips = '';
+ janelas.forEach(function(j){
+  const sel = j.periodo === AQC_PERIODO, cor = AQR_CORES[j.periodo] || '#8b949e';
+  chips += '<button type="button" class="aqRngP" data-meses="' + aqcEsc(j.periodo) + '" style="cursor:pointer;font-size:12px;padding:3px 9px;border-radius:12px;border:1px solid '
+        + cor + ';background:' + (sel ? cor : 'transparent') + ';color:' + (sel ? '#0d1117' : cor) + ';">'
+        + aqcEsc(AQR_NOME[j.periodo]) + '</button>';
+ });
+ leg.innerHTML = chips;
+ meta.textContent = d.nome + (d.unidade ? ' (' + d.unidade + ')' : '') + ' · modalidade ' + (AQ_MOD || '')
+   + '. Cada ponto é a média das sessões da janela naquele escalão de watts. Clique num período para o destacar.';
+ com.innerHTML = aqRngComentario(d);
+}
+
+function aqRngComentario(d){
+ const j = d.janelas.filter(function(x){ return x.periodo === AQC_PERIODO; })[0];
+ const t = j ? j.tendencia : null;
+ const per = AQR_NOME[AQC_PERIODO] || AQC_PERIODO;
+ const un = d.unidade ? ' ' + aqcEsc(d.unidade) : '';
+ const metodo = '<div style="color:#8b949e;font-size:11px;margin-top:4px;">Teste de Mann-Kendall (τ de Kendall) com declive de Theil-Sen, '
+   + 'uma observação por sessão, corrigida pela potência (desvio face à mediana do mesmo escalão). '
+   + 'p &lt; 0,05 = tendência estatisticamente clara. Com uma só pessoa, sessões próximas no tempo não são independentes: trate como indício.</div>';
+ if(!t || t.status !== 'ok'){
+  return '<span style="color:#8b949e;">Dados insuficientes em ' + aqcEsc(per)
+       + ' para estimar a tendência de ' + aqcEsc(d.nome) + '.</span>';
+ }
+ const rot = {subida: '<b>subida</b>', descida: '<b>descida</b>', sem_mudanca: '<b>sem mudança clara</b>'}[t.direcao];
+ let s = 'Tendência de ' + aqcEsc(d.nome) + ' em ' + aqcEsc(per) + ': ' + rot + '. '
+       + 'Variação estimada de ' + aqcFmt(t.declive_ano, 2) + un + ' por ano (IC 95%: '
+       + aqcFmt(t.ic95[0], 2) + ' a ' + aqcFmt(t.ic95[1], 2) + '), p = ' + aqcFmt(t.p, 3) + '.';
+ if(t.avaliacao) s += ' Leitura: <b>' + aqcEsc(t.avaliacao) + '</b>.';
+ return s + metodo;
+}
 /* AQCMP_END */
 /* AQTEND_BEGIN */
-function aqTendCarregar(){
+function aqTendRender(){
  const cont = document.getElementById('aqTendCont');
  const meta = document.getElementById('aqTendMeta');
  if(!cont || !meta) return;
- if(!AQ_MOD){ meta.textContent = 'Modalidade ainda não carregada.'; return; }
- const dias = Array.prototype.map.call(document.querySelectorAll('.aqTendP:checked'),
-   function(cb){ return parseInt(cb.value, 10); });
- if(!dias.length){ cont.innerHTML = ''; meta.textContent = 'Escolha pelo menos um período.'; return; }
- meta.textContent = 'A carregar…';
- Promise.all(dias.map(function(d){
-   return fetch('/api/aquecimento/comparativo?modalidade=' + encodeURIComponent(AQ_MOD)
-                + '&metrica=fc_rec1min&dias=' + d + '&agregacao=mes&min_n=1')
-     .then(function(r){ return r.json(); })
-     .then(function(j){ return {dias: d, j: j}; });
- })).then(aqTendRender).catch(function(e){
-   console.error('[aqTendCarregar]', e);
-   meta.textContent = 'Falha ao carregar a tendência.';
+ const d = AQC_ESTAT.fc_rec1min;
+ if(d === undefined){ cont.innerHTML = ''; meta.textContent = 'A carregar…'; return; }
+ if(!d || d.status !== 'ok'){
+  cont.innerHTML = '';
+  meta.textContent = (d && d.mensagem) || 'Sem dados de FC de recuperação.';
+  return;
+ }
+ const escs = [];
+ d.janelas.forEach(function(j){
+  j.escaloes.forEach(function(w){ if(escs.indexOf(w) < 0) escs.push(w); });
  });
-}
-function aqTendRender(res){
- const cont = document.getElementById('aqTendCont');
- const meta = document.getElementById('aqTendMeta');
- let h = '';
- res.forEach(function(x){
-   const j = x.j || {};
-   h += '<h3 style="font-size:14px;margin:14px 0 4px;">Últimos ' + aqcEsc(x.dias) + ' dias · ' + aqcEsc(AQ_MOD) + '</h3>';
-   if(j.status !== 'ok'){
-     h += '<p style="color:#8b949e;font-size:12px;">' + aqcEsc(j.mensagem || 'sem dados') + '</p>';
-     return;
-   }
-   const s = j.sessoes || {};
-   h += '<p style="color:#8b949e;font-size:12px;margin:0 0 6px;">Sessões com FC de recuperação: '
-      + aqcEsc(s.incluidas || 0) + ' · sem valor: ' + aqcEsc(s.excluidas || 0) + '</p>';
-   const per = (j.vista2 && j.vista2.periodos) || [];
-   const escs = j.escaloes || [];
-   if(!per.length){
-     h += '<p style="color:#8b949e;font-size:12px;">Sem FC de recuperação neste período.</p>';
-     return;
-   }
-   h += '<div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:12px;">'
-      + '<thead><tr><th style="text-align:left;padding:4px 8px;">Escalão</th>';
-   per.forEach(function(p){ h += '<th style="padding:4px 8px;">' + aqcEsc(p.periodo) + '</th>'; });
-   h += '</tr></thead><tbody>';
-   escs.forEach(function(w){
-     h += '<tr><td style="padding:4px 8px;">' + aqcEsc(w) + ' W</td>';
-     per.forEach(function(p){
-       const e = (p.escaloes || []).find(function(q){ return q.watts_alvo === w; });
-       if(!e){ h += '<td style="padding:4px 8px;color:#8b949e;">—</td>'; return; }
-       const cor = e.suficiente ? '' : 'color:#8b949e;';
-       h += '<td style="padding:4px 8px;' + cor + '">' + aqcFmt(e.media, 0)
-          + ' <span style="font-size:10px;">(n=' + aqcEsc(e.n) + ')</span></td>';
-     });
-     h += '</tr>';
-   });
-   h += '</tbody></table></div>';
+ escs.sort(function(a, b){ return a - b; });
+ const td = function(txt, extra){ return '<td style="padding:4px 8px;' + (extra || '') + '">' + txt + '</td>'; };
+ let h = '<div style="overflow-x:auto;"><table style="border-collapse:collapse;font-size:12px;">'
+       + '<thead><tr><th style="text-align:left;padding:4px 8px;">Período</th>';
+ escs.forEach(function(w){ h += '<th style="padding:4px 8px;">' + w + ' W</th>'; });
+ h += '<th style="padding:4px 8px;">Tendência</th><th style="padding:4px 8px;">p</th>'
+    + '<th style="padding:4px 8px;">Variação/ano</th><th style="padding:4px 8px;">Leitura</th></tr></thead><tbody>';
+ d.janelas.forEach(function(j){
+  const t = j.tendencia || {};
+  const destaque = j.periodo === AQC_PERIODO ? 'background:#161b22;font-weight:600;' : '';
+  h += '<tr style="' + destaque + '">' + td(aqcEsc(AQR_NOME[j.periodo]));
+  escs.forEach(function(w){
+   const p = j.pontos.filter(function(q){ return q.watts_alvo === w; })[0];
+   h += td(p ? aqcFmt(p.valor, d.casas) : '—');
+  });
+  if(t.status === 'ok'){
+   const rot = {subida: 'subindo', descida: 'descendo', sem_mudanca: 'sem mudança clara'}[t.direcao];
+   h += td(rot) + td(aqcFmt(t.p, 3)) + td(aqcFmt(t.declive_ano, 2) + ' bpm') + td(aqcEsc(t.avaliacao || '—'));
+  } else {
+   h += '<td colspan="4" style="padding:4px 8px;color:#8b949e;">dados insuficientes</td>';
+  }
+  h += '</tr>';
  });
+ h += '</tbody></table></div>';
  cont.innerHTML = h;
- meta.textContent = 'FC rec. 1 min (bpm) · ' + (AQ_MOD || '') + ' · um valor por mês dentro de cada período.';
-}
-function aqTendLigar(){
- document.querySelectorAll('.aqTendP').forEach(function(cb){ cb.onchange = aqTendCarregar; });
+ meta.textContent = 'FC rec. 1 min (bpm): média por escalão de watts em cada período. Tendência calculada sobre as sessões '
+   + 'de cada período, corrigida pela potência (Mann-Kendall + Theil-Sen). Menor FC ao mesmo escalão = melhor recuperação. '
+   + 'p < 0,05 = tendência estatisticamente clara.';
 }
 /* AQTEND_END */
 

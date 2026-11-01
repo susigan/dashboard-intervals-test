@@ -108,6 +108,14 @@ class BaseDeDados(unittest.TestCase):
         self.assertEqual(aqdb.janelas_da_sessao('i1'), [(20.0, 320.0, 80), (400.0, 700.0, 100)])
         self.assertEqual(aqdb.contar_blocos('i1'), 2)
 
+    def test_janelas_so_da_modalidade_pedida(self):
+        blocos = [{'bloco_num': 1, 'watts_alvo': 80, 'watts_real': 80.0, 'tempo_seg': 300,
+                   't_inicio_s': 20.0, 't_fim_s': 320.0}]
+        aqdb.salvar_blocos('i5', 'Bike', '2026-10-20', blocos, sync=False)
+        self.assertEqual(aqdb.janelas_da_sessao('i5', 'Bike'), [(20.0, 320.0, 80)])
+        self.assertIsNone(aqdb.janelas_da_sessao('i5', 'Row'))
+        self.assertIsNone(aqdb.janelas_da_sessao('i5', 'Ski'))
+
     def test_sem_instantes_devolve_none(self):
         self.con.execute("INSERT INTO aquecimento_blocos (activity_id,bloco_num,modalidade,data,watts_alvo) "
                          "VALUES ('i2',1,'Bike','2026-10-20',80)")

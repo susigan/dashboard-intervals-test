@@ -2377,7 +2377,7 @@ def api_aquecimento_hrr():
         if err:
             return jsonify({'status': 'erro_api', 'mensagem': err}), 502
         # instantes dos WORK ja aceites (se existirem): nao se volta a detetar
-        janelas_r = aq_db.janelas_da_sessao(aid)
+        janelas_r = aq_db.janelas_da_sessao(aid, mod)
         r = _hrr.hrr_por_degrau(streams, mod, _aa.PROTOCOLOS,
                                 duracao_s=_duracao_atividade(aid),
                                 janelas=janelas_r)
@@ -2429,7 +2429,7 @@ def _janelas_da_sessao(aid, mod):
     import aquecimento_analyzer as _aa
     import db as _db_j
     aid = str(aid)
-    j = aq_db.janelas_da_sessao(aid)
+    j = aq_db.janelas_da_sessao(aid, mod)
     if j:
         return j, None, False
     streams_red, _meta = _db_j.get_streams(aid)

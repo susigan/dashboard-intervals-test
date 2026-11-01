@@ -185,6 +185,74 @@ def agregar_periodos(incluidas, agregacao='mes', min_n=3):
     return saida
 
 
+PERIODOS_SERIE = ('mes', 'trimestre', 'semestre', 'ano', 'todo')
+
+
+def chave_periodo_amplo(data_iso, periodo):
+    """Rotulo do periodo para a serie agregada (mes, trimestre, semestre, ano, todo)."""
+    d = date.fromisoformat(data_iso)
+    if periodo == 'mes':
+        return f'{d.year:04d}-{d.month:02d}'
+    if periodo == 'trimestre':
+        return f'{d.year:04d}-T{(d.month - 1) // 3 + 1}'
+    if periodo == 'semestre':
+        return f'{d.year:04d}-S{1 if d.month <= 6 else 2}'
+    if periodo == 'ano':
+        return f'{d.year:04d}'
+    if periodo == 'todo':
+        return 'todo'
+    raise ValueError(f'periodo deve ser um de {", ".join(PERIODOS_SERIE)}')
+
+
+def intervalo_dados(blocos):
+    """(primeiro, ultimo) dia AAAA-MM-DD dos dados, ou (None, None) se nao ha."""
+    datas = sorted(str(b.get('data') or '')[:10] for b in blocos if b.get('data'))
+    return (datas[0], datas[-1]) if datas else (None, None)
+
+
+def serie_por_periodo(blocos, metrica, periodo, ini_iso, fim_iso, rolling=1):
+    """Linha agregada por periodo: para cada escalao de watts, a MEDIA de todas
+    as sessoes do periodo (sem N, sem uma linha por sessao).
+
+    rolling=1 e' a media simples do periodo. rolling=k e' uma media movel que
+    junta os ultimos k periodos existentes (pool de todas as sessoes dessa janela).
+    Ausencia continua a ser ausencia: um escalao sem dados no periodo nao aparece.
+    """
+    if metrica not in METRICAS:
+        raise ValueError(f'metrica desconhecida: {metrica}')
+    if periodo not in PERIODOS_SERIE:
+        raise ValueError(f'periodo deve ser um de {", ".join(PERIODOS_SERIE)}')
+    if rolling < 1:
+        raise ValueError('rolling deve ser >= 1')
+    casas = METRICAS[metrica]['casas']
+
+    incl, _excl, _zeros = sessoes_no_periodo(blocos, metrica, ini_iso, fim_iso)
+    grupos = {}  # (periodo, escalao) -> valores de todas as sessoes
+    for sess in incl:
+        p = chave_periodo_amplo(sess['data'], periodo)
+        for pt in sess['pontos']:
+            grupos.setdefault((p, pt['watts_alvo']), []).append(pt['valor'])
+
+    periodos = sorted({p for p, _ in grupos})
+    escaloes = sorted({w for _, w in grupos})
+    series = []
+    for i, p in enumerate(periodos):
+        janela = periodos[max(0, i - rolling + 1): i + 1]
+        pontos = []
+        for w in escaloes:
+            vals = [v for q in janela for v in grupos.get((q, w), [])]
+            if vals:
+                pontos.append({'watts_alvo': w,
+                               'valor': round(sum(vals) / len(vals), casas)})
+        if pontos:
+            series.append({'periodo': p, 'pontos': pontos})
+
+    m = METRICAS[metrica]
+    return {'metrica': metrica, 'nome': m['nome'], 'unidade': m['unidade'],
+            'casas': casas, 'periodo': periodo, 'rolling': rolling,
+            'escaloes': escaloes, 'series': series, 'sessoes': len(incl)}
+
+
 def deltas(periodos, escalao_lista):
     """Diferenca entre o primeiro e o ultimo periodo suficiente, por escalao."""
     out = []

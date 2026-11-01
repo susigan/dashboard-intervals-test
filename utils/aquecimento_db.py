@@ -185,14 +185,21 @@ def _garantir_colunas_tempo(conn):
     conn.commit()
 
 
-def janelas_da_sessao(activity_id):
+def janelas_da_sessao(activity_id, modalidade=None):
     """[(t_inicio_s, t_fim_s, watts_alvo), ...] por degrau, ou None se algum
-    degrau ainda nao tem instantes guardados (sessao a preencher)."""
+    degrau ainda nao tem instantes guardados (sessao a preencher).
+
+    Com modalidade, so devolve os blocos dessa modalidade: os WORK guardados
+    de uma Bike nao servem para ler a FC de um pedido de Row/Ski."""
     conn = get_conn()
     _garantir_colunas_tempo(conn)
+    cond, params = "activity_id = ?", [activity_id]
+    if modalidade:
+        cond += " AND modalidade = ?"
+        params.append(modalidade)
     linhas = conn.execute(
-        """SELECT bloco_num, watts_alvo, t_inicio_s, t_fim_s FROM aquecimento_blocos
-           WHERE activity_id = ? ORDER BY bloco_num""", (activity_id,)).fetchall()
+        f"""SELECT bloco_num, watts_alvo, t_inicio_s, t_fim_s FROM aquecimento_blocos
+           WHERE {cond} ORDER BY bloco_num""", tuple(params)).fetchall()
     if not linhas or any(r["t_inicio_s"] is None or r["t_fim_s"] is None for r in linhas):
         return None
     return [(r["t_inicio_s"], r["t_fim_s"], r["watts_alvo"]) for r in linhas]

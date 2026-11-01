@@ -108,6 +108,14 @@ class BaseDeDados(unittest.TestCase):
         self.assertEqual(aqdb.janelas_da_sessao('i1'), [(20.0, 320.0, 80), (400.0, 700.0, 100)])
         self.assertEqual(aqdb.contar_blocos('i1'), 2)
 
+    def test_janelas_so_da_modalidade_pedida(self):
+        blocos = [{'bloco_num': 1, 'watts_alvo': 80, 'watts_real': 80.0, 'tempo_seg': 300,
+                   't_inicio_s': 20.0, 't_fim_s': 320.0}]
+        aqdb.salvar_blocos('i5', 'Bike', '2026-10-20', blocos, sync=False)
+        self.assertEqual(aqdb.janelas_da_sessao('i5', 'Bike'), [(20.0, 320.0, 80)])
+        self.assertIsNone(aqdb.janelas_da_sessao('i5', 'Row'))
+        self.assertIsNone(aqdb.janelas_da_sessao('i5', 'Ski'))
+
     def test_sem_instantes_devolve_none(self):
         self.con.execute("INSERT INTO aquecimento_blocos (activity_id,bloco_num,modalidade,data,watts_alvo) "
                          "VALUES ('i2',1,'Bike','2026-10-20',80)")
@@ -131,6 +139,35 @@ class BaseDeDados(unittest.TestCase):
         self.assertIn('t_inicio_s', cols)
         self.assertIn('t_fim_s', cols)
         con.close()
+
+
+class RecuperacaoAposUltimo(unittest.TestCase):
+
+    def _r(self, streams, janelas):
+        return hrr.hrr_por_degrau(streams, 'Bike', PROTO, janelas=janelas)
+
+    def test_ultimo_work_com_60s_de_descanso_tem_fc_de_1_min(self):
+        streams, j = _stream([(160, 300, 90)])
+        d = self._r(streams, j)['degraus'][0]
+        self.assertEqual(d['fc_media_rec_1min']['regra'], 'apos_ultimo_work')
+        self.assertIsNotNone(d['fc_media_rec_1min']['valor'])
+        self.assertEqual(d['fc_media_rec_1min']['janela'], [300.0, 360.0])
+
+    def test_ultimo_work_seguido_de_esforco_nao_conta_como_recuperacao(self):
+        streams, j = _stream([(160, 300, 0)])
+        for _ in range(90):
+            streams['time'].append(float(len(streams['time'])))
+            streams['watts'].append(200.0)
+            streams['heartrate'].append(150.0)
+        d = self._r(streams, j)['degraus'][0]
+        self.assertIsNone(d['fc_media_rec_1min']['valor'])
+        self.assertEqual(d['fc_media_rec_1min']['motivo'], 'esforco_seguinte')
+
+    def test_stream_que_acaba_antes_de_60s_fica_sem_valor(self):
+        streams, j = _stream([(160, 300, 30)])
+        d = self._r(streams, j)['degraus'][0]
+        self.assertIsNone(d['fc_media_rec_1min']['valor'])
+        self.assertEqual(d['fc_media_rec_1min']['motivo'], 'stream_acaba_antes_de_60s')
 
 
 class RotaSemJanelas(unittest.TestCase):

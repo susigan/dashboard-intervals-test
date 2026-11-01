@@ -163,6 +163,30 @@ def _janela_rec(t, hr, pesos, lacunas, t_end, janela, t_next):
     return {**r, "janela": [round(a, 1), round(b, 1)]}
 
 
+def _fc_rec_apos_ultimo(t, hr, watts, pesos, lacunas, t_end, alvo):
+    """FC media nos 60 s seguintes ao ULTIMO WORK (sem degrau seguinte).
+
+    So' vale se nao arranca novo esforco: potencia media nesses 60 s abaixo de
+    FATOR_FASE x alvo (o mesmo criterio de fase_confirmada). Se o atleta voltar
+    a pedalar forte, a FC nao e' de recuperacao e fica marcada como tal.
+    """
+    a, b = t_end, t_end + JANELA_REC_1MIN_S
+    janela = [round(a, 1), round(b, 1)]
+    base = {"valor": None, "cobertura": None, "n_validas": 0, "n_zeros": 0,
+            "janela": janela, "duracao_janela_s": JANELA_REC_1MIN_S,
+            "regra": "apos_ultimo_work"}
+    if not t or t[-1] < b:
+        return {**base, "motivo": "stream_acaba_antes_de_60s"}
+    pot = _media_potencia(t, watts, a, b)
+    if pot is None:
+        return {**base, "motivo": "sem_potencia_apos_ultimo"}
+    if pot >= FATOR_FASE * alvo:
+        return {**base, "motivo": "esforco_seguinte", "potencia_media_w": pot}
+    r = _janela_fc(t, hr, pesos, lacunas, a, b)
+    return {**r, "janela": janela, "duracao_janela_s": JANELA_REC_1MIN_S,
+            "regra": "apos_ultimo_work", "potencia_media_w": pot}
+
+
 def _fc_media_rec_1min(t, hr, pesos, lacunas, t_end, t_next):
     """FC media no inicio da recuperacao: [t_end, min(t_end+60, t_next-15)].
 
@@ -442,7 +466,11 @@ def hrr_por_degrau(streams, modalidade, protocolos, duracao_s=None, janelas=None
             hr_end = _janela_end(t, hr, pesos, lacunas, t_end, t_ini_work)
             h60 = _janela_rec(t, hr, pesos, lacunas, t_end, JANELA_60, t_next)
             h120 = _janela_rec(t, hr, pesos, lacunas, t_end, JANELA_120, t_next)
-            fc_rec = _fc_media_rec_1min(t, hr, pesos, lacunas, t_end, t_next)
+            if t_next is None:
+                # ultimo WORK: sem degrau seguinte para marcar o fim da recuperacao
+                fc_rec = _fc_rec_apos_ultimo(t, hr, watts, pesos, lacunas, t_end, alvo)
+            else:
+                fc_rec = _fc_media_rec_1min(t, hr, pesos, lacunas, t_end, t_next)
 
         def _hrr(ref, h):
             if h["valor"] is None and h["motivo"] == "sem_fim_de_recuperacao":
@@ -567,7 +595,7 @@ def serie_grafico(streams, max_pontos=MAX_PONTOS_GRAFICO, janela=None):
 
 # Sobe sempre que a logica de HRR muda: as sessoes guardadas com outra versao
 # sao recalculadas no proximo reprocessamento.
-VERSAO_HRR = 4  # 4: HRR lido a partir dos instantes dos WORK aceites
+VERSAO_HRR = 5  # 5: FC de 1 min apos o ultimo WORK (60 s, sem esforco seguinte)
 
 
 def _val(d):

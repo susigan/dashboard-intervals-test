@@ -228,7 +228,7 @@ class PainelTendencia(unittest.TestCase):
             self.assertNotIn(proibido, self.js, proibido)
 
     def test_hook_no_separador_aquecimento(self):
-        self.assertIn('aqTendLigar(); aqTendCarregar(); aqPTLigar(); aqPTCarregar(); }', self.html)
+        self.assertIn('aqTendLigar(); aqTendCarregar(); }', self.html)
 
     def test_painel_comparativo_intacto(self):
         self.assertIn('/* AQCMP_BEGIN */', self.html)

@@ -792,89 +792,29 @@ BODY = r"""
     <label class="sel" style="cursor:pointer;white-space:nowrap;">
       <input type="checkbox" id="aqTrend" checked style="vertical-align:middle;margin-right:4px;"><span style="vertical-align:middle;">Tendência</span></label>
   </div>
-  <h2 id="aqCmpTitulo">Análise comparativa — todos os aquecimentos do período</h2>
+  <div id="aqCmp" style="margin:18px 0 8px;padding-top:10px;border-top:1px solid #30363d;">
+  <h2 id="aqCmpTitulo">Análise comparativa por período · sessões agregadas</h2>
   <div class="controls" style="margin-bottom:8px;">
     <span style="color:#8b949e;font-size:12px;">Período:</span>
-    <button type="button" class="aqCmpP" data-dias="30">30 dias</button>
-    <button type="button" class="aqCmpP" data-dias="60">60 dias</button>
-    <button type="button" class="aqCmpP" data-dias="90">90 dias</button>
-    <button type="button" class="aqCmpP" data-dias="custom">Personalizado</button>
-    <span id="aqCmpCustom" style="display:none;margin-left:8px;">
-      <input type="date" id="aqCmpIni"> a <input type="date" id="aqCmpFim">
-      <button type="button" id="aqCmpAplicar">Aplicar</button></span>
+    <button type="button" class="aqCmpP" data-meses="3">3 meses</button>
+    <button type="button" class="aqCmpP" data-meses="6">6 meses</button>
+    <button type="button" class="aqCmpP" data-meses="12">1 ano</button>
+    <button type="button" class="aqCmpP" data-meses="24">2 anos</button>
+    <button type="button" class="aqCmpP" data-meses="36">3 anos</button>
+    <button type="button" class="aqCmpP" data-meses="todo">Todo o período</button>
   </div>
-  <div class="controls" style="margin-bottom:8px;">
-    <label class="sel">Métrica
-      <select id="aqCmpMet">
-        <option value="hr">HR (bpm)</option>
-        <option value="smo2">SmO&#8322; (%)</option>
-        <option value="resp">Respiração (rpm)</option>
-        <option value="dfa1">DFA-&#945;1</option>
-        <option value="fc_rec1min">FC rec. 1 min (bpm)</option>
-      </select></label>
-    <label class="sel">Agregação por período
-      <select id="aqCmpAgr">
-        <option value="mes" selected>Mês</option>
-        <option value="semana">Semana</option>
-      </select></label>
-    <label class="sel">n mínimo por ponto
-      <select id="aqCmpMin">
-        <option value="2">2</option>
-        <option value="3" selected>3</option>
-        <option value="6">6</option>
-      </select></label>
-  </div>
-  <div id="aqCmpMeta" style="font-size:12px;color:#8b949e;margin-bottom:10px;line-height:1.6;"></div>
-  <h3 id="aqCmpT1" style="font-size:14px;margin:12px 0 4px;">Vista 1 — sessões individuais</h3>
-  <div id="aqCmpLegenda" style="font-size:12px;margin-bottom:6px;"></div>
+  <div id="aqCmpLeg" style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px;"></div>
+  <div id="aqCmpMeta" style="font-size:12px;color:#8b949e;margin-bottom:8px;line-height:1.6;"></div>
   <div class="chartbox" style="position:relative;">
-    <canvas id="chCmp1" height="320"></canvas>
-    <div id="aqCmpTip1" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
+    <div id="aqCmpCont"></div>
+    <div id="aqCmpTip" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
          border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
          white-space:nowrap;"></div>
   </div>
-  <h3 id="aqCmpT2" style="font-size:14px;margin:16px 0 4px;">Vista 2 — tendência agregada por período</h3>
-  <div id="aqCmpPeriodos" style="font-size:12px;margin-bottom:6px;"></div>
-  <div class="chartbox" style="position:relative;">
-    <canvas id="chCmp2" height="320"></canvas>
-    <div id="aqCmpTip2" style="position:absolute;display:none;background:#0d1117;border:1px solid #30363d;
-         border-radius:4px;padding:7px 9px;font-size:11px;color:#c9d1d9;pointer-events:none;z-index:50;
-         white-space:nowrap;"></div>
-  </div>
-  <div id="aqCmpDelta" style="font-size:12px;color:#c9d1d9;margin-top:8px;"></div>
   <p style="color:#8b949e;font-size:11px;margin:8px 0 16px;">
-    Vista 2: cada ponto é a média das sessões do escalão naquele período, não uma medição
-    individual. A barra é o desvio-padrão amostral entre sessões (n−1). Pontos com n abaixo do
-    mínimo aparecem vazados, sem barra e fora da linha. Os escalões são posições categóricas,
-    não uma escala contínua de tempo.
+    Cada ponto é a média de todas as sessões do período naquele escalão de watts. Métricas com a mesma
+    unidade partilham um eixo Y. Clique numa métrica na legenda para mostrar ou ocultar a linha.
   </p>
-
-  <div id="aqPT" style="margin:18px 0 8px;padding-top:10px;border-top:1px solid #30363d;">
-  <h2>Tendência por período · todas as sessões</h2>
-  <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:6px 0 4px;font-size:13px;">
-    <label>Período
-      <select id="aqPTPer" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:3px 6px;">
-        <option value="mes">Mês</option>
-        <option value="trimestre">Trimestre</option>
-        <option value="semestre">Semestre</option>
-        <option value="ano">Ano</option>
-        <option value="todo" selected>Todo o histórico</option>
-      </select></label>
-    <label>Média
-      <select id="aqPTRoll" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:3px 6px;">
-        <option value="1" selected>Simples do período</option>
-        <option value="3">Móvel (3 períodos)</option>
-      </select></label>
-  </div>
-  <div id="aqPTMet" style="display:flex;flex-wrap:wrap;gap:12px;margin:6px 0;font-size:13px;">
-    <label><input type="checkbox" class="aqPTM" value="hr" checked> FC</label>
-    <label><input type="checkbox" class="aqPTM" value="smo2"> SmO₂</label>
-    <label><input type="checkbox" class="aqPTM" value="resp"> Respiração</label>
-    <label><input type="checkbox" class="aqPTM" value="dfa1"> DFA-α1</label>
-    <label><input type="checkbox" class="aqPTM" value="fc_rec1min"> FC rec. 1 min</label>
-  </div>
-  <div id="aqPTMeta" style="font-size:12px;color:#8b949e;margin-bottom:8px;line-height:1.6;"></div>
-  <div id="aqPTCont"></div>
   </div>
   <div id="aqTend" style="margin:18px 0 8px;padding-top:10px;border-top:1px solid #30363d;">
   <h2 id="aqTendTitulo">Tendência de FC de recuperação (FC rec. 1 min) por período</h2>
@@ -1462,7 +1402,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   this.classList.add('active');
   document.getElementById(tabName).classList.add('active');
-  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqPerDefaults(); aqCmpCarregar(); aqTendLigar(); aqTendCarregar(); aqPTLigar(); aqPTCarregar(); }
+  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqPerDefaults(); aqCmpCarregar(); aqTendLigar(); aqTendCarregar(); }
   if(tabName === 'perfilmet'){ if(!PM) pmCarregar(); else pmDraw(); }
  });
 });
@@ -1802,19 +1742,18 @@ function aqContexto(met, agr){
 }
 
 /* AQCMP_BEGIN */
-const AQC_CORES = ['#58A6FF','#F0883E','#3FB950','#D2A8FF','#79C0FF','#FFA657','#7EE787',
-                   '#FF7B72','#E3B341','#A5D6FF','#56D364','#F778BA','#B1BAC4','#FFDFB6'];
-const AQC_NOME = {hr:'HR', smo2:'SmO₂', resp:'Respiração', dfa1:'DFA-α1', hrr60:'HRR60', hrr120:'HRR120', fc_rec1min:'FC rec. 1 min'};
-let AQC_DADOS = null, AQC_OCULTAS = {}, AQC_LIGADO = false, AQC_PER = 30;
-let AQC_PTS1 = [], AQC_PTS2 = [];
+let AQC_LIGADO = false, AQC_DADOS = null, AQC_HOVER = null, AQC_PERIODO = 'todo';
+const AQC_ORDEM = ['hr','smo2','resp','dfa1','fc_rec1min'];
+const AQC_CORES = {hr:'#58A6FF', smo2:'#3FB950', resp:'#F0883E', dfa1:'#D2A8FF', fc_rec1min:'#E3B341'};
+const AQC_NOME = {hr:'HR', smo2:'SmO₂', resp:'Respiração', dfa1:'DFA-α1', fc_rec1min:'FC rec. 1 min'};
+const AQC_LIG = {hr:true, smo2:true, resp:true, dfa1:false, fc_rec1min:false};
+const AQC_PERIODO_NOME = {'3':'últimos 3 meses','6':'últimos 6 meses','12':'último ano',
+                          '24':'últimos 2 anos','36':'últimos 3 anos','todo':'todo o período'};
+const AQC_W = 760, AQC_H = 340, AQC_MT = 22, AQC_MB = 40, AQC_PASSO = 56;
 
 function aqcFmt(v, casas){
  if(v===null || v===undefined || !isFinite(v)) return '—';
  return Number(v).toFixed(casas||0).replace('.', ',');
-}
-function aqcData(iso){
- const p = String(iso||'').slice(0,10).split('-');
- return p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : String(iso||'');
 }
 function aqcEsc(s){
  return String(s==null?'':s).replace(/[&<>"]/g, function(c){
@@ -1824,413 +1763,213 @@ function aqcMsg(t){
  const m = document.getElementById('aqCmpMeta');
  if(m) m.textContent = t;
 }
-function aqcMarcaPeriodo(v){
+function aqcIso(d){
+ const m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+ return d.getFullYear() + '-' + m + '-' + dd;
+}
+function aqcIntervalo(periodo){
+ if(periodo === 'todo') return '';
+ const meses = parseInt(periodo, 10);
+ const fim = new Date();
+ const ini = new Date(fim.getFullYear(), fim.getMonth() - meses, fim.getDate());
+ return '&inicio=' + aqcIso(ini) + '&fim=' + aqcIso(fim);
+}
+function aqcPontos(m){
+ return (m && m.series && m.series[0]) ? m.series[0].pontos : [];
+}
+function aqCmpMarcaPeriodo(){
  document.querySelectorAll('.aqCmpP').forEach(function(b){
-  const ativo = String(b.dataset.dias) === String(v);
+  const ativo = b.dataset.meses === AQC_PERIODO;
   b.style.fontWeight = ativo ? '700' : '400';
   b.style.borderColor = ativo ? '#58a6ff' : '';
  });
 }
 
-function aqCmpCarregar(){
- aqCmpLigar();
- if(!AQ_MOD) return;
- const met = document.getElementById('aqCmpMet').value;
- const agr = document.getElementById('aqCmpAgr').value;
- const mn  = document.getElementById('aqCmpMin').value;
- let q = 'modalidade=' + encodeURIComponent(AQ_MOD) + '&metrica=' + met
-       + '&agregacao=' + agr + '&min_n=' + mn;
- if(AQC_PER === 'custom'){
-  const i = document.getElementById('aqCmpIni').value;
-  const f = document.getElementById('aqCmpFim').value;
-  if(!i || !f){ aqcMsg('Escolha as duas datas e carregue em Aplicar.'); return; }
-  q += '&inicio=' + i + '&fim=' + f;
- } else {
-  q += '&dias=' + AQC_PER;
- }
- aqcMsg('A carregar…');
- fetch('/api/aquecimento/comparativo?' + q).then(function(r){ return r.json(); })
-  .then(function(d){ AQC_DADOS = d; aqCmpRender(); })
-  .catch(function(e){
-   console.error('[aqCmpCarregar]', e);
-   AQC_DADOS = {status:'erro', mensagem:'falha de ligação'}; aqCmpRender();
-  });
-}
-
 function aqCmpLigar(){
  if(AQC_LIGADO) return;
  AQC_LIGADO = true;
+ const leg = document.getElementById('aqCmpLeg');
+ if(leg) leg.addEventListener('click', function(ev){
+  const b = ev.target.closest('.aqCmpChip');
+  if(!b) return;
+  AQC_LIG[b.dataset.m] = !AQC_LIG[b.dataset.m];
+  aqCmpRenderLegenda();
+  aqCmpDesenha();
+ });
  document.querySelectorAll('.aqCmpP').forEach(function(b){
-  b.addEventListener('click', function(){
-   const v = b.dataset.dias;
-   document.getElementById('aqCmpCustom').style.display = (v==='custom') ? 'inline' : 'none';
-   aqcMarcaPeriodo(v);
-   if(v === 'custom'){ AQC_PER = 'custom'; return; }
-   AQC_PER = parseInt(v, 10); AQC_OCULTAS = {}; aqCmpCarregar();
-  });
+  b.addEventListener('click', function(){ AQC_PERIODO = b.dataset.meses; aqCmpCarregar(); });
  });
- ['aqCmpMet','aqCmpAgr','aqCmpMin'].forEach(function(id){
-  document.getElementById(id).addEventListener('change', function(){ AQC_OCULTAS = {}; aqCmpCarregar(); });
- });
- document.getElementById('aqCmpAplicar').addEventListener('click', function(){
-  AQC_OCULTAS = {}; aqCmpCarregar();
- });
- aqcMarcaPeriodo(AQC_PER);
- aqcLigarTip('chCmp1', 'aqCmpTip1', function(){ return AQC_PTS1; }, aqcHtml1);
- aqcLigarTip('chCmp2', 'aqCmpTip2', function(){ return AQC_PTS2; }, aqcHtml2);
+ const cont = document.getElementById('aqCmpCont');
+ if(cont){
+  cont.addEventListener('mousemove', aqCmpHover);
+  cont.addEventListener('mouseleave', aqCmpEsconde);
+ }
 }
 
-function aqCmpRender(){
- const D = AQC_DADOS;
- const meta = document.getElementById('aqCmpMeta');
- if(!D || D.status !== 'ok'){
-  aqcMsg((D && D.mensagem) ? 'Erro: ' + D.mensagem : 'Sem dados.');
-  aqCmpDesenhaVazio('chCmp1', 'Sem dados'); aqCmpDesenhaVazio('chCmp2', 'Sem dados');
-  document.getElementById('aqCmpLegenda').innerHTML = '';
-  document.getElementById('aqCmpPeriodos').innerHTML = '';
-  document.getElementById('aqCmpDelta').textContent = '';
+function aqCmpCarregar(){
+ aqCmpLigar();
+ aqCmpMarcaPeriodo();
+ if(!AQ_MOD){ aqcMsg('Modalidade ainda não carregada.'); return; }
+ aqcMsg('A carregar…');
+ fetch('/api/aquecimento/tendencia_periodos?modalidade=' + encodeURIComponent(AQ_MOD)
+       + '&metricas=' + encodeURIComponent(AQC_ORDEM.join(','))
+       + '&periodo=todo&rolling=1' + aqcIntervalo(AQC_PERIODO))
+  .then(function(r){ return r.json(); })
+  .then(function(j){ AQC_DADOS = j; aqCmpRenderLegenda(); aqCmpDesenha(); })
+  .catch(function(e){ console.error('[aqCmpCarregar]', e); AQC_DADOS = null; aqcMsg('Falha ao carregar a comparação.'); });
+}
+
+function aqCmpRenderLegenda(){
+ const cont = document.getElementById('aqCmpLeg');
+ if(!cont || !AQC_DADOS || !AQC_DADOS.metricas) return;
+ let h = '';
+ AQC_ORDEM.forEach(function(k){
+  const m = AQC_DADOS.metricas[k];
+  if(!m || m.status !== 'ok') return;
+  const on = !!AQC_LIG[k], cor = AQC_CORES[k];
+  h += '<button type="button" class="aqCmpChip" data-m="' + k + '" aria-pressed="' + on
+     + '" style="cursor:pointer;font-size:12px;padding:4px 10px;border-radius:14px;border:1px solid ' + cor
+     + ';background:' + (on ? cor : 'transparent') + ';color:' + (on ? '#0d1117' : cor) + ';">'
+     + aqcEsc(AQC_NOME[k]) + '</button>';
+ });
+ cont.innerHTML = h;
+}
+
+function aqCmpDesenha(){
+ const cont = document.getElementById('aqCmpCont');
+ const tip = document.getElementById('aqCmpTip');
+ if(!cont) return;
+ AQC_HOVER = null;
+ if(tip) tip.style.display = 'none';
+ if(!AQC_DADOS || AQC_DADOS.status !== 'ok'){
+  cont.innerHTML = '';
+  aqcMsg((AQC_DADOS && AQC_DADOS.mensagem) || 'Sem resposta.');
   return;
  }
- const un = D.unidade ? ' (' + D.unidade + ')' : '';
- const s = D.sessoes;
- const per = aqcData(D.periodo.inicio) + ' a ' + aqcData(D.periodo.fim)
-           + (D.periodo.dias ? ' (' + D.periodo.dias + ' dias)' : ' (personalizado)');
- const motivos = {};
- s.excluidas_lista.forEach(function(x){ motivos[x.motivo] = (motivos[x.motivo]||0) + 1; });
- const txtMot = Object.keys(motivos).map(function(k){ return k + ': ' + motivos[k]; }).join('; ');
- const linhas = [
-  '<b style="color:#c9d1d9;">Período:</b> ' + per + ' · <b style="color:#c9d1d9;">Modalidade:</b> ' + aqcEsc(D.modalidade),
-  '<b style="color:#c9d1d9;">Métrica:</b> ' + aqcEsc(D.nome) + un
-    + ' · <b style="color:#c9d1d9;">Sessões incluídas:</b> ' + s.incluidas + ' de ' + (s.incluidas + s.excluidas)
-    + (s.excluidas ? ' · excluídas: ' + s.excluidas + ' (' + aqcEsc(txtMot) + ')' : ''),
-  '<b style="color:#c9d1d9;">Escalões de watts:</b> ' + (D.escaloes.length ? D.escaloes.join(' · ') + ' W' : '—')
-    + ' · sessões com escalões em falta: ' + s.incompletas
-    + ' · zeros duvidosos excluídos: ' + s.zeros_excluidos,
-  '<b style="color:#c9d1d9;">Agregação (Vista 2):</b> ' + (D.agregacao==='mes' ? 'mês' : 'semana')
-    + ' · média das sessões, n mínimo ' + D.min_n + ', dispersão = desvio-padrão amostral entre sessões',
- ];
- meta.innerHTML = linhas.join('<br>') + '<br>' + D.avisos.map(function(a){
-  return '• ' + aqcEsc(a); }).join('<br>');
-
- aqCmpLegendaSessoes();
- aqCmpDraw1();
- aqCmpDraw2();
-}
-
-function aqCmpDesenhaVazio(id, msg){
- const o = ctx(id, 320); if(!o) return;
- o.g.clearRect(0,0,o.W,o.H); noData(o.g, o.W, o.H, msg);
-}
-
-function aqCmpLegendaSessoes(){
- const box = document.getElementById('aqCmpLegenda');
- box.innerHTML = '';
- const D = AQC_DADOS;
- if(!D.vista1.length){
-  box.textContent = 'Nenhuma sessão incluída neste período.';
+ const M = AQC_DADOS.metricas || {};
+ const visiveis = AQC_ORDEM.filter(function(k){
+  return AQC_LIG[k] && M[k] && M[k].status === 'ok' && aqcPontos(M[k]).length > 0;
+ });
+ if(!visiveis.length){
+  cont.innerHTML = '';
+  aqcMsg('Escolha pelo menos uma métrica com dados neste período.');
   return;
  }
- const acoes = document.createElement('span');
- acoes.style.marginRight = '10px';
- [['todas', true], ['nenhuma', false]].forEach(function(par){
-  const b = document.createElement('button');
-  b.type = 'button'; b.textContent = par[0];
-  b.style.marginRight = '6px';
-  b.addEventListener('click', function(){
-   AQC_OCULTAS = {};
-   if(!par[1]) D.vista1.forEach(function(x){ AQC_OCULTAS[x.activity_id] = true; });
-   aqCmpLegendaSessoes(); aqCmpDraw1();
-  });
-  acoes.appendChild(b);
- });
- box.appendChild(acoes);
- D.vista1.forEach(function(sess, idx){
-  const lab = document.createElement('label');
-  lab.style.cssText = 'cursor:pointer;margin-right:12px;white-space:nowrap;';
-  const cb = document.createElement('input');
-  cb.type = 'checkbox'; cb.checked = !AQC_OCULTAS[sess.activity_id];
-  cb.style.marginRight = '3px';
-  cb.addEventListener('change', function(){
-   if(cb.checked) delete AQC_OCULTAS[sess.activity_id];
-   else AQC_OCULTAS[sess.activity_id] = true;
-   aqCmpDraw1();
-  });
-  const sw = document.createElement('span');
-  sw.style.cssText = 'display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle;background:' + AQC_CORES[idx % AQC_CORES.length];
-  lab.appendChild(cb); lab.appendChild(sw);
-  lab.appendChild(document.createTextNode(aqcData(sess.data) + ' · ' + sess.activity_id
-    + (sess.em_falta.length ? ' (escalões em falta)' : '')));
-  box.appendChild(lab);
- });
-}
+ aqcMsg('Modalidade ' + AQ_MOD + ' · ' + (AQC_PERIODO_NOME[AQC_PERIODO] || AQC_PERIODO)
+      + '. Cada ponto é a média de todas as sessões do período naquele escalão de watts.');
 
-function aqCmpDraw1(){
- const o = ctx('chCmp1', 320); if(!o) return;
- const g = o.g, W = o.W, H = o.H;
- g.clearRect(0,0,W,H);
- AQC_PTS1 = [];
- const D = AQC_DADOS;
- document.getElementById('aqCmpT1').textContent =
-   'Vista 1 — sessões individuais · ' + (AQC_NOME[D && D.metrica] || '') + ' · ' + (D && D.modalidade || '');
- if(!D || D.status !== 'ok' || !D.vista1.length){ noData(g, W, H, 'Sem sessões incluídas neste período'); return; }
- const esc = D.escaloes;
- const m = {l:58, r:20, t:14, b:40};
- const pw = W - m.l - m.r, ph = H - m.t - m.b;
- const xPos = function(w){ return esc.length<=1 ? m.l + pw/2 : m.l + pw * esc.indexOf(w) / (esc.length-1); };
- const vis = D.vista1.filter(function(x){ return !AQC_OCULTAS[x.activity_id]; });
- const vals = [];
- vis.forEach(function(x){ x.pontos.forEach(function(p){ vals.push(p.valor); }); });
- if(!vals.length){ noData(g, W, H, 'Todas as sessões estão ocultas'); return; }
- let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
- const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
- const yPos = function(v){ return m.t + ph * (1 - (v - lo) / (hi - lo)); };
+ const escs = [];
+ visiveis.forEach(function(k){
+  aqcPontos(M[k]).forEach(function(p){ if(escs.indexOf(p.watts_alvo) < 0) escs.push(p.watts_alvo); });
+ });
+ escs.sort(function(a, b){ return a - b; });
 
- g.font = '11px sans-serif'; g.textAlign = 'right'; g.fillStyle = '#8b949e'; g.strokeStyle = '#21262d';
- for(let i = 0; i <= 4; i++){
-  const v = lo + (hi - lo) * i / 4, y = yPos(v);
-  g.beginPath(); g.moveTo(m.l, y); g.lineTo(W - m.r, y); g.stroke();
-  g.fillText(aqcFmt(v, D.casas), m.l - 6, y + 4);
+ // Um eixo Y por unidade: métricas com a mesma unidade partilham a escala.
+ const eixos = [];
+ visiveis.forEach(function(k){
+  const u = M[k].unidade || '';
+  let e = eixos.filter(function(x){ return x.unidade === u; })[0];
+  if(!e){ e = {unidade: u, metricas: [], casas: M[k].casas, lo: 0, hi: 1}; eixos.push(e); }
+  e.metricas.push(k);
+ });
+ eixos.forEach(function(e){
+  let lo = Infinity, hi = -Infinity;
+  e.metricas.forEach(function(k){
+   aqcPontos(M[k]).forEach(function(p){ lo = Math.min(lo, p.valor); hi = Math.max(hi, p.valor); });
+  });
+  if(hi - lo < 1e-9){ lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.1;
+  e.lo = lo - pad; e.hi = hi + pad;
+ });
+
+ const L = Math.ceil(eixos.length / 2), R = Math.floor(eixos.length / 2);
+ const ML = 12 + L * AQC_PASSO, PR = AQC_W - 12 - R * AQC_PASSO;
+ const xOf = function(w){
+  const i = escs.indexOf(w);
+  return escs.length === 1 ? (ML + PR) / 2 : ML + i * (PR - ML) / (escs.length - 1);
+ };
+ const yOf = function(e, v){ return AQC_MT + (e.hi - v) * (AQC_H - AQC_MT - AQC_MB) / (e.hi - e.lo); };
+
+ let svg = '<svg id="aqCmpSvg" viewBox="0 0 ' + AQC_W + ' ' + AQC_H + '" width="100%" style="max-width:'
+         + AQC_W + 'px;background:#0d1117;border:1px solid #30363d;border-radius:6px;">';
+ const e0 = eixos[0];
+ for(let t = 0; t <= 4; t++){
+  const y = yOf(e0, e0.lo + (e0.hi - e0.lo) * t / 4).toFixed(1);
+  svg += '<line x1="' + ML + '" x2="' + PR + '" y1="' + y + '" y2="' + y + '" stroke="#21262d"/>';
  }
- g.textAlign = 'center';
- esc.forEach(function(w){ g.fillText(w + ' W', xPos(w), H - m.b + 16); });
-
- D.vista1.forEach(function(sess, idx){
-  if(AQC_OCULTAS[sess.activity_id]) return;
-  const cor = AQC_CORES[idx % AQC_CORES.length];
-  g.strokeStyle = cor; g.fillStyle = cor; g.lineWidth = 1.6; g.globalAlpha = 0.85;
-  let prev = -2;
-  g.beginPath();
-  sess.pontos.forEach(function(p){
-   const ix = esc.indexOf(p.watts_alvo);
-   const x = xPos(p.watts_alvo), y = yPos(p.valor);
-   if(ix !== prev + 1) g.moveTo(x, y); else g.lineTo(x, y);
-   prev = ix;
-  });
-  g.stroke();
-  sess.pontos.forEach(function(p){
-   const x = xPos(p.watts_alvo), y = yPos(p.valor);
-   g.beginPath(); g.arc(x, y, 3, 0, Math.PI*2); g.fill();
-   AQC_PTS1.push({x:x, y:y, data:sess.data, sid:sess.activity_id, watts:p.watts_alvo, valor:p.valor});
-  });
-  g.globalAlpha = 1;
+ eixos.forEach(function(e, idx){
+  const esq = idx % 2 === 0, j = Math.floor(idx / 2);
+  const xa = esq ? (12 + j * AQC_PASSO + 48) : (PR + 8 + j * AQC_PASSO);
+  const xt = esq ? xa - 4 : xa + 4;
+  const anc = esq ? 'end' : 'start';
+  svg += '<line x1="' + xa + '" x2="' + xa + '" y1="' + AQC_MT + '" y2="' + (AQC_H - AQC_MB) + '" stroke="#30363d"/>';
+  if(e.unidade) svg += '<text x="' + xt + '" y="' + (AQC_MT - 8) + '" fill="#8b949e" font-size="10" text-anchor="' + anc + '">' + aqcEsc(e.unidade) + '</text>';
+  for(let t = 0; t <= 4; t++){
+   const v = e.lo + (e.hi - e.lo) * t / 4;
+   svg += '<text x="' + xt + '" y="' + (yOf(e, v) + 4).toFixed(1) + '" fill="#8b949e" font-size="11" text-anchor="' + anc + '">' + aqcFmt(v, e.casas) + '</text>';
+  }
  });
-}
-
-function aqCmpDraw2(){
- const o = ctx('chCmp2', 320); if(!o) return;
- const g = o.g, W = o.W, H = o.H;
- g.clearRect(0,0,W,H);
- AQC_PTS2 = [];
- const D = AQC_DADOS;
- document.getElementById('aqCmpT2').textContent =
-   'Vista 2 — tendência agregada por ' + (D && D.agregacao==='semana' ? 'semana' : 'mês')
-   + ' · ' + (AQC_NOME[D && D.metrica] || '') + ' · ' + (D && D.modalidade || '');
- const P = D && D.status === 'ok' ? D.vista2.periodos : [];
- const cont = document.getElementById('aqCmpPeriodos');
- const dl = document.getElementById('aqCmpDelta');
- cont.innerHTML = ''; dl.textContent = '';
- if(!P.length){ noData(g, W, H, 'Sem dados agregados neste período'); return; }
-
- const esc = D.escaloes;
- const m = {l:58, r:20, t:14, b:40};
- const pw = W - m.l - m.r, ph = H - m.t - m.b;
- const xPos = function(w){ return esc.length<=1 ? m.l + pw/2 : m.l + pw * esc.indexOf(w) / (esc.length-1); };
- let lo = Infinity, hi = -Infinity;
- P.forEach(function(p){ p.escaloes.forEach(function(e){
-  const dp = (e.suficiente && e.sd!==null) ? e.sd : 0;
-  lo = Math.min(lo, e.media - dp); hi = Math.max(hi, e.media + dp);
- }); });
- const pad = (hi - lo) * 0.1 || 1; lo -= pad; hi += pad;
- const yPos = function(v){ return m.t + ph * (1 - (v - lo) / (hi - lo)); };
-
- g.font = '11px sans-serif'; g.textAlign = 'right'; g.fillStyle = '#8b949e'; g.strokeStyle = '#21262d';
- for(let i = 0; i <= 4; i++){
-  const v = lo + (hi - lo) * i / 4, y = yPos(v);
-  g.beginPath(); g.moveTo(m.l, y); g.lineTo(W - m.r, y); g.stroke();
-  g.fillText(aqcFmt(v, D.casas), m.l - 6, y + 4);
- }
- g.textAlign = 'center';
- esc.forEach(function(w){ g.fillText(w + ' W', xPos(w), H - m.b + 16); });
-
- P.forEach(function(per, idx){
-  const cor = AQC_CORES[idx % AQC_CORES.length];
-  g.strokeStyle = cor; g.fillStyle = cor; g.lineWidth = 1.8;
-  const sw = document.createElement('span');
-  sw.style.cssText = 'display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 12px;vertical-align:middle;background:' + cor;
-  cont.appendChild(sw);
-  cont.appendChild(document.createTextNode(per.periodo));
-
-  // linha: so entre pontos suficientes e escaloes consecutivos
-  let prev = -2; g.beginPath();
-  per.escaloes.forEach(function(e){
-   if(!e.suficiente){ prev = -2; return; }
-   const ix = esc.indexOf(e.watts_alvo);
-   const x = xPos(e.watts_alvo), y = yPos(e.media);
-   if(ix !== prev + 1) g.moveTo(x, y); else g.lineTo(x, y);
-   prev = ix;
-  });
-  g.globalAlpha = 0.9; g.stroke(); g.globalAlpha = 1;
-
-  per.escaloes.forEach(function(e){
-   const x = xPos(e.watts_alvo), y = yPos(e.media);
-   if(e.suficiente && e.sd !== null){
-    const y1 = yPos(e.media - e.sd), y2 = yPos(e.media + e.sd);
-    g.globalAlpha = 0.5;
-    g.beginPath(); g.moveTo(x, y1); g.lineTo(x, y2);
-    g.moveTo(x-4, y1); g.lineTo(x+4, y1); g.moveTo(x-4, y2); g.lineTo(x+4, y2); g.stroke();
-    g.globalAlpha = 1;
-   }
-   g.beginPath();
-   if(e.suficiente){ g.arc(x, y, 4, 0, Math.PI*2); g.fill(); }
-   else { g.arc(x, y, 4, 0, Math.PI*2); g.fillStyle = '#0d1117'; g.fill(); g.fillStyle = cor; g.stroke(); }
-   g.font = '10px sans-serif'; g.fillStyle = cor;
-   const ladoDir = x + 44 < W - m.r;   // etiqueta a esquerda no ultimo escalao
-   g.textAlign = ladoDir ? 'left' : 'right';
-   g.fillText('n=' + e.n, ladoDir ? x + 6 : x - 6, y - 6);
-   AQC_PTS2.push({x:x, y:y, periodo:per.periodo, watts:e.watts_alvo, n:e.n, media:e.media,
-                  sd:e.sd, suficiente:e.suficiente});
-  });
+ escs.forEach(function(w){
+  svg += '<text x="' + xOf(w).toFixed(1) + '" y="' + (AQC_H - AQC_MB + 16) + '" fill="#8b949e" font-size="11" text-anchor="middle">' + w + ' W</text>';
  });
 
- if(D.vista2.deltas.length){
-  D.vista2.deltas.forEach(function(d){
-   const linha = document.createElement('div');
-   linha.textContent = d.watts_alvo + ' W: ' + (d.delta>=0 ? '+' : '') + aqcFmt(d.delta, D.casas)
-     + (D.unidade ? ' ' + D.unidade : '') + '  (' + d.de + ' → ' + d.para
-     + ', n ' + d.n_de + ' → ' + d.n_para + ')';
-   dl.appendChild(linha);
+ const valores = {}, casas = {}, unidades = {};
+ visiveis.forEach(function(k){
+  const e = eixos.filter(function(x){ return x.metricas.indexOf(k) >= 0; })[0];
+  const cor = AQC_CORES[k];
+  casas[k] = M[k].casas;
+  unidades[k] = M[k].unidade || '';
+  const pts = aqcPontos(M[k]).slice().sort(function(a, b){ return a.watts_alvo - b.watts_alvo; });
+  const d = pts.map(function(p, i){
+   return (i ? 'L' : 'M') + xOf(p.watts_alvo).toFixed(1) + ' ' + yOf(e, p.valor).toFixed(1);
+  }).join(' ');
+  svg += '<path d="' + d + '" fill="none" stroke="' + cor + '" stroke-width="2"/>';
+  pts.forEach(function(p){
+   svg += '<circle cx="' + xOf(p.watts_alvo).toFixed(1) + '" cy="' + yOf(e, p.valor).toFixed(1) + '" r="3.5" fill="' + cor + '"/>';
+   (valores[p.watts_alvo] = valores[p.watts_alvo] || {})[k] = p.valor;
   });
- }
+ });
+ svg += '<line id="aqCmpGuia" x1="0" x2="0" y1="' + AQC_MT + '" y2="' + (AQC_H - AQC_MB)
+      + '" stroke="#58a6ff" stroke-dasharray="3 3" style="display:none;"/>';
+ svg += '</svg>';
+ cont.innerHTML = svg;
+ AQC_HOVER = {escs: escs, xs: escs.map(function(w){ return xOf(w); }), visiveis: visiveis,
+              valores: valores, casas: casas, unidades: unidades, ML: ML, PR: PR};
 }
 
-function aqcHtml1(p){
- const un = (AQC_DADOS && AQC_DADOS.unidade) ? ' ' + AQC_DADOS.unidade : '';
- return '<b>' + aqcData(p.data) + '</b> · ' + aqcEsc(p.sid) + '<br>'
-  + p.watts + ' W · <b>' + aqcFmt(p.valor, AQC_DADOS.casas) + un + '</b>';
-}
-function aqcHtml2(p){
- const un = (AQC_DADOS && AQC_DADOS.unidade) ? ' ' + AQC_DADOS.unidade : '';
- let h = '<b>' + aqcEsc(p.periodo) + '</b> · ' + p.watts + ' W<br>média ' + aqcFmt(p.media, AQC_DADOS.casas) + un
-       + ' · n=' + p.n;
- if(p.sd !== null) h += ' · DP ' + aqcFmt(p.sd, AQC_DADOS.casas);
- if(!p.suficiente) h += '<br><span style="color:#8b949e;">n abaixo do mínimo</span>';
- return h;
-}
-function aqcLigarTip(cvId, tipId, obter, html){
- const cv = document.getElementById(cvId), tip = document.getElementById(tipId);
- if(!cv || !tip || cv._aqcLigado) return;
- cv._aqcLigado = true;
- cv.addEventListener('mousemove', function(ev){
-  const r = cv.getBoundingClientRect();
-  const mx = (ev.clientX - r.left) * (cv.width / r.width);
-  const my = (ev.clientY - r.top) * (cv.height / r.height);
-  let best = null, dmin = 12;
-  obter().forEach(function(p){
-   const d = Math.hypot(p.x - mx, p.y - my);
-   if(d < dmin){ dmin = d; best = p; }
-  });
-  if(!best){ tip.style.display = 'none'; return; }
-  tip.innerHTML = html(best);
-  tip.style.display = 'block';
-  tip.style.left = Math.min(ev.clientX - r.left + 12, r.width - 200) + 'px';
-  tip.style.top = (ev.clientY - r.top - 10) + 'px';
+function aqCmpHover(ev){
+ const h = AQC_HOVER, svg = document.getElementById('aqCmpSvg'), tip = document.getElementById('aqCmpTip'),
+       guia = document.getElementById('aqCmpGuia');
+ if(!h || !svg || !tip) return;
+ const r = svg.getBoundingClientRect();
+ if(r.width <= 0) return;
+ const xs = (ev.clientX - r.left) * AQC_W / r.width;
+ if(xs < h.ML - 14 || xs > h.PR + 14){ aqCmpEsconde(); return; }
+ let best = 0, dist = Infinity;
+ h.xs.forEach(function(x, i){ const d = Math.abs(x - xs); if(d < dist){ dist = d; best = i; } });
+ const w = h.escs[best], x = h.xs[best];
+ if(guia){ guia.setAttribute('x1', x); guia.setAttribute('x2', x); guia.style.display = ''; }
+ let t = '<div style="font-weight:600;margin-bottom:4px;">' + w + ' W</div>';
+ h.visiveis.forEach(function(k){
+  const v = h.valores[w] ? h.valores[w][k] : undefined;
+  t += '<div><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'
+     + AQC_CORES[k] + ';margin-right:6px;"></span>' + aqcEsc(AQC_NOME[k]) + ': <b>'
+     + (v === undefined ? '—' : aqcFmt(v, h.casas[k]) + ' ' + aqcEsc(h.unidades[k])) + '</b></div>';
  });
- cv.addEventListener('mouseleave', function(){ tip.style.display = 'none'; });
+ tip.innerHTML = t;
+ tip.style.display = 'block';
+ const box = tip.parentElement.getBoundingClientRect();
+ let left = ev.clientX - box.left + 14;
+ if(left + 190 > box.width) left = ev.clientX - box.left - 200;
+ tip.style.left = Math.max(0, left) + 'px';
+ tip.style.top = '8px';
+}
+function aqCmpEsconde(){
+ const tip = document.getElementById('aqCmpTip'), guia = document.getElementById('aqCmpGuia');
+ if(tip) tip.style.display = 'none';
+ if(guia) guia.style.display = 'none';
 }
 /* AQCMP_END */
-/* AQPT_BEGIN */
-const AQPT_CORES = ['#58a6ff','#f0883e','#3fb950','#d2a8ff','#ff7b72','#79c0ff','#e3b341'];
-function aqPTMetricas(){
- return Array.prototype.map.call(document.querySelectorAll('.aqPTM:checked'), function(cb){ return cb.value; });
-}
-function aqPTCarregar(){
- const cont = document.getElementById('aqPTCont');
- const meta = document.getElementById('aqPTMeta');
- if(!cont || !meta) return;
- if(!AQ_MOD){ meta.textContent = 'Modalidade ainda não carregada.'; return; }
- const mets = aqPTMetricas();
- if(!mets.length){ cont.innerHTML = ''; meta.textContent = 'Escolha pelo menos uma métrica.'; return; }
- const per = document.getElementById('aqPTPer').value;
- const roll = document.getElementById('aqPTRoll').value;
- meta.textContent = 'A carregar…';
- fetch('/api/aquecimento/tendencia_periodos?modalidade=' + encodeURIComponent(AQ_MOD)
-       + '&metricas=' + encodeURIComponent(mets.join(','))
-       + '&periodo=' + encodeURIComponent(per) + '&rolling=' + encodeURIComponent(roll))
-  .then(function(r){ return r.json(); })
-  .then(aqPTRender)
-  .catch(function(e){ console.error('[aqPTCarregar]', e); meta.textContent = 'Falha ao carregar a tendência.'; });
-}
-function aqPTRender(j){
- const cont = document.getElementById('aqPTCont');
- const meta = document.getElementById('aqPTMeta');
- if(!j || j.status !== 'ok'){ meta.textContent = (j && j.mensagem) || 'Sem resposta.'; cont.innerHTML = ''; return; }
- const per = document.getElementById('aqPTPer');
- const roll = document.getElementById('aqPTRoll');
- meta.textContent = 'Modalidade ' + AQ_MOD + ' · período: ' + per.options[per.selectedIndex].text
-   + ' · média: ' + roll.options[roll.selectedIndex].text.toLowerCase()
-   + '. Cada ponto é a média de todas as sessões do período naquele escalão.';
- let h = '';
- Object.keys(j.metricas || {}).forEach(function(k){
-   const m = j.metricas[k];
-   h += '<h3 style="font-size:14px;margin:16px 0 4px;">' + aqcEsc(m.nome || k) + '</h3>';
-   if(m.status !== 'ok'){
-     h += '<p style="color:#8b949e;font-size:12px;">' + aqcEsc(m.status === 'sem_dados' ? 'Sem dados guardados para esta métrica.' : (m.status || 'sem dados')) + '</p>';
-     return;
-   }
-   h += aqPTSvg(m);
- });
- cont.innerHTML = h || '<p style="color:#8b949e;font-size:12px;">Sem dados.</p>';
-}
-function aqPTSvg(m){
- const W = 760, H = 280, ML = 52, MR = 16, MT = 14, MB = 42;
- const escs = m.escaloes || [];
- const series = m.series || [];
- const vals = [];
- series.forEach(function(s){ s.pontos.forEach(function(p){ vals.push(p.valor); }); });
- if(!escs.length || !vals.length){ return '<p style="color:#8b949e;font-size:12px;">Sem valores válidos neste período.</p>'; }
- let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
- if(hi - lo < 1e-9){ lo -= 1; hi += 1; }
- const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
- const xOf = function(w){
-   const i = escs.indexOf(w);
-   return escs.length === 1 ? (ML + (W - ML - MR) / 2) : ML + i * (W - ML - MR) / (escs.length - 1);
- };
- const yOf = function(v){ return MT + (hi - v) * (H - MT - MB) / (hi - lo); };
- let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" style="max-width:' + W + 'px;background:#0d1117;border:1px solid #30363d;border-radius:6px;">';
- for(let t = 0; t <= 4; t++){
-   const v = lo + (hi - lo) * t / 4, y = yOf(v);
-   svg += '<line x1="' + ML + '" x2="' + (W - MR) + '" y1="' + y + '" y2="' + y + '" stroke="#21262d"/>';
-   svg += '<text x="' + (ML - 6) + '" y="' + (y + 4) + '" fill="#8b949e" font-size="11" text-anchor="end">' + aqcFmt(v, m.casas) + '</text>';
- }
- escs.forEach(function(w){
-   const x = xOf(w);
-   svg += '<text x="' + x + '" y="' + (H - MB + 16) + '" fill="#8b949e" font-size="11" text-anchor="middle">' + w + ' W</text>';
- });
- series.forEach(function(s, si){
-   const cor = AQPT_CORES[si % AQPT_CORES.length];
-   const pts = s.pontos.slice().sort(function(a, b){ return a.watts_alvo - b.watts_alvo; });
-   const d = pts.map(function(p, i){ return (i ? 'L' : 'M') + xOf(p.watts_alvo).toFixed(1) + ' ' + yOf(p.valor).toFixed(1); }).join(' ');
-   svg += '<path d="' + d + '" fill="none" stroke="' + cor + '" stroke-width="2"/>';
-   pts.forEach(function(p){
-     svg += '<circle cx="' + xOf(p.watts_alvo).toFixed(1) + '" cy="' + yOf(p.valor).toFixed(1) + '" r="3" fill="' + cor + '"><title>'
-          + aqcEsc(s.periodo) + ' · ' + p.watts_alvo + ' W: ' + aqcFmt(p.valor, m.casas) + ' ' + aqcEsc(m.unidade) + '</title></circle>';
-   });
- });
- svg += '</svg>';
- let legenda = '<div style="display:flex;flex-wrap:wrap;gap:12px;font-size:12px;margin:6px 0 0;">';
- series.forEach(function(s, si){
-   legenda += '<span><span style="display:inline-block;width:10px;height:10px;background:' + AQPT_CORES[si % AQPT_CORES.length]
-            + ';border-radius:2px;margin-right:4px;"></span>' + aqcEsc(s.periodo) + '</span>';
- });
- legenda += '</div>';
- return svg + legenda;
-}
-function aqPTLigar(){
- document.querySelectorAll('.aqPTM').forEach(function(cb){ cb.onchange = aqPTCarregar; });
- const a = document.getElementById('aqPTPer'); if(a) a.onchange = aqPTCarregar;
- const b = document.getElementById('aqPTRoll'); if(b) b.onchange = aqPTCarregar;
-}
-/* AQPT_END */
 /* AQTEND_BEGIN */
 function aqTendCarregar(){
  const cont = document.getElementById('aqTendCont');

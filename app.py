@@ -2309,6 +2309,52 @@ def api_aquecimento_auditoria():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/tendencia_estatistica')
+def api_aquecimento_tendencia_estatistica():
+    """Uma metrica, todas as janelas (3, 6, 12, 24, 36 meses e todo o periodo).
+
+    ?modalidade=Bike&metrica=hr
+    Para cada janela: medias por escalao de watts e tendencia ao longo do tempo
+    (Mann-Kendall / tau de Kendall e declive de Theil-Sen). Sem N na resposta.
+    Nao altera a base: so le.
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        import aquecimento_comparativo as cmp
+        from datetime import date as _date
+        mod = request.args.get('modalidade')
+        metrica = request.args.get('metrica', 'hr')
+        if not mod:
+            return jsonify({'status': 'erro', 'mensagem': 'falta ?modalidade='}), 400
+        if metrica not in cmp.METRICAS:
+            return jsonify({'status': 'erro', 'mensagem': f'metrica desconhecida: {metrica}'}), 400
+        if metrica in cmp.METRICAS_HRR:
+            import aquecimento_hrr as _hrr_t
+            blocos = aq_db.listar_hrr(mod, _hrr_t.VERSAO_HRR)
+        else:
+            blocos = aq_db.listar_blocos(mod)
+        primeiro, ultimo = cmp.intervalo_dados(blocos)
+        if primeiro is None:
+            return jsonify({'status': 'sem_dados', 'modalidade': mod, 'metrica': metrica})
+        hoje = _date.today()
+        janelas = []
+        for rotulo, meses in cmp.JANELAS_MESES:
+            if meses is None:
+                ini, fim = primeiro, ultimo
+            else:
+                ini, fim = cmp.menos_meses(hoje, meses).isoformat(), hoje.isoformat()
+            janelas.append({'periodo': rotulo, **cmp.resumo_janela(blocos, metrica, ini, fim)})
+        m = cmp.METRICAS[metrica]
+        return jsonify({'status': 'ok', 'modalidade': mod, 'metrica': metrica,
+                        'nome': m['nome'], 'unidade': m['unidade'], 'casas': m['casas'],
+                        'janelas': janelas})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/aquecimento/tendencia_periodos')
 def api_aquecimento_tendencia_periodos():
     """Linhas agregadas por periodo, com a media de TODAS as sessoes por escalao.

@@ -849,6 +849,33 @@ BODY = r"""
     não uma escala contínua de tempo.
   </p>
 
+  <div id="aqPT" style="margin:18px 0 8px;padding-top:10px;border-top:1px solid #30363d;">
+  <h2>Tendência por período · todas as sessões</h2>
+  <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:6px 0 4px;font-size:13px;">
+    <label>Período
+      <select id="aqPTPer" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:3px 6px;">
+        <option value="mes">Mês</option>
+        <option value="trimestre">Trimestre</option>
+        <option value="semestre">Semestre</option>
+        <option value="ano">Ano</option>
+        <option value="todo" selected>Todo o histórico</option>
+      </select></label>
+    <label>Média
+      <select id="aqPTRoll" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:3px 6px;">
+        <option value="1" selected>Simples do período</option>
+        <option value="3">Móvel (3 períodos)</option>
+      </select></label>
+  </div>
+  <div id="aqPTMet" style="display:flex;flex-wrap:wrap;gap:12px;margin:6px 0;font-size:13px;">
+    <label><input type="checkbox" class="aqPTM" value="hr" checked> FC</label>
+    <label><input type="checkbox" class="aqPTM" value="smo2"> SmO₂</label>
+    <label><input type="checkbox" class="aqPTM" value="resp"> Respiração</label>
+    <label><input type="checkbox" class="aqPTM" value="dfa1"> DFA-α1</label>
+    <label><input type="checkbox" class="aqPTM" value="fc_rec1min"> FC rec. 1 min</label>
+  </div>
+  <div id="aqPTMeta" style="font-size:12px;color:#8b949e;margin-bottom:8px;line-height:1.6;"></div>
+  <div id="aqPTCont"></div>
+  </div>
   <div id="aqTend" style="margin:18px 0 8px;padding-top:10px;border-top:1px solid #30363d;">
   <h2 id="aqTendTitulo">Tendência de FC de recuperação (FC rec. 1 min) por período</h2>
   <div class="controls" style="margin-bottom:8px;flex-wrap:wrap;">
@@ -1435,7 +1462,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   this.classList.add('active');
   document.getElementById(tabName).classList.add('active');
-  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqPerDefaults(); aqCmpCarregar(); aqTendLigar(); aqTendCarregar(); }
+  if(tabName === 'aquecimento'){ aqDraw(); aqRange(); aqTabela(); aqPerDefaults(); aqCmpCarregar(); aqTendLigar(); aqTendCarregar(); aqPTLigar(); aqPTCarregar(); }
   if(tabName === 'perfilmet'){ if(!PM) pmCarregar(); else pmDraw(); }
  });
 });
@@ -2111,6 +2138,99 @@ function aqcLigarTip(cvId, tipId, obter, html){
  cv.addEventListener('mouseleave', function(){ tip.style.display = 'none'; });
 }
 /* AQCMP_END */
+/* AQPT_BEGIN */
+const AQPT_CORES = ['#58a6ff','#f0883e','#3fb950','#d2a8ff','#ff7b72','#79c0ff','#e3b341'];
+function aqPTMetricas(){
+ return Array.prototype.map.call(document.querySelectorAll('.aqPTM:checked'), function(cb){ return cb.value; });
+}
+function aqPTCarregar(){
+ const cont = document.getElementById('aqPTCont');
+ const meta = document.getElementById('aqPTMeta');
+ if(!cont || !meta) return;
+ if(!AQ_MOD){ meta.textContent = 'Modalidade ainda não carregada.'; return; }
+ const mets = aqPTMetricas();
+ if(!mets.length){ cont.innerHTML = ''; meta.textContent = 'Escolha pelo menos uma métrica.'; return; }
+ const per = document.getElementById('aqPTPer').value;
+ const roll = document.getElementById('aqPTRoll').value;
+ meta.textContent = 'A carregar…';
+ fetch('/api/aquecimento/tendencia_periodos?modalidade=' + encodeURIComponent(AQ_MOD)
+       + '&metricas=' + encodeURIComponent(mets.join(','))
+       + '&periodo=' + encodeURIComponent(per) + '&rolling=' + encodeURIComponent(roll))
+  .then(function(r){ return r.json(); })
+  .then(aqPTRender)
+  .catch(function(e){ console.error('[aqPTCarregar]', e); meta.textContent = 'Falha ao carregar a tendência.'; });
+}
+function aqPTRender(j){
+ const cont = document.getElementById('aqPTCont');
+ const meta = document.getElementById('aqPTMeta');
+ if(!j || j.status !== 'ok'){ meta.textContent = (j && j.mensagem) || 'Sem resposta.'; cont.innerHTML = ''; return; }
+ const per = document.getElementById('aqPTPer');
+ const roll = document.getElementById('aqPTRoll');
+ meta.textContent = 'Modalidade ' + AQ_MOD + ' · período: ' + per.options[per.selectedIndex].text
+   + ' · média: ' + roll.options[roll.selectedIndex].text.toLowerCase()
+   + '. Cada ponto é a média de todas as sessões do período naquele escalão.';
+ let h = '';
+ Object.keys(j.metricas || {}).forEach(function(k){
+   const m = j.metricas[k];
+   h += '<h3 style="font-size:14px;margin:16px 0 4px;">' + aqcEsc(m.nome || k) + '</h3>';
+   if(m.status !== 'ok'){
+     h += '<p style="color:#8b949e;font-size:12px;">' + aqcEsc(m.status === 'sem_dados' ? 'Sem dados guardados para esta métrica.' : (m.status || 'sem dados')) + '</p>';
+     return;
+   }
+   h += aqPTSvg(m);
+ });
+ cont.innerHTML = h || '<p style="color:#8b949e;font-size:12px;">Sem dados.</p>';
+}
+function aqPTSvg(m){
+ const W = 760, H = 280, ML = 52, MR = 16, MT = 14, MB = 42;
+ const escs = m.escaloes || [];
+ const series = m.series || [];
+ const vals = [];
+ series.forEach(function(s){ s.pontos.forEach(function(p){ vals.push(p.valor); }); });
+ if(!escs.length || !vals.length){ return '<p style="color:#8b949e;font-size:12px;">Sem valores válidos neste período.</p>'; }
+ let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+ if(hi - lo < 1e-9){ lo -= 1; hi += 1; }
+ const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+ const xOf = function(w){
+   const i = escs.indexOf(w);
+   return escs.length === 1 ? (ML + (W - ML - MR) / 2) : ML + i * (W - ML - MR) / (escs.length - 1);
+ };
+ const yOf = function(v){ return MT + (hi - v) * (H - MT - MB) / (hi - lo); };
+ let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" style="max-width:' + W + 'px;background:#0d1117;border:1px solid #30363d;border-radius:6px;">';
+ for(let t = 0; t <= 4; t++){
+   const v = lo + (hi - lo) * t / 4, y = yOf(v);
+   svg += '<line x1="' + ML + '" x2="' + (W - MR) + '" y1="' + y + '" y2="' + y + '" stroke="#21262d"/>';
+   svg += '<text x="' + (ML - 6) + '" y="' + (y + 4) + '" fill="#8b949e" font-size="11" text-anchor="end">' + aqcFmt(v, m.casas) + '</text>';
+ }
+ escs.forEach(function(w){
+   const x = xOf(w);
+   svg += '<text x="' + x + '" y="' + (H - MB + 16) + '" fill="#8b949e" font-size="11" text-anchor="middle">' + w + ' W</text>';
+ });
+ series.forEach(function(s, si){
+   const cor = AQPT_CORES[si % AQPT_CORES.length];
+   const pts = s.pontos.slice().sort(function(a, b){ return a.watts_alvo - b.watts_alvo; });
+   const d = pts.map(function(p, i){ return (i ? 'L' : 'M') + xOf(p.watts_alvo).toFixed(1) + ' ' + yOf(p.valor).toFixed(1); }).join(' ');
+   svg += '<path d="' + d + '" fill="none" stroke="' + cor + '" stroke-width="2"/>';
+   pts.forEach(function(p){
+     svg += '<circle cx="' + xOf(p.watts_alvo).toFixed(1) + '" cy="' + yOf(p.valor).toFixed(1) + '" r="3" fill="' + cor + '"><title>'
+          + aqcEsc(s.periodo) + ' · ' + p.watts_alvo + ' W: ' + aqcFmt(p.valor, m.casas) + ' ' + aqcEsc(m.unidade) + '</title></circle>';
+   });
+ });
+ svg += '</svg>';
+ let legenda = '<div style="display:flex;flex-wrap:wrap;gap:12px;font-size:12px;margin:6px 0 0;">';
+ series.forEach(function(s, si){
+   legenda += '<span><span style="display:inline-block;width:10px;height:10px;background:' + AQPT_CORES[si % AQPT_CORES.length]
+            + ';border-radius:2px;margin-right:4px;"></span>' + aqcEsc(s.periodo) + '</span>';
+ });
+ legenda += '</div>';
+ return svg + legenda;
+}
+function aqPTLigar(){
+ document.querySelectorAll('.aqPTM').forEach(function(cb){ cb.onchange = aqPTCarregar; });
+ const a = document.getElementById('aqPTPer'); if(a) a.onchange = aqPTCarregar;
+ const b = document.getElementById('aqPTRoll'); if(b) b.onchange = aqPTCarregar;
+}
+/* AQPT_END */
 /* AQTEND_BEGIN */
 function aqTendCarregar(){
  const cont = document.getElementById('aqTendCont');

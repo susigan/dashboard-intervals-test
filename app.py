@@ -2309,6 +2309,53 @@ def api_aquecimento_auditoria():
                         'trace': traceback.format_exc()}), 500
 
 
+@app.route('/api/aquecimento/tendencia_periodos')
+def api_aquecimento_tendencia_periodos():
+    """Linhas agregadas por periodo, com a media de TODAS as sessoes por escalao.
+
+    ?modalidade=Bike&metricas=hr,smo2&periodo=mes|trimestre|semestre|ano|todo
+    [&rolling=1|3][&inicio=AAAA-MM-DD&fim=AAAA-MM-DD]
+    Sem N e sem uma linha por sessao. Nao altera a base: so le.
+    """
+    if not AQUECIMENTO_ENABLED:
+        return _aq_indisponivel()
+    try:
+        import aquecimento_comparativo as cmp
+        mod = request.args.get('modalidade')
+        if not mod:
+            return jsonify({'status': 'erro', 'mensagem': 'falta ?modalidade='}), 400
+        metricas = [m.strip() for m in request.args.get('metricas', 'hr').split(',') if m.strip()]
+        periodo = request.args.get('periodo', 'mes')
+        rolling = request.args.get('rolling', default=1, type=int)
+        ini_q, fim_q = request.args.get('inicio'), request.args.get('fim')
+        saida = {}
+        for m in metricas:
+            if m not in cmp.METRICAS:
+                saida[m] = {'status': 'metrica_desconhecida'}
+                continue
+            if m in cmp.METRICAS_HRR:
+                import aquecimento_hrr as _hrr_t
+                blocos = aq_db.listar_hrr(mod, _hrr_t.VERSAO_HRR)
+            else:
+                blocos = aq_db.listar_blocos(mod)
+            primeiro, ultimo = cmp.intervalo_dados(blocos)
+            if primeiro is None:
+                saida[m] = {'status': 'sem_dados'}
+                continue
+            ini = ini_q or primeiro
+            fim = fim_q or ultimo
+            res = cmp.serie_por_periodo(blocos, m, periodo, ini, fim, rolling=rolling)
+            saida[m] = {'status': 'ok', **res}
+        return jsonify({'status': 'ok', 'modalidade': mod, 'periodo': periodo,
+                        'rolling': rolling, 'metricas': saida})
+    except ValueError as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 400
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'erro', 'mensagem': str(e),
+                        'trace': traceback.format_exc()}), 500
+
+
 @app.route('/api/aquecimento/comparativo')
 def api_aquecimento_comparativo():
     """Analise multi-sessao: todos os aquecimentos de um periodo, por escalao.

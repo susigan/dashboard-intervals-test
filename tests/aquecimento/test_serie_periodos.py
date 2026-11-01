@@ -81,25 +81,33 @@ if __name__ == '__main__':
 
 
 class PainelTendenciaPorPeriodo(unittest.TestCase):
-    """Secao nova no painel: marcadores, endpoint certo e sem N no grafico."""
+    """Painel unico de comparacao: periodos em janelas, sem N, sem data, endpoint certo."""
 
     @classmethod
     def setUpClass(cls):
         with open(os.path.join(RAIZ, 'tabs', 'tab_metabol.py'), encoding='utf-8') as f:
             cls.src = f.read()
+        cls.bloco = cls.src.split('/* AQCMP_BEGIN */')[1].split('/* AQCMP_END */')[0]
 
     def test_marcadores_e_endpoint(self):
-        self.assertIn('/* AQPT_BEGIN */', self.src)
-        self.assertIn('/* AQPT_END */', self.src)
-        self.assertIn('/api/aquecimento/tendencia_periodos', self.src)
+        self.assertNotIn('AQPT_BEGIN', self.src)
+        self.assertIn('/api/aquecimento/tendencia_periodos', self.bloco)
+        self.assertNotIn('/api/aquecimento/comparativo', self.bloco)
 
     def test_grafico_nao_mostra_n(self):
-        bloco = self.src.split('/* AQPT_BEGIN */')[1].split('/* AQPT_END */')[0]
         import re
-        self.assertIsNone(re.search(r'\.n\b', bloco))
-        self.assertNotIn('n=', bloco)
+        self.assertIsNone(re.search(r'\.n\b', self.bloco))
+        self.assertNotIn('n=', self.bloco)
 
-    def test_periodos_e_medias_oferecidos(self):
-        for v in ('mes', 'trimestre', 'semestre', 'ano', 'todo'):
-            self.assertIn(f'value="{v}"', self.src)
-        self.assertIn('value="3"', self.src)
+    def test_periodos_em_janelas_oferecidos(self):
+        for m in ('3', '6', '12', '24', '36', 'todo'):
+            self.assertIn(f'data-meses="{m}"', self.src)
+        for antigo in ('mes', 'trimestre', 'semestre'):
+            self.assertNotIn(f'value="{antigo}"', self.bloco)
+
+    def test_metricas_padrao_hr_smo2_resp(self):
+        import re
+        m = re.search(r"const AQC_LIG = \{([^}]*)\}", self.bloco)
+        self.assertIsNotNone(m)
+        ligadas = set(re.findall(r"(\w+):true", m.group(1)))
+        self.assertEqual(ligadas, {'hr', 'smo2', 'resp'})

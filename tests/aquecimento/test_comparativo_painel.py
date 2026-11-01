@@ -27,23 +27,21 @@ class PainelComparativo(unittest.TestCase):
 
     def test_ids_do_html_existem_uma_vez(self):
         s = _ler('tabs/tab_metabol.py')
-        for id_ in ('aqCmpMeta', 'aqCmpLegenda', 'aqCmpPeriodos', 'aqCmpDelta',
-                    'chCmp1', 'chCmp2', 'aqCmpTip1', 'aqCmpTip2', 'aqCmpMet',
-                    'aqCmpAgr', 'aqCmpMin', 'aqCmpCustom', 'aqCmpIni', 'aqCmpFim',
-                    'aqCmpAplicar'):
+        for id_ in ('aqCmpMeta', 'aqCmpLeg', 'aqCmpCont', 'aqCmpTip'):
             with self.subTest(id=id_):
                 self.assertEqual(s.count(f'id="{id_}"'), 1)
 
-    def test_botoes_de_periodo_30_60_90_e_personalizado(self):
+    def test_botoes_de_periodo_em_janelas(self):
         s = _ler('tabs/tab_metabol.py')
-        for dias in ('30', '60', '90', 'custom'):
-            with self.subTest(dias=dias):
-                self.assertIn(f'data-dias="{dias}"', s)
+        for meses in ('3', '6', '12', '24', '36', 'todo'):
+            with self.subTest(meses=meses):
+                self.assertIn(f'data-meses="{meses}"', s)
 
     def test_chama_o_endpoint_comparativo(self):
         js = _bloco_js()
-        self.assertIn("'/api/aquecimento/comparativo?'", js)
-        self.assertIn('min_n=', js)
+        self.assertIn("/api/aquecimento/tendencia_periodos?modalidade=", js)
+        self.assertIn("periodo=todo", js)
+        self.assertNotIn('min_n=', js)
 
     def test_endpoint_existe_no_app_uma_vez(self):
         s = _ler('app.py')
@@ -70,7 +68,7 @@ class PainelComparativo(unittest.TestCase):
 
     def test_hooks_de_carregamento(self):
         s = _ler('tabs/tab_metabol.py')
-        self.assertIn("aqPerDefaults(); aqCmpCarregar(); aqTendLigar(); aqTendCarregar(); aqPTLigar(); aqPTCarregar(); }", s)
+        self.assertIn("aqPerDefaults(); aqCmpCarregar(); aqTendLigar(); aqTendCarregar(); }", s)
 
     def test_marcadores_do_bloco_presentes(self):
         s = _ler('tabs/tab_metabol.py')

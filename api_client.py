@@ -214,6 +214,15 @@ def kj_da_atividade(a):
     return 0.0
 
 
+def horas_da_atividade(a):
+    """Duracao em horas: tempo em movimento (s); elapsed_time se faltar."""
+    for campo in ('moving_time', 'elapsed_time'):
+        t = a.get(campo)
+        if isinstance(t, (int, float)) and t > 0:
+            return float(t) / 3600.0
+    return 0.0
+
+
 def kj_do_stream(watts, dt=1.0, n_pontos=None):
     """kJ integrando o stream de potencia.
 

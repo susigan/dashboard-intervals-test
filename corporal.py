@@ -269,6 +269,11 @@ def lag_calorico(cal_r7, var_r7, lags_semanas=(0, 1, 2, 3)):
     return {'melhor': melhor, 'todos': resultados}
 
 
+def kj_diario(pares, ate=None):
+    """kJ de trabalho por dia (ver soma_diaria)."""
+    return soma_diaria(pares, ate, 'kj')
+
+
 KJ_LAG_SEMANAS = (0, 1, 2, 3, 4)
 MIN_PARES_KJ = 12
 
@@ -279,11 +284,11 @@ def _segunda(d):
     return (dt - timedelta(days=dt.weekday())).strftime('%Y-%m-%d')
 
 
-def kj_diario(pares, ate=None):
-    """kJ de trabalho por dia. pares: [(data, kj)], uma entrada por atividade.
+def soma_diaria(pares, ate=None, chave='kj'):
+    """Soma diaria de atividade. pares: [(data, valor)], uma entrada por atividade.
 
     Os dias entre a primeira atividade e 'ate' (hoje por omissao) sem
-    atividade contam como 0 kJ: pressupoe que todas as sessoes estao na base.
+    atividade contam como 0: pressupoe que todas as sessoes estao na base.
     """
     soma = {}
     for d, kj in pares:
@@ -296,7 +301,7 @@ def kj_diario(pares, ate=None):
     out = []
     while dia <= fim:
         k = dia.isoformat()
-        out.append({'date': k, 'kj': round(soma.get(k, 0.0), 1)})
+        out.append({'date': k, chave: round(soma.get(k, 0.0), 1)})
         dia += timedelta(days=1)
     return out
 
@@ -336,6 +341,125 @@ def lag_kj(kj_dia, linhas, lags=KJ_LAG_SEMANAS):
                     item.update(r=r, p=p, p_ajust=round(min(1.0, p * len(lags)), 4))
             resultados.append(item)
         out[campo] = resultados
+    return out
+
+
+CRUZ_LAGS_SEM = (0, 1, 2, 3, 4)
+CRUZ_N_PERM = 499
+CRUZ_N_REFINO = 4999  # so para pares com p <= 0.05: resolucao necessaria para Bonferroni
+CRUZ_MIN_PARES = 30
+_CRUZ_CACHE = {}
+
+
+def _rank_medio(a):
+    """Postos com empates resolvidos pela media (1-based)."""
+    import numpy as np
+    a = np.asarray(a, float)
+    _, inv, cnt = np.unique(a, return_inverse=True, return_counts=True)
+    medio = np.cumsum(cnt) - (cnt - 1) / 2.0
+    return medio[inv]
+
+
+def _corr(a, b):
+    """Pearson sobre arrays (aqui sobre postos = Spearman). None se constante."""
+    sa, sb = a.std(), b.std()
+    if sa == 0 or sb == 0:
+        return None
+    return float(((a - a.mean()) * (b - b.mean())).mean() / (sa * sb))
+
+
+def _p_permutacao(xs, ys, r_obs, rng, n_perm):
+    """p por deslocamento circular de y: preserva a autocorrelacao de cada serie."""
+    import numpy as np
+    rx, ry = _rank_medio(xs), _rank_medio(ys)
+    n, cont = len(xs), 0
+    for _ in range(n_perm):
+        k = int(rng.integers(8, n - 8))
+        r = _corr(rx, np.roll(ry, k))
+        if r is not None and abs(r) >= abs(r_obs) - 1e-12:
+            cont += 1
+    return (cont + 1) / (n_perm + 1)
+
+
+def _serie_semanal(pares, agr):
+    """{segunda: valor agregado} a partir de pares (data, valor)."""
+    por = {}
+    for d, v in pares:
+        if d and v is not None:
+            por.setdefault(_segunda(d), []).append(v)
+    return {s: agr(vs) for s, vs in por.items()}
+
+
+def correlacoes_cruzadas(kj_dia, horas_dia, cal_dia, linhas,
+                         lags=CRUZ_LAGS_SEM, n_perm=CRUZ_N_PERM, n_refino=CRUZ_N_REFINO):
+    """Correlacao cruzada semanal entre kJ, horas, calorias, peso e gordura.
+
+    Cada variavel e agregada por semana (kJ e horas: soma; calorias: media;
+    peso e gordura: mediana). Para cada par ordenado (causa -> efeito) e lag
+    de 0 a 4 semanas: Spearman com p por permutacao em bloco e versao sem
+    tendencia linear. p ajustado por Bonferroni sobre todos os testes.
+    Determinista (semente fixa) e em cache: o mesmo dado da sempre o mesmo resultado.
+    """
+    import hashlib
+    import json
+    import numpy as np
+
+    series = {
+        'kJ': _serie_semanal([(r['date'], r.get('kj')) for r in kj_dia], sum),
+        'Horas': _serie_semanal([(r['date'], r.get('horas')) for r in horas_dia], sum),
+        'Calorias': _serie_semanal([(r['date'], _num(r.get('calorias'))) for r in cal_dia], statistics.mean),
+        'Peso': _serie_semanal([(r['date'], _num(r.get('peso'))) for r in linhas], statistics.median),
+        'Gordura': _serie_semanal([(r['date'], _num(r.get('bf'))) for r in linhas], statistics.median),
+    }
+    series = {k: {s: float(v) for s, v in x.items() if v is not None} for k, x in series.items()}
+
+    chave = hashlib.md5(json.dumps([series, list(lags), n_perm, n_refino], sort_keys=True).encode()).hexdigest()
+    if chave in _CRUZ_CACHE:
+        return _CRUZ_CACHE[chave]
+
+    testes = []
+    for a, b in ((a, b) for a in series for b in series if a != b):
+        for L in lags:
+            pares = []
+            for s, y in series[b].items():
+                ref = (datetime.strptime(s, '%Y-%m-%d') - timedelta(weeks=L)).strftime('%Y-%m-%d')
+                if ref in series[a]:
+                    pares.append((series[a][ref], y, s))
+            if len(pares) < CRUZ_MIN_PARES:
+                continue
+            pares.sort(key=lambda t: t[2])
+            xs = np.array([p[0] for p in pares])
+            ys = np.array([p[1] for p in pares])
+            t = np.array([datetime.strptime(p[2], '%Y-%m-%d').toordinal() / 7.0 for p in pares])
+            rng = np.random.default_rng(42)
+            r = _corr(_rank_medio(xs), _rank_medio(ys))
+            if r is None:
+                continue
+            p = _p_permutacao(xs, ys, r, rng, n_perm)
+            if p <= 0.05:
+                p = _p_permutacao(xs, ys, r, rng, n_refino)
+            xd = xs - np.polyval(np.polyfit(t, xs, 1), t)
+            yd = ys - np.polyval(np.polyfit(t, ys, 1), t)
+            rd = _corr(_rank_medio(xd), _rank_medio(yd))
+            pd_ = _p_permutacao(xd, yd, rd, rng, n_perm) if rd is not None else None
+            if pd_ is not None and pd_ <= 0.05:
+                pd_ = _p_permutacao(xd, yd, rd, rng, n_refino)
+            testes.append({'causa': a, 'efeito': b, 'lag_sem': L, 'n': len(pares),
+                           'r': round(r, 3), 'p': round(p, 4),
+                           'r_sem_tend': round(rd, 3) if rd is not None else None,
+                           'p_sem_tend': round(pd_, 4) if pd_ is not None else None})
+
+    T = len(testes)
+    for t_ in testes:
+        t_['p_ajust'] = round(min(1.0, t_['p'] * T), 4)
+        t_['p_sem_tend_ajust'] = (round(min(1.0, t_['p_sem_tend'] * T), 4)
+                                  if t_['p_sem_tend'] is not None else None)
+    testes.sort(key=lambda t_: t_['p'])
+    out = {'n_testes': T, 'semanas': len({s for x in series.values() for s in x}),
+           'cobertura': {k: len(x) for k, x in series.items()}, 'linhas': testes}
+    if len(_CRUZ_CACHE) > 8:
+        _CRUZ_CACHE.clear()
+    _CRUZ_CACHE[chave] = out
     return out
 
 

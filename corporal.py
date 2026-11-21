@@ -21,6 +21,7 @@ Regras portadas do tab_corporal.py do dashboard:
   correlacao de Spearman mais forte com p < 0.10.
 """
 
+import statistics
 from datetime import datetime, timedelta
 
 NUM_COLS = ['peso', 'bf', 'calorias', 'carb', 'fat', 'ptn', 'net']
@@ -195,7 +196,7 @@ def variacao_com_bandas(agrupado, campo):
 
 
 def _spearman(x, y):
-    """Correlacao de Spearman e p-valor aproximado (t de Student)."""
+    """Correlacao de Spearman e p-valor aproximado (normal sobre a estatistica t)."""
     import math
     n = len(x)
     if n < 5:
@@ -260,6 +261,76 @@ def lag_calorico(cal_r7, var_r7, lags=(0, 3, 5, 7, 10, 14, 21)):
     return {'melhor': melhor, 'todos': resultados}
 
 
+KJ_LAG_SEMANAS = (0, 1, 2, 3, 4)
+MIN_PARES_KJ = 12
+
+
+def _segunda(d):
+    """Segunda-feira da semana de d (YYYY-MM-DD)."""
+    dt = datetime.strptime(d, '%Y-%m-%d')
+    return (dt - timedelta(days=dt.weekday())).strftime('%Y-%m-%d')
+
+
+def kj_diario(pares, ate=None):
+    """kJ de trabalho por dia. pares: [(data, kj)], uma entrada por atividade.
+
+    Os dias entre a primeira atividade e 'ate' (hoje por omissao) sem
+    atividade contam como 0 kJ: pressupoe que todas as sessoes estao na base.
+    """
+    soma = {}
+    for d, kj in pares:
+        if d and kj:
+            soma[d] = soma.get(d, 0.0) + kj
+    if not soma:
+        return []
+    fim = datetime.strptime(ate or datetime.now().strftime('%Y-%m-%d'), '%Y-%m-%d').date()
+    dia = datetime.strptime(min(soma), '%Y-%m-%d').date()
+    out = []
+    while dia <= fim:
+        k = dia.isoformat()
+        out.append({'date': k, 'kj': round(soma.get(k, 0.0), 1)})
+        dia += timedelta(days=1)
+    return out
+
+
+def lag_kj(kj_dia, linhas, lags=KJ_LAG_SEMANAS):
+    """Spearman entre o kJ semanal (defasado 0 a 4 semanas) e o peso e a
+    gordura semanais (mediana). Um ponto por semana, para nao usar a
+    autocorrelacao diaria. p ajustado por Bonferroni (n de lags testados).
+    """
+    kj_sem = {}
+    for r in kj_dia:
+        s = _segunda(r['date'])
+        kj_sem[s] = kj_sem.get(s, 0.0) + r['kj']
+
+    out = {}
+    for campo in ('peso', 'bf'):
+        por_sem = {}
+        for r in linhas:
+            v = _num(r.get(campo))
+            if v is not None:
+                por_sem.setdefault(_segunda(r['date']), []).append(v)
+        alvo = {s: statistics.median(v) for s, v in por_sem.items()}
+
+        resultados = []
+        for L in lags:
+            xs, ys = [], []
+            for s, y in alvo.items():
+                kj_ref = (datetime.strptime(s, '%Y-%m-%d') - timedelta(weeks=L)).strftime('%Y-%m-%d')
+                if kj_ref in kj_sem:
+                    xs.append(kj_sem[kj_ref])
+                    ys.append(y)
+            item = {'lag_semanas': L, 'lag_dias': 7 * L, 'n': len(xs),
+                    'r': None, 'p': None, 'p_ajust': None}
+            if len(xs) >= MIN_PARES_KJ:
+                r, p = _spearman(xs, ys)
+                if r is not None:
+                    item.update(r=r, p=p, p_ajust=round(min(1.0, p * len(lags)), 4))
+            resultados.append(item)
+        out[campo] = resultados
+    return out
+
+
 def macros_percentagem(linhas):
     """Reparticao energetica dos macros. Calculada a partir das gramas,
     porque as colunas _perc do sheet nem sempre estao preenchidas."""
@@ -286,7 +357,7 @@ def macros_percentagem(linhas):
     return out
 
 
-def resumo(linhas, wellness=None):
+def resumo(linhas):
     """Cobertura, valores actuais e tendencias."""
     if not linhas:
         return None

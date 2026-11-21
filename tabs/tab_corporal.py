@@ -151,7 +151,7 @@ BODY = r"""
   <thead><tr id="kjHead"></tr></thead><tbody id="kjBody"></tbody></table></div>
 
 <h2>Correlacoes cruzadas (semanal): kJ, horas, calorias, peso e gordura</h2>
-<div class="sub" id="cruzMeta">Cada par testado nos dois sentidos, com lag de 0 a 4 semanas. p por permutacao em bloco (respeita a autocorrelacao) e ajuste de Bonferroni sobre todos os testes. Mostra os 15 pares com menor p.</div>
+<div class="sub" id="cruzMeta">Variacoes semana a semana (teste principal); niveis so como comparacao. Cada par nos dois sentidos, lag de 0 a 4 semanas, p por permutacao em bloco e Bonferroni. Mostra os 15 pares com menor p.</div>
 <div class="wrap" style="max-height:420px"><table>
   <thead><tr id="cruzHead"></tr></thead><tbody id="cruzBody"></tbody></table></div>
 
@@ -700,14 +700,14 @@ function tabelaCruzada(){
  const fmt=(v,c)=>v==null?'—':Number(v).toFixed(c).replace('.',',');
  const nomes={kJ:'kJ',Horas:'Horas',Calorias:'Calorias',Peso:'Peso',Gordura:'Gordura'};
  document.getElementById('cruzHead').innerHTML=
-  ['Causa','Efeito','Lag (sem.)','r','p','p ajust. (Bonferroni)','r sem tendencia','p ajust. sem tendencia','n']
+  ['Causa','Efeito','Lag (sem.)','r (variacoes)','p','p ajust. (Bonferroni)','r (niveis)','p ajust. (niveis)','n']
    .map((c,i)=>'<th class="'+(i>1?'num':'')+'">'+c+'</th>').join('');
  const rows=(Z.linhas||[]).slice(0,15);
  const sig=(Z.linhas||[]).filter(x=>x.p_ajust<0.10).length;
  document.getElementById('cruzMeta').textContent=
   (Z.n_testes?Z.n_testes+' testes, '+(Z.semanas||'-')+' semanas. '+
-   (sig?sig+' par(es) com p ajustado < 0,10.':'Nenhum par significativo apos correcao.')+' ':'')+
-  'Cada par testado nos dois sentidos, com lag de 0 a 4 semanas. p por permutacao em bloco (respeita a autocorrelacao) e ajuste de Bonferroni sobre todos os testes.';
+   (sig?sig+' par(es) com p ajustado < 0,10 nas variacoes.':'Nenhum par significativo nas variacoes apos correcao.')+' ':'')+
+  'Teste principal nas variacoes semana a semana (niveis com tendencia dao p enganoso). p por permutacao em bloco e ajuste de Bonferroni sobre os testes principais.';
  const h=rows.map(x=>{
   const ok=x.p_ajust<0.10;
   const cor=ok?(x.r<0?'#2ECC71':'#E67E22'):'#8b949e';
@@ -715,7 +715,7 @@ function tabelaCruzada(){
    '<td class="num">'+x.lag_sem+'</td>'+
    '<td class="num" style="color:'+cor+'">'+fmt(x.r,3)+'</td>'+
    '<td class="num">'+fmt(x.p,4)+'</td><td class="num">'+fmt(x.p_ajust,4)+'</td>'+
-   '<td class="num">'+fmt(x.r_sem_tend,3)+'</td><td class="num">'+fmt(x.p_sem_tend_ajust,4)+'</td>'+
+   '<td class="num">'+fmt(x.r_nivel,3)+'</td><td class="num">'+fmt(x.p_nivel_ajust,4)+'</td>'+
    '<td class="num">'+x.n+'</td></tr>';}).join('');
  document.getElementById('cruzBody').innerHTML=h||'<tr><td class="loading">Sem dados suficientes</td></tr>';
 }

@@ -390,19 +390,54 @@ def _serie_semanal(pares, agr):
     return {s: agr(vs) for s, vs in por.items()}
 
 
+def _variacoes_semanais(serie):
+    """{semana: valor - valor da semana anterior}, so entre semanas consecutivas."""
+    ks = sorted(serie)
+    out = {}
+    for a, b in zip(ks, ks[1:]):
+        dias = (datetime.strptime(b, '%Y-%m-%d') - datetime.strptime(a, '%Y-%m-%d')).days
+        if dias == 7:
+            out[b] = serie[b] - serie[a]
+    return out
+
+
+def _teste_par(xd, yd, L, n_perm, n_refino):
+    """Spearman entre xd (L semanas antes) e yd, com p por permutacao. None se faltam pares."""
+    import numpy as np
+    pares = []
+    for s, y in yd.items():
+        ref = (datetime.strptime(s, '%Y-%m-%d') - timedelta(weeks=L)).strftime('%Y-%m-%d')
+        if ref in xd:
+            pares.append((xd[ref], y, s))
+    if len(pares) < CRUZ_MIN_PARES:
+        return None
+    pares.sort(key=lambda t: t[2])
+    xs = np.array([p[0] for p in pares])
+    ys = np.array([p[1] for p in pares])
+    rng = np.random.default_rng(42)
+    r = _corr(_rank_medio(xs), _rank_medio(ys))
+    if r is None:
+        return None
+    p = _p_permutacao(xs, ys, r, rng, n_perm)
+    if p <= 0.05:
+        p = _p_permutacao(xs, ys, r, rng, n_refino)
+    return {'n': len(pares), 'r': round(r, 3), 'p': round(p, 4)}
+
+
 def correlacoes_cruzadas(kj_dia, horas_dia, cal_dia, linhas,
                          lags=CRUZ_LAGS_SEM, n_perm=CRUZ_N_PERM, n_refino=CRUZ_N_REFINO):
     """Correlacao cruzada semanal entre kJ, horas, calorias, peso e gordura.
 
     Cada variavel e agregada por semana (kJ e horas: soma; calorias: media;
-    peso e gordura: mediana). Para cada par ordenado (causa -> efeito) e lag
-    de 0 a 4 semanas: Spearman com p por permutacao em bloco e versao sem
-    tendencia linear. p ajustado por Bonferroni sobre todos os testes.
-    Determinista (semente fixa) e em cache: o mesmo dado da sempre o mesmo resultado.
+    peso e gordura: mediana). O teste principal usa as VARIACOES semana a
+    semana: com niveis, series com tendencia geram p falsamente baixos
+    (ver tests). Os niveis ficam so como comparacao (r_nivel, p_nivel).
+    Para cada par ordenado (causa -> efeito) e lag de 0 a 4 semanas:
+    Spearman, p por permutacao em bloco. p ajustado por Bonferroni sobre
+    os testes principais. Determinista (semente fixa) e em cache.
     """
     import hashlib
     import json
-    import numpy as np
 
     series = {
         'kJ': _serie_semanal([(r['date'], r.get('kj')) for r in kj_dia], sum),
@@ -412,6 +447,7 @@ def correlacoes_cruzadas(kj_dia, horas_dia, cal_dia, linhas,
         'Gordura': _serie_semanal([(r['date'], _num(r.get('bf'))) for r in linhas], statistics.median),
     }
     series = {k: {s: float(v) for s, v in x.items() if v is not None} for k, x in series.items()}
+    variacoes = {k: _variacoes_semanais(x) for k, x in series.items()}
 
     chave = hashlib.md5(json.dumps([series, list(lags), n_perm, n_refino], sort_keys=True).encode()).hexdigest()
     if chave in _CRUZ_CACHE:
@@ -420,41 +456,20 @@ def correlacoes_cruzadas(kj_dia, horas_dia, cal_dia, linhas,
     testes = []
     for a, b in ((a, b) for a in series for b in series if a != b):
         for L in lags:
-            pares = []
-            for s, y in series[b].items():
-                ref = (datetime.strptime(s, '%Y-%m-%d') - timedelta(weeks=L)).strftime('%Y-%m-%d')
-                if ref in series[a]:
-                    pares.append((series[a][ref], y, s))
-            if len(pares) < CRUZ_MIN_PARES:
+            var = _teste_par(variacoes[a], variacoes[b], L, n_perm, n_refino)
+            if var is None:
                 continue
-            pares.sort(key=lambda t: t[2])
-            xs = np.array([p[0] for p in pares])
-            ys = np.array([p[1] for p in pares])
-            t = np.array([datetime.strptime(p[2], '%Y-%m-%d').toordinal() / 7.0 for p in pares])
-            rng = np.random.default_rng(42)
-            r = _corr(_rank_medio(xs), _rank_medio(ys))
-            if r is None:
-                continue
-            p = _p_permutacao(xs, ys, r, rng, n_perm)
-            if p <= 0.05:
-                p = _p_permutacao(xs, ys, r, rng, n_refino)
-            xd = xs - np.polyval(np.polyfit(t, xs, 1), t)
-            yd = ys - np.polyval(np.polyfit(t, ys, 1), t)
-            rd = _corr(_rank_medio(xd), _rank_medio(yd))
-            pd_ = _p_permutacao(xd, yd, rd, rng, n_perm) if rd is not None else None
-            if pd_ is not None and pd_ <= 0.05:
-                pd_ = _p_permutacao(xd, yd, rd, rng, n_refino)
-            testes.append({'causa': a, 'efeito': b, 'lag_sem': L, 'n': len(pares),
-                           'r': round(r, 3), 'p': round(p, 4),
-                           'r_sem_tend': round(rd, 3) if rd is not None else None,
-                           'p_sem_tend': round(pd_, 4) if pd_ is not None else None})
+            niv = _teste_par(series[a], series[b], L, n_perm, n_refino)
+            testes.append({'causa': a, 'efeito': b, 'lag_sem': L, 'n': var['n'],
+                           'r': var['r'], 'p': var['p'],
+                           'r_nivel': niv['r'] if niv else None,
+                           'p_nivel': niv['p'] if niv else None})
 
     T = len(testes)
     for t_ in testes:
         t_['p_ajust'] = round(min(1.0, t_['p'] * T), 4)
-        t_['p_sem_tend_ajust'] = (round(min(1.0, t_['p_sem_tend'] * T), 4)
-                                  if t_['p_sem_tend'] is not None else None)
-    testes.sort(key=lambda t_: t_['p'])
+        t_['p_nivel_ajust'] = round(min(1.0, t_['p_nivel'] * T), 4) if t_['p_nivel'] is not None else None
+    testes.sort(key=lambda t_: (t_['p'], -abs(t_['r'])))
     out = {'n_testes': T, 'semanas': len({s for x in series.values() for s in x}),
            'cobertura': {k: len(x) for k, x in series.items()}, 'linhas': testes}
     if len(_CRUZ_CACHE) > 8:

@@ -82,3 +82,34 @@ class LagKJ(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestLagCalorico(unittest.TestCase):
+    def test_relacao_planeada_a_1_semana(self):
+        import random
+        from datetime import date, timedelta
+        rnd = random.Random(1)
+        d0 = date(2026, 1, 5)  # segunda
+        cal, var = [], []
+        cals = {}
+        for s in range(30):
+            c = 2000 + rnd.uniform(-300, 300)
+            cals[s] = c
+            for k in range(7):
+                cal.append({'date': (d0 + timedelta(weeks=s, days=k)).isoformat(), 'valor': c})
+        for s in range(1, 30):
+            y = 80 - 0.002 * cals[s - 1] + rnd.uniform(-0.05, 0.05)
+            var.append({'date': (d0 + timedelta(weeks=s)).isoformat(), 'valor': y})
+        out = corporal.lag_calorico(cal, var)
+        self.assertEqual(out['melhor']['lag'], 7)
+        self.assertLess(out['melhor']['p'], 0.10)
+        self.assertLess(out['melhor']['r'], 0)
+        self.assertEqual(len(out['todos']), 4)
+
+    def test_sem_relacao_nao_escolhe_lag(self):
+        from datetime import date, timedelta
+        d0 = date(2026, 1, 5)
+        cal = [{'date': (d0 + timedelta(days=i)).isoformat(), 'valor': 2000 + (i * 37) % 500} for i in range(210)]
+        var = [{'date': (d0 + timedelta(days=i)).isoformat(), 'valor': 80 + (i * 13) % 7 / 10} for i in range(210)]
+        out = corporal.lag_calorico(cal, var)
+        self.assertIsNone(out['melhor']['lag'])

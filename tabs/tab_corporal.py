@@ -817,7 +817,7 @@ function tabelaLag(){
   const m=L.melhor;
   if(m.r==null){
    linhas_.push('<tr><td>'+par[1]+'</td><td class="num" colspan="5" '+
-    'style="color:#484f58">sem correlacao significativa (p &lt; 0.10)</td></tr>');
+    'style="color:#484f58">sem correlacao significativa (p ajustado &lt; 0.10)</td></tr>');
    return;}
   const cor=m.r<0?'#2ECC71':'#E67E22';
   const leitura=m.r<0

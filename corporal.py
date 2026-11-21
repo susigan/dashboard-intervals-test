@@ -231,33 +231,41 @@ def _spearman(x, y):
     return round(r, 3), round(p, 4)
 
 
-def lag_calorico(cal_r7, var_r7, lags=(0, 3, 5, 7, 10, 14, 21)):
-    """Ao fim de quantos dias as calorias se reflectem no peso ou no BF.
+def lag_calorico(cal_r7, var_r7, lags_semanas=(0, 1, 2, 3)):
+    """Ao fim de quantas semanas as calorias se reflectem no peso ou no BF.
 
-    Testa varios desfasamentos e fica com o mais forte que seja
-    estatisticamente defensavel (p < 0.10).
+    Um ponto por semana: calorias = media semanal, peso/BF = mediana semanal.
+    Testa lags de 0 a 3 semanas; p ajustado por Bonferroni (n de lags).
+    Fica com o lag mais forte com p ajustado < 0.10.
     """
-    idx_cal = {r['date']: r['valor'] for r in cal_r7}
-    idx_var = {r['date']: r['valor'] for r in var_r7}
-    datas = sorted(set(idx_var))
+    def semanal(serie, agr):
+        por = {}
+        for r in serie:
+            v = _num(r.get('valor'))
+            if v is not None:
+                por.setdefault(_segunda(r['date']), []).append(v)
+        return {s: agr(v) for s, v in por.items()}
 
-    resultados, melhor = [], {'lag': 7, 'r': None, 'p': None}
-    for lag in lags:
-        pares = []
-        for d in datas:
-            dt = (datetime.strptime(d, '%Y-%m-%d') - timedelta(days=lag)
-                  ).strftime('%Y-%m-%d')
-            a, b = idx_cal.get(dt), idx_var.get(d)
-            if a is not None and b is not None:
-                pares.append((a, b))
-        if len(pares) < 15:
-            resultados.append({'lag': lag, 'r': None, 'p': None, 'n': len(pares)})
-            continue
-        r, p = _spearman([x for x, _ in pares], [y for _, y in pares])
-        resultados.append({'lag': lag, 'r': r, 'p': p, 'n': len(pares)})
-        if r is not None and p is not None and p < 0.10:
-            if melhor['r'] is None or abs(r) > abs(melhor['r']):
-                melhor = {'lag': lag, 'r': r, 'p': p, 'n': len(pares)}
+    cal_s = semanal(cal_r7, statistics.mean)
+    var_s = semanal(var_r7, statistics.median)
+
+    resultados, melhor = [], {'lag': None, 'r': None, 'p': None, 'n': None}
+    for L in lags_semanas:
+        xs, ys = [], []
+        for s, y in var_s.items():
+            ref = (datetime.strptime(s, '%Y-%m-%d') - timedelta(weeks=L)).strftime('%Y-%m-%d')
+            if ref in cal_s:
+                xs.append(cal_s[ref])
+                ys.append(y)
+        item = {'lag': 7 * L, 'n': len(xs), 'r': None, 'p': None}
+        if len(xs) >= MIN_PARES_KJ:
+            r, p = _spearman(xs, ys)
+            if r is not None:
+                item.update(r=r, p=round(min(1.0, p * len(lags_semanas)), 4))
+        resultados.append(item)
+        if item['p'] is not None and item['p'] < 0.10:
+            if melhor['r'] is None or abs(item['r']) > abs(melhor['r']):
+                melhor = dict(item)
     return {'melhor': melhor, 'todos': resultados}
 
 

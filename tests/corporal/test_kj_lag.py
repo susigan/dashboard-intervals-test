@@ -113,3 +113,44 @@ class TestLagCalorico(unittest.TestCase):
         var = [{'date': (d0 + timedelta(days=i)).isoformat(), 'valor': 80 + (i * 13) % 7 / 10} for i in range(210)]
         out = corporal.lag_calorico(cal, var)
         self.assertIsNone(out['melhor']['lag'])
+
+
+class CorrelacoesCruzadas(unittest.TestCase):
+    def _dados(self, planted, semanas=60, seed=3):
+        rnd = random.Random(seed)
+        d0 = date(2024, 1, 1)
+        horas, linhas, cal = [], [], []
+        h = {}
+        for s in range(semanas):
+            h[s] = rnd.uniform(3, 9)
+            for k in range(7):
+                dia = (d0 + timedelta(weeks=s, days=k)).isoformat()
+                horas.append({'date': dia, 'horas': h[s] / 7})
+                cal.append({'date': dia, 'calorias': 2000 + rnd.uniform(-200, 200)})
+        for s in range(semanas):
+            v = 80 + rnd.uniform(-0.05, 0.05)
+            if planted and s >= 2:
+                v -= 0.6 * h[s - 2]
+            linhas.append({'date': (d0 + timedelta(weeks=s)).isoformat(), 'peso': v, 'bf': 15 + rnd.uniform(-0.1, 0.1)})
+        return horas, cal, linhas
+
+    def test_relacao_planeada_horas_peso_lag_2(self):
+        horas, cal, linhas = self._dados(planted=True)
+        out = corporal.correlacoes_cruzadas([], horas, cal, linhas, n_perm=499, n_refino=4999)
+        top = out['linhas'][0]
+        self.assertEqual((top['causa'], top['efeito'], top['lag_sem']), ('Horas', 'Peso', 2))
+        self.assertLess(top['r'], -0.8)
+        self.assertLess(top['p_ajust'], 0.05)
+
+    def test_sem_relacao_nada_significativo(self):
+        horas, cal, linhas = self._dados(planted=False, seed=5)
+        out = corporal.correlacoes_cruzadas([], horas, cal, linhas, n_perm=499, n_refino=999)
+        self.assertGreaterEqual(min(x['p_ajust'] for x in out['linhas']), 0.05)
+
+    def test_determinista(self):
+        horas, cal, linhas = self._dados(planted=True)
+        corporal._CRUZ_CACHE.clear()
+        a = corporal.correlacoes_cruzadas([], horas, cal, linhas, n_perm=99, n_refino=499)
+        corporal._CRUZ_CACHE.clear()
+        b = corporal.correlacoes_cruzadas([], horas, cal, linhas, n_perm=99, n_refino=499)
+        self.assertEqual(a, b)

@@ -27,15 +27,21 @@ def api_data():
     cal_r7 = res['r7']['calorias']
 
     import db
-    from api_client import kj_da_atividade
+    from api_client import kj_da_atividade, horas_da_atividade
     acts = db.load_activities() or []
     kj = corporal.kj_diario([((a.get('start_date_local') or '')[:10], kj_da_atividade(a))
                              for a in acts])
+    horas = corporal.soma_diaria([((a.get('start_date_local') or '')[:10], horas_da_atividade(a))
+                                  for a in acts], None, 'horas')
+    macros = corporal.macros_percentagem(linhas)
+    cruzada = corporal.correlacoes_cruzadas(
+        kj, horas, [{'date': m['date'], 'calorias': m.get('calorias')} for m in macros], linhas)
 
     return jsonify({
         'status': 'OK',
         'kj': kj,
         'kj_lag': corporal.lag_kj(kj, linhas),
+        'cruzada': cruzada,
         'sheets_ok': sheets.disponivel(), 'erros_sheets': erros,
         'linhas': linhas,
         'resumo': {k: v for k, v in res.items() if k != 'r7'},
@@ -47,7 +53,7 @@ def api_data():
                      'bf': corporal.variacao_com_bandas(ag, 'bf')},
         'bandas': {k: [{'pct': p, 'rotulo': r, 'cor': c}
                        for p, r, c in v] for k, v in corporal.BANDAS.items()},
-        'macros': corporal.macros_percentagem(linhas),
+        'macros': macros,
         'lag': {'peso': corporal.lag_calorico(cal_r7, res['r7']['peso']),
                 'bf': corporal.lag_calorico(cal_r7, res['r7']['bf'])},
     })
@@ -143,6 +149,11 @@ BODY = r"""
 <div class="sub">Spearman entre o kJ somado por semana e o peso / gordura semanais (mediana), com o kJ defasado 0 a 4 semanas. Um ponto por semana. p ajustado por Bonferroni (5 lags); so conta como correlacao se p ajustado &lt; 0.05.</div>
 <div class="wrap" style="max-height:300px"><table>
   <thead><tr id="kjHead"></tr></thead><tbody id="kjBody"></tbody></table></div>
+
+<h2>Correlacoes cruzadas (semanal): kJ, horas, calorias, peso e gordura</h2>
+<div class="sub" id="cruzMeta">Cada par testado nos dois sentidos, com lag de 0 a 4 semanas. p por permutacao em bloco (respeita a autocorrelacao) e ajuste de Bonferroni sobre todos os testes. Mostra os 15 pares com menor p.</div>
+<div class="wrap" style="max-height:420px"><table>
+  <thead><tr id="cruzHead"></tr></thead><tbody id="cruzBody"></tbody></table></div>
 
 <div class="sub" style="margin-top:20px">
   <a href="/api/corporal" target="_blank">JSON</a> &middot;
@@ -683,6 +694,32 @@ function tabelaLagKJ(){
   '<tr><td class="loading">Sem dados de atividade</td></tr>';
 }
 
+// correlacoes cruzadas semanais (C.cruzada, calculado no servidor)
+function tabelaCruzada(){
+ const Z=C.cruzada||{};
+ const fmt=(v,c)=>v==null?'—':Number(v).toFixed(c).replace('.',',');
+ const nomes={kJ:'kJ',Horas:'Horas',Calorias:'Calorias',Peso:'Peso',Gordura:'Gordura'};
+ document.getElementById('cruzHead').innerHTML=
+  ['Causa','Efeito','Lag (sem.)','r','p','p ajust. (Bonferroni)','r sem tendencia','p ajust. sem tendencia','n']
+   .map((c,i)=>'<th class="'+(i>1?'num':'')+'">'+c+'</th>').join('');
+ const rows=(Z.linhas||[]).slice(0,15);
+ const sig=(Z.linhas||[]).filter(x=>x.p_ajust<0.10).length;
+ document.getElementById('cruzMeta').textContent=
+  (Z.n_testes?Z.n_testes+' testes, '+(Z.semanas||'-')+' semanas. '+
+   (sig?sig+' par(es) com p ajustado < 0,10.':'Nenhum par significativo apos correcao.')+' ':'')+
+  'Cada par testado nos dois sentidos, com lag de 0 a 4 semanas. p por permutacao em bloco (respeita a autocorrelacao) e ajuste de Bonferroni sobre todos os testes.';
+ const h=rows.map(x=>{
+  const ok=x.p_ajust<0.10;
+  const cor=ok?(x.r<0?'#2ECC71':'#E67E22'):'#8b949e';
+  return '<tr><td>'+nomes[x.causa]+'</td><td>'+nomes[x.efeito]+'</td>'+
+   '<td class="num">'+x.lag_sem+'</td>'+
+   '<td class="num" style="color:'+cor+'">'+fmt(x.r,3)+'</td>'+
+   '<td class="num">'+fmt(x.p,4)+'</td><td class="num">'+fmt(x.p_ajust,4)+'</td>'+
+   '<td class="num">'+fmt(x.r_sem_tend,3)+'</td><td class="num">'+fmt(x.p_sem_tend_ajust,4)+'</td>'+
+   '<td class="num">'+x.n+'</td></tr>';}).join('');
+ document.getElementById('cruzBody').innerHTML=h||'<tr><td class="loading">Sem dados suficientes</td></tr>';
+}
+
 // variacao mensal de peso e gordura, em % do mes anterior, na mesma figura.
 // Bandas fixas em % (linhas horizontais): peso +-0.30 a +-0.70, gordura +-0.25 a +-0.65.
 function drawVar(){
@@ -868,7 +905,7 @@ async function load(){
   'Variacao em % do periodo anterior, no agrupamento escolhido. Bandas em % fixo, iguais para semana, mes ou trimestre: '+
   'peso ±0.30% a ±0.70%, gordura ±0.25% a ±0.65%. Barras dentro das bandas = variacao fisiologica normal.';
 
- drawTemporal();drawVar();drawMacro();tabelaLag();tabelaLagKJ();
+ drawTemporal();drawVar();drawMacro();tabelaLag();tabelaLagKJ();tabelaCruzada();
 }
 document.getElementById('periodo').onchange=load;
 document.getElementById('macroModo').onchange=drawMacro;

@@ -22,12 +22,20 @@ def api_data():
     if periodo not in ('W', 'M', 'Q'):
         periodo = 'W'
 
-    res = corporal.resumo(linhas, wellness)
+    res = corporal.resumo(linhas)
     ag = corporal.agrupar(linhas, periodo)
     cal_r7 = res['r7']['calorias']
 
+    import db
+    from api_client import kj_da_atividade
+    acts = db.load_activities() or []
+    kj = corporal.kj_diario([((a.get('start_date_local') or '')[:10], kj_da_atividade(a))
+                             for a in acts])
+
     return jsonify({
         'status': 'OK',
+        'kj': kj,
+        'kj_lag': corporal.lag_kj(kj, linhas),
         'sheets_ok': sheets.disponivel(), 'erros_sheets': erros,
         'linhas': linhas,
         'resumo': {k: v for k, v in res.items() if k != 'r7'},
@@ -52,7 +60,7 @@ BODY = r"""
 <div class="cards" id="kpis"></div>
 
 <h2>Evolucao temporal: peso, gordura e calorias</h2>
-<div class="sub" id="subTemp">Figura 1: peso e gordura (um ponto por periodo e media movel, cada um com eixo proprio) e calorias (uma barra por periodo e media movel). Figura 2: calorias e net (media movel), com a linha de referencia Net = 0.<br>Cada ponto e o resumo do periodo (mediana para peso e gordura, media para calorias e net). A media movel e a media dos ultimos N periodos, e so aparece quando os N periodos tem valor. Nao ha preenchimento: lacunas interrompem a linha.</div>
+<div class="sub" id="subTemp">Figura 1: peso e gordura (um ponto por periodo e media movel, cada um com eixo proprio) e calorias (uma barra por periodo e media movel). Figura 2: calorias e net (media movel), com a linha de referencia Net = 0.<br>Cada ponto e o resumo do periodo (mediana para peso e gordura, media para calorias e net). A media movel e a media dos ultimos N periodos, e so aparece quando os N periodos tem valor. Nao ha preenchimento: lacunas interrompem a linha. Periodos com poucos dias de registo nao aparecem.</div>
 <div class="controls">
   <label class="sel">Janela
     <select id="janela">
@@ -89,6 +97,13 @@ BODY = r"""
 </div>
 <div class="sub" id="subTempInfo"></div>
 
+<h2>Atividade (kJ) x peso e gordura</h2>
+<div class="sub">kJ de trabalho somado por periodo (todas as atividades; dias sem atividade contam como 0), com peso e gordura (mediana por periodo e media movel). Periodos com poucos dias de registo nao aparecem.</div>
+<div class="chartbox">
+  <div class="legend" id="lgKJ"></div>
+  <canvas id="chKJ" height="280"></canvas>
+</div>
+
 <h2>Variacao com bandas de ganho e perda esperados</h2>
 <div class="sub" id="subVar"></div>
 <div class="controls">
@@ -124,6 +139,11 @@ BODY = r"""
 <div class="wrap" style="max-height:300px"><table>
   <thead><tr id="lagHead"></tr></thead><tbody id="lagBody"></tbody></table></div>
 
+<h2>Lag: atividade (kJ) x peso e gordura</h2>
+<div class="sub">Spearman entre o kJ somado por semana e o peso / gordura semanais (mediana), com o kJ defasado 0 a 4 semanas. Um ponto por semana. p ajustado por Bonferroni (5 lags); so conta como correlacao se p ajustado &lt; 0.05.</div>
+<div class="wrap" style="max-height:300px"><table>
+  <thead><tr id="kjHead"></tr></thead><tbody id="kjBody"></tbody></table></div>
+
 <div class="sub" style="margin-top:20px">
   <a href="/api/corporal" target="_blank">JSON</a> &middot;
   <a href="/api/debug/sheets" target="_blank">Diagnostico dos Sheets</a>
@@ -133,14 +153,10 @@ BODY = r"""
 JS = r"""
 let C=null;
 const CORC={peso:'#27ae60',bf:'#2980b9',calorias:'#F4D03F',net:'#48C9B0',
- carb:'#58D68D',ptn:'#AF7AC5',fat:'#E67E22'};
+ carb:'#58D68D',ptn:'#AF7AC5',fat:'#E67E22',kj:'#EB984E'};
 const LBLC={peso:'Peso (kg)',bf:'Gordura (%)',calorias:'Calorias',net:'Net',
  carb:'Carboidratos',ptn:'Proteina',fat:'Gordura alimentar'};
 
-function jan(arr){
- const n=parseInt(document.getElementById('janela').value,10);
- return (n>0&&arr.length>n)?arr.slice(-n):arr;
-}
 
 // ── Visao temporal ─────────────────────────────────────────────────────────
 // Tres camadas por metrica, todas derivadas de C.linhas (nada e alterado):
@@ -156,7 +172,8 @@ const SERIES_TEMP={
  peso:{titulo:'Peso',unid:'kg',stat:'mediana',cor:CORC.peso,minSpan:2},
  bf:{titulo:'Gordura corporal',unid:'%',stat:'mediana',cor:CORC.bf,minSpan:2},
  calorias:{titulo:'Calorias',unid:'kcal',stat:'media',cor:CORC.calorias,minSpan:1000},
- net:{titulo:'Net',unid:'kcal',stat:'media',cor:CORC.net,minSpan:1000}};
+ net:{titulo:'Net',unid:'kcal',stat:'media',cor:CORC.net,minSpan:1000},
+ kj:{titulo:'kJ de atividade',unid:'kJ',stat:'soma',cor:CORC.kj,minSpan:300}};
 // dias minimos por periodo; abaixo disto o ponto do periodo aparece oco
 const MIN_REG={W:3,M:7,Q:14,S:30,A:60};
 const GRAN_NOME={W:'semana',M:'mes',Q:'trimestre',S:'semestre',A:'ano'};
@@ -165,22 +182,26 @@ const GRAN_NOME={W:'semana',M:'mes',Q:'trimestre',S:'semestre',A:'ano'};
 //   (o primeiro fica mais perto do grafico). Cada eixo tem escala e unidade proprias.
 const FIGURAS=[
  {canvas:'chMain',legenda:'lgMain',pref:'main',altura:340,
-  eixos:[{m:'peso',lado:'esq'},{m:'bf',lado:'dir'},{m:'calorias',lado:'dir'}]},
+  eixos:[{m:'peso',lado:'esq'},{m:'bf',lado:'dir'},{m:'calorias',lado:'dir',zero:true}]},
  {canvas:'chCalNet',legenda:'lgCalNet',pref:'cn',altura:260,
-  eixos:[{m:'calorias',lado:'esq'},{m:'net',lado:'dir',zero:true}]}];
+  eixos:[{m:'calorias',lado:'esq',zero:true},{m:'net',lado:'dir',zero:true}]},
+ {canvas:'chKJ',legenda:'lgKJ',pref:'kj',altura:280,
+  eixos:[{m:'kj',lado:'esq',zero:true},{m:'peso',lado:'dir'},{m:'bf',lado:'dir'}]}];
 // camadas de cada metrica em cada figura:
 //   pontos  : registos diarios (peso e BF: pontos; calorias: barras)
 //   rolling : media movel dos ultimos N periodos (N e a granularidade do seletor)
 //   periodo : resumo por periodo (mediana ou media), desligado por padrao
 const CAMADAS={
  main:{peso:['pontos','rolling'],bf:['pontos','rolling'],calorias:['pontos','rolling']},
- cn:{calorias:['pontos','rolling'],net:['rolling']}};
+ cn:{calorias:['pontos','rolling'],net:['rolling']},
+ kj:{kj:['pontos'],peso:['pontos','rolling'],bf:['pontos','rolling']}};
 // camadas visiveis (alternadas pela legenda de cada figura)
 const ATIVAS={main_peso_pontos:true,main_peso_rolling:true,
  main_bf_pontos:true,main_bf_rolling:true,
  main_calorias_pontos:true,main_calorias_rolling:true,
  cn_calorias_pontos:true,cn_calorias_rolling:true,
- cn_net_rolling:true};
+ cn_net_rolling:true,
+ kj_kj_pontos:true,kj_peso_pontos:true,kj_peso_rolling:true,kj_bf_pontos:true,kj_bf_rolling:true};
 const GRAN_PLURAL={W:'semanal',M:'mensal',Q:'trimestral',S:'semestral',A:'anual'};
 const ROLL_NOME={W:'semanas',M:'meses',Q:'trimestres',S:'semestres',A:'anos'};
 // inicio fixo de 'Todo o historico' (data final = data atual, ver drawTemporal)
@@ -230,6 +251,7 @@ function proximoPeriodo(p,g){
 }
 function estatistica(vals,tipo){
  const n=vals.length;
+ if(tipo==='soma') return vals.reduce((a,b)=>a+b,0);
  if(tipo==='mediana'){const s=vals.slice().sort((a,b)=>a-b);
   return n%2?s[(n-1)/2]:(s[n/2-1]+s[n/2])/2;}
  return vals.reduce((a,b)=>a+b,0)/n;
@@ -359,7 +381,7 @@ function janelaDias(rows){
  const corte=sUTC(addDias(dUTC(fim),-(n-1)));
  return rows.filter(r=>r.date>=corte);
 }
-function fmtV(v,unid){return unid==='kcal'?Math.round(v).toLocaleString('pt-PT'):v.toFixed(1);}
+function fmtV(v,unid){return (unid==='kcal'||unid==='kJ')?Math.round(v).toLocaleString('pt-PT'):v.toFixed(1).replace('.',',');}
 
 // limites com passo redondo (1, 2, 2.5 ou 5 x 10^k) e 4 intervalos
 // menor intervalo com passo redondo (1, 2, 2.5 ou 5 x 10^k) que cobre [lo,hi]
@@ -384,14 +406,15 @@ function limitesY(vals,minSpan){
 
 function nomeCamada(m,tipo,N,g){
  const t=SERIES_TEMP[m].titulo;
- if(tipo==='pontos') return t+' — pontos por '+GRAN_NOME[g];
+ if(tipo==='pontos') return t+(m==='kj'?' — soma '+GRAN_PLURAL[g]:' — pontos por '+GRAN_NOME[g]);
  if(tipo==='rolling') return t+' — média móvel '+N+' '+ROLL_NOME[g]+(m==='calorias'?' (lacunas estimadas)':'');
  return t+' — resumo '+GRAN_PLURAL[g];
 }
 
 // desenha uma figura (um canvas) com um eixo Y por metrica.
 // Devolve as escalas e os dados usados (lidos pelos testes).
-function desenharFigura(f,dados,g,N,t0,t1,periodos){
+function desenharFigura(f,dados,g,N,eixo,periodos){
+ const t0=eixo.t0, t1=eixo.t1;
  const metricas=[];
  f.eixos.forEach(e=>{if(!metricas.includes(e.m)) metricas.push(e.m);});
  const camadas=[];
@@ -431,19 +454,17 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
   if(!v.length){lim[e.m]=null;return;}
   lim[e.m]=limitesY(e.zero?v.concat([0]):v,SERIES_TEMP[e.m].minSpan);});
 
- const X=t=>PL+w*(t1>t0?(t-t0)/(t1-t0):0.5);
+ const X=t=>PL+w*eixo.paraX(t);
  const Y={};
  metricas.forEach(m=>{if(!lim[m]) return;
   const lo=lim[m][0], hi=lim[m][1];
   Y[m]=v=>PT+h-(v-lo)/(hi-lo)*h;});
  const colX=e=>PL+w+10+dir.indexOf(e)*OFF;
 
- // grade (4 divisoes) e faixas de periodos sem registos (sem valor)
+ // grade (4 divisoes)
  G.strokeStyle='#21262d';G.lineWidth=1;
  for(let i=0;i<=4;i++){const y=PT+h*i/4;G.beginPath();G.moveTo(PL,y);G.lineTo(PL+w,y);G.stroke();}
- periodos.forEach(q=>{if(q.dias===0){const a=X(Math.max(q.ini,t0)),b=X(Math.min(q.fim,t1));
-  G.fillStyle='rgba(139,148,158,0.12)';G.fillRect(a,PT,Math.max(1,b-a),h);}});
-
+ 
  // metricas sem nenhum valor no intervalo: aviso explicito dentro do grafico
  const semDados=metricas.filter(m=>!valores[m].length);
  G.fillStyle='#8b949e';G.font='12px sans-serif';G.textAlign='left';
@@ -473,13 +494,14 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
  });
 
  // series: barras de fundo, depois resumos, registos e, por cima, a linha rolling
- const ordemDesenho=L=>(L.tipo==='pontos'&&L.m==='calorias')?0:L.tipo==='pontos'?1:2;
- const pxDia=w/Math.max(1,t1-t0);   // pixels por dia de calendario
+ const ehBarra=L=>L.tipo==='pontos'&&(L.m==='calorias'||L.m==='kj');
+ const ordemDesenho=L=>ehBarra(L)?0:L.tipo==='pontos'?1:2;
+ const pxDia=w/Math.max(1,eixo.total);   // pixels por dia no eixo (periodos sem dados saem)
  // series recortadas na area do grafico (periodos fora do intervalo nao aparecem)
  G.save(); G.beginPath(); G.rect(PL,PT,w,h); G.clip();
  vis.slice().sort((a,b)=>ordemDesenho(a)-ordemDesenho(b)).forEach(L=>{
   const c=SERIES_TEMP[L.m], d=dados[L.m], Yf=Y[L.m]; if(!Yf) return;
-  if(L.tipo==='pontos'&&L.m==='calorias'){
+  if(ehBarra(L)){
    // barras: uma por periodo, ocupando a largura do periodo (sem registo = sem barra)
    const base=PT+h;
    G.fillStyle=c.cor;G.globalAlpha=0.65;
@@ -527,7 +549,7 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
  registarTip(f.canvas,function(mxp,myp,rw){
   const x=mxp*(W/rw);
   if(x<PL||x>PL+w) return '';
-  const t=Math.round(t0+(x-PL)/w*(t1-t0));
+  const t=Math.round(eixo.deX((x-PL)/w));
   if(t<t0||t>t1) return '';
   let html='<div class="th">'+dataBR(diaStr(t))+'</div>';
   metricas.forEach(m=>{const c=SERIES_TEMP[m],d=dados[m];
@@ -546,34 +568,74 @@ function desenharFigura(f,dados,g,N,t0,t1,periodos){
  return {lim:lim,dados:dados,metricas:metricas,camadas:camadas,semDados:semDados};
 }
 
+// Linhas diarias do grafico temporal: registos (C.linhas) juntos com o kJ por dia (C.kj).
+function linhasTemporais(){
+ const por={};
+ (C.linhas||[]).forEach(r=>{if(r&&r.date) por[r.date]=Object.assign({},r);});
+ (C.kj||[]).forEach(k=>{por[k.date]=Object.assign(por[k.date]||{date:k.date},{kj:k.kj});});
+ const hoje=hojeLocal();
+ return Object.keys(por).filter(d=>d<=hoje).sort().map(d=>por[d]);
+}
+// Janela atual: 'Janela' em dias ate ao ultimo registo; 'Todo' desde INICIO_TODO.
+// Usada pelo grafico temporal e pelo grafico de macros (mesmo intervalo).
+function janelaAtual(){
+ const rows=linhasTemporais();
+ const n=parseInt(document.getElementById('janela').value,10);
+ const fim=rows.length?rows[rows.length-1].date:hojeLocal();
+ const corte=n>0?sUTC(addDias(dUTC(fim),-(n-1)))
+   :((rows.length&&rows[0].date<INICIO_TODO)?rows[0].date:INICIO_TODO);
+ return {rows:rows,corte:corte,fim:fim};
+}
+// Eixo X comprimido: entram so os periodos com dados suficientes (periodos ocultos
+// saem do eixo, sem espacos vazios). Devolve a posicao [0..1] de um dia e o inverso.
+function eixoTempo(periodos,t0,t1){
+ const segs=[]; let total=0;
+ periodos.forEach(q=>{
+  const a=Math.max(q.ini,t0), b=Math.min(q.fim,t1);
+  if(b<a) return;
+  segs.push({a:a,b:b,off:total}); total+=b-a+1;});
+ return {t0:t0,t1:t1,total:total,
+  paraX:function(t){
+   if(!total) return 0.5;
+   for(const s of segs){ if(t<=s.b) return Math.min(1,Math.max(0,(s.off+Math.max(0,t-s.a))/total)); }
+   return 1;},
+  deX:function(f){
+   if(!total) return t0;
+   const c=f*total;
+   for(const s of segs){ const L=s.b-s.a+1; if(c<=s.off+L) return s.a+Math.max(0,c-s.off); }
+   return t1;}};
+}
+
 function drawTemporal(){
  if(!C) return;
  const g=document.getElementById('granul').value;
  const N=parseInt(document.getElementById('rollJan').value,10)||4;
- const hoje=hojeLocal();
- const full=(C.linhas||[]).filter(r=>r&&r.date&&r.date<=hoje)
-  .sort((x,y)=>x.date<y.date?-1:x.date>y.date?1:0);
+ const J=janelaAtual();
+ const full=J.rows;
  if(!full.length){FIGURAS.forEach(f=>{const o=ctx(f.canvas,f.altura);if(o)noData(o.g,o.W,o.H,'Sem registos');});return;}
- const jn=parseInt(document.getElementById('janela').value,10);
- const todo=!(jn>0);
- const fim=todo?hojeLocal():full[full.length-1].date;
- const corte=todo?INICIO_TODO:sUTC(addDias(dUTC(fim),-(jn-1)));
- const disp=full.filter(r=>r.date>=corte);
+ const corte=J.corte, fim=J.fim;
+ const disp=full.filter(r=>r.date>=corte&&r.date<=fim);
  const per=agregarTemporal(disp,g,corte,fim);
  const perFull=agregarTemporal(full,g,full[0].date,fim);
+ // periodo com poucos dias de registo: fica sem valor (oculto); a media movel interrompe-se
+ [per,perFull].forEach(lista=>lista.forEach(q=>{
+  q.ok=q.dias>=MIN_REG[g];
+  if(!q.ok) Object.keys(q.v).forEach(s=>{q.v[s]=null;});}));
  const t0=diaNum(corte), t1=diaNum(fim);
- const periodos=per.map(q=>({k:q.k,rot:q.rot,ini:diaNum(q.ini),fim:diaNum(q.fim),dias:q.dias}));
+ const periodos=per.filter(q=>q.ok).map(q=>({k:q.k,rot:q.rot,ini:diaNum(q.ini),fim:diaNum(q.fim),dias:q.dias}));
+ const eixo=eixoTempo(periodos,t0,t1);
  // dados de cada metrica, calculados uma vez e partilhados pelas figuras
  const cache={};
  const ESTIMA=estimarCalorias(perFull), ESTIMA_INFO=modelosCalorias(perFull);
+ ESTIMA.forEach((e,i)=>{if(!perFull[i].ok) e.v=null;});
  const dadosDe=m=>{
   if(cache[m]) return cache[m];
   // media movel calculada sobre todos os periodos (antes do recorte), depois limitada ao intervalo
   const rolCompleto=m==='calorias'?rolCaloriasMisto(perFull,ESTIMA,N):rolPeriodo(perFull,m,N);
   const rolPts=rolCompleto.filter(q=>q.fim>=t0&&q.ini<=t1);
   return cache[m]={
-   // pontos agrupados: um por periodo (mediana para peso e BF, media para calorias)
-   pontos:per.filter(q=>q.v[m]!=null).map(q=>{const i0=diaNum(q.ini),i1=diaNum(q.fim);
+   // pontos agrupados: um por periodo (mediana para peso e BF, media para calorias, soma para kJ)
+   pontos:per.filter(q=>q.ok&&q.v[m]!=null).map(q=>{const i0=diaNum(q.ini),i1=diaNum(q.fim);
     return {t:Math.round((i0+i1)/2),ini:i0,fim:i1,v:q.v[m],n:q.n[m],dias:q.dias,k:q.k};}),
    rolPts:rolPts,
    periodos:per.map(q=>({k:q.k,rot:q.rot,ini:diaNum(q.ini),fim:diaNum(q.fim),dias:q.dias,v:q.v[m],n:q.n[m]}))};
@@ -582,17 +644,43 @@ function drawTemporal(){
  FIGURAS.forEach(f=>{
   const dados={};
   f.eixos.forEach(e=>{dados[e.m]=dadosDe(e.m);});
-  figuras[f.canvas]=desenharFigura(f,dados,g,N,t0,t1,periodos);
+  figuras[f.canvas]=desenharFigura(f,dados,g,N,eixo,periodos);
  });
  TEMP_ULT={g:g,N:N,corte:corte,fim:fim,t0:t0,t1:t1,figuras:figuras};
- const semReg=per.filter(q=>!q.dias).length;
- const poucos=per.filter(q=>q.dias>0&&q.dias<MIN_REG[g]).length;
+ const ocultos=per.length-periodos.length;
  document.getElementById('subTempInfo').textContent='Intervalo: '+dataBR(corte)+' a '+dataBR(fim)+'. '+
-  per.length+' periodos ('+GRAN_NOME[g]+'). '+
-  semReg+' sem registos (faixa cinza, sem valor); '+poucos+' com menos de '+MIN_REG[g]+
-  ' dias (indicado no tooltip). Media movel de '+N+' '+ROLL_NOME[g]+', so com os '+N+' periodos preenchidos.'+
+  periodos.length+' periodos com dados ('+GRAN_NOME[g]+'); '+ocultos+' ocultos por terem menos de '+
+  MIN_REG[g]+' dias de registo. Media movel de '+N+' '+ROLL_NOME[g]+', so com os '+N+' periodos preenchidos.'+
  (Object.keys(ESTIMA_INFO).length?' Calorias estimadas (pontilhado) so nas lacunas, por regressao: '+
   Object.keys(ESTIMA_INFO).map(X=>X+' com atraso '+ESTIMA_INFO[X].L+' sem., R2='+ESTIMA_INFO[X].r2.toFixed(2)).join('; ')+'.':'');
+}
+
+// tabela do lag: kJ semanal x peso e gordura semanais (C.kj_lag, calculado no servidor)
+function tabelaLagKJ(){
+ const K=C.kj_lag||{};
+ const fmt=(v,c)=>v==null?'—':Number(v).toFixed(c).replace('.',',');
+ document.getElementById('kjHead').innerHTML=
+  ['Variavel','Lag (semanas)','r (Spearman)','p','p ajust. (Bonferroni)','n','Leitura']
+   .map((c,i)=>'<th class="'+(i?'num':'')+'">'+c+'</th>').join('');
+ const linhas_=[];
+ [['peso','Peso'],['bf','Gordura corporal']].forEach(function(par){
+  (K[par[0]]||[]).forEach(function(x){
+   if(x.r==null){
+    linhas_.push('<tr><td>'+par[1]+'</td><td class="num">'+x.lag_semanas+'</td>'+
+     '<td class="num" colspan="5" style="color:#484f58">dados insuficientes</td></tr>');
+    return;}
+   const sig=x.p_ajust<0.05;
+   const leitura=x.r<0?'mais kJ -> valor mais baixo '+x.lag_semanas+' sem. depois'
+                       :'mais kJ -> valor mais alto '+x.lag_semanas+' sem. depois';
+   linhas_.push('<tr><td>'+par[1]+'</td><td class="num">'+x.lag_semanas+'</td>'+
+    '<td class="num" style="color:'+(sig?(x.r<0?'#2ECC71':'#E67E22'):'#8b949e')+'">'+fmt(x.r,3)+'</td>'+
+    '<td class="num">'+fmt(x.p,4)+'</td><td class="num">'+fmt(x.p_ajust,4)+'</td>'+
+    '<td class="num">'+x.n+'</td>'+
+    '<td style="font-size:12px;color:#8b949e">'+(sig?leitura:'sem correlacao significativa')+'</td></tr>');
+  });
+ });
+ document.getElementById('kjBody').innerHTML=linhas_.join('')||
+  '<tr><td class="loading">Sem dados de atividade</td></tr>';
 }
 
 // variacao mensal de peso e gordura, em % do mes anterior, na mesma figura.
@@ -630,7 +718,7 @@ function drawVar(){
  // bandas: linhas horizontais em % fixo (tracejado = limite maximo, pontilhado = limite minimo)
  metricas.forEach(m=>bandas[m].forEach(b=>{
   g.strokeStyle=b.cor;g.lineWidth=1.2;
-  g.setLineDash(Math.abs(b.pct)>=0.6?[6,3]:[2,3]);
+  g.setLineDash(Math.abs(b.pct)===Math.max.apply(null,bandas[m].map(x=>Math.abs(x.pct)))?[6,3]:[2,3]);
   g.beginPath();g.moveTo(PL,Y(b.pct));g.lineTo(PL+w,Y(b.pct));g.stroke();g.setLineDash([]);}));
 
  // barras: peso a esquerda, gordura a direita de cada mes
@@ -676,8 +764,9 @@ function drawVar(){
 function drawMacro(){
  const modo=document.getElementById('macroModo').value;
  const sufixo=modo==='pct'?'_pct':'_g';
- const dados=jan((C.macros||[]).map(function(m){
-  return {date:m.date,carb:m['carb'+sufixo],ptn:m['ptn'+sufixo],fat:m['fat'+sufixo]};}));
+ const J=janelaAtual();
+ const dados=(C.macros||[]).filter(m=>m.date>=J.corte&&m.date<=J.fim).map(function(m){
+  return {date:m.date,carb:m['carb'+sufixo],ptn:m['ptn'+sufixo],fat:m['fat'+sufixo]};});
  const o=ctx('chMacro',240); if(!o)return;
  const g=o.g,W=o.W,H=o.H;
  const PL=48,PR=16,PT=12,PB=24,w=W-PL-PR,h=H-PT-PB,n=dados.length;
@@ -728,7 +817,7 @@ function tabelaLag(){
   const m=L.melhor;
   if(m.r==null){
    linhas_.push('<tr><td>'+par[1]+'</td><td class="num" colspan="5" '+
-    'style="color:#484f58">sem correlacao significativa (p &lt; 0.10)</td></tr>');
+    'style="color:#484f58">sem correlacao significativa (p ajustado &lt; 0.10)</td></tr>');
    return;}
   const cor=m.r<0?'#2ECC71':'#E67E22';
   const leitura=m.r<0
@@ -776,10 +865,10 @@ async function load(){
   k[1]+k[2]+'</div></div>').join('');
 
  document.getElementById('subVar').innerHTML=
-  'Variacao em % do periodo anterior, no agrupamento escolhido. Bandas (definidas para o mes): '+
+  'Variacao em % do periodo anterior, no agrupamento escolhido. Bandas em % fixo, iguais para semana, mes ou trimestre: '+
   'peso ±0.30% a ±0.70%, gordura ±0.25% a ±0.65%. Barras dentro das bandas = variacao fisiologica normal.';
 
- drawTemporal();drawVar();drawMacro();tabelaLag();
+ drawTemporal();drawVar();drawMacro();tabelaLag();tabelaLagKJ();
 }
 document.getElementById('periodo').onchange=load;
 document.getElementById('macroModo').onchange=drawMacro;

@@ -152,17 +152,23 @@ def ref_roll(linhas, campo, N, minimo=3):
     return out
 
 
+MIN_REG_REF = {'W': 3, 'M': 7, 'Q': 14, 'S': 30, 'A': 60}
+
+
 def ref_rolp(linhas, campo, g, N, hoje=None):
     """Media movel por periodo: media dos ultimos N periodos; None se algum dos N nao tem valor.
+    Periodos com menos de MIN_REG dias de registo sao ocultos (sem valor).
     Independente do JavaScript: usa o resumo de ref_agregar (mediana ou media por periodo)."""
     per = ref_agregar(linhas, g, hoje)
     keys = list(per.keys())
+    def valor(k):
+        return per[k]['v'][campo] if per[k]['dias'] >= MIN_REG_REF[g] else None
     out = {}
     for i, k in enumerate(keys):
         if i < N - 1:
             out[k] = None
             continue
-        vals = [per[keys[j]]['v'][campo] for j in range(i - N + 1, i + 1)]
+        vals = [valor(keys[j]) for j in range(i - N + 1, i + 1)]
         out[k] = sum(vals) / N if all(v is not None for v in vals) else None
     return out
 
@@ -301,7 +307,9 @@ def main():
                         'main_bf_pontos': True, 'main_bf_rolling': True,
                         'main_calorias_pontos': True, 'main_calorias_rolling': True,
                         'cn_calorias_pontos': True, 'cn_calorias_rolling': True,
-                        'cn_net_rolling': True}
+                        'cn_net_rolling': True,
+                        'kj_kj_pontos': True, 'kj_peso_pontos': True, 'kj_peso_rolling': True,
+                        'kj_bf_pontos': True, 'kj_bf_rolling': True}
             pg.select_option('#granul', 'W'); pg.wait_for_timeout(120)
             txt = pg.inner_text('#lgMain')
             check('legenda da figura principal identifica metrica e tipo de serie',

@@ -163,8 +163,8 @@ class TestFontePeso(_Base):
 class TestPayloadApi(_Base):
     """Formato de /api/corporal mantido (chaves iguais ao esperado)."""
 
-    CHAVES_TOPO = {'agrupado', 'bandas', 'erros_sheets', 'lag', 'linhas', 'macros',
-                   'periodo', 'r7', 'resumo', 'sheets_ok', 'status', 'variacao'}
+    CHAVES_TOPO = {'agrupado', 'bandas', 'erros_sheets', 'kj', 'kj_lag', 'lag', 'linhas',
+                   'macros', 'periodo', 'r7', 'resumo', 'sheets_ok', 'status', 'variacao'}
     CHAVES_LINHA = {'date', 'peso', 'bf', 'calorias', 'carb', 'fat', 'ptn', 'net'}
 
     def test_6_payload_compativel(self):

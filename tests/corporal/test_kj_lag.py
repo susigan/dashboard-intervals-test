@@ -137,9 +137,12 @@ class CorrelacoesCruzadas(unittest.TestCase):
     def test_relacao_planeada_horas_peso_lag_2(self):
         horas, cal, linhas = self._dados(planted=True)
         out = corporal.correlacoes_cruzadas([], horas, cal, linhas, n_perm=499, n_refino=4999)
+        # Nas variacoes, os lags vizinhos (1 e 3) mostram r de sinal trocado por a
+        # diferenciacao criar dependencia entre semanas. O lag real (2) deve ser o mais forte.
         top = out['linhas'][0]
-        self.assertEqual((top['causa'], top['efeito'], top['lag_sem']), ('Horas', 'Peso', 2))
-        self.assertLess(top['r'], -0.8)
+        self.assertEqual((top['causa'], top['efeito']), ('Horas', 'Peso'))
+        self.assertEqual(top['lag_sem'], 2)
+        self.assertLess(top['r'], -0.9)
         self.assertLess(top['p_ajust'], 0.05)
 
     def test_sem_relacao_nada_significativo(self):
